@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in ephemeral hosted signer. No default/search-list or persistent host edits."""
+"""Opt-in ephemeral hosted signer. Restores the original search list/default after the job."""
 import argparse
 import base64
 import hashlib
@@ -91,8 +91,9 @@ def setup(env):
     (directory / 'baseline.json').write_text(json.dumps(baseline)); (directory / 'baseline.json').chmod(0o600)
     p12 = directory / 'identity.p12';p12.write_bytes(payload);p12.chmod(0o600)
     call(['security', 'create-keychain', '-p', password, str(keychain)])
-    # create-keychain can add itself to the user list; immediately restore baseline.
-    restore(baseline['search'], baseline['default'][0])
+    # codesign's private-key lookup needs the keychain in the search list even
+    # with --keychain. Keep it registered for this disposable job, never default.
+    restore([str(keychain), *baseline['search']], baseline['default'][0])
     # A fresh keychain may auto-lock while Cargo builds. Scope a two-hour
     # timeout to this disposable job keychain (shipping job itself is 90 min),
     # never the user's login/default keychain. Keep normal lock-on-sleep.
@@ -107,10 +108,18 @@ def setup(env):
     call(['xcrun', 'notarytool', 'store-credentials', env['OKILUM_NOTARY_PROFILE'],
           '--keychain', str(keychain), '--apple-id', env['OKILUM_MAC_NOTARY_APPLE_ID'],
           '--team-id', env['OKILUM_MAC_NOTARY_TEAM'], '--password', env['OKILUM_MAC_NOTARY_PASSWORD']])
+    # Exercise private-key access before spending time compiling. Identity listing
+    # and Notary history alone do not prove codesign can retrieve the private key.
+    probe = directory / 'signing-probe'
+    shutil.copyfile('/usr/bin/true', probe)
+    call(['codesign', '--keychain', str(keychain), '--force', '--timestamp',
+          '--sign', env['OKILUM_SIGNING_IDENTITY'], str(probe)])
+    call(['codesign', '--verify', '--strict', str(probe)])
+    probe.unlink()
     p12.unlink()
     with open(env['GITHUB_ENV'], 'a') as f:
         f.write('OKILUM_SIGNING_KEYCHAIN=' + str(keychain) + '\n')
-    print('Ephemeral signing capability ready; no default/search-list changes')
+    print('Ephemeral signing capability ready; private-key signing verified; default unchanged')
 
 
 def cleanup(env):
@@ -121,7 +130,7 @@ def cleanup(env):
         return
     if directory.stat().st_uid != os.getuid() or not directory.is_dir():
         raise ValueError('Signing directory ownership mismatch')
-    allowed = {'baseline.json', 'identity.p12', 'shipping.keychain-db', 'shipping.keychain-db-shm',
+    allowed = {'signing-probe', 'baseline.json', 'identity.p12', 'shipping.keychain-db', 'shipping.keychain-db-shm',
                'shipping.keychain-db-wal'}
     if any(p.name not in allowed or p.is_symlink() or not p.is_file()
            or p.stat().st_uid != os.getuid() for p in directory.iterdir()):
@@ -145,7 +154,13 @@ if __name__ == '__main__':
     command = parser.parse_args().command
     try:
         {'setup': setup, 'cleanup': cleanup}[command](dict(os.environ))
-    except Exception:
+    except Exception as error:
         # Commands can contain secret argv; no exception/traceback/response body is logged.
-        print('Ephemeral signing ' + command + ' FAILED; no fallback or compilation', file=sys.stderr)
+        operation = type(error).__name__
+        if isinstance(error, subprocess.CalledProcessError):
+            # Only fixed executable/subcommand names, never arguments or output.
+            operation += ':' + Path(error.cmd[0]).name
+            if error.cmd[0] == 'security':
+                operation += ':' + error.cmd[1]
+        print('Ephemeral signing ' + command + ' FAILED (' + operation + ')', file=sys.stderr)
         sys.exit(1)
