@@ -25,7 +25,7 @@ impl Directory {
         }
         self.worker.take();
     }
-    pub(super) fn reset(&mut self, cx: &mut App) {
+    pub(super) fn reset(&mut self, _cx: &mut App) {
         self.pause();
         let (enabled, epoch) = (self.enabled, self.epoch);
         let draft = std::mem::take(&mut self.draft);
