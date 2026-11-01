@@ -82,6 +82,19 @@ pub(super) fn read(
     deadline: Instant,
     cancelled: impl Fn() -> bool,
 ) -> Result<Option<String>, Error> {
+    read_with_limit(command, deadline, cancelled, MAX_BYTES)
+}
+
+/// The note snapshot has two individually bounded UTF-8 flavors plus framing.
+pub(super) fn read_with_limit(
+    command: &mut Command,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+    max_bytes: usize,
+) -> Result<Option<String>, Error> {
+    if max_bytes > MAX_BYTES * 2 + 2 {
+        return Err(Error::TooLarge);
+    }
     if cancelled() {
         return Err(Error::Cancelled);
     }
@@ -97,10 +110,10 @@ pub(super) fn read(
     let mut child = Reap(child);
     let stdout = child.0.stdout.take().ok_or(Error::Io)?;
     #[cfg(windows)]
-    return read_windows(child, stdout, deadline, cancelled);
+    return read_windows(child, stdout, deadline, cancelled, max_bytes);
     #[cfg(unix)]
     {
-        read_unix(&mut child, stdout, deadline, cancelled)
+        read_unix(&mut child, stdout, deadline, cancelled, max_bytes)
     }
 }
 
@@ -110,6 +123,7 @@ fn read_unix(
     mut stdout: std::process::ChildStdout,
     deadline: Instant,
     cancelled: impl Fn() -> bool,
+    max_bytes: usize,
 ) -> Result<Option<String>, Error> {
     {
         let flags = fcntl_getfl(&stdout).map_err(|_| Error::Io)?;
@@ -130,7 +144,7 @@ fn read_unix(
                 Ok(0) => eof = true,
                 Ok(n) => {
                     // One status byte precedes an optional exact UTF-8 payload.
-                    if bytes.len().saturating_add(n) > MAX_BYTES + 1 {
+                    if bytes.len().saturating_add(n) > max_bytes + 1 {
                         return Err(Error::TooLarge);
                     }
                     bytes.extend_from_slice(&buffer[..n]);
@@ -164,20 +178,21 @@ fn read_windows(
     stdout: std::process::ChildStdout,
     deadline: Instant,
     cancelled: impl Fn() -> bool,
+    max_bytes: usize,
 ) -> Result<Option<String>, Error> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let reader = std::thread::Builder::new()
         .name("clipboard-pipe".into())
         .spawn(move || {
             let mut bytes = Vec::new();
-            // One status byte, at most MAX_BYTES payload, and one overflow
+            // One status byte, at most max_bytes payload, and one overflow
             // byte. A faulty helper cannot allocate an unbounded parent buffer.
             let result = stdout
-                .take((MAX_BYTES + 2) as u64)
+                .take((max_bytes + 2) as u64)
                 .read_to_end(&mut bytes)
                 .map_err(|_| Error::Io)
                 .and_then(|_| {
-                    if bytes.len() > MAX_BYTES + 1 {
+                    if bytes.len() > max_bytes + 1 {
                         Err(Error::TooLarge)
                     } else {
                         Ok(bytes)
