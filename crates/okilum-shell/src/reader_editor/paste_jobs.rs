@@ -33,11 +33,11 @@ struct Target {
 }
 
 impl Target {
-    fn files_saved(&self, paths: &[PathBuf], cx: &mut App) {
+    fn files_saved(&self, paths: &[PathBuf], window: &mut Window, cx: &mut App) {
         if let Some(reader) = self.reader.upgrade() {
             reader.update(cx, |reader, cx| {
                 if reader.vault_root == self.root {
-                    reader.pasted_attachments_saved(paths, cx);
+                    reader.publish_saved_attachments(paths, window, cx);
                 }
             });
         }
@@ -68,6 +68,17 @@ fn note_closed(saved: &str, window: &mut Window, cx: &mut App) {
 }
 
 impl Reader {
+    /// Present only actual completed files, after the existing paste guards.
+    pub(super) fn publish_saved_attachments(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pasted_attachments_saved(paths, cx);
+        reader_toast::saved_attachments(&self.vault_root, paths, window, cx);
+    }
+
     /// Paste as Plain Text and Paste as Titled Link, from keys and menus.
     pub(super) fn paste_with_mode(
         &mut self,
@@ -159,7 +170,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.pasted_attachments_saved(&routed.saved_files, cx);
+        self.publish_saved_attachments(&routed.saved_files, window, cx);
         if let Some(text) = &routed.insert {
             input.update(cx, |state, cx| {
                 state.replace_source_range(offset..offset, text, window, cx);
@@ -389,7 +400,7 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
             started.elapsed().as_millis()
         );
         let _ = cx.update_window(handle, |_, window, cx| {
-            input.files_saved(&saved_files, cx);
+            input.files_saved(&saved_files, window, cx);
             let links = files::links(&plan, &copied);
             if !links.is_empty() {
                 let block = links.len() > 1;
@@ -431,7 +442,7 @@ fn run_job(
         finished.store(true, Ordering::Relaxed);
         let _ = cx.update_window(handle, |_, window, cx| match result {
             Ok((text, files)) => {
-                input.files_saved(&files, cx);
+                input.files_saved(&files, window, cx);
                 if insert_at_anchor(&input, &anchor, &text, false, false, window, cx).is_none() {
                     note_closed(&text, window, cx);
                 }
@@ -926,6 +937,19 @@ mod attachment_refresh_tests {
             assert_eq!(
                 image::guess_format(&bytes).unwrap(),
                 image::ImageFormat::WebP
+            );
+            visual.update(|window, cx| window.simulate_next_frame(cx));
+            visual.run_until_parked();
+            let relative = okilum_core::vault::note_path(attachment.strip_prefix(&root).unwrap());
+            assert!(
+                visual
+                    .debug_bounds(&format!("paste-saved-path-{relative}"))
+                    .is_some(),
+                "the actual converted/collision-safe path is visible after saving"
+            );
+            assert!(
+                visual.debug_bounds("reveal-saved-attachment").is_some(),
+                "the receipt offers the platform file-manager action"
             );
             visual.dispatch_action(gpui_component::input::Undo);
             visual.run_until_parked();
