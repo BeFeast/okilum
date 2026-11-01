@@ -87,13 +87,17 @@ fn exact_instance_browse_search_and_click_preserve_confirmed_current(cx: &mut Te
         )
     });
     assert!(gateway.sends.lock().unwrap().is_empty());
-    // A change from another client between openings must choose the fresh
-    // current instance, not the instance cached by the previous popup.
+    // The existing fallback poll receives external changes independently of
+    // opening the popup; native uses its live subscription metadata.
     *gateway.model_current.lock().unwrap() = Some(ModelSelection {
         instance_id: "account-a".into(),
         model: "mini".into(),
         options: vec![],
     });
+    visual
+        .executor()
+        .advance_clock(Duration::from_millis(2_000));
+    visual.run_until_parked();
     let trigger = visual.debug_bounds("project-manager-model").unwrap();
     visual.simulate_click(trigger.center(), Modifiers::default());
     visual.run_until_parked();
