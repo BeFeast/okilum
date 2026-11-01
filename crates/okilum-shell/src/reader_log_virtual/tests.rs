@@ -254,8 +254,40 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
             panel.worker.is_none() && !panel.active,
             "file-open never selects sources or installs a source-root watch before Start"
         );
+        assert_eq!(panel.generation, 0);
+        assert!(panel.view.is_none() && panel.pending.is_none());
     });
     assert!(visual.debug_bounds("virtual-definition-view").is_some());
+    let inline = reader.read_with(visual, |reader, _| {
+        reader
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .virtual_log
+            .as_ref()
+            .unwrap()
+            .clone()
+    });
+    inline.update(visual, |panel, _| panel.watch = false);
+    let start = visual.debug_bounds("virtual-start").unwrap();
+    visual.simulate_click(start.center(), Modifiers::default());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        visual.run_until_parked();
+        if inline.read_with(visual, |panel, _| panel.view.is_some()) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "positive control: explicit Start must select the embedded source"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    inline.read_with(visual, |panel, cx| {
+        assert!(panel.generation > 0);
+        assert_eq!(panel.view.as_ref().unwrap().read(cx).total(), 2);
+    });
+    drop(inline);
     reader.update_in(visual, |reader, window, cx| {
         reader.preview_file("broken.okilog", window, cx)
     });
@@ -288,7 +320,7 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
         assert!(panel.loaded.is_none() && panel.worker.is_none());
         assert_eq!(
             PathBuf::from(panel.path.read(cx).value().as_str()),
-            vault.join("broken.okilog")
+            vault.join("broken.okilog").canonicalize().unwrap()
         );
         assert!(!panel.message.is_empty());
     });
