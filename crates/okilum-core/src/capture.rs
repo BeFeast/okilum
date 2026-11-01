@@ -13,6 +13,7 @@ pub struct Receipt {
 /// One authored capture. Keep this value on failure: a new attempt must not
 /// silently allocate another destination after publication became uncertain.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Capture {
     receipt: Receipt,
     text: String,
@@ -154,8 +155,9 @@ struct Record {
     capture: Capture,
 }
 
-/// Recover drafts and unfinished saves for this exact vault. Corruption is an
-/// error rather than an empty inbox. Completed operations never become drafts.
+/// Recover bound drafts and unfinished saves for this exact vault. Unbound
+/// legacy intents are exposed separately by `load_recovery`, never auto-bound.
+/// Corruption is an error; completed operations never become drafts.
 pub fn recover(root: &Path, records: &Path) -> Result<Vec<Capture>> {
     let root = root.canonicalize()?;
     let entries = match std::fs::read_dir(records) {
@@ -171,8 +173,18 @@ pub fn recover(root: &Path, records: &Path) -> Result<Vec<Capture>> {
         if !name.ends_with(".intent.json") && !name.ends_with(".draft.json") {
             continue;
         }
-        let record: Record =
-            read_optional(&entry.path())?.context("Capture record disappeared during recovery")?;
+        let bytes = std::fs::read(entry.path())?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value.get("root").is_none() {
+            let legacy: Capture = serde_json::from_value(value)?;
+            legacy.validate()?;
+            anyhow::ensure!(
+                name == format!("{}.intent.json", legacy.receipt.operation_id),
+                "Legacy capture identity mismatch"
+            );
+            continue;
+        }
+        let record: Record = serde_json::from_value(value)?;
         record.capture.validate()?;
         anyhow::ensure!(
             record.root == root,
@@ -209,6 +221,8 @@ pub struct ComposerDraft {
     pub text: String,
     pub folder: Option<PathBuf>,
     pub attempt: Option<Capture>,
+    #[serde(default)]
+    pub copy_origin: Option<CopyPreview>,
 }
 
 impl Default for ComposerDraft {
@@ -218,11 +232,38 @@ impl Default for ComposerDraft {
             text: String::new(),
             folder: None,
             attempt: None,
+            copy_origin: None,
         }
     }
 }
 
 impl ComposerDraft {
+    /// Checkpoint first, including copy provenance. Every retry after restart
+    /// revalidates the reviewed source before any new canonical publication.
+    pub fn publish(&self, root: &Path, drafts: &Path, records: &Path) -> Result<Receipt> {
+        if let Some(origin) = &self.copy_origin {
+            anyhow::ensure!(
+                root.canonicalize()? == origin.root,
+                "Copy destination vault changed; preview again"
+            );
+        }
+        self.persist(root, records)?;
+        let attempt = self
+            .attempt
+            .as_ref()
+            .context("Capture has no prepared operation")?;
+        if let Some(origin) = &self.copy_origin {
+            if read_optional::<Receipt>(
+                &records.join(format!("{}.receipt.json", attempt.receipt.operation_id)),
+            )?
+            .is_none()
+            {
+                origin.validate_copy(root, records, self)?;
+            }
+        }
+        attempt.publish(root, drafts, records)
+    }
+
     pub fn prepare_save(&mut self) -> Result<()> {
         if let Some(attempt) = &self.attempt {
             anyhow::ensure!(
@@ -266,6 +307,10 @@ impl ComposerDraft {
                 "Composer draft belongs to another vault"
             );
             if let Some(attempt) = prior.draft.attempt {
+                anyhow::ensure!(
+                    self.copy_origin == prior.draft.copy_origin,
+                    "Capture copy provenance changed"
+                );
                 anyhow::ensure!(self.attempt.as_ref() == Some(&attempt), "Another save already owns this recovered draft; reopen recovery instead of creating a second note");
             }
         }
@@ -342,9 +387,233 @@ pub fn recover_composers(root: &Path, records: &Path) -> Result<Vec<ComposerDraf
         text: capture.text.clone(),
         folder: capture.path().parent().map(Path::to_path_buf),
         attempt: Some(capture),
+        copy_origin: None,
     }));
     drafts.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(drafts)
+}
+
+/// A preserved recovery source. An absent root means genuinely unknown, even
+/// when the legacy intent happens to live in the current vault's state folder.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CopySource {
+    record_name: String,
+    record_bytes: Vec<u8>,
+    capture: Capture,
+    bound_root: Option<PathBuf>,
+}
+
+impl CopySource {
+    pub fn text(&self) -> &str {
+        self.capture.text()
+    }
+    pub fn original_path(&self) -> &Path {
+        self.capture.path()
+    }
+    pub fn bound_root(&self) -> Option<&Path> {
+        self.bound_root.as_deref()
+    }
+
+    pub fn from_composer(root: &Path, records: &Path, draft: &ComposerDraft) -> Result<Self> {
+        let capture = draft
+            .attempt
+            .as_ref()
+            .context("Choose a pending capture to copy")?;
+        let record_name = format!("{}.composer.json", draft.id);
+        let record_bytes = std::fs::read(records.join(&record_name))?;
+        let record: ComposerRecord = serde_json::from_slice(&record_bytes)?;
+        anyhow::ensure!(
+            record.root == root.canonicalize()? && record.draft == *draft,
+            "Capture draft changed; reload recovery before previewing"
+        );
+        Ok(Self {
+            record_name,
+            record_bytes,
+            capture: capture.clone(),
+            bound_root: Some(record.root),
+        })
+    }
+
+    /// Read-only preview: no operation UUID is allocated and no source file or
+    /// recovery record is changed. The user must explicitly choose vault/folder.
+    pub fn preview(&self, root: &Path, folder: &Path, records: &Path) -> Result<CopyPreview> {
+        self.verify(records)?;
+        validate_copy_folder(root, folder)?;
+        Ok(CopyPreview {
+            source: self.clone(),
+            root: root.canonicalize()?,
+            folder: folder.to_path_buf(),
+        })
+    }
+
+    fn verify(&self, records: &Path) -> Result<()> {
+        self.capture.validate()?;
+        anyhow::ensure!(
+            Path::new(&self.record_name).components().count() == 1
+                && matches!(
+                    Path::new(&self.record_name).components().next(),
+                    Some(Component::Normal(_))
+                ),
+            "Invalid copy source record path"
+        );
+        anyhow::ensure!(
+            std::fs::read(records.join(&self.record_name))? == self.record_bytes,
+            "Original recovery record changed; preview it again before Save copy"
+        );
+        if self.record_name.ends_with(".composer.json") {
+            let record: ComposerRecord = serde_json::from_slice(&self.record_bytes)?;
+            anyhow::ensure!(
+                self.bound_root.as_ref() == Some(&record.root)
+                    && record.draft.attempt.as_ref() == Some(&self.capture)
+                    && self.record_name == format!("{}.composer.json", record.draft.id),
+                "Copy source identity mismatch"
+            );
+        } else {
+            let value: serde_json::Value = serde_json::from_slice(&self.record_bytes)?;
+            if value.get("root").is_some() {
+                let record: Record = serde_json::from_value(value)?;
+                anyhow::ensure!(
+                    self.bound_root.as_ref() == Some(&record.root)
+                        && record.capture == self.capture,
+                    "Copy source vault binding mismatch"
+                );
+            } else {
+                let capture: Capture = serde_json::from_value(value)?;
+                anyhow::ensure!(
+                    self.bound_root.is_none() && capture == self.capture,
+                    "Legacy source must remain unbound"
+                );
+            }
+            anyhow::ensure!(
+                self.record_name == format!("{}.intent.json", self.capture.receipt.operation_id),
+                "Copy source record identity mismatch"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CopyPreview {
+    source: CopySource,
+    root: PathBuf,
+    folder: PathBuf,
+}
+
+impl CopyPreview {
+    pub fn source(&self) -> &CopySource {
+        &self.source
+    }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+    pub fn folder(&self) -> &Path {
+        &self.folder
+    }
+
+    /// Call only on the explicit Save copy action, after displaying the preview.
+    /// The old draft/intent is never rewritten or consumed by this operation.
+    pub fn start_copy(&self) -> Result<ComposerDraft> {
+        let capture = Capture::new(&self.folder, self.source.text().to_owned())?;
+        Ok(ComposerDraft {
+            text: self.source.text().to_owned(),
+            folder: Some(self.folder.clone()),
+            attempt: Some(capture),
+            copy_origin: Some(self.clone()),
+            ..Default::default()
+        })
+    }
+
+    fn validate_copy(&self, root: &Path, records: &Path, draft: &ComposerDraft) -> Result<()> {
+        anyhow::ensure!(
+            root.canonicalize()? == self.root,
+            "Copy destination vault changed; preview again"
+        );
+        validate_copy_folder(root, &self.folder)?;
+        self.source.verify(records)?;
+        let attempt = draft
+            .attempt
+            .as_ref()
+            .context("Save copy has no operation")?;
+        anyhow::ensure!(
+            attempt.receipt.operation_id != self.source.capture.receipt.operation_id
+                && draft.text == self.source.text()
+                && draft.folder.as_ref() == Some(&self.folder),
+            "Copy must retain the reviewed text and use a new operation"
+        );
+        Ok(())
+    }
+}
+
+pub struct RecoveryInbox {
+    pub drafts: Vec<ComposerDraft>,
+    pub unbound: Vec<CopySource>,
+}
+
+pub fn load_recovery(root: &Path, records: &Path) -> Result<RecoveryInbox> {
+    let drafts = recover_composers(root, records)?;
+    let mut unbound = Vec::new();
+    let entries = match std::fs::read_dir(records) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RecoveryInbox { drafts, unbound })
+        }
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.ends_with(".intent.json") {
+            continue;
+        }
+        let bytes = std::fs::read(entry.path())?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        if value.get("root").is_some() {
+            continue;
+        }
+        let capture: Capture = serde_json::from_value(value)?;
+        capture.validate()?;
+        anyhow::ensure!(
+            name == format!("{}.intent.json", capture.receipt.operation_id),
+            "Legacy capture record identity mismatch"
+        );
+        // An old receipt has no vault binding either. It cannot choose a vault
+        // or prove that a note in the current vault belongs to this intent.
+        unbound.push(CopySource {
+            record_name: name.into(),
+            record_bytes: bytes,
+            capture,
+            bound_root: None,
+        });
+    }
+    unbound.sort_by(|a, b| a.record_name.cmp(&b.record_name));
+    Ok(RecoveryInbox { drafts, unbound })
+}
+
+fn validate_copy_folder(root: &Path, folder: &Path) -> Result<()> {
+    anyhow::ensure!(
+        folder
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+            && !crate::vault::service_path(folder),
+        "Choose a real capture folder inside the selected vault"
+    );
+    #[cfg(unix)]
+    {
+        use rustix::fs::{open, openat, Mode, OFlags};
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let mut directory = open(root, flags, Mode::empty())?;
+        for component in folder.components() {
+            directory = openat(&directory, component.as_os_str(), flags, Mode::empty())?;
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _root = crate::windows_files::Directory::open(root)?;
+        let _folder = crate::windows_files::Directory::open(&root.join(folder))?;
+    }
+    Ok(())
 }
 
 fn prepare_records(records: &Path) -> Result<()> {
@@ -728,5 +997,243 @@ mod tests {
         assert!(competing.persist(vault.path(), &records).is_err());
         let recovered = recover_composers(vault.path(), &records).unwrap();
         assert_eq!(recovered, vec![draft]);
+    }
+    #[test]
+    fn divergent_capture_copy_requires_preview_and_preserves_original_intent() {
+        let vault = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let records = state.path().join("records");
+        let locks = state.path().join("locks");
+        std::fs::create_dir(vault.path().join("Copies")).unwrap();
+        let mut original = ComposerDraft {
+            text: "authored\r\n".into(),
+            folder: Some(PathBuf::new()),
+            ..Default::default()
+        };
+        original.prepare_save().unwrap();
+        original.persist(vault.path(), &records).unwrap();
+        let attempt = original.attempt.as_ref().unwrap();
+        persist_new(
+            &records,
+            &format!("{}.intent.json", attempt.receipt.operation_id),
+            &Record {
+                root: vault.path().canonicalize().unwrap(),
+                capture: attempt.clone(),
+            },
+        )
+        .unwrap();
+        std::fs::write(vault.path().join(attempt.path()), "external divergent text").unwrap();
+        assert!(original.publish(vault.path(), &locks, &records).is_err());
+        let intent = records.join(format!("{}.intent.json", attempt.receipt.operation_id));
+        let intent_before = std::fs::read(&intent).unwrap();
+        let composer = records.join(format!("{}.composer.json", original.id));
+        let composer_before = std::fs::read(&composer).unwrap();
+        let count_before = std::fs::read_dir(&records).unwrap().count();
+        let source = CopySource::from_composer(vault.path(), &records, &original).unwrap();
+        let preview = source
+            .preview(vault.path(), Path::new("Copies"), &records)
+            .unwrap();
+        assert_eq!(std::fs::read_dir(&records).unwrap().count(), count_before);
+        assert_eq!(
+            std::fs::read_dir(vault.path().join("Copies"))
+                .unwrap()
+                .count(),
+            0
+        );
+        let copy = preview.start_copy().unwrap();
+        assert_ne!(
+            copy.attempt.as_ref().unwrap().receipt.operation_id,
+            attempt.receipt.operation_id
+        );
+        let receipt = copy.publish(vault.path(), &locks, &records).unwrap();
+        assert_eq!(
+            copy.publish(vault.path(), &locks, &records).unwrap(),
+            receipt
+        );
+        assert_eq!(
+            std::fs::read_to_string(vault.path().join(&receipt.path)).unwrap(),
+            "authored\r\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(vault.path().join(attempt.path())).unwrap(),
+            "external divergent text"
+        );
+        assert_eq!(std::fs::read(intent).unwrap(), intent_before);
+        assert_eq!(std::fs::read(composer).unwrap(), composer_before);
+        assert_eq!(
+            std::fs::read_dir(vault.path().join("Copies"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn legacy_intent_stays_unbound_until_explicit_copy_in_selected_folder() {
+        let vault = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let records = state.path().join("records");
+        prepare_records(&records).unwrap();
+        std::fs::create_dir(vault.path().join("Chosen")).unwrap();
+        let legacy = Capture::new(
+            Path::new("UnknownOldFolder"),
+            "\u{feff}legacy\r\nsource".into(),
+        )
+        .unwrap();
+        let name = format!("{}.intent.json", legacy.receipt.operation_id);
+        persist_new(&records, &name, &legacy).unwrap();
+        // An old receipt still cannot establish which vault originally received it.
+        persist_new(
+            &records,
+            &format!("{}.receipt.json", legacy.receipt.operation_id),
+            &legacy.receipt,
+        )
+        .unwrap();
+        let before = std::fs::read(records.join(&name)).unwrap();
+        let inbox = load_recovery(vault.path(), &records).unwrap();
+        assert!(inbox.drafts.is_empty());
+        assert_eq!(inbox.unbound.len(), 1);
+        let source = &inbox.unbound[0];
+        assert!(source.bound_root().is_none());
+        assert_eq!(source.original_path(), legacy.path());
+        assert!(legacy
+            .publish(vault.path(), &state.path().join("locks"), &records)
+            .is_err());
+        let preview = source
+            .preview(vault.path(), Path::new("Chosen"), &records)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_dir(vault.path().join("Chosen"))
+                .unwrap()
+                .count(),
+            0
+        );
+        let copy = preview.start_copy().unwrap();
+        let receipt = copy
+            .publish(vault.path(), &state.path().join("locks"), &records)
+            .unwrap();
+        assert_ne!(receipt.operation_id, legacy.receipt.operation_id);
+        assert_eq!(receipt.path.parent(), Some(Path::new("Chosen")));
+        assert_eq!(
+            std::fs::read_to_string(vault.path().join(receipt.path)).unwrap(),
+            legacy.text()
+        );
+        assert_eq!(std::fs::read(records.join(name)).unwrap(), before);
+        assert!(!vault.path().join("UnknownOldFolder").exists());
+        assert_eq!(
+            load_recovery(vault.path(), &records).unwrap().unbound.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn copy_preview_is_revision_checked_and_refuses_guessed_or_unsafe_destination() {
+        let vault = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let records = state.path().join("records");
+        prepare_records(&records).unwrap();
+        let legacy = Capture::new(Path::new(""), "retained".into()).unwrap();
+        let name = format!("{}.intent.json", legacy.receipt.operation_id);
+        persist_new(&records, &name, &legacy).unwrap();
+        let source = load_recovery(vault.path(), &records)
+            .unwrap()
+            .unbound
+            .remove(0);
+        assert!(source
+            .preview(vault.path(), Path::new("../outside"), &records)
+            .is_err());
+        assert!(source
+            .preview(vault.path(), Path::new("missing"), &records)
+            .is_err());
+        let preview = source
+            .preview(vault.path(), Path::new(""), &records)
+            .unwrap();
+        let copy = preview.start_copy().unwrap();
+        let error = copy
+            .publish(other.path(), &state.path().join("locks"), &records)
+            .unwrap_err();
+        assert!(error.to_string().contains("vault changed"));
+        assert!(!records.join(format!("{}.composer.json", copy.id)).exists());
+        std::fs::write(records.join(&name), b"changed after preview").unwrap();
+        let error = copy
+            .publish(vault.path(), &state.path().join("locks"), &records)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Original recovery record changed"));
+        assert!(!vault
+            .path()
+            .join(copy.attempt.as_ref().unwrap().path())
+            .exists());
+        assert_eq!(
+            std::fs::read(records.join(&name)).unwrap(),
+            b"changed after preview"
+        );
+        assert_eq!(copy.text, "retained");
+        // Positive control: restoring the reviewed record lets this same copy
+        // operation finish, proving the refusal was the source revision guard.
+        std::fs::write(records.join(&name), &source.record_bytes).unwrap();
+        let receipt = copy
+            .publish(vault.path(), &state.path().join("locks"), &records)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(vault.path().join(&receipt.path)).unwrap(),
+            "retained"
+        );
+        std::fs::write(records.join(name), b"later external change").unwrap();
+        assert_eq!(
+            copy.publish(vault.path(), &state.path().join("locks"), &records)
+                .unwrap(),
+            receipt
+        );
+        assert_eq!(std::fs::read_dir(vault.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_writer_failure_restarts_with_same_copy_identity_and_provenance() {
+        let vault = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let records = state.path().join("records");
+        let locks = state.path().join("locks");
+        prepare_records(&records).unwrap();
+        let legacy = Capture::new(Path::new(""), "copy text".into()).unwrap();
+        persist_new(
+            &records,
+            &format!("{}.intent.json", legacy.receipt.operation_id),
+            &legacy,
+        )
+        .unwrap();
+        let source = load_recovery(vault.path(), &records)
+            .unwrap()
+            .unbound
+            .remove(0);
+        let preview = source
+            .preview(vault.path(), Path::new(""), &records)
+            .unwrap();
+        let copy = preview.start_copy().unwrap();
+        assert!(
+            crate::unix_publish::inject(rustix::io::Errno::ACCESS, || copy.publish(
+                vault.path(),
+                &locks,
+                &records
+            ))
+            .is_err()
+        );
+        let recovered = load_recovery(vault.path(), &records).unwrap().drafts;
+        assert_eq!(recovered, vec![copy.clone()]);
+        let receipt = recovered[0]
+            .publish(vault.path(), &locks, &records)
+            .unwrap();
+        assert_eq!(
+            receipt.operation_id,
+            copy.attempt.as_ref().unwrap().receipt.operation_id
+        );
+        assert_eq!(std::fs::read_dir(vault.path()).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(vault.path().join(receipt.path)).unwrap(),
+            legacy.text()
+        );
     }
 }

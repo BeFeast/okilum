@@ -2,7 +2,7 @@
 //! on the background executor. No reader or Brain protocol is extended.
 use super::*;
 use gpui_component::input::{Textarea, TextareaState};
-use okilum_core::capture::{self, ComposerDraft, Receipt};
+use okilum_core::capture::{self, ComposerDraft, CopyPreview, CopySource, Receipt, RecoveryInbox};
 
 /// Emitted after a durable checkpoint when Cancel closes the mounted composer.
 pub(crate) struct CaptureClosed;
@@ -14,6 +14,12 @@ pub(crate) struct CaptureComposer {
     reader: WeakEntity<Reader>,
     root: PathBuf,
     recovered: Vec<ComposerDraft>,
+    unbound: Vec<CopySource>,
+    legacy_selected: bool,
+    copy_source: Option<CopySource>,
+    copy_preview: Option<CopyPreview>,
+    copy_folder: Entity<InputState>,
+    copy_folder_chosen: bool,
     saved: Option<Receipt>,
     error: Option<String>,
     checkpoint_error: bool,
@@ -26,15 +32,22 @@ pub(crate) struct CaptureComposer {
 }
 impl EventEmitter<CaptureClosed> for CaptureComposer {}
 
+enum PreviewSource {
+    Composer(ComposerDraft),
+    Legacy(CopySource),
+}
+
 enum Work {
     Recover,
+    Preview(PreviewSource, PathBuf),
     Checkpoint(ComposerDraft, u64),
     Save(ComposerDraft),
     Close(ComposerDraft),
 }
 
 enum Completed {
-    Recovery(anyhow::Result<Vec<ComposerDraft>>),
+    Recovery(anyhow::Result<RecoveryInbox>),
+    Preview(anyhow::Result<CopyPreview>),
     Checkpoint(u64, anyhow::Result<()>),
     Save(anyhow::Result<Receipt>),
     Close(anyhow::Result<()>),
@@ -60,14 +73,33 @@ impl CaptureComposer {
             InputState::new(window, cx)
                 .placeholder("Vault-relative folder; blank uses the vault root")
         });
+        let copy_folder = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Choose a vault-relative folder, or click Use vault root")
+        });
+        let copy_folder_input = cx.subscribe(&copy_folder, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) && !this.busy {
+                this.copy_folder_chosen = true;
+                this.copy_preview = None;
+                cx.notify();
+            }
+        });
         let text_input = cx.subscribe(&text, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) && !this.busy && !this.loading {
+            if matches!(event, InputEvent::Change)
+                && !this.busy
+                && !this.loading
+                && !this.legacy_selected
+            {
                 this.draft.text = this.text.read(cx).value().to_string();
                 this.checkpoint(cx);
             }
         });
         let folder_input = cx.subscribe(&folder, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) && !this.busy && !this.loading {
+            if matches!(event, InputEvent::Change)
+                && !this.busy
+                && !this.loading
+                && !this.legacy_selected
+            {
                 this.draft.folder = Some(PathBuf::from(this.folder.read(cx).value().as_str()));
                 this.checkpoint(cx);
             }
@@ -81,14 +113,17 @@ impl CaptureComposer {
                 let records = records.clone();
                 let completed = cx.background_executor().spawn(async move {
                     match work {
-                        Work::Recover => Completed::Recovery(capture::recover_composers(&root, &records)),
+                        Work::Recover => Completed::Recovery(capture::load_recovery(&root, &records)),
+                        Work::Preview(source, folder) => Completed::Preview((|| {
+                            let source = match source {
+                                PreviewSource::Composer(draft) => CopySource::from_composer(&root, &records, &draft)?,
+                                PreviewSource::Legacy(source) => source,
+                            };
+                            source.preview(&root, &folder, &records)
+                        })()),
                         Work::Checkpoint(draft, generation) => Completed::Checkpoint(generation, draft.persist(&root, &records)),
                         Work::Close(draft) => Completed::Close(draft.persist(&root, &records)),
-                        Work::Save(draft) => Completed::Save((|| {
-                            // Persist operation identity before attempting any canonical IO.
-                            draft.persist(&root, &records)?;
-                            draft.attempt.as_ref().ok_or_else(|| anyhow::anyhow!("Capture has no prepared operation"))?.publish(&root, &drafts, &records)
-                        })()),
+                        Work::Save(draft) => Completed::Save(draft.publish(&root, &drafts, &records)),
                     }
                 }).await;
                 let _ = this.update_in(cx, |this, window, cx| {
@@ -96,8 +131,22 @@ impl CaptureComposer {
                         Completed::Recovery(result) => {
                             this.loading = false;
                             match result {
-                                Ok(drafts) => this.recovered = drafts,
+                                Ok(inbox) => {
+                                    this.recovered = inbox.drafts;
+                                    this.unbound = inbox.unbound;
+                                },
                                 Err(error) => this.error = Some(format!("Could not recover capture drafts: {error:#}")),
+                            }
+                        }
+                        Completed::Preview(result) => {
+                            this.busy = false;
+                            match result {
+                                Ok(preview) => {
+                                    this.copy_source = Some(preview.source().clone());
+                                    this.copy_preview = Some(preview);
+                                    this.error = None;
+                                }
+                                Err(error) => this.error = Some(format!("Copy preview could not be prepared: {error:#}")),
                             }
                         }
                         Completed::Checkpoint(generation, result) => match result {
@@ -132,6 +181,10 @@ impl CaptureComposer {
                                         }
                                     });
                                     this.saved = Some(receipt);
+                                    this.copy_source = None;
+                                    this.copy_preview = None;
+                                    this.copy_folder_chosen = false;
+                                    this.legacy_selected = false;
                                     this.draft = ComposerDraft { folder: this.draft.folder.clone(), ..Default::default() };
                                     this.text.update(cx, |input, cx| input.set_value("", window, cx));
                                     this.error = None;
@@ -166,6 +219,12 @@ impl CaptureComposer {
             reader,
             root,
             recovered: Vec::new(),
+            unbound: Vec::new(),
+            legacy_selected: false,
+            copy_source: None,
+            copy_preview: None,
+            copy_folder,
+            copy_folder_chosen: false,
             saved: None,
             error: None,
             checkpoint_error: false,
@@ -174,7 +233,7 @@ impl CaptureComposer {
             generation: 0,
             persisted: None,
             queue,
-            _inputs: vec![text_input, folder_input],
+            _inputs: vec![text_input, folder_input, copy_folder_input],
         }
     }
 
@@ -205,6 +264,11 @@ impl CaptureComposer {
             cx.notify();
             return;
         }
+        if self.legacy_selected {
+            self.error = Some("This legacy intent has no vault binding. Choose a copy folder and preview the destination before Save copy.".into());
+            cx.notify();
+            return;
+        }
         if let Err(error) = self.draft.prepare_save() {
             self.checkpoint_error = false;
             self.error = Some(format!("{error:#}"));
@@ -219,6 +283,10 @@ impl CaptureComposer {
         if self.busy || !self.draft.text.is_empty() || self.draft.attempt.is_some() {
             return;
         }
+        self.copy_source = None;
+        self.copy_preview = None;
+        self.copy_folder_chosen = false;
+        self.legacy_selected = false;
         self.draft = self.recovered.remove(index);
         // Suppress input checkpoints while installing one recovered snapshot.
         self.busy = true;
@@ -240,6 +308,103 @@ impl CaptureComposer {
         self.busy = false;
         self.error = None;
         self.checkpoint(cx);
+    }
+
+    fn select_legacy(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || !self.draft.text.is_empty() || self.draft.attempt.is_some() {
+            return;
+        }
+        let source = self.unbound[index].clone();
+        self.busy = true;
+        self.text.update(cx, |input, cx| {
+            input.set_value(source.text().to_owned(), window, cx)
+        });
+        self.draft.text = source.text().to_owned();
+        self.draft.folder = None;
+        self.copy_source = Some(source);
+        self.copy_preview = None;
+        self.copy_folder_chosen = false;
+        self.legacy_selected = true;
+        self.busy = false;
+        self.error = None;
+        cx.notify();
+    }
+
+    fn preview_copy(&mut self, cx: &mut Context<Self>) {
+        if self.busy || self.loading || !self.copy_folder_chosen {
+            return;
+        }
+        let source = if self.legacy_selected {
+            let Some(source) = self.copy_source.clone() else {
+                return;
+            };
+            PreviewSource::Legacy(source)
+        } else {
+            if self.draft.attempt.is_none() {
+                return;
+            }
+            PreviewSource::Composer(self.draft.clone())
+        };
+        self.busy = true;
+        self.copy_preview = None;
+        self.enqueue(
+            Work::Preview(
+                source,
+                PathBuf::from(self.copy_folder.read(cx).value().as_str()),
+            ),
+            cx,
+        );
+    }
+
+    fn save_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.loading {
+            return;
+        }
+        if !self
+            .reader
+            .upgrade()
+            .is_some_and(|reader| reader.read(cx).vault_root == self.root)
+        {
+            self.error = Some(
+                "The selected vault changed. Reopen the capture vault and preview again.".into(),
+            );
+            cx.notify();
+            return;
+        }
+        let Some(preview) = &self.copy_preview else {
+            return;
+        };
+        match preview.start_copy() {
+            Ok(draft) => {
+                // This explicit click alone creates a new operation. The original
+                // draft and intent keep their bytes and their operation identity.
+                self.busy = true;
+                self.persisted = None;
+                self.generation += 1;
+                self.draft = draft;
+                self.legacy_selected = false;
+                self.folder.update(cx, |input, cx| {
+                    input.set_value(
+                        self.draft
+                            .folder
+                            .as_ref()
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string(),
+                        window,
+                        cx,
+                    )
+                });
+                self.copy_preview = None;
+                self.copy_source = None;
+                self.copy_folder_chosen = false;
+                self.enqueue(Work::Save(self.draft.clone()), cx);
+            }
+            Err(error) => {
+                self.error = Some(format!("{error:#}"));
+                cx.notify();
+            }
+        }
     }
 
     fn open_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -264,7 +429,8 @@ impl CaptureComposer {
 
 impl Render for CaptureComposer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let locked = self.busy || self.loading || self.draft.attempt.is_some();
+        let locked =
+            self.busy || self.loading || self.draft.attempt.is_some() || self.legacy_selected;
         let mut view = v_flex()
             .w_full()
             .gap_2()
@@ -276,6 +442,8 @@ impl Render for CaptureComposer {
             .child(Textarea::new(&self.text).disabled(locked));
         if self.loading {
             view = view.child("Recovering saved drafts…");
+        } else if self.legacy_selected {
+            view = view.child("Legacy intent retained. Its original vault is unknown. Choose a destination and use the previewed Save copy action to create a separate note.");
         } else if self.persisted == Some(self.generation) {
             view = view.child("Draft stored on this device");
         } else if !self.draft.text.is_empty() {
@@ -308,6 +476,53 @@ impl Render for CaptureComposer {
                     ),
             );
         }
+        for (index, source) in self.unbound.iter().enumerate() {
+            view = view.child(
+                Button::new(("capture-legacy", index))
+                    .label(format!(
+                        "Inspect unbound legacy intent: {}",
+                        source.original_path().display()
+                    ))
+                    .disabled(
+                        self.busy || !self.draft.text.is_empty() || self.draft.attempt.is_some(),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_legacy(index, window, cx)
+                    })),
+            );
+        }
+        if self.draft.attempt.is_some() || self.legacy_selected {
+            view = view.child(div().child("Save a separate copy: choose its destination explicitly. The original note and intent are retained."))
+                .child(Input::new(&self.copy_folder).disabled(self.busy))
+                .child(h_flex().gap_2()
+                    .child(Button::new("capture-copy-root").label("Use vault root").disabled(self.busy)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.copy_folder.update(cx, |input, cx| input.set_value("", window, cx));
+                            this.copy_folder_chosen = true;
+                            this.copy_preview = None;
+                            cx.notify();
+                        })))
+                    .child(Button::new("capture-preview-copy").label("Preview copy in this vault")
+                        .disabled(self.busy || !self.copy_folder_chosen)
+                        .on_click(cx.listener(|this, _, _, cx| this.preview_copy(cx)))));
+        }
+        if let Some(preview) = &self.copy_preview {
+            let origin = preview
+                .source()
+                .bound_root()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "Unknown — legacy intent has no vault binding".into());
+            view = view.child(v_flex().gap_2()
+                .child(format!("Original vault: {origin}"))
+                .child(format!("Recorded original path: {}", preview.source().original_path().display()))
+                .child(format!("Selected copy vault: {}", preview.root().display()))
+                .child(format!("Selected copy folder: {}", if preview.folder().as_os_str().is_empty() { "(vault root)".into() } else { preview.folder().display().to_string() }))
+                .child("Save copy will allocate a new Capture-<UUID>.md filename. The exact captured text shown above will be copied; existing notes will not be replaced.")
+                .child(Button::new("capture-confirm-copy").label("Save copy").disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| this.save_copy(window, cx))))
+                .child(Button::new("capture-dismiss-preview").label("Cancel preview").disabled(self.busy)
+                    .on_click(cx.listener(|this, _, _, cx| { this.copy_preview = None; cx.notify(); }))));
+        }
         view.child(
             h_flex()
                 .gap_2()
@@ -316,6 +531,10 @@ impl Render for CaptureComposer {
                         .label("Cancel — keep draft")
                         .disabled(self.busy || self.loading)
                         .on_click(cx.listener(|this, _, _, cx| {
+                            if this.legacy_selected {
+                                cx.emit(CaptureClosed);
+                                return;
+                            }
                             this.busy = true;
                             this.enqueue(Work::Close(this.draft.clone()), cx);
                         })),
@@ -329,7 +548,12 @@ impl Render for CaptureComposer {
                         } else {
                             "Save capture"
                         })
-                        .disabled(self.busy || self.loading || self.draft.text.trim().is_empty())
+                        .disabled(
+                            self.busy
+                                || self.loading
+                                || self.legacy_selected
+                                || self.draft.text.trim().is_empty(),
+                        )
                         .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
                 ),
         )
