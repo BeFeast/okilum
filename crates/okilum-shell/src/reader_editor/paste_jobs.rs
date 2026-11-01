@@ -943,7 +943,7 @@ mod attachment_refresh_tests {
             let relative = okilum_core::vault::note_path(attachment.strip_prefix(&root).unwrap());
             assert!(
                 visual
-                    .debug_bounds(format!("paste-saved-path-{relative}"))
+                    .debug_bounds(format!("paste-saved-path-{relative}").leak())
                     .is_some(),
                 "the actual converted/collision-safe path is visible after saving"
             );
