@@ -95,6 +95,41 @@ fn key(visual: &mut VisualTestContext, name: &str, held: bool) {
     send_key(visual, keystroke, held);
 }
 
+fn focus_composer_control(view: &Entity<ProjectView>, visual: &mut VisualTestContext) {
+    view.update_in(visual, |view, window, cx| {
+        view.compose.update(cx, |input, cx| input.focus(window, cx));
+    });
+    // Kit buttons deliberately preserve mouse focus. Use real Tab navigation
+    // to the preceding enabled composer control before exercising bubbling keys.
+    key(visual, "shift-tab", false);
+    visual.update(|window, cx| {
+        assert!(
+            window.focused(cx).is_some(),
+            "positive control: Tab established keyboard focus"
+        );
+        assert!(
+            !window.has_focused_input(cx),
+            "positive control: the preceding control is noneditable"
+        );
+        assert!(
+            !view
+                .read(cx)
+                .compose
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            "positive control: focus left the raw composer handle"
+        );
+        assert!(
+            !window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains("Input")),
+            "positive control: the focused dispatch path contains no Input context"
+        );
+    });
+}
+
 fn logical_key(visual: &mut VisualTestContext, physical: &str, logical: &str) {
     let mut keystroke = gpui::Keystroke::parse(physical).unwrap();
     keystroke.key_char = Some(logical.into());
@@ -151,7 +186,7 @@ fn real_digits_from_composer_controls_keep_exact_values_repeat_delay_and_multi_t
         "no implicit first choice"
     );
     assert!(visual.debug_bounds("answer-key-options-first-1").is_some());
-    click(visual, "project-mode-Send");
+    focus_composer_control(&view, visual);
     key(visual, "2", false);
     assert_eq!(answers(&view, visual)["first"], json!("β second"));
     assert!(visual
@@ -194,7 +229,7 @@ fn real_digits_from_composer_controls_keep_exact_values_repeat_delay_and_multi_t
 fn digits_ignore_editable_answers_composer_model_search_and_modified_keys(cx: &mut TestAppContext) {
     let (view, visual, _temp) = fixture(cx);
     show(&view, visual, request(true));
-    click(visual, "project-mode-Send");
+    focus_composer_control(&view, visual);
     logical_key(visual, "shift-1", "!");
     assert!(
         answers(&view, visual).is_empty(),
@@ -230,7 +265,7 @@ fn digits_ignore_editable_answers_composer_model_search_and_modified_keys(cx: &m
         assert!(actions.question_timers.is_empty());
         assert_eq!(actions.deferred_dispatches.get(), 0);
     });
-    click(visual, "project-mode-Send");
+    focus_composer_control(&view, visual);
     key(visual, "2", false);
     assert_eq!(
         answers(&view, visual)["first"],
@@ -268,7 +303,7 @@ fn digits_ignore_editable_answers_composer_model_search_and_modified_keys(cx: &m
         cx.notify();
     });
     visual.run_until_parked();
-    click(visual, "project-mode-Send");
+    focus_composer_control(&view, visual);
     key(visual, "2", false);
     assert_eq!(
         answers(&view, visual)["first"],
@@ -288,7 +323,7 @@ fn digits_reject_collapsed_busy_submitting_unready_retained_and_stale_controls(
     key(visual, "2", false);
     assert!(answers(&view, visual).is_empty());
     click(visual, "question-header-options-first");
-    click(visual, "project-mode-Send");
+    focus_composer_control(&view, visual);
     for guard in [
         "busy",
         "submitting",
@@ -360,7 +395,7 @@ fn digits_reject_collapsed_busy_submitting_unready_retained_and_stale_controls(
             });
         });
         visual.run_until_parked();
-        click(visual, "project-mode-Send");
+        focus_composer_control(&view, visual);
         key(visual, "2", false);
         assert_eq!(
             answers(&view, visual)["first"],
@@ -465,7 +500,7 @@ fn digits_keep_rendered_option_ordinals_and_only_the_first_nine_have_hints(
         .map(|n| json!({"label":format!("Choice {n}"),"value":format!(" exact {n} ")}))
         .collect::<Vec<_>>());
     show(&view, visual, choices);
-    click(visual, "project-mode-Send");
+    focus_composer_control(&view, visual);
     key(visual, "9", false);
     assert_eq!(
         answers(&view, visual)["first"],
