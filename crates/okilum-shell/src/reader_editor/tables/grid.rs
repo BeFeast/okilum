@@ -505,6 +505,7 @@ impl TableGrid {
     /// Route Undo/Redo to the source editor, never the cell's private history.
     /// Source observation invalidates this binding; reopening uses fresh bytes.
     fn history(&mut self, action: Box<dyn Action>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
         if self
             .cells
             .iter()
