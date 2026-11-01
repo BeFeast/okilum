@@ -389,10 +389,23 @@ fn a_long_unconfirmed_message_cannot_bury_the_current_request(cx: &mut TestAppCo
     );
     let panel = visual.debug_bounds("project-native-actions").unwrap();
     let form = visual.debug_bounds("project-current-request").unwrap();
+    eprintln!("short current form vs retained recovery: panel={panel:?}; form={form:?}");
     assert!(
         form.origin.y >= panel.origin.y && form.bottom() <= panel.bottom(),
         "the current form is visible before long recovery details"
     );
+    for selector in [
+        "respond-question",
+        "question-attach-question-q",
+        "question-paste-question-q",
+    ] {
+        let control = bounds(visual, selector)
+            .expect("positive control: response and attachment actions remain available");
+        assert!(
+            control.origin.y >= panel.origin.y && control.bottom() <= panel.bottom(),
+            "{selector} stays visible in the bounded short form"
+        );
+    }
     click(visual, "answer-question-q-0");
     assert_eq!(answers(&view, visual, "question")["q"], json!([" exact "]));
     click(visual, "answer-custom-question-q");

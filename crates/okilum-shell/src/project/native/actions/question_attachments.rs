@@ -807,7 +807,7 @@ impl Actions {
         self.question_file_action(control, UserAction::Add(sources), window, cx);
         true
     }
-    pub(super) fn render_question_files(
+    pub(super) fn render_question_file_controls(
         &self,
         control: &QuestionControl,
         disabled: bool,
@@ -815,7 +815,6 @@ impl Actions {
     ) -> AnyElement {
         let request = &control.transition.request;
         let question = &control.transition.question;
-        let key = (request.clone(), question.clone());
         let unsupported = self
             .question_files
             .capabilities()
@@ -824,11 +823,6 @@ impl Actions {
         let attach_control = control.clone();
         let paste_control = control.clone();
         let check_control = control.clone();
-        let mut tray = v_flex().w_full().min_w_0().gap_1().debug_selector({
-            let request = request.clone();
-            let question = question.clone();
-            move || format!("question-files-{request}-{question}")
-        });
         let mut controls = h_flex()
             .gap_1()
             .child(
@@ -884,7 +878,32 @@ impl Actions {
                 })),
             );
         }
-        tray = tray.child(controls);
+        controls.into_any_element()
+    }
+
+    pub(super) fn render_question_files(
+        &self,
+        control: &QuestionControl,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let request = &control.transition.request;
+        let question = &control.transition.question;
+        let key = (request.clone(), question.clone());
+        if self
+            .question_files
+            .entries
+            .get(&key)
+            .is_none_or(Vec::is_empty)
+            && self.question_files.notice.is_none()
+        {
+            return None;
+        }
+        let mut tray = v_flex().w_full().min_w_0().gap_1().debug_selector({
+            let request = request.clone();
+            let question = question.clone();
+            move || format!("question-files-{request}-{question}")
+        });
         if let Some(notice) = &self.question_files.notice {
             tray = tray.child(div().whitespace_normal().child(notice.clone()));
         }
@@ -945,7 +964,7 @@ impl Actions {
                 tray = tray.child(row);
             }
         }
-        tray.into_any_element()
+        Some(tray.into_any_element())
     }
 }
 

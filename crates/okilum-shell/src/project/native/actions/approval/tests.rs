@@ -113,8 +113,14 @@ fn complete_command_detail_is_keyboard_focusable_and_scrolls_both_axes(cx: &mut 
         .debug_bounds("approval-scroll-fixture-line-29")
         .unwrap();
     assert!(viewport.size.height <= px(80.));
-    assert!(first.size.width > viewport.size.width * 2.);
-    assert!(last.origin.y > viewport.bottom());
+    assert!(
+        first.size.width > viewport.size.width * 2.,
+        "positive control: full long command has horizontal extent; viewport={viewport:?}, first={first:?}"
+    );
+    assert!(
+        last.origin.y > viewport.bottom(),
+        "positive control: full multiline command has vertical extent; viewport={viewport:?}, last={last:?}"
+    );
     visual.simulate_click(viewport.center(), Modifiers::default());
     visual.run_until_parked();
     visual.update(|window, cx| {
@@ -128,12 +134,18 @@ fn complete_command_detail_is_keyboard_focusable_and_scrolls_both_axes(cx: &mut 
     let paged = visual
         .debug_bounds("approval-scroll-fixture-line-0")
         .unwrap();
-    assert!(paged.origin.y < first.origin.y - px(30.));
+    assert!(
+        paged.origin.y < first.origin.y - px(30.),
+        "PageDown scrolls actual text; before={first:?}, after={paged:?}"
+    );
     key(visual, "right");
     let right = visual
         .debug_bounds("approval-scroll-fixture-line-0")
         .unwrap();
-    assert!(right.origin.x < first.origin.x - px(20.));
+    assert!(
+        right.origin.x < first.origin.x - px(20.),
+        "Right scrolls actual text; before={first:?}, after={right:?}"
+    );
     key(visual, "end");
     let end = visual
         .debug_bounds("approval-scroll-fixture-line-29")
@@ -151,6 +163,7 @@ fn complete_command_detail_is_keyboard_focusable_and_scrolls_both_axes(cx: &mut 
 }
 
 struct WarningHarness {
+    anchor: FocusHandle,
     disabled: bool,
     decisions: Rc<RefCell<Vec<String>>>,
 }
@@ -161,6 +174,12 @@ impl Render for WarningHarness {
             .size_full()
             .tab_group()
             .p_2()
+            .child(
+                div()
+                    .track_focus(&self.anchor)
+                    .tab_stop(true)
+                    .child("Keyboard focus start"),
+            )
             .child(ApprovalDecision {
                 scope: "warning-focus-fixture".into(),
                 selector: "warning-choice".into(),
@@ -186,9 +205,14 @@ fn keyboard_focus_exposes_full_provider_warning_without_activating_the_decision(
     cx.update(crate::test_init);
     let decisions = Rc::new(RefCell::new(Vec::new()));
     let (root, visual) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|_| WarningHarness {
-            disabled: false,
-            decisions: decisions.clone(),
+        let view = cx.new(|cx| {
+            let anchor = cx.focus_handle();
+            anchor.focus(window, cx);
+            WarningHarness {
+                anchor,
+                disabled: false,
+                decisions: decisions.clone(),
+            }
         });
         Root::new(view, window, cx)
     });

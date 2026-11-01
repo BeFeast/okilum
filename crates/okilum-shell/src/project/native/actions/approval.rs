@@ -132,14 +132,42 @@ impl RenderOnce for ApprovalText {
                 cx.stop_propagation();
             });
         if self.code {
-            content = content.font_family(crate::reader_fonts::code(cx));
-            // A max-content grid preserves line breaks, indentation and long
-            // command lines without wrapping or a hidden horizontal tail.
-            content = content.child(div().grid().grid_cols_max_content(1).children(
-                self.text.split('\n').enumerate().map(|(line, text)| {
+            let family = crate::reader_fonts::code(cx);
+            let mut font = window.text_style().font();
+            font.family = family.clone();
+            let lines = self.text.split('\n').collect::<Vec<_>>();
+            let width = lines.iter().fold(px(1.), |width, text| {
+                let run = gpui::TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color: cx.theme().foreground,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                width.max(
+                    window
+                        .text_system()
+                        .shape_line(
+                            (*text).to_owned().into(),
+                            window.rem_size() * 0.75,
+                            &[run],
+                            None,
+                        )
+                        .width()
+                        .ceil(),
+                )
+            });
+            content = content.font_family(family);
+            // Explicit unwrapped glyph width gives the scroll container a
+            // complete horizontal extent. A max-content grid track alone may
+            // overflow a viewport-sized grid without widening that extent.
+            content = content.child(v_flex().w(width).min_w_full().children(
+                lines.into_iter().enumerate().map(|(line, text)| {
                     let text_selector = format!("{selector}-line-{line}");
                     div()
                         .debug_selector(move || text_selector.clone())
+                        .w_full()
                         .min_h(px(16.))
                         .whitespace_nowrap()
                         .child(text.to_owned())

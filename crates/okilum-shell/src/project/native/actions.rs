@@ -1098,7 +1098,9 @@ impl Actions {
                     );
                 }
             }
-            form = form.child(self.render_question_files(&control, disabled, cx));
+            if let Some(files) = self.render_question_files(&control, disabled, cx) {
+                form = form.child(files);
+            }
         }
         let mut controls = h_flex().gap_1();
         if index > 0 {
@@ -1130,6 +1132,7 @@ impl Actions {
                 && self.question_files.references(&request_id, None).is_ok());
         let request = request_id.clone();
         let question = question_id;
+        let submit_control = control.clone();
         controls = controls.child(
             Button::new(SharedString::from(if last {
                 format!("respond-{request_id}")
@@ -1158,11 +1161,14 @@ impl Actions {
             })
             .disabled(disabled || !complete || !can_submit)
             .on_click(cx.listener(move |this, _, window, cx| {
-                if this.question_control_current(&control) {
+                if this.question_control_current(&submit_control) {
                     this.advance_question(&request, &question, window, cx);
                 }
             })),
         );
+        if !collapsed {
+            controls = controls.child(self.render_question_file_controls(&control, disabled, cx));
+        }
         form.child(controls).into_any_element()
     }
     pub(super) fn render_request(
