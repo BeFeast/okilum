@@ -1,0 +1,100 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1941,7 +1941,34 @@
+     type PrepaintState = PrepaintState;
+
+     fn id(&self) -> Option<ElementId> {
+-        None
++        Some("source-text".into())
++    }
++
++    fn a11y_role(&self) -> Option<gpui::accesskit::Role> {
++        Some(gpui::accesskit::Role::Group)
++    }
++
++    fn a11y_synthetic_children(
++        &mut self,
++        prepaint: &mut Self::PrepaintState,
++        builder: &mut gpui::A11ySubtreeBuilder,
++    ) {
++        // Use this frame's validated marker rows, never last frame's painted
++        // hit targets. Raw/revealed markers and block-replaced rows stay absent.
++        for (index, rows) in prepaint.marker_rows.iter().enumerate() {
++            let Some(line) = prepaint.last_layout.visible_buffer_lines.get(index) else {
++                continue;
++            };
++            if prepaint.block_lines.iter().any(|lines| lines.contains(line)) {
++                continue;
++            }
++            for row in rows.iter().flatten() {
++                for (range, node) in row.task_accessibility_nodes() {
++                    let id = builder.synthetic_node_id(("task", range.start, range.end));
++                    builder.push_child(id, node);
++                }
++            }
++        }
+     }
+
+     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -318,6 +318,25 @@
+ pub(super) type PaintedTask = (Range<usize>, bool, Bounds<Pixels>);
+
+ impl RowPaint {
++    /// Expose precisely the task shapes admitted by projection validation.
++    pub(super) fn task_accessibility_nodes(
++        &self,
++    ) -> impl Iterator<Item = (Range<usize>, gpui::accesskit::Node)> + '_ {
++        self.shapes.iter().filter_map(|shape| {
++            let MarkerKind::Task { checked } = &shape.kind else {
++                return None;
++            };
++            let mut node = gpui::accesskit::Node::new(gpui::accesskit::Role::CheckBox);
++            node.set_label("Task");
++            node.set_toggled(if *checked {
++                gpui::accesskit::Toggled::True
++            } else {
++                gpui::accesskit::Toggled::False
++            });
++            Some((shape.source.clone(), node))
++        })
++    }
++
+     /// Paint the row's replacement markers; returns the task boxes it drew.
+     pub(super) fn paint(
+         &self,
+@@ -563,6 +582,31 @@
+     use crate::input::projection::*;
+     use std::{cell::Cell, sync::Arc};
+
++    #[test]
++    fn task_accessibility_exposes_role_and_both_checked_states() {
++        let row = RowPaint {
++            foreground: Foreground::Pieces(vec![]),
++            shapes: vec![
++                Shape { x: px(0.), width: px(12.), kind: MarkerKind::Task { checked: false }, source: 0..5 },
++                Shape { x: px(20.), width: px(12.), kind: MarkerKind::Task { checked: true }, source: 10..13 },
++                Shape { x: px(40.), width: px(12.), kind: MarkerKind::Rule, source: 20..23 },
++            ],
++        };
++        let nodes: Vec<_> = row.task_accessibility_nodes().collect();
++        assert_eq!(nodes.len(), 2);
++        for ((range, node), (expected_range, checked)) in nodes.iter().zip([
++            (0..5, gpui::accesskit::Toggled::False),
++            (10..13, gpui::accesskit::Toggled::True),
++        ]) {
++            assert_eq!(*range, expected_range);
++            assert_eq!(node.role(), gpui::accesskit::Role::CheckBox);
++            assert_eq!(node.toggled(), Some(checked));
++            assert_eq!(node.label(), Some("Task"));
++        }
++        let empty = RowPaint { foreground: Foreground::Pieces(vec![]), shapes: vec![] };
++        assert_eq!(empty.task_accessibility_nodes().count(), 0);
++    }
++
+     struct Fixture {
+         source: SourceSnapshot,
+         markers: Vec<ProjectionMarker>,
