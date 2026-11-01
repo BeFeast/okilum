@@ -31,19 +31,22 @@ pub fn remove(
 ) -> Outcome {
     let mut outcome = Outcome::default();
     // Read failure is not permission to assume ownership of an external daemon.
-    let snapshot = match runtime.snapshot() {
-        Ok(snapshot) => snapshot,
+    let (snapshot, snapshot_known) = match runtime.snapshot() {
+        Ok(snapshot) => (snapshot, true),
         Err(error) => {
             outcome.errors.push(error.to_string());
-            return outcome;
+            (None, false)
         }
     };
-    outcome.external_sync_retained = snapshot
-        .as_ref()
-        .is_some_and(|s| matches!(s.selection, Selection::Reuse(_)));
+    outcome.external_sync_retained = !snapshot_known
+        || snapshot
+            .as_ref()
+            .is_some_and(|s| matches!(s.selection, Selection::Reuse(_)));
     // All durable denies precede network effects. Do not short-circuit: even a
     // damaged grant/folder journal must not prevent stopping an owned service.
-    let mut denied = true;
+    // An unreadable runtime must not block independent denies or revocation,
+    // but cannot establish local shutdown or external-daemon ownership.
+    let mut denied = snapshot_known;
     for result in [
         runtime.request_remove(),
         enrollment.request_remove(),
@@ -82,4 +85,75 @@ fn revoke(enrollment: &Enrollment, service: &impl PairingService) -> Result<bool
         enrollment.remove(service)?.removal,
         Some(Removal::Revoked | Removal::CancelledWithoutGrant)
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        pairing::{Approval, Registration, Session, State, Status},
+        private,
+    };
+    use std::{cell::Cell, fs};
+
+    struct LostExchange {
+        removals: Cell<usize>,
+    }
+    impl PairingService for LostExchange {
+        fn origin(&self) -> &str {
+            "https://removal.example.test"
+        }
+        fn start(&self, _: &Session) -> Result<Approval> {
+            anyhow::bail!("lost start response")
+        }
+        fn exchange(&self, _: &Session) -> Result<Option<Registration>> {
+            anyhow::bail!("lost grant response")
+        }
+        fn status(&self, _: &Session) -> Result<Status> {
+            panic!("removal must not resume pairing")
+        }
+        fn remove(&self, _: &Session) -> Result<State> {
+            self.removals.set(self.removals.get() + 1);
+            Ok(State::Revoked)
+        }
+    }
+
+    #[test]
+    fn corrupt_runtime_does_not_block_revocation_or_delete_local_notes() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let state = root.path().join("runtime");
+        private::directory(&state)?;
+        private::write(&state.join("runtime.json"), b"{broken")?;
+        let runtime = Runtime::new(state.clone(), root.path().join("units"));
+        assert!(runtime.snapshot().is_err());
+        let note = root.path().join("local-note.md");
+        fs::write(&note, b"canonical note remains")?;
+        let enrollment = Enrollment::new(root.path().join("enrollment"));
+        let service = LostExchange {
+            removals: Cell::new(0),
+        };
+        assert!(enrollment
+            .begin(&service, &["AAAAAAA"; 8].join("-"), "Removal fixture")
+            .is_err());
+        // A lost exchange may have minted a grant and therefore requires revoke.
+        assert!(enrollment.poll(&service).is_err());
+        assert_eq!(service.removals.get(), 0);
+        let folder = FolderController::new(root.path().join("folder"));
+        let outcome = remove(&runtime, &enrollment, &folder, &service);
+        assert_eq!(service.removals.get(), 1, "revocation must be attempted");
+        assert!(outcome.revoked);
+        assert!(!outcome.local_stopped && !outcome.complete());
+        assert!(outcome.external_sync_retained);
+        assert!(!outcome.errors.is_empty());
+        assert_eq!(
+            enrollment.snapshot()?.unwrap().removal,
+            Some(Removal::Revoked)
+        );
+        assert_eq!(fs::read(&note)?, b"canonical note remains");
+        assert_eq!(fs::read(state.join("runtime.json"))?, b"{broken");
+        let retry = remove(&runtime, &enrollment, &folder, &service);
+        assert!(retry.revoked && !retry.complete());
+        assert_eq!(service.removals.get(), 1, "terminal revoke is idempotent");
+        Ok(())
+    }
 }

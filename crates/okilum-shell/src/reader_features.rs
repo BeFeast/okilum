@@ -210,7 +210,7 @@ fn suspend(feature: Feature, cx: &mut App) {
         reader_t3_settings::suspend(cx);
         cx.set_global(okilum_shell::project_avatar::ProjectIcons::default());
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if feature == Feature::Sync {
         reader_settings_sync::suspend(cx);
     }

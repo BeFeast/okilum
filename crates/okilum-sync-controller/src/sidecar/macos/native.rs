@@ -156,6 +156,10 @@ impl super::registration::RegistrationPort for RegistrationService {
         service_status(PLIST)
     }
     fn register(&mut self, deadline: Instant) -> Result<()> {
+        ensure!(
+            okilum_sync::NetworkAccess::current().allowed(),
+            "Sync is disabled"
+        );
         ensure!(Instant::now() < deadline, "registration deadline elapsed");
         let service = service(PLIST)?;
         // This native synchronous API has no cancellation interface; critically,
@@ -167,4 +171,9 @@ impl super::registration::RegistrationPort for RegistrationService {
         }
         Ok(())
     }
+}
+
+/// Read-only approval state for the current app bundled service.
+pub(super) fn registration_status() -> Result<Status> {
+    service_status(PLIST)
 }

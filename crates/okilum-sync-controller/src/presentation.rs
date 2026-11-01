@@ -44,16 +44,17 @@ impl FolderState {
         {
             return Self::NeedsAttention;
         }
-        // Local idle/zero need is not a first-receive completion receipt.
-        if local.preparing {
-            return Self::Preparing;
-        }
         if !local.hub_connected {
             return Self::Offline;
         }
         if status["needTotalItems"].as_u64().is_some_and(|n| n > 0) || status["state"] == "syncing"
         {
             return Self::Syncing;
+        }
+        // First receive can be offline or syncing before promotion completes.
+        // Local idle/zero need is still not a completion receipt.
+        if local.preparing {
+            return Self::Preparing;
         }
         if status["state"] == "idle"
             && status["needTotalItems"] == 0
@@ -179,6 +180,46 @@ mod tests {
         assert_eq!(FolderState::from_local(&local), FolderState::Removing);
         local.removed = true;
         assert_eq!(FolderState::from_local(&local), FolderState::Removed);
+    }
+    #[test]
+    fn first_receive_progress_and_recovery_preserve_the_promotion_gate() {
+        let mut local = local();
+        local.folder["type"] = json!("receiveonly");
+        assert_eq!(FolderState::from_local(&local), FolderState::Preparing);
+
+        local.hub_connected = false;
+        assert_eq!(FolderState::from_local(&local), FolderState::Offline);
+        local.hub_connected = true;
+        assert_eq!(FolderState::from_local(&local), FolderState::Preparing);
+
+        // Pending work is visible even before the runner reports syncing.
+        local.status["needTotalItems"] = json!(3);
+        assert_eq!(FolderState::from_local(&local), FolderState::Syncing);
+        local.status["state"] = json!("syncing");
+        local.status["needTotalItems"] = json!(0);
+        assert_eq!(FolderState::from_local(&local), FolderState::Syncing);
+        local.hub_connected = false;
+        assert_eq!(FolderState::from_local(&local), FolderState::Offline);
+
+        local.hub_connected = true;
+        local.status["error"] = json!("folder marker missing");
+        assert_eq!(FolderState::from_local(&local), FolderState::NeedsAttention);
+        local.status["error"] = json!("");
+        assert_eq!(FolderState::from_local(&local), FolderState::Syncing);
+
+        // A clean, connected idle snapshot must still await durable promotion.
+        local.status["state"] = json!("idle");
+        assert_eq!(FolderState::from_local(&local), FolderState::Preparing);
+        local.folder["type"] = json!("sendreceive");
+        assert_eq!(FolderState::from_local(&local), FolderState::Preparing);
+        local.preparing = false;
+        assert_eq!(FolderState::from_local(&local), FolderState::CaughtUp);
+
+        // Subsequent bidirectional work uses the same observed progress states.
+        local.status["needTotalItems"] = json!(1);
+        assert_eq!(FolderState::from_local(&local), FolderState::Syncing);
+        local.status["needTotalItems"] = json!(0);
+        assert_eq!(FolderState::from_local(&local), FolderState::CaughtUp);
     }
     #[test]
     fn missing_observations_and_local_edits_never_report_caught_up() {

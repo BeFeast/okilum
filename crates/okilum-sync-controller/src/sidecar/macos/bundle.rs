@@ -11,6 +11,8 @@ use std::{
 };
 
 pub const HELPER: &str = "Contents/MacOS/okilum-sync-supervisor";
+pub const SYNCTHING: &str = "Contents/MacOS/syncthing";
+const SYNCTHING_PROVENANCE: &str = "Contents/Resources/Syncthing/provenance.json";
 
 // System-wide installs are root-owned; per-user installs belong to this account.
 // Read-only mode bits do not make a different file owner's code trustworthy.
@@ -33,6 +35,39 @@ pub struct BundleGuard<V> {
     verifier: V,
 }
 impl<V: SignatureVerifier> BundleGuard<V> {
+    /// The preparation layer can select only this runtime inside the verified
+    /// installed app, never PATH or an arbitrary download. No process is started.
+    /// The returned digest is of the Developer-ID-signed bytes, not the upstream
+    /// unsigned payload; retain this provenance when copying into private state.
+    pub fn bundled_runtime(
+        &self,
+        binding: &Binding,
+        runtime_requirement: &CodeRequirement,
+    ) -> Result<(PathBuf, String, Vec<u8>)> {
+        use sha2::{Digest, Sha256};
+        self.verify(binding)?;
+        self.inspect(Path::new(SYNCTHING), false)?;
+        self.inspect(Path::new(SYNCTHING_PROVENANCE), false)?;
+        let runtime = self.root.join(SYNCTHING);
+        self.verifier.verify(&runtime, runtime_requirement)?;
+        let provenance = fs::read(self.root.join(SYNCTHING_PROVENANCE))?;
+        let parsed: serde_json::Value = serde_json::from_slice(&provenance)?;
+        ensure!(
+            parsed["version"]
+                == crate::daemon::CLIENT_VERSION
+                    .strip_prefix('v')
+                    .unwrap_or(crate::daemon::CLIENT_VERSION)
+                && parsed["signed"] == true,
+            "untrusted bundled runtime provenance"
+        );
+        let hash = format!("{:x}", Sha256::digest(fs::read(&runtime)?));
+        ensure!(
+            parsed["signed_binary_sha256"].as_str() == Some(hash.as_str()),
+            "bundled runtime digest changed"
+        );
+        Ok((runtime, hash, provenance))
+    }
+
     /// The current app supplies its own bundle, never one discovered by label.
     /// Resolution reads only; no state, registration, or signature is created.
     pub fn new(
@@ -134,34 +169,7 @@ impl<V: SignatureVerifier> BundleGuard<V> {
     }
 
     fn inspect(&self, relative: &Path, directory: bool) -> Result<()> {
-        let mut path = self.root.clone();
-        let check = |path: &Path, directory: bool| -> Result<()> {
-            let m = fs::symlink_metadata(path)?;
-            ensure!(
-                !m.file_type().is_symlink() && if directory { m.is_dir() } else { m.is_file() },
-                "bundle entry is missing, linked or has the wrong type"
-            );
-            ensure!(
-                trusted_owner(m.uid(), rustix::process::geteuid().as_raw()),
-                "bundle entry belongs to another user"
-            );
-            ensure!(
-                m.mode() & 0o022 == 0,
-                "bundle entry is writable by other users"
-            );
-            Ok(())
-        };
-        check(&path, true)?;
-        let mut parts = relative.components().peekable();
-        while let Some(part) = parts.next() {
-            ensure!(
-                matches!(part, Component::Normal(_)),
-                "plain bundle-relative path required"
-            );
-            path.push(part);
-            check(&path, parts.peek().is_some() || directory)?;
-        }
-        Ok(())
+        inspect_entry(&self.root, relative, directory)
     }
 }
 
@@ -176,3 +184,153 @@ impl SignatureVerifier for NativeSignature {
 
 #[cfg(test)]
 mod tests;
+
+fn inspect_entry(root: &Path, relative: &Path, directory: bool) -> Result<()> {
+    let mut path = root.to_path_buf();
+    let check = |path: &Path, directory: bool| -> Result<()> {
+        let m = fs::symlink_metadata(path)?;
+        ensure!(
+            !m.file_type().is_symlink() && if directory { m.is_dir() } else { m.is_file() },
+            "bundle entry is missing, linked or has the wrong type"
+        );
+        ensure!(
+            trusted_owner(m.uid(), rustix::process::geteuid().as_raw()),
+            "bundle entry belongs to another user"
+        );
+        ensure!(
+            m.mode() & 0o022 == 0,
+            "bundle entry is writable by other users"
+        );
+        Ok(())
+    };
+    check(&path, true)?;
+    let mut parts = relative.components().peekable();
+    while let Some(part) = parts.next() {
+        ensure!(
+            matches!(part, Component::Normal(_)),
+            "plain bundle-relative path required"
+        );
+        path.push(part);
+        check(&path, parts.peek().is_some() || directory)?;
+    }
+    Ok(())
+}
+
+/// Authenticate the current installed bundle before private identity exists.
+/// Does not create state, execute code, register services or construct a Binding.
+#[cfg(target_os = "macos")]
+pub fn trusted_preparation_runtime(
+    app: &Path,
+    app_executable: &str,
+    app_requirement: &CodeRequirement,
+    helper_requirement: &CodeRequirement,
+    runtime_requirement: &CodeRequirement,
+) -> Result<(PathBuf, String, Vec<u8>)> {
+    trusted_preparation_runtime_with(
+        app,
+        app_executable,
+        app_requirement,
+        helper_requirement,
+        runtime_requirement,
+        &std::env::current_exe()?,
+        &NativeSignature,
+    )
+}
+
+fn trusted_preparation_runtime_with<V: SignatureVerifier>(
+    app: &Path,
+    app_executable: &str,
+    app_requirement: &CodeRequirement,
+    helper_requirement: &CodeRequirement,
+    runtime_requirement: &CodeRequirement,
+    current_executable: &Path,
+    verifier: &V,
+) -> Result<(PathBuf, String, Vec<u8>)> {
+    use sha2::{Digest, Sha256};
+    ensure!(
+        app.is_absolute()
+            && app
+                .components()
+                .all(|c| !matches!(c, Component::ParentDir | Component::CurDir))
+            && app.extension().is_some_and(|e| e == "app"),
+        "plain absolute app bundle required"
+    );
+    ensure!(
+        !app_executable.is_empty()
+            && app_executable.len() <= 255
+            && app_executable != "okilum-sync-supervisor"
+            && app_executable != "."
+            && app_executable != ".."
+            && app_executable
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_')),
+        "invalid app executable name"
+    );
+    ensure!(app.canonicalize()? == app, "linked bundle path refused");
+    let own = PathBuf::from("Contents/MacOS").join(app_executable);
+    ensure!(
+        current_executable == app.join(&own),
+        "not the current application bundle"
+    );
+    inspect_entry(app, Path::new(""), true)?;
+    for relative in [own.as_path(), Path::new(HELPER), Path::new(SYNCTHING)] {
+        inspect_entry(app, relative, false)?;
+        ensure!(
+            fs::metadata(app.join(relative))?.mode() & 0o111 != 0,
+            "bundle code is not executable"
+        );
+    }
+    let plist = PathBuf::from("Contents/Library/LaunchAgents").join(PLIST);
+    inspect_entry(app, &plist, false)?;
+    let read = |relative: &Path| -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        File::options()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(app.join(relative))?
+            .take(65537)
+            .read_to_end(&mut bytes)?;
+        ensure!(bytes.len() <= 65536, "bundle metadata exceeds limit");
+        Ok(bytes)
+    };
+    ensure!(
+        read(&plist)? == bundled_plist(HELPER)?.as_bytes(),
+        "bundled agent definition changed"
+    );
+    inspect_entry(app, Path::new(SYNCTHING_PROVENANCE), false)?;
+    verifier.verify(app, app_requirement)?;
+    verifier.verify(&app.join(HELPER), helper_requirement)?;
+    let runtime = app.join(SYNCTHING);
+    verifier.verify(&runtime, runtime_requirement)?;
+    let provenance = read(Path::new(SYNCTHING_PROVENANCE))?;
+    let parsed: serde_json::Value = serde_json::from_slice(&provenance)?;
+    ensure!(
+        parsed["version"]
+            == crate::daemon::CLIENT_VERSION
+                .strip_prefix('v')
+                .unwrap_or(crate::daemon::CLIENT_VERSION)
+            && parsed["signed"] == true,
+        "untrusted bundled runtime provenance"
+    );
+    let mut file = File::options()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&runtime)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    let hash = format!("{:x}", digest.finalize());
+    ensure!(
+        parsed["signed_binary_sha256"].as_str() == Some(hash.as_str()),
+        "bundled runtime digest changed"
+    );
+    // Recheck the resource seal after metadata and runtime reads.
+    verifier.verify(app, app_requirement)?;
+    Ok((runtime, hash, provenance))
+}

@@ -20,6 +20,12 @@ pub use linux::{configuration_paths, prepare, Preparation};
 
 pub const CLIENT_VERSION: &str = "v2.1.6";
 
+/// External compatibility is independent of the checksum-pinned bundled runtime.
+/// Unknown releases remain unavailable rather than silently inheriting authority.
+pub fn compatible_external_version(version: &str) -> bool {
+    matches!(version, "v2.1.6" | "v2.1.7")
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DaemonIdentity {
@@ -34,7 +40,9 @@ impl DaemonIdentity {
         let api = Syncthing::connect(config.address, &config.key)?;
         api.verify_identity(&self.device_id)?;
         ensure!(
-            api.version()?["version"] == CLIENT_VERSION,
+            api.version()?["version"]
+                .as_str()
+                .is_some_and(compatible_external_version),
             "unsupported Syncthing version"
         );
         Ok(api)
@@ -106,7 +114,7 @@ pub fn discover(configs: &[PathBuf]) -> Discovery {
                 .context("missing version")?
                 .to_owned();
             ensure!(
-                [CLIENT_VERSION, "v1.29.5"].contains(&version.as_str()),
+                compatible_external_version(&version) || version == "v1.29.5",
                 "unsupported inventory version"
             );
             let id = api.identity()?["myID"]
