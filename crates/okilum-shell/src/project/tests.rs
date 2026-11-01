@@ -1479,9 +1479,7 @@ fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together
         "project-manager-model",
         "project-interrupt",
         "project-attach",
-        "project-mode-Send",
-        "project-mode-Queue",
-        "project-mode-Steer",
+        "project-send-mode",
         "project-send",
     ] {
         let control = bounds(selector);

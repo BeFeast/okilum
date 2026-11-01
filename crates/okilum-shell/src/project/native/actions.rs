@@ -1220,6 +1220,87 @@ impl Actions {
         card.into_any_element()
     }
 }
+impl Actions {
+    /// Match the actual action surface, including the session-only dismissal
+    /// mask. An idle entity must not reserve a blank strip above the composer.
+    pub(in crate::project) fn has_visible_content(&self, cx: &App) -> bool {
+        self.state.active_run.is_some()
+            || (self.pinned && self.current_request().is_some())
+            || self.records.iter().any(|record| record.sequence.is_none())
+            || self.error.as_ref().is_some_and(|error| {
+                let key = self.conversation.as_ref().map(|(origin, thread)| {
+                    super::recovery_state::ErrorDismissKey::new(
+                        origin,
+                        thread,
+                        super::recovery_state::ErrorOrigin::Action,
+                        error,
+                    )
+                });
+                !key.as_ref().is_some_and(|key| {
+                    cx.try_global::<super::recovery_state::SessionDismissals>()
+                        .is_some_and(|session| session.is_dismissed(key))
+                })
+            })
+    }
+
+    fn render_run_header(
+        &self,
+        label: &str,
+        count: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = h_flex()
+            .debug_selector(|| "project-run-controls".into())
+            .w_full()
+            .min_w_0()
+            .min_h(px(28.))
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .debug_selector(|| "project-run-status".into())
+                    .text_size(px(13.))
+                    .line_height(px(20.))
+                    .child(label.to_owned()),
+            )
+            .when_some(count.filter(|count| *count > 1), |row, count| {
+                row.child(
+                    div()
+                        .debug_selector(move || format!("project-current-request-count-{count}"))
+                        .text_size(px(12.))
+                        .line_height(px(20.))
+                        .text_color(brand::palette(cx).text_muted)
+                        .child(format!("1/{count}")),
+                )
+            })
+            .child(div().flex_1());
+        if let Some(run_id) = &self.state.active_run {
+            let run_id = run_id.clone();
+            row = row.child(
+                Button::new("project-interrupt")
+                    .ghost()
+                    .small()
+                    .size(px(28.))
+                    .icon(Icon::default().path("icons/square.svg"))
+                    .accessibility_label("Stop")
+                    .tooltip("Stop")
+                    .debug_selector(|| "project-interrupt".into())
+                    .disabled(self.busy || !self.enabled || !self.state.ready || self.records.iter().any(|r| matches!(&r.command.intent, Intent::Interrupt { run_id: id } if id == &run_id)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.dispatch(
+                            Intent::Interrupt {
+                                run_id: run_id.clone(),
+                            },
+                            window,
+                            cx,
+                        )
+                    })),
+            );
+        }
+        row.into_any_element()
+    }
+}
 impl Render for Actions {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.question_keys = None;
@@ -1240,27 +1321,8 @@ impl Render for Actions {
             .max_h(px(280.))
             .overflow_y_scroll()
             .gap_2();
-        if let Some(run_id) = &self.state.active_run {
-            let run_id = run_id.clone();
-            panel = panel.child(
-                Button::new("project-interrupt")
-                    .ghost()
-                    .small()
-                    .icon(Icon::default().path("icons/square.svg"))
-                    .accessibility_label("Stop")
-                    .tooltip("Stop")
-                    .debug_selector(|| "project-interrupt".into())
-                    .disabled(self.busy || !self.enabled || !self.state.ready || self.records.iter().any(|r| matches!(&r.command.intent, Intent::Interrupt { run_id: id } if id == &run_id)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.dispatch(
-                            Intent::Interrupt {
-                                run_id: run_id.clone(),
-                            },
-                            window,
-                            cx,
-                        )
-                    })),
-            );
+        if current.is_none() && self.state.active_run.is_some() {
+            panel = panel.child(self.render_run_header("Working", None, cx));
         }
         // Recovery details must not bury the current actionable request.
         if let Some((request, count)) = current {
@@ -1276,20 +1338,7 @@ impl Render for Actions {
                     .min_w_0()
                     .gap_1()
                     .debug_selector(|| "project-current-request".into())
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .child(label)
-                            .when(count > 1, |row| {
-                                row.child(
-                                    div()
-                                        .debug_selector(move || {
-                                            format!("project-current-request-count-{count}")
-                                        })
-                                        .child(format!("1/{count}")),
-                                )
-                            }),
-                    )
+                    .child(self.render_run_header(label, Some(count), cx))
                     .child(form),
             );
         }
@@ -1586,6 +1635,131 @@ mod tests {
         net::TcpListener,
         thread,
     };
+
+    #[gpui::test]
+    fn action_surface_is_empty_at_idle_and_stop_shares_the_running_or_request_header(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let state = tempfile::tempdir().unwrap();
+        let mut owner = None;
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let project = cx.new(|cx| {
+                let mut project = super::super::super::fixture::view(
+                    state.path().into(),
+                    Arc::new(super::super::super::fixture::Fake::default()),
+                    window,
+                    cx,
+                );
+                project.active = false;
+                project
+            });
+            let actions = project.read(cx).native.actions.clone();
+            owner = Some(project);
+            Root::new(actions, window, cx)
+        });
+        visual.simulate_resize(size(px(320.), px(700.)));
+        visual.run_until_parked();
+        let actions = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Actions>().unwrap()
+        });
+        actions.read_with(visual, |actions, cx| {
+            assert!(!actions.has_visible_content(cx))
+        });
+        assert!(
+            visual.debug_bounds("project-run-controls").is_none(),
+            "idle has no blank run row"
+        );
+        assert!(visual.debug_bounds("project-interrupt").is_none());
+        actions.update_in(visual, |actions, window, cx| {
+            actions.set_state(
+                State {
+                    ready: true,
+                    active_run: Some("exact-current-run".into()),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            assert!(actions.has_visible_content(cx));
+        });
+        visual.run_until_parked();
+        let running_header = visual.debug_bounds("project-run-controls").unwrap();
+        let status = visual.debug_bounds("project-run-status").unwrap();
+        let stop = visual.debug_bounds("project-interrupt").unwrap();
+        assert!(status.left() < stop.left());
+        assert_eq!(
+            stop.right(),
+            running_header.right(),
+            "Stop has a stable right-aligned action position"
+        );
+        assert!(stop.top() >= running_header.top() && stop.bottom() <= running_header.bottom());
+        actions.update_in(visual, |actions, window, cx| {
+            actions.pinned = true;
+            actions.set_state(State { ready:true, active_run:Some("exact-current-run".into()), requests:vec![Request {
+                approval_detail:None, id:"current-question".into(), item:json!({"id":"current-question-row","type":"user_input_request","status":"pending","questions":[{"id":"q","question":"Confirm the visible result","options":[{"label":"Yes","value":"yes"}]}]}), answerable:true, dismissible:true, response_mode:Some("message".into()),reason:None,
+            }], ..Default::default() }, window, cx);
+        });
+        visual.run_until_parked();
+        let request = visual.debug_bounds("project-current-request").unwrap();
+        let header = visual.debug_bounds("project-run-controls").unwrap();
+        let stop = visual.debug_bounds("project-interrupt").unwrap();
+        assert_eq!(
+            request.top(),
+            header.top(),
+            "request and Stop share one header rather than an orphan action row"
+        );
+        assert_eq!(stop.right(), header.right());
+        assert!(stop.bottom() <= header.bottom());
+        actions.update_in(visual, |actions, window, cx| {
+            actions.set_state(
+                State {
+                    ready: true,
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            actions.error = Some("Retained action detail".into());
+            actions.conversation = Some(("https://t3.example".into(), "exact-thread".into()));
+            assert!(
+                actions.has_visible_content(cx),
+                "errors remain reachable while idle"
+            );
+            let key = super::super::recovery_state::ErrorDismissKey::new(
+                "https://t3.example",
+                "exact-thread",
+                super::super::recovery_state::ErrorOrigin::Action,
+                "Retained action detail",
+            );
+            cx.default_global::<super::super::recovery_state::SessionDismissals>()
+                .dismiss(key);
+            assert!(
+                !actions.has_visible_content(cx),
+                "a dismissed error cannot leave an empty action strip"
+            );
+            actions.error = None;
+            actions.records.push(Record {
+                command: okilum_t3::actions::Command::new(
+                    "exact-thread",
+                    Intent::Interrupt {
+                        run_id: "old-retained-run".into(),
+                    },
+                ),
+                sequence: None,
+            });
+            assert!(
+                actions.has_visible_content(cx),
+                "unconfirmed actions retain recovery controls"
+            );
+            actions.records[0].sequence = Some(1);
+            assert!(
+                !actions.has_visible_content(cx),
+                "acknowledged records alone do not reserve a row"
+            );
+        });
+        drop(owner);
+    }
 
     pub(super) fn inert_native(view: &mut ProjectView) {
         let environment = Environment::new("fixture", "http://127.0.0.1:9").unwrap();

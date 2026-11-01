@@ -45,6 +45,8 @@ pub(super) struct Native {
     pub(super) model_revision: u64,
     pub(super) catalog: Option<Entity<models::catalog::Catalog>>,
     pub(super) catalog_observer: Option<Subscription>,
+    actions_visible: bool,
+    _actions_visibility: Subscription,
 }
 impl Native {
     #[cfg(test)]
@@ -54,6 +56,13 @@ impl Native {
     pub(super) fn new(window: &mut Window, cx: &mut Context<ProjectView>) -> Self {
         let parent = cx.entity().downgrade();
         let actions = cx.new(|_| actions::Actions::new(parent));
+        let visibility = cx.observe(&actions, |this, actions, cx| {
+            let visible = actions.read(cx).has_visible_content(cx);
+            if this.native.actions_visible != visible {
+                this.native.actions_visible = visible;
+                cx.notify();
+            }
+        });
         Self {
             actions,
             request_lease: Arc::new(()),
@@ -82,6 +91,8 @@ impl Native {
             model_revision: 0,
             catalog: None,
             catalog_observer: None,
+            actions_visible: false,
+            _actions_visibility: visibility,
         }
     }
     pub(super) fn stream_error_is_clear(&self) -> bool {

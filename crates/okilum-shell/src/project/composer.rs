@@ -2,7 +2,7 @@
 use super::*;
 pub(super) mod history;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Mode {
     Auto,
     Queue,
@@ -23,6 +23,9 @@ pub(super) struct Composer {
     input: Entity<TextareaState>,
     enabled: bool,
     pub(super) mode: Mode,
+    mode_open: bool,
+    mode_focus: gpui::FocusHandle,
+    mode_trigger_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<Pixels>>>,
     native: bool,
     steer: bool,
     busy: bool,
@@ -56,6 +59,9 @@ impl Composer {
             input,
             enabled: false,
             mode: Mode::Auto,
+            mode_open: false,
+            mode_focus: cx.focus_handle(),
+            mode_trigger_bounds: Default::default(),
             native: false,
             steer: false,
             busy: false,
@@ -148,6 +154,9 @@ impl Composer {
         if (self.native, self.steer) != (native, steer) {
             self.native = native;
             self.steer = steer;
+            if !native {
+                self.mode_open = false;
+            }
             if !steer && self.mode == Mode::Steer {
                 self.mode = Mode::Auto;
             }
@@ -158,6 +167,9 @@ impl Composer {
         if (self.enabled, self.busy) != (enabled, busy) {
             self.enabled = enabled;
             self.busy = busy;
+            if busy {
+                self.mode_open = false;
+            }
             cx.notify();
         }
     }
@@ -173,41 +185,114 @@ impl Composer {
             cx.notify();
         }
     }
-}
-impl Render for Composer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let validation = self.prompt_validation(cx);
-        let modes = if self.native {
-            [
-                (Mode::Auto, "Send"),
-                (Mode::Queue, "Queue"),
-                (Mode::Steer, "Steer"),
-            ]
-            .into_iter()
-            .map(|(mode, label)| {
+
+    fn close_send_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.mode_open = false;
+        self.input.update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+    fn render_send_mode(&self, cx: &mut Context<Self>) -> AnyElement {
+        let bounds = self.mode_trigger_bounds.clone();
+        let trigger = div()
+            .id("project-send-mode-anchor")
+            .on_prepaint(move |measured, _, _| bounds.set(measured))
+            .child(
+                Button::new("project-send-mode")
+                    .debug_selector(|| "project-send-mode".into())
+                    .ghost()
+                    .small()
+                    .icon(IconName::ChevronDown)
+                    .selected(self.mode_open)
+                    .accessibility_label("Choose send mode")
+                    .tooltip("Choose send mode")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.mode_open {
+                            this.close_send_mode(window, cx);
+                        } else {
+                            this.mode_open = true;
+                            this.mode_focus.focus(window);
+                            cx.notify();
+                        }
+                    })),
+            );
+        let popup =
+            gpui_base::Popup::new("project-send-mode-popup", trigger).anchor(Anchor::BottomRight);
+        if !self.mode_open {
+            return popup.into_any_element();
+        }
+        let mut menu = v_flex()
+            .id("project-send-mode-menu")
+            .debug_selector(|| "project-send-mode-menu".into())
+            .role(gpui::Role::Menu)
+            .track_focus(&self.mode_focus)
+            .occlude()
+            .popover_style(cx)
+            .text_size(px(13.))
+            .line_height(px(20.))
+            .w(px(200.))
+            .p_1()
+            .gap_0p5()
+            .on_mouse_down_out(
+                cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                    // The trigger owns its completed click. A pointer-down outside
+                    // the menu but on that same trigger must not close then reopen.
+                    if !this.mode_trigger_bounds.get().contains(&event.position) {
+                        this.close_send_mode(window, cx);
+                    }
+                }),
+            )
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.close_send_mode(window, cx);
+                    cx.stop_propagation();
+                }
+            }));
+        for (mode, label, tooltip) in [
+            (
+                Mode::Auto,
+                "Send",
+                "Send normally; let the manager handle an active turn",
+            ),
+            (
+                Mode::Queue,
+                "Queue",
+                "Queue this message after the current turn",
+            ),
+            (
+                Mode::Steer,
+                "Steer",
+                "Send this message into the current turn",
+            ),
+        ] {
+            menu = menu.child(
                 Button::new(SharedString::from(format!("project-mode-{label}")))
                     .debug_selector(move || format!("project-mode-{label}"))
                     .ghost()
                     .small()
-                    .label(if mode == Mode::Auto { "Auto" } else { label })
+                    .w_full()
+                    .justify_start()
+                    .label(label)
                     .selected(self.mode == mode)
                     .toggled(self.mode == mode)
-                    .tooltip(match mode {
-                        Mode::Auto => "Send normally; let the manager handle an active turn",
-                        Mode::Queue => "Queue this message after the current turn",
-                        Mode::Steer => "Send this message into the current turn",
-                    })
+                    .tooltip(tooltip)
                     .disabled(self.busy || (mode == Mode::Steer && !self.steer))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.mode = mode;
-                        cx.notify();
+                    .child(div().flex_1())
+                    .child(div().w(px(14.)).when(self.mode == mode, |check| {
+                        check.child(Icon::new(IconName::Check).small())
                     }))
-            })
-            .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let modes = h_flex().items_center().gap_1().children(modes);
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.mode = mode;
+                        this.close_send_mode(window, cx);
+                    })),
+            );
+        }
+        popup.content(menu).into_any_element()
+    }
+}
+impl Render for Composer {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let validation = self.prompt_validation(cx);
         v_flex()
             .id("project-composer")
             .relative()
@@ -274,27 +359,45 @@ impl Render for Composer {
                                 cx.listener(|_, _, _, cx| cx.emit(AttachmentRequested::Choose)),
                             ),
                     )
-                    .child(modes)
                     .child(div().flex_1())
                     .child(
-                        Button::new("project-send")
-                            .debug_selector(|| "project-send".into())
-                            .primary()
-                            .small()
-                            .icon(IconName::ArrowUp)
-                            .tooltip(match self.mode {
-                                Mode::Auto => "Send to manager (Enter)",
-                                Mode::Queue => "Queue message (Enter)",
-                                Mode::Steer => "Steer current turn (Enter)",
-                            })
-                            .disabled(
-                                self.busy
-                                    || validation.is_some()
-                                    || !self.enabled
-                                    || (!self.has_attachments
-                                        && self.input.read(cx).value().trim().is_empty()),
+                        h_flex()
+                            .debug_selector(|| "project-send-controls".into())
+                            .items_center()
+                            .gap_0p5()
+                            .child(
+                                Button::new("project-send")
+                                    .debug_selector(|| "project-send".into())
+                                    .primary()
+                                    .small()
+                                    .icon(IconName::ArrowUp)
+                                    .when(self.mode != Mode::Auto, |button| {
+                                        button.label(if self.mode == Mode::Queue {
+                                            "Queue"
+                                        } else {
+                                            "Steer"
+                                        })
+                                    })
+                                    .accessibility_label(match self.mode {
+                                        Mode::Auto => "Send message",
+                                        Mode::Queue => "Queue message",
+                                        Mode::Steer => "Steer current turn",
+                                    })
+                                    .tooltip(match self.mode {
+                                        Mode::Auto => "Send to manager (Enter)",
+                                        Mode::Queue => "Queue message (Enter)",
+                                        Mode::Steer => "Steer current turn (Enter)",
+                                    })
+                                    .disabled(
+                                        self.busy
+                                            || validation.is_some()
+                                            || !self.enabled
+                                            || (!self.has_attachments
+                                                && self.input.read(cx).value().trim().is_empty()),
+                                    )
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SendRequested))),
                             )
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SendRequested))),
+                            .when(self.native, |group| group.child(self.render_send_mode(cx))),
                     ),
             )
             .when_some(validation, |composer, message| {
@@ -317,6 +420,123 @@ mod tests {
         cell::{Cell, RefCell},
         rc::Rc,
     };
+
+    #[gpui::test]
+    fn send_mode_disclosure_stays_with_send_and_enter_retains_each_explicit_mode(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let observed = sent.clone();
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let input = cx.new(|cx| TextareaState::new(window, cx).submit_on_enter(true));
+            let composer = cx.new(|cx| {
+                let mut composer = Composer::new(input, cx);
+                composer.set_native(true, true, cx);
+                composer.set_controls(true, false, cx);
+                composer.set_attachments(false, true, cx);
+                cx.subscribe(&cx.entity(), move |this, _, _: &SendRequested, _| {
+                    observed.borrow_mut().push(this.mode);
+                })
+                .detach();
+                composer
+            });
+            Root::new(composer, window, cx)
+        });
+        visual.simulate_resize(size(px(320.), px(600.)));
+        visual.run_until_parked();
+        let composer = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<Composer>().unwrap()
+        });
+        let input = visual.debug_bounds("project-composer-input").unwrap();
+        let send = visual.debug_bounds("project-send").unwrap();
+        let mode = visual.debug_bounds("project-send-mode").unwrap();
+        let attach = visual.debug_bounds("project-attach").unwrap();
+        assert!(
+            input.size.width >= px(280.),
+            "textarea retains the narrow-panel width"
+        );
+        assert!(attach.top() >= input.bottom() && send.top() >= input.bottom());
+        assert_eq!(
+            send.top(),
+            mode.top(),
+            "mode disclosure shares the Send baseline"
+        );
+        assert!(
+            mode.left() >= send.right() && mode.left() - send.right() <= px(4.),
+            "mode belongs to the send group"
+        );
+        assert!(visual.debug_bounds("project-mode-Send").is_none());
+        assert!(visual.debug_bounds("project-mode-Queue").is_none());
+        assert!(
+            visual.debug_bounds("project-mode-Steer").is_none(),
+            "idle composer has no always-visible mode strip"
+        );
+        for (index, (selector, expected)) in [
+            ("project-mode-Send", Mode::Auto),
+            ("project-mode-Queue", Mode::Queue),
+            ("project-mode-Steer", Mode::Steer),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let trigger = visual.debug_bounds("project-send-mode").unwrap();
+            visual.simulate_click(trigger.center(), Modifiers::default());
+            visual.run_until_parked();
+            let choice = visual
+                .debug_bounds(selector)
+                .expect("all supported modes remain reachable in the disclosure");
+            visual.simulate_click(choice.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds("project-send-mode-menu").is_none(),
+                "choosing mode closes its disclosure"
+            );
+            composer.update_in(visual, |composer, window, cx| {
+                assert_eq!(composer.mode, expected);
+                composer.input.update(cx, |input, cx| {
+                    input.set_value(format!("Message {index}"), window, cx);
+                    input.focus(window, cx);
+                });
+            });
+            visual.run_until_parked();
+            if expected != Mode::Auto {
+                assert!(
+                    visual.debug_bounds("project-send").unwrap().size.width > send.size.width,
+                    "Queue/Steer is visibly named in the primary send control"
+                );
+            }
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            assert_eq!(
+                *sent.borrow(),
+                [Mode::Auto, Mode::Queue, Mode::Steer][..=index]
+            );
+        }
+        let trigger = visual.debug_bounds("project-send-mode").unwrap();
+        visual.simulate_click(trigger.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("project-send-mode-menu").is_some());
+        visual.simulate_click(trigger.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("project-send-mode-menu").is_none(),
+            "a second completed trigger click closes without reopening"
+        );
+        assert_eq!(
+            sent.borrow().len(),
+            3,
+            "disclosure interactions never dispatch a message"
+        );
+        composer.update(visual, |composer, cx| composer.set_native(true, false, cx));
+        composer.read_with(visual, |composer, _| {
+            assert_eq!(
+                composer.mode,
+                Mode::Auto,
+                "a lost Steer capability returns to the safe existing mode"
+            )
+        });
+    }
 
     #[gpui::test]
     fn native_paste_consumes_the_action_once_and_legacy_paste_still_works(cx: &mut TestAppContext) {
