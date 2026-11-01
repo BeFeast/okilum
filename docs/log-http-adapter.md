@@ -24,13 +24,38 @@ append identity contract; file rotation reconciliation is not implemented.
 Ordinary ETags are intentionally not pinned: appending changes a resource's
 ETag and must not turn every legitimate append into a full-response If-Range.
 
-## Integration requirement
+## Desktop flow
 
-This packet exports the HTTP adapter only. The parent remote-file owner must
-connect the URL-opening action, follow worker lifetime/cancellation, byte-to-log
-snapshot assembly and visible connection status. The shipped Kibana UI is not
-a generic remote-file UI and is unchanged. Consequently this packet alone does
-not complete the interactive acceptance of #1390 or its SFTP acceptance.
+Settings → Logs → HTTPS log files opens one vault-scoped session window.
+Source name and a public HTTPS file URL can be saved under the existing durable
+application state directory, partitioned by vault path. Saving/selecting a source
+does not connect. URL credentials, query tokens and fragments are refused; this
+flow has no authentication or credential-storage fallback.
+
+Start explicitly opens the applied source on one background worker. Stop, source
+replacement and window close prevent further polling or stale replies. Waiting is
+cancelled immediately; an in-flight request finishes within the adapter's existing
+10-second request deadline. It is not claimed to abort network IO immediately.
+Disconnected/backoff and terminal Range/source-change errors remain visible.
+Previously loaded rows remain visible after Stop or a terminal error.
+
+The shared `log::stream::Assembler` joins transport byte chunks, including split
+UTF-8 and CRLF, and publishes only newline-terminated valid UTF-8. It bounds raw
+retention to 8 MiB, 20,000 physical lines and 64 KiB per physical line; each chunk
+is at most 1 MiB. A bound/encoding error stops rather than silently evicting rows.
+An unfinished final line is counted as pending, never presented as complete.
+Assembler storage and immutable index snapshots lease the existing process-wide
+log memory pool. Pool exhaustion is explicit. Event bytes stay in session memory;
+only an explicit existing LogView export writes user-selected event output.
+
+`LogView::stream` / `replace_stream` use the existing virtual rows, fields, details,
+local filters, histogram, raw copy and export. Scope identifies one stream session;
+record byte offsets preserve selections/marks across appends. This interface is
+transport-independent; it does not implement Kubernetes/SFTP process ownership.
+
+This completes the HTTPS desktop flow, not SFTP or all of #1390. Same-size source
+rewrites remain undetectable under the adapter's append-only contract. Native
+clipboard/visual and real HTTPS endpoint acceptance remain separate evidence.
 
 ## Verification
 

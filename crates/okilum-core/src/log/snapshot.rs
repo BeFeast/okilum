@@ -24,7 +24,7 @@ pub(super) fn reserve(bytes: usize) -> Result<Reservation> {
         .reserve(bytes.max(1))
         .context(super::window_budget::BudgetBusy)
 }
-fn charge(capacity: usize, lines: usize) -> usize {
+pub(super) fn charge(capacity: usize, lines: usize) -> usize {
     capacity + lines.min(WINDOW_LINES) * std::mem::size_of::<super::LogEntry>() * 4 + SCRATCH_BYTES
 }
 

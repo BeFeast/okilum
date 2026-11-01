@@ -35,6 +35,7 @@ pub mod regex_text;
 pub mod saved_query;
 mod snapshot;
 pub mod source_link;
+pub mod stream;
 pub mod tail;
 mod text;
 pub mod timestamp;

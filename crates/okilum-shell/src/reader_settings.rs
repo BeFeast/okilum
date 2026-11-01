@@ -1550,6 +1550,12 @@ impl Settings {
                                 cx.notify();
                             })))
                     }))
+                    .child(Button::new("settings-https-log-sources").label("HTTPS log files…").disabled(self.vault(cx).is_none()).on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(reader) = this.vault(cx) {
+                            let root = reader.read(cx).vault_root.clone();
+                            reader_log::http::show(root, cx);
+                        }
+                    })))
                     .child(Button::new("settings-kibana-sources").label("Kibana sources…").disabled(self.vault(cx).is_none()).on_click(cx.listener(|this,_,_,cx| {
                         if let Some(reader)=this.vault(cx) {
                             let root=reader.read(cx).vault_root.clone();
