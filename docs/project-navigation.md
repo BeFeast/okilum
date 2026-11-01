@@ -26,8 +26,12 @@ the registry file is absent. A pointer alone is not proof of a running manager.
 Status refresh groups listings by configured T3 environment and project.
 
 Entering a project preserves the original tree, expansion, cursor, scroll and
-panel choices, then scopes the tree and opens Board with the manager on the right. The scoped
-tree starts collapsed and remains available through the existing sidebar toggle.
+panel choices, then opens Board with Manager on the right. Project workspace has
+no folder sidebar or duplicate project header (#2216). Its top project selector,
+Recent, Pinned and search remain available. Files in the header returns to the
+normal vault tree; the Notes shortcut makes the same explicit transition rather
+than opening a scoped tree. A stale Notes flag never reserves sidebar width or
+renders the folder browser while a project is active.
 Background updates of the retained note do not leave Board; an explicit note
 selection does. Pending note preparation from before project selection cannot
 replace the newly selected project surface. Switching

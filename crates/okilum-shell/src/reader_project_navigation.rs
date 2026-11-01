@@ -1,4 +1,4 @@
-//! Projects is an application section; entering one temporarily scopes the vault.
+//! Project workspace owns Board and Manager; Files restores the vault browser.
 use super::*;
 use okilum_shell::projects_picker::{
     picker::{ManagerObservation, PickerModel},
@@ -10,6 +10,9 @@ use okilum_t3::projects::{
 };
 
 pub(super) type Gateways = std::collections::BTreeMap<String, Arc<dyn okilum_t3::ManagerGateway>>;
+
+#[cfg(test)]
+mod workspace_tests;
 
 /// Local metadata and logo paths are available before any network operation.
 fn cached_project_icons(
@@ -335,6 +338,31 @@ struct Saved {
 }
 
 impl Reader {
+    /// Project workspace never allocates a second folder browser, even if an
+    /// older layout or another command leaves Notes enabled in raw panel state.
+    pub(super) fn workspace_panels(&self) -> reader_layout::Panels {
+        let mut panels = self.panels.clone();
+        if self.project_navigation.active.is_some() {
+            panels.notes = false;
+            if panels.active == reader_layout::Panel::Notes {
+                panels.active = reader_layout::Panel::Closed;
+            }
+        }
+        panels
+    }
+
+    /// An explicit Files request leaves Project and opens the original tree,
+    /// without revealing another path or resetting its scroll/width choices.
+    pub(super) fn show_vault_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_vault_project(window, cx);
+        self.sidebar.left_mode = reader_sidebar::LeftMode::Tree;
+        self.save_sidebar(cx);
+        self.resizing_panel = None;
+        self.panels.open(reader_layout::Panel::Notes);
+        self.tree_focus.focus(window, cx);
+        cx.notify();
+    }
+
     pub(super) fn reset_vault_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.project_navigation.manager_panel.take() {
             panel.update(cx, |panel, cx| panel.hide(cx));
