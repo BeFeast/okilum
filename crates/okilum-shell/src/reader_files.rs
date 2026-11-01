@@ -316,6 +316,7 @@ impl Reader {
         }
         let root = self.vault_root.clone();
         let reader = cx.entity().downgrade();
+        let selection = reader_read_menu::snapshot(self, cx);
         let popup = PopupMenu::build(window, cx, move |mut m, window, cx| {
             let address = address.clone();
             m = m.item(
@@ -335,7 +336,7 @@ impl Reader {
                     }),
                 );
             }
-            m = reader_read_menu::selection(m.separator(), &reader, cx);
+            m = reader_read_menu::selection(m.separator(), &reader, selection.clone());
             match rel.clone() {
                 Some(rel) => menu(m.separator(), root.clone(), rel, window, cx),
                 None => m,

@@ -8,30 +8,64 @@ use commands::{commands, Command};
 /// Copy payloads are captured when the menu opens. Navigation or an external
 /// reload while it is open cannot substitute a different document's contents.
 pub(super) fn menu(menu: PopupMenu, reader: &WeakEntity<Reader>, cx: &App) -> PopupMenu {
-    build(menu, reader, cx, false)
-}
-
-/// Selection formats join an object's existing popup, rather than opening
-/// another menu for the same press. Background commands stay on the surface.
-pub(super) fn selection(menu: PopupMenu, reader: &WeakEntity<Reader>, cx: &App) -> PopupMenu {
-    build(menu, reader, cx, true)
-}
-
-fn build(menu: PopupMenu, reader: &WeakEntity<Reader>, cx: &App, object: bool) -> PopupMenu {
     let Some(entity) = reader.upgrade() else {
         return menu;
     };
     let state = entity.read(cx);
-    if state.editing.is_some()
-        || state.file_preview.is_some()
-        || (!object && state.pointer_on_link())
-    {
+    if state.pointer_on_link() {
         return menu;
     }
+    build(menu, reader, snapshot(state, cx), false)
+}
+
+/// Payloads can also be captured from an already-borrowed Reader while an
+/// object popup is created. Its builder must not re-borrow the Reader entity.
+#[derive(Clone)]
+pub(super) struct Snapshot {
+    plain: String,
+    markdown: String,
+    document: Option<SharedString>,
+    generation: u64,
+}
+
+pub(super) fn snapshot(state: &Reader, cx: &App) -> Option<Snapshot> {
+    if state.editing.is_some() || state.file_preview.is_some() {
+        return None;
+    }
     let content = state.content.read(cx);
-    let plain = content.selected_text_as(SelectionFormat::Plain);
-    let markdown = content.selected_text_as(SelectionFormat::Source);
-    let document = content.document_source();
+    Some(Snapshot {
+        plain: content.selected_text_as(SelectionFormat::Plain),
+        markdown: content.selected_text_as(SelectionFormat::Source),
+        document: content.document_source(),
+        generation: state.navigation.preparation_generation,
+    })
+}
+
+/// Selection formats join an object's existing popup, rather than opening
+/// another menu for the same press. Background commands stay on the surface.
+pub(super) fn selection(
+    menu: PopupMenu,
+    reader: &WeakEntity<Reader>,
+    snapshot: Option<Snapshot>,
+) -> PopupMenu {
+    build(menu, reader, snapshot, true)
+}
+
+fn build(
+    menu: PopupMenu,
+    reader: &WeakEntity<Reader>,
+    snapshot: Option<Snapshot>,
+    object: bool,
+) -> PopupMenu {
+    let Some(Snapshot {
+        plain,
+        markdown,
+        document,
+        generation,
+    }) = snapshot
+    else {
+        return menu;
+    };
     let has_selection = !plain.is_empty() || !markdown.is_empty();
     if object && !has_selection {
         return menu;
@@ -45,7 +79,6 @@ fn build(menu: PopupMenu, reader: &WeakEntity<Reader>, cx: &App, object: bool) -
             Command::SelectAll => None,
         };
         let reader = reader.clone();
-        let generation = state.navigation.preparation_generation;
         menu = menu.item(
             PopupMenuItem::element(move |_, _| {
                 div()
