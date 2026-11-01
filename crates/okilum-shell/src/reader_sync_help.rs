@@ -104,7 +104,7 @@ impl Render for SyncHelp {
             .overflow_y_scroll().text_color(p.text)
             .child(TextView::markdown("sync-help-written-guide", GUIDE).selectable(true).w_full())
             .child(Button::new("sync-help-copy-guide").label("Copy written guide").ghost()
-                .on_click(|_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(GUIDE))))
+                .on_click(|_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(GUIDE.to_owned()))))
             .child(Button::new("sync-help-local-video").label(if self.busy { "Preparing local guide…" } else { "Open local video guide" })
                 .disabled(self.busy).on_click(cx.listener(|this, _, _, cx| this.open_video(cx))))
             .child(div().text_sm().text_color(p.text_muted)
