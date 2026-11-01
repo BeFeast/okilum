@@ -33,6 +33,7 @@ mod links;
 mod models;
 #[cfg(target_os = "linux")]
 mod native;
+mod rules_reread;
 mod setup;
 #[cfg(target_os = "linux")]
 mod threads;
