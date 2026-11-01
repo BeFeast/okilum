@@ -1,4 +1,5 @@
 use super::*;
+use ::core::prelude::v1::test;
 use okilum_t3::actions::{Intent, State};
 use serde_json::json;
 
@@ -194,6 +195,65 @@ fn invalidation_and_navigation_never_revalidate_an_old_timer_token() {
     assert!(progress.accepts(&progress.transition(&request.id).unwrap()));
     let separate_instance = QuestionProgress::new(&request);
     assert!(!separate_instance.accepts(&progress.transition(&request.id).unwrap()));
+}
+
+#[test]
+fn rendered_control_survives_local_edits_but_not_schema_instance_or_active_question_change() {
+    let mut request = request(vec![question("q1", true), question("q2", true)]);
+    let mut progress = QuestionProgress::new(&request);
+    let rendered_control = progress.transition(&request.id).unwrap();
+    assert!(progress.interaction_current(&rendered_control));
+    assert!(
+        progress.accepts(&rendered_control),
+        "positive initial timer control"
+    );
+
+    progress.invalidate(); // A choice click cancels and replaces its timer.
+    assert!(
+        progress.interaction_current(&rendered_control),
+        "the rendered button must accept another click before repaint"
+    );
+    assert!(
+        !progress.accepts(&rendered_control),
+        "the first click's old timer must stay cancelled"
+    );
+    let replaced_timer = progress.transition(&request.id).unwrap();
+    assert!(progress.accepts(&replaced_timer));
+    progress.invalidate(); // Another local selection/custom edit changes no schema.
+    assert!(progress.interaction_current(&rendered_control));
+    assert!(!progress.accepts(&replaced_timer));
+    assert!(progress.accepts(&progress.transition(&request.id).unwrap()));
+
+    assert!(progress.next());
+    assert!(
+        !progress.interaction_current(&rendered_control),
+        "q1's control cannot select an answer for active q2"
+    );
+    let q2_control = progress.transition(&request.id).unwrap();
+    assert!(progress.interaction_current(&q2_control));
+    request.item["questions"][1]["options"][0]["label"] = json!("Revised provider label");
+    assert!(progress.reconcile(&request));
+    assert!(progress.same_instance(&q2_control));
+    assert_eq!(progress.active(), Some("q2"));
+    assert!(
+        !progress.interaction_current(&q2_control),
+        "same identities do not authorize a control rendered from the previous schema"
+    );
+    let fresh_control = progress.transition(&request.id).unwrap();
+    assert!(progress.interaction_current(&fresh_control));
+    assert!(progress.accepts(&fresh_control));
+
+    let mut remounted = QuestionProgress::new(&request);
+    assert!(remounted.next());
+    assert_eq!(remounted.active(), Some(fresh_control.question.as_str()));
+    assert!(!remounted.same_instance(&fresh_control));
+    assert!(
+        !remounted.interaction_current(&fresh_control),
+        "reused request/question IDs do not authorize the previous instance's control"
+    );
+    let remounted_control = remounted.transition(&request.id).unwrap();
+    assert!(remounted.interaction_current(&remounted_control));
+    assert!(remounted.accepts(&remounted_control));
 }
 
 #[test]
