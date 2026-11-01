@@ -36,6 +36,8 @@ pub(super) fn suspend(cx: &mut App) {
 
 enum Operation {
     Read,
+    #[cfg(target_os = "linux")]
+    SelectConnection(PathBuf),
     Begin(String),
     Redeem(String, String),
     Approve(uuid::Uuid),
@@ -50,11 +52,15 @@ struct Output {
     controller: Controller,
     snapshot: Snapshot,
     inspected: Option<ExistingVault>,
+    #[cfg(target_os = "linux")]
+    runtimes: Vec<linux_runtime::Choice>,
 }
 pub(super) struct SyncSettings {
     controller: Option<Controller>,
     snapshot: Option<Snapshot>,
     inspected: Option<ExistingVault>,
+    #[cfg(target_os = "linux")]
+    runtimes: Vec<linux_runtime::Choice>,
     name: Entity<InputState>,
     invitation: Entity<InputState>,
     selected_peer: Option<uuid::Uuid>,
@@ -65,6 +71,8 @@ pub(super) struct SyncSettings {
 impl SyncSettings {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            #[cfg(target_os = "linux")]
+            runtimes: vec![],
             controller: None,
             snapshot: None,
             inspected: None,
@@ -112,6 +120,10 @@ impl SyncSettings {
                     this.busy = false;
                     match result {
                         Ok(output) => {
+                            #[cfg(target_os = "linux")]
+                            {
+                                this.runtimes = output.runtimes;
+                            }
                             this.controller = Some(output.controller);
                             if this.selected_peer.is_none()
                                 && !output.snapshot.catalog.is_empty()
@@ -229,12 +241,6 @@ fn sync_refresh_needed(snapshot: &Snapshot) -> bool {
     snapshot.offer_url.is_some() || snapshot.pending.is_some() || snapshot.preparing
 }
 fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
-    use anyhow::Context as _;
-    #[cfg(target_os = "linux")]
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .context("home unavailable")?;
     let configs = direct::configuration_paths()?;
     #[cfg(target_os = "macos")]
     let configs = {
@@ -253,15 +259,7 @@ fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
         configs
     };
     #[cfg(target_os = "linux")]
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home.join(".local/state"))
-        .join("okilum/sync/direct");
-    #[cfg(target_os = "linux")]
-    for parent in [state.parent().and_then(Path::parent), state.parent()] {
-        ensure_private_sync_directory(parent.context("Sync state parent unavailable")?)?;
-    }
+    let state = linux_runtime::state_path(&reader_history::state_directory()?)?;
     #[cfg(target_os = "macos")]
     let state =
         mac_direct_state(&okilum_sync_controller::sidecar::macos::account_state_directory()?)?;
@@ -333,10 +331,14 @@ fn perform_scoped(
             _ => {}
         }
         let (state, configs) = locations()?;
+        #[cfg(target_os = "linux")]
+        let mut runtime = linux_runtime::inspect(&state, &configs)?;
+        #[cfg(target_os = "linux")]
+        let configs = runtime.configs.clone();
         ticket.check()?;
         let controller = match controller {
             Some(c) => c,
-            None => Controller::open(state, configs.clone())?,
+            None => Controller::open(state.clone(), configs.clone())?,
         };
         let guard = ControllerGuard {
             ticket: ticket.clone(),
@@ -350,9 +352,31 @@ fn perform_scoped(
             connect_managed_runtime(&controller)?;
         }
         guard.check()?;
+        #[cfg(target_os = "linux")]
+        {
+            if let Operation::SelectConnection(path) = &operation {
+                linux_runtime::select(&state, &mut runtime, path, &controller.snapshot()?)?;
+            }
+            if matches!(
+                &operation,
+                Operation::Begin(_) | Operation::Redeem(_, _) | Operation::Attach(_, _, _)
+            ) {
+                runtime.inventory.folders()?;
+                anyhow::ensure!(
+                    runtime.choices.iter().filter(|c| c.selected).count() == 1,
+                    "Choose a Sync connection before pairing"
+                );
+            }
+            if let Operation::Attach(_, _, path) = &operation {
+                linux_runtime::check_destination(&runtime, path)?;
+            }
+            controller.set_configurations(runtime.configs.clone())?;
+        }
         let mut inspected = None;
         let snapshot = match operation {
             Operation::Read => controller.refresh()?,
+            #[cfg(target_os = "linux")]
+            Operation::SelectConnection(_) => controller.refresh()?,
             Operation::Begin(name) => controller.begin_pairing(&name)?,
             Operation::Redeem(url, name) => controller.redeem(&url, &name)?,
             Operation::Approve(id) => controller.approve(id)?,
@@ -382,6 +406,8 @@ fn perform_scoped(
             controller,
             snapshot,
             inspected,
+            #[cfg(target_os = "linux")]
+            runtimes: runtime.choices,
         })
     })?
 }
@@ -416,7 +442,9 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
 }
 fn user_error(error: &anyhow::Error) -> String {
     let text = error.to_string().to_lowercase();
-    if text.contains("approval") {
+    if text.contains("choose a sync connection") {
+        "Choose which existing Sync connection to use below, then try again.".into()
+    } else if text.contains("approval") {
         "Allow Okilum Sync in macOS System Settings → General → Login Items, then choose Connect again.".into()
     } else if text.contains("signing") || text.contains("bundle") || text.contains("runtime") {
         "A verified Sync runtime is not available in this build. Install a signed beta that includes Sync and try again.".into()
@@ -444,3 +472,7 @@ mod epoch;
 mod tests;
 #[path = "reader_settings_sync/view.rs"]
 mod view;
+
+#[cfg(target_os = "linux")]
+#[path = "reader_settings_sync/linux_runtime.rs"]
+mod linux_runtime;

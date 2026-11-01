@@ -16,6 +16,58 @@ impl Render for SyncSettings {
                 .child(Input::new(&self.invitation).disabled(self.busy))
                 .child(Button::new("sync-connect").label("Connect").disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.start_pairing(true, cx)))));
+        #[cfg(target_os = "linux")]
+        if !self.runtimes.is_empty() {
+            content = content.child(div().text_base().child("Sync connection"));
+            for (index, runtime) in self.runtimes.iter().enumerate() {
+                let path = runtime.identity.config_file.clone();
+                let in_use = self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| !s.peers.is_empty() || !s.attached.is_empty() || s.preparing);
+                content = content.child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div().text_sm().child(format!(
+                                "{} · {} vaults",
+                                format!(
+                                    "{}…{}",
+                                    runtime
+                                        .identity
+                                        .device_id
+                                        .chars()
+                                        .take(7)
+                                        .collect::<String>(),
+                                    runtime
+                                        .identity
+                                        .device_id
+                                        .chars()
+                                        .rev()
+                                        .take(7)
+                                        .collect::<String>()
+                                        .chars()
+                                        .rev()
+                                        .collect::<String>()
+                                ),
+                                runtime.folders
+                            )),
+                        )
+                        .child(
+                            Button::new(("sync-select-runtime", index))
+                                .label(if runtime.selected {
+                                    "Selected"
+                                } else {
+                                    "Use connection"
+                                })
+                                .disabled(self.busy || runtime.selected || in_use)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.run(Operation::SelectConnection(path.clone()), cx)
+                                })),
+                        ),
+                );
+            }
+        }
         if let Some(snapshot) = &self.snapshot {
             content = content.child(
                 div()

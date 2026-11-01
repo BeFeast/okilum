@@ -3,6 +3,8 @@ use ::core::prelude::v1::test;
 
 fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings {
     SyncSettings {
+        #[cfg(target_os = "linux")]
+        runtimes: vec![],
         controller: None,
         snapshot: None,
         inspected: None,
