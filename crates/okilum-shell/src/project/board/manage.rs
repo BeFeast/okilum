@@ -707,23 +707,19 @@ mod tests {
                 let mut board = Board::with_reader(
                     area.path().into(),
                     |binding| {
-                        binding
+                        Ok(binding
                             .issues
                             .iter()
-                            .map(|scope| {
-                                (
-                                    scope.number,
-                                    Ok(okilum_t3::board::Issue {
-                                        number: scope.number,
-                                        title: format!("Fixture issue {}", scope.number),
-                                        state: "open".into(),
-                                        body: String::new(),
-                                        labels: Vec::new(),
-                                        open_pull_requests: Vec::new(),
-                                    }),
-                                )
+                            .map(|scope| okilum_t3::board::Issue {
+                                number: scope.number,
+                                title: format!("Fixture issue {}", scope.number),
+                                state: "open".into(),
+                                body: String::new(),
+                                labels: Vec::new(),
+                                open_pull_requests: Vec::new(),
+                                live_pulls: Vec::new(),
                             })
-                            .collect()
+                            .collect())
                     },
                     window,
                     cx,
@@ -869,7 +865,7 @@ mod tests {
         std::fs::write(area.path().join("ops/project.yaml"), project).unwrap();
         let (root, visual) = cx.add_window_view(|window, cx| {
             let board = cx.new(|cx| {
-                let mut b = Board::with_reader(area.path().into(), |_| Vec::new(), window, cx);
+                let mut b = Board::with_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
                 b.active = true;
                 b
             });

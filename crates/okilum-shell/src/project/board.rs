@@ -11,7 +11,7 @@ mod local;
 mod manage;
 mod notes;
 
-type IssueReader = fn(&Binding) -> Vec<(u64, Result<okilum_t3::board::Issue, String>)>;
+type IssueReader = fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String>;
 
 pub(crate) struct Board {
     pub(super) area: PathBuf,
@@ -272,7 +272,7 @@ impl Board {
                 let seconds = match this.update(cx, |this, _| {
                     this.binding
                         .as_ref()
-                        .map(|b| b.refresh_seconds)
+                        .map(|b| b.refresh_seconds.min(30))
                         .unwrap_or(30)
                 }) {
                     Ok(seconds) => seconds,
@@ -302,7 +302,6 @@ impl Board {
         let Some(ticket) = self.snapshot.begin() else {
             return;
         }; // Coalesce overlapping refreshes.
-        self.refresh_delivery(ticket.clone(), window, cx);
         self.refresh_project_notes(ticket.clone(), window, cx);
         let forgejo_ticket = ticket.clone();
         let read_issues = self.read_issues;
@@ -321,8 +320,11 @@ impl Board {
                             read_issues(&binding)
                         }))
                         .await;
-                    let _ = this.update_in(cx, |this, _, cx| {
-                        this.snapshot.issues(&forgejo_ticket, result, now());
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.snapshot.live_issues(&forgejo_ticket, result, now());
+                        if this.snapshot.matches(&forgejo_ticket) {
+                            this.refresh_delivery(forgejo_ticket.clone(), window, cx);
+                        }
                         cx.notify();
                     });
                 })
@@ -1060,6 +1062,14 @@ impl Render for Board {
             }
             return root.into_any_element();
         };
+        let projected;
+        let binding = if self.snapshot.forgejo.last_success.is_some() {
+            projected =
+                okilum_t3::board::live::project(binding, &self.snapshot.forgejo.value, now());
+            &projected
+        } else {
+            binding
+        };
         if binding.repository.is_empty() {
             root = root.child(div().debug_selector(|| "board-local".into())
                 .text_size(px(12.)).text_color(colors.text_muted)
@@ -1324,7 +1334,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.ensure_project_board_using(area, okilum_t3::board::read_issues, window, cx);
+        self.ensure_project_board_using(area, okilum_t3::board::live::read, window, cx);
     }
     fn ensure_project_board_using(
         &mut self,

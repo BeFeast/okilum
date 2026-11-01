@@ -133,6 +133,7 @@ fn issue(number: u64, state: &str) -> Issue {
         body: "Actual issue body".into(),
         labels: Vec::new(),
         open_pull_requests: Vec::new(),
+        live_pulls: Vec::new(),
     }
 }
 #[test]
@@ -155,7 +156,7 @@ fn explicit_stage_scope_is_stable_across_open_and_closed_issues() {
             Column::Checks
         );
     }
-    assert_eq!(binding.issues.len(), 14); // No repo-wide open/closed query supplies membership.
+    assert_eq!(binding.issues.len(), 14); // Parsing retains explicit annotations independently of live membership.
 }
 #[test]
 fn current_task_tracks_new_active_runs_without_manual_execution_ids() {
