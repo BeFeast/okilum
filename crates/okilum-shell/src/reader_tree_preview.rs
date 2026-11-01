@@ -68,7 +68,7 @@ impl Reader {
             Ok(path) => {
                 let root = self.vault_root.clone();
                 let rel = row.path.clone();
-                let preview = cx.new(|cx| readonly::Preview::new(root, rel, path, cx));
+                let preview = cx.new(|cx| readonly::Preview::new(root, rel, path, window, cx));
                 self.tree_preview.preview = Some((row.path, preview));
             }
             Err(error) => {
