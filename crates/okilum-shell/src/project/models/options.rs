@@ -1,6 +1,7 @@
 //! Controls are supplied by this exact model's descriptors. Prompt-only Claude
 //! choices follow T3's draft semantics, never an invented server wire option.
 use super::*;
+use crate::project::design as ui;
 use okilum_t3::models::{ModelControl, ModelControlChoice, Snapshot};
 use serde_json::Value;
 
@@ -163,20 +164,85 @@ impl ProjectView {
         let mut panel = v_flex()
             .w_full()
             .min_w_0()
-            .text_size(px(13.))
-            .line_height(px(18.))
-            .gap_2()
+            .text_size(px(ui::CHROME))
+            .line_height(px(ui::LINE))
+            .gap(px(ui::INSET))
             .debug_selector(|| "project-model-options".into());
-        if let Some(model) = snapshot.model_info(selection) {
+        let model_name = snapshot
+            .model_info(selection)
+            .map(|model| model.display_name())
+            .unwrap_or(&selection.model);
+        let provider = snapshot
+            .catalog
+            .providers
+            .iter()
+            .find(|provider| provider.provider_instance_id == selection.instance_id);
+        let mut identity = h_flex().w_full().min_w_0().items_center().gap_2();
+        if let Some(provider) = provider {
+            identity = identity.child(visuals::provider_visual(&provider.driver_kind, px(24.)));
+        }
+        panel = panel.child(
+            v_flex()
+                .w_full()
+                .min_w_0()
+                .flex_shrink_0()
+                .gap_1()
+                .pb_3()
+                .border_b_1()
+                .border_color(palette.border_subtle)
+                .child(
+                    identity.child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .debug_selector(|| "project-model-inspector-title".into())
+                            .text_size(px(ui::TITLE))
+                            .line_height(px(24.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(model_name.to_owned()),
+                    ),
+                )
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(px(ui::LABEL))
+                                .line_height(px(20.))
+                                .px_2()
+                                .rounded_md()
+                                .bg(palette.selected)
+                                .child("Current"),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(ui::LABEL))
+                                .line_height(px(20.))
+                                .text_color(palette.text_muted)
+                                .child(
+                                    provider
+                                        .and_then(|provider| provider.display_name.as_deref())
+                                        .unwrap_or(&selection.instance_id)
+                                        .to_owned(),
+                                ),
+                        ),
+                ),
+        );
+        if !controls.is_empty() {
             panel = panel.child(
                 div()
                     .flex_shrink_0()
-                    .min_h(px(18.))
-                    .truncate()
-                    .text_size(px(12.))
-                    .line_height(px(18.))
-                    .text_color(palette.text_muted)
-                    .child(model.display_name().to_owned()),
+                    .debug_selector(|| "project-model-settings-title".into())
+                    .text_size(px(ui::CHROME))
+                    .line_height(px(ui::LINE))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Settings"),
             );
         }
         for (index, control) in controls.iter().enumerate() {
@@ -191,6 +257,19 @@ impl ProjectView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(control.label.clone()),
             );
+            if let Some(description) = &control.description {
+                section = section.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .whitespace_normal()
+                        .text_size(px(ui::LABEL))
+                        .line_height(px(18.))
+                        .text_color(palette.text_muted)
+                        .child(description.clone()),
+                );
+            }
             for (choice_index, choice) in control.choices.iter().enumerate() {
                 let id = control.id.clone();
                 let value = choice.value.clone();

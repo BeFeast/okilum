@@ -1,5 +1,6 @@
 //! Linux composer invalidates its own controls, never the history entity.
 use super::*;
+use crate::project::design;
 use gpui_component::ThemeStyled as _;
 pub(super) mod history;
 
@@ -21,6 +22,8 @@ pub(super) enum AttachmentRequested {
 impl EventEmitter<AttachmentRequested> for Composer {}
 
 pub(super) struct Composer {
+    parent: Option<WeakEntity<ProjectView>>,
+    _parent: Option<Subscription>,
     input: Entity<TextareaState>,
     enabled: bool,
     pub(super) mode: Mode,
@@ -57,6 +60,8 @@ impl Composer {
             cx.notify();
         });
         Self {
+            parent: None,
+            _parent: None,
             input,
             enabled: false,
             mode: Mode::Auto,
@@ -73,6 +78,15 @@ impl Composer {
             history_blocked: false,
             _input: subscription,
         }
+    }
+    pub(super) fn bind_parent(&mut self, parent: WeakEntity<ProjectView>, cx: &mut Context<Self>) {
+        // Model state lives on ProjectView, while keystrokes stay local to this
+        // entity. Observe its changes so a cached composer shows the confirmed
+        // model and popup state without invalidating the message history.
+        self._parent = parent
+            .upgrade()
+            .map(|parent| cx.observe(&parent, |_, _, cx| cx.notify()));
+        self.parent = Some(parent);
     }
     pub(super) fn bind_history(&mut self, feed: Entity<feed::Feed>) {
         self.history_feed = Some(feed);
@@ -201,8 +215,11 @@ impl Composer {
             .child(
                 Button::new("project-send-mode")
                     .debug_selector(|| "project-send-mode".into())
-                    .ghost()
+                    .primary()
                     .small()
+                    .h(px(32.))
+                    .w(px(28.))
+                    .rounded(px(8.))
                     .icon(IconName::ChevronDown)
                     .selected(self.mode_open)
                     .accessibility_label("Choose send mode")
@@ -229,8 +246,8 @@ impl Composer {
             .occlude()
             .on_prepaint(gpui_base::GlobalState::record_native_overlay)
             .popover_style(cx)
-            .text_size(px(13.))
-            .line_height(px(20.))
+            .text_size(px(design::CHROME))
+            .line_height(px(design::LINE))
             .w(px(200.))
             .p_1()
             .gap_0p5()
@@ -309,14 +326,22 @@ impl Composer {
     }
 }
 impl Render for Composer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let validation = self.prompt_validation(cx);
+        let model_controls = self.parent.as_ref().and_then(|parent| {
+            parent
+                .update(cx, |view, cx| view.render_model_controls(window, cx))
+                .ok()
+        });
+        let palette = brand::palette(cx);
         v_flex()
             .id("project-composer")
             .relative()
             .w_full()
             .min_w_0()
-            .gap_2()
+            .text_size(px(design::CHROME))
+            .line_height(px(design::LINE))
+            .gap(px(design::GAP))
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::MoveUp, window, cx| {
                     if !this.navigate_history(history::Direction::Backward, window, cx) {
@@ -355,8 +380,17 @@ impl Render for Composer {
                 div()
                     .w_full()
                     .min_w_0()
+                    .min_h(px(64.))
                     .debug_selector(|| "project-composer-input".into())
-                    .child(Textarea::new(&self.input).w_full().aria_label("Message")),
+                    .child(
+                        Textarea::new(&self.input)
+                            .appearance(false)
+                            .bordered(false)
+                            .w_full()
+                            .text_size(px(design::BODY))
+                            .line_height(px(design::LINE))
+                            .aria_label("Message your manager"),
+                    ),
             )
             .child(
                 h_flex()
@@ -364,37 +398,52 @@ impl Render for Composer {
                     .min_w_0()
                     .items_center()
                     .flex_wrap()
-                    .gap_2()
+                    .gap(px(design::GAP))
+                    .debug_selector(|| "project-composer-toolbar".into())
                     .child(
                         Button::new("project-attach")
                             .debug_selector(|| "project-attach".into())
                             .ghost()
                             .small()
+                            .size(px(32.))
+                            .rounded(px(8.))
                             .icon(IconName::Plus)
+                            .accessibility_label("Attach images or files")
                             .tooltip("Attach images or files")
                             .disabled(!self.can_attach)
                             .on_click(
                                 cx.listener(|_, _, _, cx| cx.emit(AttachmentRequested::Choose)),
                             ),
                     )
-                    .child(div().flex_1())
+                    .when_some(model_controls, |toolbar, controls| {
+                        toolbar.child(
+                            div()
+                                .flex_1()
+                                .min_w(px(120.))
+                                .debug_selector(|| "project-composer-model-slot".into())
+                                .child(controls),
+                        )
+                    })
+                    .child(div().flex_1().min_w_0())
                     .child(
                         h_flex()
                             .debug_selector(|| "project-send-controls".into())
                             .items_center()
-                            .gap_0p5()
+                            .gap(px(1.))
+                            .rounded(px(8.))
+                            .bg(palette.accent)
                             .child(
                                 Button::new("project-send")
                                     .debug_selector(|| "project-send".into())
                                     .primary()
                                     .small()
+                                    .h(px(32.))
+                                    .rounded(px(8.))
                                     .icon(IconName::ArrowUp)
-                                    .when(self.mode != Mode::Auto, |button| {
-                                        button.label(if self.mode == Mode::Queue {
-                                            "Queue"
-                                        } else {
-                                            "Steer"
-                                        })
+                                    .label(match self.mode {
+                                        Mode::Auto => "Send",
+                                        Mode::Queue => "Queue",
+                                        Mode::Steer => "Steer",
                                     })
                                     .accessibility_label(match self.mode {
                                         Mode::Auto => "Send message",
@@ -422,7 +471,8 @@ impl Render for Composer {
                 composer.child(
                     div()
                         .debug_selector(|| "project-prompt-length-validation".into())
-                        .text_sm()
+                        .text_size(px(design::LABEL))
+                        .line_height(px(design::LINE))
                         .text_color(cx.theme().danger)
                         .child(message),
                 )
@@ -518,12 +568,6 @@ mod tests {
                 });
             });
             visual.run_until_parked();
-            if expected != Mode::Auto {
-                assert!(
-                    visual.debug_bounds("project-send").unwrap().size.width > send.size.width,
-                    "Queue/Steer is visibly named in the primary send control"
-                );
-            }
             visual.simulate_keystrokes("enter");
             visual.run_until_parked();
             assert_eq!(
@@ -575,6 +619,67 @@ mod tests {
                 "a lost Steer capability returns to the safe existing mode"
             )
         });
+    }
+
+    #[gpui::test]
+    fn real_model_control_and_send_share_the_composer_toolbar_across_panel_widths(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let state = tempfile::tempdir().unwrap();
+        let gateway = Arc::new(super::super::fixture::Fake::default());
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let project = cx.new(|cx| {
+                super::super::fixture::view(state.path().to_owned(), gateway.clone(), window, cx)
+            });
+            Root::new(project, window, cx)
+        });
+        visual.run_until_parked();
+        let project = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ProjectView>().unwrap()
+        });
+        project.update_in(visual, |project, window, cx| {
+            project.compose.update(cx, |input, cx| {
+                input.set_value("Design layout keeps this draft.", window, cx)
+            });
+            project.composer.update(cx, |_, cx| cx.notify());
+        });
+        for width in [760., 360.] {
+            visual.simulate_resize(size(px(width), px(700.)));
+            visual.run_until_parked();
+            let toolbar = visual.debug_bounds("project-composer-toolbar").unwrap();
+            let input = visual.debug_bounds("project-composer-input").unwrap();
+            let slot = visual.debug_bounds("project-composer-model-slot").unwrap();
+            let model = visual.debug_bounds("project-manager-model").unwrap();
+            let send = visual.debug_bounds("project-send").unwrap();
+            assert!(
+                toolbar.top() >= input.bottom(),
+                "controls belong below the editable draft"
+            );
+            assert!(
+                slot.contains(&model.center()),
+                "the actual model control lives in the composer slot"
+            );
+            for selector in ["project-attach", "project-manager-model", "project-send"] {
+                let control = visual.debug_bounds(selector).unwrap();
+                assert!(control.left() >= toolbar.left() && control.right() <= toolbar.right()
+                    && control.top() >= toolbar.top() && control.bottom() <= toolbar.bottom(),
+                    "{selector} must stay inside the visible message toolbar at width {width}: control={control:?}, toolbar={toolbar:?}");
+            }
+            if width == 760. {
+                assert!(
+                    (model.center().y - send.center().y).abs() <= px(1.),
+                    "model and Send share one aligned toolbar on a wide panel"
+                );
+            }
+            project.read_with(visual, |project, cx| {
+                assert_eq!(
+                    project.compose.read(cx).value().as_str(),
+                    "Design layout keeps this draft.",
+                    "layout reflow preserves the draft verbatim"
+                );
+            });
+        }
     }
 
     #[gpui::test]

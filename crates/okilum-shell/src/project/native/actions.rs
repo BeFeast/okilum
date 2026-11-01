@@ -1249,28 +1249,43 @@ impl Actions {
         count: Option<usize>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let palette = brand::palette(cx);
         let mut row = h_flex()
             .debug_selector(|| "project-run-controls".into())
             .w_full()
             .min_w_0()
-            .min_h(px(28.))
+            .min_h(px(32.))
             .flex_shrink_0()
             .items_center()
-            .gap_2()
+            .gap(px(crate::project::design::GAP))
+            .child(
+                div()
+                    .debug_selector(|| "project-run-indicator".into())
+                    .size(px(6.))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(if label == "Working" {
+                        palette.accent
+                    } else {
+                        palette.warning
+                    }),
+            )
             .child(
                 div()
                     .debug_selector(|| "project-run-status".into())
-                    .text_size(px(13.))
-                    .line_height(px(20.))
+                    .text_size(px(crate::project::design::CHROME))
+                    .line_height(px(crate::project::design::LINE))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(palette.text)
                     .child(label.to_owned()),
             )
             .when_some(count.filter(|count| *count > 1), |row, count| {
                 row.child(
                     div()
                         .debug_selector(move || format!("project-current-request-count-{count}"))
-                        .text_size(px(12.))
-                        .line_height(px(20.))
-                        .text_color(brand::palette(cx).text_muted)
+                        .text_size(px(crate::project::design::LABEL))
+                        .line_height(px(crate::project::design::LINE))
+                        .text_color(palette.text_muted)
                         .child(format!("1/{count}")),
                 )
             })
@@ -1281,8 +1296,14 @@ impl Actions {
                 Button::new("project-interrupt")
                     .ghost()
                     .small()
-                    .size(px(28.))
-                    .icon(Icon::default().path("icons/square.svg"))
+                    .h(px(28.))
+                    .px_2()
+                    .rounded(px(6.))
+                    .bg(palette.surface)
+                    .border_1()
+                    .border_color(palette.border_subtle)
+                    .icon(Icon::default().path("icons/square.svg").size(px(12.)).text_color(palette.danger))
+                    .label("Stop")
                     .accessibility_label("Stop")
                     .tooltip("Stop")
                     .debug_selector(|| "project-interrupt".into())
@@ -1320,7 +1341,9 @@ impl Render for Actions {
             .min_w_0()
             .max_h(px(280.))
             .overflow_y_scroll()
-            .gap_2();
+            .text_size(px(crate::project::design::CHROME))
+            .line_height(px(crate::project::design::LINE))
+            .gap(px(crate::project::design::GAP));
         if current.is_none() && self.state.active_run.is_some() {
             panel = panel.child(self.render_run_header("Working", None, cx));
         }

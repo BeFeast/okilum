@@ -184,14 +184,17 @@ impl RenderOnce for MessageActions {
         let copied = state.read(cx).copied;
         h_flex()
             .items_center()
+            .h(px(28.))
             .flex_shrink_0()
+            .text_size(px(crate::project::design::LABEL))
+            .line_height(px(crate::project::design::LINE))
             .text_color(brand::palette(cx).text_muted)
             .when(user, |row| row.justify_end())
             .tab_group()
             .child(
                 Button::new("project-message-copy")
-                    .xsmall()
                     .ghost()
+                    .size(px(28.))
                     .tab_stop(true)
                     .icon(if copied {
                         IconName::Check

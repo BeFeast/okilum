@@ -5,8 +5,10 @@
 //! existence/canonical containment before opening and display unavailable-link
 //! reasons. Resolving an intent here performs no filesystem or network access.
 
-use crate::{reader_code, reader_manager_links, reader_text_style};
-use gpui::{App, ClickEvent, ElementId, MouseButton, SharedString, Window};
+use crate::{brand, project::design, reader_code, reader_manager_links, reader_text_style};
+use gpui::{
+    px, relative, rems, App, ClickEvent, ElementId, MouseButton, SharedString, Styled as _, Window,
+};
 use gpui_component::{
     text::{SelectionFormat, TextView},
     ActiveTheme as _,
@@ -47,7 +49,23 @@ pub(super) fn markdown(
     TextView::markdown(id, text)
         .selectable(true)
         .selection_format(SelectionFormat::Plain)
-        .style(reader_text_style(cx.theme()))
+        .style(
+            reader_text_style(cx.theme())
+                .paragraph_gap(rems(0.6))
+                .heading_font_size(|level, _| {
+                    px(match level {
+                        1 => 20.,
+                        2 => 18.,
+                        3 => design::TITLE,
+                        _ => design::BODY,
+                    })
+                }),
+        )
+        .text_size(px(design::BODY))
+        // Relative line height keeps 14px body at 20px while giving larger
+        // Markdown headings their own complete line box, including descenders.
+        .line_height(relative(design::LINE / design::BODY))
+        .text_color(brand::palette(cx).text)
         .code_block_actions(reader_code::actions)
         .on_link_click(move |url, event, window, cx| {
             if !activates_link(event) {
