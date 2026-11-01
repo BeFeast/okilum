@@ -271,6 +271,8 @@ async fn fresh_capability_lookup_cancels_choice_timer_and_retains_png_until_real
 ) {
     let server = Server::new(vec![true], true);
     let (view, visual, _temp, _, _, _) = harness::fixture(cx, Some(server.environment.clone()));
+    // Discovery and upload publish only to Actions, not the history owner.
+    let actions_entity = view.read_with(visual, |view, _| view.native.actions.clone());
     prepare_last(&view, visual);
     harness::click(visual, "answer-wizard-two-0");
     view.read_with(visual, |view, cx| {
@@ -301,10 +303,8 @@ async fn fresh_capability_lookup_cancels_choice_timer_and_retains_png_until_real
     assert_blocked(&view, visual, &server.commands);
     server.config_release.send(()).unwrap();
     visual
-        .condition(&view, |view, cx| {
-            view.native
-                .actions
-                .read(cx)
+        .condition(&actions_entity, |actions, _| {
+            actions
                 .question_files
                 .entries
                 .values()
@@ -332,11 +332,8 @@ async fn fresh_capability_lookup_cancels_choice_timer_and_retains_png_until_real
     assert_blocked(&view, visual, &server.commands);
     server.post_release.send(()).unwrap();
     visual
-        .condition(&view, |view, cx| {
-            view.native
-                .actions
-                .read(cx)
-                .question_complete("wizard", "two", cx)
+        .condition(&actions_entity, |actions, cx| {
+            actions.question_complete("wizard", "two", cx)
         })
         .await;
     harness::tick(visual, 500);
@@ -375,6 +372,8 @@ async fn failed_capability_lookup_keeps_captured_png_retry_remove_and_blocks_tex
 ) {
     let server = Server::new(vec![false], false);
     let (view, visual, _temp, _, _, _) = harness::fixture(cx, Some(server.environment.clone()));
+    // Discovery and upload publish only to Actions, not the history owner.
+    let actions_entity = view.read_with(visual, |view, _| view.native.actions.clone());
     prepare_last(&view, visual);
     harness::click(visual, "answer-custom-wizard-two");
     visual.simulate_input("valid existing text");
@@ -387,8 +386,7 @@ async fn failed_capability_lookup_keeps_captured_png_retry_remove_and_blocks_tex
     assert_blocked(&view, visual, &server.commands);
     server.config_release.send(()).unwrap();
     visual
-        .condition(&view, |view, cx| {
-            let actions = view.native.actions.read(cx);
+        .condition(&actions_entity, |actions, _| {
             actions.question_files.loading.is_none()
                 && actions
                     .question_files
@@ -440,6 +438,8 @@ async fn retry_after_capability_failure_uploads_original_captured_image_not_the_
 ) {
     let server = Server::new(vec![false, true], true);
     let (view, visual, _temp, _, _, _) = harness::fixture(cx, Some(server.environment.clone()));
+    // Discovery and upload publish only to Actions, not the history owner.
+    let actions_entity = view.read_with(visual, |view, _| view.native.actions.clone());
     prepare_last(&view, visual);
     harness::click(visual, "answer-custom-wizard-two");
     visual.simulate_input("valid answer survives retry");
@@ -451,10 +451,8 @@ async fn retry_after_capability_failure_uploads_original_captured_image_not_the_
     let id = pending_id(&view, visual);
     server.config_release.send(()).unwrap();
     visual
-        .condition(&view, |view, cx| {
-            view.native
-                .actions
-                .read(cx)
+        .condition(&actions_entity, |actions, _| {
+            actions
                 .question_files
                 .pending
                 .iter()
@@ -472,10 +470,8 @@ async fn retry_after_capability_failure_uploads_original_captured_image_not_the_
     assert_blocked(&view, visual, &server.commands);
     server.config_release.send(()).unwrap();
     visual
-        .condition(&view, |view, cx| {
-            view.native
-                .actions
-                .read(cx)
+        .condition(&actions_entity, |actions, _| {
+            actions
                 .question_files
                 .entries
                 .values()
@@ -491,11 +487,8 @@ async fn retry_after_capability_failure_uploads_original_captured_image_not_the_
     );
     server.post_release.send(()).unwrap();
     visual
-        .condition(&view, |view, cx| {
-            view.native
-                .actions
-                .read(cx)
-                .question_complete("wizard", "two", cx)
+        .condition(&actions_entity, |actions, cx| {
+            actions.question_complete("wizard", "two", cx)
         })
         .await;
     harness::click(visual, "respond-wizard");
