@@ -52,10 +52,10 @@ Indexes and previews are rebuildable caches.
 
 ## Download
 
-| Platform | Download Beta | Stable (after first promotion) |
+| Platform | Download Beta | Stable (per-platform approval) |
 |---|---|---|
 | macOS (Apple Silicon) | [Download DMG](https://updates.befeast.com/okilum/macos/beta/Okilum.dmg) · signed and notarized · [ZIP](https://updates.befeast.com/okilum/macos/beta/latest.zip) | [Download DMG](https://updates.befeast.com/okilum/macos/stable/Okilum.dmg) · [ZIP](https://updates.befeast.com/okilum/macos/latest.zip) |
-| Windows (x64) | [Download Setup.exe](https://updates.befeast.com/okilum/windows/beta/Setup.exe) · reading, search and editing; build not yet signed | [Download Setup.exe](https://updates.befeast.com/okilum/windows/stable/Setup.exe) |
+| Windows (x64) | [Download Setup.exe](https://updates.befeast.com/okilum/windows/beta/Setup.exe) · unsigned preview | [Download Setup.exe](https://updates.befeast.com/okilum/windows/stable/Setup.exe) · signed installer |
 | Linux (x86_64) | [Signed AppImage](https://updates.befeast.com/okilum/linux/beta/Okilum-x86_64.AppImage) · [verify signature](docs/linux-releases.md) | [Signed AppImage](https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage) · available after accepted Stable promotion |
 
 [GitHub Beta release and checksums](https://github.com/BeFeast/okilum/releases/tag/beta) ·
@@ -63,15 +63,17 @@ Indexes and previews are rebuildable caches.
 [macOS help](docs/macos-auto-update.md) · [Windows help](docs/windows-delivery.md) ·
 [Linux help](docs/linux-releases.md)
 
-Windows is unsigned for now, so SmartScreen may warn on first launch: check
-that the download came from the official link above, then choose
-**More info → Run anyway**. On Arch, the pacman repository and its packages are
-signed; the GitHub Beta release also carries the `.pkg.tar.zst` with its `.sig`.
+Windows Beta is currently unsigned, so SmartScreen may warn on first launch:
+check that the download came from the official link above, then choose
+**More info → Run anyway** for the preview. Windows Stable requires signed artifacts
+and separate native acceptance; an unsigned Beta build cannot be promoted.
+Linux uses signed AppImages; the pacman repository is retained for legacy
+installations and migration, not the current install/update path.
 
-Beta is available now. Stable downloads become available after the first
-cross-platform performance approval; until then, use Beta.
-GitHub's rolling **Beta** groups completed builds from the same commit; individual
-platform update feeds can be newer while another platform is still building.
+Beta is available for preview. Stable promotion is approved independently per
+platform after its required acceptance; availability and source builds may differ.
+GitHub's rolling **Beta** groups the latest completed build per platform, which
+may come from different commits. Individual platform update feeds can be newer.
 
 Okilum is under active development. Keep normal backups of your notes.
 
