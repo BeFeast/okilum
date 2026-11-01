@@ -59,7 +59,7 @@ impl<V: SignatureVerifier, D: StateDir, C: Connector> Connection<V, D, C> {
 
     fn begin_attempt(&self) -> Result<u64> {
         self.generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
             })
             .map(|previous| previous + 1)
