@@ -2,6 +2,9 @@
 use super::*;
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 
+#[cfg(test)]
+mod list_layout_tests;
+
 #[derive(Clone, Copy)]
 pub(crate) enum Role {
     Note,
