@@ -2,13 +2,17 @@
 //! and cursor are paired under a mutex, including during concurrent history loads.
 use super::*;
 pub(super) mod actions;
+mod recovery;
+mod recovery_state;
 use okilum_t3::{
     projection::{Metadata, Projection},
     stream::{
         CancelSubscription, NativeClient, NativeToken, ResumeCursor, StreamError,
-        ThreadSubscription,
+        ThreadSubscription, ThreadUpdate,
     },
 };
+use recovery::{ConnectionAttempt, ConnectionPhase, ConnectionSource};
+use recovery_state::{ConnectionContext, ConnectionFailure};
 use std::sync::Mutex;
 
 struct Retained {
@@ -23,8 +27,12 @@ pub(super) struct Native {
     request_lease: Arc<()>,
     open: bool,
     busy: bool,
-    error: Option<String>,
-    stream_error: Option<String>,
+    setup_error: Option<String>,
+    history_error: Option<String>,
+    failure: Option<ConnectionFailure>,
+    phase: ConnectionPhase,
+    connection_epoch: u64,
+    ever_ready: bool,
     stream_ready: bool,
     expires_at: Option<u64>,
     client: Option<Arc<NativeClient>>,
@@ -32,6 +40,7 @@ pub(super) struct Native {
     cancel: Option<CancelSubscription>,
     worker: Option<Task<()>>,
     history_busy: bool,
+    history_epoch: u64,
     metadata: Metadata,
 }
 impl Native {
@@ -52,8 +61,12 @@ impl Native {
             }),
             open: false,
             busy: false,
-            error: None,
-            stream_error: None,
+            setup_error: None,
+            history_error: None,
+            failure: None,
+            phase: ConnectionPhase::Paused,
+            connection_epoch: 0,
+            ever_ready: false,
             stream_ready: false,
             expires_at: None,
             client: None,
@@ -61,14 +74,15 @@ impl Native {
             cancel: None,
             worker: None,
             history_busy: false,
+            history_epoch: 0,
             metadata: Metadata::default(),
         }
     }
     pub(super) fn stream_error_is_clear(&self) -> bool {
-        self.stream_ready && self.stream_error.is_none()
+        !self.busy && self.stream_ready && self.failure.is_none()
     }
     pub(super) fn client_can_operate(&self) -> bool {
-        self.stream_ready && self.client.as_ref().is_some_and(|c| c.can_operate())
+        !self.busy && self.stream_ready && self.client.as_ref().is_some_and(|c| c.can_operate())
     }
     pub(super) fn deleted(&self) -> bool {
         self.metadata.deleted
@@ -92,12 +106,14 @@ impl Native {
         if self.busy {
             return "Connecting";
         }
-        if self.client.is_none() || self.error.is_some() || self.stream_error.is_some() {
-            return "Offline";
-        }
         let state = &self.actions.read(cx).state;
         if !self.stream_ready {
-            "Connecting"
+            match self.phase {
+                ConnectionPhase::Connecting => "Connecting",
+                ConnectionPhase::Reconnecting => "Reconnecting",
+                ConnectionPhase::Terminal | ConnectionPhase::Paused => "Offline",
+                ConnectionPhase::Connected => "Connecting",
+            }
         } else if !state.requests.is_empty() {
             "Waiting"
         } else if state.active_run.is_some() {
@@ -114,6 +130,13 @@ impl Native {
     }
     pub(super) fn pause(&mut self) {
         self.stream_ready = false;
+        // This epoch owns credential setup as well as the live worker. A stale
+        // completion cannot clear a newer attempt's busy flag.
+        self.busy = false;
+        self.history_busy = false;
+        self.history_epoch = self.history_epoch.wrapping_add(1);
+        self.phase = ConnectionPhase::Paused;
+        self.connection_epoch = self.connection_epoch.wrapping_add(1);
         if let Some(retained) = &self.retained {
             retained.lock().unwrap().epoch += 1;
         }
@@ -127,8 +150,10 @@ impl Native {
         self.request_lease = Arc::new(());
         self.client = None;
         self.retained = None;
-        self.error = None;
-        self.stream_error = None;
+        self.setup_error = None;
+        self.history_error = None;
+        self.failure = None;
+        self.ever_ready = false;
         self.metadata = Metadata::default();
         self.busy = false;
         self.history_busy = false;
@@ -175,13 +200,17 @@ impl ProjectView {
             return;
         };
         self.native.busy = true;
-        let generation = self.generation;
+        self.freeze_native_actions(window, cx);
+        self.native.phase = ConnectionPhase::Connecting;
+        let attempt = ConnectionAttempt::begin(self, environment.origin());
         cx.spawn_in(window, async move |this, cx| {
-            let task = match this.update_in(cx, |_, _, cx| {
-                cx.read_credentials(&NativeToken::credential_key(&environment))
+            let task = match this.update_in(cx, |this, _, cx| {
+                attempt
+                    .current(this)
+                    .then(|| cx.read_credentials(&NativeToken::credential_key(&environment)))
             }) {
-                Ok(task) => task,
-                Err(_) => return,
+                Ok(Some(task)) => task,
+                _ => return,
             };
             let result = match task.await {
                 Ok(Some((_, bytes))) => NativeToken::from_secret(&environment, &bytes).map(Some),
@@ -204,13 +233,14 @@ impl ProjectView {
                 Err(error) => Err(error),
             };
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.generation != generation {
+                if !attempt.current(this) {
                     return;
                 }
                 this.native.busy = false;
                 match result {
                     Ok(Some((client, expiry))) => this.install_native(client, expiry, window, cx),
                     Ok(None) => {
+                        this.native.phase = ConnectionPhase::Paused;
                         this.draft_restore(window, cx);
                         if ask {
                             this.pair_enrolled_device(window, cx);
@@ -218,7 +248,8 @@ impl ProjectView {
                         cx.notify();
                     }
                     Err(error) => {
-                        this.native.error = Some(error.to_string());
+                        this.native.phase = ConnectionPhase::Terminal;
+                        this.native.setup_error = Some(error.to_string());
                         this.draft_restore(window, cx);
                         if ask {
                             this.pair_enrolled_device(window, cx);
@@ -242,17 +273,21 @@ impl ProjectView {
             return;
         };
         self.native.busy = true;
-        let generation = self.generation;
+        self.freeze_native_actions(window, cx);
+        self.native.phase = ConnectionPhase::Connecting;
+        let attempt = ConnectionAttempt::begin(self, environment.origin());
         cx.spawn_in(window, async move |this, cx| {
-            let task = match this.update_in(cx, |_, _, cx| {
-                cx.read_credentials(&NativeToken::pairing_key(&environment))
+            let task = match this.update_in(cx, |this, _, cx| {
+                attempt
+                    .current(this)
+                    .then(|| cx.read_credentials(&NativeToken::pairing_key(&environment)))
             }) {
-                Ok(task) => task,
-                Err(_) => return,
+                Ok(Some(task)) => task,
+                _ => return,
             };
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.generation != generation {
+                if !attempt.current(this) {
                     return;
                 }
                 this.native.busy = false;
@@ -260,14 +295,17 @@ impl ProjectView {
                     Ok(Some((_, bytes))) => match String::from_utf8(bytes) {
                         Ok(credential) => this.pair_native_credential(credential, window, cx),
                         Err(_) => {
-                            this.native.error =
+                            this.native.setup_error =
                                 Some("The saved device enrollment could not be read".into())
                         }
                     },
-                    _ => this.native.error = Some(
+                    _ => this.native.setup_error = Some(
                         "This device has not been enrolled with T3. Open Diagnostics to connect."
                             .into(),
                     ),
+                }
+                if this.native.setup_error.is_some() {
+                    this.native.phase = ConnectionPhase::Terminal;
                 }
                 cx.notify();
             });
@@ -291,7 +329,7 @@ impl ProjectView {
             return;
         };
         if credential.trim().is_empty() {
-            self.native.error = Some("Enter a one-time T3 pairing token".into());
+            self.native.setup_error = Some("Enter a one-time T3 pairing token".into());
             cx.notify();
             return;
         }
@@ -299,8 +337,10 @@ impl ProjectView {
             .input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.native.busy = true;
-        self.native.error = None;
-        let generation = self.generation;
+        self.native.setup_error = None;
+        self.freeze_native_actions(window, cx);
+        self.native.phase = ConnectionPhase::Connecting;
+        let attempt = ConnectionAttempt::begin(self, environment.origin());
         cx.spawn_in(window, async move |this, cx| {
             let env = environment.clone();
             let pair_access = access.clone();
@@ -316,7 +356,7 @@ impl ProjectView {
                     let expiry = token.expires_at();
                     let bytes = token.to_secret();
                     let task = match this.update_in(cx, |this, _, cx| {
-                        if this.generation != generation {
+                        if !attempt.current(this) {
                             return None;
                         }
                         Some(cx.write_credentials(
@@ -330,8 +370,10 @@ impl ProjectView {
                     };
                     match task.await {
                         Ok(()) => {
-                            if let Ok(cleanup) = this.update_in(cx, |_, _, cx| {
-                                cx.delete_credentials(&NativeToken::pairing_key(&environment))
+                            if let Ok(Some(cleanup)) = this.update_in(cx, |this, _, cx| {
+                                attempt.current(this).then(|| {
+                                    cx.delete_credentials(&NativeToken::pairing_key(&environment))
+                                })
                             }) {
                                 let _ = cleanup.await;
                             }
@@ -352,14 +394,15 @@ impl ProjectView {
                 Err(error) => Err(error),
             };
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.generation != generation {
+                if !attempt.current(this) {
                     return;
                 }
                 this.native.busy = false;
                 match result {
                     Ok((client, expiry)) => this.install_native(client, expiry, window, cx),
                     Err(error) => {
-                        this.native.error = Some(error.to_string());
+                        this.native.phase = ConnectionPhase::Terminal;
+                        this.native.setup_error = Some(error.to_string());
                         cx.notify();
                     }
                 }
@@ -389,8 +432,8 @@ impl ProjectView {
         self.native.pause();
         self.native.client = Some(client);
         self.attachments.connection_changed();
-        self.native.error = None;
-        self.native.stream_error = None;
+        self.native.setup_error = None;
+        self.native.failure = None;
         self.native.expires_at = Some(expiry);
         self.native.open = false;
         self.sync_native_action_surface(cx);
@@ -412,7 +455,11 @@ impl ProjectView {
         cx.notify();
     }
     pub(super) fn native_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.active || self.native.worker.is_some() || self.threads.selected.is_some() {
+        if !self.active
+            || self.native.busy
+            || self.native.worker.is_some()
+            || self.threads.selected.is_some()
+        {
             return;
         }
         let Some(client) = self.native.client.clone() else {
@@ -432,9 +479,24 @@ impl ProjectView {
             r.epoch += 1;
             r.epoch
         };
+        self.native.connection_epoch = self.native.connection_epoch.wrapping_add(1);
+        self.native.phase = if self.native.ever_ready {
+            ConnectionPhase::Reconnecting
+        } else {
+            ConnectionPhase::Connecting
+        };
+        self.freeze_native_actions(window, cx);
+        let source = ConnectionSource::new(
+            self,
+            client.clone(),
+            retained.clone(),
+            thread.clone(),
+            epoch,
+        );
         self.native.worker = Some(cx.spawn_in(window, async move |this, cx| {
             let mut socket: Option<ThreadSubscription> = None;
             let mut failures = 0u32;
+            let mut synchronized = false;
             loop {
                 if socket.is_none() {
                     let cursor = {
@@ -446,32 +508,48 @@ impl ProjectView {
                     };
                     let connect_client = client.clone();
                     let connect_thread = thread.clone();
-                    match cx
-                        .background_executor()
-                        .spawn(async move { connect_client.subscribe(&connect_thread, cursor) })
-                        .await
+                    match recovery::stream_io(cx.background_executor(), move || {
+                        connect_client.subscribe(&connect_thread, cursor)
+                    })
+                    .await
                     {
                         Ok(stream) => {
                             let cancel = stream.cancellation().ok();
-                            if this
+                            if !this
                                 .update_in(cx, |this, _, _| {
+                                    if !source.current(this) {
+                                        return false;
+                                    }
                                     this.native.cancel = cancel;
+                                    true
                                 })
-                                .is_err()
+                                .unwrap_or(false)
                             {
                                 return;
                             }
                             socket = Some(stream);
+                            synchronized = false;
                         }
                         Err(error) => {
                             let terminal = terminal(&error);
-                            let message = notice(&error);
-                            let _ = this.update_in(cx, |this, _, cx| {
-                                if this.native.stream_error.as_ref() != Some(&message) {
-                                    this.native.stream_error = Some(message);
+                            let current = this
+                                .update_in(cx, |this, window, cx| {
+                                    if !source.current(this) {
+                                        return false;
+                                    }
+                                    this.native_failed(
+                                        error,
+                                        ConnectionContext::Connect,
+                                        window,
+                                        cx,
+                                    );
                                     cx.notify();
-                                }
-                            });
+                                    true
+                                })
+                                .unwrap_or(false);
+                            if !current {
+                                return;
+                            }
                             if terminal {
                                 return;
                             }
@@ -483,15 +561,17 @@ impl ProjectView {
                 }
                 let mut stream = socket.take().unwrap();
                 let model = retained.clone();
-                let (stream, result) = cx
-                    .background_executor()
-                    .spawn(async move {
+                let (stream, result, accepted_sync) =
+                    recovery::stream_io(cx.background_executor(), move || {
                         let result = stream.receive(|updates| {
                             let mut r = model.lock().unwrap();
                             if r.epoch != epoch {
                                 return Err(StreamError::Closed);
                             }
                             r.model.apply(updates)?;
+                            synchronized |= updates
+                                .iter()
+                                .any(|update| matches!(update, ThreadUpdate::Synchronized));
                             r.valid = false;
                             Ok(())
                         });
@@ -502,18 +582,36 @@ impl ProjectView {
                                 r.valid = true;
                             }
                         }
-                        (stream, result)
+                        (stream, result, synchronized)
                     })
                     .await;
+                synchronized = accepted_sync;
                 let terminal_error = result.as_ref().err().is_some_and(terminal);
-                let message = result.as_ref().err().map(notice);
+                let failure = result
+                    .as_ref()
+                    .err()
+                    .cloned()
+                    .map(|cause| ConnectionFailure {
+                        cause,
+                        context: ConnectionContext::Receive,
+                    });
                 let changed = this
                     .update_in(cx, |this, window, cx| {
                         let mut r = retained.lock().unwrap();
-                        if r.epoch != epoch {
+                        if !source.matches(this) || r.epoch != epoch {
                             return false;
                         }
                         let mut changes = r.model.take_changes();
+                        // An accepted resume may contain no new entities. Restore
+                        // authority only from that same retained model, never a
+                        // synthetic ready state while the socket is reconnecting.
+                        let ready = result.is_ok() && synchronized;
+                        if ready && !this.native.stream_ready && changes.actions.is_none() {
+                            changes.actions = Some(r.model.action_state());
+                        }
+                        if let Some(state) = &mut changes.actions {
+                            state.ready &= ready;
+                        }
                         let controls_changed = changes.actions.is_some();
                         if let Some(state) = changes.actions.take() {
                             let timeline_runs =
@@ -562,12 +660,17 @@ impl ProjectView {
                                 feed.apply_native(changes, &this.records, cx)
                             });
                         }
-                        let ready = result.is_ok();
                         let mut notify = controls_changed
-                            || this.native.stream_error != message
+                            || this.native.failure != failure
                             || this.native.stream_ready != ready;
                         this.native.stream_ready = ready;
-                        this.native.stream_error = message;
+                        if let Some(failure) = failure {
+                            this.native_failed(failure.cause, failure.context, window, cx);
+                        } else if ready {
+                            this.native.failure = None;
+                            this.native.phase = ConnectionPhase::Connected;
+                            this.native.ever_ready = true;
+                        }
                         if let Some(metadata) = metadata {
                             notify |= this.native.metadata != metadata;
                             this.native.metadata = metadata;
@@ -591,11 +694,12 @@ impl ProjectView {
                 }
             }
         }));
+        cx.notify();
     }
     pub(super) fn prefetch_native_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A failed page remains an explicit retry; painting must not start a
         // retry chain. Existing loaded history remains usable.
-        if self.native.error.is_none() && self.native.metadata.has_more_history {
+        if self.native.history_error.is_none() && self.native.metadata.has_more_history {
             self.native_history(window, cx);
         }
     }
@@ -622,19 +726,32 @@ impl ProjectView {
             return;
         };
         self.native.history_busy = true;
-        self.native.error = None;
-        let generation = self.generation;
+        self.native.history_epoch = self.native.history_epoch.wrapping_add(1);
+        let history_epoch = self.native.history_epoch;
+        self.native.history_error = None;
+        let epoch = retained.lock().unwrap().epoch;
+        let source = ConnectionSource::new(
+            self,
+            client.clone(),
+            retained.clone(),
+            thread.clone(),
+            epoch,
+        );
         cx.spawn_in(window, async move |this, cx| {
             let model = retained.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let page = client.history(&thread, request.cursor())?;
-                    model.lock().unwrap().model.apply_history(&request, page)
+                    let mut retained = model.lock().unwrap();
+                    if retained.epoch != epoch {
+                        return Err(StreamError::Closed);
+                    }
+                    retained.model.apply_history(&request, page)
                 })
                 .await;
             let _ = this.update_in(cx, |this, _, cx| {
-                if this.generation != generation {
+                if !source.same_source(this) || this.native.history_epoch != history_epoch {
                     return;
                 }
                 this.native.history_busy = false;
@@ -648,7 +765,7 @@ impl ProjectView {
                         this.feed
                             .update(cx, |feed, cx| feed.apply_native(changes, &this.records, cx));
                     }
-                    Err(error) => this.native.error = Some(error.to_string()),
+                    Err(error) => this.native.history_error = Some(error.to_string()),
                 }
                 cx.notify();
             });
@@ -656,9 +773,9 @@ impl ProjectView {
         .detach();
         cx.notify();
     }
-    pub(super) fn render_native(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_native(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let compact = !self.connection_details;
-        let enabled = self.native.client_can_operate() && self.native.stream_error.is_none();
+        let enabled = self.native.client_can_operate() && self.native.failure.is_none();
         self.native
             .actions
             .update(cx, |a, cx| a.set_enabled(enabled, cx));
@@ -673,8 +790,11 @@ impl ProjectView {
                 .debug_selector(|| "project-live-connect".into())
                 .disabled(self.native.busy || self.environment.is_none())
                 .on_click(cx.listener(|this, _, window, cx| {
-                    this.native.pause();
-                    this.native_restore(true, window, cx);
+                    if this.native.active() {
+                        this.native_reconnect(window, cx);
+                    } else {
+                        this.native_restore(true, window, cx);
+                    }
                 })),
         );
         if self.native.active() {
@@ -700,6 +820,8 @@ impl ProjectView {
                     .ghost()
                     .label(if self.native.history_busy {
                         "Loading earlier messages…"
+                    } else if self.native.history_error.is_some() {
+                        "Retry earlier messages"
                     } else {
                         "Load earlier messages"
                     })
@@ -751,26 +873,7 @@ impl ProjectView {
                     .child("This manager thread was deleted. Open T3 to choose another manager."),
             );
         }
-        if let Some(error) = self
-            .native
-            .error
-            .clone()
-            .or_else(|| self.native.stream_error.clone())
-        {
-            view = view.child(
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .whitespace_normal()
-                    .debug_selector(|| "project-live-error".into())
-                    .text_color(cx.theme().danger)
-                    .child(if compact {
-                        "Connection interrupted. Open Diagnostics to reconnect.".to_owned()
-                    } else {
-                        error
-                    }),
-            );
-        }
+        view = view.child(self.render_native_recovery(window, cx));
         if self.native_actions_pinned() {
             view.into_any_element()
         } else {
@@ -778,27 +881,8 @@ impl ProjectView {
         }
     }
 }
-fn notice(error: &StreamError) -> String {
-    match error {
-        StreamError::Closed | StreamError::Unreachable => {
-            "Connection interrupted. Reconnecting live updates…".into()
-        }
-        StreamError::PairingRequired | StreamError::Expired => {
-            "This live connection is no longer signed in. Pair again to continue.".into()
-        }
-        StreamError::Protocol(_) | StreamError::IncompatibleProtocol => {
-            "Live updates are unavailable with this T3 server. Open T3 to continue.".into()
-        }
-        _ => error.to_string(),
-    }
-}
-
 fn terminal(error: &StreamError) -> bool {
-    match error {
-        StreamError::Closed | StreamError::Unreachable => false,
-        StreamError::Http(status) => !matches!(*status, 408 | 429 | 500..=599),
-        _ => true,
-    }
+    !recovery_state::is_transient(error)
 }
 
 fn delay(attempt: u32) -> Duration {
