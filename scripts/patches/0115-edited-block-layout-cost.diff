@@ -1,0 +1,174 @@
+diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crates/base/src/input/editor/display_map/projected_cache.rs
+--- a/crates/base/src/input/editor/display_map/projected_cache.rs
++++ b/crates/base/src/input/editor/display_map/projected_cache.rs
+@@ -76,6 +76,9 @@
+     previous: HashMap<LineKey, LineItem>,
+     current: HashMap<LineKey, LineItem>,
+     bytes: usize,
++    // Last projected metrics survive the temporary native Source map used by
++    // text edits. SumTree clones share immutable nodes; no source hit map lives here.
++    lines: Option<sum_tree::SumTree<LineItem>>,
+ }
+
+ impl ProjectedCache {
+@@ -84,10 +87,20 @@
+             self.previous.clear();
+             self.current.clear();
+             self.document = Some(document);
++            self.lines = None;
+         } else {
+             self.previous = std::mem::take(&mut self.current);
+         }
+         self.bytes = 0;
++    }
++
++    pub(super) fn adopt_lines(&mut self, items: Vec<LineItem>) -> sum_tree::SumTree<LineItem> {
++        let lines = match self.lines.take() {
++            Some(previous) => super::text_wrapper::adopt_projected_lines(&previous, items).0,
++            None => sum_tree::SumTree::from_iter(items, &()),
++        };
++        self.lines = Some(lines.clone());
++        lines
+     }
+
+     pub(super) fn get(&self, key: &LineKey) -> Option<LineItem> {
+@@ -136,6 +149,25 @@
+     }
+
+     #[test]
++    fn projected_tree_tracks_publications_and_resets_for_new_document() {
++        let mut cache = ProjectedCache::default();
++        cache.begin(1);
++        let first = cache.adopt_lines(vec![line(), line()]);
++        // begin follows the native source-edit path; no projected tree is read
++        // from the wrapper that has meanwhile returned to raw source metrics.
++        cache.begin(1);
++        assert!(cache.lines.is_some());
++        let inserted = LineItem::cached_test_line(2, smallvec::smallvec![0..2]);
++        let adopted = cache.adopt_lines(vec![inserted.clone(), line(), line()]);
++        assert_eq!(first.iter().count(), 2);
++        assert_eq!(adopted.iter().next(), Some(&inserted));
++        assert_eq!(adopted.iter().count(), 3);
++        cache.begin(2);
++        assert!(cache.lines.is_none(), "a different document drops projected geometry");
++        assert_eq!(cache.adopt_lines(vec![line()]).iter().count(), 1);
++    }
++
++    #[test]
+     fn exact_line_metrics_and_document_are_required_for_reuse() {
+         let mut cache = ProjectedCache::default();
+         cache.begin(1);
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -28,7 +28,7 @@
+ }
+
+ /// A line with soft wrapped lines info.
+-#[derive(Debug, Clone)]
++#[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) struct LineItem {
+     /// The byte length of the line, without the end `\n`.
+     len: usize,
+@@ -572,7 +572,7 @@
+             items.push(item);
+         }
+         self.text = text;
+-        self.lines = SumTree::from_iter(items, &());
++        self.lines = cache.adopt_lines(items);
+         self._initialized = true;
+         reshaped
+     }
+@@ -666,6 +666,33 @@
+         let offset = self.text.point_to_offset(point);
+         self.offset_to_display_point(offset)
+     }
++}
++
++/// Adopt only the dirty interval of projected row metrics. All keys and line
++/// metrics are still visited above; unchanged tree nodes keep their summaries.
++/// Compare relative geometry, never source offsets or presentation identities:
++/// the caller installs the new Rope and projection even for an empty interval.
++/// The previous tree belongs to the projection cache, not `self.lines`, which
++/// may already have been restored to Source by an IME, Undo or ordinary edit.
++pub(super) fn adopt_projected_lines(
++    previous: &SumTree<LineItem>,
++    items: Vec<LineItem>,
++) -> (SumTree<LineItem>, usize) {
++    let old: Vec<_> = previous.iter().collect();
++    let prefix = old.iter().zip(&items).take_while(|(a, b)| **a == *b).count();
++    let suffix = old[prefix..].iter().rev().zip(items[prefix..].iter().rev())
++        .take_while(|(a, b)| **a == *b).count();
++    let dirty_end = items.len() - suffix;
++    let replaced = dirty_end - prefix;
++    if prefix == old.len() && prefix == items.len() {
++        return (previous.clone(), 0);
++    }
++    let mut cursor = previous.cursor::<BufferRows>(&());
++    let mut lines = cursor.slice(&BufferRows(prefix), Bias::Right);
++    cursor.seek_forward(&BufferRows(old.len() - suffix), Bias::Right);
++    lines.extend(items.into_iter().skip(prefix).take(replaced), &());
++    lines.append(cursor.suffix(), &());
++    (lines, replaced)
+ }
+
+ /// A display point within the soft-wrapped text.
+@@ -1242,6 +1269,58 @@
+
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn projected_dirty_interval_adopts_shifted_suffix_and_exact_geometry() {
++        let line = |len| LineItem::cached_test_line(len, smallvec::smallvec![0..len]);
++        let base = vec![line(3), line(8), line(5), line(0)];
++        let previous = SumTree::from_iter(base.clone(), &());
++        let mut cases = vec![
++            (base.clone(), 0),
++            (vec![line(3), line(9), line(5), line(0)], 1),
++            (vec![line(3), line(2), line(8), line(5), line(0)], 1),
++            (vec![line(3), line(5), line(0)], 0),
++            (vec![line(3), line(8)], 0),
++            (vec![line(2), line(3), line(8), line(5), line(0)], 1),
++            (vec![line(3), line(8), line(5), line(0), line(2)], 1),
++            (vec![], 0),
++        ];
++        // Equal byte lengths are insufficient: wrap boundaries and continuation
++        // indent change hit geometry before any source offset conversion.
++        let mut wrapped = base.clone();
++        wrapped[1].wrapped_lines = smallvec::smallvec![0..3, 3..8];
++        cases.push((wrapped, 1));
++        let mut indented = base.clone();
++        indented[1].indent = 2;
++        cases.push((indented, 1));
++        for (items, expected_dirty) in cases {
++            let fresh = SumTree::from_iter(items.clone(), &());
++            let (adopted, dirty) = adopt_projected_lines(&previous, items.clone());
++            assert_eq!(dirty, expected_dirty);
++            assert_eq!(adopted.iter().cloned().collect::<Vec<_>>(), items);
++            assert_eq!(adopted.summary().buffer_rows, fresh.summary().buffer_rows);
++            assert_eq!(adopted.summary().wrap_rows, fresh.summary().wrap_rows);
++            assert_eq!(adopted.summary().bytes, fresh.summary().bytes);
++            assert_eq!(adopted.summary().max_line_len, fresh.summary().max_line_len);
++            assert_eq!(adopted.summary().longest_row, fresh.summary().longest_row);
++        }
++        // Positive control: cold/fully changed geometry cannot reuse any rows.
++        let changed = vec![line(11), line(12), line(13)];
++        assert_eq!(adopt_projected_lines(&previous, changed).1, 3);
++        assert_eq!(adopt_projected_lines(&SumTree::new(&()), base).1, 4);
++        // Exercise real multi-node slices and summaries after an insertion
++        // shifts every following buffer row. Duplicate geometry must not make
++        // the prefix and suffix overlap.
++        let large: Vec<_> = (0..700).map(|n| line(n % 19)).collect();
++        let previous = SumTree::from_iter(large.clone(), &());
++        let mut inserted = large;
++        inserted.insert(350, line(23));
++        let (adopted, dirty) = adopt_projected_lines(&previous, inserted.clone());
++        assert_eq!(dirty, 1);
++        assert_eq!(adopted.iter().cloned().collect::<Vec<_>>(), inserted);
++        let mut cursor = adopted.cursor::<BufferRows>(&());
++        cursor.seek(&BufferRows(351), Bias::Right);
++        assert_eq!(cursor.item(), inserted.get(351));
++    }
+     /// #931: right-to-left glyphs arrive in visual order; rows must still be
+     /// logical ranges that break after whitespace and fit the width.
+     #[test]
