@@ -1403,21 +1403,24 @@ impl Reader {
                 }
             }
             Section::Logs => {
-                body = body.child(div().text_lg().child("Logs")).child(
-                    Button::new("app-kibana-sources")
-                        .ghost()
-                        .label("Kibana sources…")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            reader_log::remote::show(this.vault_root.clone(), cx)
-                        })),
-                ).child(
-                    Button::new("app-kubernetes-logs")
-                        .ghost()
-                        .label("Kubernetes logs…")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            reader_log_kubernetes::show(this.vault_root.clone(), cx)
-                        })),
-                );
+                body = body
+                    .child(div().text_lg().child("Logs"))
+                    .child(
+                        Button::new("app-kibana-sources")
+                            .ghost()
+                            .label("Kibana sources…")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                reader_log::remote::show(this.vault_root.clone(), cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("app-kubernetes-logs")
+                            .ghost()
+                            .label("Kubernetes logs…")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                reader_log_kubernetes::show(this.vault_root.clone(), cx)
+                            })),
+                    );
                 for (index, entry) in self
                     .vault
                     .entries
