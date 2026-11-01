@@ -65,6 +65,7 @@ pub(crate) fn reopen(cx: &mut App) {
 }
 
 pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
+    opts.restore_workspace = true;
     let directory = opts.session_directory.clone();
     let diagnostics = opts.diagnostics.clone();
     cx.spawn(async move |cx| {
@@ -263,6 +264,7 @@ pub(crate) fn restore_windows(
             let opts = Opts {
                 vault: Some(root.clone()),
                 note,
+                restore_workspace: true,
                 ..base.clone()
             };
             let resolving = cx.update(|cx| reader_open::resolve(opts, cx));

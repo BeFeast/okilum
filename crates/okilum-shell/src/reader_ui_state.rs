@@ -47,6 +47,8 @@ pub(crate) struct Visit {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Layout {
+    /// Vault-relative project identity; None is an explicit World choice.
+    pub project: Option<PathBuf>,
     pub panels: reader_layout::Panels,
     pub widths: reader_layout::Widths,
     pub collapsed: BTreeSet<reader_sidebar::Section>,
@@ -69,6 +71,7 @@ pub(crate) struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
+            project: None,
             panels: reader_layout::Panels {
                 notes: true,
                 backlinks: true,
@@ -99,6 +102,7 @@ impl Layout {
     /// An unseen vault inherits presentation, never another vault's paths.
     fn inherited(&self) -> Self {
         Self {
+            project: None,
             folders: Default::default(),
             tree_cursor: None,
             tree_scroll: 0.,
@@ -968,6 +972,8 @@ pub(crate) fn flush(cx: &mut App) {
 #[derive(Default)]
 pub(crate) struct Session {
     root: PathBuf,
+    workspace: Option<(PathBuf, u64)>,
+    pub(super) restoring_workspace: bool,
     last: Option<Layout>,
     active: bool,
     tree: Option<Layout>,
@@ -1038,6 +1044,25 @@ impl Reader {
                     .as_ref()
                     .is_some_and(|path| path.extension().is_some())
         });
+        let replay = self
+            .loading
+            .as_ref()
+            .is_some_and(|load| load.opts.restore_workspace);
+        if known && (!explicit || replay) && !interacted && self.queued_open_note.is_none() {
+            self.ui_state.workspace = saved
+                .project
+                .as_ref()
+                .filter(|path| {
+                    path.components()
+                        .all(|part| matches!(part, std::path::Component::Normal(_)))
+                })
+                .map(|path| {
+                    (
+                        self.vault_root.join(path),
+                        self.project_navigation.generation,
+                    )
+                });
+        }
         if known && saved.note.is_empty() && !explicit {
             self.show_empty_vault(window, cx);
         }
@@ -1070,6 +1095,20 @@ impl Reader {
             }
         }
         cx.notify();
+    }
+
+    pub(crate) fn restore_workspace_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ui_state.tree.is_some() || self.restoring_source() {
+            return;
+        }
+        if let Some((folder, generation)) = self.ui_state.workspace.take() {
+            if generation == self.project_navigation.generation
+                && reader_features::enabled(reader_features::Feature::Agents, cx)
+            {
+                self.ui_state.restoring_workspace = true;
+                self.enter_project_folder(folder, window, cx);
+            }
+        }
     }
 
     pub(crate) fn restore_ui_tree(&mut self) {
@@ -1160,7 +1199,11 @@ impl Reader {
         if self.navigation.pending_landing.is_none() {
             self.ui_state.reader_position_pending = false;
         }
-        if !self.ui_state.ready || self.ui_state.root != self.vault_root {
+        if self.ui_state.workspace.is_some()
+            || self.ui_state.restoring_workspace
+            || !self.ui_state.ready
+            || self.ui_state.root != self.vault_root
+        {
             return;
         }
         // A background sibling must not replace the active window's viewport
@@ -1212,21 +1255,36 @@ impl Reader {
             .map(|p| [p.x.into(), p.y.into()])
             .or(self.ui_state.source)
             .unwrap_or([0.; 2]);
+        let world = self.project_navigation.saved.as_ref();
+        let tree = world.map_or(&self.tree, |saved| &saved.tree);
         let saved = Layout {
-            panels: self.panels.preferences(),
-            widths: self.panel_widths.clone(),
+            project: self.project_navigation.active.as_ref().and_then(|project| {
+                project
+                    .folder
+                    .strip_prefix(&self.vault_root)
+                    .ok()
+                    .map(Path::to_path_buf)
+            }),
+            panels: world.map_or_else(
+                || self.panels.preferences(),
+                |saved| saved.panels.preferences(),
+            ),
+            widths: world.map_or_else(|| self.panel_widths.clone(), |saved| saved.widths.clone()),
             collapsed: self.sidebar.collapsed.clone(),
             properties_collapsed: self.sidebar.properties_collapsed,
             show_hidden: self.sidebar.show_hidden,
             folders: pending
                 .map(|state| state.folders.clone())
-                .unwrap_or_else(|| self.tree.expanded_paths().clone()),
+                .unwrap_or_else(|| tree.expanded_paths().clone()),
             tree_cursor: pending
                 .and_then(|state| state.tree_cursor.clone())
-                .or_else(|| self.tree.cursor.clone()),
-            tree_scroll: pending
-                .map(|state| state.tree_scroll)
-                .unwrap_or_else(|| self.tree_scroll.0.borrow().base_handle.offset().y.into()),
+                .or_else(|| tree.cursor.clone()),
+            tree_scroll: pending.map(|state| state.tree_scroll).unwrap_or_else(|| {
+                world.map_or_else(
+                    || self.tree_scroll.0.borrow().base_handle.offset().y.into(),
+                    |saved| saved.tree_offset.y.into(),
+                )
+            }),
             recent_expanded: self.recent_expanded,
             properties_open: self.properties_open,
             hidden_properties: self.show_hidden_properties,
@@ -2052,6 +2110,24 @@ fn mark_saved(generation: u64, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workspace_identity_is_optional_and_never_inherited() {
+        let legacy: Layout = serde_json::from_str(r#"{"note":"home.md"}"#).unwrap();
+        assert!(legacy.project.is_none());
+        let missing: Saved = serde_json::from_str("{}").unwrap();
+        assert!(missing.vaults.is_empty());
+        for relative in ["Work/App", "Music/Studio", ""] {
+            let layout = Layout {
+                project: Some(PathBuf::from(relative)),
+                ..Default::default()
+            };
+            let restored: Layout =
+                serde_json::from_slice(&serde_json::to_vec(&layout).unwrap()).unwrap();
+            assert_eq!(restored.project, layout.project);
+            assert!(restored.inherited().project.is_none());
+        }
+    }
+
     #[gpui::test]
     fn image_import_preferences_are_global_persisted_and_merged(cx: &mut TestAppContext) {
         let temp = tempfile::tempdir().unwrap();
