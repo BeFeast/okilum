@@ -48,6 +48,10 @@ class EphemeralSigning(unittest.TestCase):
             if argv[:2] == ['security', 'find-certificate']:return PEM.encode()
             if argv[:2] == ['security', 'find-identity']:
                 return ('1) ' + hashlib.sha1(DER).hexdigest().upper() + ' "' + IDENTITY + '"').encode()
+            if argv[0] == 'codesign' and '--sign' in argv:
+                keychain = argv[argv.index('--keychain') + 1]
+                if keychain not in state['search']:
+                    raise subprocess.CalledProcessError(1, argv)
             if argv[:2] == ['security', 'delete-keychain']:Path(argv[-1]).unlink()
             return b''
         return execute, state
@@ -57,8 +61,11 @@ class EphemeralSigning(unittest.TestCase):
             env = self.env(tmp);commands=[];backend,state=self.backend(env,commands)
             with patch.object(m, 'call', side_effect=backend):
                 m.setup(env);directory=m.root(env)
-                self.assertEqual(state['search'], ['/original/login.keychain-db'])
+                self.assertEqual(state['search'], [str(directory/'shipping.keychain-db'), '/original/login.keychain-db'])
                 self.assertFalse((directory/'identity.p12').exists())
+                self.assertFalse((directory/'signing-probe').exists())
+                self.assertTrue(any(a[0] == 'codesign' and '--sign' in a for a in commands))
+                self.assertTrue(any(a[:3] == ['codesign', '--verify', '--strict'] for a in commands))
                 settings = [a for a in commands if a[:2] == ['security', 'set-keychain-settings']]
                 self.assertEqual(settings, [['security', 'set-keychain-settings', '-lut', '7200', str(directory/'shipping.keychain-db')]])
                 self.assertLess(commands.index(settings[0]), next(i for i,a in enumerate(commands) if a[:2] == ['security','unlock-keychain']))
@@ -82,7 +89,7 @@ class EphemeralSigning(unittest.TestCase):
                 self.assertFalse(any('create-keychain' in x for x in commands))
 
     def test_failed_import_or_notary_cleans_only_partial_own_state(self):
-        for fail in ['import','store-credentials']:
+        for fail in ['import','store-credentials','codesign']:
             with self.subTest(fail=fail),tempfile.TemporaryDirectory() as tmp:
                 env=self.env(tmp);commands=[];backend,_=self.backend(env,commands,fail)
                 with patch.object(m,'call',side_effect=backend),self.assertRaises(subprocess.CalledProcessError):m.setup(env)
