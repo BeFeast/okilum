@@ -14,10 +14,11 @@ pub struct Import {
 /// Recognize standalone @path lines, excluding fenced and indented code.
 /// Whitespace in a path is literal; shell quoting and interpolation are never evaluated.
 pub fn parse(source: &str) -> Vec<Import> {
-    parse_up_to(source, usize::MAX)
+    parse_bounded(source, usize::MAX)
 }
 
-fn parse_up_to(source: &str, max_imports: usize) -> Vec<Import> {
+/// Parse at most `max_imports` directives without allocating for the remainder.
+pub fn parse_bounded(source: &str, max_imports: usize) -> Vec<Import> {
     let mut result = Vec::new();
     let mut offset = 0;
     let mut fence: Option<(u8, usize)> = None;
@@ -63,6 +64,8 @@ pub enum Failure {
     Cycle,
     Depth,
     Budget,
+    /// Source changed while it was being read, or its root was replaced.
+    Changed,
 }
 
 /// Implementations must resolve symlinks before returning a canonical absolute path.
@@ -70,6 +73,183 @@ pub enum Failure {
 pub trait Source {
     fn canonicalize(&self, path: &Path) -> Result<PathBuf, Failure>;
     fn read(&self, canonical: &Path, max_bytes: usize) -> Result<String, Failure>;
+}
+
+/// Concrete filesystem reader bound to one canonical vault root. No writes,
+/// interpolation, shell execution, or unbounded whole-file reads are performed.
+/// Unix reads walk directory descriptors with NOFOLLOW after resolution, so a
+/// replaced symlink cannot redirect an already resolved import outside the root.
+/// Other platforms fail closed until an equivalent rooted handle reader exists.
+pub struct RootedSource {
+    root: PathBuf,
+    #[cfg(unix)]
+    directory: std::fs::File,
+}
+
+fn io_failure(error: std::io::Error) -> Failure {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => Failure::Missing,
+        _ => Failure::Unreadable,
+    }
+}
+
+impl RootedSource {
+    pub fn new(root: &Path) -> Result<Self, Failure> {
+        let root = std::fs::canonicalize(root).map_err(io_failure)?;
+        #[cfg(unix)]
+        {
+            let directory = open_directory(&root)?;
+            Ok(Self { root, directory })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = root;
+            Err(Failure::Unreadable)
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    #[cfg(unix)]
+    fn validate_root(&self) -> Result<(), Failure> {
+        use std::os::unix::fs::MetadataExt;
+        let current = open_directory(&self.root)?.metadata().map_err(io_failure)?;
+        let held = self.directory.metadata().map_err(io_failure)?;
+        if (current.dev(), current.ino()) != (held.dev(), held.ino()) {
+            return Err(Failure::Changed);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn open_directory(path: &Path) -> Result<std::fs::File, Failure> {
+    use rustix::fs::{openat, Mode, OFlags, CWD};
+    if !path.is_absolute() {
+        return Err(Failure::InvalidPath);
+    }
+    let mut directory = std::fs::File::from(
+        openat(
+            CWD,
+            "/",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| io_failure(e.into()))?,
+    );
+    for part in path.components() {
+        match part {
+            Component::RootDir => (),
+            Component::Normal(name) => {
+                directory = std::fs::File::from(
+                    openat(
+                        &directory,
+                        name,
+                        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                        Mode::empty(),
+                    )
+                    .map_err(|e| io_failure(e.into()))?,
+                );
+            }
+            _ => return Err(Failure::InvalidPath),
+        }
+    }
+    Ok(directory)
+}
+
+impl Source for RootedSource {
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf, Failure> {
+        #[cfg(unix)]
+        self.validate_root()?;
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(path)
+        };
+        if !normalize(&path)?.starts_with(&self.root) {
+            return Err(Failure::OutsideRoot);
+        }
+        let canonical = std::fs::canonicalize(path).map_err(io_failure)?;
+        if !canonical.starts_with(&self.root) {
+            return Err(Failure::OutsideRoot);
+        }
+        Ok(canonical)
+    }
+
+    fn read(&self, canonical: &Path, max_bytes: usize) -> Result<String, Failure> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{openat, Mode, OFlags};
+            use std::{io::Read, os::unix::fs::MetadataExt};
+            self.validate_root()?;
+            let relative = canonical
+                .strip_prefix(&self.root)
+                .map_err(|_| Failure::OutsideRoot)?;
+            let parts: Vec<_> = relative.components().collect();
+            if parts.is_empty() || parts.iter().any(|p| !matches!(p, Component::Normal(_))) {
+                return Err(Failure::InvalidPath);
+            }
+            let mut directory = self.directory.try_clone().map_err(io_failure)?;
+            for (index, part) in parts.iter().enumerate() {
+                let Component::Normal(name) = part else {
+                    unreachable!()
+                };
+                let last = index + 1 == parts.len();
+                let mut flags =
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+                if !last {
+                    flags |= OFlags::DIRECTORY;
+                }
+                let file = std::fs::File::from(
+                    openat(&directory, *name, flags, Mode::empty())
+                        .map_err(|e| io_failure(e.into()))?,
+                );
+                if !last {
+                    directory = file;
+                    continue;
+                }
+                let before = file.metadata().map_err(io_failure)?;
+                if !before.is_file() {
+                    return Err(Failure::Unreadable);
+                }
+                if before.len() > max_bytes as u64 {
+                    return Err(Failure::Budget);
+                }
+                // The extra byte detects growth even if metadata was initially small.
+                let mut bytes = Vec::new();
+                (&file)
+                    .take((max_bytes as u64).saturating_add(1))
+                    .read_to_end(&mut bytes)
+                    .map_err(io_failure)?;
+                if bytes.len() > max_bytes {
+                    return Err(Failure::Budget);
+                }
+                let after = file.metadata().map_err(io_failure)?;
+                let revision = |m: &std::fs::Metadata| {
+                    (
+                        m.len(),
+                        m.mtime(),
+                        m.mtime_nsec(),
+                        m.ctime(),
+                        m.ctime_nsec(),
+                    )
+                };
+                if revision(&before) != revision(&after) || after.len() != bytes.len() as u64 {
+                    return Err(Failure::Changed);
+                }
+                self.validate_root()?;
+                return String::from_utf8(bytes).map_err(|_| Failure::Unreadable);
+            }
+            Err(Failure::InvalidPath)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (canonical, max_bytes);
+            Err(Failure::Unreadable)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -118,6 +298,15 @@ fn normalize(path: &Path) -> Result<PathBuf, Failure> {
     Ok(out)
 }
 
+/// Lexical dependency identity, also available when a target does not exist yet.
+/// Use canonical source context and track the resolved path separately for symlinks.
+pub fn reference_path(source: &Path, target: &str) -> Result<PathBuf, Failure> {
+    if target.is_empty() || target.chars().any(char::is_control) {
+        return Err(Failure::InvalidPath);
+    }
+    normalize(&source.parent().ok_or(Failure::InvalidPath)?.join(target))
+}
+
 /// Resolve a literal source-relative import; absolute paths must remain inside root.
 /// Canonical containment is checked before source is read (including symlink escapes).
 pub fn resolve(
@@ -134,8 +323,8 @@ pub fn resolve(
     if !root.is_absolute() || !source.starts_with(&root) {
         return Err(Failure::OutsideRoot);
     }
-    let candidate = normalize(&source.parent().ok_or(Failure::InvalidPath)?.join(target))?;
-    if !candidate.starts_with(&root) {
+    let candidate = source.parent().ok_or(Failure::InvalidPath)?.join(target);
+    if !normalize(&candidate)?.starts_with(&root) {
         return Err(Failure::OutsideRoot);
     }
     let canonical = store.canonicalize(&candidate)?;
@@ -182,7 +371,7 @@ impl<S: Source> State<'_, S> {
         // Include at most one terminal Budget diagnostic rather than allocate for
         // every remaining directive in an arbitrarily large source snapshot.
         let mut nodes = Vec::new();
-        for import in parse_up_to(
+        for import in parse_bounded(
             text,
             self.limits
                 .imports
@@ -244,7 +433,7 @@ mod tests {
             if path == Path::new("/vault/escape") {
                 return Ok("/outside/secret".into());
             }
-            Ok(path.into())
+            normalize(path)
         }
         fn read(&self, path: &Path, max: usize) -> Result<String, Failure> {
             self.reads.borrow_mut().push(path.into());
@@ -328,5 +517,120 @@ mod tests {
             Err(Failure::Budget)
         );
         assert_eq!(nodes.len(), 2);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod rooted_tests {
+    use super::*;
+    use std::{
+        fs,
+        os::unix::fs::symlink,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "okilum-imports-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::create_dir(path.join("vault")).unwrap();
+            fs::create_dir(path.join("outside")).unwrap();
+            Self(path)
+        }
+        fn root(&self) -> PathBuf {
+            self.0.join("vault")
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn real_rooted_reads_are_bounded_lossless_and_regular_only() {
+        let f = Fixture::new();
+        let root = f.root();
+        fs::write(root.join("AGENTS.md"), "é\r\n").unwrap();
+        fs::write(root.join("invalid"), [0xff]).unwrap();
+        let store = RootedSource::new(&root).unwrap();
+        let path = store.canonicalize(&root.join("AGENTS.md")).unwrap();
+        assert_eq!(store.read(&path, 4).unwrap(), "é\r\n");
+        assert_eq!(store.read(&path, 3), Err(Failure::Budget));
+        assert_eq!(
+            store.read(&root.join("invalid"), 10),
+            Err(Failure::Unreadable)
+        );
+        assert_eq!(store.read(store.root(), 10), Err(Failure::InvalidPath));
+        assert_eq!(
+            store.canonicalize(&root.join("missing")),
+            Err(Failure::Missing)
+        );
+        assert_eq!(
+            store.read(&f.0.join("outside/secret"), 10),
+            Err(Failure::OutsideRoot)
+        );
+    }
+
+    #[test]
+    fn symlinks_resolve_inside_root_but_cannot_redirect_a_resolved_read() {
+        let f = Fixture::new();
+        let root = f.root();
+        fs::create_dir_all(root.join("real/deep")).unwrap();
+        fs::write(root.join("AGENTS.md"), "@alias/../target").unwrap();
+        fs::write(root.join("target"), "wrong lexical target").unwrap();
+        fs::write(root.join("real/target"), "correct target").unwrap();
+        fs::write(f.0.join("outside/secret"), "must never be imported").unwrap();
+        symlink("real/deep", root.join("alias")).unwrap();
+        symlink(f.0.join("outside"), root.join("escape")).unwrap();
+        let store = RootedSource::new(&root).unwrap();
+        let target = resolve(
+            &store,
+            store.root(),
+            &root.join("AGENTS.md"),
+            "alias/../target",
+        )
+        .unwrap();
+        assert_eq!(store.read(&target, 100).unwrap(), "correct target");
+        assert_eq!(
+            resolve(
+                &store,
+                store.root(),
+                &root.join("AGENTS.md"),
+                "escape/secret"
+            ),
+            Err(Failure::OutsideRoot)
+        );
+        fs::remove_file(&target).unwrap();
+        symlink(f.0.join("outside/secret"), &target).unwrap();
+        assert_eq!(store.read(&target, 100), Err(Failure::Unreadable));
+        // Replacing an ancestor after resolution is rejected as well.
+        fs::rename(root.join("real"), root.join("old-real")).unwrap();
+        symlink(f.0.join("outside"), root.join("real")).unwrap();
+        assert!(store.read(&target, 100).is_err());
+    }
+
+    #[test]
+    fn replaced_root_requires_a_new_reader() {
+        let f = Fixture::new();
+        let root = f.root();
+        fs::write(root.join("AGENTS.md"), "old").unwrap();
+        let store = RootedSource::new(&root).unwrap();
+        fs::rename(&root, f.0.join("old-vault")).unwrap();
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("AGENTS.md"), "replacement").unwrap();
+        assert_eq!(
+            store.canonicalize(&root.join("AGENTS.md")),
+            Err(Failure::Changed)
+        );
+        assert_eq!(
+            store.read(&root.join("AGENTS.md"), 100),
+            Err(Failure::Changed)
+        );
     }
 }
