@@ -127,8 +127,8 @@ fn files_and_notes_shortcut_restore_the_global_tree_after_project_switches(
     });
     assert!(visual.debug_bounds("sidebar-tree-body").is_some());
     assert!(
-        visual.debug_bounds("sidebar-header-actions").is_some(),
-        "normal file actions return"
+        visual.debug_bounds("sidebar-header").is_some(),
+        "the normal Files header returns; creation below exercises its file operations"
     );
     assert!(visual.debug_bounds("reader-files").is_none());
     let project = Project::read(&vault.join("Work/App")).unwrap();
