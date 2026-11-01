@@ -1,0 +1,11 @@
+{
+  "content": "Bundled offline Sync Help; written first-connection guide and separate existing-pair v6 demo",
+  "source": "User-supplied Sync Help v1 and v6 source bundles, 2026-11-02",
+  "media_scope": "Existing pair only; not first-connection recording or Oleg acceptance; labelled 6.3 second wait cut",
+  "files": {
+    "assets/befeast.svg": "3e95046a4841f0f474bf7631f2e81b209adbc100f337a1007e6a12440ae64c23",
+    "assets/poster-v6.png": "3c874c4991dd89280df5295bde2d616b87278193c689dcafffe52a75058f6179",
+    "assets/sync-settings.png": "e0fbbb1cd93433c0c49b2e80414f5d54e223b4fa13f5e9192d067c727b35c6e1",
+    "assets/sync-v6.mp4": "15e44e0b944fcee95d3b0012e8f84457fe794dfa68695f7bcacf82de6780b20c"
+  }
+}
