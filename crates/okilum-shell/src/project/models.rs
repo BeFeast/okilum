@@ -2,6 +2,8 @@ use super::*;
 use gpui_component::popover::Popover;
 use okilum_t3::{models::Target, ModelSelection};
 
+#[cfg(target_os = "linux")]
+pub(super) mod catalog;
 #[cfg(test)]
 mod tests;
 
@@ -15,6 +17,101 @@ pub(super) struct PickerUi {
 }
 
 impl ProjectView {
+    #[cfg(target_os = "linux")]
+    pub(super) fn receive_live_model(&mut self, metadata: &okilum_t3::projection::Metadata) {
+        if self
+            .chat
+            .as_ref()
+            .is_none_or(|chat| chat.thread_id != metadata.thread_id)
+        {
+            return;
+        }
+        let old = self.native.current_selection(&metadata.thread_id);
+        if old == metadata.model_selection.as_ref()
+            && self.native.current_model(&metadata.thread_id) == Some(metadata.model.as_str())
+        {
+            return;
+        }
+        self.native.model_revision = self.native.model_revision.wrapping_add(1);
+        let Some(snapshot) = self
+            .models
+            .as_mut()
+            .filter(|snapshot| snapshot.target.thread_id == metadata.thread_id)
+        else {
+            return;
+        };
+        let Some(selection) = &metadata.model_selection else {
+            self.models = None;
+            self.model_ui.provider = None;
+            return;
+        };
+        if self.model_ui.provider.as_deref()
+            == Some(&snapshot.configuration.model_selection.instance_id)
+        {
+            self.model_ui.provider = Some(selection.instance_id.clone());
+        }
+        snapshot.configuration.model_selection = selection.clone();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn reconcile_model_read(
+        &self,
+        snapshot: &mut okilum_t3::models::Snapshot,
+        requested_revision: u64,
+    ) {
+        // A late catalog/readback cannot overwrite newer subscription metadata,
+        // including A→B→A changes and option-only changes of the same model.
+        if self.native.model_revision != requested_revision {
+            if let Some(selection) = self.native.current_selection(&snapshot.target.thread_id) {
+                snapshot.configuration.model_selection = selection.clone();
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn ensure_native_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.native.catalog.is_some() {
+            return;
+        }
+        let Some(client) = self.native.model_client() else {
+            return;
+        };
+        let catalog = catalog::Catalog::acquire(client, cx);
+        self.native.catalog_observer = Some(cx.observe(&catalog, |this, _, cx| {
+            this.sync_native_models(cx);
+            cx.notify();
+        }));
+        self.native.catalog = Some(catalog);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn sync_native_models(&mut self, cx: &App) {
+        let Some(target) = self.manager_model_target() else {
+            return;
+        };
+        let Some(configuration) = self.native.configuration(&target.thread_id) else {
+            return;
+        };
+        let Some(catalog) = &self.native.catalog else {
+            return;
+        };
+        let catalog = catalog.read(cx);
+        if !self.model_busy {
+            self.model_error = catalog.error.clone();
+        }
+        if let Some(data) = &catalog.data {
+            self.models = Some(okilum_t3::models::Snapshot {
+                target: target.clone(),
+                configuration: configuration.clone(),
+                catalog: okilum_t3::Capabilities {
+                    runtime_mode: configuration.runtime_mode,
+                    providers: data.providers.clone(),
+                },
+            });
+            self.model_target = Some(target);
+        }
+    }
+
     fn can_read_models(&self) -> bool {
         #[cfg(target_os = "linux")]
         if let Some(client) = self.native.model_client() {
@@ -123,19 +220,27 @@ impl ProjectView {
             });
         self.model_open = true;
         self.settle_model_layout(true, window, cx);
-        if !self.model_busy {
-            self.model_candidate = None;
-            self.model_request(None, window, cx);
-        }
+        self.model_candidate = None;
+        #[cfg(target_os = "linux")]
+        self.sync_native_models(cx);
         cx.notify();
     }
 
-    fn model_request(
+    pub(super) fn model_request(
         &mut self,
         selection: Option<ModelSelection>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(target_os = "linux")]
+        if selection.is_none() && self.native.active() {
+            if let Some(catalog) = &self.native.catalog {
+                catalog.update(cx, |catalog, cx| catalog.refresh(cx));
+            }
+            self.sync_native_models(cx);
+            cx.notify();
+            return;
+        }
         if self.model_busy
             || self.busy
             || (if selection.is_some() {
@@ -154,6 +259,15 @@ impl ProjectView {
         let native = self.native.model_client();
         let generation = self.generation;
         let applying = selection.is_some();
+        #[cfg(target_os = "linux")]
+        let requested_revision = self.native.model_revision;
+        #[cfg(target_os = "linux")]
+        let requested_connection = self.native.connection_epoch;
+        #[cfg(target_os = "linux")]
+        let requested_scope = self
+            .native
+            .model_client()
+            .map(|client| client.catalog_scope());
         self.model_busy = true;
         self.model_error = None;
         cx.spawn_in(window, async move |this, cx| {
@@ -181,12 +295,20 @@ impl ProjectView {
                 .await;
             let (result, observed) = result;
             let _ = this.update_in(cx, |this, window, cx| {
+                #[cfg(target_os = "linux")]
+                if requested_connection != this.native.connection_epoch || requested_scope != this.native.model_client().map(|client| client.catalog_scope()) { return; }
                 if this.generation == generation
                     && this.model_target.as_ref() == Some(&requested_target)
                 {
                     this.model_busy = false;
                     match result {
                         Ok(snapshot) => {
+                            #[cfg(target_os = "linux")]
+                            let snapshot = {
+                                let mut snapshot = snapshot;
+                                this.reconcile_model_read(&mut snapshot, requested_revision);
+                                snapshot
+                            };
                             if this.model_ui.follow_current || this.model_ui.provider.is_none() {
                                 this.model_ui.provider = Some(snapshot.configuration.model_selection.instance_id.clone());
                             }
@@ -198,6 +320,12 @@ impl ProjectView {
                         }
                         Err(error) => {
                             if let Some(observed) = observed {
+                                #[cfg(target_os = "linux")]
+                                let observed = {
+                                    let mut observed = observed;
+                                    this.reconcile_model_read(&mut observed, requested_revision);
+                                    observed
+                                };
                                 this.model_ui.provider = Some(observed.configuration.model_selection.instance_id.clone());
                                 this.models = Some(observed);
                             }

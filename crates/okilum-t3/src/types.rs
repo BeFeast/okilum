@@ -71,7 +71,7 @@ fn lenient_repository<'de, D: serde::Deserializer<'de>>(
 
 /// T3's canonical model selection: a provider instance, a model of that
 /// instance, and option selections keyed by the catalog's descriptor ids.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelSelection {
     pub instance_id: String,
@@ -80,7 +80,7 @@ pub struct ModelSelection {
     pub options: Vec<ModelOption>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelOption {
     pub id: String,
     pub value: Value,

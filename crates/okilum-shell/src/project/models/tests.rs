@@ -257,3 +257,87 @@ fn disconnect_clears_model_loading_and_reconnect_can_load_again(cx: &mut TestApp
         "opening models must not configure a work thread"
     );
 }
+
+#[gpui::test]
+#[cfg(target_os = "linux")]
+fn live_instance_and_effort_changes_replace_cached_current_without_refresh(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(super::super::fixture::Fake::default());
+    *gateway.model_catalog.lock().unwrap() = Some(serde_json::from_value(serde_json::json!({"runtimeMode":"full-access","providers":[
+        {"providerInstanceId":"seat-a","driverKind":"claudeAgent","displayName":"Work","models":[{"id":"shared","label":"Work Opus"}]},
+        {"providerInstanceId":"seat-b","driverKind":"claudeAgent","displayName":"Personal","models":[{"id":"shared","label":"Personal Opus"}]}
+    ]})).unwrap());
+    let selection = |seat: &str, effort: &str| -> ModelSelection {
+        serde_json::from_value(serde_json::json!({"instanceId":seat,"model":"shared","options":[{"id":"effort","value":effort}]})).unwrap()
+    };
+    *gateway.model_current.lock().unwrap() = Some(selection("seat-a", "high"));
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            super::super::fixture::view(temp.path().to_owned(), gateway.clone(), window, cx)
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<ProjectView>().unwrap()
+    });
+    let trigger = visual.debug_bounds("project-manager-model").unwrap();
+    visual.simulate_click(trigger.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-model-current-0").is_some());
+    let original = view.read_with(visual, |view, _| view.models.clone().unwrap());
+    let thread = original.target.thread_id.clone();
+    let metadata = |seat: &str, effort: &str| okilum_t3::projection::Metadata {
+        thread_id: thread.clone(),
+        model: "shared".into(),
+        model_selection: Some(selection(seat, effort)),
+        title: "Same thread".into(),
+        ..Default::default()
+    };
+    view.update(visual, |view, cx| {
+        let initial = metadata("seat-a", "high");
+        view.receive_live_model(&initial);
+        view.native.retain_metadata(initial);
+        cx.notify();
+    });
+    let requested_revision = view.read_with(visual, |view, _| view.native.model_revision);
+    for (seat, effort) in [("seat-b", "high"), ("seat-b", "max"), ("seat-a", "high")] {
+        view.update(visual, |view, cx| {
+            let next = metadata(seat, effort);
+            view.receive_live_model(&next);
+            view.native.retain_metadata(next);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert_eq!(
+                view.models.as_ref().unwrap().configuration.model_selection,
+                selection(seat, effort)
+            );
+            assert_eq!(view.model_ui.provider.as_deref(), Some(seat));
+            assert!(view.native.current_selection("some-other-thread").is_none());
+        });
+        assert!(
+            visual.debug_bounds("project-model-current-0").is_some(),
+            "confirmed current remains checked with non-empty options and same-driver duplicate slugs"
+        );
+    }
+    view.read_with(visual, |view, _| {
+        let mut slow_response = original.clone();
+        slow_response.configuration.model_selection = selection("seat-b", "max");
+        view.reconcile_model_read(&mut slow_response, requested_revision);
+        assert_eq!(
+            slow_response.configuration.model_selection,
+            selection("seat-a", "high"),
+            "A→B→A subscription changes still invalidate an earlier read"
+        );
+    });
+    assert!(
+        gateway.model_writes.lock().unwrap().is_empty(),
+        "metadata/readback reconciliation must never configure a thread"
+    );
+    assert!(gateway.sends.lock().unwrap().is_empty());
+}

@@ -33,8 +33,21 @@ impl ProjectView {
                     .child(Input::new(search).w_full().aria_label("Search models")),
             );
         }
-        if self.model_busy {
-            panel = panel.child("Loading…");
+        #[cfg(target_os = "linux")]
+        let catalog_loading = self.native.active()
+            && self
+                .native
+                .catalog
+                .as_ref()
+                .is_none_or(|catalog| catalog.read(cx).loading);
+        #[cfg(not(target_os = "linux"))]
+        let catalog_loading = false;
+        if self.model_busy || catalog_loading {
+            panel = panel.child(if self.models.is_some() {
+                "Updating models…"
+            } else {
+                "Loading models…"
+            });
         }
         if let Some(error) = &self.model_error {
             panel = panel.child(

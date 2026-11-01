@@ -34,8 +34,12 @@ pub struct TurnRow {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Metadata {
+    pub thread_id: String,
     pub title: String,
     pub model: String,
+    pub model_selection: Option<crate::ModelSelection>,
+    pub runtime_mode: Option<String>,
+    pub interaction_mode: Option<String>,
     pub deleted: bool,
     pub history_cursor: Option<String>,
     pub has_more_history: bool,
@@ -234,11 +238,22 @@ impl Projection {
                     let mut next = Self::new(&self.thread, &self.project);
                     next.check_thread(&projection["thread"])?;
                     next.metadata = Metadata {
+                        thread_id: self.thread.clone(),
                         title: projection["thread"]["title"].as_str().unwrap_or("").into(),
                         model: projection["thread"]["modelSelection"]["model"]
                             .as_str()
                             .unwrap_or("")
                             .into(),
+                        model_selection: serde_json::from_value(
+                            projection["thread"]["modelSelection"].clone(),
+                        )
+                        .ok(),
+                        runtime_mode: projection["thread"]["runtimeMode"]
+                            .as_str()
+                            .map(str::to_owned),
+                        interaction_mode: projection["thread"]["interactionMode"]
+                            .as_str()
+                            .map(str::to_owned),
                         history_cursor: history_cursor.clone(),
                         has_more_history: *has_more_history,
                         latest_local_turn_ordinal: *latest_local_turn_ordinal,
@@ -329,6 +344,8 @@ impl Projection {
                             | "provider-session.updated"
                             | "thread.deleted"
                             | "thread.metadata-updated"
+                            | "thread.model-selection-updated"
+                            | "thread.provider-switched"
                             | "thread.archived"
                             | "thread.unarchived"
                             | "thread.settled"
@@ -419,7 +436,23 @@ impl Projection {
                         self.metadata_dirty = true;
                     }
                 }
+                for (field, current) in [
+                    ("runtimeMode", &mut self.metadata.runtime_mode),
+                    ("interactionMode", &mut self.metadata.interaction_mode),
+                ] {
+                    if let Some(value) = payload[field].as_str() {
+                        if current.as_deref() != Some(value) {
+                            *current = Some(value.into());
+                            self.metadata_dirty = true;
+                        }
+                    }
+                }
                 if let Some(model) = payload["modelSelection"]["model"].as_str() {
+                    let selection = serde_json::from_value(payload["modelSelection"].clone()).ok();
+                    if self.metadata.model_selection != selection {
+                        self.metadata.model_selection = selection;
+                        self.metadata_dirty = true;
+                    }
                     if self.metadata.model != model {
                         self.metadata.model = model.into();
                         self.metadata_dirty = true;

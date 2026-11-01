@@ -21,6 +21,7 @@ pub mod thread_create;
 pub mod turn_item;
 pub use manager::{ManagerThread, ManagerThreadDetails};
 pub mod shell;
+pub mod model_catalog;
 
 #[cfg(test)]
 mod tests;
@@ -29,6 +30,7 @@ use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tungstenite::{stream::MaybeTlsStream, Message, WebSocket};
 
 use crate::Environment;
@@ -72,6 +74,20 @@ impl std::fmt::Display for StreamError {
 impl std::error::Error for StreamError {}
 pub type StreamResult<T> = Result<T, StreamError>;
 
+// A transport error may carry a URL with a ticket or an HTTP body with a
+// credential. Diagnostics report only a static local phase and timeout flag.
+fn transport_failure(phase: &'static str, timeout: bool) -> StreamError {
+    eprintln!("Native T3 transport failed: phase={phase}; timeout={timeout}");
+    StreamError::Unreachable
+}
+
+fn io_timeout(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    )
+}
+
 /// Belongs to a retained projection, not a durable delivery/replay ledger.
 /// Discard it when discarding that projection. Its private fields prevent a
 /// cursor from being constructed from an uncommitted or unrelated snapshot.
@@ -101,6 +117,12 @@ impl NativeClient {
     /// Immutable server origin bound to this native credential/client.
     pub fn origin(&self) -> String {
         self.environment.origin()
+    }
+
+    /// Memory-only authenticated catalog scope. The serialized token includes
+    /// the normalized origin; the key never exposes or persists the bearer.
+    pub fn catalog_scope(&self) -> [u8; 32] {
+        Sha256::digest(self.token.to_secret()).into()
     }
 
     pub fn history(
@@ -293,7 +315,7 @@ impl NativeClient {
         }
         let addresses = (host.as_str(), url.port_or_known_default().unwrap_or(80))
             .to_socket_addrs()
-            .map_err(|_| StreamError::Unreachable)?;
+            .map_err(|_| transport_failure("DNS resolution", false))?;
         let deadline = Instant::now() + self.timeout;
         let mut connected = None;
         for address in addresses {
@@ -308,14 +330,18 @@ impl NativeClient {
                 break;
             }
         }
-        let stream = connected.ok_or(StreamError::Unreachable)?;
+        let stream = connected.ok_or_else(|| {
+            transport_failure("TCP connection", Instant::now() >= deadline)
+        })?;
         stream
             .set_read_timeout(Some(self.timeout))
-            .map_err(|_| StreamError::Unreachable)?;
+            .map_err(|_| transport_failure("socket read configuration", false))?;
         stream
             .set_write_timeout(Some(self.timeout))
-            .map_err(|_| StreamError::Unreachable)?;
-        let cancel = stream.try_clone().map_err(|_| StreamError::Unreachable)?;
+            .map_err(|_| transport_failure("socket write configuration", false))?;
+        let cancel = stream
+            .try_clone()
+            .map_err(|_| transport_failure("socket cancellation handle", false))?;
         if !self.access.allowed() {
             return Err(StreamError::Closed);
         }
@@ -340,7 +366,13 @@ impl NativeClient {
                     tungstenite::HandshakeError::Failure(tungstenite::Error::Http(response)) => {
                         StreamError::Http(response.status().as_u16())
                     }
-                    _ => StreamError::Unreachable,
+                    tungstenite::HandshakeError::Failure(tungstenite::Error::Tls(_)) => {
+                        transport_failure("TLS handshake", false)
+                    }
+                    tungstenite::HandshakeError::Failure(tungstenite::Error::Io(error)) => {
+                        transport_failure("TLS/WebSocket upgrade", io_timeout(&error))
+                    }
+                    _ => transport_failure("WebSocket upgrade", false),
                 },
             )?;
         Ok((socket, cancel))

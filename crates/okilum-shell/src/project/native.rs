@@ -2,7 +2,7 @@
 //! and cursor are paired under a mutex, including during concurrent history loads.
 use super::*;
 pub(super) mod actions;
-mod recovery;
+pub(super) mod recovery;
 mod recovery_state;
 use okilum_t3::{
     projection::{Metadata, Projection},
@@ -31,7 +31,7 @@ pub(super) struct Native {
     history_error: Option<String>,
     failure: Option<ConnectionFailure>,
     phase: ConnectionPhase,
-    connection_epoch: u64,
+    pub(super) connection_epoch: u64,
     ever_ready: bool,
     stream_ready: bool,
     expires_at: Option<u64>,
@@ -42,6 +42,9 @@ pub(super) struct Native {
     history_busy: bool,
     history_epoch: u64,
     metadata: Metadata,
+    pub(super) model_revision: u64,
+    pub(super) catalog: Option<Entity<models::catalog::Catalog>>,
+    pub(super) catalog_observer: Option<Subscription>,
 }
 impl Native {
     #[cfg(test)]
@@ -76,6 +79,9 @@ impl Native {
             history_busy: false,
             history_epoch: 0,
             metadata: Metadata::default(),
+            model_revision: 0,
+            catalog: None,
+            catalog_observer: None,
         }
     }
     pub(super) fn stream_error_is_clear(&self) -> bool {
@@ -96,8 +102,25 @@ impl Native {
     pub(super) fn model_client(&self) -> Option<Arc<NativeClient>> {
         self.client.clone()
     }
-    pub(super) fn current_model(&self, _: &str) -> Option<&str> {
-        (!self.metadata.model.is_empty()).then_some(self.metadata.model.as_str())
+    pub(super) fn current_model(&self, thread: &str) -> Option<&str> {
+        (self.metadata.thread_id == thread && !self.metadata.model.is_empty())
+            .then_some(self.metadata.model.as_str())
+    }
+    pub(super) fn current_selection(&self, thread: &str) -> Option<&okilum_t3::ModelSelection> {
+        (self.metadata.thread_id == thread)
+            .then_some(self.metadata.model_selection.as_ref())
+            .flatten()
+    }
+    pub(super) fn configuration(&self, thread: &str) -> Option<okilum_t3::ThreadConfiguration> {
+        Some(okilum_t3::ThreadConfiguration {
+            thread_id: thread.into(),
+            model_selection: self.current_selection(thread)?.clone(),
+            runtime_mode: self.metadata.runtime_mode.clone()?,
+            interaction_mode: self.metadata.interaction_mode.clone()?,
+        })
+    }
+    pub(super) fn retain_metadata(&mut self, metadata: Metadata) {
+        self.metadata = metadata;
     }
     pub(super) fn title(&self) -> &str {
         &self.metadata.title
@@ -130,6 +153,8 @@ impl Native {
     }
     pub(super) fn pause(&mut self) {
         self.stream_ready = false;
+        self.catalog_observer.take();
+        self.catalog.take();
         // This epoch owns credential setup as well as the live worker. A stale
         // completion cannot clear a newer attempt's busy flag.
         self.busy = false;
@@ -474,6 +499,13 @@ impl ProjectView {
             r.epoch += 1;
             r.epoch
         };
+        if self.model_busy {
+            self.model_busy = false;
+            self.model_error = Some(
+                "The connection changed before the model change was confirmed. No retry was sent."
+                    .into(),
+            );
+        }
         self.native.connection_epoch = self.native.connection_epoch.wrapping_add(1);
         self.native.phase = if self.native.ever_ready {
             ConnectionPhase::Reconnecting
@@ -511,11 +543,14 @@ impl ProjectView {
                         Ok(stream) => {
                             let cancel = stream.cancellation().ok();
                             if !this
-                                .update_in(cx, |this, _, _| {
+                                .update_in(cx, |this, _, cx| {
                                     if !source.current(this) {
                                         return false;
                                     }
                                     this.native.cancel = cancel;
+                                    // The ticket/upgrade authenticated this native
+                                    // connection. Warm config alongside history.
+                                    this.ensure_native_catalog(cx);
                                     true
                                 })
                                 .unwrap_or(false)
@@ -658,17 +693,26 @@ impl ProjectView {
                         let mut notify = controls_changed
                             || this.native.failure != failure
                             || this.native.stream_ready != ready;
+                        let was_ready = this.native.stream_ready;
                         this.native.stream_ready = ready;
                         if let Some(failure) = failure {
                             this.native_failed(failure.cause, failure.context, window, cx);
                         } else if ready {
+                            this.ensure_native_catalog(cx);
+                            if !was_ready && this.native.ever_ready {
+                                if let Some(catalog) = &this.native.catalog {
+                                    catalog.update(cx, |catalog, cx| catalog.refresh(cx));
+                                }
+                            }
                             this.native.failure = None;
                             this.native.phase = ConnectionPhase::Connected;
                             this.native.ever_ready = true;
                         }
                         if let Some(metadata) = metadata {
                             notify |= this.native.metadata != metadata;
-                            this.native.metadata = metadata;
+                            this.receive_live_model(&metadata);
+                            this.native.retain_metadata(metadata);
+                            this.sync_native_models(cx);
                         }
                         if notify {
                             cx.notify();
@@ -752,7 +796,9 @@ impl ProjectView {
                         let mut r = retained.lock().unwrap();
                         let changes = r.model.take_changes();
                         if let Some(metadata) = &changes.metadata {
-                            this.native.metadata = metadata.clone();
+                            this.receive_live_model(metadata);
+                            this.native.retain_metadata(metadata.clone());
+                            this.sync_native_models(cx);
                         }
                         this.feed
                             .update(cx, |feed, cx| feed.apply_native(changes, &this.records, cx));
@@ -877,7 +923,7 @@ fn terminal(error: &StreamError) -> bool {
     !recovery_state::is_transient(error)
 }
 
-fn delay(attempt: u32) -> Duration {
+pub(super) fn delay(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.saturating_sub(1).min(4)).min(15))
 }
 #[cfg(test)]

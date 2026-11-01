@@ -58,8 +58,20 @@ impl NativeClient {
         };
         rpc.send(json!({"_tag":"Request","id":"1","tag":method,"payload":payload,"headers":[]}))?;
         let deadline = Instant::now() + self.timeout;
-        while Instant::now() < deadline {
-            let value: Value = match rpc.socket.read().map_err(|_| StreamError::Closed)? {
+        loop {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(transport_failure("Manager RPC response deadline", true));
+            };
+            // Keepalives must not reset the bounded operation's deadline.
+            rpc.cancel
+                .set_read_timeout(Some(remaining))
+                .map_err(|_| transport_failure("Manager RPC read deadline", false))?;
+            let value: Value = match rpc.socket.read().map_err(|error| match error {
+                tungstenite::Error::Io(error) if io_timeout(&error) => {
+                    transport_failure("Manager RPC response read", true)
+                }
+                _ => StreamError::Closed,
+            })? {
                 Message::Text(text) => serde_json::from_str(&text)
                     .map_err(|_| StreamError::Protocol("invalid Manager response"))?,
                 Message::Ping(_) => {
@@ -100,7 +112,6 @@ impl NativeClient {
                 _ => return Err(StreamError::Protocol("unexpected Manager response")),
             }
         }
-        Err(StreamError::Unreachable)
     }
 
     pub fn project_threads(&self, project: &str) -> StreamResult<Vec<ManagerThread>> {
