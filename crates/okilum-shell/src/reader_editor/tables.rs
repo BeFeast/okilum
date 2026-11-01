@@ -16,6 +16,7 @@ use std::ops::Range;
 gpui::actions!(
     okilum,
     [
+        TableEditGrid,
         TableInsertRow,
         TableDeleteRow,
         TableInsertColumn,
@@ -32,6 +33,8 @@ pub(super) fn menu() -> Menu {
         name: "Table".into(),
         disabled: false,
         items: vec![
+            MenuItem::action("Edit table as grid", TableEditGrid),
+            MenuItem::separator(),
             MenuItem::action("Insert row below", TableInsertRow),
             MenuItem::action("Delete row", TableDeleteRow),
             MenuItem::action("Insert column after", TableInsertColumn),
@@ -80,6 +83,84 @@ fn change(text: &str, selection: Range<usize>, command: Command) -> Option<ListE
 }
 
 impl Reader {
+    fn open_table_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ime_allows(Trigger::Tab, cx) {
+            return;
+        }
+        let Some(input) = self.list_input(window, cx) else {
+            return;
+        };
+        let state = input.read(cx);
+        let text = state.value().to_string();
+        let selection = state.selected_range();
+        let stamp = state.source_stamp();
+        if text.len() > source_classifier::MAX_BYTES {
+            return;
+        }
+        let snapshot = Snapshot::new("open-table-grid", 0, text.as_str());
+        let classified = source_classifier::classify(&snapshot);
+        let range = classified
+            .decorations_for(&snapshot)
+            .ok()
+            .and_then(|markers| {
+                markers
+                    .iter()
+                    .find(|marker| {
+                        marker.kind == Kind::Table
+                            && marker.range.start <= selection.start
+                            && selection.end <= marker.range.end
+                    })
+                    .map(|marker| marker.range.clone())
+            });
+        let Some(range) = range else {
+            reader_toast::error(
+                "Place the caret in a regular Markdown table to edit its cells.",
+                window,
+                cx,
+            );
+            return;
+        };
+        let Some(table) = model::Table::parse(&text[range.clone()]) else {
+            reader_toast::error(
+                "This table needs exact Source editing before it can open as a grid.",
+                window,
+                cx,
+            );
+            return;
+        };
+        let target = table
+            .ranges
+            .iter()
+            .enumerate()
+            .find_map(|(r, row)| {
+                row.iter()
+                    .position(|cell| {
+                        range.start + cell.start <= selection.start
+                            && selection.start <= range.start + cell.end
+                    })
+                    .map(|c| (r, c))
+            })
+            .unwrap_or((0, 0));
+        let grid = self.editing.as_ref().unwrap().table_grid.clone();
+        self.set_live_preview(true, window, cx);
+        // Run with App after the Reader action borrow ends. Grid admission
+        // reads the current Reader owner and rechecks the captured revision.
+        window.on_next_frame(move |window, cx| {
+            grid.update(cx, |grid, cx| {
+                grid.open_cell(
+                    range.clone(),
+                    stamp,
+                    &text[range],
+                    target.0,
+                    target.1,
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.stop_propagation();
+    }
+
     fn table_command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
         // Completion, IME, focus and read-only checks match the note commands.
         if !self.ime_allows(Trigger::Tab, cx) {
@@ -118,6 +199,9 @@ impl Reader {
 
     pub(super) fn table_actions(&self, column: Div, cx: &mut Context<Self>) -> Div {
         column
+            .on_action(
+                cx.listener(|this, _: &TableEditGrid, window, cx| this.open_table_grid(window, cx)),
+            )
             // Only actual Tab, not the Cmd/Ctrl+] indentation action.
             .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
                 this.table_command(Command::Next, window, cx)

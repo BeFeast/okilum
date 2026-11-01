@@ -11,6 +11,7 @@ mod lists;
 mod live_preview;
 mod math_preview;
 mod paste_jobs;
+mod tables;
 mod writing_modes;
 use super::*;
 use crate::platform::labels::Os;
@@ -78,6 +79,8 @@ pub(super) struct Editing {
     live_preview: live_preview::LivePreview,
     /// The card under an inline formula holding the caret (#1645).
     math_preview: Entity<math_preview::MathPreview>,
+    /// One persistent cell grid per editor; cell changes use the source Undo path.
+    table_grid: Entity<tables::TableGrid>,
     input: Entity<EditorState>,
     conflict: Option<String>,
     conflict_detected: bool,
@@ -140,6 +143,9 @@ const DRAFT_WRITE_NOTICE: &str =
     "The recovery copy couldn’t be saved. Keep this window open and retry Save or copy your draft.";
 
 fn file_access_notice(error: &anyhow::Error) -> &'static str {
+    if let Some(notice) = crate::reader_file_access_notice::publication_notice(error) {
+        return notice;
+    }
     if error.is::<okilum_core::file_editor::PublishedSaveNeedsAttention>() {
         return "The save was published, but recovery changed during verification. Your draft is preserved. Inspect the file before saving again.";
     }
@@ -169,6 +175,50 @@ fn file_access_notice(error: &anyhow::Error) -> &'static str {
         MOVED_OR_DELETED_NOTICE
     } else {
         "Okilum couldn’t access this file. Your edits are still here. Copy them or close, keeping a draft."
+    }
+}
+
+/// A revision of the exact saved UTF-8 source, never a native editor generation.
+/// Only AGENTS.md has this receipt; callers publish it after confirmed success.
+fn saved_agents_revision(path: &Path, changed: bool, text: &str) -> Option<(PathBuf, String)> {
+    if !changed || !path.is_absolute() || path.file_name()?.to_str()? != "AGENTS.md" {
+        return None;
+    }
+    use sha2::{Digest, Sha256};
+    Some((
+        path.to_owned(),
+        format!("sha256:{:x}", Sha256::digest(text.as_bytes())),
+    ))
+}
+
+/// FileEditor returns Saved for an already matching file too. Exclude that
+/// no-op before attempting the save; a failed/ambiguous read produces no offer.
+fn pending_agents_revision(store: &FileEditor, changed: bool) -> Option<(PathBuf, String)> {
+    if !changed || store.path().file_name()?.to_str()? != "AGENTS.md" {
+        return None;
+    }
+    let current = store.current().ok()?;
+    saved_agents_revision(store.path(), current != store.text(), store.text())
+}
+
+#[cfg(test)]
+mod saved_agents_revision_tests {
+    use super::saved_agents_revision;
+    use ::core::prelude::v1::test;
+    use std::path::Path;
+
+    #[test]
+    fn receipt_is_exact_source_sha256_and_only_for_a_changed_absolute_agents_file() {
+        let path = std::env::temp_dir().join("AGENTS.md");
+        let (absolute_path, revision) = saved_agents_revision(&path, true, "abc").unwrap();
+        assert_eq!(absolute_path, path);
+        assert_eq!(
+            revision,
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(saved_agents_revision(&path, false, "abc").is_none());
+        assert!(saved_agents_revision(Path::new("AGENTS.md"), true, "abc").is_none());
+        assert!(saved_agents_revision(&path.with_file_name("note.md"), true, "abc").is_none());
     }
 }
 
@@ -261,6 +311,7 @@ impl Editing {
             store,
             live_preview,
             math_preview,
+            table_grid,
             input,
             conflict,
             conflict_detected,
@@ -288,6 +339,7 @@ impl Editing {
             store,
             live_preview,
             math_preview,
+            table_grid,
             input,
             conflict,
             conflict_detected,
@@ -877,11 +929,15 @@ impl Reader {
         let live_preview =
             live_preview::LivePreview::new(self, cx.entity_id(), &store, &input, !plain_file);
         let reader = cx.entity();
-        let math_preview = cx.new(|cx| math_preview::MathPreview::new(reader, input.clone(), cx));
+        let math_preview =
+            cx.new(|cx| math_preview::MathPreview::new(reader.clone(), input.clone(), cx));
+        let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), cx));
+        let table_watch = cx.observe(&table_grid, |_, _, cx| cx.notify());
         self.editing = Some(Editing {
             store,
             live_preview,
             math_preview,
+            table_grid,
             input: input.clone(),
             conflict: None,
             conflict_detected: false,
@@ -910,6 +966,7 @@ impl Reader {
                 toggled,
                 highlighting,
                 menu_watch,
+                table_watch,
                 pasted,
             ],
         });
@@ -1198,6 +1255,9 @@ impl Reader {
         let source_changed = editing.store.dirty() || editing.store.text() != text;
         let draft = editing.store.set_text(text);
         let protected = draft.is_ok();
+        let rules_revision = protected
+            .then(|| pending_agents_revision(&editing.store, editing.store.dirty()))
+            .flatten();
         let result = draft.and_then(|_| editing.store.save());
         let saved = match result {
             Ok(Save::Saved) => {
@@ -1209,6 +1269,9 @@ impl Reader {
                 editing.conflict_detected = false;
                 editing.save_failed = false;
                 editing.protecting = false;
+                if let Some((absolute_path, saved_revision)) = rules_revision {
+                    self.agents_rules_saved(&absolute_path, &saved_revision, cx);
+                }
                 if source_changed && self.file_preview.is_none() {
                     self.queue_saved_source(cx);
                 }
@@ -1312,14 +1375,26 @@ impl Reader {
         cx.notify();
         let worker = cx.background_executor().spawn(async move {
             let mut copy = copy;
+            let rules_revision = pending_agents_revision(&copy, copy.dirty());
             let result = copy.save();
             // The UI editor takes the stamp, so its next refresh skips the read (#1363).
-            (result, copy.disk_stamp())
+            (result, copy.disk_stamp(), rules_revision)
         });
         cx.spawn(async move |this, cx| {
-            let (result, stamp) = worker.await;
+            let (result, stamp, rules_revision) = worker.await;
             let _ = this.update(cx, |this, cx| {
-                this.autosaved(input_id, saves, text, result, stamp, cx)
+                let accepted = matches!(&result, Ok(Save::Saved))
+                    && this.editing.as_ref().is_some_and(|editing| {
+                        editing.input.entity_id() == input_id
+                            && editing.saves == saves
+                            && editing.autosaving.as_ref() == Some(&text)
+                    });
+                this.autosaved(input_id, saves, text, result, stamp, cx);
+                if accepted {
+                    if let Some((absolute_path, saved_revision)) = rules_revision {
+                        this.agents_rules_saved(&absolute_path, &saved_revision, cx);
+                    }
+                }
             });
         })
         .detach();
@@ -1529,6 +1604,9 @@ impl Reader {
         };
         editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
         editing.protecting = false;
+        let rules_revision = (!reload)
+            .then(|| pending_agents_revision(&editing.store, true))
+            .flatten();
         let result = if reload {
             editing.store.reload().map(|_| Save::Saved)
         } else if let Some(current) = &editing.conflict {
@@ -1536,6 +1614,7 @@ impl Reader {
         } else {
             Ok(Save::Conflict)
         };
+        let changed_rules_saved = matches!(&result, Ok(Save::Saved));
         match result {
             Ok(Save::Saved) => {
                 editing.saved_at = Some(
@@ -1573,6 +1652,11 @@ impl Reader {
             }
         }
         self.editing = Some(editing);
+        if changed_rules_saved {
+            if let Some((absolute_path, saved_revision)) = rules_revision {
+                self.agents_rules_saved(&absolute_path, &saved_revision, cx);
+            }
+        }
         cx.notify();
     }
     fn park_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1687,6 +1771,9 @@ impl Reader {
         // Room below the last line for toasts, focus and typewriter (#1643).
         self.apply_writing_modes(window, cx);
         let editing = self.editing.as_ref().unwrap();
+        editing.table_grid.update(cx, |grid, cx| {
+            grid.sync_presentation(editing.live_preview.enabled, window, cx);
+        });
         let palette = brand::palette(cx);
         let column = v_flex().key_context("ReaderSource").size_full().min_w_0();
         // #1992: Enter, Tab and the comment key in a code block's body, before
@@ -1701,6 +1788,7 @@ impl Reader {
         // #1993: the caret's code block in an external editor.
         let column = self.external_block_actions(column, cx);
         let column = self.format_actions(column, cx);
+        let column = self.table_actions(column, cx);
         self.list_actions(column, cx)
             // #1611: the paste commands beside Cmd+V, and files dropped onto
             // the note, through the same router.
@@ -1832,7 +1920,17 @@ impl Reader {
                     .context_menu({
                         let facts = editing.menu_facts.clone();
                         let markdown = editing.markdown;
-                        move |menu, _, cx| context_menu::editor_menu(menu, &facts, markdown, cx)
+                        move |menu, _, cx| {
+                            let menu = context_menu::editor_menu(menu, &facts, markdown, cx);
+                            if markdown && facts.editable() {
+                                menu.separator().submenu(
+                                    "Table",
+                                    gpui_component::native_menu::NativeMenu::from(tables::menu()),
+                                )
+                            } else {
+                                menu
+                            }
+                        }
                     })
                     .font_family(if editing.live_preview.enabled {
                         reader_fonts::note(cx)
@@ -1880,6 +1978,25 @@ fn live_blocks(
         let Some(this) = reader.upgrade() else {
             return div().into_any_element();
         };
+        let table_range = block.source.start.0..block.source.end.0;
+        let grid = {
+            let reader = this.read(cx);
+            reader
+                .editing
+                .as_ref()
+                .filter(|editing| editing.live_preview.enabled)
+                .map(|editing| {
+                    (
+                        editing.table_grid.clone(),
+                        editing.input.read(cx).source_stamp(),
+                    )
+                })
+        };
+        if let Some((grid, _)) = &grid {
+            if grid.read(cx).active_range(cx).as_ref() == Some(&table_range) {
+                return grid.clone().into_any_element();
+            }
+        }
         let (vault, states, identities, code_source, focused) = {
             let this = this.read(cx);
             (
@@ -1967,8 +2084,34 @@ fn live_blocks(
             let source: Arc<str> = source.into();
             move |cell: gpui_component::text::TableCellPress,
                   event: &gpui::MouseDownEvent,
-                  _: &mut Window,
-                  _: &mut App| {
+                  window: &mut Window,
+                  cx: &mut App| {
+                // A plain cell press opens the revision-bound persistent grid.
+                // Double-click and modified presses retain the existing source hooks.
+                if event.click_count == 1
+                    && !event.modifiers.shift
+                    && !event.modifiers.control
+                    && !event.modifiers.platform
+                    && !event.modifiers.alt
+                {
+                    if let Some((grid, stamp)) = &grid {
+                        let opened = grid.update(cx, |grid, cx| {
+                            grid.open_cell(
+                                table_range.clone(),
+                                *stamp,
+                                &source,
+                                cell.row,
+                                cell.column,
+                                window,
+                                cx,
+                            )
+                        });
+                        if opened {
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
+                }
                 let Some(at) =
                     crate::source_presentation::table_cell_offset(&source, cell.row, cell.column)
                 else {

@@ -229,6 +229,138 @@ impl Table {
     }
 }
 
+/// A lossless cell presentation: GFM pipe/backslash escapes and HTML line
+/// breaks have editable text equivalents. Boundary pairs keep untouched source
+/// spellings (including mixed <br>, <BR/> and <br />) byte for byte.
+struct CellText {
+    text: String,
+    boundaries: Vec<(usize, usize)>,
+    newline: String,
+}
+
+impl CellText {
+    fn read(raw: &str) -> Self {
+        let mut result = Self {
+            text: String::new(),
+            boundaries: vec![(0, 0)],
+            newline: String::new(),
+        };
+        let mut at = 0;
+        let mut ticks = None;
+        while at < raw.len() {
+            let tail = &raw[at..];
+            let mut len = tail.chars().next().unwrap().len_utf8();
+            let mut decoded = None;
+            if tail.starts_with('`') {
+                let run = tail.bytes().take_while(|&b| b == b'`').count();
+                ticks = match ticks {
+                    None => Some(run),
+                    Some(n) if n == run => None,
+                    other => other,
+                };
+                for _ in 0..run {
+                    at += 1;
+                    result.text.push('`');
+                    result.boundaries.push((result.text.len(), at));
+                }
+                continue;
+            }
+            if tail.starts_with('\\') {
+                match tail.as_bytes().get(1) {
+                    Some(b'|') => {
+                        len = 2;
+                        decoded = Some('|');
+                    }
+                    Some(b'\\') if ticks.is_none() => {
+                        len = 2;
+                        decoded = Some('\\');
+                    }
+                    _ => {}
+                }
+            } else if ticks.is_none() {
+                for spelling in ["<br>", "<br/>", "<br />"] {
+                    if tail
+                        .get(..spelling.len())
+                        .is_some_and(|text| text.eq_ignore_ascii_case(spelling))
+                    {
+                        len = spelling.len();
+                        decoded = Some('\n');
+                        if result.newline.is_empty() {
+                            result.newline = tail[..len].to_owned();
+                        }
+                        break;
+                    }
+                }
+            }
+            result
+                .text
+                .push(decoded.unwrap_or_else(|| tail.chars().next().unwrap()));
+            at += len;
+            result.boundaries.push((result.text.len(), at));
+        }
+        if result.newline.is_empty() {
+            result.newline = "<br>".to_owned();
+        }
+        result
+    }
+
+    fn rewrite(raw: &str, value: &str) -> Option<String> {
+        if value.contains(['\r', '\0']) {
+            return None;
+        }
+        let before = Self::read(raw);
+        if before.text == value {
+            return Some(raw.to_owned());
+        }
+        let mut prefix = before
+            .text
+            .chars()
+            .zip(value.chars())
+            .take_while(|(a, b)| a == b)
+            .map(|(c, _)| c.len_utf8())
+            .sum::<usize>();
+        // Include a neighboring backslash run in the replacement so newly
+        // typed pipes cannot turn its parity into a structural delimiter.
+        while prefix > 0 && before.text[..prefix].ends_with('\\') {
+            prefix -= 1;
+        }
+        let suffix = before.text[prefix..]
+            .chars()
+            .rev()
+            .zip(value[prefix..].chars().rev())
+            .take_while(|(a, b)| a == b)
+            .map(|(c, _)| c.len_utf8())
+            .sum::<usize>();
+        let boundary = |at| {
+            before
+                .boundaries
+                .iter()
+                .find(|(display, _)| *display == at)
+                .map(|(_, raw)| *raw)
+        };
+        let start = boundary(prefix)?;
+        let end = boundary(before.text.len() - suffix)?;
+        let mut encoded = String::new();
+        for ch in value[prefix..value.len() - suffix].chars() {
+            match ch {
+                '|' => encoded.push_str(r"\|"),
+                '\\' => encoded.push_str(r"\\"),
+                '\n' => encoded.push_str(&before.newline),
+                _ => encoded.push(ch),
+            }
+        }
+        let mut result = raw.to_owned();
+        result.replace_range(start..end, &encoded);
+        // Refuse an ambiguous escape/code-span join rather than normalizing
+        // unrelated Markdown elsewhere in the cell to make it fit.
+        (Self::read(&result).text == value).then_some(result)
+    }
+}
+
+pub(super) fn cell_text(raw: &str) -> String {
+    CellText::read(raw).text
+}
+
 /// Cell ranges retain the bytes authored during a typing session, including
 /// leading/trailing spaces. Reparsing on every keystroke would mistake those
 /// spaces for original Markdown padding and gradually duplicate them.
@@ -248,6 +380,18 @@ impl CellGrid {
 
     pub(super) fn value(&self, row: usize, column: usize) -> Option<&str> {
         self.source.get(self.ranges.get(row)?.get(column)?.clone())
+    }
+
+    pub(super) fn replace_text(
+        &self,
+        current: &str,
+        row: usize,
+        column: usize,
+        value: &str,
+    ) -> Option<(Self, Change)> {
+        let raw = self.value(row, column)?;
+        let encoded = CellText::rewrite(raw, value)?;
+        self.replace(current, row, column, &encoded)
     }
 
     /// Exact-source guard supplements the caller's document revision guard.
@@ -456,6 +600,58 @@ mod tests {
     }
     fn selected(change: &Change) -> &str {
         &change.source[change.selection.clone()]
+    }
+
+    #[test]
+    fn display_edits_preserve_escaped_pipes_and_mixed_break_spellings() {
+        let source =
+            "  Name | Value\r\n  --- | ---:\r\n  left\\|right<BR/>line<br />end  |  `raw<br>`\r\n";
+        let grid = CellGrid::new(source).unwrap();
+        let display = "left|right\nline\nend";
+        assert_eq!(cell_text(grid.value(1, 0).unwrap()), display);
+        assert_eq!(cell_text(grid.value(1, 1).unwrap()), "`raw<br>`");
+        let (same, unchanged) = grid.replace_text(source, 1, 0, display).unwrap();
+        assert_eq!(
+            unchanged.source, source,
+            "opening and leaving a cell never normalizes its source"
+        );
+        let (_, change) = same
+            .replace_text(source, 1, 0, "left|right\nline!\nend")
+            .unwrap();
+        assert_eq!(change.source, source.replace("line<br />", "line!<br />"));
+        let grid = CellGrid::new(&change.source).unwrap();
+        let (_, change) = grid
+            .replace_text(&change.source, 1, 0, "left|right\nline!\nend\nשלום|😀")
+            .unwrap();
+        assert!(change
+            .source
+            .contains("end<BR/>שלום\\|😀  |  `raw<br>`\r\n"));
+        assert_eq!(
+            change.source.matches('\n').count(),
+            source.matches('\n').count(),
+            "multiline text stays in one GFM source row"
+        );
+    }
+
+    #[test]
+    fn typed_pipes_and_newlines_are_encoded_without_touching_neighbor_source() {
+        let source = "| A | B |\n|---|---|\n| old | other\\|cell |";
+        let grid = CellGrid::new(source).unwrap();
+        let (next, change) = grid.replace_text(source, 1, 0, "one|two\nthree").unwrap();
+        assert_eq!(change.source, source.replace("old", "one\\|two<br>three"));
+        let (_, more) = next
+            .replace_text(&change.source, 1, 0, "one|two\nthree ")
+            .unwrap();
+        assert_eq!(more.source, source.replace("old", "one\\|two<br>three "));
+        assert_eq!(cell_text(r"a\\b\|c"), r"a\b|c");
+        // Existing authored backslashes retain their meaning when a pipe is
+        // appended to the same run rather than becoming an extra column.
+        let source = "| A | B |\n|---|---|\n| slash\\ | neighbor |";
+        let grid = CellGrid::new(source).unwrap();
+        let (_, change) = grid.replace_text(source, 1, 0, "slash\\|end").unwrap();
+        assert_eq!(cell_text(&change.source[change.selection]), "slash\\|end");
+        assert!(grid.replace_text(source, 1, 0, "bad\0text").is_none());
+        assert!(grid.replace_text(source, 1, 0, "bad\r\ntext").is_none());
     }
 
     #[test]
