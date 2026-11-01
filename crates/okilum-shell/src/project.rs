@@ -1522,7 +1522,7 @@ impl ProjectView {
                                 ),
                         ).into_any_element();
                 #[cfg(target_os = "linux")]
-                let view = view.child(self.native.actions.clone());
+                let view = view.when(self.native.actions.read(cx).has_visible_content(cx), |view|view.child(self.native.actions.clone()));
                 #[cfg(target_os = "linux")]
                 let attachments = if self.native.active(){self.render_native_attachment_drafts(cx)}else{self.render_draft_attachments(cx)};
                 #[cfg(target_os = "linux")]
