@@ -1,7 +1,7 @@
 //! Linux composer invalidates its own controls, never the history entity.
 use super::*;
 use crate::project::design;
-use gpui_component::ThemeStyled as _;
+use gpui_component::{button::ButtonCustomVariant, ThemeStyled as _};
 pub(super) mod history;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,6 +10,57 @@ pub(super) enum Mode {
     Queue,
     Steer,
 }
+impl Mode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "Send",
+            Self::Queue => "Queue",
+            Self::Steer => "Steer",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SendPresentation {
+    enabled: bool,
+    background: Hsla,
+    foreground: Hsla,
+    accessible_label: &'static str,
+    tooltip: &'static str,
+}
+
+/// Keep explicit colors at the button instance and glyph: the toolkit's
+/// disabled primary variant otherwise fades its own foreground independently
+/// of an accent-filled ancestor.
+fn send_presentation(mode: Mode, enabled: bool, palette: brand::Palette) -> SendPresentation {
+    let (background, foreground) = if enabled {
+        (palette.accent, palette.on_accent)
+    } else {
+        (palette.surface_raised, palette.text_muted)
+    };
+    let (accessible_label, tooltip) = match mode {
+        Mode::Auto => (
+            "Send message",
+            "Send message (Enter) · New line (Shift+Enter)",
+        ),
+        Mode::Queue => (
+            "Queue message",
+            "Queue after current turn (Enter) · New line (Shift+Enter)",
+        ),
+        Mode::Steer => (
+            "Steer current turn",
+            "Steer current turn (Enter) · New line (Shift+Enter)",
+        ),
+    };
+    SendPresentation {
+        enabled,
+        background,
+        foreground,
+        accessible_label,
+        tooltip,
+    }
+}
+
 pub(super) struct SendRequested;
 impl EventEmitter<SendRequested> for Composer {}
 pub(super) struct HistoryRecalled;
@@ -215,15 +266,15 @@ impl Composer {
             .child(
                 Button::new("project-send-mode")
                     .debug_selector(|| "project-send-mode".into())
-                    .primary()
+                    .ghost()
                     .small()
-                    .h(px(32.))
-                    .w(px(28.))
+                    .size(px(32.))
+                    .p_0()
                     .rounded(px(8.))
-                    .icon(IconName::ChevronDown)
+                    .child(Icon::new(IconName::ChevronDown).size(px(18.)))
                     .selected(self.mode_open)
-                    .accessibility_label("Choose send mode")
-                    .tooltip("Choose send mode")
+                    .accessibility_label(format!("Choose send mode; current: {}", self.mode.name()))
+                    .tooltip(format!("Send mode: {}", self.mode.name()))
                     .disabled(self.busy)
                     .on_click(cx.listener(|this, _, window, cx| {
                         if this.mode_open {
@@ -334,6 +385,14 @@ impl Render for Composer {
                 .ok()
         });
         let palette = brand::palette(cx);
+        let send = send_presentation(
+            self.mode,
+            !self.busy
+                && validation.is_none()
+                && self.enabled
+                && (self.has_attachments || !self.input.read(cx).value().trim().is_empty()),
+            palette,
+        );
         v_flex()
             .id("project-composer")
             .relative()
@@ -380,7 +439,7 @@ impl Render for Composer {
                 div()
                     .w_full()
                     .min_w_0()
-                    .min_h(px(64.))
+                    .min_h(px(32.))
                     .debug_selector(|| "project-composer-input".into())
                     .child(
                         Textarea::new(&self.input)
@@ -407,7 +466,8 @@ impl Render for Composer {
                             .small()
                             .size(px(32.))
                             .rounded(px(8.))
-                            .icon(IconName::Plus)
+                            .p_0()
+                            .child(Icon::new(IconName::Plus).size(px(18.)))
                             .accessibility_label("Attach images or files")
                             .tooltip("Attach images or files")
                             .disabled(!self.can_attach)
@@ -429,39 +489,37 @@ impl Render for Composer {
                         h_flex()
                             .debug_selector(|| "project-send-controls".into())
                             .items_center()
-                            .gap(px(1.))
-                            .rounded(px(8.))
-                            .bg(palette.accent)
+                            .gap(px(4.))
                             .child(
                                 Button::new("project-send")
                                     .debug_selector(|| "project-send".into())
-                                    .primary()
-                                    .small()
-                                    .h(px(32.))
-                                    .rounded(px(8.))
-                                    .icon(IconName::ArrowUp)
-                                    .label(match self.mode {
-                                        Mode::Auto => "Send",
-                                        Mode::Queue => "Queue",
-                                        Mode::Steer => "Steer",
-                                    })
-                                    .accessibility_label(match self.mode {
-                                        Mode::Auto => "Send message",
-                                        Mode::Queue => "Queue message",
-                                        Mode::Steer => "Steer current turn",
-                                    })
-                                    .tooltip(match self.mode {
-                                        Mode::Auto => "Send to manager (Enter)",
-                                        Mode::Queue => "Queue message (Enter)",
-                                        Mode::Steer => "Steer current turn (Enter)",
-                                    })
-                                    .disabled(
-                                        self.busy
-                                            || validation.is_some()
-                                            || !self.enabled
-                                            || (!self.has_attachments
-                                                && self.input.read(cx).value().trim().is_empty()),
+                                    .custom(
+                                        ButtonCustomVariant::new(cx)
+                                            .color(send.background)
+                                            .foreground(send.foreground)
+                                            .hover(send.background)
+                                            .active(send.background),
                                     )
+                                    .small()
+                                    .size(px(32.))
+                                    .p_0()
+                                    .rounded(px(8.))
+                                    // Instance styles are replayed after semantic disabled styles.
+                                    .bg(send.background)
+                                    .text_color(send.foreground)
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "project-send-icon".into())
+                                            .size(px(18.))
+                                            .child(
+                                                Icon::new(IconName::ArrowUp)
+                                                    .size(px(18.))
+                                                    .text_color(send.foreground),
+                                            ),
+                                    )
+                                    .accessibility_label(send.accessible_label)
+                                    .tooltip(send.tooltip)
+                                    .disabled(!send.enabled)
                                     .on_click(cx.listener(|_, _, _, cx| cx.emit(SendRequested))),
                             )
                             .when(self.native, |group| group.child(self.render_send_mode(cx))),
@@ -488,6 +546,160 @@ mod tests {
         cell::{Cell, RefCell},
         rc::Rc,
     };
+
+    fn contrast(a: Hsla, b: Hsla) -> f32 {
+        fn luminance(color: Hsla) -> f32 {
+            let color = gpui::Rgba::from(color);
+            let channel = |value: f32| {
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+        }
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn send_icon_has_nontext_contrast_in_enabled_and_disabled_theme_states() {
+        for theme in brand::ThemeId::ALL {
+            for dark in [false, true] {
+                let palette = brand::theme_palette(theme, dark);
+                let enabled = send_presentation(Mode::Auto, true, palette);
+                let disabled = send_presentation(Mode::Auto, false, palette);
+                assert!(
+                    contrast(enabled.foreground, enabled.background) >= 3.,
+                    "enabled Send icon must have 3:1 contrast: {theme:?}, dark={dark}"
+                );
+                assert!(
+                    contrast(disabled.foreground, disabled.background) >= 3.,
+                    "disabled Send remains readable: {theme:?}, dark={dark}"
+                );
+                assert_ne!(
+                    disabled.background, enabled.background,
+                    "disabled control cannot retain a saturated enabled surface"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn icon_only_send_is_compact_grows_with_text_and_blocks_disabled_dispatch(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        for dark in [false, true] {
+            cx.update(|cx| {
+                gpui_component::Theme::change(
+                    if dark {
+                        gpui_component::ThemeMode::Dark
+                    } else {
+                        gpui_component::ThemeMode::Light
+                    },
+                    None,
+                    cx,
+                );
+                brand::apply_theme(cx);
+            });
+            let sent = Rc::new(Cell::new(0));
+            let observed = sent.clone();
+            let (root, visual) = cx.add_window_view(|window, cx| {
+                let input = cx.new(|cx| {
+                    TextareaState::new(window, cx)
+                        .auto_grow(1, 10)
+                        .submit_on_enter(true)
+                });
+                let composer = cx.new(|cx| {
+                    let mut composer = Composer::new(input, cx);
+                    composer.set_controls(true, false, cx);
+                    composer.set_attachments(false, true, cx);
+                    cx.subscribe(&cx.entity(), move |_, _, _: &SendRequested, _| {
+                        observed.set(observed.get() + 1)
+                    })
+                    .detach();
+                    composer
+                });
+                Root::new(composer, window, cx)
+            });
+            visual.simulate_resize(size(px(360.), px(600.)));
+            visual.run_until_parked();
+            let composer = root.read_with(visual, |root, _| {
+                root.view().clone().downcast::<Composer>().unwrap()
+            });
+            let empty = visual.debug_bounds("project-composer-input").unwrap();
+            let send = visual.debug_bounds("project-send").unwrap();
+            let arrow = visual.debug_bounds("project-send-icon").unwrap();
+            let attach = visual.debug_bounds("project-attach").unwrap();
+            assert!(
+                empty.size.height <= px(48.),
+                "empty composer is a compact single line: {empty:?}"
+            );
+            assert_eq!(
+                send.size,
+                size(px(32.), px(32.)),
+                "primary Send is icon-only, without reserved text width"
+            );
+            assert_eq!(
+                arrow.size,
+                size(px(18.), px(18.)),
+                "arrow uses the shared optical icon size"
+            );
+            assert_eq!(
+                send.center().y,
+                attach.center().y,
+                "attachment and Send share a baseline"
+            );
+            visual.simulate_click(send.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(sent.get(), 0, "empty disabled button cannot dispatch");
+            composer.update_in(visual, |composer, window, cx| {
+                composer.input.update(cx, |input, cx| {
+                    input.set_value("First\nSecond\nThird\nFourth", window, cx);
+                    input.focus(window, cx);
+                });
+                cx.notify();
+            });
+            visual.run_until_parked();
+            let grown = visual.debug_bounds("project-composer-input").unwrap();
+            assert!(
+                grown.size.height > empty.size.height,
+                "actual multiline content grows the input"
+            );
+            let send = visual.debug_bounds("project-send").unwrap();
+            visual.simulate_click(send.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(sent.get(), 1, "enabled icon button dispatches exactly once");
+            composer.update_in(visual, |composer, window, cx| {
+                composer
+                    .input
+                    .update(cx, |input, cx| input.focus(window, cx))
+            });
+            visual.simulate_keystrokes("shift-enter");
+            visual.run_until_parked();
+            assert_eq!(
+                sent.get(),
+                1,
+                "Shift+Enter inserts a newline rather than sending"
+            );
+            composer.read_with(visual, |composer, cx| {
+                assert!(composer.input.read(cx).value().contains('\n'))
+            });
+            composer.update(visual, |composer, cx| composer.set_controls(true, true, cx));
+            visual.run_until_parked();
+            let send = visual.debug_bounds("project-send").unwrap();
+            visual.simulate_click(send.center(), Modifiers::default());
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            assert_eq!(
+                sent.get(),
+                1,
+                "in-flight Send rejects both pointer and Enter dispatch"
+            );
+        }
+    }
 
     #[gpui::test]
     fn send_mode_disclosure_stays_with_send_and_enter_retains_each_explicit_mode(

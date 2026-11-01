@@ -166,8 +166,17 @@ impl ProjectView {
             .min_w_0()
             .text_size(px(ui::CHROME))
             .line_height(px(ui::LINE))
-            .gap(px(ui::INSET))
-            .debug_selector(|| "project-model-options".into());
+            .gap(px(ui::GAP))
+            .debug_selector(|| "project-model-options".into())
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .debug_selector(|| "project-model-settings-title".into())
+                    .text_size(px(ui::CHROME))
+                    .line_height(px(ui::LINE))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Model settings"),
+            );
         let model_name = snapshot
             .model_info(selection)
             .map(|model| model.display_name())
@@ -179,7 +188,7 @@ impl ProjectView {
             .find(|provider| provider.provider_instance_id == selection.instance_id);
         let mut identity = h_flex().w_full().min_w_0().items_center().gap_2();
         if let Some(provider) = provider {
-            identity = identity.child(visuals::provider_visual(&provider.driver_kind, px(24.)));
+            identity = identity.child(visuals::provider_visual(&provider.driver_kind, px(18.)));
         }
         panel = panel.child(
             v_flex()
@@ -187,7 +196,7 @@ impl ProjectView {
                 .min_w_0()
                 .flex_shrink_0()
                 .gap_1()
-                .pb_3()
+                .pb_2()
                 .border_b_1()
                 .border_color(palette.border_subtle)
                 .child(
@@ -234,15 +243,18 @@ impl ProjectView {
                         ),
                 ),
         );
-        if !controls.is_empty() {
+        if controls.is_empty() {
             panel = panel.child(
                 div()
+                    .debug_selector(|| "project-model-no-options".into())
+                    .w_full()
+                    .min_w_0()
                     .flex_shrink_0()
-                    .debug_selector(|| "project-model-settings-title".into())
-                    .text_size(px(ui::CHROME))
-                    .line_height(px(ui::LINE))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Settings"),
+                    .whitespace_normal()
+                    .text_size(px(ui::LABEL))
+                    .line_height(px(18.))
+                    .text_color(palette.text_muted)
+                    .child("This model has no additional settings."),
             );
         }
         for (index, control) in controls.iter().enumerate() {

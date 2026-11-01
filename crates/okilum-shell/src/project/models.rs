@@ -32,9 +32,27 @@ pub(super) struct PickerUi {
     preferences: Option<preferences::Prefs>,
     preferences_origin: Option<String>,
     overlay: Option<gpui_base::DeferredPopover>,
-    trigger_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     #[cfg(any(test, feature = "project-ui-harness"))]
     painted_surface: std::rc::Rc<std::cell::Cell<Option<SurfacePaint>>>,
+}
+
+/// Strip a redundant provider prefix only when it is confirmed by real
+/// metadata. A model name containing an unrelated middle dot is left intact.
+fn compact_chip_name<'a>(name: &'a str, provider: Option<&str>, upstream: Option<&str>) -> &'a str {
+    let Some((prefix, model)) = name.split_once('·') else {
+        return name;
+    };
+    let model = model.trim();
+    if !model.is_empty()
+        && [provider, upstream]
+            .into_iter()
+            .flatten()
+            .any(|actual| prefix.trim().eq_ignore_ascii_case(actual.trim()))
+    {
+        model
+    } else {
+        name
+    }
 }
 
 impl ProjectView {
@@ -629,29 +647,45 @@ impl ProjectView {
             .panel_height
             .set((window.viewport_size().height - px(48.)).max(px(0.)));
         let is_target = self.model_target.as_ref() == Some(&target);
-        let label = self
+        let (label, full_label) = self
             .models
             .as_ref()
             .filter(|_| is_target)
             .map(|snapshot| {
                 let current = &snapshot.configuration.model_selection;
-                let name = snapshot
-                    .model_info(current)
+                let model = snapshot.model_info(current);
+                let name = model
                     .map(|model| model.display_name())
                     .unwrap_or(&current.model);
+                let provider = snapshot
+                    .catalog
+                    .providers
+                    .iter()
+                    .find(|provider| provider.provider_instance_id == current.instance_id);
+                let compact = compact_chip_name(
+                    name,
+                    provider.and_then(|provider| provider.display_name.as_deref()),
+                    model.and_then(|model| model.sub_provider.as_deref()),
+                )
+                .to_owned();
+                let full_name = model
+                    .and_then(|model| model.label.as_deref())
+                    .filter(|label| !label.trim().is_empty())
+                    .unwrap_or(name);
                 let summary = self.model_chip_summary(snapshot, cx);
-                if summary.is_empty() {
-                    name.to_owned()
+                let full = if summary.is_empty() {
+                    full_name.to_owned()
                 } else {
-                    format!("{name} · {summary}")
-                }
+                    format!("{full_name} · {summary}")
+                };
+                (compact, full)
             })
             .unwrap_or_else(|| {
                 #[cfg(target_os = "linux")]
                 if let Some(model) = self.native.current_model(&target.thread_id) {
-                    return model.into();
+                    return (model.to_owned(), model.to_owned());
                 }
-                "Model".into()
+                ("Model".into(), "Model".into())
             });
         let glyph = self
             .models
@@ -669,26 +703,27 @@ impl ProjectView {
             .debug_selector(|| "project-manager-model".into())
             .ghost()
             .small()
+            .h(px(32.))
             .border_1()
             .border_color(brand::palette(cx).border_subtle)
             .bg(brand::palette(cx).surface)
             .rounded(px(crate::project::design::RADIUS))
             .max_w(px(280.))
             .overflow_hidden()
-            .accessibility_label(label.clone())
+            .accessibility_label(format!("Choose model; current: {full_label}"))
             .child(
                 h_flex()
                     .min_w_0()
                     .items_center()
                     .gap_1()
                     .when_some(glyph, |row, driver| {
-                        row.child(visuals::provider_visual(&driver, px(16.)))
+                        row.child(visuals::provider_visual(&driver, px(18.)))
                     })
                     .child(div().min_w_0().truncate().child(label.clone()))
-                    .child(Icon::new(IconName::ChevronDown).small()),
+                    .child(Icon::new(IconName::ChevronDown).size(px(18.))),
             )
             .selected(self.model_open && is_target)
-            .tooltip(format!("Choose model · {label}"))
+            .tooltip(format!("Choose model · {full_label}"))
             .disabled(self.busy || !self.can_read_models())
             // Open after the click completes. A mouse-down-owned popover can
             // appear underneath the in-flight pointer release after layout.
@@ -699,17 +734,9 @@ impl ProjectView {
                     this.open_models(trigger_target.clone(), window, cx);
                 }
             }));
-        // Use the same window-coordinate overlay path as Projects and link
-        // completion. Keep trigger geometry on the owning view: unlike a
-        // frame-scoped PopupAnchorState, an open surface does not depend on a
-        // separate first-capture render before it can be laid out and painted.
-        let trigger_bounds = self.model_ui.trigger_bounds.clone();
-        let popup = div()
-            .id(id)
-            .child(trigger)
-            .on_prepaint(move |bounds, _, _| {
-                trigger_bounds.set(bounds);
-            });
+        // The surface uses the app's existing deferred/anchored path, with
+        // window-relative geometry independent of chip and catalog layout.
+        let popup = div().id(id).child(trigger);
         if self.model_open && is_target {
             let content = v_flex()
                 .id("project-model-popup-surface")
@@ -723,7 +750,7 @@ impl ProjectView {
                 .border_color(brand::palette(cx).border_subtle)
                 .text_size(px(brand::READER_CHROME_FONT_SIZE))
                 .line_height(px(20.))
-                .p_3()
+                .p(px(crate::project::design::INSET))
                 .when_some(self.model_ui.search.as_ref(), |content, input| {
                     content.track_focus(&input.read(cx).focus_handle(cx))
                 })
@@ -750,7 +777,20 @@ impl ProjectView {
                 .child(
                     gpui::deferred(
                         gpui::anchored()
-                            .position(self.model_ui.trigger_bounds.get().origin)
+                            // A fixed window-relative origin cannot follow chip
+                            // label widths or composer/catalog state changes.
+                            .position({
+                                let viewport = window.viewport_size();
+                                let panel = picker::surface_size(size(
+                                    viewport.width - px(48.),
+                                    viewport.height - px(48.),
+                                ));
+                                let chrome = px(crate::project::design::INSET * 2. + 2.);
+                                point(
+                                    ((viewport.width - panel.width - chrome) * 0.5).max(px(12.)),
+                                    ((viewport.height - panel.height - chrome) * 0.5).max(px(12.)),
+                                )
+                            })
                             .snap_to_window_with_margin(px(12.))
                             .child(content),
                     )
@@ -795,6 +835,40 @@ impl ProjectView {
         self.model_candidate = Some(selection.clone());
         self.close_models(window, cx);
         self.model_request(Some(selection), window, cx);
+    }
+}
+
+#[cfg(test)]
+mod compact_chip_tests {
+    use super::compact_chip_name;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn only_confirmed_provider_prefix_is_removed_from_real_model_name() {
+        assert_eq!(
+            compact_chip_name("OpenAI · gpt-6-Astra", Some("Codex"), Some("OpenAI")),
+            "gpt-6-Astra"
+        );
+        assert_eq!(
+            compact_chip_name("OpenAI · GPT-6.1-Sol", Some("OpenAI"), None),
+            "GPT-6.1-Sol"
+        );
+        assert_eq!(
+            compact_chip_name("Gemini 4 Argon (High)", Some("Antigravity"), Some("Google")),
+            "Gemini 4 Argon (High)"
+        );
+        assert_eq!(
+            compact_chip_name("Research · Pro", Some("OpenAI"), None),
+            "Research · Pro"
+        );
+        assert_eq!(
+            compact_chip_name("OpenAI · Astro", None, None),
+            "OpenAI · Astro"
+        );
+        assert_eq!(
+            compact_chip_name("OpenAI · ", Some("OpenAI"), None),
+            "OpenAI · "
+        );
     }
 }
 
