@@ -3,6 +3,12 @@ use super::*;
 use gpui_component::{notification::Notification, WindowExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod saved_files;
+
+pub(super) fn saved_attachments(root: &Path, paths: &[PathBuf], window: &mut Window, cx: &mut App) {
+    saved_files::show(root, paths, window, cx);
+}
+
 struct Toast;
 struct LinkNotice;
 struct HistoryNotice;

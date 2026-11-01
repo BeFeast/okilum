@@ -831,7 +831,7 @@ impl Reader {
                     .lock()
                     .map(|mut outbox| outbox.take_for_event(event))
                     .unwrap_or_default();
-                this.pasted_attachments_saved(&pending.saved_files, cx);
+                this.publish_saved_attachments(&pending.saved_files, window, cx);
                 let handled = pending.notice.is_some() || pending.follow_up.is_some();
                 if let Some(notice) = &pending.notice {
                     paste_jobs::show_notice(notice, window, cx);

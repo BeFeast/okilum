@@ -28,6 +28,12 @@ when paste starts, so a Settings change cannot alter an in-flight operation.
 Note Undo removes the embed, not its attachment; Redo can restore the same link
 without losing the image or its optional original.
 
+After a local image paste or file paste/drop saves attachments, a short receipt
+shows the actual vault-relative path, including conversion and collision suffixes.
+It offers Reveal in Finder / Explorer or Show in folder. When an original is
+retained, the receipt counts both files and names the converted image used by
+the note. Existing in-vault links do not claim a new saved attachment (#1622).
+
 Before merge, native acceptance must cover both paste and import into an
 isolated real vault, matching the disk file with the saved note link, and Undo
 and Redo without losing image bytes. Unit/GPUI tests supplement that gate.
