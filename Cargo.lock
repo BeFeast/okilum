@@ -6404,6 +6404,7 @@ dependencies = [
  "csv",
  "euclid",
  "flate2",
+ "globset",
  "markdown",
  "memchr",
  "memmap2",

@@ -41,6 +41,7 @@ pub mod stream;
 pub mod tail;
 mod text;
 pub mod timestamp;
+pub mod virtual_log;
 pub mod window;
 pub mod window_budget;
 

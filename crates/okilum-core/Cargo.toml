@@ -22,6 +22,7 @@ rust-stemmers = "1"
 # frontmatter date needs the same version it stores.
 time = { version = "0.3", features = ["macros", "parsing", "formatting"] }
 walkdir = "2"
+globset = "0.4.20"
 # Vault change watcher (#6). Version already in the lockfile via gpui.
 notify = "7"
 regex = "1"
