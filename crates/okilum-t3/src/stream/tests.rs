@@ -515,11 +515,13 @@ fn tier_one_commands_use_exact_effect_rpc_shapes_without_interrupting_a_subscrip
             run_id: "run".into(),
         },
         Intent::Respond {
+            attachments_by_question_id: Default::default(),
             request_id: "approval".into(),
             decision: Some("decline".into()),
             answers: None,
         },
         Intent::Respond {
+            attachments_by_question_id: Default::default(),
             request_id: "question".into(),
             decision: None,
             answers: Some(std::collections::BTreeMap::from([(
@@ -702,6 +704,10 @@ fn disabled_native_client_cannot_fetch_history_or_request_a_socket_ticket() {
         Err(StreamError::Closed)
     ));
     assert!(matches!(native.server_identity(), Err(StreamError::Closed)));
+    assert!(matches!(
+        native.environment_profile(),
+        Err(StreamError::Closed)
+    ));
     assert!(matches!(
         native.manager_models(&crate::models::Target {
             thread_id: "thread".into(),
@@ -1284,4 +1290,217 @@ fn modern_snapshot_without_budget_flag_keeps_opaque_history_metadata() {
         malformed["values"][0][field] = invalid;
         assert!(protocol::decode_chunk(&malformed, "thread-a", None).is_err());
     }
+}
+
+#[test]
+fn native_environment_profile_reads_explicit_capabilities_without_changing_identity_semantics() {
+    let fixture = Fixture::start(|listener| {
+        attachment_rpc(
+            &listener,
+            "server.getConfig",
+            json!({}),
+            json!({"environment":{
+                "environmentId":"actual-server", "label":" Remote label ",
+                "capabilities":{"questionAttachments":true,"attachmentUploads":true,
+                    "fileAttachments":{"maxUploadBytes":MAX_FILE_BYTES}}
+            }}),
+        );
+    });
+    let profile = client(&fixture.env).environment_profile().unwrap();
+    assert_eq!(profile.identity.environment_id, "actual-server");
+    assert_eq!(profile.identity.label, " Remote label ");
+    assert!(profile.capabilities.question_attachments_available());
+    assert_eq!(
+        profile.capabilities.effective_file_max_upload_bytes(),
+        Some(MAX_FILE_BYTES)
+    );
+    fixture.finish();
+}
+
+#[test]
+fn question_dispatch_without_explicit_true_capabilities_never_requests_a_ticket_or_config() {
+    use crate::actions::{Command, Intent, QuestionAttachments};
+    use std::collections::BTreeMap;
+    let server = FakeServer::start(|_| Response::empty(503));
+    let environment = Environment::new("fixture", &server.origin).unwrap();
+    let access = crate::NetworkAccess::new(true);
+    let native = attachment_client(&environment).with_access(access.clone());
+    let map = QuestionAttachments::from([(
+        "q".into(),
+        vec![ChatAttachment {
+            id: "issued-image".into(),
+            metadata: attachment_metadata(AttachmentKind::Image, 19),
+            source: None,
+        }],
+    )]);
+    let command = Command::new(
+        "thread-a",
+        Intent::Respond {
+            request_id: "question".into(),
+            decision: None,
+            answers: Some(BTreeMap::from([("q".into(), json!(""))])),
+            attachments_by_question_id: map,
+        },
+    );
+    let positive = NativeEnvironmentCapabilities {
+        question_attachments: Some(true),
+        attachment_uploads: Some(true),
+        file_attachment_max_upload_bytes: Some(MAX_FILE_BYTES),
+    };
+    assert!(matches!(
+        native.dispatch(&command),
+        Err(StreamError::Protocol(_))
+    ));
+    for capabilities in [
+        NativeEnvironmentCapabilities::default(),
+        NativeEnvironmentCapabilities {
+            question_attachments: Some(false),
+            ..positive.clone()
+        },
+        NativeEnvironmentCapabilities {
+            attachment_uploads: Some(false),
+            ..positive.clone()
+        },
+    ] {
+        assert!(matches!(
+            native.dispatch_with_question_attachments(&command, &capabilities),
+            Err(StreamError::Protocol(_))
+        ));
+    }
+    assert!(server.requests().is_empty());
+    assert!(matches!(
+        native.dispatch_with_question_attachments(&command, &positive),
+        Err(StreamError::Http(503))
+    ));
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "positive control: explicit support reaches the same native ticket transport"
+    );
+    access.revoke();
+    assert_eq!(
+        native.dispatch_with_question_attachments(&command, &positive),
+        Err(StreamError::Closed)
+    );
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn uploaded_question_bytes_and_native_response_map_reach_only_the_named_question() {
+    use crate::actions::{Command, Intent, QuestionAttachments};
+    use std::collections::BTreeMap;
+    let bytes = vec![0_u8, 255, 1, 2, 0, 3];
+    let expected = bytes.clone();
+    let metadata = attachment_metadata(AttachmentKind::Image, bytes.len() as u64);
+    let requested = serde_json::to_value(&metadata).unwrap();
+    let fixture = Fixture::start(move |listener| {
+        attachment_rpc(
+            &listener,
+            "attachments.createUploadUrl",
+            requested,
+            json!({"attachmentId":"issued-q2","relativeUrl":"/api/upload?signature=fixture-signed","expiresAt":9999999999999_u64}),
+        );
+        let mut upload = accept(&listener);
+        let mut reader = BufReader::new(&mut upload);
+        let mut headers = String::new();
+        loop {
+            let mut line = String::new();
+            assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+            if line == "\r\n" {
+                break;
+            }
+            headers.push_str(&line);
+        }
+        assert!(headers.starts_with("POST /api/upload?signature=fixture-signed HTTP/1.1\r\n"));
+        assert!(!headers.to_ascii_lowercase().contains("authorization:"));
+        let mut actual = vec![0; expected.len()];
+        reader.read_exact(&mut actual).unwrap();
+        assert_eq!(
+            actual, expected,
+            "positive control: the actual question file bytes crossed HTTP"
+        );
+        drop(reader);
+        write!(
+            upload,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        drop(upload);
+        for (index, mode) in ["live", "message"].iter().enumerate() {
+            ticket(&listener);
+            let mut ws = socket(&listener);
+            let request = read(&mut ws);
+            assert_eq!(
+                request["tag"], "orchestration.dispatchCommand",
+                "no hidden capability RPC during dispatch"
+            );
+            let payload = &request["payload"];
+            assert_eq!(payload["type"], "runtime-request.respond");
+            assert_eq!(payload["threadId"], "thread-a");
+            assert_eq!(payload["requestId"], format!("{mode}-question"));
+            assert_eq!(
+                payload["answers"]["q1"],
+                if *mode == "message" {
+                    json!("[\" exact \",\"β\"]")
+                } else {
+                    json!([" exact ", "β"])
+                }
+            );
+            assert_eq!(payload["answers"]["q2"], "");
+            assert_eq!(
+                payload["attachmentsByQuestionId"]["q2"][0]["id"],
+                "issued-q2"
+            );
+            assert_eq!(
+                payload["attachmentsByQuestionId"]["q2"][0]["sizeBytes"],
+                expected.len()
+            );
+            assert!(payload["attachmentsByQuestionId"].get("q1").is_none());
+            assert!(payload.get("messageId").is_none());
+            assert!(payload.get("attachments").is_none());
+            send(
+                &mut ws,
+                json!({"_tag":"Exit","requestId":"1","exit":{"_tag":"Success","value":{"sequence":7+index}}}),
+            );
+        }
+    });
+    let native = attachment_client(&fixture.env);
+    let confirmed = native.upload_attachment(&metadata, bytes).unwrap();
+    assert_eq!(confirmed.id, "issued-q2");
+    let capabilities = NativeEnvironmentCapabilities {
+        question_attachments: Some(true),
+        attachment_uploads: Some(true),
+        file_attachment_max_upload_bytes: Some(MAX_FILE_BYTES),
+    };
+    for (index, mode) in ["live", "message"].iter().enumerate() {
+        let command = Command::new(
+            "thread-a",
+            Intent::Respond {
+                request_id: format!("{mode}-question"),
+                decision: None,
+                answers: Some(BTreeMap::from([
+                    (
+                        "q1".into(),
+                        if *mode == "message" {
+                            json!("[\" exact \",\"β\"]")
+                        } else {
+                            json!([" exact ", "β"])
+                        },
+                    ),
+                    ("q2".into(), json!("")),
+                ])),
+                attachments_by_question_id: QuestionAttachments::from([(
+                    "q2".into(),
+                    vec![confirmed.clone()],
+                )]),
+            },
+        );
+        assert_eq!(
+            native
+                .dispatch_with_question_attachments(&command, &capabilities)
+                .unwrap(),
+            7 + index as u64
+        );
+    }
+    fixture.finish();
 }

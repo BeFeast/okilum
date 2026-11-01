@@ -9,12 +9,14 @@
 
 mod assets;
 mod auth;
+mod capabilities;
 mod manager;
 mod protocol;
 pub use assets::{
     validate_attachments, AttachmentKind, AttachmentMetadata, ChatAttachment, MAX_ATTACHMENTS,
     MAX_FILE_BYTES, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
 };
+pub use capabilities::{NativeEnvironmentCapabilities, NativeEnvironmentProfile};
 pub mod thread_create;
 pub mod turn_item;
 pub use manager::{ManagerThread, ManagerThreadDetails};
@@ -161,7 +163,33 @@ impl NativeClient {
     /// One bounded attempt on a dedicated RPC socket. The live subscription is
     /// never interrupted by command traffic. No implicit retry or MCP fallback.
     pub fn dispatch(&self, command: &crate::actions::Command) -> StreamResult<u64> {
+        if matches!(&command.intent, crate::actions::Intent::Respond { attachments_by_question_id, .. }
+            if !attachments_by_question_id.is_empty())
+        {
+            return Err(StreamError::Protocol(
+                "question attachments require explicit environment capabilities",
+            ));
+        }
         self.dispatch_payload(&command.thread_id, command.wire()?)
+    }
+
+    /// Question responses use the same immutable native command and transport.
+    /// Capabilities must come from the caller's confirmed environment profile;
+    /// this method never reads config, uploads assets or silently retries.
+    pub fn dispatch_with_question_attachments(
+        &self,
+        command: &crate::actions::Command,
+        capabilities: &NativeEnvironmentCapabilities,
+    ) -> StreamResult<u64> {
+        let payload = command.wire()?;
+        if let crate::actions::Intent::Respond {
+            attachments_by_question_id,
+            ..
+        } = &command.intent
+        {
+            capabilities.validate_question_attachments(attachments_by_question_id)?;
+        }
+        self.dispatch_payload(&command.thread_id, payload)
     }
 
     /// Rename an explicitly selected empty thread without invoking a provider.

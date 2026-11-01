@@ -142,6 +142,7 @@ impl State {
                 request_id,
                 decision,
                 answers,
+                attachments_by_question_id,
             } => self.requests.iter().any(|r| {
                 if &r.id != request_id || !r.answerable {
                     return false;
@@ -150,7 +151,10 @@ impl State {
                     let Some(d) = decision else {
                         return false;
                     };
-                    if answers.is_some() || r.response_mode.as_deref() != Some("live") {
+                    if answers.is_some()
+                        || !attachments_by_question_id.is_empty()
+                        || r.response_mode.as_deref() != Some("live")
+                    {
                         return false;
                     }
                     match r.item["options"].as_array() {
@@ -168,6 +172,7 @@ impl State {
                             valid_answers_for_mode(
                                 &r.item,
                                 answers,
+                                attachments_by_question_id,
                                 r.response_mode.as_deref() == Some("message"),
                             )
                         })
@@ -177,10 +182,31 @@ impl State {
     }
 }
 pub fn valid_answers(item: &Value, answers: &BTreeMap<String, Value>) -> bool {
-    valid_answers_for_mode(item, answers, item["responseMode"] == "message")
+    valid_answers_with_attachments(item, answers, &QuestionAttachments::new())
 }
 
-fn valid_answers_for_mode(item: &Value, answers: &BTreeMap<String, Value>, message: bool) -> bool {
+pub fn valid_answers_with_attachments(
+    item: &Value,
+    answers: &BTreeMap<String, Value>,
+    attachments: &QuestionAttachments,
+) -> bool {
+    valid_answers_for_mode(
+        item,
+        answers,
+        attachments,
+        item["responseMode"] == "message",
+    )
+}
+
+fn valid_answers_for_mode(
+    item: &Value,
+    answers: &BTreeMap<String, Value>,
+    attachments: &QuestionAttachments,
+    message: bool,
+) -> bool {
+    if validate_question_attachments(attachments).is_err() {
+        return false;
+    }
     let Some(questions) = item["questions"].as_array().filter(|q| !q.is_empty()) else {
         return false;
     };
@@ -198,6 +224,11 @@ fn valid_answers_for_mode(item: &Value, answers: &BTreeMap<String, Value>, messa
     {
         return false;
     }
+    if attachments.keys().any(|id| {
+        !answers.contains_key(id) || !questions.iter().any(|question| question["id"] == *id)
+    }) {
+        return false;
+    }
     questions.iter().all(|q| {
         let Some(id) = q["id"].as_str() else {
             return false;
@@ -205,6 +236,7 @@ fn valid_answers_for_mode(item: &Value, answers: &BTreeMap<String, Value>, messa
         let Some(answer) = answers.get(id) else {
             return q["required"] == false;
         };
+        let has_attachments = attachments.get(id).is_some_and(|files| !files.is_empty());
         let option = |value: &str| {
             q["options"].as_array().is_some_and(|options| {
                 options
@@ -222,6 +254,9 @@ fn valid_answers_for_mode(item: &Value, answers: &BTreeMap<String, Value>, messa
                 })
         };
         match answer {
+            Value::String(text) if text.trim().is_empty() => {
+                has_attachments && q["allowCustomAnswer"] != false
+            }
             Value::String(text) if message && q["multiSelect"] == true => {
                 // Message requests forward plain text to the agent. Encode a
                 // multi-choice selection as JSON-array TEXT, preserving exact
@@ -269,6 +304,7 @@ mod tests {
 
     fn respond(decision: &str) -> Intent {
         Intent::Respond {
+            attachments_by_question_id: Default::default(),
             request_id: "bound-request".into(),
             decision: Some(decision.into()),
             answers: None,
@@ -413,11 +449,13 @@ mod tests {
                 assert!(!wrong_mode.allows(&intent));
             }
             assert!(!positive.allows(&Intent::Respond {
+                attachments_by_question_id: Default::default(),
                 request_id: "foreign-request".into(),
                 decision: Some(decision.into()),
                 answers: None,
             }));
             assert!(!positive.allows(&Intent::Respond {
+                attachments_by_question_id: Default::default(),
                 request_id: "bound-request".into(),
                 decision: Some(decision.into()),
                 answers: Some(BTreeMap::from([("q".into(), json!("answer"))])),

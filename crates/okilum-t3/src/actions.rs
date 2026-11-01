@@ -8,9 +8,13 @@ mod prompt;
 pub use prompt::{prompt_length_validation, MAX_PROMPT_UNITS};
 
 mod journal;
+mod question_attachments;
 mod state;
 pub use journal::{Journal, Record};
-pub use state::{valid_answers, Request, State, APPROVAL_FALLBACK_OPTIONS};
+pub use question_attachments::{validate_question_attachments, QuestionAttachments};
+pub use state::{
+    valid_answers, valid_answers_with_attachments, Request, State, APPROVAL_FALLBACK_OPTIONS,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -48,6 +52,12 @@ pub enum Intent {
         decision: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         answers: Option<BTreeMap<String, Value>>,
+        #[serde(
+            default,
+            rename = "attachmentsByQuestionId",
+            skip_serializing_if = "BTreeMap::is_empty"
+        )]
+        attachments_by_question_id: QuestionAttachments,
     },
     #[serde(rename = "thread.user-input.dismiss")]
     Dismiss {
@@ -117,14 +127,28 @@ impl Intent {
                 request_id,
                 decision,
                 answers,
+                attachments_by_question_id,
             } => {
                 !request_id.is_empty()
                     && match (decision, answers) {
-                        (Some(d), None) => matches!(
-                            d.as_str(),
-                            "accept" | "acceptForSession" | "acceptAlways" | "decline" | "cancel"
-                        ),
-                        (None, Some(a)) => !a.is_empty(),
+                        (Some(d), None) => {
+                            attachments_by_question_id.is_empty()
+                                && matches!(
+                                    d.as_str(),
+                                    "accept"
+                                        | "acceptForSession"
+                                        | "acceptAlways"
+                                        | "decline"
+                                        | "cancel"
+                                )
+                        }
+                        (None, Some(a)) => {
+                            !a.is_empty()
+                                && validate_question_attachments(attachments_by_question_id).is_ok()
+                                && attachments_by_question_id
+                                    .keys()
+                                    .all(|id| a.contains_key(id))
+                        }
                         _ => false,
                     }
             }

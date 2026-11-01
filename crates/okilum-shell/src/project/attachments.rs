@@ -20,7 +20,7 @@ struct Scope {
 }
 
 #[derive(Clone)]
-enum Source {
+pub(in crate::project) enum Source {
     File(PathBuf),
     Image(Arc<Vec<u8>>),
 }
@@ -166,10 +166,10 @@ pub(super) fn thumbnail(bytes: &[u8]) -> Option<Arc<gpui::Image>> {
     )))
 }
 
-struct Prepared {
-    metadata: AttachmentMetadata,
-    bytes: Vec<u8>,
-    previews: Option<(Arc<gpui::Image>, Arc<gpui::Image>)>,
+pub(in crate::project) struct Prepared {
+    pub(in crate::project) metadata: AttachmentMetadata,
+    pub(in crate::project) bytes: Vec<u8>,
+    pub(in crate::project) previews: Option<(Arc<gpui::Image>, Arc<gpui::Image>)>,
 }
 
 /// Validate with the bounded decoder before retaining the original encoded
@@ -189,7 +189,7 @@ fn image_previews(bytes: &[u8]) -> Option<(Arc<gpui::Image>, Arc<gpui::Image>)> 
     ))
 }
 
-fn prepare_with_preview(
+pub(in crate::project) fn prepare_with_preview(
     source: &Source,
     name: &str,
     other_image_bytes: u64,
@@ -274,6 +274,34 @@ fn prepare(
     Ok((meta, bytes))
 }
 
+/// Validate an explicit draft collection against its confirmed server identity.
+/// Shared by message and question drafts; never reads or swaps the composer.
+pub(in crate::project) fn uploaded_references(
+    rows: &[Attachment],
+    environment: &str,
+) -> anyhow::Result<Vec<ChatAttachment>> {
+    anyhow::ensure!(
+        !environment.trim().is_empty(),
+        "Confirm the T3 connection before sending attachments"
+    );
+    let references = rows.iter().map(|row| {
+        let AttachmentState::Uploaded { attachment_id, environment_id } = &row.state else {
+            anyhow::bail!("Wait for attachments to finish, or retry, reselect or remove the unavailable file");
+        };
+        anyhow::ensure!(environment_id == environment, "This file belongs to another T3 environment; select it again");
+        Ok(ChatAttachment {
+            id: attachment_id.clone(),
+            metadata: AttachmentMetadata {
+                kind: match row.kind { DraftKind::Image => AttachmentKind::Image, DraftKind::File => AttachmentKind::File },
+                name: row.name.clone(), mime_type: row.mime_type.clone(), size_bytes: row.size_bytes,
+            },
+            source: row.source.clone(),
+        })
+    }).collect::<anyhow::Result<Vec<_>>>()?;
+    okilum_t3::stream::validate_attachments(&references)?;
+    Ok(references)
+}
+
 impl ProjectView {
     pub(super) fn attachment_can_add(&self) -> bool {
         self.native.active()
@@ -290,7 +318,7 @@ impl ProjectView {
         })
     }
 
-    fn attachment_identity(&self) -> Option<&ServerIdentity> {
+    pub(in crate::project) fn attachment_identity(&self) -> Option<&ServerIdentity> {
         let client = self.native.model_client()?;
         self.attachments
             .identity
@@ -311,13 +339,7 @@ impl ProjectView {
             .attachment_identity()
             .context("Confirm the T3 connection before sending attachments")?
             .environment_id;
-        let result=self.draft_attachments().iter().map(|row|{
-            let AttachmentState::Uploaded{attachment_id,environment_id}=&row.state else {anyhow::bail!("Wait for attachments to finish, or retry, reselect or remove the unavailable file");};
-            anyhow::ensure!(environment_id==environment,"This file belongs to another T3 environment; select it again");
-            Ok(ChatAttachment{id:attachment_id.clone(),metadata:AttachmentMetadata{kind:match row.kind{DraftKind::Image=>AttachmentKind::Image,DraftKind::File=>AttachmentKind::File},name:row.name.clone(),mime_type:row.mime_type.clone(),size_bytes:row.size_bytes},source:row.source.clone()})
-        }).collect::<anyhow::Result<Vec<_>>>()?;
-        okilum_t3::stream::validate_attachments(&result)?;
-        Ok(result)
+        uploaded_references(self.draft_attachments(), environment)
     }
 
     pub(super) fn attachment_request(

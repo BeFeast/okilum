@@ -647,6 +647,7 @@ fn a_real_click_deferred_across_a_conversation_switch_cannot_answer_a_reused_req
         );
         assert!(
             actions.state.allows(&Intent::Respond {
+                attachments_by_question_id: Default::default(),
                 request_id: "same".into(),
                 decision: Some("accept".into()),
                 answers: None
@@ -772,6 +773,7 @@ fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_adv
             let actions = view.native.actions.read(cx);
             assert_eq!(actions.records.len(), index + 1);
             let expected = Intent::Respond {
+                attachments_by_question_id: Default::default(),
                 request_id: id.clone(),
                 decision: Some((*decision).into()),
                 answers: None,

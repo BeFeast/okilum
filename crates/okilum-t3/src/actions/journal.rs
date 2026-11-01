@@ -260,6 +260,102 @@ mod tests {
             .prepare(Intent::message("".into(), DispatchMode::StartImmediately))
             .is_err());
     }
+
+    #[test]
+    fn question_attachment_retry_reopens_the_same_answer_and_issued_reference_without_reupload() {
+        use crate::stream::{AttachmentKind, AttachmentMetadata, ChatAttachment, StreamError};
+        let directory = Directory::new();
+        let environment = Environment::new("fixture", "http://localhost:9999").unwrap();
+        let journal = Journal::new(directory.path(), &environment, "question-thread");
+        let intent = Intent::Respond {
+            request_id: "question-request".into(),
+            decision: None,
+            answers: Some(BTreeMap::from([
+                ("q1".into(), json!(" exact ")),
+                ("q2".into(), json!("")),
+            ])),
+            attachments_by_question_id: BTreeMap::from([(
+                "q2".into(),
+                vec![ChatAttachment {
+                    id: "issued-q2-image".into(),
+                    metadata: AttachmentMetadata {
+                        kind: AttachmentKind::Image,
+                        name: "evidence.png".into(),
+                        mime_type: "image/png".into(),
+                        size_bytes: 19,
+                    },
+                    source: None,
+                }],
+            )]),
+        };
+        let retained = journal.prepare(intent.clone()).unwrap();
+        let original = retained.command.wire().unwrap();
+        assert!(journal
+            .send(&retained, |_| Err(StreamError::Closed))
+            .is_err());
+        let reopened = Journal::new(directory.path(), &environment, "question-thread");
+        let disk = reopened.records().unwrap().pop().unwrap();
+        assert_eq!(disk, retained);
+        assert_eq!(reopened.prepare(intent.clone()).unwrap(), retained);
+        let mut replacement = intent;
+        let Intent::Respond {
+            attachments_by_question_id,
+            ..
+        } = &mut replacement
+        else {
+            unreachable!()
+        };
+        attachments_by_question_id.get_mut("q2").unwrap()[0].id =
+            "fresh-upload-is-not-retry".into();
+        assert!(reopened.prepare(replacement).is_err());
+        let accepted = reopened
+            .send(&disk, |command| {
+                assert_eq!(command.wire().unwrap(), original);
+                assert_eq!(original["type"], "runtime-request.respond");
+                assert_eq!(
+                    original["attachmentsByQuestionId"]["q2"][0]["id"],
+                    "issued-q2-image"
+                );
+                assert!(original["attachmentsByQuestionId"].get("q1").is_none());
+                Ok(91)
+            })
+            .unwrap();
+        assert_eq!(accepted.sequence, Some(91));
+        assert_eq!(
+            reopened
+                .send(&disk, |_| panic!(
+                    "acknowledged question response must never dispatch again"
+                ))
+                .unwrap(),
+            accepted
+        );
+    }
+
+    #[test]
+    fn legacy_question_journal_without_an_attachment_map_reopens_and_retries_verbatim() {
+        let directory = Directory::new();
+        let environment = Environment::new("fixture", "http://localhost:9999").unwrap();
+        let journal = Journal::new(directory.path(), &environment, "legacy-thread");
+        let legacy = json!({"type":"runtime-request.respond","requestId":"legacy-request",
+            "answers":{"q":" exact legacy answer "}});
+        let retained = journal
+            .prepare(serde_json::from_value(legacy).unwrap())
+            .unwrap();
+        assert!(serde_json::to_value(&retained).unwrap()["command"]
+            .get("attachmentsByQuestionId")
+            .is_none());
+        let original = retained.command.wire().unwrap();
+        let reopened = Journal::new(directory.path(), &environment, "legacy-thread");
+        let disk = reopened.records().unwrap().pop().unwrap();
+        assert_eq!(disk, retained);
+        reopened
+            .send(&disk, |command| {
+                assert_eq!(command.wire().unwrap(), original);
+                assert!(original.get("attachmentsByQuestionId").is_none());
+                Ok(19)
+            })
+            .unwrap();
+    }
     struct Directory(PathBuf);
     impl Directory {
         fn new() -> Self {
@@ -286,6 +382,7 @@ mod tests {
     }
     fn response(decision: &str) -> Intent {
         Intent::Respond {
+            attachments_by_question_id: Default::default(),
             request_id: "request-1".into(),
             decision: Some(decision.into()),
             answers: None,
