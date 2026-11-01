@@ -1466,6 +1466,16 @@ mod tests {
         }
     }
 
+    fn draw_attachment_preview(visual: &mut VisualTestContext) {
+        // Like the history-image fixture, refresh cached ancestor views before
+        // reading debug selectors. A cached paint can be visible without
+        // replaying selector registration in the pinned GPUI test context.
+        visual.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+    }
+
     #[gpui::test]
     fn prepared_pending_and_failed_images_open_a_real_viewer_without_sending(
         cx: &mut TestAppContext,
@@ -1593,7 +1603,7 @@ mod tests {
                     Box::leak(format!("attachment-preview-{id}").into_boxed_str());
                 let expanded_selector: &'static str =
                     Box::leak(format!("attachment-expanded-{id}").into_boxed_str());
-                visual.update(|window, cx| window.draw(cx).clear(cx));
+                draw_attachment_preview(visual);
                 let mut thumb = visual
                     .debug_bounds(selector)
                     .expect("both pending/failed images have actual clickable thumbnails");
@@ -1612,16 +1622,24 @@ mod tests {
                         ..Default::default()
                     });
                     visual.run_until_parked();
-                    visual.update(|window, cx| window.draw(cx).clear(cx));
+                    draw_attachment_preview(visual);
                     thumb = visual.debug_bounds(selector).expect("scrolled thumbnail");
                 }
+                let viewport = visual.update(|window, _| Bounds {
+                    origin: Point::default(),
+                    size: window.viewport_size(),
+                });
                 assert!(
-                    thumb.center().y >= tray.top() && thumb.center().y <= tray.bottom(),
-                    "click must reach a visible thumbnail"
+                    tray.contains(&thumb.center()) && viewport.contains(&thumb.center()),
+                    "positive control: the actual click point must be inside both the visible tray and window"
                 );
                 visual.simulate_click(thumb.center(), Modifiers::default());
                 visual.run_until_parked();
-                visual.update(|window, cx| window.draw(cx).clear(cx));
+                draw_attachment_preview(visual);
+                assert!(
+                    visual.debug_bounds("dialog-layer").is_some(),
+                    "positive control: the real thumbnail click opened the host's visible dialog layer"
+                );
                 let expanded = visual
                     .debug_bounds(expanded_selector)
                     .expect("viewer identifies the clicked image, not its neighbour");
@@ -1638,7 +1656,7 @@ mod tests {
                 );
                 visual.simulate_keystrokes("escape");
                 visual.run_until_parked();
-                visual.update(|window, cx| window.draw(cx).clear(cx));
+                draw_attachment_preview(visual);
                 assert!(visual.debug_bounds("attachment-expanded-image").is_none());
                 view.read_with(visual, |view, cx| {
                     assert_eq!(view.compose.read(cx).value().as_str(), before.0);

@@ -263,7 +263,7 @@ impl ProjectView {
             cx.new(|cx| InputState::new(window, cx).placeholder("T3 server address (https://…)"));
         let compose = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .auto_grow(3, 10)
+                .auto_grow(1, 10)
                 .submit_on_enter(cfg!(target_os = "linux"))
                 .placeholder("Message your manager…")
         });

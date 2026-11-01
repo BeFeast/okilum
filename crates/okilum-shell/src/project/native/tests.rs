@@ -239,21 +239,19 @@ fn retry_backoff_is_bounded_and_classifies_auth_or_protocol_failures_as_terminal
 async fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll(
     cx: &mut TestAppContext,
 ) {
-    // The live worker uses real socket threads in tests; wait for the committed
-    // wire cursor rather than relying on a blocking executor poll.
+    // The wire worker commits its cursor before the UI callback publishes the
+    // feed. A supported metadata event in the same batch is the UI publication
+    // barrier: native.rs applies feed rows before retaining that metadata.
     cx.executor().allow_parking();
     cx.update(crate::test_init);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let temp = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(super::super::fixture::Fake::default());
     let (root, visual) = cx.add_window_view(|window, cx| {
         let entity = cx.new(|cx| {
-            let mut view = super::super::fixture::view(
-                temp.path().to_owned(),
-                Arc::new(super::super::fixture::Fake::default()),
-                window,
-                cx,
-            );
+            let mut view =
+                super::super::fixture::view(temp.path().to_owned(), gateway.clone(), window, cx);
             view.active = false;
             view.identity = Some(ServerIdentity {
                 environment_id: "fixture".into(),
@@ -268,6 +266,7 @@ async fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<ProjectView>().unwrap()
     });
+    let mcp_reads = gateway.reads.lock().unwrap().len();
     let (thread_id, project_id) = view.read_with(visual, |view, _| {
         (
             view.chat.as_ref().unwrap().thread_id.clone(),
@@ -324,7 +323,7 @@ async fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll
                     let mut changed = item.clone();
                     changed["text"] = json!("Streamed native reply");
                     let command = json!({"id":"cmd","threadId":thread_id,"ordinal":2,"type":"command_execution","input":"cargo test","status":"completed","runId":null,"nodeId":null});
-                    ws.send(Message::Text(json!({"_tag":"Chunk","requestId":"1","values":[{"kind":"event","sequence":11,"event":{"type":"turn-item.updated","threadId":thread_id,"payload":changed}},{"kind":"event","sequence":12,"event":{"type":"turn-item.updated","threadId":thread_id,"payload":command}}]}).to_string().into())).unwrap();
+                    ws.send(Message::Text(json!({"_tag":"Chunk","requestId":"1","values":[{"kind":"event","sequence":11,"event":{"type":"turn-item.updated","threadId":thread_id,"payload":changed}},{"kind":"event","sequence":12,"event":{"type":"turn-item.updated","threadId":thread_id,"payload":command}},{"kind":"event","sequence":13,"event":{"type":"thread.metadata-updated","threadId":thread_id,"payload":{"id":thread_id,"projectId":project_id,"title":"Live manager streamed"}}}]}).to_string().into())).unwrap();
                     phase = 2;
                 }
                 "Ack" if phase == 2 => break,
@@ -347,25 +346,38 @@ async fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll
     });
     visual
         .condition(&view, |view, _| {
-            view.native.retained.as_ref().is_some_and(|retained| {
-                retained
-                    .lock()
-                    .unwrap()
-                    .cursor
-                    .as_ref()
-                    .is_some_and(|cursor| cursor.sequence() == 12)
-            })
+            view.native.metadata.title == "Live manager streamed"
+                && view.native.retained.as_ref().is_some_and(|retained| {
+                    retained
+                        .lock()
+                        .unwrap()
+                        .cursor
+                        .as_ref()
+                        .is_some_and(|cursor| cursor.sequence() == 13)
+                })
         })
         .await;
     visual.run_until_parked();
     view.read_with(visual, |view, _| {
         let model = view.native.retained.as_ref().unwrap().lock().unwrap();
-        assert_eq!(model.cursor.as_ref().unwrap().sequence(), 12);
-        assert_eq!(model.model.metadata.title, "Live manager");
+        assert_eq!(model.cursor.as_ref().unwrap().sequence(), 13);
+        assert_eq!(model.model.metadata.title, "Live manager streamed");
+        assert_eq!(view.native.metadata.title, "Live manager streamed");
+    });
+    // Re-register selectors from the now-published feed instead of trusting
+    // cached-frame debug bounds, without changing its scroll position.
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
     });
     assert!(
         visual.debug_bounds("project-tool-2").is_some(),
         "native command did not reach the real feed"
+    );
+    assert_eq!(
+        gateway.reads.lock().unwrap().len(),
+        mcp_reads,
+        "snapshot and streamed command reach the feed without an MCP history poll"
     );
     view.update(visual, |view, _| view.native.pause());
     server.join().unwrap();

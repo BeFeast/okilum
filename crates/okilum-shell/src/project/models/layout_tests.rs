@@ -313,6 +313,18 @@ fn last_current_model_and_option_heading_lineboxes_fit_large_window_popup(cx: &m
         providers,
         "readable account label",
     );
+    let logo = bounds(visual, "project-model-provider-logo-account-0");
+    let account = bounds(visual, "project-model-account-label-0");
+    let suffix = bounds(visual, "project-model-account-suffix-0");
+    assert_eq!(
+        logo.size,
+        size(px(18.), px(18.)),
+        "brand artwork uses an optical 18px slot"
+    );
+    assert!(
+        logo.right() <= account.left() && account.right() <= suffix.left(),
+        "account identity is beside the name, never stamped over original artwork"
+    );
     let choices = bounds(visual, "project-model-choices");
     assert!(
         choices.size.width >= px(300.),
@@ -381,4 +393,225 @@ fn last_current_model_and_option_heading_lineboxes_fit_large_window_popup(cx: &m
         reads,
         "visual selector navigation and close issue zero RPC"
     );
+}
+
+fn painted_surface(view: &Entity<ProjectView>, visual: &mut VisualTestContext) -> Bounds<Pixels> {
+    view.read_with(visual, |view, _| {
+        view.model_ui
+            .painted_surface
+            .get()
+            .expect("positive control: this transition reached surface paint")
+            .0
+    })
+}
+fn redraw_picker(
+    view: &Entity<ProjectView>,
+    visual: &mut VisualTestContext,
+    change: impl FnOnce(&mut ProjectView, &mut Window, &mut Context<ProjectView>),
+) {
+    view.update_in(visual, |view, window, cx| {
+        view.model_ui.painted_surface.set(None);
+        change(view, window, cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+}
+fn assert_surface_stable(
+    view: &Entity<ProjectView>,
+    visual: &mut VisualTestContext,
+    expected: Bounds<Pixels>,
+    transition: &str,
+) {
+    assert_eq!(
+        painted_surface(view, visual),
+        expected,
+        "outer painted width, height and position must stay fixed across {transition}"
+    );
+    inside(
+        bounds(visual, "project-model-close"),
+        expected,
+        "close action",
+    );
+}
+
+#[gpui::test]
+fn provider_search_options_and_loading_keep_one_surface_and_long_catalog_tail_reachable(
+    cx: &mut TestAppContext,
+) {
+    let (view, visual, _state, gateway) = fixture(cx, size(px(1000.), px(760.)), 0, Some(px(320.)));
+    redraw_picker(&view, visual, |view, _, cx| {
+        view.active = true;
+        let snapshot = view.models.as_mut().unwrap();
+        let model = snapshot.catalog.providers[0].models[0].clone();
+        snapshot.catalog.providers[0].models = (0..120)
+            .map(|index| {
+                let mut model = model.clone();
+                model.id = format!("model-{index}");
+                model.short_name = Some(format!("Codex model {index}"));
+                model
+            })
+            .collect();
+        snapshot.catalog.providers[1].models.truncate(1);
+        snapshot.catalog.providers[1].models[0].capabilities = None;
+        cx.notify();
+    });
+    let reads = gateway.reads.lock().unwrap().len();
+    interleaved_open(visual);
+    let expected = painted_surface(&view, visual);
+    assert!(
+        expected.size.height <= px(530.),
+        "balanced viewport-capped surface, not an expanding catalog-sized window"
+    );
+    let target = view.read_with(visual, |view, _| view.model_target.clone());
+    let click = |visual: &mut VisualTestContext, selector| {
+        let area = bounds(visual, selector);
+        visual.simulate_click(area.center(), Modifiers::default());
+        visual.run_until_parked();
+    };
+    click(visual, "project-model-favorites");
+    assert_surface_stable(&view, visual, expected, "short favorites");
+    assert_eq!(
+        view.read_with(visual, |view, cx| view.visible_model_choices(cx).len()),
+        1
+    );
+    click(visual, "project-model-provider-1");
+    assert_surface_stable(&view, visual, expected, "single-model provider");
+    assert_eq!(
+        view.read_with(visual, |view, cx| view.visible_model_choices(cx).len()),
+        1
+    );
+    for (query, expected_count) in [("Codex model 119", 1), ("no-such-model-at-all", 0), ("", 1)] {
+        redraw_picker(&view, visual, |view, window, cx| {
+            view.model_ui
+                .search
+                .as_ref()
+                .unwrap()
+                .update(cx, |input, cx| input.set_value(query, window, cx));
+        });
+        assert_surface_stable(&view, visual, expected, "search/empty-search");
+        assert_eq!(
+            view.read_with(visual, |view, cx| view.visible_model_choices(cx).len()),
+            expected_count
+        );
+        assert!(
+            visual
+                .debug_bounds("project-model-settings-title")
+                .is_some(),
+            "settings stay discoverable while searching"
+        );
+    }
+    let with_options = view.read_with(visual, |view, _| view.models.clone().unwrap());
+    redraw_picker(&view, visual, |view, _, _| {
+        let snapshot = view.models.as_mut().unwrap();
+        snapshot.configuration.model_selection.instance_id = "account-1".into();
+        snapshot.configuration.model_selection.model = "model-0".into();
+        snapshot.configuration.model_selection.options.clear();
+    });
+    assert_surface_stable(
+        &view,
+        visual,
+        expected,
+        "server-confirmed model without descriptors",
+    );
+    assert!(visual.debug_bounds("project-model-no-options").is_some());
+    assert!(visual
+        .debug_bounds("project-model-settings-title")
+        .is_some());
+    redraw_picker(&view, visual, |view, _, _| {
+        view.models = None;
+        view.model_busy = true;
+    });
+    assert_surface_stable(&view, visual, expected, "initial loading without catalog");
+    redraw_picker(&view, visual, |view, _, _| {
+        view.models = Some(with_options);
+        view.model_busy = false;
+        view.model_error = Some("Read-only fixture catalog failure".into());
+        view.connection_details = true;
+    });
+    assert_surface_stable(
+        &view,
+        visual,
+        expected,
+        "restored catalog with error/details",
+    );
+    redraw_picker(&view, visual, |view, _, _| {
+        view.model_error = None;
+        view.connection_details = false;
+    });
+    click(visual, "project-model-provider-0");
+    assert_surface_stable(&view, visual, expected, "120-model Codex provider");
+    let viewport = bounds(visual, "project-model-choices");
+    scroll(visual, viewport, -10000.);
+    inside(
+        bounds(visual, "project-model-choice-119"),
+        viewport,
+        "last Codex row after physical wheel",
+    );
+    click(visual, "project-model-provider-0");
+    redraw_picker(&view, visual, |view, window, cx| {
+        view.model_ui.highlight = 0;
+        view.model_ui
+            .search
+            .as_ref()
+            .unwrap()
+            .update(cx, |input, cx| input.focus(window, cx));
+    });
+    visual.simulate_keystrokes("up");
+    visual.run_until_parked();
+    assert_eq!(
+        view.read_with(visual, |view, _| view.model_ui.highlight),
+        119
+    );
+    inside(
+        bounds(visual, "project-model-choice-119"),
+        bounds(visual, "project-model-choices"),
+        "last Codex row after keyboard navigation",
+    );
+    assert_surface_stable(&view, visual, expected, "keyboard tail reveal");
+    assert_eq!(
+        view.read_with(visual, |view, _| view.model_target.clone()),
+        target
+    );
+    assert!(
+        gateway.model_writes.lock().unwrap().is_empty(),
+        "scrolling and navigation never choose a model"
+    );
+    assert!(gateway.sends.lock().unwrap().is_empty());
+    assert_eq!(
+        gateway.reads.lock().unwrap().len(),
+        reads,
+        "all visual transitions issue zero RPC"
+    );
+    visual.simulate_resize(size(px(900.), px(620.)));
+    redraw_picker(&view, visual, |_, _, _| {});
+    let resized = painted_surface(&view, visual);
+    assert!(
+        resized.size.width < expected.size.width,
+        "only the changed viewport alters dimensions"
+    );
+    inside(
+        resized,
+        Bounds::new(point(px(0.), px(0.)), size(px(900.), px(620.))),
+        "resized painted surface",
+    );
+    visual.simulate_resize(size(px(600.), px(700.)));
+    redraw_picker(&view, visual, |_, _, _| {});
+    let logo = bounds(visual, "project-model-provider-logo-account-0");
+    let suffix = bounds(visual, "project-model-account-suffix-0");
+    assert_eq!(logo.size, size(px(18.), px(18.)));
+    assert!(
+        suffix.left() >= logo.right(),
+        "compact accounts remain distinct beside unobscured logos"
+    );
+    inside(
+        suffix,
+        bounds(visual, "project-model-providers"),
+        "compact account suffix",
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    view.update_in(visual, |view, window, cx| {
+        assert!(!view.model_open);
+        assert!(view.compose.read(cx).focus_handle(cx).is_focused(window));
+    });
 }

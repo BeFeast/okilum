@@ -1,29 +1,50 @@
 use super::*;
 use crate::project::design as ui;
 
+pub(super) fn surface_size(available: Size<Pixels>) -> Size<Pixels> {
+    size(
+        available.width.max(px(0.)).min(px(880.)),
+        (available.height.max(px(0.)) * 0.8).min(px(500.)),
+    )
+}
+
 impl ProjectView {
     pub(super) fn render_models(&self, cx: &mut Context<Self>) -> AnyElement {
-        let has_options = self.has_model_options();
         let measured = self.model_ui.panel_width.get();
         // The popup may overlay the workspace. Its limit is the visible window,
         // not the width of the Manager panel that owns the trigger.
         let available = if measured > px(0.) {
             measured
         } else {
-            px(920.)
+            px(880.)
         };
-        let width = available.min(if has_options { px(920.) } else { px(800.) });
+        let measured_height = self.model_ui.panel_height.get();
+        let geometry = surface_size(size(
+            available,
+            if measured_height > px(0.) {
+                measured_height
+            } else {
+                px(625.)
+            },
+        ));
+        let width = geometry.width;
         // Keep both names and descriptor labels readable; stack the options
         // only when the window cannot fit a useful model list beside them.
-        let options_beside = has_options && width >= px(800.);
+        let options_beside = width >= px(800.);
         let named_providers = width >= px(640.);
-        let rail_width = if named_providers { px(144.) } else { px(36.) };
-        let measured_height = self.model_ui.panel_height.get();
-        let height = if measured_height > px(0.) {
-            measured_height
+        let rail_width = if named_providers { px(144.) } else { px(68.) };
+        let height = geometry.height;
+        // Geometry is a function of the viewport only. Catalog length, current
+        // descriptors, provider selection, favorites and search cannot resize
+        // or reposition the surface underneath the pointer.
+        let body_budget = (height - px(128.)).max(px(0.));
+        let (list_height, option_height) = if options_beside {
+            (body_budget, body_budget)
         } else {
-            px(480.)
+            let stacked_budget = (body_budget - px(8.)).max(px(0.));
+            (stacked_budget * 0.6, stacked_budget * 0.4)
         };
+        let choices = Arc::new(self.visible_model_choices(cx));
         let palette = brand::palette(cx);
         let mut panel = v_flex()
             .debug_selector(|| "project-model-panel".into())
@@ -32,7 +53,8 @@ impl ProjectView {
             }))
             .w(width)
             .max_w_full()
-            .max_h(height)
+            .h(height)
+            .flex_shrink_0()
             .text_size(px(ui::CHROME))
             .min_w_0()
             .min_h_0()
@@ -126,36 +148,47 @@ impl ProjectView {
         #[cfg(not(target_os = "linux"))]
         let catalog_loading = false;
         let loading = self.model_busy || catalog_loading;
-        if loading {
-            panel = panel.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(12.))
-                    .text_color(palette.text_muted)
-                    .child(if self.models.is_some() {
-                        "Updating models…"
-                    } else {
-                        "Loading models…"
-                    }),
-            );
-        }
-        if let Some(error) = &self.model_error {
-            panel = panel.child(
-                div()
-                    .debug_selector(|| "project-model-error".into())
-                    .whitespace_normal()
-                    .flex_shrink_0()
-                    .max_h(px(48.))
-                    .overflow_hidden()
-                    .text_size(px(12.))
-                    .text_color(cx.theme().danger)
-                    .child(if self.connection_details {
-                        error.clone()
-                    } else {
-                        "Models are unavailable. Refresh to try again.".into()
-                    }),
-            );
-        }
+        let status = if self.model_error.is_some() {
+            "Models are unavailable. Refresh to try again.".to_owned()
+        } else if loading {
+            if self.models.is_some() {
+                "Updating models…"
+            } else {
+                "Loading models…"
+            }
+            .to_owned()
+        } else if self.models.is_some() {
+            format!(
+                "{} models{}",
+                choices.len(),
+                if self.has_model_options() {
+                    " · Settings available"
+                } else {
+                    ""
+                }
+            )
+        } else {
+            "Connect to see available models".to_owned()
+        };
+        panel = panel.child(
+            div()
+                .debug_selector(|| "project-model-status".into())
+                .w_full()
+                .h(px(24.))
+                .flex_shrink_0()
+                .truncate()
+                .text_size(px(ui::LABEL))
+                .line_height(px(20.))
+                .text_color(if self.model_error.is_some() {
+                    cx.theme().danger
+                } else {
+                    palette.text_muted
+                })
+                .when(self.model_error.is_some(), |status| {
+                    status.debug_selector(|| "project-model-error".into())
+                })
+                .child(status),
+        );
         if let Some(snapshot) = &self.models {
             let current = &snapshot.configuration.model_selection;
             let instance = self
@@ -168,52 +201,7 @@ impl ProjectView {
                 .search
                 .as_ref()
                 .is_some_and(|input| !input.read(cx).value().trim().is_empty());
-            let choices = Arc::new(self.visible_model_choices(cx));
             let row_count = choices.len();
-            // Search, status and errors keep their own line boxes. The body
-            // spends only the remaining visible-window budget, and each column
-            // owns its scroll rather than clipping the popup's final controls.
-            let chrome = px(96.)
-                + if loading { px(24.) } else { px(0.) }
-                + if self.model_error.is_some() {
-                    px(56.)
-                } else {
-                    px(0.)
-                }
-                + if self.connection_details {
-                    px(40.)
-                } else {
-                    px(0.)
-                };
-            let body_budget = (height - chrome).max(px(0.));
-            let rail_rows = snapshot.catalog.providers.len() as f32;
-            let rail_natural = px(88. + rail_rows * 40.);
-            let natural_height = px((row_count as f32 * 44.).clamp(132., 396.)).max(if searching {
-                px(108.)
-            } else {
-                rail_natural.min(px(396.))
-            });
-            let (list_height, option_height) = if has_options && !options_beside {
-                let column_budget = (body_budget - px(8.)).max(px(0.));
-                let option_rows = snapshot
-                    .option_controls(current)
-                    .iter()
-                    .map(|control| 28. * control.choices.len() as f32 + 28.)
-                    .sum::<f32>();
-                let option_natural = px(option_rows + 24.);
-                // Use available height for ordinary supported controls before
-                // asking the user to scroll; unusually long catalogs still own
-                // an independent, bounded option viewport.
-                let options = (column_budget * 0.5).min(option_natural).min(px(340.));
-                ((column_budget - options).min(natural_height), options)
-            } else {
-                let shared = body_budget.min(if has_options {
-                    natural_height.max(px(340.))
-                } else {
-                    natural_height
-                });
-                (shared, shared)
-            };
             let mut rail = v_flex()
                 .debug_selector(|| "project-model-provider-rail".into())
                 .w(rail_width)
@@ -295,10 +283,26 @@ impl ProjectView {
                                     .child(title.clone()),
                             )
                         })
-                        .tooltip(title.clone())
+                        .when_some(
+                            visuals::instance_badge(provider, &snapshot.catalog.providers),
+                            |button, badge| {
+                                button.child(
+                                    div()
+                                        .debug_selector(move || {
+                                            format!("project-model-account-suffix-{index}")
+                                        })
+                                        .flex_shrink_0()
+                                        .text_size(px(ui::LABEL))
+                                        .line_height(px(18.))
+                                        .text_color(palette.text_muted)
+                                        .child(badge),
+                                )
+                            },
+                        )
+                        .tooltip(format!("{title} · {}", provider.provider_instance_id))
                         .accessibility_label(format!("Models from {title}"))
-                        .selected(!self.model_ui.favorites && instance == id)
-                        .toggled(!self.model_ui.favorites && instance == id)
+                        .selected(!searching && !self.model_ui.favorites && instance == id)
+                        .toggled(!searching && !self.model_ui.favorites && instance == id)
                         .disabled(self.model_busy)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.model_ui.favorites = false;
@@ -350,7 +354,7 @@ impl ProjectView {
                     .flex_shrink_0()
                     .justify_start()
                     .icon(IconName::Check)
-                    .when(named_providers, |button| button.label("Current model"))
+                    .when(named_providers, |button| button.label("Selected model"))
                     .tooltip("Show current model")
                     .accessibility_label("Show current model")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -412,9 +416,10 @@ impl ProjectView {
                 .min_w_0()
                 .min_h_0()
                 .items_start()
+                .h(list_height)
                 .flex_shrink_0()
                 .gap_2()
-                .when(!searching, |body| body.child(rail))
+                .child(rail)
                 .child(list);
             if options_beside {
                 body = body.child(
@@ -433,7 +438,7 @@ impl ProjectView {
                 );
             }
             panel = panel.child(body);
-            if has_options && !options_beside {
+            if !options_beside {
                 panel = panel.child(
                     div()
                         .id("project-model-option-column")
@@ -451,55 +456,24 @@ impl ProjectView {
                 );
             }
         }
-        if self.connection_details {
-            panel = panel.child(
-                div()
-                    .flex_shrink_0()
-                    .max_h(px(32.))
-                    .overflow_hidden()
-                    .text_size(px(12.))
-                    .text_color(palette.text_muted)
-                    .debug_selector(|| "project-model-scheduler-limit".into())
-                    .child(okilum_t3::models::SCHEDULED_TASK_LIMIT),
-            );
-        }
         panel.into_any_element()
     }
 
     fn render_picker_provider_mark(
         &self,
         provider: &okilum_t3::ProviderCapability,
-        providers: &[okilum_t3::ProviderCapability],
-        cx: &App,
+        _: &[okilum_t3::ProviderCapability],
+        _: &App,
     ) -> AnyElement {
-        let mark = div()
-            .relative()
-            .size(px(20.))
+        // Original brand artwork remains unobscured. Account identities belong
+        // beside the name (including the compact rail), never over the logo.
+        let instance = provider.provider_instance_id.clone();
+        div()
+            .debug_selector(move || format!("project-model-provider-logo-{instance}"))
+            .size(px(18.))
             .flex_shrink_0()
-            .child(visuals::provider_visual(&provider.driver_kind, px(20.)));
-        if let Some(badge) = visuals::instance_badge(provider, providers) {
-            let palette = brand::palette(cx);
-            mark.child(
-                div()
-                    .absolute()
-                    .right(px(-2.))
-                    .bottom(px(-2.))
-                    .min_w(px(12.))
-                    .h(px(12.))
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(12.))
-                    .line_height(px(12.))
-                    .bg(palette.surface_raised)
-                    .text_color(palette.text_muted)
-                    .child(badge),
-            )
+            .child(visuals::provider_visual(&provider.driver_kind, px(18.)))
             .into_any_element()
-        } else {
-            mark.into_any_element()
-        }
     }
 
     fn render_model_choice(
