@@ -108,19 +108,23 @@ fn root_list_indent_moves_numbered_bulleted_nested_and_wrapped_text_as_one_unit(
                         .all(|point| point.x <= text.bounds().right() + px(1.)),
                     "list text stays inside the viewport"
                 );
-                let rows = positions
-                    .into_iter()
-                    .filter(|point| point.y > new.y)
-                    .collect::<Vec<_>>();
+                let mut rows = std::collections::BTreeMap::<u32, Pixels>::new();
+                for point in positions.into_iter().filter(|point| point.y > new.y) {
+                    rows.entry(f32::from(point.y).to_bits())
+                        .and_modify(|left| *left = (*left).min(point.x))
+                        .or_insert(point.x);
+                }
                 assert!(!rows.is_empty(), "long item must actually wrap");
-                let left = rows
-                    .iter()
-                    .map(|point| f32::from(point.x))
-                    .fold(f32::INFINITY, f32::min);
-                assert!(
-                    (left - f32::from(new.x)).abs() < 0.1,
-                    "wrapped rows must hang under their own text"
-                );
+                // GPUI's position_for_index has inclusive wrap-end affinity:
+                // the first byte of a new row maps to the preceding row's end.
+                // With the headless uniform NoopTextSystem, its first available
+                // position is therefore exactly one glyph past the row origin.
+                let advance = text.rendered_position_for_source(*id, 1).unwrap().x - new.x;
+                assert!(advance > px(0.), "glyph-width positive control");
+                for left in rows.values() {
+                    assert!((*left - new.x - advance).abs() < px(0.1),
+                        "segment{index}: wrapped row left={left:?}, body={new:?}, glyph={advance:?}");
+                }
             });
         }
     }
