@@ -182,8 +182,13 @@ fn model_controls_confirm_readback_and_preserve_draft_on_gateway_refusal(cx: &mu
         "model names share a left edge regardless of label width"
     );
     assert!(
-        first_label.origin.x - dropdown.origin.x < px(180.),
-        "model names must align inside the provider rail"
+        {
+            let choices = visual.debug_bounds("project-model-choices").unwrap();
+            first_label.left() >= choices.left()
+                && first_label.left() - choices.left() <= px(64.)
+                && first_label.right() <= choices.right()
+        },
+        "model names align within their own readable model column beside the account rail"
     );
     assert!(
         gateway.model_writes.lock().unwrap().is_empty(),

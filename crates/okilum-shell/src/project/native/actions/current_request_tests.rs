@@ -279,8 +279,9 @@ fn pinned_long_question_preserves_interior_history_and_custom_choice_exclusivity
     let composer = visual.debug_bounds("project-chat-composer").unwrap();
     assert!(panel.size.height <= px(280.));
     assert!(
-        panel.bottom() <= composer.origin.y,
-        "current request is outside history, above composer"
+        panel.top() >= composer.top()
+            && panel.bottom() <= visual.debug_bounds("project-composer-input").unwrap().top(),
+        "current request is outside history, inside the message surface above text entry"
     );
     let after = bounds(visual, &format!("project-message-{position}"))
         .unwrap()
