@@ -49,7 +49,7 @@ fn signal_owned_group(
 }
 
 fn inspect_leader(pid: Pid) -> Result<GroupLeader> {
-    let started = scan::started(pid.as_raw() as u32)?;
+    let started = scan::started(pid.as_raw_pid() as u32)?;
     let group = getpgid(Some(pid))?;
     // Holding a Child value alone does not prove the PID is reserved: an
     // external waiter or SIGCHLD auto-reaping may already have released it.
