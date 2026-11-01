@@ -14,6 +14,7 @@ pub(in crate::project) struct RequestCard {
     actions: Entity<Actions>,
     item: Arc<serde_json::Value>,
     local: bool,
+    request_revision: u64,
     _actions: Subscription,
 }
 impl RequestCard {
@@ -23,11 +24,21 @@ impl RequestCard {
         local: bool,
         cx: &mut Context<Self>,
     ) -> Self {
-        let observation = cx.observe(&actions, |_, _, cx| cx.notify());
+        let request_revision = actions.read(cx).request_revision;
+        let observation = cx.observe(&actions, |this, actions, cx| {
+            let actions = actions.read(cx);
+            // A pinned history summary has no draft controls. Only request
+            // presentation changes invalidate it, never answer keystrokes.
+            if !actions.pinned || this.request_revision != actions.request_revision {
+                this.request_revision = actions.request_revision;
+                cx.notify();
+            }
+        });
         Self {
             actions,
             item,
             local,
+            request_revision,
             _actions: observation,
         }
     }
@@ -163,6 +174,7 @@ pub(crate) struct Actions {
     inputs: HashMap<(String, String), Entity<InputState>>,
     selections: HashMap<(String, String), Vec<String>>,
     subscriptions: HashMap<(String, String), Subscription>,
+    request_revision: u64,
     busy: bool,
     enabled: bool,
     revision: u64,
@@ -183,6 +195,7 @@ impl Actions {
             inputs: HashMap::new(),
             selections: HashMap::new(),
             subscriptions: HashMap::new(),
+            request_revision: 0,
             busy: false,
             enabled: false,
             revision: 0,
@@ -200,6 +213,7 @@ impl Actions {
             return false;
         }
         self.pinned = pinned;
+        self.request_revision = self.request_revision.wrapping_add(1);
         cx.notify();
         true
     }
@@ -225,6 +239,7 @@ impl Actions {
         self.records.clear();
         self.error = None;
         self.busy = false;
+        self.request_revision = self.request_revision.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
         true
@@ -288,6 +303,7 @@ impl Actions {
             self.display_requests = state.requests.clone();
         }
         self.state = state;
+        self.request_revision = self.request_revision.wrapping_add(1);
         cx.notify();
     }
     fn current_request(&self) -> Option<(&Request, usize)> {
