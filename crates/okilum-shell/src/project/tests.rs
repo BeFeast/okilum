@@ -1413,3 +1413,81 @@ fn reconnect_browser_guidance_opens_only_the_entered_t3_origin(cx: &mut TestAppC
     );
     assert!(gateway.sends.lock().unwrap().is_empty());
 }
+
+#[gpui::test]
+fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together(
+    cx: &mut TestAppContext,
+) {
+    use okilum_t3::stream::{NativeClient, NativeToken};
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(fixture::Fake::default());
+    let (root, visual) = cx.add_window_view(|window,cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture::view(temp.path().into(),gateway.clone(),window,cx);
+            view.active=false;
+            let env=view.environment.clone().unwrap();
+            let token=NativeToken::from_secret(&env,&serde_json::to_vec(&serde_json::json!({"origin":env.origin(),"access_token":"layout-fixture","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read orchestration:operate"})).unwrap()).unwrap();
+            view.native.set_detail_test_client(Arc::new(NativeClient::new(env,token,Duration::from_millis(10)).unwrap()));
+            let target=view.manager_model_target().unwrap();
+            view.models=Some(target.load(gateway.as_ref()).unwrap());
+            view.model_target=Some(target);
+            view.native.actions.update(cx,|actions,cx| actions.set_state(okilum_t3::actions::State { ready:true,active_run:Some("layout-run".into()),..Default::default() },window,cx));
+            view
+        });
+        Root::new(view,window,cx)
+    });
+    visual.simulate_resize(size(px(320.), px(900.)));
+    visual.run_until_parked();
+    let bounds = |selector| {
+        visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing visible {selector}"))
+    };
+    let header = bounds("project-chat-header");
+    let composer = bounds("project-chat-composer");
+    let model = bounds("project-manager-model");
+    let input = bounds("project-composer-input");
+    let stop = bounds("project-interrupt");
+    assert!(
+        header.size.height <= px(56.),
+        "identity has one compact row: {header:?}"
+    );
+    assert!(
+        header.bottom() < model.top(),
+        "model configuration belongs to the composer, not the identity header"
+    );
+    assert!(
+        model.top() >= composer.top() && model.bottom() <= input.top(),
+        "model and textarea form one message area"
+    );
+    assert!(
+        input.size.width >= px(240.),
+        "text entry keeps the full narrow-panel width: {input:?}"
+    );
+    assert!(
+        stop.bottom() <= composer.top(),
+        "the active run action stays beside the message area"
+    );
+    for selector in [
+        "project-manager-title",
+        "project-chat-status",
+        "project-open-t3",
+        "project-manager-model",
+        "project-interrupt",
+        "project-attach",
+        "project-mode-Send",
+        "project-mode-Queue",
+        "project-mode-Steer",
+        "project-send",
+    ] {
+        let control = bounds(selector);
+        assert!(
+            control.left() >= px(0.) && control.right() <= px(320.) && control.bottom() <= px(900.),
+            "control escaped narrow panel: {selector} {control:?}"
+        );
+    }
+    assert!(bounds("project-attach").top() >= input.bottom());
+    assert!(bounds("project-send").top() >= input.bottom());
+    let _ = root;
+}

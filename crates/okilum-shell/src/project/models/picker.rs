@@ -6,6 +6,7 @@ impl ProjectView {
         let mut panel = v_flex()
             .debug_selector(|| "project-model-panel".into())
             .w(px(440.))
+            .max_w_full()
             .max_h(px(360.))
             .gap_2()
             .child(

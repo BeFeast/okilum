@@ -912,10 +912,10 @@ impl ProjectView {
             );
         }
         view = view.child(self.render_native_recovery(window, cx));
-        if self.native_actions_pinned() {
-            view.into_any_element()
-        } else {
+        if self.executors_open {
             view.child(self.native.actions.clone()).into_any_element()
+        } else {
+            view.into_any_element()
         }
     }
 }
