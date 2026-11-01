@@ -17,7 +17,7 @@ fn cf_html(fragment: &str) -> String {
         header(start, frag_end + after.len(), frag_start, frag_end)
     )
 }
-fn routed(snapshot: Snapshot, mode: router::Mode, source: &str) -> Paste {
+fn routed(snapshot: Snapshot, mode: router::Mode, source: &str) -> Box<router::Routed> {
     let temp = tempfile::tempdir().unwrap();
     route_snapshot(
         snapshot,
@@ -42,11 +42,10 @@ fn html_anchors_keep_different_labels_destinations_and_unicode_offsets() {
     let snapshot = Snapshot {
         plain: Some("Привет label שלום\r\nNext second.".into()),
         html: Some(raw),
+        native: None,
     };
     let decoded = Snapshot::decode(&snapshot.encode()).unwrap();
-    let Paste::Rich(result) = routed(decoded, router::Mode::Smart, "") else {
-        panic!("valid HTML must reach converter");
-    };
+    let result = routed(decoded, router::Mode::Smart, "");
     assert_eq!(result.route, router::Route::RichText);
     let text = result.insert.unwrap();
     assert!(
@@ -63,7 +62,7 @@ fn html_anchors_keep_different_labels_destinations_and_unicode_offsets() {
     );
 }
 #[test]
-fn absent_or_malformed_html_retains_declared_plain_text() {
+fn absent_or_malformed_html_uses_normalized_plain_router_fallback() {
     for html in [
         None,
         Some("<a href='https://example.org'>not CF_HTML</a>".into()),
@@ -76,11 +75,12 @@ fn absent_or_malformed_html_retains_declared_plain_text() {
             Snapshot {
                 plain: Some("label\r\nsecond".into()),
                 html,
+                native: None,
             },
             router::Mode::Smart,
             "",
         );
-        assert!(matches!(result, Paste::Plain(Some(ref text)) if text == "label\r\nsecond"));
+        assert_eq!(result.insert.as_deref(), Some("label\nsecond"));
     }
 }
 #[test]
@@ -93,12 +93,12 @@ fn plain_and_fenced_code_routes_never_convert_html() {
             Snapshot {
                 plain: Some("label\r\nraw".into()),
                 html: Some(cf_html("<a href='https://example.org/target'>label</a>")),
+                native: None,
             },
             mode,
             source,
         );
-        let _ = route;
-        assert!(matches!(result, Paste::Plain(Some(ref text)) if text == "label\r\nraw"));
+        assert_eq!(result.route, route);
     }
 }
 #[test]
@@ -129,7 +129,15 @@ fn bad_byte_offsets_and_frames_are_not_accepted_as_html() {
         Some("\u{feff}exact\r\nשלום\rline".into()),
     ] {
         let expected = plain.clone();
-        let decoded = Snapshot::decode(&Snapshot { plain, html: None }.encode()).unwrap();
+        let decoded = Snapshot::decode(
+            &Snapshot {
+                plain,
+                html: None,
+                native: None,
+            }
+            .encode(),
+        )
+        .unwrap();
         assert_eq!(decoded.plain, expected);
     }
 }
@@ -154,7 +162,8 @@ fn no_html_context_and_plain_flavor_limit_remain_supported() {
         Snapshot::decode(
             &Snapshot {
                 plain: Some(text.clone()),
-                html: None
+                html: None,
+                native: None
             }
             .encode()
         )
@@ -165,7 +174,8 @@ fn no_html_context_and_plain_flavor_limit_remain_supported() {
     assert!(Snapshot::decode(
         &Snapshot {
             plain: Some("x".repeat(MAX_BYTES + 1)),
-            html: None
+            html: None,
+            native: None
         }
         .encode()
     )
@@ -240,6 +250,7 @@ fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppC
             Ok(Snapshot {
                 plain: Some("Docs label".into()),
                 html: Some(raw.clone()),
+                native: None,
             })
         }),
     );
@@ -272,12 +283,12 @@ fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppC
     visual.run_until_parked();
     assert_eq!(
         reads.load(Ordering::SeqCst),
-        1,
-        "plain command skips CF_HTML acquisition"
+        2,
+        "plain command acquires metadata; router skips CF_HTML bytes"
     );
     assert_eq!(
         input.read_with(visual, |i, _| i.value().to_string()),
-        "plain label\nbefore target after\n"
+        "Docs labelbefore target after\n"
     );
     visual.dispatch_action(Undo);
     visual.run_until_parked();
@@ -290,12 +301,12 @@ fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppC
     visual.run_until_parked();
     assert_eq!(
         reads.load(Ordering::SeqCst),
-        1,
-        "fenced code skips CF_HTML acquisition"
+        3,
+        "fenced code acquires metadata; router skips CF_HTML bytes"
     );
     assert_eq!(
         input.read_with(visual, |i, _| i.value().to_string()),
-        "```\nplain label\n"
+        "```\nDocs label"
     );
 }
 
@@ -422,7 +433,9 @@ fn deferred_offer_reaches_editor(cx: &mut gpui::TestAppContext, data_image: bool
         let mut png = std::io::Cursor::new(Vec::new());
         image.write_to(&mut png, ::image::ImageFormat::Png).unwrap();
         let data = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
-        cf_html(&format!("<p><a href='https://example.org/deferred'>Docs label</a><img alt='dot' src='data:image/png;base64,{data}'></p>"))
+        cf_html(&format!(
+            "<p><a href='https://example.org/deferred'>Docs label</a><img alt='dot' src='data:image/png;base64,{data}'></p>"
+        ))
     } else {
         cf_html(&format!(
             "<p><a href='https://example.org/deferred'>Docs label</a> {}</p>",
@@ -442,6 +455,7 @@ fn deferred_offer_reaches_editor(cx: &mut gpui::TestAppContext, data_image: bool
             Ok(Snapshot {
                 plain: Some("Docs label".into()),
                 html: Some(raw.clone()),
+                native: None,
             })
         }),
     );
@@ -490,4 +504,210 @@ fn empty_caret_large_html_commits_deferred_paste(cx: &mut gpui::TestAppContext) 
 #[gpui::test]
 fn empty_caret_data_image_commits_deferred_paste(cx: &mut gpui::TestAppContext) {
     deferred_offer_reaches_editor(cx, true);
+}
+
+// Same Board and router as Windows, with a mock transport and no OS clipboard.
+fn lazy_paste(
+    types: &[&str],
+    flavors: Vec<(&str, Vec<u8>)>,
+    mode: router::Mode,
+    source: &str,
+    selection: std::ops::Range<usize>,
+    root: &std::path::Path,
+) -> (Box<router::Routed>, Vec<String>) {
+    use std::sync::{Arc, Mutex};
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let observed = reads.clone();
+    let flavors: std::collections::BTreeMap<String, Vec<u8>> = flavors
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect();
+    let read: ReadFlavor = Arc::new(move |kind| {
+        observed.lock().unwrap().push(kind.to_owned());
+        Ok(flavors.get(kind).cloned())
+    });
+    let snapshot = Snapshot {
+        native: Some(NativeOffer {
+            sequence: 42,
+            types: types.iter().map(|kind| (*kind).into()).collect(),
+        }),
+        ..Default::default()
+    };
+    let result = route_snapshot_with(
+        snapshot,
+        &router::RouteContext {
+            image_options: crate::note_paste::image_import::Options::disabled(),
+            mode,
+            source,
+            selection,
+            vault_root: root,
+            note_rel: Some("note.md"),
+            stamp: "20261101120000",
+            ask_above: None,
+        },
+        Some(read),
+    )
+    .unwrap();
+    let reads = reads.lock().unwrap().clone();
+    (result, reads)
+}
+
+#[test]
+fn windows_plain_and_code_commands_read_only_unicode_even_with_images_and_html() {
+    let vault = tempfile::tempdir().unwrap();
+    for (mode, source, route) in [
+        (router::Mode::Plain, "", router::Route::PlainText),
+        (
+            router::Mode::Smart,
+            "\u{0060}\u{0060}\u{0060}\n",
+            router::Route::CodeBlockText,
+        ),
+    ] {
+        let (result, reads) = lazy_paste(
+            &[offer::UTF8_TEXT, offer::HTML[0], "public.png"],
+            vec![(offer::UTF8_TEXT, b"raw\ntext".to_vec())],
+            mode,
+            source,
+            source.len()..source.len(),
+            vault.path(),
+        );
+        assert_eq!(result.route, route);
+        assert!(
+            reads.iter().any(|kind| kind == offer::UTF8_TEXT),
+            "positive acquisition control"
+        );
+        assert!(
+            reads
+                .iter()
+                .all(|kind| kind == VERIFY || kind == offer::UTF8_TEXT),
+            "{reads:?}"
+        );
+    }
+}
+
+#[test]
+fn windows_without_html_routes_tsv_ide_selection_and_titled_links() {
+    let vault = tempfile::tempdir().unwrap();
+    for (plain, code, mode, source, selection, route, expected) in [
+        (
+            "a\tb\n1\t2",
+            None,
+            router::Mode::Smart,
+            "",
+            0..0,
+            router::Route::Table,
+            "| a | b |",
+        ),
+        (
+            "let a = 1;\nlet b = 2;",
+            Some(r#"{"mode":"rust"}"#),
+            router::Mode::Smart,
+            "",
+            0..0,
+            router::Route::IdeCode,
+            "\u{0060}\u{0060}\u{0060}rust",
+        ),
+        (
+            "https://example.org",
+            None,
+            router::Mode::Smart,
+            "label",
+            0..5,
+            router::Route::SelectionLink,
+            "[label](https://example.org",
+        ),
+        (
+            "https://example.org",
+            None,
+            router::Mode::TitledLink,
+            "",
+            0..0,
+            router::Route::TitledLink,
+            "https://example.org",
+        ),
+    ] {
+        let mut types = vec![offer::UTF8_TEXT];
+        let mut flavors = vec![(offer::UTF8_TEXT, plain.as_bytes().to_vec())];
+        if let Some(code) = code {
+            types.extend([offer::VSCODE_EDITOR_DATA, offer::HTML[0]]);
+            flavors.push((offer::VSCODE_EDITOR_DATA, code.as_bytes().to_vec()));
+        }
+        let (result, reads) = lazy_paste(&types, flavors, mode, source, selection, vault.path());
+        assert_eq!(result.route, route);
+        assert!(
+            result.insert.as_deref().unwrap().contains(expected),
+            "{result:?}"
+        );
+        assert!(
+            !reads.iter().any(|kind| kind == offer::HTML[0]),
+            "{reads:?}"
+        );
+    }
+}
+
+#[test]
+fn windows_explorer_files_win_without_reading_text_or_image_payloads() {
+    let vault = tempfile::tempdir().unwrap();
+    let file = vault.path().join("diagram.png");
+    std::fs::write(&file, b"existing attachment").unwrap();
+    let urls = vec![url::Url::from_file_path(&file).unwrap().to_string()];
+    let (result, reads) = lazy_paste(
+        &[offer::FILE_URL, offer::UTF8_TEXT, "public.png"],
+        vec![(offer::FILE_URL, serde_json::to_vec(&urls).unwrap())],
+        router::Mode::Smart,
+        "",
+        0..0,
+        vault.path(),
+    );
+    assert_eq!(result.route, router::Route::Files);
+    assert!(reads.iter().any(|kind| kind == offer::FILE_URL));
+    assert!(
+        reads
+            .iter()
+            .all(|kind| kind == VERIFY || kind == offer::FILE_URL),
+        "{reads:?}"
+    );
+}
+
+#[test]
+fn windows_png_is_saved_only_when_image_route_wins() {
+    let vault = tempfile::tempdir().unwrap();
+    let image = ::image::DynamicImage::ImageRgba8(::image::RgbaImage::from_pixel(
+        1,
+        1,
+        ::image::Rgba([0, 0, 0, 255]),
+    ));
+    let mut png = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut png, ::image::ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    for (plain, expected_route) in [
+        ("", router::Route::Image),
+        ("actual text", router::Route::Text),
+    ] {
+        let (result, reads) = lazy_paste(
+            &[offer::UTF8_TEXT, "public.png", "com.microsoft.bmp"],
+            vec![
+                (offer::UTF8_TEXT, plain.as_bytes().to_vec()),
+                ("public.png", png.clone()),
+            ],
+            router::Mode::Smart,
+            "",
+            0..0,
+            vault.path(),
+        );
+        assert_eq!(result.route, expected_route);
+        assert_eq!(
+            reads.iter().any(|kind| kind == "public.png"),
+            expected_route == router::Route::Image
+        );
+        assert!(
+            !reads.iter().any(|kind| kind == "com.microsoft.bmp"),
+            "PNG wins over DIB"
+        );
+        if expected_route == router::Route::Image {
+            assert_eq!(result.saved_files.len(), 1);
+            assert_eq!(std::fs::read(&result.saved_files[0]).unwrap(), png);
+            assert!(result.insert.unwrap().contains("![["));
+        }
+    }
 }

@@ -82,20 +82,90 @@ pub(super) fn read_note(
     super::windows_note_clipboard::Snapshot::decode(&frame)
 }
 
+#[cfg(windows)]
+const FLAVOR_HELPER_ARG: &str = "--internal-windows-note-flavor-read";
+
+#[cfg(windows)]
+pub(super) fn read_note_flavor(
+    request: &gpui_component::input::clipboard::ClipboardReadRequest,
+    deadline: std::time::Instant,
+    sequence: &std::sync::atomic::AtomicU32,
+    kind: &str,
+) -> Result<Option<Vec<u8>>, Error> {
+    use base64::Engine as _;
+    use std::{os::windows::process::CommandExt, process::Command};
+    #[cfg(test)]
+    let executable = std::env::var_os("OKILUM_TEST_CLIPBOARD_EXECUTABLE")
+        .map(std::path::PathBuf::from)
+        .ok_or(Error::Io)?;
+    #[cfg(not(test))]
+    let executable = std::env::current_exe().map_err(|_| Error::Io)?;
+    let frame = super::clipboard_process::read_with_limit(
+        Command::new(executable)
+            .arg(FLAVOR_HELPER_ARG)
+            .arg(
+                sequence
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .to_string(),
+            )
+            .arg(kind)
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW),
+        deadline,
+        || request.is_cancelled(),
+        (super::windows_note_clipboard::formats::MAX_IMAGE + 14).div_ceil(3) * 4 + 32,
+    )?;
+    let frame = frame.ok_or(Error::Io)?;
+    let (rendered, payload) = frame.split_once(':').ok_or(Error::Io)?;
+    let rendered = rendered.parse::<u32>().map_err(|_| Error::Io)?;
+    if rendered == 0 {
+        return Err(Error::Io);
+    }
+    sequence.store(rendered, std::sync::atomic::Ordering::Relaxed);
+    if payload == "-" {
+        return Ok(None);
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map(Some)
+        .map_err(|_| Error::Io)
+}
+
 /// Called before Velopack, configuration, background threads and GUI startup.
 #[cfg(windows)]
 pub fn helper_entry() -> Option<i32> {
     use std::io::Write;
     let mut args = std::env::args_os().skip(1);
     let first = args.next();
+    let flavor = first.as_deref() == Some(std::ffi::OsStr::new(FLAVOR_HELPER_ARG));
     let note = first.as_deref() == Some(std::ffi::OsStr::new(NOTE_HELPER_ARG));
-    if !note && first.as_deref() != Some(std::ffi::OsStr::new(HELPER_ARG)) {
+    if !flavor && !note && first.as_deref() != Some(std::ffi::OsStr::new(HELPER_ARG)) {
         return None;
     }
+    let selected = if flavor {
+        let sequence = args
+            .next()
+            .and_then(|s| s.to_str().and_then(|s| s.parse::<u32>().ok()));
+        let kind = args.next().and_then(|s| s.into_string().ok());
+        match (sequence, kind) {
+            (Some(sequence), Some(kind)) => Some((sequence, kind)),
+            _ => return Some(2),
+        }
+    } else {
+        None
+    };
     if args.next().is_some() {
         return Some(2);
     }
-    let result = if note {
+    let result = if let Some((sequence, kind)) = selected {
+        use base64::Engine as _;
+        native::read_selected(sequence, &kind).map(|(rendered, data)| {
+            Some(format!(
+                "{rendered}:{}",
+                data.map(|data| base64::engine::general_purpose::STANDARD.encode(data))
+                    .unwrap_or_else(|| "-".into())
+            ))
+        })
+    } else if note {
         native::read_note().map(|snapshot| Some(snapshot.encode()))
     } else {
         native::read()
@@ -195,50 +265,186 @@ mod native {
             return Err(Error::ChangedOffer);
         }
         let owner = unsafe { GetClipboardOwner() };
-        let (plain, text_sequence) = read_open()?;
-        if unsafe { GetClipboardSequenceNumber() } != text_sequence {
-            return Err(Error::ChangedOffer);
+        // Presence only: no GetClipboardData (including delayed rendering).
+        let mut types = Vec::new();
+        for kind in [
+            offer::UTF8_TEXT,
+            offer::FILE_URL,
+            "public.png",
+            "com.microsoft.bmp",
+            offer::HTML[0],
+            offer::VSCODE_EDITOR_DATA,
+            offer::URL,
+        ] {
+            if format_for(kind).is_some() {
+                types.push(kind.to_owned());
+            }
         }
-        let (html, sequence) = read_html()?;
-        if unsafe { GetClipboardSequenceNumber() } != sequence
+        if types.iter().any(|kind| kind == offer::HTML[0]) {
+            types.push(offer::CHROMIUM_SOURCE_URL.to_owned());
+        }
+        if unsafe { GetClipboardSequenceNumber() } != before
             || unsafe { GetClipboardOwner() } != owner
         {
             return Err(Error::ChangedOffer);
         }
-        Ok(super::super::windows_note_clipboard::Snapshot { plain, html })
+        Ok(super::super::windows_note_clipboard::Snapshot {
+            native: Some(super::super::windows_note_clipboard::NativeOffer {
+                sequence: before,
+                types,
+            }),
+            ..Default::default()
+        })
     }
 
-    fn read_html() -> Result<(Option<String>, u32), Error> {
-        let name = "HTML Format\0".encode_utf16().collect::<Vec<_>>();
-        // Registering the name does not write or replace any clipboard data.
-        let format = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
-        if format == 0 || unsafe { IsClipboardFormatAvailable(format) } == 0 {
-            return Ok((None, unsafe { GetClipboardSequenceNumber() }));
+    use super::super::windows_note_clipboard::{formats, VERIFY};
+    use crate::note_paste::offer;
+
+    fn registered(name: &str) -> Option<u32> {
+        let wide = name.encode_utf16().chain([0]).collect::<Vec<_>>();
+        let format = unsafe { RegisterClipboardFormatW(wide.as_ptr()) };
+        (format != 0).then_some(format)
+    }
+    fn format_for(kind: &str) -> Option<u32> {
+        let candidates: Vec<u32> = match kind {
+            offer::UTF8_TEXT => vec![CF_UNICODETEXT as u32],
+            "public.html" => registered("HTML Format").into_iter().collect(),
+            "public.png" => registered("PNG").into_iter().collect(),
+            // CF_DIBV5 before CF_DIB.
+            "com.microsoft.bmp" => vec![17, 8],
+            // CF_HDROP before the legacy single-file registered format.
+            offer::FILE_URL => std::iter::once(15).chain(registered("FileNameW")).collect(),
+            offer::VSCODE_EDITOR_DATA => registered("vscode-editor-data").into_iter().collect(),
+            offer::URL => registered("UniformResourceLocatorW").into_iter().collect(),
+            _ => return None,
+        };
+        candidates
+            .into_iter()
+            .find(|format| unsafe { IsClipboardFormatAvailable(*format) } != 0)
+    }
+
+    pub(super) fn read_selected(
+        expected: u32,
+        kind: &str,
+    ) -> Result<(u32, Option<Vec<u8>>), Error> {
+        let before = unsafe { GetClipboardSequenceNumber() };
+        if expected == 0 || before != expected {
+            return Err(Error::ChangedOffer);
         }
-        let handle = unsafe { GetClipboardData(format) };
-        let sequence = unsafe { GetClipboardSequenceNumber() };
-        if sequence == 0 {
+        if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
             return Err(Error::Unavailable);
         }
-        if handle.is_null() {
-            return Ok((None, sequence));
+        let _clipboard = Clipboard;
+        if unsafe { GetClipboardSequenceNumber() } != expected {
+            return Err(Error::ChangedOffer);
         }
+        let owner = unsafe { GetClipboardOwner() };
+        let mut rendered_sequence = expected;
+        let data = if kind == VERIFY {
+            Some(Vec::new())
+        } else {
+            match format_for(kind) {
+                None => None,
+                Some(format) => {
+                    let handle = unsafe { GetClipboardData(format) };
+                    rendered_sequence = unsafe { GetClipboardSequenceNumber() };
+                    if handle.is_null() {
+                        return Err(Error::Unavailable);
+                    }
+                    if kind == offer::FILE_URL && format == 15 {
+                        Some(drop_files(handle)?)
+                    } else if kind == offer::HTML[0]
+                        && (unsafe { GlobalSize(handle) } == 0
+                            || unsafe { GlobalSize(handle) } > MAX_BYTES + 64)
+                    {
+                        // Invalid/oversized CF_HTML retains the declared plain fallback.
+                        None
+                    } else {
+                        let limit = if matches!(kind, "public.png" | "com.microsoft.bmp") {
+                            formats::MAX_IMAGE
+                        } else {
+                            MAX_BYTES * 2 + 64
+                        };
+                        let bytes = copy_global(handle, limit)?;
+                        Some(match kind {
+                            offer::UTF8_TEXT | offer::URL => formats::unicode(&bytes, MAX_BYTES)?,
+                            offer::FILE_URL => {
+                                let path = String::from_utf8(formats::unicode(&bytes, MAX_BYTES)?)
+                                    .map_err(|_| Error::Io)?;
+                                let url = url::Url::from_file_path(path).map_err(|_| Error::Io)?;
+                                serde_json::to_vec(&vec![url.as_str()]).map_err(|_| Error::Io)?
+                            }
+                            "com.microsoft.bmp" => formats::dib_to_bmp(&bytes)?,
+                            "public.png" => bytes,
+                            _ => {
+                                let end = bytes
+                                    .iter()
+                                    .position(|byte| *byte == 0)
+                                    .unwrap_or(bytes.len());
+                                if end > MAX_BYTES && kind != offer::HTML[0] {
+                                    return Err(Error::TooLarge);
+                                }
+                                bytes[..end].to_vec()
+                            }
+                        })
+                    }
+                }
+            }
+        };
+        // Delayed rendering may increment the sequence while this helper holds
+        // the clipboard open. Return that sequence to pin subsequent reads.
+        if rendered_sequence == 0
+            || unsafe { GetClipboardSequenceNumber() } != rendered_sequence
+            || unsafe { GetClipboardOwner() } != owner
+        {
+            return Err(Error::ChangedOffer);
+        }
+        Ok((rendered_sequence, data))
+    }
+
+    fn copy_global(handle: HGLOBAL, limit: usize) -> Result<Vec<u8>, Error> {
         let size = unsafe { GlobalSize(handle) };
-        if size == 0 || size > MAX_BYTES + 64 {
-            return Ok((None, sequence));
+        if size > limit {
+            return Err(Error::TooLarge);
+        }
+        if size == 0 {
+            return Err(Error::Io);
         }
         let pointer = unsafe { GlobalLock(handle) };
         if pointer.is_null() {
-            return Ok((None, sequence));
+            return Err(Error::Io);
         }
         let _memory = Memory(handle);
-        // SAFETY: this clipboard-owned block is locked and valid for size bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), size) };
-        let end = bytes.iter().position(|&byte| byte == 0).unwrap_or(size);
-        let html = (end <= MAX_BYTES)
-            .then(|| std::str::from_utf8(&bytes[..end]).ok().map(str::to_owned))
-            .flatten();
-        Ok((html, sequence))
+        // SAFETY: clipboard-owned global storage is locked for size bytes.
+        Ok(unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), size) }.to_vec())
+    }
+
+    fn drop_files(handle: HGLOBAL) -> Result<Vec<u8>, Error> {
+        use windows_sys::Win32::UI::Shell::DragQueryFileW;
+        let count = unsafe { DragQueryFileW(handle, u32::MAX, std::ptr::null_mut(), 0) };
+        if count > 4096 {
+            return Err(Error::TooLarge);
+        }
+        let mut urls = Vec::new();
+        let mut total = 0;
+        for index in 0..count {
+            let length = unsafe { DragQueryFileW(handle, index, std::ptr::null_mut(), 0) };
+            if length == 0 || length > 32767 {
+                return Err(Error::Io);
+            }
+            total += (length as usize + 1) * 2;
+            if total > MAX_BYTES {
+                return Err(Error::TooLarge);
+            }
+            let mut path = vec![0u16; length as usize + 1];
+            if unsafe { DragQueryFileW(handle, index, path.as_mut_ptr(), length + 1) } != length {
+                return Err(Error::Io);
+            }
+            let path = String::from_utf16(&path[..length as usize]).map_err(|_| Error::Io)?;
+            let url = url::Url::from_file_path(path).map_err(|_| Error::Io)?;
+            urls.push(url.to_string());
+        }
+        serde_json::to_vec(&urls).map_err(|_| Error::Io)
     }
 
     fn read_open() -> Result<(Option<String>, u32), Error> {

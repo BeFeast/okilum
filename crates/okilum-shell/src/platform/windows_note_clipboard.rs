@@ -1,21 +1,39 @@
-//! Note-only CF_HTML ingestion. No changes to ordinary Windows text fields.
+//! Lazy Windows smart paste. Native reads stay in deadline-bound helpers.
 use crate::note_paste::{
     offer::{self, Pasteboard},
     router,
 };
 use gpui_component::input::clipboard::ClipboardReadError as Error;
 
+pub(super) mod formats;
+
 const MAX_BYTES: usize = offer::MAX_TEXT_BYTES;
 /// Two text flavors plus one presence byte and one separator; no JSON expansion.
-pub(super) const MAX_SNAPSHOT_BYTES: usize = MAX_BYTES * 2 + 2;
+pub(super) const MAX_SNAPSHOT_BYTES: usize = MAX_BYTES * 2 + 64 * 1024;
 
 #[derive(Clone, Default)]
 pub(super) struct Snapshot {
     pub(super) plain: Option<String>,
     pub(super) html: Option<String>,
+    pub(super) native: Option<NativeOffer>,
 }
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct NativeOffer {
+    pub sequence: u32,
+    pub types: Vec<String>,
+}
+
+type ReadFlavor = std::sync::Arc<dyn Fn(&str) -> Result<Option<Vec<u8>>, Error> + Send + Sync>;
+pub(super) const VERIFY: &str = "verify-sequence";
 impl Snapshot {
     pub(super) fn encode(self) -> String {
+        if let Some(native) = self.native {
+            return format!(
+                "N{}",
+                serde_json::to_string(&native).expect("clipboard metadata")
+            );
+        }
         format!(
             "{}{}\0{}",
             if self.plain.is_some() { '1' } else { '0' },
@@ -26,6 +44,16 @@ impl Snapshot {
     pub(super) fn decode(frame: &str) -> Result<Self, Error> {
         if frame.len() > MAX_SNAPSHOT_BYTES {
             return Err(Error::TooLarge);
+        }
+        if let Some(json) = frame.strip_prefix('N') {
+            let native: NativeOffer = serde_json::from_str(json).map_err(|_| Error::Io)?;
+            if native.sequence == 0 || native.types.len() > 32 {
+                return Err(Error::Io);
+            }
+            return Ok(Self {
+                native: Some(native),
+                ..Default::default()
+            });
         }
         let (plain, html) = frame
             .get(1..)
@@ -45,6 +73,7 @@ impl Snapshot {
         Ok(Self {
             plain,
             html: (!html.is_empty()).then(|| html.to_owned()),
+            native: None,
         })
     }
 }
@@ -91,7 +120,7 @@ fn fragment(raw: &str) -> Option<(String, Option<String>)> {
         .lines()
         .find_map(|line| line.strip_prefix("SourceURL:"))
         .and_then(|s| url::Url::parse(s.trim()).ok())
-        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .filter(|u| matches!(u.scheme(), "http" | "https" | "file"))
         .map(|u| u.to_string());
     Some((html.to_owned(), base))
 }
@@ -100,6 +129,11 @@ struct Board {
     plain: Option<String>,
     html: Option<String>,
     base: Option<String>,
+    native: Option<NativeOffer>,
+    read: Option<ReadFlavor>,
+    cache: std::cell::RefCell<std::collections::BTreeMap<String, Option<Vec<u8>>>>,
+    error: std::cell::RefCell<Option<Error>>,
+    failed_sequence: std::cell::Cell<i64>,
 }
 impl From<Snapshot> for Board {
     fn from(snapshot: Snapshot) -> Self {
@@ -112,14 +146,64 @@ impl From<Snapshot> for Board {
             plain: snapshot.plain,
             html,
             base,
+            native: snapshot.native,
+            read: None,
+            cache: Default::default(),
+            error: Default::default(),
+            failed_sequence: Default::default(),
         }
+    }
+}
+impl Board {
+    fn native_data(&self, kind: &str) -> Option<Vec<u8>> {
+        if self.error.borrow().is_some() {
+            return None;
+        }
+        if let Some(data) = self.cache.borrow().get(kind) {
+            return data.clone();
+        }
+        let read = self.read.as_ref()?;
+        let data = match read(kind) {
+            Ok(data) => data,
+            Err(error) => {
+                *self.error.borrow_mut() = Some(error);
+                None
+            }
+        };
+        self.cache
+            .borrow_mut()
+            .insert(kind.to_owned(), data.clone());
+        data
+    }
+    fn native_html(&self) -> Option<(String, Option<String>)> {
+        let raw = self.native_data(offer::HTML[0])?;
+        if raw.len() > MAX_BYTES {
+            return None;
+        }
+        fragment(std::str::from_utf8(&raw).ok()?)
     }
 }
 impl Pasteboard for Board {
     fn change_count(&self) -> i64 {
-        0
-    } // One immutable, owner/sequence-checked offer.
+        let Some(native) = &self.native else {
+            return 0;
+        };
+        if let Some(read) = &self.read {
+            if let Err(error) = read(VERIFY) {
+                *self.error.borrow_mut() = Some(error);
+            }
+            if self.error.borrow().is_some() {
+                let sequence = self.failed_sequence.get() - 1;
+                self.failed_sequence.set(sequence);
+                return sequence;
+            }
+        }
+        i64::from(native.sequence)
+    }
     fn types(&self) -> Vec<String> {
+        if let Some(native) = &self.native {
+            return native.types.clone();
+        }
         [
             (offer::UTF8_TEXT, self.plain.as_ref()),
             (offer::HTML[0], self.html.as_ref()),
@@ -130,9 +214,29 @@ impl Pasteboard for Board {
         .collect()
     }
     fn data(&self, kind: &str) -> Option<Vec<u8>> {
+        if self.native.is_some() {
+            if kind == offer::HTML[0] || kind == offer::CHROMIUM_SOURCE_URL {
+                return self.string(kind).map(String::into_bytes);
+            }
+            return self.native_data(kind);
+        }
         self.string(kind).map(String::into_bytes)
     }
+    fn file_urls(&self) -> Vec<String> {
+        self.native_data(offer::FILE_URL)
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
     fn string(&self, kind: &str) -> Option<String> {
+        if self.native.is_some() {
+            return match kind {
+                "public.html" => self.native_html().map(|(html, _)| html),
+                offer::CHROMIUM_SOURCE_URL => self.native_html().and_then(|(_, base)| base),
+                _ => self
+                    .native_data(kind)
+                    .and_then(|bytes| String::from_utf8(bytes).ok()),
+            };
+        }
         match kind {
             offer::UTF8_TEXT => self.plain.clone(),
             "public.html" => self.html.clone(),
@@ -145,26 +249,30 @@ impl Pasteboard for Board {
     }
 }
 
-enum Paste {
-    Plain(Option<String>),
-    Rich(Box<router::Routed>),
-}
-
-fn wants_rich(mode: router::Mode, source: &str, selection: usize) -> bool {
-    mode == router::Mode::Smart && !crate::note_paste::context::in_fenced_code(source, selection)
-}
+#[cfg(test)]
+mod board_tests;
 
 fn route_snapshot(
     snapshot: Snapshot,
     context: &router::RouteContext,
-) -> Result<Paste, offer::OfferError> {
-    let board = Board::from(snapshot);
-    // No valid CF_HTML: retain the exact declared text, including BOM/CRLF,
-    // rather than enabling unrelated TSV/URL smart-paste routes on Windows.
-    if board.html.is_none() || !wants_rich(context.mode, context.source, context.selection.start) {
-        return Ok(Paste::Plain(board.plain));
+) -> Result<Box<router::Routed>, Error> {
+    route_snapshot_with(snapshot, context, None)
+}
+
+fn route_snapshot_with(
+    snapshot: Snapshot,
+    context: &router::RouteContext,
+    read: Option<ReadFlavor>,
+) -> Result<Box<router::Routed>, Error> {
+    let mut board = Board::from(snapshot);
+    board.read = read;
+    let routed = router::route(&board, context);
+    if let Some(error) = board.error.into_inner() {
+        return Err(error);
     }
-    router::route(&board, context).map(|routed| Paste::Rich(Box::new(routed)))
+    routed
+        .map(Box::new)
+        .map_err(crate::note_paste::clipboard_error)
 }
 
 #[cfg(any(windows, test))]
@@ -248,12 +356,7 @@ mod provider {
             let Ok(mut job) = self.job.lock() else {
                 return Some(Err(Error::Io));
             };
-            *job = wants_rich(
-                note_paste::router_mode(context.mode),
-                &context.source,
-                context.selection.start,
-            )
-            .then(|| Job {
+            *job = Some(Job {
                 context: context.clone(),
                 options: crate::reader_ui_state::image_import_options(cx),
                 ask_above: note_paste::ask_above_bytes(cx),
@@ -271,7 +374,15 @@ mod provider {
                 Err(_) => return Task::ready(Err(Error::Io)),
             };
             let Some(job) = job else {
-                return self.text.read_text(request, cx);
+                let started = Instant::now();
+                let task = self.text.read_text(request, cx);
+                return cx.background_executor().spawn(async move {
+                    let result = task.await;
+                    eprintln!("Paste: windows note route=PlainText types=[CF_UNICODETEXT] bytes={} ms={} ok={}",
+                        result.as_ref().ok().and_then(|text| text.as_ref()).map_or(0, String::len),
+                        started.elapsed().as_millis(), result.is_ok());
+                    result
+                });
             };
             let (root, note, notice, outbox) = (
                 self.root.clone(),
@@ -282,8 +393,28 @@ mod provider {
             let read = self.read.clone();
             let deadline = Instant::now() + super::super::clipboard_process::TIMEOUT;
             cx.background_executor().spawn(async move {
-                let snapshot = read(&request, deadline)?;
+                let started = Instant::now();
+                let snapshot = read(&request, deadline).inspect_err(|error| {
+                    eprintln!("Paste: windows note route=ReadError types=[] bytes=0 ms={} error={error:?}",
+                        started.elapsed().as_millis());
+                })?;
+                let types = snapshot.native.as_ref().map(|native| native.types.clone())
+                    .unwrap_or_else(|| Board::from(snapshot.clone()).types());
+                #[cfg(windows)]
+                let flavor_reader: Option<ReadFlavor> = snapshot.native.as_ref().map(|native| {
+                    let sequence = std::sync::atomic::AtomicU32::new(native.sequence);
+                    let request = request.clone();
+                    Arc::new(move |kind: &str| {
+                        super::super::exact_windows_clipboard::read_note_flavor(
+                            &request, deadline, &sequence, kind,
+                        )
+                    }) as ReadFlavor
+                });
+                #[cfg(not(windows))]
+                let flavor_reader = None;
                 if request.is_cancelled() {
+                    eprintln!("Paste: windows note route=Cancelled types={types:?} bytes=0 ms={}",
+                        started.elapsed().as_millis());
                     return Err(Error::Cancelled);
                 }
                 let stamp = note_paste::attachments::stamp_now();
@@ -297,25 +428,21 @@ mod provider {
                     stamp: &stamp,
                     ask_above: job.ask_above,
                 };
-                let mut routed = match route_snapshot(snapshot, &context)
-                    .map_err(note_paste::clipboard_error)?
-                {
-                    Paste::Plain(text) => {
-                        return if request.is_cancelled() {
-                            Err(Error::Cancelled)
-                        } else {
-                            Ok(text)
-                        };
-                    }
-                    Paste::Rich(routed) => *routed,
-                };
+                let mut routed = *route_snapshot_with(snapshot, &context, flavor_reader)
+                    .inspect_err(|error| {
+                        eprintln!("Paste: windows note route=ReadError types={types:?} bytes=0 ms={} error={error:?}",
+                            started.elapsed().as_millis());
+                    })?;
+                eprintln!(
+                    "Paste: windows note route={:?} bytes={} types={:?} ms={}",
+                    routed.route,
+                    routed.bytes,
+                    routed.types,
+                    started.elapsed().as_millis()
+                );
                 if request.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                eprintln!(
-                    "Paste: windows note route={:?} bytes={} types={:?}",
-                    routed.route, routed.bytes, routed.types
-                );
                 let failed = routed
                     .notice
                     .as_ref()
