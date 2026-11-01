@@ -1,0 +1,125 @@
+diff --git a/crates/base/src/color_picker.rs b/crates/base/src/color_picker.rs
+--- a/crates/base/src/color_picker.rs
++++ b/crates/base/src/color_picker.rs
+@@ -68,21 +68,21 @@
+ /// Formats a color as `#RRGGBB`, or `#RRGGBBAA` when it is translucent.
+ fn hex_string(color: Hsla) -> String {
+     let rgba = Rgba::from(color);
+-    let channel = |value: f32| (value * 255.) as u32;
++    let rgb_channel = |value: f32| (value * 255.).round() as u32;
+     if rgba.a < 1. {
+         format!(
+             "#{:02X}{:02X}{:02X}{:02X}",
+-            channel(rgba.r),
+-            channel(rgba.g),
+-            channel(rgba.b),
+-            channel(rgba.a)
++            rgb_channel(rgba.r),
++            rgb_channel(rgba.g),
++            rgb_channel(rgba.b),
++            (rgba.a * 255.) as u32
+         )
+     } else {
+         format!(
+             "#{:02X}{:02X}{:02X}",
+-            channel(rgba.r),
+-            channel(rgba.g),
+-            channel(rgba.b)
++            rgb_channel(rgba.r),
++            rgb_channel(rgba.g),
++            rgb_channel(rgba.b)
+         )
+     }
+ }
+@@ -806,6 +806,21 @@
+     }
+
+     #[test]
++    fn rgb_hex_preserves_authored_bytes_and_alpha_quantization() {
++        for (rgb, expected) in [
++            (0x16a34a, "#16A34A"), (0x3a7bd5, "#3A7BD5"),
++            (0x000000, "#000000"), (0xffffff, "#FFFFFF"),
++            (0xff0000, "#FF0000"), (0x00ff00, "#00FF00"), (0x0000ff, "#0000FF"),
++        ] {
++            let color: Hsla = gpui::rgb(rgb).into();
++            assert_eq!(hex_string(color), expected);
++            for (alpha, suffix) in [(0., "00"), (0.1, "19"), (0.5, "7F"), (128. / 255., "80")] {
++                assert_eq!(hex_string(Hsla { a: alpha, ..color }), format!("{expected}{suffix}"));
++            }
++        }
++    }
++
++    #[test]
+     fn formats_alpha_only_when_translucent() {
+         assert_eq!(hex_string(hsla(0., 1., 0.5, 1.)), "#FF0000");
+         assert_eq!(hex_string(hsla(0., 1., 0.5, 0.5)), "#FF00007F");
+diff --git a/crates/component/src/theme/color.rs b/crates/component/src/theme/color.rs
+--- a/crates/component/src/theme/color.rs
++++ b/crates/component/src/theme/color.rs
+@@ -272,18 +272,18 @@
+         if rgb.a < 1. {
+             return format!(
+                 "#{:02X}{:02X}{:02X}{:02X}",
+-                ((rgb.r * 255.) as u32),
+-                ((rgb.g * 255.) as u32),
+-                ((rgb.b * 255.) as u32),
++                ((rgb.r * 255.).round() as u32),
++                ((rgb.g * 255.).round() as u32),
++                ((rgb.b * 255.).round() as u32),
+                 ((self.a * 255.) as u32)
+             );
+         }
+
+         format!(
+             "#{:02X}{:02X}{:02X}",
+-            ((rgb.r * 255.) as u32),
+-            ((rgb.g * 255.) as u32),
+-            ((rgb.b * 255.) as u32)
++            ((rgb.r * 255.).round() as u32),
++            ((rgb.g * 255.).round() as u32),
++            ((rgb.b * 255.).round() as u32)
+         )
+     }
+
+@@ -938,6 +938,21 @@
+     }
+
+     #[test]
++    fn rgb_hex_preserves_authored_bytes_and_alpha_quantization() {
++        for (rgb, expected) in [
++            (0x16a34a, "#16A34A"), (0x3a7bd5, "#3A7BD5"),
++            (0x000000, "#000000"), (0xffffff, "#FFFFFF"),
++            (0xff0000, "#FF0000"), (0x00ff00, "#00FF00"), (0x0000ff, "#0000FF"),
++        ] {
++            let color: Hsla = gpui::rgb(rgb).into();
++            assert_eq!(color.to_hex(), expected);
++            for (alpha, suffix) in [(0., "00"), (0.1, "19"), (0.5, "7F"), (128. / 255., "80")] {
++                assert_eq!(Hsla { a: alpha, ..color }.to_hex(), format!("{expected}{suffix}"));
++            }
++        }
++    }
++
++    #[test]
+     fn test_to_hex_string() {
+         let color: Hsla = rgb(0xf8fafc).into();
+         assert_eq!(color.to_hex(), "#F8FAFC");
+@@ -990,7 +1005,7 @@
+
+         assert_eq!(red.mix(blue, 0.5).to_hex(), "#FF00FF");
+         assert_eq!(green.mix(red, 0.5).to_hex(), "#FFFF00");
+-        assert_eq!(blue.mix(yellow, 0.2).to_hex(), "#0098FF");
++        assert_eq!(blue.mix(yellow, 0.2).to_hex(), "#0099FF");
+     }
+
+     #[test]
+@@ -1051,8 +1066,8 @@
+         assert_eq!(format!("{:?}", ColorName::Yellow), "Yellow");
+
+         let color = ColorName::Green;
+-        assert_eq!(color.scale(500).to_hex(), "#21C55E");
+-        assert_eq!(color.scale(1500).to_hex(), "#21C55E");
++        assert_eq!(color.scale(500).to_hex(), "#22C55E");
++        assert_eq!(color.scale(1500).to_hex(), "#22C55E");
+
+         for name in ColorName::all().iter() {
+             let name1: ColorName = name.to_string().as_str().try_into().unwrap();
