@@ -11,7 +11,7 @@ on:
       verify_pr:
         default: ''
       verify_evidence:
-        description: 'Protected bridge admission digest, authenticated through GitHub status'
+        description: 'Protected bridge admission digest, bound to write-once GitHub attestation tag'
         default: ''
       source:
         required: true
@@ -37,7 +37,6 @@ env:
   VERIFY_GITHUB_TOKEN: ${{ github.token }}
 permissions:
   contents: read
-  statuses: read
 concurrency:
   group: macos-shipping-${{ inputs.source }}
   cancel-in-progress: false

@@ -16,6 +16,7 @@ class HostedProducer(unittest.TestCase):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'releases'))
         import macos_verify_authorization as authorization
         api = Mock(token='fixture-token')
+        api.request.return_value = {'sha': 'c' * 40}
         env = dict(GITHUB_RUN_ID='700', VERIFY_PR='2218')
         with patch.object(authorization, 'authorize', return_value='a' * 40) as admit, \
              patch.object(m.subprocess, 'run') as run:
@@ -26,7 +27,8 @@ class HostedProducer(unittest.TestCase):
             self.assertIn('--bare', commands[0])
             self.assertTrue(any('push' in c and 'a' * 40 + ':refs/heads/' + evidence['ref'] in c for c in commands))
             self.assertFalse(any('checkout' in c for c in commands))
-            self.assertEqual(api.request.call_args.args[:2], ('statuses/' + 'a' * 40, 'POST'))
+            self.assertEqual(api.request.call_args.args[:2], ('git/refs', 'POST'))
+            self.assertTrue(api.request.call_args.args[2]['ref'].startswith('refs/tags/okilum-verify-admission/'))
         api.reset_mock()
         with patch.object(authorization, 'authorize', side_effect=['a' * 40, ValueError('stale')]), \
              patch.object(m.subprocess, 'run'), self.assertRaises(ValueError):

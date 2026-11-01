@@ -12,14 +12,17 @@ bare repository to an invocation-specific `okilum-verify-source/` GitHub ref; no
 product checkout, hooks or build scripts run with bridge credentials. This ref
 does not match the existing `forgejo-pr/**` unsigned build trigger.
 
-The existing bridge GitHub App records a commit-status attestation whose digest
+The existing bridge GitHub App records a write-once annotated-tag attestation that
 binds repository, PR, source, producer, attempt, trusted tooling SHA, mirror ref,
 fast result and issuance time. Hosted admission requires that App's dispatch
-actor and authenticated status creator, the exact trusted-main pin, the matching
-digest and mirror SHA, and evidence no older than two hours. Invalid/missing or
+actor, the exact trusted-main pin, the matching canonical evidence/tag content
+and mirror SHA, and evidence no older than two hours. Invalid/missing or
 changed evidence fails before key import. API failure stops; there is no Forgejo
-network fallback or substitution of main. The bridge App requires commit-status
-write permission; the hosted job token has only contents/status read permissions.
+network fallback or substitution of main. The existing App installation175816005 has contents/actions/workflows write;
+Commit statuses permission is absent and is not requested. The hosted job token
+needs only contents read. Attestation identity comes from the protected App
+workflow-dispatch actor plus the exact immutable evidence object/source binding;
+tagger text alone is never trusted.
 
 Hosted source retrieval uses the authenticated GitHub mirror ref and verifies the
 checked-out SHA. Product code receives the existing closed build environment,
@@ -39,8 +42,9 @@ After this correction is merged and mirrored to GitHub, independently read back:
    `17ace291abaa5bc7c8a0f5f186c6e63d4e86728f`; required fast is success.
 2. No queued/running/completed verify attempt already exists for the new authorized
    producer. Keep18627 as failed historical evidence, not a reusable artifact.
-3. The existing protected bridge App can write commit statuses. If permission is
-   absent, stop and identify that exact missing permission; do not alter credentials.
+3. Existing App installation175816005 remains active for BeFeast/okilum with
+   contents/actions/workflows write. No Commit statuses permission is needed.
+   Repository or installation unavailability fails closed; do not alter credentials.
 
 Then, only under a concrete new ONE attempt authorization:
 
@@ -59,5 +63,5 @@ Stop issuing verify-only dispatches. Revert this route-correction commit to rest
 the previous fail-closed route (whose hosted Forgejo reachability remains blocked).
 Do not change production ancestry/publication requirements, running jobs, runner
 services or user applications. An expired/abandoned invocation-specific mirror ref
-and admission status grant no authority without matching trusted pin, App dispatch
+and admission tag grant no authority without matching trusted pin, App dispatch
 and fresh evidence; their later cleanup is separate from this delivery.

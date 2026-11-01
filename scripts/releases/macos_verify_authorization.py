@@ -1,6 +1,5 @@
 """Exact maintainer authorization from trusted main; never inferred from PR green."""
 import json
-import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 import re
@@ -47,13 +46,15 @@ def hosted_evidence(env, source, number, api=None):
     ref = api('git/ref/heads/' + expected['ref'])
     if ref['ref'] != 'refs/heads/' + expected['ref'] or ref['object']['sha'] != source:
         raise ValueError('Authenticated source mirror changed')
-    status = api(f'commits/{source}/status')
-    matches = [s for s in status['statuses'] if s['context'] == 'okilum/verify-admission/' + producer]
-    digest = 'sha256:' + hashlib.sha256(evidence_bytes(evidence)).hexdigest()
-    if (status['sha'] != source or len(matches) != 1 or matches[0]['state'] != 'success'
-            or matches[0]['description'] != digest
-            or (matches[0]['creator']['login'], matches[0]['creator']['id']) != BRIDGE_ACTOR):
-        raise ValueError('Missing or invalid authenticated bridge attestation')
+    name = 'okilum-verify-admission/' + number + '-' + source + '-' + producer
+    reference = api('git/ref/tags/' + name)
+    if reference['ref'] != 'refs/tags/' + name or reference['object']['type'] != 'tag':
+        raise ValueError('Missing immutable bridge attestation tag')
+    tag = api('git/tags/' + reference['object']['sha'])
+    if (tag['sha'] != reference['object']['sha'] or tag['tag'] != name
+            or tag['object']['type'] != 'commit' or tag['object']['sha'] != source
+            or tag['message'] != evidence_bytes(evidence).decode()):
+        raise ValueError('Invalid immutable bridge attestation')
     return source
 
 

@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-import hashlib
 import base64
 from datetime import datetime, timezone
 import time
@@ -81,9 +80,13 @@ def prepare_verify_mirror(api, source, tooling, env):
     # Revalidate after transfer; a changed remote PR must not gain an attestation.
     if authorize(env) != source:
         raise ValueError('Live admission changed while mirroring')
-    api.request('statuses/' + source, 'POST', {
-        'state': 'success', 'context': 'okilum/verify-admission/' + producer,
-        'description': 'sha256:' + hashlib.sha256(evidence_bytes(evidence)).hexdigest()})
+    # GitHub binds workflow dispatch to the protected App actor. Bind its exact
+    # admission payload to the source with a write-once annotated tag using the
+    # App's EXISTING contents permission; never require/grant status permission.
+    name = 'okilum-verify-admission/' + number + '-' + source + '-' + producer
+    tag = api.request('git/tags', 'POST', {'tag': name,
+        'message': evidence_bytes(evidence).decode(), 'object': source, 'type': 'commit'})
+    api.request('git/refs', 'POST', {'ref': 'refs/tags/' + name, 'sha': tag['sha']})
     return evidence_bytes(evidence).decode()
 
 

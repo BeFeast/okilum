@@ -1,5 +1,4 @@
 import json
-import hashlib
 from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
@@ -55,11 +54,13 @@ class VerifyAuthorization(unittest.TestCase):
             VERIFY_EVIDENCE=auth.evidence_bytes(evidence).decode())
         def api(path):
             self.assertFalse(path.startswith('/pulls/') or path.endswith('/status') and path.startswith('/commits/'))
-            if path.startswith('git/ref/'):
+            name = 'okilum-verify-admission/2218-' + SOURCE + '-700'
+            if path.startswith('git/ref/heads/'):
                 return dict(ref='refs/heads/' + evidence['ref'], object=dict(sha=SOURCE))
-            return dict(sha=SOURCE, statuses=[dict(context='okilum/verify-admission/700',
-                state='success', description='sha256:' + hashlib.sha256(auth.evidence_bytes(evidence)).hexdigest(),
-                creator=dict(login=auth.BRIDGE_ACTOR[0], id=auth.BRIDGE_ACTOR[1]))])
+            if path.startswith('git/ref/tags/'):
+                return dict(ref='refs/tags/' + name, object=dict(sha='c' * 40, type='tag'))
+            return dict(sha='c' * 40, tag=name, object=dict(sha=SOURCE, type='commit'),
+                        message=auth.evidence_bytes(evidence).decode())
         with patch.object(auth.Path, 'read_text', return_value=json.dumps({'2218': SOURCE})):
             self.assertEqual(auth.authorize(environment, api), SOURCE)
             invalid = [dict(VERIFY_EVIDENCE=''), dict(VERIFY_EVIDENCE='{}'),
@@ -71,17 +72,19 @@ class VerifyAuthorization(unittest.TestCase):
             for change in invalid:
                 with self.subTest(change=change), self.assertRaises((ValueError, KeyError)):
                     auth.authorize(environment | change, api)
-            for failure in ['digest', 'actor', 'missing', 'ref']:
+            for failure in ['digest', 'missing', 'ref', 'tag-source']:
                 def bad(path):
                     result = api(path)
-                    if path.startswith('git/ref/'):
+                    if path.startswith('git/ref/heads/'):
                         if failure == 'ref': result['object']['sha'] = 'c' * 40
-                    elif failure == 'missing': result['statuses'] = []
-                    elif failure == 'digest': result['statuses'][0]['description'] = 'sha256:bad'
-                    elif failure == 'actor': result['statuses'][0]['creator']['id'] = 1
+                    elif path.startswith('git/ref/tags/'):
+                        if failure == 'missing': result['object']['type'] = 'commit'
+                    elif failure == 'digest': result['message'] = '{}'
+                    elif failure == 'tag-source': result['object']['sha'] = 'd' * 40
                     return result
                 with self.subTest(failure=failure), self.assertRaises(ValueError):
                     auth.authorize(environment, bad)
+
 
 
 if __name__ == '__main__':

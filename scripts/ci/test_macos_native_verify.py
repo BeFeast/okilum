@@ -104,6 +104,7 @@ class NativeVerifyTests(unittest.TestCase):
         hosted = (repo / '.github/workflows/forgejo-macos-shipping.yml').read_text()
         self.assertIn('python3 scripts/ci/macos-native-verify.py', hosted)
         self.assertIn('macos-verify', hosted)
+        self.assertEqual(yaml.safe_load(hosted)['permissions'], {'contents': 'read'})
         self.assertNotIn('publication.py', hosted)
 
     def test_full_verify_only_execution_builds_once_without_publisher_or_write_api(self):
