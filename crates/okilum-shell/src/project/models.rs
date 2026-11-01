@@ -15,6 +15,9 @@ mod preferences;
 mod tests;
 mod visuals;
 
+#[cfg(any(test, feature = "project-ui-harness"))]
+type SurfacePaint = (Bounds<Pixels>, Bounds<Pixels>);
+
 #[derive(Default)]
 pub(super) struct PickerUi {
     search: Option<Entity<InputState>>,
@@ -29,6 +32,9 @@ pub(super) struct PickerUi {
     preferences: Option<preferences::Prefs>,
     preferences_origin: Option<String>,
     overlay: Option<gpui_base::DeferredPopover>,
+    trigger_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    #[cfg(any(test, feature = "project-ui-harness"))]
+    painted_surface: std::rc::Rc<std::cell::Cell<Option<SurfacePaint>>>,
 }
 
 impl ProjectView {
@@ -689,22 +695,23 @@ impl ProjectView {
                     this.open_models(trigger_target.clone(), window, cx);
                 }
             }));
-        let popup = gpui_base::Popup::new(id, trigger).anchor(Anchor::TopLeft);
+        // Use the same window-coordinate overlay path as Projects and link
+        // completion. Keep trigger geometry on the owning view: unlike a
+        // frame-scoped PopupAnchorState, an open surface does not depend on a
+        // separate first-capture render before it can be laid out and painted.
+        let trigger_bounds = self.model_ui.trigger_bounds.clone();
+        let popup = div()
+            .id(id)
+            .child(trigger)
+            .on_prepaint(move |bounds, _, _| {
+                trigger_bounds.set(bounds);
+            });
         if self.model_open && is_target {
-            #[cfg(feature = "project-ui-harness")]
-            if std::env::var_os("OKILUM_PROJECT_UI_FIXTURE").is_some() {
-                eprintln!(
-                    "QA model-picker render: usable_rows={}",
-                    self.visible_model_choices(cx)
-                        .iter()
-                        .filter(|choice| choice.selectable)
-                        .count()
-                );
-            }
             let content = v_flex()
                 .id("project-model-popup-surface")
                 .role(gpui::Role::Dialog)
                 .occlude()
+                .on_prepaint(gpui_base::GlobalState::record_native_overlay)
                 .tab_group()
                 .popover_style(cx)
                 .text_size(px(brand::READER_CHROME_FONT_SIZE))
@@ -715,7 +722,34 @@ impl ProjectView {
                 })
                 .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_models(window, cx)))
                 .child(self.render_models(cx));
-            popup.content(content).into_any_element()
+            #[cfg(any(test, feature = "project-ui-harness"))]
+            let content = content.child({
+                let painted = self.model_ui.painted_surface.clone();
+                gpui::canvas(
+                    |bounds, _, _| bounds,
+                    move |_, bounds, window, _| {
+                        let mask = window.content_mask().bounds;
+                        painted.set(Some((bounds, mask)));
+                        #[cfg(feature = "project-ui-harness")]
+                        if std::env::var_os("OKILUM_PROJECT_UI_FIXTURE").is_some() {
+                            eprintln!("QA model-picker paint: bounds={bounds:?} mask={mask:?} viewport={:?}", window.viewport_size());
+                        }
+                    },
+                )
+                .absolute()
+                .size_full()
+            });
+            popup
+                .child(
+                    gpui::deferred(
+                        gpui::anchored()
+                            .position(self.model_ui.trigger_bounds.get().origin)
+                            .snap_to_window_with_margin(px(12.))
+                            .child(content),
+                    )
+                    .with_priority(gpui_base::POPUP_PRIORITY),
+                )
+                .into_any_element()
         } else {
             popup.into_any_element()
         }

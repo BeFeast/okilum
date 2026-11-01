@@ -23,10 +23,29 @@ fn catalog() -> serde_json::Value {
     })).collect::<Vec<_>>()})
 }
 
+struct PickerHost {
+    view: Entity<ProjectView>,
+    manager_width: Option<Pixels>,
+}
+
+impl Render for PickerHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        h_flex().size_full().child(div().flex_1()).child(
+            div()
+                .h_full()
+                .overflow_hidden()
+                .when_some(self.manager_width, |host, width| host.w(width))
+                .when(self.manager_width.is_none(), |host| host.flex_1())
+                .child(self.view.clone()),
+        )
+    }
+}
+
 fn fixture(
     cx: &mut TestAppContext,
     viewport: Size<Pixels>,
     current_model: usize,
+    manager_width: Option<Pixels>,
 ) -> (
     Entity<ProjectView>,
     &mut VisualTestContext,
@@ -50,12 +69,22 @@ fn fixture(
         let view = cx.new(|cx| {
             super::super::fixture::view(state.path().to_owned(), gateway.clone(), window, cx)
         });
-        Root::new(view, window, cx)
+        let host = cx.new(|_| PickerHost {
+            view,
+            manager_width,
+        });
+        Root::new(host, window, cx)
     });
     visual.simulate_resize(viewport);
     visual.run_until_parked();
-    let view = root.read_with(visual, |root, _| {
-        root.view().clone().downcast::<ProjectView>().unwrap()
+    let view = root.read_with(visual, |root, cx| {
+        root.view()
+            .clone()
+            .downcast::<PickerHost>()
+            .unwrap()
+            .read(cx)
+            .view
+            .clone()
     });
     view.read_with(visual, |view, _| {
         assert!(
@@ -136,8 +165,16 @@ fn short_window_picker_opens_after_release_and_all_columns_remain_reachable(
     cx: &mut TestAppContext,
 ) {
     let viewport = size(px(760.), px(520.));
-    let (view, visual, _state, gateway) = fixture(cx, viewport, 12);
+    let (view, visual, _state, gateway) = fixture(cx, viewport, 12, None);
     let reads = gateway.reads.lock().unwrap().len();
+    // Let the normal closed view pass through idle display frames before the
+    // completed click. The trigger must not require an extra capture-open cycle.
+    for _ in 0..3 {
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        visual.run_until_parked();
+    }
     interleaved_open(visual);
     let panel = bounds(visual, "project-model-panel");
     let window = Bounds {
@@ -145,6 +182,20 @@ fn short_window_picker_opens_after_release_and_all_columns_remain_reachable(
         size: viewport,
     };
     inside(panel, window, "popup");
+    let (surface, mask) = view.read_with(visual, |view, _| {
+        view.model_ui
+            .painted_surface
+            .get()
+            .expect("positive control: surface reached paint, not just render/layout")
+    });
+    assert!(surface.size.width > px(0.) && surface.size.height > px(0.));
+    inside(surface, window, "painted popup including padding");
+    inside(
+        surface,
+        mask,
+        "painted surface is not clipped by its narrow ancestor",
+    );
+    inside(panel, surface, "panel is within actual painted surface");
     let choices = bounds(visual, "project-model-choices");
     let options = bounds(visual, "project-model-option-column");
     let providers = bounds(visual, "project-model-providers");
@@ -200,7 +251,15 @@ fn short_window_picker_opens_after_release_and_all_columns_remain_reachable(
 #[gpui::test]
 fn last_current_model_and_option_heading_lineboxes_fit_large_window_popup(cx: &mut TestAppContext) {
     let viewport = size(px(1000.), px(760.));
-    let (view, visual, _state, gateway) = fixture(cx, viewport, 23);
+    let (view, visual, _state, gateway) = fixture(cx, viewport, 23, Some(px(320.)));
+    // Let the normal closed view pass through idle display frames before the
+    // completed click. The trigger must not require an extra capture-open cycle.
+    for _ in 0..3 {
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        visual.run_until_parked();
+    }
     interleaved_open(visual);
     let panel = bounds(visual, "project-model-panel");
     let window = Bounds {
@@ -208,6 +267,20 @@ fn last_current_model_and_option_heading_lineboxes_fit_large_window_popup(cx: &m
         size: viewport,
     };
     inside(panel, window, "popup");
+    let (surface, mask) = view.read_with(visual, |view, _| {
+        view.model_ui
+            .painted_surface
+            .get()
+            .expect("positive control: surface reached paint, not just render/layout")
+    });
+    assert!(surface.size.width > px(0.) && surface.size.height > px(0.));
+    inside(surface, window, "painted popup including padding");
+    inside(
+        surface,
+        mask,
+        "painted surface is not clipped by its narrow ancestor",
+    );
+    inside(panel, surface, "panel is within actual painted surface");
     assert!(
         panel.size.width > px(320.),
         "the popup has a workspace-width budget, not a narrow Manager-panel budget"
