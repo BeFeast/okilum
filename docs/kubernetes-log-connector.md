@@ -29,12 +29,22 @@ They do not manage subprocess trees created by external credential plugins.
 
 ## Integration boundary
 
-This packet implements the core connector only. The desktop target picker and
-Log view adapter are not wired here. That integration must own a Session, poll it
-off the render path, preserve record boundaries across Data events, feed the
-existing bounded log storage, show Diagnostic/ReadError/nonzero Exited outcomes,
-and cancel on Stop, target replacement and window close. Do not make stderr into
-log rows or claim live Kubernetes GUI acceptance from the fixture tests.
+The desktop Logs section offers **Kubernetes logs…**. Its vault-scoped window
+requires an explicit namespace, pod and container; context is optional and the
+initial tail defaults to 1000 lines. Follow and Previous instance are explicit
+choices. Nothing runs on opening the window. Start reads this target; Stop and
+window close cancel the selected session. Target edits are disabled until it
+finishes stopping. Inputs and loaded rows are session-only.
+
+The worker polls off the render path and feeds the shared leased stream assembler
+and ordinary LogView. Split UTF-8 and CRLF remain intact. Only complete UTF-8
+lines enter the view; trailing bytes without a newline are reported explicitly.
+The current session stops at 8 MiB, 20,000 lines or a 64 KiB line. Existing rows
+remain readable on a limit, read error or failed exit. Stderr has a separate
+16 KiB bounded diagnostic area and never becomes a log record. The UI receives
+coalesced immutable snapshots through a one-update channel; stale generations
+cannot replace current state. No live Kubernetes GUI acceptance is claimed from
+source, fake transport or headless layout tests.
 
 ## Offline verification
 
