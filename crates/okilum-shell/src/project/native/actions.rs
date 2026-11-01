@@ -1139,9 +1139,18 @@ mod tests {
             visual.debug_bounds("project-request-r").is_some(),
             "positive control: inline request is visible"
         );
+        let history_diagnostics = feed.read_with(visual, |feed, cx| {
+            (
+                feed.test_scroll_anchor(cx),
+                feed.rendered_positions.borrow().clone(),
+            )
+        });
         assert!(
             visual.debug_bounds("project-message-1000").is_some(),
-            "positive control: real unrelated native history is visible"
+            "positive control: real unrelated native history is visible; anchor/rendered={history_diagnostics:?}; history={:?}; pinned={:?}; request={:?}",
+            visual.debug_bounds("project-history"),
+            visual.debug_bounds("project-native-actions"),
+            visual.debug_bounds("project-request-r"),
         );
         feed.read_with(visual, |f, _| f.rendered_positions.borrow_mut().clear());
         let counts = Rc::new([Cell::new(0), Cell::new(0), Cell::new(0)]);
