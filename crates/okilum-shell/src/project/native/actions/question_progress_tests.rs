@@ -74,17 +74,16 @@ impl Render for Host {
             .child(self.view.clone())
     }
 }
-fn fixture<'a>(
-    cx: &'a mut TestAppContext,
-    environment: Option<Environment>,
-) -> (
+type Fixture<'a> = (
     Entity<ProjectView>,
     &'a mut VisualTestContext,
     tempfile::TempDir,
     Rc<Cell<bool>>,
     Rc<Cell<usize>>,
     Rc<RefCell<Option<Request>>>,
-) {
+);
+
+fn fixture(cx: &mut TestAppContext, environment: Option<Environment>) -> Fixture<'_> {
     // The autonomous RPC fixture uses real sockets; it never waits for a UI step.
     cx.executor().allow_parking();
     cx.update(|cx| {
