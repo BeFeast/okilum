@@ -202,6 +202,12 @@ impl Controller {
         );
         Ok(())
     }
+    /// Current verified selection, including a runtime supplied after bootstrap.
+    /// Discovery defaults are not a replacement for this controller snapshot.
+    pub fn configuration_paths(&self) -> Result<Vec<PathBuf>> {
+        self.check()?;
+        Ok(self.shared.configs.lock().unwrap().clone())
+    }
     pub fn set_configurations(&self, configs: Vec<PathBuf>) -> Result<()> {
         self.check()?;
         *self.shared.configs.lock().unwrap() = configs;
@@ -772,6 +778,37 @@ mod tests {
     use super::*;
     fn controller(root: &Path, name: &str) -> Result<Controller> {
         Controller::open(root.join(name), vec![])
+    }
+    #[test]
+    fn configuration_snapshot_tracks_bootstrap_selection_and_capability_revocation() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let access = okilum_sync::NetworkAccess::new(true);
+        let _scope = access.enter();
+        let initial = root.path().join("external/config.xml");
+        let current = Controller::open(root.path().join("direct"), vec![initial.clone()])?;
+        let retained = current.clone();
+        assert_eq!(current.configuration_paths()?, vec![initial]);
+        let managed = root.path().join("managed/config.xml");
+        current.set_configurations(vec![managed.clone()])?;
+        let mut snapshot = retained.configuration_paths()?;
+        assert_eq!(snapshot, vec![managed.clone()]);
+        snapshot.clear();
+        assert_eq!(current.configuration_paths()?, vec![managed]);
+        access.revoke();
+        assert!(retained.configuration_paths().is_err());
+        assert!(retained.set_configurations(vec![]).is_err());
+        Ok(())
+    }
+    #[test]
+    fn configuration_snapshot_refuses_a_stopped_controller_and_retained_clone() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let current = controller(root.path(), "direct")?;
+        let retained = current.clone();
+        assert!(retained.configuration_paths()?.is_empty());
+        current.shutdown();
+        assert!(current.configuration_paths().is_err());
+        assert!(retained.configuration_paths().is_err());
+        Ok(())
     }
     fn offer(controller: &Controller) -> Result<String> {
         Ok(controller
