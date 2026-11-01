@@ -15,12 +15,8 @@ fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserv
     let binding = Binding::parse(&source.to_string()).unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(
-                area.path().into(),
-                okilum_t3::board::read_issues,
-                window,
-                cx,
-            );
+            let mut board =
+                Board::with_reader(area.path().into(), okilum_t3::board::live::read, window, cx);
             board.binding = Some(binding.clone());
             board
         });
@@ -81,12 +77,8 @@ fn source_error_and_recovery_keep_board_geometry_stable(cx: &mut TestAppContext)
     .unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(
-                area.path().into(),
-                okilum_t3::board::read_issues,
-                window,
-                cx,
-            );
+            let mut board =
+                Board::with_reader(area.path().into(), okilum_t3::board::live::read, window, cx);
             board.binding = Some(binding);
             board
         });
@@ -189,7 +181,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
         let board = cx.new(|cx| {
             Board::with_reader(
                 area.path().to_owned(),
-                okilum_t3::board::read_issues,
+                okilum_t3::board::live::read,
                 window,
                 cx,
             )
@@ -219,6 +211,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
                     body: String::new(),
                     labels: Vec::new(),
                     open_pull_requests: Vec::new(),
+                    live_pulls: Vec::new(),
                 }),
             )],
             1,
@@ -328,23 +321,19 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         reader.ensure_project_board_using(
             folder.clone(),
             |binding| {
-                binding
+                Ok(binding
                     .issues
                     .iter()
-                    .map(|s| {
-                        (
-                            s.number,
-                            Ok(okilum_t3::board::Issue {
-                                number: s.number,
-                                title: format!("Fixture issue {}", s.number),
-                                state: "open".into(),
-                                body: String::new(),
-                                labels: Vec::new(),
-                                open_pull_requests: Vec::new(),
-                            }),
-                        )
+                    .map(|s| okilum_t3::board::Issue {
+                        number: s.number,
+                        title: format!("Fixture issue {}", s.number),
+                        state: "open".into(),
+                        body: String::new(),
+                        labels: Vec::new(),
+                        open_pull_requests: Vec::new(),
+                        live_pulls: Vec::new(),
                     })
-                    .collect()
+                    .collect())
             },
             window,
             cx,
@@ -698,7 +687,7 @@ fn board_without_registered_agents_does_not_request_a_separate_t3_connection(
     }
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(area.path().into(), |_| Vec::new(), window, cx);
+            let mut board = Board::with_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
             board.binding = Some(binding);
             board.active = true;
             board.refresh(window, cx);
@@ -803,7 +792,7 @@ fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestA
         let board = cx.new(|cx| {
             let mut board = Board::with_reader(
                 area.path().into(),
-                okilum_t3::board::read_issues,
+                okilum_t3::board::live::read,
                 window,
                 cx,
             );
@@ -925,12 +914,8 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut b = Board::with_reader(
-                area.path().into(),
-                okilum_t3::board::read_issues,
-                window,
-                cx,
-            );
+            let mut b =
+                Board::with_reader(area.path().into(), okilum_t3::board::live::read, window, cx);
             b.binding = Some(binding.clone());
             assert_eq!(
                 b.delivery_column(&binding.issues[0]),
@@ -990,10 +975,16 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     assert!(visual.debug_bounds("board-delivery-details").is_some());
     assert!(visual.debug_bounds("board-delivery-line").is_some());
     assert!(visual.debug_bounds("board-delivery-details-line").is_some());
-    assert!(visual.debug_bounds("delivery-problem-Mac-Stable").is_some());
+    assert!(visual.debug_bounds("delivery-problem-Mac").is_some());
     assert!(visual
-        .debug_bounds("board-delivery-details-problem-Mac-Stable")
+        .debug_bounds("board-delivery-details-problem-Mac")
         .is_some());
+    for id in ["delivery-problem-Mac-Stable", "delivery-problem-Mac-Beta"] {
+        assert!(
+            visual.debug_bounds(id).is_none(),
+            "no duplicate channel indicators"
+        );
+    }
     for id in [
         "board-delivery-details-Mac-Stable",
         "board-delivery-details-Mac-Beta",
@@ -1096,7 +1087,7 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
     .unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(area.path().into(), |_| Vec::new(), window, cx);
+            let mut board = Board::with_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
             board
                 .project_notes
                 .accept(okilum_t3::board::context::refresh(area.path()), now());
@@ -1130,7 +1121,7 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
 }
 
 #[gpui::test]
-fn delivery_publications_stay_on_one_row_at_board_width(cx: &mut TestAppContext) {
+fn delivery_publications_align_by_platform_at_board_width(cx: &mut TestAppContext) {
     use okilum_t3::board::delivery as d;
     cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
@@ -1168,12 +1159,8 @@ fn delivery_publications_stay_on_one_row_at_board_width(cx: &mut TestAppContext)
     }
     let (_, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(
-                area.path().into(),
-                okilum_t3::board::read_issues,
-                window,
-                cx,
-            );
+            let mut board =
+                Board::with_reader(area.path().into(), okilum_t3::board::live::read, window, cx);
             board.binding = Some(binding);
             board.delivery.accept(
                 d::Update {
@@ -1201,7 +1188,7 @@ fn delivery_publications_stay_on_one_row_at_board_width(cx: &mut TestAppContext)
     let line = visual
         .debug_bounds("board-delivery-line")
         .expect("delivery line");
-    let mut row_y = None;
+    let mut platform_rows = std::collections::HashMap::new();
     for id in [
         "board-delivery-Mac-Stable",
         "board-delivery-Windows-Stable",
@@ -1212,15 +1199,20 @@ fn delivery_publications_stay_on_one_row_at_board_width(cx: &mut TestAppContext)
     ] {
         let button = visual.debug_bounds(id).expect("publication control");
         assert_eq!(
-            *row_y.get_or_insert(button.origin.y),
+            *platform_rows
+                .entry(id.split('-').nth(2).unwrap())
+                .or_insert(button.origin.y),
             button.origin.y,
-            "same row: {id}"
+            "channels share their platform row: {id}"
         );
         assert!(
             button.right() <= line.right(),
             "visible without horizontal scrolling at normal Board width: {id}"
         );
     }
+    assert_eq!(platform_rows.len(), 3, "all platform rows are present");
+    assert!(platform_rows["Mac"] < platform_rows["Windows"]);
+    assert!(platform_rows["Windows"] < platform_rows["Linux"]);
     for id in [
         "board-delivery-Mac-Sprint",
         "board-delivery-Windows-Sprint",
