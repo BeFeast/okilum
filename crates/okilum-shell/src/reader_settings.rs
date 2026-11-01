@@ -3036,6 +3036,49 @@ mod tests {
         });
     }
 
+    /// Both visible hex views serialize the same authored RGB; alpha keeps
+    /// the library's existing truncation convention and original state value.
+    #[gpui::test]
+    fn colour_picker_hex_views_preserve_rgb_and_existing_alpha(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let (picker, visual) = cx.add_window_view(ColorPickerState::new);
+        for (value, expected) in [
+            (0x16a34a, "#16A34A"),
+            (0x3a7bd5, "#3A7BD5"),
+            (0x000000, "#000000"),
+            (0xffffff, "#FFFFFF"),
+            (0xff0000, "#FF0000"),
+            (0x00ff00, "#00FF00"),
+            (0x0000ff, "#0000FF"),
+        ] {
+            for (alpha, suffix) in [
+                (1., ""),
+                (0., "00"),
+                (0.1, "19"),
+                (0.5, "7F"),
+                (128. / 255., "80"),
+            ] {
+                visual.update(|window, cx| {
+                    let color: Hsla = rgb(value).into();
+                    picker.update(cx, |picker, cx| {
+                        picker.set_value(Hsla { a: alpha, ..color }, window, cx)
+                    });
+                });
+                visual.run_until_parked();
+                picker.read_with(visual, |picker, cx| {
+                    let expected = format!("{expected}{suffix}");
+                    assert_eq!(picker.hex_input().read(cx).value().as_str(), expected);
+                    let actual = picker.value().unwrap();
+                    assert_eq!(gpui_component::Colorize::to_hex(&actual), expected);
+                    assert_eq!(
+                        actual.a, alpha,
+                        "formatting must not quantize the stored alpha"
+                    );
+                });
+            }
+        }
+    }
+
     /// #1399: a custom colour is typed and applied through the real Settings
     /// field; anything that is not a whole `#RRGGBB` is named in place and
     /// changes nothing. The colour persists canonically, comes back after a
@@ -3274,6 +3317,12 @@ mod tests {
         settings.read_with(visual, |settings, cx| {
             let (input, _) = settings.vault_color_input.as_ref().unwrap();
             assert_eq!(input.read(cx).value().as_str(), "#3A7BD5");
+            let picker = settings.vault_color_picker.as_ref().unwrap().0.read(cx);
+            assert_eq!(picker.hex_input().read(cx).value().as_str(), "#3A7BD5");
+            assert_eq!(
+                gpui_component::Colorize::to_hex(&picker.value().unwrap()),
+                "#3A7BD5"
+            );
             assert!(settings.vault_color_rejected.is_none());
         });
 
@@ -3329,6 +3378,16 @@ mod tests {
         visual.run_until_parked();
         click(visual, "settings-vault-color-apply");
         assert_eq!(stored(visual).as_deref(), Some("#123456"));
+        type_in_field(visual, "#16A34A");
+        settings.read_with(visual, |settings, cx| {
+            let picker = settings.vault_color_picker.as_ref().unwrap().0.read(cx);
+            assert_eq!(picker.hex_input().read(cx).value().as_str(), "#16A34A");
+            assert_eq!(
+                gpui_component::Colorize::to_hex(&picker.value().unwrap()),
+                "#16A34A"
+            );
+        });
+        click(visual, "settings-vault-color-cancel");
         // A fresh Settings entity reopens with the authored RGB, not its
         // contrast-adapted display colour (the renderer keeps that adaptation).
         let (settings, visual) = open_settings(&first_reader, cx);
