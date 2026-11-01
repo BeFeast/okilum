@@ -290,14 +290,17 @@ impl Composer {
         }
         // The measured trigger stays in the composer flow; only the menu is
         // deferred. Opening must not change the trigger's bounds or its own
-        // outside-click exclusion region.
+        // outside-click exclusion region. Side placement flips when the menu
+        // cannot fit above, rather than clamping it over its own trigger.
         trigger
             .child(
                 gpui::deferred(
-                    gpui::anchored()
-                        .anchor(Anchor::BottomRight)
-                        .position(self.mode_trigger_bounds.get().top_right())
-                        .snap_to_window_with_margin(px(12.))
+                    gpui_base::Positioner::side(self.mode_trigger_bounds.get())
+                        .placement(gpui_base::Placement::Top)
+                        .align(gpui_base::Align::End)
+                        .offset(px(4.))
+                        .margin(px(12.))
+                        .occlude()
                         .child(menu),
                 )
                 .with_priority(gpui_base::POPUP_PRIORITY),
@@ -532,7 +535,12 @@ mod tests {
         visual.simulate_click(trigger.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.debug_bounds("project-send-mode-menu").is_some());
+        let menu = visual.debug_bounds("project-send-mode-menu").unwrap();
         let open_trigger = visual.debug_bounds("project-send-mode").unwrap();
+        assert!(
+            menu.bottom() <= open_trigger.top() || menu.top() >= open_trigger.bottom(),
+            "menu cannot cover its closing trigger: menu={menu:?}, trigger={open_trigger:?}"
+        );
         assert_eq!(
             open_trigger, trigger,
             "opening cannot move the disclosure trigger"
@@ -547,6 +555,13 @@ mod tests {
             visual.debug_bounds("project-send-mode-menu").is_none(),
             "a second completed trigger click closes without reopening"
         );
+        composer.read_with(visual, |composer, _| {
+            assert_eq!(
+                composer.mode,
+                Mode::Steer,
+                "closing the disclosure never selects a mode under its trigger"
+            )
+        });
         assert_eq!(
             sent.borrow().len(),
             3,
