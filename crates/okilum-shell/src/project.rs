@@ -1042,7 +1042,7 @@ impl ProjectView {
                         let native = false;
                         if !native {
                             this.model_target = this.manager_model_target();
-                            this.model_request(None, window, cx);
+                            this.warm_gateway_models(window, cx);
                         }
                     }
                     if changed {
@@ -1519,14 +1519,18 @@ impl ProjectView {
                                 ),
                         ).into_any_element();
                 #[cfg(target_os = "linux")]
-                let view = if self.native_actions_pinned() {
-                    view.child(self.native.actions.clone())
-                } else {
-                    view
-                };
+                let view = view.child(self.native.actions.clone());
                 #[cfg(target_os = "linux")]
-                let view = view.child(if self.native.active(){self.render_native_attachment_drafts(cx)}else{self.render_draft_attachments(cx)});
-                view.child(div().debug_selector(|| "project-chat-composer".into()).child(composer))
+                let attachments = if self.native.active(){self.render_native_attachment_drafts(cx)}else{self.render_draft_attachments(cx)};
+                #[cfg(target_os = "linux")]
+                let composer = v_flex().w_full().min_w_0().gap_2()
+                    .child(self.render_model_controls(cx))
+                    .child(attachments)
+                    .child(composer);
+                #[cfg(not(target_os = "linux"))]
+                let composer = v_flex().w_full().min_w_0().gap_2()
+                    .child(self.render_model_controls(cx)).child(composer);
+                view.child(div().w_full().min_w_0().debug_selector(|| "project-chat-composer".into()).child(composer))
             }).into_any_element()
     }
 }

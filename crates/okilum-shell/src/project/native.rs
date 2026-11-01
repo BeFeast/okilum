@@ -693,17 +693,14 @@ impl ProjectView {
                         let mut notify = controls_changed
                             || this.native.failure != failure
                             || this.native.stream_ready != ready;
-                        let was_ready = this.native.stream_ready;
                         this.native.stream_ready = ready;
                         if let Some(failure) = failure {
                             this.native_failed(failure.cause, failure.context, window, cx);
                         } else if ready {
                             this.ensure_native_catalog(cx);
-                            if !was_ready && this.native.ever_ready {
-                                if let Some(catalog) = &this.native.catalog {
-                                    catalog.update(cx, |catalog, cx| catalog.refresh(cx));
-                                }
-                            }
+                            // The independent catalog stream stays subscribed and
+                            // re-snapshots on its own reconnect. Thread replay
+                            // must not start a second catalog refresh.
                             this.native.failure = None;
                             this.native.phase = ConnectionPhase::Connected;
                             this.native.ever_ready = true;
@@ -912,10 +909,10 @@ impl ProjectView {
             );
         }
         view = view.child(self.render_native_recovery(window, cx));
-        if self.native_actions_pinned() {
-            view.into_any_element()
-        } else {
+        if self.executors_open {
             view.child(self.native.actions.clone()).into_any_element()
+        } else {
+            view.into_any_element()
         }
     }
 }

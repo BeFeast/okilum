@@ -1245,7 +1245,10 @@ impl Render for Actions {
             panel = panel.child(
                 Button::new("project-interrupt")
                     .ghost()
-                    .label("Stop")
+                    .small()
+                    .icon(Icon::default().path("icons/square.svg"))
+                    .accessibility_label("Stop")
+                    .tooltip("Stop")
                     .debug_selector(|| "project-interrupt".into())
                     .disabled(self.busy || !self.enabled || !self.state.ready || self.records.iter().any(|r| matches!(&r.command.intent, Intent::Interrupt { run_id: id } if id == &run_id)))
                     .on_click(cx.listener(move |this, _, window, cx| {

@@ -28,20 +28,9 @@ impl ProjectView {
             .items_center()
             .gap_1()
             .child(self.connection_line(status, cx));
-        let mut controls = h_flex()
-            .w_full()
-            .min_w_0()
-            .items_center()
-            .flex_wrap()
-            .gap_2();
-        let mut has_controls = false;
-        if let Some(target) = self.manager_model_target() {
-            controls = controls.child(self.model_picker("project-manager-model", target, cx));
-            has_controls = true;
-        }
         #[cfg(target_os = "linux")]
         if !self.native.active() {
-            controls = controls.child(
+            actions = actions.child(
                 Button::new("project-pair")
                     .debug_selector(|| "project-pair".into())
                     .ghost()
@@ -50,7 +39,6 @@ impl ProjectView {
                     .disabled(self.native_pairing_busy())
                     .on_click(cx.listener(|this, _, window, cx| this.pair_manager(window, cx))),
             );
-            has_controls = true;
         }
         let can_open = open.is_some();
         #[cfg(target_os = "linux")]
@@ -68,16 +56,24 @@ impl ProjectView {
             );
         }
         heading = heading.child(actions);
-        let header = v_flex()
+        heading
+            .debug_selector(|| "project-chat-header".into())
+            .into_any_element()
+    }
+
+    pub(super) fn render_model_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let controls = h_flex()
             .w_full()
             .min_w_0()
-            .gap_1()
-            .debug_selector(|| "project-chat-header".into())
-            .child(heading);
-        if has_controls {
-            header.child(controls).into_any_element()
+            .items_center()
+            .flex_wrap()
+            .gap_2();
+        if let Some(target) = self.manager_model_target() {
+            controls
+                .child(self.model_picker("project-manager-model", target, cx))
+                .into_any_element()
         } else {
-            header.into_any_element()
+            controls.into_any_element()
         }
     }
 
