@@ -236,6 +236,132 @@ fn rpc(ack: bool) -> (Environment, Arc<Mutex<Vec<Value>>>, thread::JoinHandle<()
 }
 
 #[gpui::test]
+fn header_collapse_while_submitting_preserves_draft_and_message_dismiss_sends_only_dismiss(
+    cx: &mut TestAppContext,
+) {
+    let (environment, wire, server) = rpc(true);
+    let (view, visual, _temp, _, _, _) = fixture(cx, Some(environment));
+    let message = request(vec![json!({
+        "id":"one", "header":"Explain", "question":"Keep this draft?", "options":[]
+    })]);
+    let mut live = message.clone();
+    live.response_mode = Some("live".into());
+    live.dismissible = false;
+    show(&view, visual, live);
+    assert!(
+        visual.debug_bounds("dismiss-wizard").is_none(),
+        "live capability exposes no Dismiss control"
+    );
+    view.read_with(visual, |view, cx| {
+        assert!(
+            !view.native.actions.read(cx).state.allows(&Intent::Dismiss {
+                request_id: ID.into()
+            })
+        );
+    });
+    click(visual, "answer-custom-wizard-one");
+    visual.simulate_input("  unsent exact draft  ");
+    visual.run_until_parked();
+    let draft = input(&view, visual, "one");
+    show(&view, visual, message);
+    assert_eq!(input(&view, visual, "one"), draft);
+    view.read_with(visual, |view, cx| {
+        assert!(
+            view.native.actions.read(cx).state.allows(&Intent::Dismiss {
+                request_id: ID.into()
+            }),
+            "positive control: message capability permits dismissal"
+        );
+    });
+    view.update(visual, |view, cx| {
+        view.busy = true;
+        view.native.actions.update(cx, |actions, cx| {
+            actions.busy = true;
+            actions
+                .question_progress
+                .get_mut(ID)
+                .unwrap()
+                .begin_submission();
+            cx.notify();
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "question-header-wizard-one");
+    assert!(
+        visual.debug_bounds("question-collapsed-wizard").is_some(),
+        "header remains a presentation-only disclosure during submission, matching T3"
+    );
+    click(visual, "dismiss-wizard");
+    view.read_with(visual, |view, cx| {
+        let actions = view.native.actions.read(cx);
+        assert!(actions.busy && actions.question_progress[ID].submitting);
+        assert!(actions.question_progress[ID].collapsed());
+        assert!(actions.records.is_empty());
+        assert_eq!(
+            actions.deferred_dispatches.get(),
+            0,
+            "the independently disabled Dismiss never dispatches while submitting"
+        );
+    });
+    assert!(wire.lock().unwrap().is_empty());
+    assert_eq!(
+        draft.read_with(visual, |input, _| input.value().to_string()),
+        "  unsent exact draft  "
+    );
+
+    view.update(visual, |view, cx| {
+        view.busy = false;
+        view.native.actions.update(cx, |actions, cx| {
+            actions.busy = false;
+            actions
+                .question_progress
+                .get_mut(ID)
+                .unwrap()
+                .finish_submission();
+            cx.notify();
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    click(visual, "dismiss-wizard");
+    server.join().unwrap();
+    let commands = wire.lock().unwrap();
+    assert_eq!(
+        commands.len(),
+        1,
+        "positive RPC detector: only the ready message Dismiss reaches transport"
+    );
+    assert_eq!(commands[0]["type"], "thread.user-input.dismiss");
+    assert_eq!(commands[0]["threadId"], THREAD);
+    assert_eq!(commands[0]["requestId"], ID);
+    assert!(commands[0].get("answers").is_none());
+    assert!(commands[0].get("decision").is_none());
+    view.read_with(visual, |view, cx| {
+        let actions = view.native.actions.read(cx);
+        assert_eq!(actions.deferred_dispatches.get(), 1);
+        assert_eq!(actions.records.len(), 1);
+        assert_eq!(actions.records[0].sequence, Some(1));
+        assert_eq!(
+            actions.records[0].command.command_id,
+            commands[0]["commandId"].as_str().unwrap()
+        );
+        assert!(matches!(&actions.records[0].command.intent,
+            Intent::Dismiss { request_id } if request_id == ID));
+        assert!(
+            actions.question_progress[ID].collapsed(),
+            "X Dismiss does not toggle disclosure; ACK alone is not canonical resolution"
+        );
+    });
+    assert_eq!(input(&view, visual, "one"), draft);
+    assert_eq!(
+        draft.read_with(visual, |input, _| input.value().to_string()),
+        "  unsent exact draft  "
+    );
+    assert!(visual.debug_bounds("question-collapsed-wizard").is_some());
+}
+
+#[gpui::test]
 fn three_steps_preserve_actual_inputs_collapse_and_previous_then_send_all_answers_once(
     cx: &mut TestAppContext,
 ) {
