@@ -329,6 +329,17 @@ Every icon-only button has a tooltip naming the action and shortcut.
 
 ## Sidebar (R2)
 
+**Recognized agent files (2026-11-01).** Tree, search Agent files and Now share
+the exact, case-sensitive filename classifier: `AGENTS.md`, `CLAUDE.md`,
+`GEMINI.md`, `SKILL.md`, `CONTEXT.md`, `ANTIGRAVITY.md`, at any depth. These
+instruction files remain in inventory and can always be opened explicitly;
+Tree lists them with Show hidden files, or temporarily on explicit reveal.
+Ordinary `agent.md`, `agents.md`, `my-AGENTS.md` and backup suffixes do not match.
+Dot/underscore path visibility retains its existing rules and template/index
+exceptions; this is a shared visibility switch, not a filename rename or deletion.
+Scanner-excluded generated service directories remain separate from browsable
+hidden files and are not added back by this switch.
+
 The panel header gives the vault name width priority and a full-name tooltip.
 Clicking it opens vault actions. New note, New folder and Collapse all folders
 follow. Measured text determines overflow: Collapse all, then New folder, then

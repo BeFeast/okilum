@@ -32,7 +32,14 @@ pub fn inventory(notes: impl IntoIterator<Item = Note>, entries: &[VaultEntry]) 
 }
 
 /// Conventional agent instruction files (#1589), matched by exact file name.
-const AGENT_FILE_NAMES: [&str; 4] = ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "SKILL.md"];
+const AGENT_FILE_NAMES: [&str; 6] = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    "SKILL.md",
+    "CONTEXT.md",
+    "ANTIGRAVITY.md",
+];
 
 /// A vault-relative path names an agent instruction file: its last segment is
 /// exactly one of the conventional names, in any folder. A note that merely
@@ -439,6 +446,8 @@ mod tests {
             "CLAUDE.md",
             "GEMINI.md",
             "SKILL.md",
+            "CONTEXT.md",
+            "ANTIGRAVITY.md",
             "Dev/Areas/okilum/AGENTS.md",
             "Dev/Areas/okilum/CLAUDE.md",
             "_Assets/Skills/review/SKILL.md",
@@ -454,6 +463,9 @@ mod tests {
             "Dev/AGENTS.md.bak",
             "Dev/AGENTS",
             "Dev/agents.md",
+            "agent.md",
+            "Dev/AGENT.md",
+            "Dev/context.md",
             "Dev/Claude.md",
             "Dev/AGENTS.md/notes.md",
             "Agents/Agent notes.md",

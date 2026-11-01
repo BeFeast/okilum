@@ -184,10 +184,7 @@ pub fn noise(path: &str) -> bool {
                     "pokutan" | "transcripts" | "archive" | "архив" | "_schema"
                 )
         })
-        || matches!(
-            file,
-            "CLAUDE.md" | "AGENTS.md" | "GEMINI.md" | "ANTIGRAVITY.md" | "CONTEXT.md"
-        )
+        || crate::quick_open::is_agent_file(path)
         || file.starts_with("._")
         || path.ends_with("ops/thread-ids.md")
         || path.ends_with("ops/board.md")
