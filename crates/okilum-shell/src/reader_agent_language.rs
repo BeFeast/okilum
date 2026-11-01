@@ -81,6 +81,7 @@ struct Shared {
 /// polling is needed. Drop/retire never waits for a running match on the UI thread.
 pub struct Controller {
     shared: Arc<Shared>,
+    notify: Arc<dyn Fn() + Send + Sync>,
     current: Option<Job>,
     published: Option<Published>,
 }
@@ -105,6 +106,8 @@ impl Controller {
         run: impl Fn(&Snapshot) -> Report + Send + 'static,
     ) -> std::io::Result<Self> {
         let shared = Arc::new(Shared::default());
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(notify);
+        let worker_notify = notify.clone();
         let worker = shared.clone();
         std::thread::Builder::new()
             .name("agent-language".into())
@@ -138,11 +141,12 @@ impl Controller {
                     drop(mailbox);
                     // A retire racing this wake is harmless: apply_ready verifies
                     // identity again, and the callback owns no document source.
-                    notify();
+                    worker_notify();
                 }
             })?;
         Ok(Self {
             shared,
+            notify,
             current: None,
             published: None,
         })
@@ -168,6 +172,17 @@ impl Controller {
             snapshot: snapshot.clone(),
             cancelled: cancelled.clone(),
         });
+        // An unavailable policy has no matching work. Publish its truthful
+        // status on the observing thread, without waking the regex worker.
+        if let Err(error) = &snapshot.policy {
+            let report = diagnostics(true, &snapshot.path, &snapshot.source, Err(error));
+            self.shared.mailbox.lock().unwrap().completed = Some(Completion {
+                value: Published { snapshot, report },
+                cancelled,
+            });
+            (self.notify)();
+            return true;
+        }
         self.shared.mailbox.lock().unwrap().pending = Some(Job {
             snapshot,
             cancelled,
