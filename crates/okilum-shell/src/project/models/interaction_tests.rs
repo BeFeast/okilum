@@ -66,7 +66,7 @@ fn fixture<'a>(
     visual.run_until_parked();
     (view, visual, state, gateway)
 }
-fn click(visual: &mut VisualTestContext, selector: &str) {
+fn click(visual: &mut VisualTestContext, selector: &'static str) {
     let bounds = visual
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("visible control missing: {selector}"));
