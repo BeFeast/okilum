@@ -391,6 +391,13 @@ fn reason(reason: &Reason) -> String {
     .into()
 }
 
+fn field(label: &'static str, input: &Entity<InputState>, disabled: bool) -> Div {
+    v_flex()
+        .gap_1()
+        .child(div().text_xs().child(label))
+        .child(Input::new(input).small().disabled(disabled))
+}
+
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(loaded) = self.pending_load.take() {
@@ -402,7 +409,7 @@ impl Render for Panel {
         let time = self.time;
         let time_menu = Button::new("virtual-time")
             .small()
-            .label(time.label())
+            .label(format!("Time: {}", time.label()))
             .disabled(disabled)
             .dropdown_menu(move |mut menu, _, _| {
                 for mode in [
@@ -429,11 +436,11 @@ impl Render for Panel {
                 .child(Button::new("virtual-load").small().label("Load definition").disabled(disabled).on_click(cx.listener(|this, _, _, cx| { let path = PathBuf::from(this.path.read(cx).value().as_str()); this.load_definition(path, cx); })))
                 .child(Button::new("virtual-browse").small().label("Browse…").disabled(disabled).on_click(cx.listener(|this, _, _, cx| this.choose(cx)))))
             .child(h_flex().gap_2()
-                .child(div().w(px(220.)).child(Input::new(&self.name).small().disabled(disabled || self.loaded.is_none())))
-                .child(div().flex_1().min_w_0().child(Input::new(&self.glob).small().disabled(disabled || self.loaded.is_none())))
+                .child(div().w(px(220.)).child(field("Name", &self.name, disabled || self.loaded.is_none())))
+                .child(div().flex_1().min_w_0().child(field("File glob", &self.glob, disabled || self.loaded.is_none())))
                 .child(Button::new("virtual-root").small().ghost().label(if self.vault_root { "Vault root" } else { "Definition folder" }).disabled(disabled || self.loaded.is_none()).tooltip("Root used for the relative glob").on_click(cx.listener(|this, _, _, cx| { this.vault_root = !this.vault_root; cx.notify(); }))))
-            .child(h_flex().gap_2().child(div().flex_1().min_w_0().child(Input::new(&self.query).small().disabled(disabled || self.loaded.is_none())))
-                .child(div().w(px(220.)).child(Input::new(&self.rotation).small().disabled(disabled || self.loaded.is_none()))))
+            .child(h_flex().gap_2().child(div().flex_1().min_w_0().child(field("File-level query", &self.query, disabled || self.loaded.is_none())))
+                .child(div().w(px(220.)).child(field("Rotation family", &self.rotation, disabled || self.loaded.is_none()))))
             .child(h_flex().gap_2().items_center().child(time_menu)
                 .when(self.time == model::TimeMode::Last, |row| row.child(div().w(px(140.)).child(Input::new(&self.seconds).small().disabled(disabled))))
                 .when(self.time == model::TimeMode::Absolute, |row| row.child(div().flex_1().child(Input::new(&self.from).small().disabled(disabled))).child(div().flex_1().child(Input::new(&self.to).small().disabled(disabled)))))
