@@ -8,6 +8,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "draft.rs"]
+pub(super) mod draft;
+
 pub(super) const ENDPOINT: &str = "https://pomoi.co/api/feedback/okilum";
 const FALLBACK_ENDPOINT: &str = "https://feedback.befeast.com/api/feedback/okilum";
 pub(super) const MAX_IMAGE: usize = 8 * 1024 * 1024;
@@ -92,12 +95,107 @@ pub(super) struct Report {
 
 /// A user-chosen screen recording. Only the path is kept; the file is
 /// streamed from disk on Send, so a 90 MB clip never sits in memory.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Video {
     pub path: std::path::PathBuf,
     pub name: String,
     pub size: u64,
+    #[serde(skip)]
     pub mime: &'static str,
+    pub identity: VideoIdentity,
+}
+/// Content and filesystem identity captured at explicit selection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct VideoIdentity {
+    digest: [u8; 32],
+    modified: Option<std::time::SystemTime>,
+    created: Option<std::time::SystemTime>,
+    filesystem_file: Option<(u64, u64)>,
+}
+fn video_identity(file: &mut std::fs::File) -> Result<VideoIdentity> {
+    use sha2::{Digest, Sha256};
+    let before = file.metadata()?;
+    ensure!(
+        before.is_file() && before.len() > 0 && before.len() <= MAX_VIDEO,
+        "The selected video is not a supported nonempty regular file. Select it again."
+    );
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        ensure!(
+            total <= MAX_VIDEO,
+            "The selected video grew. Select it again."
+        );
+        digest.update(&buffer[..read]);
+    }
+    let after = file.metadata()?;
+    ensure!(
+        before.len() == total
+            && after.len() == total
+            && before.modified().ok() == after.modified().ok(),
+        "The selected video changed. Select it again."
+    );
+    #[cfg(unix)]
+    let filesystem_file = {
+        use std::os::unix::fs::MetadataExt;
+        Some((before.dev(), before.ino()))
+    };
+    #[cfg(windows)]
+    let filesystem_file = {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+        let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the File owns a live handle and information is writable.
+        ensure!(
+            unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } != 0,
+            "Couldn't identify the selected video: {}",
+            std::io::Error::last_os_error()
+        );
+        Some((
+            u64::from(information.dwVolumeSerialNumber),
+            (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+        ))
+    };
+    #[cfg(not(any(unix, windows)))]
+    let filesystem_file = None;
+    file.rewind()?;
+    Ok(VideoIdentity {
+        digest: digest.finalize().into(),
+        modified: before.modified().ok(),
+        created: before.created().ok(),
+        filesystem_file,
+    })
+}
+/// Freeze the verified selection before HTTP begins. An in-place source edit
+/// during upload cannot change bytes already approved by the user.
+fn selected_video_snapshot(video: &Video) -> Result<std::fs::File> {
+    ensure!(
+        std::fs::metadata(&video.path)?.is_file(),
+        "The selected video is no longer a regular file. Select it again."
+    );
+    let mut source = std::fs::File::open(&video.path)
+        .context("The selected video is unavailable. Select it again or remove it.")?;
+    ensure!(
+        video_identity(&mut source)? == video.identity,
+        "The selected video changed or was replaced. Select it again or remove it."
+    );
+    let mut snapshot = tempfile::tempfile()?;
+    std::io::copy(&mut source.take(MAX_VIDEO + 1), &mut snapshot)?;
+    snapshot.rewind()?;
+    let identity = video_identity(&mut snapshot)?;
+    ensure!(
+        identity.digest == video.identity.digest && snapshot.metadata()?.len() == video.size,
+        "The selected video changed while preparing it. Select it again."
+    );
+    Ok(snapshot)
 }
 impl Video {
     pub fn size_label(&self) -> String {
@@ -135,7 +233,14 @@ pub(super) fn video_mime(path: &Path) -> Option<&'static str> {
 }
 pub(super) fn video_file(path: &Path) -> Result<Video> {
     let mime = video_mime(path).context("Choose an MP4, MOV or WebM video.")?;
-    let metadata = std::fs::metadata(path).context("Couldn't read the video file.")?;
+    ensure!(
+        std::fs::metadata(path)
+            .context("Couldn't read the video file.")?
+            .is_file(),
+        "Choose an MP4, MOV or WebM video file."
+    );
+    let mut file = std::fs::File::open(path).context("Couldn't read the video file.")?;
+    let metadata = file.metadata()?;
     ensure!(metadata.is_file(), "Choose an MP4, MOV or WebM video file.");
     ensure!(metadata.len() > 0, "The video file is empty.");
     ensure!(
@@ -152,6 +257,7 @@ pub(super) fn video_file(path: &Path) -> Result<Video> {
         name,
         size: metadata.len(),
         mime,
+        identity: video_identity(&mut file)?,
     })
 }
 impl Report {
@@ -176,7 +282,10 @@ impl Report {
         );
         if let Some(video) = &self.video {
             // Re-check on Send: the file may have changed since it was attached.
-            video_file(&video.path)?;
+            ensure!(
+                video_file(&video.path)? == *video,
+                "The selected video changed or was replaced. Select it again or remove it."
+            );
         }
         Ok(())
     }
@@ -314,8 +423,10 @@ async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
         form = form.text("log", log.clone());
     }
     if let Some(video) = &report.video {
-        let file = std::fs::File::open(&video.path)
-            .context("Couldn't open the attached video. Your draft is kept.")?;
+        let selected = video.clone();
+        let file = tokio::task::spawn_blocking(move || selected_video_snapshot(&selected))
+            .await
+            .context("Prepare the selected video")??;
         let length = file.metadata()?.len();
         ensure!(
             length <= MAX_VIDEO,
