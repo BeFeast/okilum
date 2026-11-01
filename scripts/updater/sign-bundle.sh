@@ -1,6 +1,7 @@
 #!/bin/bash
 # Sourced by build-macos-ci.sh. Signs $APP inside-out with the Developer ID,
 # notarizes and staples it, then sets $ARCHIVE to the distributable ZIP in $OUTPUT.
+source "${OKILUM_DELIVERY_TOOLS:-$PWD}/scripts/updater/stapler.sh"
 SIGNING_KEYCHAIN_ARGS=()
 NOTARY_KEYCHAIN_ARGS=()
 IDENTITY_KEYCHAIN_ARGS=()
@@ -30,8 +31,8 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUTPUT/notarization-app.zip"
 xcrun notarytool submit "$OUTPUT/notarization-app.zip" --keychain-profile "$OKILUM_NOTARY_PROFILE" ${NOTARY_KEYCHAIN_ARGS[@]+"${NOTARY_KEYCHAIN_ARGS[@]}"} --wait --output-format json | tee "$OUTPUT/notarization.json"
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1]))["status"]; sys.exit(s!="Accepted" and f"Notarization: {s}")' "$OUTPUT/notarization.json"
-xcrun stapler staple "$APP"
-xcrun stapler validate "$APP"
+okilum_stapler staple "$APP"
+okilum_stapler validate "$APP"
 # Only this archive, made after stapling, is distributable. The name is what
 # builds 4791/4792 require in an update URL.
 ARCHIVE="$OUTPUT/okilum-macos-arm64-${SOURCE_SHA}-notarized.zip"

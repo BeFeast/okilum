@@ -74,7 +74,8 @@ def build(env):
     tools = Path(tempfile.mkdtemp(prefix='okilum-delivery-tools-', dir=env.get('RUNNER_TEMP')))
     tool_hashes = {}
     for name in ['scripts/build-macos-ci.sh', 'scripts/ci/supervisor-bundle.sh',
-                 'scripts/updater/sign-bundle.sh', 'scripts/updater/make-dmg.sh']:
+                 'scripts/updater/sign-bundle.sh', 'scripts/updater/make-dmg.sh',
+                 'scripts/updater/stapler.sh']:
         dest = tools / name; dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(name, dest)
         tool_hashes[name] = hashlib.sha256(dest.read_bytes()).hexdigest()

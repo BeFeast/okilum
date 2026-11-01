@@ -78,6 +78,25 @@ class EphemeralSigning(unittest.TestCase):
                 self.assertFalse(directory.exists())
                 self.assertEqual(state, {'search':['/original/login.keychain-db'],'default':'/original/login.keychain-db'})
 
+    def test_security_auxiliary_file_cleanup_and_symlink_refusal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.env(tmp); commands = []; backend, state = self.backend(env, commands)
+            with patch.object(m, 'call', side_effect=backend):
+                m.setup(env)
+                (m.root(env) / 'security-framework-auxiliary').write_bytes(b'fixture')
+                m.cleanup(env)
+            self.assertFalse(m.root(env).exists())
+            self.assertEqual(state['search'], ['/original/login.keychain-db'])
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.env(tmp); commands = []; backend, _ = self.backend(env, commands)
+            with patch.object(m, 'call', side_effect=backend):
+                m.setup(env)
+                outside = Path(tmp) / 'precious'; outside.write_text('keep')
+                (m.root(env) / 'alias').symlink_to(outside)
+                with self.assertRaises(ValueError):
+                    m.cleanup(env)
+                self.assertEqual(outside.read_text(), 'keep')
+
     def test_missing_credentials_ref_attempt_or_team_never_create_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             for changes in [{'OKILUM_MAC_DEVELOPER_ID_P12':''}, {'GITHUB_REF':'refs/pull/1/head'},

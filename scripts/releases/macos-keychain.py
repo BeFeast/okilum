@@ -130,11 +130,14 @@ def cleanup(env):
         return
     if directory.stat().st_uid != os.getuid() or not directory.is_dir():
         raise ValueError('Signing directory ownership mismatch')
-    allowed = {'signing-probe', 'baseline.json', 'identity.p12', 'shipping.keychain-db', 'shipping.keychain-db-shm',
-               'shipping.keychain-db-wal'}
-    if any(p.name not in allowed or p.is_symlink() or not p.is_file()
+    # This directory was exclusively created by this attempt with mode 0700.
+    # Security.framework may create additional regular auxiliary files. Their
+    # names are not a stable API; never traverse aliases or nested directories.
+    if directory.stat().st_mode & 0o077:
+        raise ValueError('Signing directory is not private')
+    if any(p.is_symlink() or not p.is_file()
            or p.stat().st_uid != os.getuid() for p in directory.iterdir()):
-        raise ValueError('Unknown signing residue; preserve rather than remove unrelated files')
+        raise ValueError('Unsafe signing residue; refusing traversal')
     baseline_file = directory / 'baseline.json'
     baseline = json.loads(baseline_file.read_text()) if baseline_file.exists() else None
     keychain = directory / 'shipping.keychain-db'
@@ -157,6 +160,8 @@ if __name__ == '__main__':
     except Exception as error:
         # Commands can contain secret argv; no exception/traceback/response body is logged.
         operation = type(error).__name__
+        if isinstance(error, ValueError):
+            operation += ':' + str(error)  # Only fixed validation messages, no secret inputs.
         if isinstance(error, subprocess.CalledProcessError):
             # Only fixed executable/subcommand names, never arguments or output.
             operation += ':' + Path(error.cmd[0]).name
