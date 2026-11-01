@@ -236,9 +236,12 @@ fn retry_backoff_is_bounded_and_classifies_auth_or_protocol_failures_as_terminal
     assert!(!terminal(&StreamError::Http(503)));
 }
 #[gpui::test]
-fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll(
+async fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll(
     cx: &mut TestAppContext,
 ) {
+    // The live worker uses real socket threads in tests; wait for the committed
+    // wire cursor rather than relying on a blocking executor poll.
+    cx.executor().allow_parking();
     cx.update(crate::test_init);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -331,9 +334,10 @@ fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll(
     });
     let environment = Environment::new("fixture", &origin).unwrap();
     let token=NativeToken::from_secret(&environment,&serde_json::to_vec(&json!({"origin":origin,"access_token":"fixture-only","expires_at":chrono::Utc::now().timestamp() as u64+3600,"scope":"orchestration:read"})).unwrap()).unwrap();
-    let client = NativeClient::new(environment, token, Duration::from_secs(2)).unwrap();
+    let client = NativeClient::new(environment.clone(), token, Duration::from_secs(2)).unwrap();
     view.update_in(visual, |view, window, cx| {
         view.active = true;
+        view.environment = Some(environment);
         view.install_native(
             Arc::new(client),
             chrono::Utc::now().timestamp() as u64 + 3600,
@@ -341,6 +345,18 @@ fn live_snapshot_and_flush_reach_the_real_feed_without_an_mcp_history_poll(
             cx,
         );
     });
+    visual
+        .condition(&view, |view, _| {
+            view.native.retained.as_ref().is_some_and(|retained| {
+                retained
+                    .lock()
+                    .unwrap()
+                    .cursor
+                    .as_ref()
+                    .is_some_and(|cursor| cursor.sequence() == 12)
+            })
+        })
+        .await;
     visual.run_until_parked();
     view.read_with(visual, |view, _| {
         let model = view.native.retained.as_ref().unwrap().lock().unwrap();
