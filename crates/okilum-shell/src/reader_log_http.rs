@@ -1,6 +1,7 @@
 //! Explicit, vault-scoped HTTPS file sessions over the ordinary LogView.
 use crate::*;
 use anyhow::Result;
+use gpui_component::menu::DropdownMenu as _;
 #[path = "reader_log_http/model.rs"]
 mod model;
 #[path = "reader_log_http/worker.rs"]

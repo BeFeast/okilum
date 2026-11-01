@@ -240,7 +240,7 @@ fn mounted_start_stream_rows_stop_and_stale_reply_keep_the_visible_session(
                 2
             );
             assert_eq!(out, b"level=info msg=hello\nlevel=warn msg=next\n");
-        });
+        }
     });
     let stop = visual
         .debug_bounds("https-log-stop")
