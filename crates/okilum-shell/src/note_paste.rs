@@ -68,11 +68,45 @@ pub trait NoteClipboard: Send + Sync {
 /// What a paste left to do after its text went in: a notice for the toast and
 /// background work for the editor (#1611). Taken by the editor's paste
 /// event handler.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Outbox {
+    /// Async acquisition commits follow-ups only after the editor accepts it.
+    pub request: Option<ClipboardReadRequest>,
     pub notice: Option<Notice>,
     pub follow_up: Option<FollowUp>,
     pub saved_files: Vec<PathBuf>,
+}
+impl std::fmt::Debug for Outbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Outbox")
+            .field("request_pending", &self.request.is_some())
+            .field("has_notice", &self.notice.is_some())
+            .field("has_follow_up", &self.follow_up.is_some())
+            .field("saved_files", &self.saved_files.len())
+            .finish()
+    }
+}
+impl Outbox {
+    pub(crate) fn take_for_event(
+        &mut self,
+        event: &gpui_component::input::clipboard::ClipboardPasteEvent,
+    ) -> Self {
+        if let Some(request) = &self.request {
+            // One Input allows one pending request. Busy (or another unrelated
+            // failure) must not consume that request's still-uncommitted work.
+            if request.is_cancelled() {
+                *self = Self::default();
+                return Self::default();
+            }
+            if !matches!(
+                event,
+                gpui_component::input::clipboard::ClipboardPasteEvent::Applied { .. }
+            ) {
+                return Self::default();
+            }
+        }
+        std::mem::take(self)
+    }
 }
 pub type PasteOutbox = Arc<Mutex<Outbox>>;
 
@@ -158,7 +192,7 @@ pub fn ask_above_bytes(cx: &App) -> Option<u64> {
     (mb > 0).then(|| u64::from(mb) * 1024 * 1024)
 }
 
-fn router_mode(mode: PasteMode) -> router::Mode {
+pub(crate) fn router_mode(mode: PasteMode) -> router::Mode {
     match mode {
         PasteMode::Smart => router::Mode::Smart,
         PasteMode::Plain => router::Mode::Plain,
@@ -214,6 +248,20 @@ pub fn provider_for_note(
     let text = cx
         .try_global::<crate::platform::ManagedClipboard>()
         .map(|managed| managed.0.clone());
+    // Only Markdown note editors opt into Windows CF_HTML. Other fields and
+    // plain/code files keep the exact CF_UNICODETEXT provider unchanged.
+    #[cfg(windows)]
+    if let (Some(text), Some(note)) = (text.as_ref(), note_rel.as_ref()) {
+        return Some(Arc::new(
+            crate::platform::windows_note_clipboard::WindowsNoteClipboard::new(
+                text.clone(),
+                vault_root,
+                note.clone(),
+                notice,
+                outbox,
+            ),
+        ));
+    }
     let Some(clipboard) = cx
         .try_global::<ManagedNoteClipboard>()
         .map(|managed| managed.0.clone())

@@ -55,18 +55,52 @@ impl gpui_component::input::clipboard::ExactClipboardProvider for WindowsClipboa
 #[cfg(windows)]
 const HELPER_ARG: &str = "--internal-windows-exact-clipboard-read";
 
+#[cfg(windows)]
+const NOTE_HELPER_ARG: &str = "--internal-windows-note-clipboard-read";
+
+#[cfg(windows)]
+pub(super) fn read_note(
+    request: &gpui_component::input::clipboard::ClipboardReadRequest,
+    deadline: std::time::Instant,
+) -> Result<super::windows_note_clipboard::Snapshot, Error> {
+    use std::{os::windows::process::CommandExt, process::Command};
+    #[cfg(test)]
+    let executable = std::env::var_os("OKILUM_TEST_CLIPBOARD_EXECUTABLE")
+        .map(std::path::PathBuf::from)
+        .ok_or(Error::Io)?;
+    #[cfg(not(test))]
+    let executable = std::env::current_exe().map_err(|_| Error::Io)?;
+    let frame = super::clipboard_process::read_with_limit(
+        Command::new(executable)
+            .arg(NOTE_HELPER_ARG)
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW),
+        deadline,
+        || request.is_cancelled(),
+        super::windows_note_clipboard::MAX_SNAPSHOT_BYTES,
+    )?
+    .ok_or(Error::Io)?;
+    super::windows_note_clipboard::Snapshot::decode(&frame)
+}
+
 /// Called before Velopack, configuration, background threads and GUI startup.
 #[cfg(windows)]
 pub fn helper_entry() -> Option<i32> {
     use std::io::Write;
     let mut args = std::env::args_os().skip(1);
-    if args.next().as_deref() != Some(std::ffi::OsStr::new(HELPER_ARG)) {
+    let first = args.next();
+    let note = first.as_deref() == Some(std::ffi::OsStr::new(NOTE_HELPER_ARG));
+    if !note && first.as_deref() != Some(std::ffi::OsStr::new(HELPER_ARG)) {
         return None;
     }
     if args.next().is_some() {
         return Some(2);
     }
-    let (status, text) = match native::read() {
+    let result = if note {
+        native::read_note().map(|snapshot| Some(snapshot.encode()))
+    } else {
+        native::read()
+    };
+    let (status, text) = match result {
         Ok(Some(text)) => (0, text),
         Ok(None) => (1, String::new()),
         Err(Error::TooLarge) => (2, String::new()),
@@ -97,7 +131,7 @@ mod native {
         System::{
             DataExchange::{
                 CloseClipboard, GetClipboardData, GetClipboardOwner, GetClipboardSequenceNumber,
-                IsClipboardFormatAvailable, OpenClipboard,
+                IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
             },
             Memory::{GlobalLock, GlobalSize, GlobalUnlock},
             Ole::CF_UNICODETEXT,
@@ -146,6 +180,65 @@ mod native {
             return Err(Error::ChangedOffer);
         }
         Ok(text)
+    }
+
+    pub(super) fn read_note() -> Result<super::super::windows_note_clipboard::Snapshot, Error> {
+        let before = unsafe { GetClipboardSequenceNumber() };
+        if before == 0 {
+            return Err(Error::Unavailable);
+        }
+        if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+            return Err(Error::Unavailable);
+        }
+        let _clipboard = Clipboard;
+        if unsafe { GetClipboardSequenceNumber() } != before {
+            return Err(Error::ChangedOffer);
+        }
+        let owner = unsafe { GetClipboardOwner() };
+        let (plain, text_sequence) = read_open()?;
+        if unsafe { GetClipboardSequenceNumber() } != text_sequence {
+            return Err(Error::ChangedOffer);
+        }
+        let (html, sequence) = read_html()?;
+        if unsafe { GetClipboardSequenceNumber() } != sequence
+            || unsafe { GetClipboardOwner() } != owner
+        {
+            return Err(Error::ChangedOffer);
+        }
+        Ok(super::super::windows_note_clipboard::Snapshot { plain, html })
+    }
+
+    fn read_html() -> Result<(Option<String>, u32), Error> {
+        let name = "HTML Format\0".encode_utf16().collect::<Vec<_>>();
+        // Registering the name does not write or replace any clipboard data.
+        let format = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
+        if format == 0 || unsafe { IsClipboardFormatAvailable(format) } == 0 {
+            return Ok((None, unsafe { GetClipboardSequenceNumber() }));
+        }
+        let handle = unsafe { GetClipboardData(format) };
+        let sequence = unsafe { GetClipboardSequenceNumber() };
+        if sequence == 0 {
+            return Err(Error::Unavailable);
+        }
+        if handle.is_null() {
+            return Ok((None, sequence));
+        }
+        let size = unsafe { GlobalSize(handle) };
+        if size == 0 || size > MAX_BYTES + 64 {
+            return Ok((None, sequence));
+        }
+        let pointer = unsafe { GlobalLock(handle) };
+        if pointer.is_null() {
+            return Ok((None, sequence));
+        }
+        let _memory = Memory(handle);
+        // SAFETY: this clipboard-owned block is locked and valid for size bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), size) };
+        let end = bytes.iter().position(|&byte| byte == 0).unwrap_or(size);
+        let html = (end <= MAX_BYTES)
+            .then(|| std::str::from_utf8(&bytes[..end]).ok().map(str::to_owned))
+            .flatten();
+        Ok((html, sequence))
     }
 
     fn read_open() -> Result<(Option<String>, u32), Error> {
