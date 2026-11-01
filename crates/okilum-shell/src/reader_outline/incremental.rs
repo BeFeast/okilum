@@ -204,6 +204,34 @@ mod tests {
     }
 
     #[test]
+    fn product_cache_reparses_reference_dependents_instead_of_the_whole_note() {
+        let source = format!(
+            "# Ω [Alias][id]\n\n{}[id]: /target\n\n# [id]\n",
+            (0..100)
+                .map(|i| format!("# Stable {i}\n\n"))
+                .collect::<String>()
+        );
+        let mut cache = Cache::default();
+        cache.update(&source);
+        let changed = source.replace("[id]: /target\n\n", "");
+        let mut calls = Vec::new();
+        let mut entries = cache.update_with(&changed, |text| {
+            calls.push(text.to_owned());
+            HeadingInventory::new(text).entries
+        });
+        let mut expected = HeadingInventory::new(&changed).entries;
+        for inventory in [&mut entries, &mut expected] {
+            for (index, heading) in inventory.iter_mut().enumerate() {
+                heading.target.block = index;
+            }
+        }
+        assert_eq!(entries, expected);
+        assert!(calls.iter().any(|text| text.contains("# Ω [Alias][id]")));
+        assert!(calls.iter().any(|text| text.contains("# [id]")));
+        assert!(!calls.iter().any(|text| text.contains("# Stable")));
+    }
+
+    #[test]
     fn syntax_context_changes_invalidate_cached_boundaries() {
         for syntax in [
             "```\n",
@@ -215,7 +243,7 @@ mod tests {
             "1. Item\n",
             "    Code\n",
             "[id]: /target\n",
-            "# [Label][id]\n",
+            "# [Label][^id]\n",
             "| table |\n",
             "\u{a0}\n",
         ] {

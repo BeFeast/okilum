@@ -3,10 +3,12 @@
 //! Reuse is permitted only when the canonical parser sees that heading at root
 //! again. An open fence/list/HTML container therefore expands the dirty suffix.
 use okilum_core::document_links::HeadingEntry;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub(super) struct Context {
     snapshot: Option<Snapshot>,
+    references: Option<ReferenceSnapshot>,
 }
 
 struct Snapshot {
@@ -20,13 +22,16 @@ impl Context {
         source: &str,
         parse: &mut impl FnMut(&str) -> Vec<HeadingEntry>,
     ) -> Vec<HeadingEntry> {
-        // Reference definitions have document-wide effects on heading labels.
-        // Until the canonical API exposes their dependency graph, do not reuse
-        // any segment of a snapshot containing reference-capable syntax.
         if source.contains(['[', ']']) {
             self.snapshot = None;
+            let old = self.references.take();
+            if let Some((entries, snapshot)) = reference_revision(source, old, parse) {
+                self.references = Some(snapshot);
+                return entries;
+            }
             return parse(source);
         }
+        self.references = None;
         let entries = match self.snapshot.take() {
             None => parse(source),
             Some(old) if old.source == source => old.entries,
@@ -38,6 +43,227 @@ impl Context {
         });
         entries
     }
+}
+
+// This is a dependency scanner, not a Markdown parser: it accepts only flat,
+// independently bounded blocks and simple ASCII reference identifiers. Every
+// heading is still produced by the canonical parser with the complete definition
+// environment. Containers, escapes, Unicode labels, footnotes and unknown forms
+// retain the whole-document fallback rather than guessing normalization/context.
+struct ReferenceSnapshot {
+    blocks: Vec<ReferenceBlock>,
+    definitions: BTreeMap<String, String>,
+}
+
+struct ReferenceBlock {
+    source: String,
+    dependencies: BTreeSet<String>,
+    entries: Vec<HeadingEntry>,
+}
+
+fn reference_label(label: &str) -> Option<String> {
+    if !label
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-_ \t".contains(&b))
+    {
+        return None;
+    }
+    let label = label
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    (!label.is_empty()).then_some(label)
+}
+
+fn reference_revision(
+    source: &str,
+    old: Option<ReferenceSnapshot>,
+    parse: &mut impl FnMut(&str) -> Vec<HeadingEntry>,
+) -> Option<(Vec<HeadingEntry>, ReferenceSnapshot)> {
+    if source.starts_with("---\n")
+        || source.starts_with("---\r\n")
+        || source.starts_with('\u{feff}')
+    {
+        return None;
+    }
+    let mut definitions = BTreeMap::new();
+    let mut environment = String::new();
+    let mut masked = String::new();
+    let mut block_dependencies = Vec::new();
+    let mut dependencies = BTreeSet::new();
+    let mut has_definition = false;
+    let mut has_content = false;
+    for line in source.split_inclusive('\n') {
+        let text = line.trim_end_matches(['\n', '\r']);
+        if text.bytes().all(|b| b == b' ' || b == b'\t') {
+            if has_definition && has_content {
+                return None;
+            }
+            block_dependencies.push(std::mem::take(&mut dependencies));
+            has_definition = false;
+            has_content = false;
+            masked.push_str("\n");
+            continue;
+        }
+        if let Some((label, destination)) = text.strip_prefix('[').and_then(|s| s.split_once("]:"))
+        {
+            let label = reference_label(label)?;
+            let destination = destination.strip_prefix(' ')?;
+            let destination = destination
+                .strip_prefix('<')
+                .and_then(|d| d.strip_suffix('>'))
+                .unwrap_or(destination);
+            if destination.is_empty()
+                || destination
+                    .chars()
+                    .any(|c| c.is_whitespace() || "[]<>\\\"'()".contains(c))
+            {
+                return None;
+            }
+            definitions.entry(label).or_insert_with(|| text.to_owned());
+            environment.push_str(text);
+            environment.push('\n');
+            has_definition = true;
+            masked.push_str("Definition\n");
+            continue;
+        }
+        has_content = true;
+        let mut remaining = text;
+        while let Some(open) = remaining.find('[') {
+            let plain = &remaining[..open];
+            if plain.contains(']') {
+                return None;
+            }
+            masked.push_str(plain);
+            let rest = &remaining[open + 1..];
+            let close = rest.find(']')?;
+            let label = &rest[..close];
+            if !label.is_empty() {
+                dependencies.insert(reference_label(label)?);
+            }
+            masked.push_str("Reference");
+            remaining = &rest[close + 1..];
+        }
+        if remaining.contains(']') {
+            return None;
+        }
+        masked.push_str(remaining);
+        masked.push('\n');
+    }
+    if has_definition && has_content {
+        return None;
+    }
+    // Reuse the existing conservative block gate; replacing bracket tokens
+    // cannot authorize indentation, lists, fences, HTML, escapes or extensions.
+    super::independent_blocks(&masked)?;
+    // A final nonblank block has not yet contributed its dependency set.
+    if has_content || has_definition {
+        block_dependencies.push(dependencies);
+    }
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        offset += line.len();
+        if line
+            .trim_end_matches(['\n', '\r'])
+            .bytes()
+            .all(|b| b == b' ' || b == b'\t')
+        {
+            parts.push(&source[start..offset]);
+            start = offset;
+        }
+    }
+    if start < source.len() {
+        parts.push(&source[start..]);
+    }
+    if parts.len() != block_dependencies.len() {
+        return None;
+    }
+    let cold = old.is_none();
+    let old = old.unwrap_or(ReferenceSnapshot {
+        blocks: Vec::new(),
+        definitions: BTreeMap::new(),
+    });
+    let changed = definitions
+        .keys()
+        .chain(old.definitions.keys())
+        .filter(|key| definitions.get(*key) != old.definitions.get(*key))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let prefix = parts
+        .iter()
+        .zip(&old.blocks)
+        .take_while(|(part, block)| **part == block.source)
+        .count();
+    let suffix = parts[prefix..]
+        .iter()
+        .rev()
+        .zip(old.blocks[prefix..].iter().rev())
+        .take_while(|(part, block)| **part == block.source)
+        .count();
+    let old_len = old.blocks.len();
+    let mut previous = old.blocks.into_iter().map(Some).collect::<Vec<_>>();
+    environment.push('\n');
+    let mut blocks = Vec::new();
+    let mut entries = Vec::new();
+    let mut offset = 0;
+    for (index, part) in parts.iter().enumerate() {
+        let cached = if index < prefix {
+            previous[index].take()
+        } else if index >= parts.len() - suffix {
+            previous[old_len - (parts.len() - index)].take()
+        } else {
+            None
+        };
+        let block = match cached {
+            Some(block) if block.dependencies.is_disjoint(&changed) => block,
+            _ => {
+                // Prepend definitions so first-definition-wins is identical
+                // even when this block contains a later duplicate definition.
+                let input = format!("{environment}{part}");
+                let mut parsed = parse(&input);
+                for heading in &mut parsed {
+                    heading.target.offset = heading.target.offset.checked_sub(environment.len())?;
+                }
+                ReferenceBlock {
+                    source: (*part).into(),
+                    dependencies: block_dependencies[index].clone(),
+                    entries: parsed,
+                }
+            }
+        };
+        entries.extend(block.entries.iter().cloned().map(|mut heading| {
+            heading.target.offset += offset;
+            heading
+        }));
+        offset += part.len();
+        blocks.push(block);
+    }
+    // A cold cache verifies the scanner's accepted layout against the whole
+    // canonical document. Unknown parser behavior fails closed, never cached.
+    if cold {
+        let expected = parse(source);
+        if entries.len() != expected.len()
+            || entries.iter().zip(&expected).any(|(a, b)| {
+                a.text != b.text
+                    || a.level != b.level
+                    || a.supported_container != b.supported_container
+                    || a.target.offset != b.target.offset
+                    || a.target.setext != b.target.setext
+            })
+        {
+            return None;
+        }
+    }
+    Some((
+        entries,
+        ReferenceSnapshot {
+            blocks,
+            definitions,
+        },
+    ))
 }
 
 fn header_end(source: &str, offset: usize) -> usize {
@@ -238,6 +464,112 @@ mod tests {
         );
         parity(&mut context, &edited);
         assert_eq!(parity(&mut context, &edited), 0);
+    }
+
+    #[test]
+    fn reference_definitions_invalidate_only_dependent_blocks_with_exact_offsets() {
+        let source = format!(
+            "# Ω [Alias][target]\r\n\r\n# [other]\r\n\r\n{}[target]: /first\r\n\r\n[other]: /other\r\n\r\n# Tail 🎯\r\n\r\n# Suffix [target]\r\n",
+            (0..500)
+                .map(|i| format!("# Stable {i}\r\n\r\nBody\r\n\r\n"))
+                .collect::<String>()
+        );
+        let mut context = Context::default();
+        parity(&mut context, &source);
+        assert!(
+            context.references.is_some(),
+            "positive control: dependency cache enrolled"
+        );
+        let removed = source.replace("[target]: /first\r\n\r\n", "");
+        let mut calls = Vec::new();
+        let entries = context.update(&removed, &mut |text| {
+            calls.push(text.to_owned());
+            HeadingInventory::new(text).entries
+        });
+        assert_eq!(
+            normalized(entries),
+            normalized(HeadingInventory::new(&removed).entries)
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|part| part.contains("# Ω [Alias][target]")),
+            "dependent prefix heading reparses"
+        );
+        assert!(
+            calls.iter().any(|part| part.contains("# Suffix [target]")),
+            "dependent suffix heading reparses"
+        );
+        assert!(
+            !calls.iter().any(|part| part.contains("# [other]")
+                || part.contains("# Stable")
+                || part.contains("# Tail")),
+            "unaffected prefix and shifted suffix reuse"
+        );
+        assert!(calls.iter().map(String::len).sum::<usize>() < 512);
+        for changed in [
+            removed.replace("[other]: /other", "[TARGET]: /new\r\n\r\n[other]: /other"),
+            source.replace("[target]: /first", "[target]: /new"),
+            source.replace("# Ω [Alias][target]", "# Ω [target][]"),
+            source.replace("# Ω [Alias][target]", "# Ω [target]"),
+            source.replace("[target]: /first", "[Target]: /first\r\n[target]: /ignored"),
+            source
+                .replace("[target]: /first", "[Target]: /first\r\n[target]: /ignored")
+                .replace("[Target]: /first\r\n", ""),
+        ] {
+            parity(&mut context, &changed);
+        }
+    }
+
+    #[test]
+    fn ascii_label_normalization_duplicates_and_setext_match_canonical_parser() {
+        let source = "# Ω [Alias][A  B]\n\nShortcut [a b]\n----------------\n\n# [A B][]\n\n[a b]: /first\n[A B]: /ignored\n\n# Tail 🎯\n";
+        let mut context = Context::default();
+        parity(&mut context, source);
+        assert!(context.references.is_some());
+        for revised in [
+            source.replace("[a b]: /first\n", ""),
+            source.replace("[a b]: /first\n[A B]: /ignored\n", ""),
+            source.replace("[a b]: /first", "[A\tB]: /new"),
+            source.replace("# Ω [Alias][A  B]", "# Ψ [Alias][missing]"),
+            source.replace("[a b]: /first", "[missing]: /new\n[a b]: /first"),
+        ] {
+            parity(&mut context, &revised);
+        }
+    }
+
+    #[test]
+    fn unknown_reference_syntax_falls_back_and_discards_dependency_state() {
+        let known = "# Ω [Alias][id]\n\n[id]: /target\n\n# End\n";
+        for unknown in [
+            known.replace("[id]: /target", "[id]: /target \"Title\""),
+            known.replace("[id]: /target", "[id]:\n  /target"),
+            known.replace("[id]", "[κλειδί]"),
+            known.replace("# End", "- Item\n  ## [Alias][id]"),
+            known.replace("# End", "```\n# [Alias][id]\n```"),
+            known.replace("# End", "# [[Wiki]]"),
+            known.replace("# End", "# [^footnote]"),
+            format!("---\n{known}---\n# Outside\n"),
+        ] {
+            let mut context = Context::default();
+            parity(&mut context, known);
+            let mut calls = Vec::new();
+            let entries = context.update(&unknown, &mut |text| {
+                calls.push(text.to_owned());
+                HeadingInventory::new(text).entries
+            });
+            assert_eq!(
+                calls,
+                [unknown.clone()],
+                "unknown syntax is one full canonical parse"
+            );
+            assert!(context.references.is_none());
+            assert_eq!(
+                normalized(entries),
+                normalized(HeadingInventory::new(&unknown).entries)
+            );
+            parity(&mut context, known);
+        }
     }
 
     #[test]
