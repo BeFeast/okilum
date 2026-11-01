@@ -894,16 +894,19 @@ impl ProjectView {
                         this.generation,
                         window.is_window_active(),
                         this.binding.as_ref()?.manager.project_id.clone()?,
-                        this.models.is_some() && {
-                            #[cfg(target_os = "linux")]
-                            {
-                                !this.native.active() && !this.threads.enabled
-                            }
-                            #[cfg(not(target_os = "linux"))]
-                            {
-                                true
-                            }
-                        },
+                        (
+                            this.models.is_some() && {
+                                #[cfg(target_os = "linux")]
+                                {
+                                    !this.native.active() && !this.threads.enabled
+                                }
+                                #[cfg(not(target_os = "linux"))]
+                                {
+                                    true
+                                }
+                            },
+                            this.chat.as_ref()?.thread_id.clone(),
+                        ),
                         this.executors_open
                             .then(|| this.area.clone().zip(this.binding.clone()))
                             .flatten(),
@@ -918,7 +921,7 @@ impl ProjectView {
                 generation,
                 focused,
                 expected_project,
-                read_model_configuration,
+                (read_model_configuration, model_thread),
                 executor_binding,
             )) = job
             else {
@@ -941,7 +944,7 @@ impl ProjectView {
                         okilum_t3::executors::Snapshot::load(gateway.as_ref(), &area, &binding)
                     });
                     let configuration = read_model_configuration
-                        .then(|| gateway.thread_configuration(&chat.thread_id));
+                        .then(|| gateway.thread_configuration(&model_thread));
                     Ok::<_, anyhow::Error>((chat, identity, records, executors, configuration))
                 })
                 .await;
