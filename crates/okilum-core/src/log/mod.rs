@@ -24,6 +24,7 @@ mod file;
 pub mod filter;
 pub mod histogram;
 pub mod http;
+pub mod kubernetes;
 mod index;
 mod json;
 mod level;
