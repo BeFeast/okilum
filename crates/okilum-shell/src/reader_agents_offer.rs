@@ -202,10 +202,13 @@ impl Reader {
             .refresh
             .acknowledged()
             .is_some_and(|r| Some(&r.offer) == ui.refresh.offer());
-        let label = ui
-            .status
-            .clone()
-            .unwrap_or_else(|| "AGENTS.md saved. Ask Manager to read the updated rules?".into());
+        let label = ui.status.clone().unwrap_or_else(|| {
+            if ui.refresh.pending().is_some_and(|receipt| Some(&receipt.offer) != ui.refresh.offer()) {
+                "An earlier rules request is unconfirmed. Retry it before sending the latest saved rules.".into()
+            } else {
+                "AGENTS.md saved. Ask Manager to read the updated rules?".into()
+            }
+        });
         h_flex()
             .id("rules-refresh-offer")
             .w_full()
