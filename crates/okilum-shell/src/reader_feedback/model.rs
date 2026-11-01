@@ -213,18 +213,58 @@ pub(super) struct Receipt {
     pub delivery_endpoint: Option<String>,
 }
 
+/// Shared abort future spans both endpoints and the entire response body.
+pub(super) type CancelSignal = futures_util::future::Shared<
+    futures_util::future::BoxFuture<'static, Result<(), futures_util::future::Aborted>>,
+>;
+
 pub(super) fn send(report: Report) -> Result<Receipt> {
     send_using(ENDPOINT, FALLBACK_ENDPOINT, &report)
 }
+pub(super) fn send_cancellable(report: Report, cancel: CancelSignal) -> Result<Receipt> {
+    send_using_cancellable(ENDPOINT, FALLBACK_ENDPOINT, &report, Some(cancel))
+}
 fn send_using(primary: &str, fallback: &str, report: &Report) -> Result<Receipt> {
-    okilum_http::primary_then_fallback(primary, fallback, |endpoint| send_to(endpoint, report))
+    send_using_cancellable(primary, fallback, report, None)
+}
+fn send_using_cancellable(
+    primary: &str,
+    fallback: &str,
+    report: &Report,
+    cancel: Option<CancelSignal>,
+) -> Result<Receipt> {
+    okilum_http::primary_then_fallback(primary, fallback, |endpoint| {
+        send_to_cancellable(endpoint, report, cancel.clone())
+    })
 }
 fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
+    send_to_cancellable(endpoint, report, None)
+}
+fn send_to_cancellable(
+    endpoint: &str,
+    report: &Report,
+    cancel: Option<CancelSignal>,
+) -> Result<Receipt> {
+    use futures_util::{
+        future::{select, Either},
+        FutureExt,
+    };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("Create Feedback network runtime")?
-        .block_on(send_to_async(endpoint, report))
+        .block_on(async {
+            let Some(cancel) = cancel else {
+                return send_to_async(endpoint, report).await;
+            };
+            // Poll cancellation first: an already cancelled primary/fallback
+            // must never open another connection. Dropping the losing request
+            // future also drops the streaming file and response body.
+            match select(cancel, send_to_async(endpoint, report).boxed()).await {
+                Either::Left(_) => bail!("Sending cancelled. Your draft and attachments are kept. The server may already have received the report; check before retrying."),
+                Either::Right((result, _)) => result,
+            }
+        })
 }
 async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
     use futures_util::TryStreamExt;
@@ -488,3 +528,102 @@ pub(super) fn image_file(path: &Path) -> Result<(Arc<Vec<u8>>, image::RgbaImage)
 #[cfg(test)]
 #[path = "model_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use futures_util::{future::AbortHandle, FutureExt};
+    use std::net::TcpListener;
+
+    fn signal() -> (AbortHandle, CancelSignal) {
+        let (abort, registration) = AbortHandle::new_pair();
+        (
+            abort,
+            futures_util::future::Abortable::new(std::future::pending(), registration)
+                .boxed()
+                .shared(),
+        )
+    }
+
+    fn draft() -> Report {
+        Report {
+            text: "Keep this draft".into(),
+            kind: Kind::Bug,
+            meta: tests::meta(),
+            screenshot: Some(Arc::new(vec![1, 2, 3])),
+            log: None,
+            video: None,
+        }
+    }
+
+    #[test]
+    fn cancelled_before_send_contacts_neither_endpoint() {
+        let primary = TcpListener::bind("127.0.0.1:0").unwrap();
+        let fallback = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (abort, cancel) = signal();
+        abort.abort();
+        let error = send_using_cancellable(
+            &format!("http://{}", primary.local_addr().unwrap()),
+            &format!("http://{}", fallback.local_addr().unwrap()),
+            &draft(),
+            Some(cancel),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Sending cancelled"));
+        for listener in [primary, fallback] {
+            listener.set_nonblocking(true).unwrap();
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    #[test]
+    fn cancellation_drops_active_receipt_and_never_falls_back() {
+        use std::io::Write;
+        let primary = TcpListener::bind("127.0.0.1:0").unwrap();
+        let fallback = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", primary.local_addr().unwrap());
+        let alternate = format!("http://{}", fallback.local_addr().unwrap());
+        let (abort, cancel) = signal();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = primary.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = [0; 4096];
+            assert!(
+                socket.read(&mut bytes).unwrap() > 0,
+                "positive control: real request arrived"
+            );
+            socket
+                .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 1000\r\n\r\n{")
+                .unwrap();
+            abort.abort();
+            // The body deliberately never completes. Cancellation must drop it.
+            loop {
+                match socket.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                    Err(error) => panic!("request was not closed: {error}"),
+                }
+            }
+        });
+        let report = draft();
+        let error =
+            send_using_cancellable(&endpoint, &alternate, &report, Some(cancel)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("server may already have received"));
+        assert_eq!(report.text, "Keep this draft");
+        assert_eq!(report.screenshot.as_deref().unwrap().as_slice(), &[1, 2, 3]);
+        server.join().unwrap();
+        fallback.set_nonblocking(true).unwrap();
+        assert_eq!(
+            fallback.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}

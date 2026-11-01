@@ -383,6 +383,8 @@ struct FeedbackView {
     state: SendState,
     sender: Sender,
     _send: Option<Task<()>>,
+    send_abort: Option<futures_util::future::AbortHandle>,
+    send_cancel: Arc<std::sync::Mutex<Option<model::CancelSignal>>>,
     _image: Option<Task<()>>,
     _text: Subscription,
 }
@@ -403,6 +405,8 @@ impl FeedbackView {
         );
         let log_path = reader_diagnostics::feedback_log_path(cx).ok();
         let sprint_log = log_path.clone();
+        let send_cancel = Arc::new(std::sync::Mutex::new(None::<model::CancelSignal>));
+        let cancellation = send_cancel.clone();
         Self {
             text,
             meta,
@@ -419,9 +423,19 @@ impl FeedbackView {
             log_path,
             state: SendState::Compose,
             sender: Arc::new(move |report| {
-                model::send(sprint::enrich(report, sprint_log.as_deref())?)
+                let report = sprint::enrich(report, sprint_log.as_deref())?;
+                let cancel = cancellation
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                match cancel {
+                    Some(cancel) => model::send_cancellable(report, cancel),
+                    None => model::send(report),
+                }
             }),
             _send: None,
+            send_abort: None,
+            send_cancel,
             _image: None,
             _text: subscription,
         }
@@ -492,6 +506,14 @@ impl FeedbackView {
                 return;
             }
         };
+        use futures_util::FutureExt;
+        let (abort, registration) = futures_util::future::AbortHandle::new_pair();
+        let cancel =
+            futures_util::future::Abortable::new(std::future::pending::<()>(), registration)
+                .boxed()
+                .shared();
+        *self.send_cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel);
+        self.send_abort = Some(abort);
         self.state = SendState::Sending;
         let sender = self.sender.clone();
         self._send = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
@@ -500,6 +522,8 @@ impl FeedbackView {
                 .spawn(async move { sender(report) })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.send_abort = None;
+                *this.send_cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 this.state = match result {
                     Ok(receipt) => SendState::Sent(receipt),
                     Err(error) => SendState::Failed(error.to_string()),
@@ -507,6 +531,14 @@ impl FeedbackView {
                 cx.notify();
             });
         }));
+        cx.notify();
+    }
+    fn cancel_send(&mut self, cx: &mut Context<Self>) {
+        if let Some(abort) = &self.send_abort {
+            abort.abort();
+        }
+        // Remain busy until the transport acknowledges cancellation. A new
+        // Send cannot race an old upload or consume its completion.
         cx.notify();
     }
     fn copy(&mut self, cx: &mut Context<Self>) {
@@ -1017,11 +1049,31 @@ impl Render for FeedbackView {
                         Button::new("feedback-cancel")
                             .debug_selector(|| "feedback-cancel".into())
                             .ghost()
-                            .disabled(matches!(self.state, SendState::Sending))
-                            .label("Cancel")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(CloseFeedback), cx)
-                            }),
+                            .disabled(
+                                self.send_abort
+                                    .as_ref()
+                                    .is_some_and(|abort| abort.is_aborted()),
+                            )
+                            .label(
+                                if self
+                                    .send_abort
+                                    .as_ref()
+                                    .is_some_and(|abort| abort.is_aborted())
+                                {
+                                    "Cancelling…"
+                                } else if matches!(self.state, SendState::Sending) {
+                                    "Cancel sending"
+                                } else {
+                                    "Cancel"
+                                },
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if matches!(this.state, SendState::Sending) {
+                                    this.cancel_send(cx);
+                                } else {
+                                    window.dispatch_action(Box::new(CloseFeedback), cx);
+                                }
+                            })),
                     )
                     .child(
                         Button::new("feedback-send")
