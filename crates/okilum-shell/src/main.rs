@@ -79,6 +79,7 @@ mod reader_link_navigation;
 mod reader_loading;
 mod reader_log;
 mod reader_log_kubernetes;
+mod reader_log_sftp;
 #[cfg(target_os = "macos")]
 mod reader_manager_focus;
 #[cfg(any(target_os = "macos", target_os = "linux", test))]

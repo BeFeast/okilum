@@ -1420,6 +1420,14 @@ impl Reader {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 reader_log_kubernetes::show(this.vault_root.clone(), cx)
                             })),
+                    )
+                    .child(
+                        Button::new("app-sftp-logs")
+                            .ghost()
+                            .label("SFTP logs…")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                reader_log_sftp::show(this.vault_root.clone(), cx)
+                            })),
                     );
                 for (index, entry) in self
                     .vault
