@@ -980,7 +980,10 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
         .debug_bounds("board-delivery-details-problem-Mac")
         .is_some());
     for id in ["delivery-problem-Mac-Stable", "delivery-problem-Mac-Beta"] {
-        assert!(visual.debug_bounds(id).is_none(), "no duplicate channel indicators");
+        assert!(
+            visual.debug_bounds(id).is_none(),
+            "no duplicate channel indicators"
+        );
     }
     for id in [
         "board-delivery-details-Mac-Stable",
@@ -1005,9 +1008,6 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     ] {
         assert!(visual.debug_bounds(id).is_some(), "visible {id}");
     }
-    assert_eq!(platform_rows.len(), 3, "all platform rows are present");
-    assert!(platform_rows["Mac"] < platform_rows["Windows"]);
-    assert!(platform_rows["Windows"] < platform_rows["Linux"]);
     for id in [
         "board-delivery-Mac-Sprint",
         "board-delivery-Windows-Sprint",
@@ -1210,6 +1210,9 @@ fn delivery_publications_align_by_platform_at_board_width(cx: &mut TestAppContex
             "visible without horizontal scrolling at normal Board width: {id}"
         );
     }
+    assert_eq!(platform_rows.len(), 3, "all platform rows are present");
+    assert!(platform_rows["Mac"] < platform_rows["Windows"]);
+    assert!(platform_rows["Windows"] < platform_rows["Linux"]);
     for id in [
         "board-delivery-Mac-Sprint",
         "board-delivery-Windows-Sprint",
