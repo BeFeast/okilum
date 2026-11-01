@@ -235,6 +235,11 @@ fn decide(
     let Some(range) = locate(text, range, body) else {
         return Outcome::Conflict;
     };
+    // A local fence edit changes the block's boundaries even if its body
+    // stayed identical. Do not validate a new save against a stale fence.
+    if opening_fence(text, &range) != Some(fence) {
+        return Outcome::Conflict;
+    }
     if closes_fence(&new, fence) {
         return Outcome::ClosesFence;
     }
@@ -807,6 +812,30 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_fence_conflicts_even_when_the_body_is_unchanged() {
+        for (fence, current) in [
+            (('`', 4), "```md\nx\n```\n"),
+            (('`', 3), "````md\nx\n````\n"),
+            (('`', 3), "~~~md\nx\n~~~\n"),
+        ] {
+            let at = current.find('x').unwrap();
+            assert_eq!(
+                decide(current, &(at..at + 1), "x", fence, "x\n```\nafter\n"),
+                Outcome::Conflict,
+                "a changed delimiter cannot use the session's old fence"
+            );
+        }
+        let current = "````md\nx\n````\n";
+        assert!(
+            matches!(
+                decide(current, &(7..8), "x", ('`', 4), "x\n```\nafter\n"),
+                Outcome::Apply { .. }
+            ),
+            "three backticks stay code inside an unchanged four-backtick fence"
+        );
+    }
+
+    #[test]
     fn the_file_name_is_safe_and_names_the_note() {
         assert_eq!(file_stem("Projects/Plan: v2.md"), "Plan- v2");
         assert_eq!(file_stem("Заметка.md"), "Заметка");
@@ -1063,6 +1092,57 @@ mod tests {
             )
         });
         assert_eq!(sessions(&note, visual), 1);
+    }
+
+    /// Changing only the fence locally must not let an external save turn
+    /// code into prose through validation against the old, longer fence.
+    #[gpui::test]
+    fn a_local_fence_edit_conflicts_without_losing_source_or_undo(cx: &mut TestAppContext) {
+        let original = "# Plan\n\n````rs\nfn main() {}\n````\n\nAfter.\n";
+        let (note, visual) = open(cx, original);
+        caret(&note, visual, original.find("main").unwrap());
+        let (_, path) = start(&note, visual);
+        let end = original.rfind("````").unwrap();
+        let start = original.find("````").unwrap();
+        note.input.update_in(visual, |input, window, cx| {
+            assert!(input.replace_source_edits(
+                &[
+                    (start..start + 1, String::new()),
+                    (end..end + 1, String::new())
+                ],
+                start..start,
+                window,
+                cx,
+            ));
+        });
+        visual.run_until_parked();
+        let local = original.replace("````", "```");
+        assert_eq!(value(&note, visual), local, "local fence edit took effect");
+        save(visual, &path, "fn main() {}\n```\nexternal prose\n");
+        assert_eq!(value(&note, visual), local, "external save is refused");
+        assert!(visual.debug_bounds("external-block-copy").is_some());
+        visual.executor().advance_clock(Duration::from_secs(2));
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(note.root.join("note.md")).unwrap(),
+            local
+        );
+        visual.dispatch_action(gpui_component::input::Undo);
+        visual.run_until_parked();
+        assert_eq!(
+            value(&note, visual),
+            original,
+            "the local edit remains undoable"
+        );
+        save(visual, &path, "fn main() { safe }\n");
+        assert_eq!(value(&note, visual), original.replace("{}", "{ safe }"));
+        visual.dispatch_action(gpui_component::input::Undo);
+        visual.run_until_parked();
+        assert_eq!(
+            value(&note, visual),
+            original,
+            "write-back remains one Undo"
+        );
     }
 
     /// Cancelling: an editor closed without saving changes nothing; Stop and
