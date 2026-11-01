@@ -23,6 +23,7 @@ pub mod export;
 mod file;
 pub mod filter;
 pub mod histogram;
+pub mod http;
 mod index;
 mod json;
 mod level;
