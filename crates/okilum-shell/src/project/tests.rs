@@ -1432,7 +1432,10 @@ fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together
             let target=view.manager_model_target().unwrap();
             view.models=Some(target.load(gateway.as_ref()).unwrap());
             view.model_target=Some(target);
-            view.native.actions.update(cx,|actions,cx| actions.set_state(okilum_t3::actions::State { ready:true,active_run:Some("layout-run".into()),..Default::default() },window,cx));
+            view.native.actions.update(cx,|actions,cx| {
+                actions.state = okilum_t3::actions::State { ready:true,active_run:Some("layout-run".into()),..Default::default() };
+                cx.notify();
+            });
             view
         });
         Root::new(view,window,cx)
