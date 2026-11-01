@@ -450,16 +450,11 @@ impl ProjectView {
         self.draft_restore(window, cx);
         self.native_load_actions(window, cx);
         self.start_thread_directory(window, cx);
-        self.rebind_selected_native_thread(window, cx);
         self.native_start(window, cx);
         cx.notify();
     }
     pub(super) fn native_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.active
-            || self.native.busy
-            || self.native.worker.is_some()
-            || self.threads.selected.is_some()
-        {
+        if !self.active || self.native.busy || self.native.worker.is_some() {
             return;
         }
         let Some(client) = self.native.client.clone() else {
@@ -704,10 +699,7 @@ impl ProjectView {
         }
     }
     fn native_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.active
-            || self.threads.selected.is_some()
-            || !reader_features::enabled(reader_features::Feature::Agents, cx)
-        {
+        if !self.active || !reader_features::enabled(reader_features::Feature::Agents, cx) {
             return;
         }
         if self.native.history_busy {

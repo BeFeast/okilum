@@ -1,26 +1,16 @@
-//! Linux Manager workspace. The area's Manager binding is never rewritten when
-//! another thread is inspected; every thread retains its own composer and journal.
+//! Configured Manager workspace. Other conversations are opened in T3 (#2203).
 use super::*;
 use okilum_t3::stream::{shell, CancelSubscription, StreamError};
-use std::collections::BTreeMap;
 use std::sync::Mutex;
-mod create;
 #[cfg(feature = "project-ui-harness")]
 pub(in crate::project) mod native_fixture;
 
 #[derive(Default)]
 pub(super) struct Directory {
     pub enabled: bool,
-    pub selected: Option<String>,
-    pub views: BTreeMap<(String, String, String), Entity<ProjectView>>,
     pub(super) draft: super::drafts::State,
-    create_busy: bool,
-    create_error: Option<String>,
     pub(super) link_notice: Option<String>,
     pub model: Option<Arc<Mutex<shell::Directory>>>,
-    open: bool,
-    input: Option<Entity<InputState>>,
-    input_changes: Option<Subscription>,
     worker: Option<Task<()>>,
     cancel: Option<CancelSubscription>,
     epoch: u64,
@@ -35,21 +25,13 @@ impl Directory {
         }
         self.worker.take();
     }
-    pub(super) fn reset(&mut self, cx: &mut App) {
+    pub(super) fn reset(&mut self, _cx: &mut App) {
         self.pause();
-        for view in self.views.values() {
-            view.update(cx, |view, _| {
-                view.active = false;
-                view.native.pause();
-            });
-        }
         let (enabled, epoch) = (self.enabled, self.epoch);
-        let views = std::mem::take(&mut self.views);
         let draft = std::mem::take(&mut self.draft);
         *self = Self::default();
         self.enabled = enabled;
         self.epoch = epoch;
-        self.views = views;
         self.draft = draft;
     }
 }
@@ -59,37 +41,6 @@ impl Drop for Directory {
     }
 }
 impl ProjectView {
-    pub(super) fn native_thread_view(&self, id: &str) -> Option<&Entity<ProjectView>> {
-        let origin = self.environment.as_ref()?.origin();
-        let project = self.threads.model.as_ref().and_then(|model| {
-            model
-                .lock()
-                .unwrap()
-                .threads
-                .get(id)
-                .map(|row| row.project_id.clone())
-        })?;
-        self.threads.views.get(&(origin, project, id.to_owned()))
-    }
-    pub(super) fn rebind_selected_native_thread(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(id) = &self.threads.selected else {
-            return;
-        };
-        let Some(view) = self.native_thread_view(id) else {
-            return;
-        };
-        let Some((client, expiry)) = self.native.connection() else {
-            return;
-        };
-        view.update(cx, |view, cx| {
-            view.active = self.active;
-            view.install_native(client, expiry, window, cx);
-        });
-    }
     pub(super) fn set_threads_active(
         &mut self,
         active: bool,
@@ -98,21 +49,6 @@ impl ProjectView {
     ) {
         if !active {
             self.threads.pause();
-        }
-        let origin = self.environment.as_ref().map(Environment::origin);
-        for ((server, project, id), view) in &self.threads.views {
-            let selected = active
-                && origin.as_ref() == Some(server)
-                && self.threads.selected.as_ref() == Some(id)
-                && self.threads.model.as_ref().is_some_and(|model| {
-                    model
-                        .lock()
-                        .unwrap()
-                        .threads
-                        .get(id)
-                        .is_some_and(|row| &row.project_id == project)
-                });
-            view.update(cx, |view, cx| view.set_active(selected, window, cx));
         }
         if active {
             self.start_thread_directory(window, cx);
@@ -148,12 +84,6 @@ impl ProjectView {
             .clone();
         self.threads.epoch = self.threads.epoch.wrapping_add(1);
         let epoch = self.threads.epoch;
-        if self.threads.input.is_none() {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search threads…"));
-            self.threads.input_changes =
-                Some(cx.subscribe(&input, |_, _, _: &InputEvent, cx| cx.notify()));
-            self.threads.input = Some(input);
-        }
         self.threads.worker = Some(cx.spawn_in(window, async move |this, cx| {
             let mut socket: Option<shell::Subscription> = None;
             let mut failures = 0u32;
@@ -243,16 +173,9 @@ impl ProjectView {
                 );
                 let message = result.as_ref().err().map(ToString::to_string);
                 let accepted = this
-                    .update_in(cx, |this, window, cx| {
+                    .update(cx, |this, cx| {
                         if !this.active || this.threads.epoch != epoch {
                             return false;
-                        }
-                        if let Some(id) = &this.threads.selected {
-                            if !model.lock().unwrap().threads.contains_key(id) {
-                                if let Some(view) = this.native_thread_view(id) {
-                                    view.update(cx, |view, cx| view.set_active(false, window, cx));
-                                }
-                            }
                         }
                         if changed || this.threads.error != message {
                             this.threads.error = message;
@@ -279,301 +202,34 @@ impl ProjectView {
     }
 
     pub(super) fn select_manager_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.threads.selected.take() {
-            if let Some(view) = self.native_thread_view(&id) {
-                view.update(cx, |view, cx| view.set_active(false, window, cx));
-            }
-        }
-        self.threads.open = false;
         self.native_start(window, cx);
         cx.notify();
     }
-    fn select_native_thread(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.active || !reader_features::enabled(reader_features::Feature::Agents, cx) {
-            return;
-        }
-        if self
-            .binding
-            .as_ref()
-            .and_then(|b| b.manager.thread_id.as_ref())
-            == Some(&id)
-        {
-            self.select_manager_thread(window, cx);
-            return;
-        }
-        let row = self
-            .threads
-            .model
-            .as_ref()
-            .and_then(|m| m.lock().unwrap().threads.get(&id).cloned());
-        let Some(row) = row else {
-            return;
-        };
-        self.draft_flush(cx);
-        let Some((client, expiry)) = self.native.connection() else {
-            return;
-        };
-        let Some(mut binding) = self.binding.clone() else {
-            return;
-        };
-        if let Some(previous) = &self.threads.selected {
-            if let Some(view) = self.native_thread_view(previous) {
-                view.update(cx, |view, cx| view.set_active(false, window, cx));
-            }
-        }
-        self.native.pause();
-        binding.manager.thread_id = Some(row.id.clone());
-        binding.manager.project_id = Some(row.project_id.clone());
-        let view = if let Some(view) = self.native_thread_view(&id) {
-            view.clone()
-        } else {
-            let view = cx.new(|cx| {
-                let mut view = ProjectView::empty(self.state.clone(), window, cx);
-                view.binding = Some(binding);
-                view.area = self.area.clone();
-                view.context_path = self.context_path.clone();
-                view.environment = self.environment.clone();
-                view.reason = None;
-                view.chat = Some(Conversation::new(&id));
-                view.install_native(client, expiry, window, cx);
-                view
-            });
-            Self::forward_chat_links(&view, cx);
-            cx.observe(&view, |_, _, cx| cx.notify()).detach();
-            self.threads.views.insert(
-                (
-                    self.environment.as_ref().unwrap().origin(),
-                    row.project_id.clone(),
-                    id.clone(),
-                ),
-                view.clone(),
-            );
-            view
-        };
-        let (client, expiry) = self.native.connection().unwrap();
-        view.update(cx, |view, cx| {
-            view.active = true;
-            if view
-                .native
-                .connection()
-                .is_none_or(|(previous, _)| !Arc::ptr_eq(&previous, &client))
-            {
-                view.install_native(client, expiry, window, cx);
-            }
-            view.set_active(true, window, cx);
-        });
-        self.threads.selected = Some(id);
-        self.threads.open = false;
-        cx.notify();
-    }
 
-    pub(super) fn render_thread_directory(&self, cx: &mut Context<Self>) -> AnyElement {
-        let manager = self
-            .binding
-            .as_ref()
-            .and_then(|b| b.manager.thread_id.as_deref());
-        let selected = self.threads.selected.as_deref().or(manager);
-        let rows = self
-            .threads
-            .model
-            .as_ref()
-            .map(|m| {
-                m.lock()
-                    .unwrap()
-                    .threads
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let current = rows.iter().find(|row| Some(row.id.as_str()) == selected);
-        let title = current.map_or("Manager", |row| row.title.as_str());
-        let mut view =
-            v_flex()
-                .w_full()
-                .min_w_0()
-                .gap_1()
-                .px_3()
-                .py_2()
-                .debug_selector(|| "manager-workspace".into())
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        .child(
-                            Button::new("manager-thread-picker")
-                                .ghost()
-                                .label(title.to_owned())
-                                .dropdown_caret(true)
-                                .debug_selector(|| "manager-thread-picker".into())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.threads.open = !this.threads.open;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            Button::new("manager-new-thread")
-                                .ghost()
-                                .small()
-                                .label(if self.threads.create_busy {
-                                    "Creating…"
-                                } else {
-                                    "New thread"
-                                })
-                                .debug_selector(|| "manager-new-thread".into())
-                                .disabled(
-                                    self.threads.create_busy
-                                        || self
-                                            .native
-                                            .connection()
-                                            .is_none_or(|(c, _)| !c.can_operate()),
-                                )
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.create_native_thread(window, cx)
-                                })),
-                        )
-                        .when(!self.native.active(), |line| {
-                            line.child(
-                                Button::new("manager-native-pair")
-                                    .ghost()
-                                    .small()
-                                    .label("Pair")
-                                    .disabled(self.native_pairing_busy())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.pair_manager(window, cx)
-                                    })),
-                            )
-                        })
-                        .when(self.threads.selected.is_some(), |line| {
-                            line.child(
-                                Button::new("manager-return")
-                                    .ghost()
-                                    .label("Manager")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.select_manager_thread(window, cx)
-                                    })),
-                            )
-                        }),
-                );
-        if let Some(error) = self.threads.create_error.as_deref() {
-            view = view.child(
-                div()
-                    .text_color(cx.theme().danger)
-                    .whitespace_normal()
-                    .child(error.to_owned()),
-            );
-        }
-        let draft_notice = if let Some(child) = self
-            .threads
-            .selected
-            .as_deref()
-            .and_then(|id| self.native_thread_view(id))
-        {
-            child.read(cx).draft_notice().map(str::to_owned)
-        } else {
-            self.draft_notice().map(str::to_owned)
-        };
-        if let Some(error) = draft_notice {
-            view = view.child(
-                div()
-                    .text_color(cx.theme().danger)
-                    .whitespace_normal()
-                    .child(error),
-            );
-        }
-        let link_notice = if let Some(child) = self
-            .threads
-            .selected
-            .as_deref()
-            .and_then(|id| self.native_thread_view(id))
-        {
-            child.read(cx).threads.link_notice.clone()
-        } else {
-            self.threads.link_notice.clone()
-        };
-        if let Some(notice) = link_notice {
-            view = view.child(
-                div()
-                    .whitespace_normal()
-                    .text_color(brand::palette(cx).text_muted)
-                    .child(notice),
-            );
-        }
-        if self.threads.error.is_some() {
-            view = view.child(
-                div()
-                    .text_color(cx.theme().danger)
-                    .whitespace_normal()
-                    .child("Could not load threads. Open Diagnostics or reconnect."),
-            );
-        }
-        if !self.native.active() {
-            view = view.child(
-                div()
-                    .text_color(brand::palette(cx).text_muted)
-                    .child("Pair with T3 to load threads and live messages."),
-            );
-        }
-        if self.threads.open {
-            if let Some(input) = &self.threads.input {
-                view = view.child(Input::new(input).w_full());
-                let query = input.read(cx).value().to_lowercase();
-                let rows: Vec<_> = rows
-                    .into_iter()
-                    .filter(|r| {
-                        r.title.to_lowercase().contains(&query)
-                            || r.id.to_lowercase().contains(&query)
-                    })
-                    .collect();
-                let count = rows.len();
-                let current = selected.map(str::to_owned);
-                let manager = manager.map(str::to_owned);
-                let list = gpui::uniform_list(
-                    "manager-thread-list",
-                    count,
-                    cx.processor(move |_this, range: std::ops::Range<usize>, _, cx| {
-                        range
-                            .map(|index| {
-                                let row = &rows[index];
-                                let id = row.id.clone();
-                                let title = if row.title.is_empty() {
-                                    "Untitled thread"
-                                } else {
-                                    &row.title
-                                };
-                                Button::new(SharedString::from(format!("manager-thread-{id}")))
-                                    .ghost()
-                                    .w_full()
-                                    .h(px(36.))
-                                    .label(format!(
-                                        "{}{} · {}",
-                                        if manager.as_ref() == Some(&id) {
-                                            "Manager · "
-                                        } else {
-                                            ""
-                                        },
-                                        title,
-                                        row.status
-                                    ))
-                                    .selected(current.as_ref() == Some(&id))
-                                    .tooltip("Open conversation")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.select_native_thread(id.clone(), window, cx)
-                                    }))
-                                    .into_any_element()
-                            })
-                            .collect::<Vec<_>>()
-                    }),
+    pub(super) fn render_manager_notices(&self, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_1()
+            .px_3()
+            .debug_selector(|| "manager-workspace".into())
+            .when_some(self.draft_notice(), |view, error| {
+                view.child(
+                    div()
+                        .text_color(cx.theme().danger)
+                        .whitespace_normal()
+                        .child(error.to_owned()),
                 )
-                .h(px((count.clamp(1, 7) as f32) * 36.));
-                view = view.child(list);
-                if count == 0 {
-                    view = view.child("No matching threads in the bound projects.");
-                }
-            }
-        }
-        view.into_any_element()
+            })
+            .when_some(self.threads.link_notice.as_ref(), |view, notice| {
+                view.child(
+                    div()
+                        .text_color(brand::palette(cx).text_muted)
+                        .whitespace_normal()
+                        .child(notice.clone()),
+                )
+            })
+            .into_any_element()
     }
 }
 
@@ -598,7 +254,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn thread_selection_retains_independent_drafts_and_never_changes_the_area_manager(
+    fn configured_manager_has_no_other_thread_navigation_and_keeps_its_draft(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(crate::test_init);
@@ -647,63 +303,54 @@ mod tests {
         let view = entity.unwrap();
         visual.run_until_parked();
         assert!(visual.debug_bounds("manager-workspace").is_some());
+        for selector in [
+            "manager-thread-picker",
+            "manager-new-thread",
+            "manager-return",
+            "manager-thread-list",
+        ] {
+            assert!(
+                visual.debug_bounds(selector).is_none(),
+                "{selector} is not in the Manager workflow"
+            );
+        }
+        assert!(visual.debug_bounds("project-manager-title").is_some());
         view.update_in(visual, |view, window, cx| {
+            assert!(view.threads.enabled, "native auth/send must stay enabled");
             view.compose.update(cx, |input, cx| {
                 input.set_value("Keep manager draft", window, cx)
             });
-            view.select_native_thread("executor-a".into(), window, cx);
-        });
-        visual.run_until_parked();
-        view.update_in(visual, |view, window, cx| {
-            let child = view.native_thread_view("executor-a").unwrap().clone();
-            child.update(cx, |child, cx| {
-                assert_eq!(child.chat.as_ref().unwrap().thread_id, "executor-a");
-                child.compose.update(cx, |input, cx| {
-                    input.set_value("Keep executor draft", window, cx)
-                });
-            });
-            view.select_native_thread("executor-b".into(), window, cx);
-            view.select_native_thread("executor-a".into(), window, cx);
-            assert_eq!(
-                child.read(cx).compose.read(cx).value().as_str(),
-                "Keep executor draft"
-            );
+            view.select_manager_thread(window, cx);
+            assert_eq!(view.chat.as_ref().unwrap().thread_id, "mcp:manager");
             assert_eq!(
                 view.binding.as_ref().unwrap().manager.thread_id.as_deref(),
                 Some("mcp:manager")
             );
-            view.select_native_thread("foreign".into(), window, cx);
-            assert_eq!(view.threads.selected.as_deref(), Some("executor-a"));
-            let original = view.environment.clone();
-            view.environment = Some(Environment::new("other", "https://other.invalid").unwrap());
-            assert!(
-                view.native_thread_view("executor-a").is_none(),
-                "equal thread IDs on another origin cannot reuse drafts"
-            );
-            view.environment = original;
-            let directory = view.threads.model.as_ref().unwrap().clone();
-            directory
-                .lock()
-                .unwrap()
-                .apply(&[shell::Update::Thread(row("executor-a", "managers"), true)]);
-            assert!(
-                view.native_thread_view("executor-a").is_none(),
-                "equal origin/thread IDs in another project cannot reuse drafts"
-            );
-            directory
-                .lock()
-                .unwrap()
-                .apply(&[shell::Update::Thread(row("executor-a", "executors"), true)]);
-            view.select_manager_thread(window, cx);
             assert_eq!(view.compose.read(cx).value().as_str(), "Keep manager draft");
-            reader_features::set_enabled(reader_features::Feature::Agents, false, cx);
-            view.select_native_thread("executor-b".into(), window, cx);
-            assert!(
-                view.threads.selected.is_none(),
-                "a disabled module cannot activate a thread"
-            );
+            view.threads
+                .model
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .apply(&[
+                    shell::Update::Thread(row("executor-a", "managers"), true),
+                    shell::Update::Thread(row("foreign", "unbound"), true),
+                ]);
+            // Shell activity for other threads cannot retarget any conversation.
+            assert_eq!(view.chat.as_ref().unwrap().thread_id, "mcp:manager");
+            assert_eq!(view.compose.read(cx).value().as_str(), "Keep manager draft");
             view.set_active(false, window, cx);
             assert!(view.threads.worker.is_none() && view.threads.cancel.is_none());
         });
+        visual.run_until_parked();
+        for selector in [
+            "manager-thread-picker",
+            "manager-new-thread",
+            "manager-return",
+            "manager-thread-list",
+        ] {
+            assert!(visual.debug_bounds(selector).is_none());
+        }
     }
 }
