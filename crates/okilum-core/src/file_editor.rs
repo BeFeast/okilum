@@ -15,6 +15,19 @@ pub(crate) use directory::open_regular_at;
 use directory::Directory;
 #[cfg(unix)]
 use rustix::fs::RenameFlags;
+/// An explicit inspection token. Cleanup accepts only the exact revision shown
+/// by this token and never writes the public note. The editor lock stays held.
+#[cfg(unix)]
+pub struct InterruptedSave {
+    inner: raw_transaction::RecoveryInspection,
+}
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptedSaveState {
+    OriginalPresent,
+    ProposedPresent,
+    ChangedExternally,
+}
 /// The public note was written, but its preimage changed before verification.
 /// Distinct from Conflict: callers must not claim that nothing was published.
 #[derive(Debug)]
@@ -549,6 +562,7 @@ impl FileEditor {
     }
     #[cfg(unix)]
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
+        self.refuse_unresolved_link_recovery()?;
         if !self.dirty() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
             return Ok(Save::Saved);
@@ -608,7 +622,7 @@ impl FileEditor {
             Ok(()) => {}
             Err(error) if crate::unix_publish::unsupported(error) => {
                 compatible = true;
-                if !self.compatible_replace(directory, &backup)? {
+                if !self.compatible_replace(directory, &backup, &history)? {
                     return Ok(Save::Conflict);
                 }
             }
@@ -696,6 +710,9 @@ impl FileEditor {
             }
         })?;
         if let Some(outcome) = completed {
+            if outcome == Save::Saved {
+                self.forget_link_recovery(&history);
+            }
             return Ok(outcome);
         }
         let stamp = DiskStamp::of(&temp.metadata().context(UnconfirmedSave::Published)?);
@@ -705,6 +722,7 @@ impl FileEditor {
             return Err(error.context(UnconfirmedSave::Published));
         }
         self.on_disk = Some(stamp);
+        self.forget_link_recovery(&history);
         // Cleanup is best effort; a retention error never reverses a saved note.
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
         Ok(Save::Saved)
@@ -714,7 +732,7 @@ impl FileEditor {
     /// publication. Unlike EXCHANGE, POSIX cannot detect a replacement in the
     /// last check→rename window; no post-publication rollback is attempted.
     #[cfg(unix)]
-    fn compatible_replace(&self, directory: &File, backup: &Path) -> Result<bool> {
+    fn compatible_replace(&self, directory: &File, backup: &Path, history: &Path) -> Result<bool> {
         use rustix::fs::{linkat, openat, renameat, AtFlags, Mode, OFlags};
         let note = self.draft.path.file_name().unwrap();
         let old_name = backup.file_name().unwrap();
@@ -733,6 +751,9 @@ impl FileEditor {
             clean_recovery_file(directory, old_name, self.proposed_bytes())?;
             return Ok(false);
         }
+        // Record both private names and inode ownership before the first
+        // namespace change. Existing History remains the original-byte store.
+        self.record_link_recovery(history, old_name, &prepared)?;
         self.track_raw_renamed(old_name, &prepared)?;
         if let Err(error) = renameat(directory, old_name, directory, prepared.as_str()) {
             return Err(with_cleanup(
@@ -871,6 +892,9 @@ impl FileEditor {
                 } else {
                     Ok(())
                 };
+                if draft_cleanup.is_ok() && preimage_cleanup.is_ok() {
+                    self.forget_link_recovery(history);
+                }
                 match outcome {
                     Err(error) => Err(with_cleanup(
                         with_cleanup(error, draft_cleanup),
