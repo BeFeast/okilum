@@ -185,12 +185,27 @@ impl Reader {
 
     /// Everything the menu lists, before «Show all» trims Recent.
     pub(super) fn nav_entries(&self, menu: Menu, now: u64) -> Vec<Entry> {
+        self.nav_entries_with_agents(menu, now, false)
+    }
+
+    pub(super) fn nav_entries_with_agents(
+        &self,
+        menu: Menu,
+        now: u64,
+        agent_files: bool,
+    ) -> Vec<Entry> {
         let folder = match self.nav_scope() {
             Some(Scope::Project) => self.project_folder().unwrap_or_default(),
             _ => String::new(),
         };
         // Hidden notes follow Show hidden files, as in the tree (#635).
-        let shown = |path: &str| in_folder(path, &folder) && !self.tree.hidden_by_preference(path);
+        let shown = |path: &str| {
+            in_folder(path, &folder)
+                && (!self.tree.hidden_by_preference(path)
+                    || (agent_files
+                        && okilum_core::quick_open::is_agent_file(path)
+                        && !crate::reader_tree::hidden(path)))
+        };
         let entry = |path: &str, age: Option<String>| Entry {
             path: path.to_owned(),
             label: self.note_label(path),

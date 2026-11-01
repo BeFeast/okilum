@@ -795,7 +795,11 @@ impl Reader {
         let aliases = self.vault.aliases();
         let mut pinned = matching(
             filtered_entries(
-                self.nav_entries(reader_title_nav::Menu::Pinned, now),
+                self.nav_entries_with_agents(
+                    reader_title_nav::Menu::Pinned,
+                    now,
+                    filter == FileFilter::AgentFiles,
+                ),
                 filter,
             ),
             &query,
@@ -805,10 +809,14 @@ impl Reader {
         let current = self.selected_file();
         let mut recent = matching(
             filtered_entries(
-                self.nav_entries(reader_title_nav::Menu::Recent, now)
-                    .into_iter()
-                    .filter(|entry| entry.path != current)
-                    .collect(),
+                self.nav_entries_with_agents(
+                    reader_title_nav::Menu::Recent,
+                    now,
+                    filter == FileFilter::AgentFiles,
+                )
+                .into_iter()
+                .filter(|entry| entry.path != current)
+                .collect(),
                 filter,
             ),
             &query,
