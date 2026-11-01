@@ -578,7 +578,7 @@ impl ProjectView {
             .child(
                 div()
                     .min_w_0()
-                    .text_size(px(11.))
+                    .text_size(px(12.))
                     .debug_selector(|| "project-chat-status".into())
                     .text_color(brand::palette(cx).text_muted)
                     .child(label),
