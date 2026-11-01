@@ -134,6 +134,21 @@ impl Fixture {
             app.join("Contents/Library/LaunchAgents").join(PLIST),
             bundled_plist(HELPER)?,
         )?;
+        // A valid fake bundle is a positive control independent of the test
+        // wrapper umask. Permission rejection is exercised explicitly elsewhere.
+        for relative in [
+            "",
+            "Contents",
+            "Contents/MacOS",
+            "Contents/Library",
+            "Contents/Library/LaunchAgents",
+        ] {
+            fs::set_permissions(app.join(relative), fs::Permissions::from_mode(0o755))?;
+        }
+        fs::set_permissions(
+            app.join("Contents/Library/LaunchAgents").join(PLIST),
+            fs::Permissions::from_mode(0o644),
+        )?;
         let state = base.join("state");
         fs::create_dir(&state)?;
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700))?;
