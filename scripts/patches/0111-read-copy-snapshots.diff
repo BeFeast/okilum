@@ -1,0 +1,95 @@
+diff --git a/crates/base/src/text/state.rs b/crates/base/src/text/state.rs
+index ab26a58e..c5eb33d8 100644
+--- a/crates/base/src/text/state.rs
++++ b/crates/base/src/text/state.rs
+@@ -716,6 +716,20 @@ impl TextViewState {
+         self.selected_text_in(None)
+     }
+ 
++    /// Snapshot the selection in an explicit format without changing the view's
++    /// copy preference, selection, or scroll position.
++    pub fn selected_text_as(&self, format: SelectionFormat) -> String {
++        self.selected_text_in_format(format, None)
++    }
++
++    /// Exact authored body paired with the accepted document revision. A failed
++    /// parse has no displayed document to copy.
++    pub fn document_source(&self) -> Option<SharedString> {
++        self.parsed_error.is_none().then(|| {
++            self.displayed_source_copy.clone().unwrap_or_else(|| self.source())
++        })
++    }
++
+     /// The owning view's exact Source selection, before shared-copy trimming.
+     pub(super) fn exact_source_selection(&self) -> Option<SharedString> {
+         (self.parsed_error.is_none()
+@@ -749,12 +763,23 @@ impl TextViewState {
+     /// even after it scrolls out of view; see
+     /// [`ParsedDocument::selected_text`](crate::text::document::ParsedDocument).
+     pub(super) fn selected_text_in(&self, blocks: Option<RangeInclusive<usize>>) -> String {
++        self.selected_text_in_format(self.effective_format(), blocks)
++    }
++
++    fn selected_text_in_format(
++        &self,
++        format: SelectionFormat,
++        blocks: Option<RangeInclusive<usize>>,
++    ) -> String {
+         // Parse errors replace the old tree with an error view. Its retained
+         // document must not expose the previous note through a new selection.
+         if self.parsed_error.is_some() {
+             return String::new();
+         }
+-        let format = self.effective_format();
++        let format = match self.format {
++            TextViewFormat::Markdown => format,
++            TextViewFormat::Html => SelectionFormat::Plain,
++        };
+ 
+         if self.select_all {
+             if format == SelectionFormat::Source {
+@@ -1379,6 +1404,28 @@ mod tests {
+     use crate::text::MarkdownNode;
+     use gpui::TestAppContext;
+ 
++    #[gpui::test]
++    fn explicit_copy_formats_preserve_preference_selection_and_original_body(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let state = cx.update(|cx| cx.new(|cx| {
++            TextViewState::markdown("", cx).selectable(true)
++                .selection_format(SelectionFormat::Plain)
++        }));
++        state.update(cx, |state, cx| {
++            state.set_text_with_source("**visible**", Some("  **authored**\r\n".into()), cx);
++            state.select_all(cx);
++            assert_eq!(state.selected_text_as(SelectionFormat::Source), "  **authored**\r\n");
++            assert_eq!(state.selected_text_as(SelectionFormat::Plain).trim(), "visible");
++            assert_eq!(state.selected_text().trim(), "visible", "copy preference stays Plain");
++            assert_eq!(state.document_source().unwrap().as_str(), "  **authored**\r\n");
++        });
++        state.update(cx, |state, cx| {
++            state.set_text_with_source("next", Some("next source\n".into()), cx);
++            assert_eq!(state.document_source().unwrap().as_str(), "next source\n");
++            assert!(state.selected_text_as(SelectionFormat::Plain).is_empty(), "no stale selection");
++        });
++    }
++
+     #[gpui::test]
+     fn large_documents_measure_visible_blocks_and_small_ones_measure_all(
+         cx: &mut TestAppContext,
+@@ -1431,6 +1478,7 @@ mod tests {
+             state.select_all(cx);
+             state.set_text_with_source(&large, Some("original B".into()), cx);
+             assert_eq!(state.source().as_str(), "old");
++            assert_eq!(state.document_source().unwrap().as_str(), "  original A\r\n");
+             assert_eq!(
+                 state.exact_source_selection().unwrap().as_str(),
+                 "  original A\r\n"
+@@ -1441,6 +1489,7 @@ mod tests {
+             state.select_all(cx);
+             assert_eq!(state.source().as_str(), large.as_str());
+             assert_eq!(state.selected_text(), "original B");
++            assert_eq!(state.document_source().unwrap().as_str(), "original B");
+             state.set_text_with_source(&(large.clone() + " superseded"), Some("stale".into()), cx);
+             state.set_text_with_source("latest", Some("original C".into()), cx);
+         });

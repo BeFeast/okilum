@@ -102,6 +102,7 @@ mod reader_plain_text;
 mod reader_project_create;
 mod reader_project_navigation;
 mod reader_properties;
+mod reader_read_menu;
 mod reader_reading_controls;
 #[cfg(any(unix, windows))]
 mod reader_recovery;
@@ -5418,11 +5419,17 @@ impl Reader {
                                 }),
                             )
                             .context_menu(move |menu, window, cx| {
-                                let menu = reader_reminder::menu(menu, &menu_entity, cx);
+                                let menu = reader_read_menu::menu(menu, &menu_entity, cx);
                                 // A right-click on a heading offers its link (#1049).
                                 let heading = menu_entity.upgrade().and_then(|reader| {
                                     reader.read(cx).heading_at(window.mouse_position(), cx)
                                 });
+                                let extra_group = heading.is_some()
+                                    || menu_entity.upgrade().is_some_and(|reader| {
+                                        reader.read(cx).reminder_for_selection(cx).is_some()
+                                    });
+                                let menu = if extra_group { menu.separator() } else { menu };
+                                let menu = reader_reminder::menu(menu, &menu_entity, cx);
                                 match heading {
                                     Some(text) => reader_deep_link::heading_link_item(
                                         menu,
