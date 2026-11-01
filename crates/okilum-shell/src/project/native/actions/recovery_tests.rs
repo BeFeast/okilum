@@ -5,9 +5,9 @@ use ::core::prelude::v1::test;
 use okilum_t3::projection::Projection;
 use std::{
     io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -55,10 +55,112 @@ fn read(ws: &mut WebSocket<TcpStream>) -> Value {
 fn send(ws: &mut WebSocket<TcpStream>, value: Value) {
     ws.send(Message::Text(value.to_string().into())).unwrap();
 }
-fn socket(listener: &TcpListener, after: Option<u64>) -> WebSocket<TcpStream> {
-    ticket(listener);
-    let mut ws = tungstenite::accept(accept(listener)).unwrap();
-    let request = read(&mut ws);
+// The authenticated connection warms its own config stream independently of
+// thread replay. Route real connections by RPC tag instead of assuming ticket
+// and upgrade pairs from concurrent clients arrive in a fixed order.
+struct RecoverySockets {
+    threads: mpsc::Receiver<(WebSocket<TcpStream>, Value)>,
+    address: SocketAddr,
+    stopped: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+impl RecoverySockets {
+    fn new(listener: TcpListener) -> Self {
+        let address = listener.local_addr().unwrap();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopping = stopped.clone();
+        let (threads, accepted) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut workers = Vec::new();
+            for incoming in listener.incoming() {
+                let mut stream = incoming.unwrap();
+                if stopping.load(Ordering::SeqCst) {
+                    break;
+                }
+                let threads = threads.clone();
+                let stopping = stopping.clone();
+                workers.push(thread::spawn(move || {
+                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut first = [0; 1];
+                    assert_eq!(stream.peek(&mut first).unwrap(), 1);
+                    if first[0] == b'P' {
+                        headers(&mut stream);
+                        response(&mut stream, 200, &json!({"ticket":"fixture-ticket","expiresAt":"2099-01-01T00:00:00Z"}).to_string());
+                        return;
+                    }
+                    let mut ws = tungstenite::accept(stream).unwrap();
+                    let request = read(&mut ws);
+                    match request["tag"].as_str() {
+                        Some("orchestration.subscribeThread") => {
+                            threads.send((ws, request)).unwrap();
+                        }
+                        Some("subscribeServerConfig") => {
+                            assert_eq!(request["payload"], json!({}));
+                            ws.get_ref().set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+                            let snapshot = json!({"_tag":"Chunk","requestId":"1","values":[{
+                                "version":1,"type":"snapshot","config":{
+                                    "environment":{"environmentId":"recovery-fixture","label":"Recovery fixture"},
+                                    "providers":[{"instanceId":"fixture-codex","driver":"codex","enabled":true,
+                                        "models":[{"slug":"fixture-model","name":"Fixture model"}]}]
+                                }
+                            }]});
+                            if ws.send(Message::Text(snapshot.to_string().into())).is_err() {
+                                return;
+                            }
+                            while !stopping.load(Ordering::SeqCst) {
+                                match ws.read() {
+                                    Ok(Message::Text(text)) => {
+                                        let value: Value = serde_json::from_str(&text).unwrap();
+                                        match value["_tag"].as_str() {
+                                            Some("Ping") => {
+                                                if ws.send(Message::Text(json!({"_tag":"Pong"}).to_string().into())).is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            Some("Ack") => assert_eq!(value["requestId"], "1"),
+                                            Some("Interrupt") => break,
+                                            other => panic!("unexpected config stream frame: {other:?}"),
+                                        }
+                                    }
+                                    Ok(Message::Ping(_)) => {
+                                        if ws.flush().is_err() { break; }
+                                    }
+                                    Ok(Message::Pong(_)) => {}
+                                    Ok(Message::Close(_)) => break,
+                                    Err(tungstenite::Error::Io(error))
+                                        if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                                    Err(_) => break,
+                                    Ok(_) => panic!("unexpected config WebSocket frame"),
+                                }
+                            }
+                        }
+                        other => panic!("unexpected recovery fixture RPC: {other:?}"),
+                    }
+                }));
+            }
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
+        Self {
+            threads: accepted,
+            address,
+            stopped,
+            worker: Some(worker),
+        }
+    }
+}
+impl Drop for RecoverySockets {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        // Wake the blocking accept, then join every owned connection worker.
+        let _ = TcpStream::connect(self.address);
+        self.worker.take().unwrap().join().unwrap();
+    }
+}
+fn socket(server: &RecoverySockets, after: Option<u64>) -> WebSocket<TcpStream> {
+    let (mut ws, request) = server.threads.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(request["tag"], "orchestration.subscribeThread");
     assert_eq!(request["payload"]["threadId"], THREAD);
     assert_eq!(request["payload"]["afterSequence"].as_u64(), after);
@@ -66,6 +168,7 @@ fn socket(listener: &TcpListener, after: Option<u64>) -> WebSocket<TcpStream> {
     ping(&mut ws);
     ws
 }
+
 fn ping(ws: &mut WebSocket<TcpStream>) {
     assert_eq!(read(ws)["_tag"], "Ping");
     send(ws, json!({"_tag":"Pong"}));
@@ -169,7 +272,8 @@ async fn real_close_and_cursor_replay_keep_controls_disabled_until_sync_and_reta
     let attempts = Arc::new(AtomicUsize::new(0));
     let count = attempts.clone();
     let server = thread::spawn(move || {
-        let mut first = socket(&listener, None);
+        let sockets = RecoverySockets::new(listener);
+        let mut first = socket(&sockets, None);
         count.fetch_add(1, Ordering::SeqCst);
         chunk(&mut first, json!([snapshot(),{"kind":"synchronized"}]));
         assert_eq!(
@@ -178,7 +282,7 @@ async fn real_close_and_cursor_replay_keep_controls_disabled_until_sync_and_reta
         );
         first.close(None).unwrap();
         drop(first);
-        let mut second = socket(&listener, Some(10));
+        let mut second = socket(&sockets, Some(10));
         count.fetch_add(1, Ordering::SeqCst);
         let mut item = question();
         item["prompt"] = json!("Replayed before synchronization");

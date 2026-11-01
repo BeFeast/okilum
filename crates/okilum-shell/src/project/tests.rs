@@ -1489,5 +1489,22 @@ fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together
     }
     assert!(bounds("project-attach").top() >= input.bottom());
     assert!(bounds("project-send").top() >= input.bottom());
+    visual.simulate_click(model.center(), Modifiers::default());
+    visual.run_until_parked();
+    let choice = visual
+        .debug_bounds("project-model-choice-0")
+        .expect("usable models are visible in a narrow popup");
+    assert!(
+        choice.left() >= px(0.)
+            && choice.right() <= px(320.)
+            && choice.top() >= px(0.)
+            && choice.bottom() <= px(900.),
+        "model popup escaped the narrow viewport: {choice:?}"
+    );
+    assert!(
+        gateway.model_writes.lock().unwrap().is_empty(),
+        "layout and opening the picker cannot select a model"
+    );
+    assert!(gateway.sends.lock().unwrap().is_empty());
     let _ = root;
 }

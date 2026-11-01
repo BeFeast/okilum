@@ -232,6 +232,22 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.model_request_inner(selection, false, window, cx);
+    }
+
+    pub(super) fn warm_gateway_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The same completed poll just verified thread/project ownership.
+        // Avoid a second history read solely to warm the model catalog.
+        self.model_request_inner(None, true, window, cx);
+    }
+
+    fn model_request_inner(
+        &mut self,
+        selection: Option<ModelSelection>,
+        verified_poll: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         #[cfg(target_os = "linux")]
         if selection.is_none() && self.native.active() {
             if let Some(catalog) = &self.native.catalog {
@@ -287,6 +303,12 @@ impl ProjectView {
                     let Some(gateway) = gateway else { return (Err(anyhow::anyhow!("Not connected")), None); };
                     let result = match selection {
                         Some(selection) => target.configure(gateway.as_ref(), &selection),
+                        None if verified_poll => (|| {
+                            let catalog = gateway.capabilities()?;
+                            let configuration = gateway.thread_configuration(&target.thread_id)?;
+                            anyhow::ensure!(configuration.thread_id == target.thread_id, "T3 returned another thread's model configuration");
+                            Ok(okilum_t3::models::Snapshot { target: target.clone(), catalog, configuration })
+                        })(),
                         None => target.load(gateway.as_ref()),
                     };
                     let observed = if applying && result.is_err() { target.load(gateway.as_ref()).ok() } else { None };

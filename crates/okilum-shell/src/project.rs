@@ -1042,7 +1042,7 @@ impl ProjectView {
                         let native = false;
                         if !native {
                             this.model_target = this.manager_model_target();
-                            this.model_request(None, window, cx);
+                            this.warm_gateway_models(window, cx);
                         }
                     }
                     if changed {
