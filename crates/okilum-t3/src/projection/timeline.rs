@@ -940,17 +940,17 @@ mod tests {
     fn final_answer_survives_fold_and_trailing_rules_are_exact() {
         let completed = run("run", RunState::Completed);
         let base = basic_turn();
-        let plan = history(&base, &[completed.clone()]);
+        let plan = history(&base, std::slice::from_ref(&completed));
         assert_eq!(fold(&plan).members.as_ref(), &[key("comment"), key("tool")]);
         assert!(source_visible(&plan, "user") && source_visible(&plan, "answer"));
         assert!(!source_visible(&plan, "comment"));
         let mut one = base.clone();
         one.push(tool("trailing-one"));
-        assert!(fold(&history(&one, &[completed.clone()]))
+        assert!(fold(&history(&one, std::slice::from_ref(&completed)))
             .members
             .contains(&key("trailing-one")));
         one.push(tool("trailing-two"));
-        let two = history(&one, &[completed.clone()]);
+        let two = history(&one, std::slice::from_ref(&completed));
         assert!(!fold(&two).members.contains(&key("trailing-one")));
         assert_eq!(
             summary(&two).members.as_ref(),
@@ -980,7 +980,7 @@ mod tests {
             protected.ended_at = Some(30_000);
             rows.push(protected);
             let completed = run("run", RunState::Completed);
-            let single = history(&rows, &[completed.clone()]);
+            let single = history(&rows, std::slice::from_ref(&completed));
             assert!(source_visible(&single, "protected-tail"));
             assert_eq!(
                 fold(&single).label,
@@ -1003,7 +1003,7 @@ mod tests {
             row("compaction", RowKind::Compaction),
             row("answer", RowKind::Assistant),
         ];
-        let plan = history(&lone, &[completed.clone()]);
+        let plan = history(&lone, std::slice::from_ref(&completed));
         assert!(source_visible(&plan, "compaction"));
         assert!(!plan
             .rows
