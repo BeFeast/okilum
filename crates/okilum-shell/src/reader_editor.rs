@@ -777,6 +777,7 @@ impl Reader {
                 });
             })
             .detach();
+            this.refresh_draft_outline(&value, cx);
             this.schedule_autosave(input_id, epoch, cx);
             this.schedule_live_preview(cx);
             cx.notify();
@@ -998,6 +999,7 @@ impl Reader {
         if let Some(place) = reader_place {
             self.place_editor_at_reader(input.clone(), place, window, cx);
         }
+        self.refresh_draft_outline(&input.read(cx).value(), cx);
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.ui_state.source_mode = true;
         self.start_editor_layout_diagnostics(input.clone(), cx);
@@ -1507,6 +1509,8 @@ impl Reader {
         }
         self.remember_source_mode();
         self.editing = None;
+        self.outline_list
+            .reset_with_uniform_height(self.outline.len(), px(OUTLINE_ROW_HEIGHT));
         true
     }
 

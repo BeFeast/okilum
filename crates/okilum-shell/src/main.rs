@@ -1791,6 +1791,7 @@ struct Reader {
     /// Top-level headings of the open document (docs/design/reader.md §Right
     /// panel, #337). Prepared with the document; never reparsed on scroll.
     outline: Vec<okilum_core::document_links::HeadingEntry>,
+    draft_outline: reader_outline::DraftOutline,
     /// Folder tree over the published inventory (#335). Rebuilt only when the
     /// vault Arc or the current document changes.
     tree: reader_tree::Tree,
@@ -2104,6 +2105,7 @@ impl Reader {
             find_input,
             find_open: false,
             outline: Vec::new(),
+            draft_outline: Default::default(),
             tree: reader_tree::Tree::default(),
             tree_source: None,
             tree_revealed: String::new(),
@@ -6433,6 +6435,13 @@ impl Reader {
 
     /// Index into `outline` of the section containing the top visible block.
     fn current_section(&self, cx: &App) -> Option<usize> {
+        if let Some(editing) = &self.editing {
+            return editing
+                .input()
+                .read(cx)
+                .top_visible_line()
+                .and_then(|line| self.draft_outline.current(line));
+        }
         let top = self
             .content
             .read(cx)
@@ -6450,7 +6459,7 @@ impl Reader {
             return outline;
         }
         let p = brand::palette(cx);
-        if self.file_preview.is_some() || self.outline.is_empty() {
+        if self.file_preview.is_some() || self.visible_outline().is_empty() {
             return div()
                 .flex_none()
                 .py_1()
@@ -6463,10 +6472,10 @@ impl Reader {
         let hover = brand::reader_palette(cx).hover;
         let current = self.current_section(cx);
         let entity = cx.entity().downgrade();
-        let base = self.outline.iter().map(|h| h.level).min().unwrap_or(1);
+        let base = self.visible_outline().iter().map(|h| h.level).min().unwrap_or(1);
         // Only the rows in view are built, so the panel costs the same for 32 and 436
         // headings (#1004). The list needs a height of its own: every row's, up to 60 %.
-        let rows_height = self.outline.len() as f32 * OUTLINE_ROW_HEIGHT;
+        let rows_height = self.visible_outline().len() as f32 * OUTLINE_ROW_HEIGHT;
         v_flex()
             .id("reader-outline")
             .debug_selector(|| "reader-outline-list".into())
@@ -6478,7 +6487,7 @@ impl Reader {
                 list(
                     self.outline_list.clone(),
                     cx.processor(move |this, ix: usize, _window, cx| {
-                        let Some(heading) = this.outline.get(ix) else {
+                        let Some(heading) = this.visible_outline().get(ix) else {
                             return div().into_any_element();
                         };
                         let p = brand::palette(cx);

@@ -3,6 +3,54 @@ use super::*;
 use gpui_component::input::EditorState;
 use okilum_core::document_links::{HeadingEntry, HeadingInventory};
 
+/// The outline and its click coordinates share one exact editor snapshot.
+#[derive(Default)]
+pub(super) struct DraftOutline {
+    source: String,
+    entries: Vec<HeadingEntry>,
+    lines: Vec<usize>,
+}
+
+impl DraftOutline {
+    fn new(source: &str) -> Self {
+        let body = okilum_core::render::without_frontmatter(source);
+        let prefix = source.len() - body.len();
+        let entries: Vec<_> = HeadingInventory::new(body)
+            .entries
+            .into_iter()
+            .filter(|heading| heading.supported_container)
+            .map(|mut heading| {
+                heading.target.offset += prefix;
+                heading
+            })
+            .collect();
+        let mut previous = 0;
+        let mut line = 0;
+        let lines = entries
+            .iter()
+            .map(|heading| {
+                line += source[previous..heading.target.offset]
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count();
+                previous = heading.target.offset;
+                line
+            })
+            .collect();
+        Self {
+            source: source.into(),
+            entries,
+            lines,
+        }
+    }
+
+    pub(super) fn current(&self, line: usize) -> Option<usize> {
+        self.lines
+            .partition_point(|heading| *heading <= line)
+            .checked_sub(1)
+    }
+}
+
 const STALE_HEADING: &str =
     "This heading changed in the editor. Return to Read to refresh the outline.";
 
@@ -58,6 +106,24 @@ fn editor_line(
 }
 
 impl Reader {
+    pub(super) fn visible_outline(&self) -> &[HeadingEntry] {
+        if self.editing.is_some() {
+            &self.draft_outline.entries
+        } else {
+            &self.outline
+        }
+    }
+
+    pub(super) fn refresh_draft_outline(&mut self, source: &str, _cx: &mut Context<Self>) {
+        self.draft_outline = DraftOutline::new(source);
+        if self.outline_list.item_count() != self.draft_outline.entries.len() {
+            self.outline_list.reset_with_uniform_height(
+                self.draft_outline.entries.len(),
+                px(OUTLINE_ROW_HEIGHT),
+            );
+        }
+    }
+
     pub(super) fn open_outline_heading(
         &mut self,
         heading: HeadingEntry,
@@ -74,10 +140,8 @@ impl Reader {
             return;
         };
         let input = editing.input().clone();
-        let Some(original) = self.note_canonical_source.clone() else {
-            return;
-        };
-        let rendered = self.note_source.clone();
+        let original = self.draft_outline.source.clone();
+        let rendered = okilum_core::render::without_frontmatter(&original).to_owned();
         let current = input.read(cx).value();
         let untouched = (
             input.read(cx).source_stamp(),
@@ -192,6 +256,112 @@ mod tests {
         assert_eq!(editor_line(wiki, rendered, wiki, &heading), Ok(0));
     }
 
+    #[test]
+    fn draft_outline_tracks_added_renamed_removed_and_duplicate_headings() {
+        let old = "---\ntitle: Note\n---\n# Old\n\nBody\n";
+        let before = DraftOutline::new(old);
+        assert_eq!(before.entries.len(), 1, "inventory positive control");
+        let draft = old.replace("# Old", "## QA heading\n\n# Renamed\n\n# Same\n\n# Same");
+        let after = DraftOutline::new(&draft);
+        assert_eq!(
+            after
+                .entries
+                .iter()
+                .map(|h| h.text.as_str())
+                .collect::<Vec<_>>(),
+            ["QA heading", "Renamed", "Same", "Same"]
+        );
+        assert_eq!(after.current(0), None);
+        assert_eq!(after.current(3), Some(0));
+        assert_eq!(after.current(9), Some(3));
+        for (index, heading) in after.entries.iter().enumerate() {
+            assert_eq!(
+                editor_line(
+                    &after.source,
+                    okilum_core::render::without_frontmatter(&after.source),
+                    &draft,
+                    heading,
+                ),
+                Ok(after.lines[index] as u32)
+            );
+        }
+        let removed = DraftOutline::new("Body only\n");
+        assert!(removed.entries.is_empty());
+        assert_eq!(removed.current(0), None);
+    }
+
+    #[gpui::test]
+    fn source_edit_and_save_refresh_outline_without_leaving_source(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("note.md");
+        let original = (0..20)
+            .map(|index| format!("## Heading {index}\n\nBody\n\n"))
+            .collect::<String>();
+        std::fs::write(&path, &original).unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        session_directory: Some(fixture.path().join("state")),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        settle(visual);
+        reader.update_in(visual, |reader, window, cx| {
+            assert_eq!(reader.outline.len(), 20, "loaded note positive control");
+            reader.toggle_source(window, cx);
+        });
+        settle(visual);
+        let draft = format!("## QA heading\n\n{original}");
+        reader.update_in(visual, |reader, window, cx| {
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .set_value(&draft, window, cx);
+        });
+        settle(visual);
+        reader.update_in(visual, |reader, _, cx| {
+            assert_eq!(reader.visible_outline().len(), 21);
+            assert_eq!(reader.visible_outline()[0].text, "QA heading");
+            assert_eq!(reader.outline_list.item_count(), 21);
+            assert!(reader.save_source(cx), "explicit save succeeds");
+            assert!(reader.editing.is_some(), "Source remains open");
+            assert_eq!(reader.visible_outline()[0].text, "QA heading");
+        });
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), draft);
+        settle(visual);
+        let row = visual
+            .debug_bounds("reader-outline-row-0")
+            .expect("new heading is drawn");
+        visual.simulate_click(row.center(), Modifiers::default());
+        settle(visual);
+        reader.read_with(visual, |reader, cx| {
+            assert!(reader.link_notice.is_none());
+            let input = reader.editing.as_ref().unwrap().input().read(cx);
+            assert_eq!(input.cursor_position().line, 0);
+            assert_eq!(reader.current_section(cx), Some(0));
+        });
+    }
+
     #[derive(Clone, Copy, Debug)]
     enum Mode {
         Read,
@@ -215,7 +385,12 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("vault");
         std::fs::create_dir(&root).unwrap();
-        let original = format!("---\r\ntitle: Synthetic Ω\r\n---\r\n# Top\r\n\r\n{}Цель 🎯\r\n-------\r\n\r\n{}## End\r\n\r\n{}", "A paragraph before the target.\r\n\r\n".repeat(80), "A paragraph after the target.\r\n\r\n".repeat(80), "Ending paragraph.\r\n\r\n".repeat(30));
+        let original = format!(
+            "---\r\ntitle: Synthetic Ω\r\n---\r\n# Top\r\n\r\n{}Цель 🎯\r\n-------\r\n\r\n{}## End\r\n\r\n{}",
+            "A paragraph before the target.\r\n\r\n".repeat(80),
+            "A paragraph after the target.\r\n\r\n".repeat(80),
+            "Ending paragraph.\r\n\r\n".repeat(30)
+        );
         let path = root.join("note.md");
         std::fs::write(&path, &original).unwrap();
         let target_offset = original.find("Цель 🎯").unwrap();
