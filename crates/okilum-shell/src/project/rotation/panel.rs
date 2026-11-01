@@ -4,18 +4,7 @@ use super::{calendar_day, DraftState, PendingReview};
 use crate::project::{design, *};
 use okilum_t3::rotation::Checkpoint;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::project) enum Action {
-    Resume,
-    Defer,
-    Cancel,
-}
-#[derive(Clone)]
-pub(in crate::project) struct Requested {
-    pub action: Action,
-    /// Retain exact revision AND owner when scheduling asynchronous work.
-    pub expected: Checkpoint,
-}
+pub(in crate::project) use super::{Action, Requested};
 impl EventEmitter<Requested> for ReconciliationPanel {}
 
 pub(in crate::project) struct ReconciliationPanel {

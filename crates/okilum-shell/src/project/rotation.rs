@@ -69,14 +69,23 @@ pub(super) fn prepare_recovery(
 #[path = "rotation/panel.rs"]
 pub(super) mod panel;
 
-/// Parent increments edit_revision for every text, attachment AND typed metadata
-/// change (slot23 TypedDraftChanged). Text comes from typed_source_text, not the
-/// visible input whose token may have become a pill.
-#[derive(Clone, PartialEq)]
-pub(super) struct ComposerSnapshot {
-    pub draft: Draft<Attachment>,
-    pub edit_revision: u64,
-    pub has_authored_metadata: bool,
+// Frozen slot23 snapshot includes the complete retained typed metadata.
+pub(super) use super::drafts::ComposerSnapshot;
+#[path = "rotation/coordinator.rs"]
+pub(super) mod coordinator;
+#[path = "rotation/protocol.rs"]
+mod protocol;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Action {
+    Resume,
+    Defer,
+    Cancel,
+}
+#[derive(Clone)]
+pub(super) struct Requested {
+    pub action: Action,
+    pub expected: Checkpoint,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DraftState {
@@ -149,11 +158,11 @@ impl PendingReview {
             DraftState::AuthoredDraftPreserved
         }
     }
-    fn validate(&self, store: &PolicyStore, owner: &Owner) -> Result<(), String> {
+    fn validate_loaded(&self, loaded: &Checkpoint, owner: &Owner) -> Result<(), String> {
         if owner != &self.checkpoint.owner {
             return Err("Rotation target changed; reopen reconciliation".into());
         }
-        if store.load()?.as_ref() != Some(&self.checkpoint) {
+        if loaded != &self.checkpoint {
             return Err("Rotation claim changed; reopen reconciliation".into());
         }
         Ok(())
@@ -164,7 +173,16 @@ impl PendingReview {
         owner: &Owner,
         current: &ComposerSnapshot,
     ) -> Result<ResumeDraft, String> {
-        self.validate(store, owner)?;
+        let loaded = store.load()?.ok_or("Rotation claim disappeared")?;
+        self.resume_loaded(&loaded, owner, current)
+    }
+    fn resume_loaded(
+        &mut self,
+        loaded: &Checkpoint,
+        owner: &Owner,
+        current: &ComposerSnapshot,
+    ) -> Result<ResumeDraft, String> {
+        self.validate_loaded(loaded, owner)?;
         if !self.checkpoint.policy.enabled() {
             return Err("Rotation is disabled".into());
         }
@@ -227,40 +245,58 @@ impl PendingReview {
         owner: &Owner,
         current: &ComposerSnapshot,
     ) -> Result<Checkpoint, String> {
-        self.validate(store, owner)?;
+        let loaded = store.load()?.ok_or("Rotation claim disappeared")?;
+        let next = self.acknowledgement_loaded(&loaded, owner, current)?;
+        store.save(self.checkpoint.revision, next)
+    }
+    fn acknowledgement_loaded(
+        &self,
+        loaded: &Checkpoint,
+        owner: &Owner,
+        current: &ComposerSnapshot,
+    ) -> Result<Checkpoint, String> {
+        self.validate_loaded(loaded, owner)?;
         if self.applied.as_ref() != Some(current) {
             return Err("Stale draft acknowledgement; pending claim preserved".into());
         }
-        store.acknowledge(self.checkpoint.revision, owner)
+        let mut next = self.checkpoint.clone();
+        next.pending = None;
+        Ok(next)
     }
-    /// Explicitly skip all windows through now. Existing composer bytes and
-    /// metadata are never changed by Defer or Cancel.
     pub fn defer(
         &self,
         store: &PolicyStore,
         owner: &Owner,
         now: i64,
     ) -> Result<Checkpoint, String> {
-        self.validate(store, owner)?;
+        let loaded = store.load()?.ok_or("Rotation claim disappeared")?;
+        let next = self.resolve_loaded(&loaded, owner, Some(now))?;
+        store.save(self.checkpoint.revision, next)
+    }
+    pub fn cancel(&self, store: &PolicyStore, owner: &Owner) -> Result<Checkpoint, String> {
+        let loaded = store.load()?.ok_or("Rotation claim disappeared")?;
+        let next = self.resolve_loaded(&loaded, owner, None)?;
+        store.save(self.checkpoint.revision, next)
+    }
+    fn resolve_loaded(
+        &self,
+        loaded: &Checkpoint,
+        owner: &Owner,
+        defer_through: Option<i64>,
+    ) -> Result<Checkpoint, String> {
+        self.validate_loaded(loaded, owner)?;
         if self.resume_issued {
-            return Err("Wait for draft persistence before deferring".into());
-        }
-        if now < self.checkpoint.through {
-            return Err("Clock moved behind recovery cursor".into());
+            return Err("Wait for draft persistence before resolving".into());
         }
         let mut next = self.checkpoint.clone();
         next.pending = None;
-        next.through = now;
-        store.save(self.checkpoint.revision, next)
-    }
-    /// Cancel this claim only. Future policy remains opt-in as configured; this
-    /// never cancels, replays or acknowledges a remote operation.
-    pub fn cancel(&self, store: &PolicyStore, owner: &Owner) -> Result<Checkpoint, String> {
-        self.validate(store, owner)?;
-        if self.resume_issued {
-            return Err("Wait for draft persistence before cancelling".into());
+        if let Some(now) = defer_through {
+            if now < self.checkpoint.through {
+                return Err("Clock moved behind recovery cursor".into());
+            }
+            next.through = now;
         }
-        store.acknowledge(self.checkpoint.revision, owner)
+        Ok(next)
     }
 }
 
@@ -432,6 +468,7 @@ mod reconciliation_tests {
             },
             edit_revision,
             has_authored_metadata: false,
+            typed_metadata: None,
         }
     }
     #[test]
