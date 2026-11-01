@@ -145,6 +145,7 @@ mod input_newline_tests;
 mod reader_agent_imports;
 mod reader_agent_language;
 mod reader_agent_search;
+mod reader_file_access_notice;
 mod reader_agents_context;
 mod reader_agents_offer;
 mod reader_features;
@@ -2327,6 +2328,7 @@ impl Reader {
             self.poll_vault(window, cx);
             return;
         }
+        self.refresh_project_resources(&changes, cx);
         reader_drawing::invalidate(&self.vault_root, cx);
         if let Some(viewer) = self.pdf_viewer().cloned() {
             viewer.update(cx, |viewer, cx| viewer.check_revision(cx));
