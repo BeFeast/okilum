@@ -44,6 +44,9 @@ fn logical_key(event: &KeyDownEvent) -> &str {
         .keystroke
         .key_char
         .as_deref()
+        // Native Ctrl combinations may carry transformed control text (for
+        // example Ctrl+M is CR); shortcuts still use the key, not that text.
+        .filter(|text| !text.chars().any(char::is_control))
         .unwrap_or(&event.keystroke.key)
 }
 
@@ -174,6 +177,16 @@ mod tests {
             is_held: held,
             prefer_character_input: false,
         }
+    }
+
+    #[test]
+    fn control_text_does_not_replace_the_native_shortcut_key() {
+        let mut event = key("ctrl-shift-m", false);
+        event.keystroke.key_char = Some("\r".into());
+        assert_eq!(
+            handle_with(Primary::Control, &event, false, 0, &[]),
+            Some(Intent::Toggle)
+        );
     }
 
     #[test]

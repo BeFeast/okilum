@@ -387,7 +387,7 @@ impl ProjectView {
             .relative()
             .size(px(20.))
             .flex_shrink_0()
-            .child(visuals::provider_glyph(&provider.driver_kind).size(px(20.)));
+            .child(visuals::provider_visual(&provider.driver_kind, px(20.)));
         if let Some(badge) = visuals::instance_badge(provider, providers) {
             let palette = brand::palette(cx);
             mark.child(
@@ -431,8 +431,12 @@ impl ProjectView {
                 .find(|provider| provider.provider_instance_id == choice.selection.instance_id)
         });
         let glyph = provider
-            .map(|provider| visuals::provider_glyph(&provider.driver_kind))
-            .unwrap_or_else(|| Icon::new(IconName::SquareTerminal));
+            .map(|provider| visuals::provider_visual(&provider.driver_kind, px(18.)))
+            .unwrap_or_else(|| {
+                Icon::new(IconName::SquareTerminal)
+                    .size(px(18.))
+                    .into_any_element()
+            });
         let full_label = self
             .models
             .as_ref()
@@ -513,7 +517,7 @@ impl ProjectView {
             .min_w_0()
             .items_center()
             .gap_2()
-            .child(glyph.size(px(18.)))
+            .child(glyph)
             .child(title);
         content = content
             .when_some(hint, |content, hint| {

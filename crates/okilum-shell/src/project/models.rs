@@ -657,7 +657,7 @@ impl ProjectView {
                         == snapshot.configuration.model_selection.instance_id
                 })
             })
-            .map(|provider| visuals::provider_glyph(&provider.driver_kind));
+            .map(|provider| provider.driver_kind.clone());
         let trigger_target = target.clone();
         let trigger = Button::new("project-model-trigger")
             .debug_selector(|| "project-manager-model".into())
@@ -665,9 +665,18 @@ impl ProjectView {
             .small()
             .max_w(px(280.))
             .overflow_hidden()
-            .label(label.clone())
-            .when_some(glyph, |button, glyph| button.icon(glyph))
-            .child(Icon::new(IconName::ChevronDown).small())
+            .accessibility_label(label.clone())
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .items_center()
+                    .gap_1()
+                    .when_some(glyph, |row, driver| {
+                        row.child(visuals::provider_visual(&driver, px(16.)))
+                    })
+                    .child(div().min_w_0().truncate().child(label.clone()))
+                    .child(Icon::new(IconName::ChevronDown).small()),
+            )
             .selected(self.model_open && is_target)
             .tooltip(format!("Choose model · {label}"))
             .disabled(self.busy || !self.can_read_models())
