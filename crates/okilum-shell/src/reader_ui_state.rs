@@ -1097,6 +1097,16 @@ impl Reader {
         cx.notify();
     }
 
+    /// Cancel before dispatching a newer user intent, not after its async I/O.
+    /// Advancing the project generation makes the old validation callback inert.
+    pub(crate) fn cancel_workspace_restore(&mut self) {
+        if self.ui_state.workspace.take().is_some() || self.ui_state.restoring_workspace {
+            self.ui_state.restoring_workspace = false;
+            self.project_navigation.generation =
+                self.project_navigation.generation.wrapping_add(1);
+        }
+    }
+
     pub(crate) fn restore_workspace_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ui_state.tree.is_some() || self.restoring_source() {
             return;

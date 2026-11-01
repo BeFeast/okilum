@@ -72,6 +72,9 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.ui_state.restoring_workspace {
+            self.cancel_workspace_restore();
+        }
         let fragment = position
             .heading
             .clone()
