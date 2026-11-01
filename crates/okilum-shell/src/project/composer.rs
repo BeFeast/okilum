@@ -72,6 +72,18 @@ pub(super) enum AttachmentRequested {
 }
 impl EventEmitter<AttachmentRequested> for Composer {}
 
+/// Build the parent's model controls during this component's layout, after
+/// Composer::render has returned. Large debug render frames must not nest.
+#[derive(IntoElement)]
+struct ModelControlsSlot(WeakEntity<ProjectView>);
+impl RenderOnce for ModelControlsSlot {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.0
+            .update(cx, |view, cx| view.render_model_controls(window, cx))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 pub(super) struct Composer {
     parent: Option<WeakEntity<ProjectView>>,
     _parent: Option<Subscription>,
@@ -377,13 +389,8 @@ impl Composer {
     }
 }
 impl Render for Composer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let validation = self.prompt_validation(cx);
-        let model_controls = self.parent.as_ref().and_then(|parent| {
-            parent
-                .update(cx, |view, cx| view.render_model_controls(window, cx))
-                .ok()
-        });
         let palette = brand::palette(cx);
         let send = send_presentation(
             self.mode,
@@ -475,13 +482,13 @@ impl Render for Composer {
                                 cx.listener(|_, _, _, cx| cx.emit(AttachmentRequested::Choose)),
                             ),
                     )
-                    .when_some(model_controls, |toolbar, controls| {
+                    .when_some(self.parent.clone(), |toolbar, parent| {
                         toolbar.child(
                             div()
                                 .flex_1()
                                 .min_w(px(120.))
                                 .debug_selector(|| "project-composer-model-slot".into())
-                                .child(controls),
+                                .child(ModelControlsSlot(parent)),
                         )
                     })
                     .child(div().flex_1().min_w_0())

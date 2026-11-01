@@ -34,6 +34,8 @@ pub(super) struct PickerUi {
     overlay: Option<gpui_base::DeferredPopover>,
     #[cfg(any(test, feature = "project-ui-harness"))]
     painted_surface: std::rc::Rc<std::cell::Cell<Option<SurfacePaint>>>,
+    #[cfg(test)]
+    diagnostics_painted: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
 }
 
 /// Strip a redundant provider prefix only when it is confirmed by real
