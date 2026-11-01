@@ -1,7 +1,7 @@
 //! Exact, draft-only rotation handoff. Parent wires this into the selected
 //! project's composer; no send, launch, registry edit or scheduled task occurs.
 use okilum_t3::chat_drafts::{Attachment, Draft};
-use okilum_t3::rotation::Owner;
+use okilum_t3::rotation::{Blocker, Checkpoint, Owner, PolicyStore, TzifResolver};
 
 #[derive(Clone)]
 pub(super) struct Handoff {
@@ -47,6 +47,25 @@ impl Handoff {
     }
 }
 
+/// Prepare a recovery draft only after its exact owner/window claim is durable.
+/// Parent applies the handoff, flushes the existing draft writer, and ONLY then
+/// calls PolicyStore::acknowledge(checkpoint.revision, owner). A crash or a stale
+/// composer leaves the pending claim visible for reconciliation after restart.
+pub(super) fn prepare_recovery(
+    store: &PolicyStore,
+    expected_revision: u64,
+    owner: &Owner,
+    current: Draft<Attachment>,
+    exact_text: String,
+    now: i64,
+    resolver: &TzifResolver,
+    blocker: Option<Blocker>,
+) -> Result<(Handoff, Checkpoint), String> {
+    let handoff = Handoff::capture(owner.clone(), current, exact_text)?;
+    let claim = store.claim(expected_revision, owner, now, resolver, blocker)?;
+    Ok((handoff, claim))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +76,68 @@ mod tests {
             manager: "m".into(),
             revision: 1,
         }
+    }
+    #[test]
+    fn recovery_claim_is_durable_and_busy_composer_does_not_claim() {
+        use okilum_t3::rotation::{Policy, Recovery};
+        let path = std::env::temp_dir().join(format!("rotation-shell-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let store = PolicyStore::new(&path);
+        let resolver = TzifResolver::new("/usr/share/zoneinfo");
+        let owner = owner();
+        let start = 20758 * 86400;
+        store
+            .configure(
+                0,
+                owner.clone(),
+                Policy::new(true, "Asia/Jerusalem", ["08:30", "20:30"]).unwrap(),
+                start,
+                &resolver,
+            )
+            .unwrap();
+        let busy = Draft {
+            text: "user draft".into(),
+            attachments: vec![],
+        };
+        let now = start + 22 * 3600;
+        assert!(prepare_recovery(
+            &store,
+            1,
+            &owner,
+            busy,
+            "exact request".into(),
+            now,
+            &resolver,
+            None
+        )
+        .is_err());
+        assert_eq!(store.load().unwrap().unwrap().revision, 1);
+        let (handoff, checkpoint) = prepare_recovery(
+            &store,
+            1,
+            &owner,
+            Draft::default(),
+            "exact request\n".into(),
+            now,
+            &resolver,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            handoff.apply(&owner, &Draft::default()).unwrap().text,
+            "exact request\n"
+        );
+        assert!(matches!(
+            store
+                .load()
+                .unwrap()
+                .unwrap()
+                .recover(&owner, now, &resolver, None)
+                .unwrap(),
+            Recovery::NeedsReconciliation(_)
+        ));
+        store.acknowledge(checkpoint.revision, &owner).unwrap();
+        std::fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn exact_handoff_preserves_edits_and_rejects_stale_selection() {
