@@ -214,6 +214,12 @@ pub(super) struct MenuFacts(
 );
 
 impl MenuFacts {
+    /// Read the mirrored capabilities; menu builders must not borrow the input.
+    pub(super) fn editable(&self) -> bool {
+        let capabilities = self.0.get().capabilities;
+        !capabilities.is_disabled() && !capabilities.is_readonly()
+    }
+
     #[cfg(test)]
     pub(super) fn date(&self) -> Option<time::Date> {
         self.0.get().date

@@ -10,6 +10,9 @@ on:
         default: 'false'
       verify_pr:
         default: ''
+      verify_evidence:
+        description: 'Protected bridge admission digest, bound to write-once GitHub attestation tag'
+        default: ''
       source:
         required: true
       build:
@@ -29,6 +32,9 @@ env:
   HOSTED_VERIFY: ${{ inputs.verify_only }}
   VERIFY_SOURCE: ${{ inputs.source }}
   VERIFY_PR: ${{ inputs.verify_pr }}
+  VERIFY_EVIDENCE: ${{ inputs.verify_evidence }}
+  PRODUCER: ${{ inputs.producer }}
+  VERIFY_GITHUB_TOKEN: ${{ github.token }}
 permissions:
   contents: read
 concurrency:
