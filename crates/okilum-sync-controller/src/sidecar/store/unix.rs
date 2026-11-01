@@ -23,8 +23,12 @@ pub struct UnixLock(Arc<UnixDir>);
 fn check_name(name: &str) -> Result<()> {
     // openat's NOFOLLOW protects only the final component. A path, including
     // an absolute one, could otherwise escape the verified directory anchor.
+    // Valid basenames still undergo Directory's final-component NOFOLLOW checks.
     ensure!(
-        !name.is_empty() && !matches!(name, "." | "..") && !name.contains('/'),
+        !name.is_empty()
+            && !matches!(name, "." | "..")
+            && !name.contains('/')
+            && !name.contains('\0'),
         "single state file name required"
     );
     Ok(())
@@ -120,6 +124,25 @@ mod tests {
         assert!(dir.remove(name).is_err(), "remove accepted {name:?}");
     }
 
+    fn invalid_name_refused(dir: &UnixDir, name: &str) {
+        for result in [
+            dir.read(name).map(|_| ()),
+            dir.write(name, b"replacement"),
+            dir.remove(name),
+        ] {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "single state file name required",
+                "invalid name {name:?} must be refused before directory access"
+            );
+        }
+    }
+
+    fn snapshot(path: &Path) -> (Vec<u8>, u64, u64) {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        (fs::read(path).unwrap(), metadata.dev(), metadata.ino())
+    }
+
     #[test]
     fn file_names_cannot_escape_the_private_directory() {
         let (root, store) = fixture();
@@ -130,6 +153,9 @@ mod tests {
         other.dir.write(NAME, b"outside committed").unwrap();
         symlink(&outside, state.join("redirect")).unwrap();
         let absolute = outside.join(NAME);
+        let committed = snapshot(&state.join(NAME));
+        let outside_committed = snapshot(&absolute);
+        let redirect = fs::symlink_metadata(state.join("redirect")).unwrap();
         for name in [
             absolute.to_str().unwrap(),
             "../outside/sidecar.json",
@@ -139,46 +165,116 @@ mod tests {
             "",
             ".",
             "..",
+            "\0",
+            "sidecar.json\0ignored",
         ] {
-            refused(&store.dir, name);
-            assert_eq!(fs::read(state.join(NAME)).unwrap(), b"committed");
-            assert_eq!(fs::read(&absolute).unwrap(), b"outside committed");
+            invalid_name_refused(&store.dir, name);
+            assert_eq!(snapshot(&state.join(NAME)), committed);
+            assert_eq!(snapshot(&absolute), outside_committed);
+            let unchanged = fs::symlink_metadata(state.join("redirect")).unwrap();
+            assert_eq!(
+                (unchanged.dev(), unchanged.ino()),
+                (redirect.dev(), redirect.ino())
+            );
+            assert_eq!(fs::read_link(state.join("redirect")).unwrap(), outside);
         }
         assert_eq!(fs::read_dir(&state).unwrap().count(), 2);
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
-        // Positive control exercises all three production operations on a basename.
-        store.dir.write("probe.json", b"healthy").unwrap();
-        assert_eq!(store.dir.read("probe.json").unwrap().unwrap(), b"healthy");
-        store.dir.remove("probe.json").unwrap();
-        assert!(store.dir.read("probe.json").unwrap().is_none());
+        // Dots and Unix backslashes are legal basename characters.
+        for name in [
+            "probe.json",
+            ".hidden.json",
+            "probe..json",
+            "...",
+            "probe.",
+            r"probe\name.json",
+        ] {
+            store.dir.write(name, b"healthy").unwrap();
+            assert_eq!(store.dir.read(name).unwrap().unwrap(), b"healthy");
+            store.dir.remove(name).unwrap();
+            assert!(store.dir.read(name).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn invalid_names_are_refused_before_directory_revalidation() {
+        let (root, store) = fixture();
+        let displaced = root.path().join("displaced");
+        fs::rename(root.path().join("state"), &displaced).unwrap();
+        let committed = snapshot(&displaced.join(NAME));
+        for name in [
+            "",
+            ".",
+            "..",
+            "/absolute",
+            "../outside",
+            "a/b",
+            "a/",
+            "a\0b",
+        ] {
+            invalid_name_refused(&store.dir, name);
+        }
+        assert_eq!(snapshot(&displaced.join(NAME)), committed);
+        // Positive control: a valid name reaches the now-missing directory check.
+        let error = store.dir.read(NAME).unwrap_err();
+        assert_ne!(error.to_string(), "single state file name required");
+    }
+
+    #[test]
+    fn final_symlink_is_refused_without_replacing_the_link_or_target() {
+        let (root, store) = fixture();
+        let state = root.path().join("state");
+        let outside = root.path().join("outside");
+        private_directory(&outside);
+        let other = UnixStore::open_existing(&outside).unwrap();
+        other.dir.write(NAME, b"outside committed").unwrap();
+        let target = outside.join(NAME);
+        let link = state.join("alias.json");
+        symlink(&target, &link).unwrap();
+        let committed = snapshot(&state.join(NAME));
+        let outside_committed = snapshot(&target);
+        let linked = snapshot(&link);
+        refused(&store.dir, "alias.json");
+        assert_eq!(snapshot(&state.join(NAME)), committed);
+        assert_eq!(snapshot(&target), outside_committed);
+        assert_eq!(snapshot(&link), linked);
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+        assert_eq!(fs::read_dir(&state).unwrap().count(), 2);
     }
 
     #[test]
     fn unsafe_directory_mode_identity_and_symlink_preserve_committed_files() {
         let (root, store) = fixture();
         let state = root.path().join("state");
+        let committed = snapshot(&state.join(NAME));
         for mode in [0o750, 0o707] {
             fs::set_permissions(&state, fs::Permissions::from_mode(mode)).unwrap();
             assert!(UnixStore::open_existing(&state).is_err());
             refused(&store.dir, NAME);
-            assert_eq!(fs::read(state.join(NAME)).unwrap(), b"committed");
+            assert_eq!(snapshot(&state.join(NAME)), committed);
         }
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
         store.dir.write(NAME, b"committed").unwrap(); // healthy again
+        let committed = snapshot(&state.join(NAME));
         let displaced = root.path().join("displaced");
         fs::rename(&state, &displaced).unwrap();
         private_directory(&state);
         let replacement = UnixStore::open_existing(&state).unwrap();
         replacement.dir.write(NAME, b"other identity").unwrap();
+        let replacement_committed = snapshot(&state.join(NAME));
         refused(&store.dir, NAME);
-        assert_eq!(fs::read(displaced.join(NAME)).unwrap(), b"committed");
-        assert_eq!(fs::read(state.join(NAME)).unwrap(), b"other identity");
+        assert_eq!(snapshot(&displaced.join(NAME)), committed);
+        assert_eq!(snapshot(&state.join(NAME)), replacement_committed);
         drop(replacement);
         fs::remove_dir_all(&state).unwrap();
         symlink(&displaced, &state).unwrap();
         assert!(UnixStore::open_existing(&state).is_err());
         refused(&store.dir, NAME);
-        assert_eq!(fs::read(displaced.join(NAME)).unwrap(), b"committed");
+        assert_eq!(snapshot(&displaced.join(NAME)), committed);
     }
 
     #[test]
@@ -189,9 +285,13 @@ mod tests {
             (Fault::BeforeRename, &b"committed"[..]),
             (Fault::AfterRename, &b"replacement"[..]),
         ] {
+            let before = snapshot(&state.join(NAME));
             store.dir.dir.fault.set(Some(fault));
             assert!(store.dir.write(NAME, b"replacement").is_err());
             assert_eq!(fs::read(state.join(NAME)).unwrap(), visible);
+            if fault == Fault::BeforeRename {
+                assert_eq!(snapshot(&state.join(NAME)), before);
+            }
             assert_eq!(fs::read_dir(&state).unwrap().count(), 1);
             store.dir.dir.fault.set(None);
             let reopened = UnixStore::open_existing(&state).unwrap();
