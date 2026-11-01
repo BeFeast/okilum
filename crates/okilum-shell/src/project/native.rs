@@ -304,6 +304,9 @@ impl ProjectView {
                             .into(),
                     ),
                 }
+                if this.native.setup_error.is_some() {
+                    this.native.phase = ConnectionPhase::Terminal;
+                }
                 cx.notify();
             });
         })
