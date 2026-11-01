@@ -22,7 +22,7 @@ fn grouped(n: usize) -> String {
     let raw = n.to_string();
     let mut result = String::new();
     for (index, c) in raw.chars().enumerate() {
-        if index > 0 && (raw.len() - index) % 3 == 0 {
+        if index > 0 && (raw.len() - index).is_multiple_of(3) {
             result.push(',');
         }
         result.push(c);

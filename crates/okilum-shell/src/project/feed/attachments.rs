@@ -14,7 +14,7 @@ struct Transfer;
 impl Transfer {
     fn acquire() -> Option<Self> {
         TRANSFERS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_TRANSFERS).then_some(count + 1)
             })
             .ok()
@@ -40,6 +40,9 @@ impl AssetKey {
         }
     }
 }
+#[cfg(test)]
+type AttachmentFetch = dyn Fn(&ChatAttachment) -> anyhow::Result<Vec<u8>> + Send + Sync;
+
 #[derive(Default)]
 pub(super) struct History {
     pub(super) rows: HashMap<u64, Vec<Value>>,
@@ -47,7 +50,7 @@ pub(super) struct History {
     lease: Arc<()>,
     retry_paint_pending: bool,
     #[cfg(test)]
-    fetch: Option<Arc<dyn Fn(&ChatAttachment) -> anyhow::Result<Vec<u8>> + Send + Sync>>,
+    fetch: Option<Arc<AttachmentFetch>>,
 }
 enum Download {
     Loading {
@@ -68,6 +71,16 @@ enum Action {
     Expand,
     Open,
     Save,
+}
+
+struct AttachmentTarget {
+    position: u64,
+    attachment: ChatAttachment,
+}
+
+struct AttachmentOperation {
+    action: Action,
+    retry: bool,
 }
 
 fn filename(name: &str) -> String {
@@ -228,12 +241,16 @@ impl Feed {
                             window.defer(cx, move |window, cx| {
                                 request(
                                     &parent,
-                                    position,
-                                    attachment,
+                                    AttachmentTarget {
+                                        position,
+                                        attachment,
+                                    },
                                     origin,
                                     lease,
-                                    Action::Thumbnail,
-                                    false,
+                                    AttachmentOperation {
+                                        action: Action::Thumbnail,
+                                        retry: false,
+                                    },
                                     window,
                                     cx,
                                 )
@@ -254,12 +271,16 @@ impl Feed {
                         .on_click(move |_, window, cx| {
                             request(
                                 &parent,
-                                position,
-                                reference.clone(),
+                                AttachmentTarget {
+                                    position,
+                                    attachment: reference.clone(),
+                                },
                                 expected_origin.clone(),
                                 history_lease.clone(),
-                                Action::Expand,
-                                false,
+                                AttachmentOperation {
+                                    action: Action::Expand,
+                                    retry: false,
+                                },
                                 window,
                                 cx,
                             )
@@ -295,12 +316,16 @@ impl Feed {
                     .on_click(move |_, window, cx| {
                         request(
                             &parent,
-                            position,
-                            attachment.clone(),
+                            AttachmentTarget {
+                                position,
+                                attachment: attachment.clone(),
+                            },
                             origin.clone(),
                             lease.clone(),
-                            action,
-                            label == "Retry",
+                            AttachmentOperation {
+                                action,
+                                retry: label == "Retry",
+                            },
                             window,
                             cx,
                         )
@@ -345,15 +370,18 @@ impl Feed {
 
     fn download_attachment(
         &mut self,
-        position: u64,
-        attachment: ChatAttachment,
+        target: AttachmentTarget,
         origin: String,
-        action: Action,
-        retry: bool,
+        operation: AttachmentOperation,
         client: Arc<NativeClient>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let AttachmentTarget {
+            position,
+            attachment,
+        } = target;
+        let AttachmentOperation { action, retry } = operation;
         if !self.attachments.contains(position, &attachment) {
             return;
         }
@@ -430,12 +458,13 @@ impl Feed {
                 let _ = cx.update(|window, cx| {
                     request(
                         &parent,
-                        position,
-                        attachment,
+                        AttachmentTarget {
+                            position,
+                            attachment,
+                        },
                         Some(origin),
                         lease,
-                        action,
-                        retry,
+                        AttachmentOperation { action, retry },
                         window,
                         cx,
                     )
@@ -587,12 +616,10 @@ impl Feed {
 
 fn request(
     parent: &WeakEntity<ProjectView>,
-    position: u64,
-    attachment: ChatAttachment,
+    target: AttachmentTarget,
     origin: Option<String>,
     lease: Arc<()>,
-    action: Action,
-    retry: bool,
+    operation: AttachmentOperation,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -620,9 +647,7 @@ fn request(
             if !Arc::ptr_eq(&feed.attachments.lease, &lease) {
                 return;
             }
-            feed.download_attachment(
-                position, attachment, origin, action, retry, client, window, cx,
-            );
+            feed.download_attachment(target, origin, operation, client, window, cx);
         });
     });
 }

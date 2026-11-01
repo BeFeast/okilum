@@ -180,6 +180,9 @@ impl Render for RequestCard {
     }
 }
 
+#[cfg(test)]
+type RequestObservations = std::cell::RefCell<Vec<(u64, u64, bool, bool)>>;
+
 pub(crate) struct Actions {
     parent: WeakEntity<ProjectView>,
     pub(crate) state: State,
@@ -191,7 +194,7 @@ pub(crate) struct Actions {
     #[cfg(test)]
     deferred_dispatches: std::cell::Cell<usize>,
     #[cfg(test)]
-    request_observations: Option<std::cell::RefCell<Vec<(u64, u64, bool, bool)>>>,
+    request_observations: Option<RequestObservations>,
     records: Vec<Record>,
     inputs: HashMap<(String, String), Entity<InputState>>,
     selections: HashMap<(String, String), Vec<String>>,
