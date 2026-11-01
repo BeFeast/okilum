@@ -5,6 +5,17 @@ title/goal/Refresh/Stage note header (#1795). Platforms and channels remain
 separate. Opening a feed, source, artifact, Actions job or scenario is the only
 action; this surface never publishes, installs, promotes, accepts or dispatches.
 
+## Compact Board presentation (#2132)
+
+The summary and expanded card use the same platform rows with Stable and Beta
+columns. Each publication shows its build and local human-readable publication
+date and opens its release notes; exact source SHA stays in the tooltip. Sprint
+and PR history are absent from this overview. One muted indicator beside each
+platform combines channel freshness and publication/download verification
+problems in a tooltip. Failed refreshes retain last-known publications without
+presenting them as current. These presentation choices do not change readiness
+or human evidence gates.
+
 ## Explicit opt-in and compatibility
 
 The project owner authors `ops/board-delivery.toml` beside the existing Board

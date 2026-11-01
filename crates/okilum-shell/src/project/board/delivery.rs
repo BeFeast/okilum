@@ -105,21 +105,27 @@ impl Board {
             .gap_1()
             .text_size(px(12.));
         let line_id = format!("{namespace}-line");
-        let mut line = h_flex()
+        let mut line = v_flex()
             .id(SharedString::from(line_id.clone()))
             .debug_selector(move || line_id.clone())
             .w_full()
             .min_w_0()
-            .gap_2()
-            .overflow_x_scroll();
+            .gap_1();
+        let mut header = h_flex().w_full().gap_2().child(div().w(px(96.)));
         for channel in [facts::Channel::Stable, facts::Channel::Beta] {
-            line = line.child(
+            header = header.child(
                 div()
-                    .flex_shrink_0()
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(colors.text_muted)
                     .child(channel.label()),
             );
-            for platform in facts::Platform::ALL {
+        }
+        line = line.child(header);
+        for platform in facts::Platform::ALL {
+            let mut problems = Vec::new();
+            let mut cells = Vec::new();
+            for channel in [facts::Channel::Stable, facts::Channel::Beta] {
                 let source = self.delivery.feeds.get(&(platform, channel));
                 let build = source.and_then(|s| s.value.as_ref());
                 let stale = facts::problem(&self.delivery.config, now(), binding.refresh_seconds)
@@ -127,73 +133,101 @@ impl Board {
                     || source.is_none_or(|s| {
                         facts::problem(s, now(), binding.refresh_seconds).is_some()
                     });
-                let mut issue = build.is_none();
-                let url = build.and_then(|b| b.release_url.clone());
-                if let Some(b) = build {
-                    issue |= b.published_at.is_none();
-                    if let Some(artifact) = self.delivery.artifacts.get(&b.artifact) {
-                        issue |= facts::problem(artifact, now(), binding.refresh_seconds).is_some()
-                            || !artifact.value.available;
-                    }
+                let unverified = build.is_none_or(|b| {
+                    b.published_at.is_none()
+                        || self
+                            .delivery
+                            .artifacts
+                            .get(&b.artifact)
+                            .is_none_or(|artifact| {
+                                facts::problem(artifact, now(), binding.refresh_seconds).is_some()
+                                    || !artifact.value.available
+                            })
+                });
+                if stale {
+                    problems.push(format!(
+                        "{}: last known data; refresh is overdue or unavailable",
+                        channel.label()
+                    ));
+                } else if unverified {
+                    problems.push(format!(
+                        "{}: publication date or download availability could not be verified",
+                        channel.label()
+                    ));
                 }
-                let name = if platform == facts::Platform::Windows {
-                    "Win"
-                } else {
-                    platform.label()
-                };
-                let label =
-                    build.map_or_else(|| format!("{name} —"), |b| format!("{name} {}", b.build));
+                let url = build.and_then(|b| b.release_url.clone());
+                let label = build.map_or_else(
+                    || "—".into(),
+                    |b| {
+                        format!(
+                            "{} · {}",
+                            b.build,
+                            publication_date(b.published_at.as_deref())
+                        )
+                    },
+                );
                 let tooltip = build.map_or("Publication is not available".into(), |b| {
                     format!(
-                        "Published: {}\nSource: {}\nDate: release publication or feed update\n{}",
-                        publication_date(b.published_at.as_deref()),
+                        "Source: {}\n{}",
                         b.source,
                         if stale {
                             "Last known data; refresh is overdue or unavailable"
                         } else {
-                            "Channel release notes"
+                            "Open channel release notes"
                         }
                     )
                 });
                 let id = format!("{namespace}-{}-{}", platform.label(), channel.label());
-                let problem_url = url.clone().unwrap_or_else(|| {
-                    format!("{}/releases", binding.repository.trim_end_matches('/'))
-                });
-                line = line.child(
+                cells.push(
+                    div().flex_1().min_w_0().child(
+                        Button::new(SharedString::from(id.clone()))
+                            .ghost()
+                            .small()
+                            .debug_selector(move || id.clone())
+                            .text_size(px(12.))
+                            .label(label)
+                            .tooltip(tooltip)
+                            .disabled(url.is_none())
+                            .on_click(move |_, _, cx| {
+                                if let Some(url) = &url {
+                                    cx.open_url(url);
+                                }
+                            }),
+                    ),
+                );
+            }
+            let mut name = h_flex()
+                .w(px(96.))
+                .flex_shrink_0()
+                .gap_1()
+                .child(platform.label());
+            if !problems.is_empty() {
+                let prefix = if namespace == "board-delivery" {
+                    "delivery"
+                } else {
+                    namespace
+                };
+                let id = format!("{prefix}-problem-{}", platform.label());
+                let url = format!("{}/releases", binding.repository.trim_end_matches('/'));
+                name = name.child(
                     Button::new(SharedString::from(id.clone()))
+                        .debug_selector(move || id.clone())
                         .ghost()
                         .small()
-                        .flex_shrink_0()
-                        .debug_selector(move || id.clone())
-                        .text_size(px(12.))
-                        .label(label)
-                        .tooltip(tooltip)
-                        .disabled(url.is_none())
-                        .on_click(move |_, _, cx| {
-                            if let Some(url) = &url {
-                                cx.open_url(url);
-                            }
-                        }),
+                        .text_color(colors.text_muted)
+                        .label("ⓘ")
+                        .tooltip(problems.join("\n"))
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
                 );
-                if stale || issue {
-                    // Preserve the main summary's existing problem identities.
-                    let problem_prefix = if namespace == "board-delivery" {
-                        "delivery"
-                    } else {
-                        namespace
-                    };
-                    let problem_id = format!(
-                        "{problem_prefix}-problem-{}-{}",
-                        platform.label(),
-                        channel.label()
-                    );
-                    line = line.child(Button::new(SharedString::from(problem_id.clone()))
-                        .debug_selector(move || problem_id.clone())
-                        .ghost().small().flex_shrink_0().text_color(colors.text_muted).label(if stale { "Stale" } else { "Check" })
-                        .tooltip(if stale { "Delivery data is out of date or unavailable. Open release notes for current publications." } else { "Publication date or download availability could not be verified. Open release notes." })
-                        .on_click(move |_, _, cx| cx.open_url(&problem_url)));
-                }
             }
+            line = line.child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_2()
+                    .child(name)
+                    .children(cells),
+            );
         }
         view = view.child(line);
         view.into_any_element()
