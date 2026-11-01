@@ -1244,7 +1244,9 @@ mod tests {
             input.read_with(visual, |input, _| input.value().is_empty()),
             "positive control: setup flush precedes all answer input"
         );
-        feed.read_with(visual, |feed, _| feed.rendered_positions.borrow_mut().clear());
+        feed.read_with(visual, |feed, _| {
+            feed.rendered_positions.borrow_mut().clear()
+        });
         for count in counts.iter() {
             count.set(0);
         }
