@@ -659,6 +659,7 @@ impl ProjectView {
                         }
                     } else {
                         this.model_open = false;
+                        this.compose.update(cx, |input, cx| input.focus(window, cx));
                         cx.notify();
                     }
                 });

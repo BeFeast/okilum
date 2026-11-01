@@ -14,6 +14,9 @@ impl ProjectView {
         let palette = brand::palette(cx);
         let mut panel = v_flex()
             .debug_selector(|| "project-model-panel".into())
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.model_key(event, window, cx);
+            }))
             .w(width)
             .max_w_full()
             .max_h(px(420.))
