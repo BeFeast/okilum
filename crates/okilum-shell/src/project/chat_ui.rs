@@ -14,27 +14,19 @@ impl ProjectView {
             .w_full()
             .min_w_0()
             .items_center()
-            .flex_wrap()
+            .h(px(40.))
+            .flex_none()
             .gap_2()
             .child(
-                v_flex()
+                div()
                     .flex_1()
-                    .min_w(px(72.))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(design::TITLE))
-                            .line_height(px(design::LINE))
-                            .debug_selector(|| "project-manager-title".into())
-                            .child("Manager"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(design::LABEL))
-                            .line_height(px(18.))
-                            .text_color(brand::palette(cx).text_muted)
-                            .child("Project conversation"),
-                    ),
+                    .min_w_0()
+                    .text_ellipsis()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(design::CHROME))
+                    .line_height(px(design::LINE))
+                    .debug_selector(|| "project-manager-title".into())
+                    .child("Manager"),
             );
         let mut actions = h_flex()
             .items_center()
@@ -70,7 +62,6 @@ impl ProjectView {
         heading = heading.child(actions);
         heading
             .px(px(design::INSET))
-            .py(px(design::GAP))
             .border_b_1()
             .border_color(brand::palette(cx).border_subtle)
             .debug_selector(|| "project-chat-header".into())
