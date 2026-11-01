@@ -452,7 +452,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         visual.simulate_resize(size(px(width), px(1000.)));
         visual.run_until_parked();
         let center = visual.debug_bounds("project-board").unwrap();
-        for key in ["board-lane-Queue", "board-lane-Ready"] {
+        for key in ["board-lane-Queue", "board-expand-empty-Ready"] {
             let lane = visual.debug_bounds(key).unwrap();
             assert!(lane.left() >= center.left() && lane.right() <= center.right());
         }
