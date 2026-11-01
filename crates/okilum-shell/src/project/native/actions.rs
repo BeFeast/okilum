@@ -7,8 +7,10 @@ use serde_json::json;
 #[cfg(test)]
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+mod approval;
 mod question_progress;
 use question_progress::{QuestionProgress, Transition};
+mod question_attachments;
 mod question_keys;
 use question_keys::QuestionKeys;
 
@@ -204,6 +206,7 @@ pub(crate) struct Actions {
     question_progress: HashMap<String, QuestionProgress>,
     question_timers: HashMap<String, Task<()>>,
     question_keys: Option<QuestionKeys>,
+    question_files: question_attachments::Runtime,
     request_revision: u64,
     busy: bool,
     enabled: bool,
@@ -230,6 +233,7 @@ impl Actions {
             question_progress: HashMap::new(),
             question_timers: HashMap::new(),
             question_keys: None,
+            question_files: question_attachments::Runtime::default(),
             request_revision: 0,
             busy: false,
             enabled: false,
@@ -242,6 +246,7 @@ impl Actions {
             self.enabled = enabled;
             if !enabled {
                 self.cancel_question_transitions();
+                self.question_files.invalidate_jobs();
             }
             cx.notify();
         }
@@ -278,6 +283,7 @@ impl Actions {
         self.question_timers.clear();
         self.question_keys = None;
         self.question_progress.clear();
+        self.question_files = question_attachments::Runtime::default();
         self.records.clear();
         self.error = None;
         self.busy = false;
@@ -295,7 +301,9 @@ impl Actions {
             .map(|(request, _)| request.id.clone());
         if !state.ready {
             self.cancel_question_transitions();
+            self.question_files.invalidate_jobs();
         }
+        self.question_files.reconcile(&state);
         let mut keep = std::collections::HashSet::new();
         let mut progress_keep = std::collections::HashSet::new();
         for request in &state.requests {
@@ -399,12 +407,20 @@ impl Actions {
         self.records.iter().any(|r| matches!(&r.command.intent, Intent::Respond { request_id, .. } | Intent::Dismiss { request_id } if request_id == id))
     }
     fn retry_allowed(&self, record: &Record) -> bool {
+        if matches!(&record.command.intent, Intent::Respond { attachments_by_question_id, .. } if !attachments_by_question_id.is_empty())
+            && !self.question_files.capabilities().is_some_and(
+                okilum_t3::stream::NativeEnvironmentCapabilities::question_attachments_available,
+            )
+        {
+            return false;
+        }
         record.sequence.is_some()
             || (self.state.ready && matches!(record.command.intent, Intent::Message { .. }))
             || self.state.allows(&record.command.intent)
     }
     fn intent(&self, request: &str, cx: &App) -> Intent {
         let mut answers = BTreeMap::new();
+        let attachments_by_question_id = self.question_files.ready_references(request);
         if let Some(questions) = self
             .state
             .requests
@@ -439,6 +455,12 @@ impl Actions {
                             json!(selected[0])
                         },
                     );
+                } else if question["allowCustomAnswer"] != false
+                    && attachments_by_question_id
+                        .get(id)
+                        .is_some_and(|files| !files.is_empty())
+                {
+                    answers.insert(id.to_owned(), json!(""));
                 }
             }
         }
@@ -446,6 +468,7 @@ impl Actions {
             request_id: request.to_owned(),
             decision: None,
             answers: Some(answers),
+            attachments_by_question_id,
         }
     }
     fn cancel_question_transition(&mut self, request: &str) {
@@ -517,18 +540,28 @@ impl Actions {
     fn question_complete(&self, request: &str, question: &str, cx: &App) -> bool {
         let Intent::Respond {
             answers: Some(answers),
+            attachments_by_question_id,
             ..
         } = self.intent(request, cx)
         else {
             return false;
         };
-        self.state
-            .requests
-            .iter()
-            .find(|candidate| candidate.id == request)
-            .is_some_and(|candidate| {
-                question_progress::question_complete(candidate, question, &answers)
-            })
+        self.question_files
+            .references(request, Some(question))
+            .is_ok()
+            && self
+                .state
+                .requests
+                .iter()
+                .find(|candidate| candidate.id == request)
+                .is_some_and(|candidate| {
+                    question_progress::question_complete_with_attachments(
+                        candidate,
+                        question,
+                        &answers,
+                        &attachments_by_question_id,
+                    )
+                })
     }
     fn advance_question(
         &mut self,
@@ -551,7 +584,10 @@ impl Actions {
             return;
         };
         let intent = self.intent(request, cx);
-        if index + 1 == count && !self.state.allows(&intent) {
+        if index + 1 == count
+            && (!self.state.allows(&intent)
+                || self.question_files.references(request, None).is_err())
+        {
             return;
         }
         self.cancel_question_transition(request);
@@ -1042,9 +1078,28 @@ impl Actions {
                                 let question = question_id.clone();
                                 move || format!("answer-custom-{request}-{question}")
                             })
+                            .capture_action({
+                                let paste_control = control.clone();
+                                cx.listener(
+                                    move |this, _: &gpui_component::input::Paste, window, cx| {
+                                        if this.question_paste_files(
+                                            paste_control.clone(),
+                                            window,
+                                            cx,
+                                        ) {
+                                            cx.stop_propagation();
+                                        } else {
+                                            cx.propagate();
+                                        }
+                                    },
+                                )
+                            })
                             .child(Input::new(input).disabled(disabled).w_full()),
                     );
                 }
+            }
+            if let Some(files) = self.render_question_files(&control, disabled, cx) {
+                form = form.child(files);
             }
         }
         let mut controls = h_flex().gap_1();
@@ -1072,9 +1127,12 @@ impl Actions {
         }
         let last = index + 1 == count;
         let complete = self.question_complete(&request_id, &question_id, cx);
-        let can_submit = !last || self.state.allows(&self.intent(&request_id, cx));
+        let can_submit = !last
+            || (self.state.allows(&self.intent(&request_id, cx))
+                && self.question_files.references(&request_id, None).is_ok());
         let request = request_id.clone();
         let question = question_id;
+        let submit_control = control.clone();
         controls = controls.child(
             Button::new(SharedString::from(if last {
                 format!("respond-{request_id}")
@@ -1103,11 +1161,14 @@ impl Actions {
             })
             .disabled(disabled || !complete || !can_submit)
             .on_click(cx.listener(move |this, _, window, cx| {
-                if this.question_control_current(&control) {
+                if this.question_control_current(&submit_control) {
                     this.advance_question(&request, &question, window, cx);
                 }
             })),
         );
+        if !collapsed {
+            controls = controls.child(self.render_question_file_controls(&control, disabled, cx));
+        }
         form.child(controls).into_any_element()
     }
     pub(super) fn render_request(
@@ -1142,66 +1203,7 @@ impl Actions {
                 move || format!("project-request-{id}")
             });
         if request.item["type"] == "approval_request" {
-            let label = request.item["prompt"]
-                .as_str()
-                .or(request.item["reason"].as_str())
-                .unwrap_or("Approval requested")
-                .to_owned();
-            card = card.child(div().whitespace_normal().child(label));
-            if let Some(reason) = request.item["reason"]
-                .as_str()
-                .filter(|r| Some(*r) != request.item["prompt"].as_str())
-            {
-                card = card.child(div().whitespace_normal().child(reason.to_owned()));
-            }
-            if let Some(app) = request.item["appName"].as_str() {
-                card = card.child(div().whitespace_normal().child(app.to_owned()));
-            }
-            if let Some(reason) = request.item["fullAccessOverride"].as_str() {
-                card = card.child(match reason {
-                    "ask_rule" => "Your approval rule requires this decision.",
-                    "provider_check" => "The provider requires this decision.",
-                    _ => "This action requires an additional approval.",
-                });
-            }
-            let options = match request.item.get("options") {
-                None => APPROVAL_FALLBACK_OPTIONS
-                    .iter()
-                    .map(|(decision, label)| json!({"decision":decision,"label":label}))
-                    .collect(),
-                Some(options) => options.as_array().cloned().unwrap_or_default(),
-            };
-            let mut buttons = h_flex().items_start().flex_wrap().gap_1();
-            for (n, option) in options.iter().enumerate() {
-                let Some(decision) = option["decision"].as_str() else {
-                    continue;
-                };
-                let intent = Intent::Respond {
-                    request_id: request_id.clone(),
-                    decision: Some(decision.into()),
-                    answers: None,
-                };
-                let allowed = self.state.allows(&intent);
-                let mut decision_group = v_flex().min_w_0().gap_1().child(
-                    Button::new(SharedString::from(format!("approval-{request_id}-{n}")))
-                        .debug_selector({
-                            let request_id = request_id.clone();
-                            move || format!("approval-{request_id}-{n}")
-                        })
-                        .ghost()
-                        .label(option["label"].as_str().unwrap_or(decision).to_owned())
-                        .disabled(disabled || !allowed)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.dispatch(intent.clone(), window, cx)
-                        })),
-                );
-                if let Some(warning) = option["warning"].as_str() {
-                    decision_group =
-                        decision_group.child(div().whitespace_normal().child(warning.to_owned()));
-                }
-                buttons = buttons.child(decision_group);
-            }
-            card = card.child(buttons);
+            card = card.child(self.render_approval(&request, disabled, cx));
         } else if request.item["type"] == "user_input_request" {
             card = card.child(self.render_question_step(&request, disabled, cx));
         }
@@ -1349,8 +1351,26 @@ impl ProjectView {
         let conversation = self.native_action_conversation();
         let lease = self.native.request_lease.clone();
         let pinned = self.native_actions_pinned();
+        let attachment_context = self.native.model_client().and_then(|client| {
+            Some(question_attachments::AttachmentContext {
+                origin: self.environment.as_ref()?.origin(),
+                project: self
+                    .chat
+                    .as_ref()?
+                    .project_id
+                    .clone()
+                    .or_else(|| self.binding.as_ref()?.manager.project_id.clone())?,
+                thread: self.chat.as_ref()?.thread_id.clone(),
+                lease: lease.clone(),
+                client,
+                confirmed_environment: self
+                    .attachment_identity()
+                    .map(|identity| identity.environment_id.clone()),
+            })
+        });
         let changed = self.native.actions.update(cx, |actions, cx| {
             let changed = actions.set_scope(conversation, &lease, cx);
+            actions.question_files.set_context(attachment_context);
             actions.set_pinned(pinned, cx) || changed
         });
         if changed {
@@ -1440,6 +1460,16 @@ impl ProjectView {
         {
             return;
         }
+        if intent.as_ref().is_some_and(|intent| matches!(intent,
+            Intent::Respond { request_id, decision: None, .. }
+                if self.native.actions.read(cx).question_files.references(request_id, None).is_err())) { return; }
+        let question_capabilities = self
+            .native
+            .actions
+            .read(cx)
+            .question_files
+            .capabilities()
+            .cloned();
         let Some(journal) = self.native_journal() else {
             return;
         };
@@ -1474,7 +1504,12 @@ impl ProjectView {
                 let result = (|| {
                     let record = match retry { Some(r) => r, None => journal.prepare(intent.context("missing action")?)? };
                     retained = true;
-                    journal.send(&record, |command| client.dispatch(command))
+                    journal.send(&record, |command| {
+                        if matches!(&command.intent, Intent::Respond { attachments_by_question_id, .. } if !attachments_by_question_id.is_empty()) {
+                            let capabilities = question_capabilities.as_ref().ok_or(StreamError::Protocol("Confirm question attachment support before retrying"))?;
+                            client.dispatch_with_question_attachments(command, capabilities)
+                        } else { client.dispatch(command) }
+                    })
                 })();
                 (result, journal.records(), retained)
             }).await;
@@ -1717,6 +1752,7 @@ mod tests {
         let state = State {
             ready: true,
             requests: vec![okilum_t3::actions::Request {
+                approval_detail: None,
                 id: "approval".into(),
                 item: json!({"type":"approval_request","options":[{"decision":"decline","label":"Decline"}]}),
                 answerable: true,
@@ -1727,11 +1763,13 @@ mod tests {
             ..Default::default()
         };
         assert!(!state.allows(&Intent::Respond {
+            attachments_by_question_id: Default::default(),
             request_id: "approval".into(),
             decision: Some("accept".into()),
             answers: None
         }));
         assert!(state.allows(&Intent::Respond {
+            attachments_by_question_id: Default::default(),
             request_id: "approval".into(),
             decision: Some("decline".into()),
             answers: None
@@ -1753,7 +1791,7 @@ mod tests {
                 view.active=false;
                 inert_native(&mut view);
                 let question = Arc::new(json!({"id":"request-row","threadId":"thread","ordinal":2,"status":"pending","type":"user_input_request","requestId":"r","questions":[{"id":"q","question":"Your choice","options":[]}]}));
-                view.native.actions.update(cx,|a,cx| a.set_state(State{ready:true,requests:vec![okilum_t3::actions::Request{id:"r".into(),item:question.as_ref().clone(),answerable:true,dismissible:true,response_mode:Some("message".into()),reason:None}],..Default::default()},window,cx));
+                view.native.actions.update(cx,|a,cx| a.set_state(State{ready:true,requests:vec![okilum_t3::actions::Request { approval_detail: None,id:"r".into(),item:question.as_ref().clone(),answerable:true,dismissible:true,response_mode:Some("message".into()),reason:None}],..Default::default()},window,cx));
                 // Native history must contain real unrelated messages: the
                 // first native projection deliberately replaces any MCP rows.
                 let mut rows:Vec<_>=(0..1000).map(|n| Arc::new(okilum_t3::projection::TurnRow {
@@ -1914,7 +1952,7 @@ mod tests {
                 {"id":"custom","question":"Why","options":[]}
             ]});
             view.native.actions.update(cx, |a,cx| {
-                let request=okilum_t3::actions::Request{id:"r".into(),item:item.clone(),answerable:true,dismissible:true,response_mode:Some("live".into()),reason:None};
+                let request=okilum_t3::actions::Request { approval_detail: None,id:"r".into(),item:item.clone(),answerable:true,dismissible:true,response_mode:Some("live".into()),reason:None};
                 a.set_state(State{ready:true,requests:vec![request],..Default::default()},window,cx);
                 assert_eq!(a.selections[&("r".into(),"one".into())],vec![" exact "]);
                 a.selections.insert(("r".into(),"many".into()),vec!["A".into(),"B".into()]);
@@ -1954,7 +1992,7 @@ mod tests {
         });
         view.update_in(visual,|v,_,cx|v.native.actions.update(cx,|a,_| {
             a.state=State{ready:true,active_run:Some("new-run".into()),..Default::default()};
-            let response=Record{command:okilum_t3::actions::Command::new("thread",Intent::Respond{request_id:"resolved".into(),decision:Some("accept".into()),answers:None}),sequence:Some(17)};
+            let response=Record{command:okilum_t3::actions::Command::new("thread",Intent::Respond{ attachments_by_question_id: Default::default(),request_id:"resolved".into(),decision:Some("accept".into()),answers:None}),sequence:Some(17)};
             a.records=vec![response.clone()];
             assert!(a.request_retained("resolved"));
             assert!(a.retry_allowed(&response),"acknowledged receipt is local only");

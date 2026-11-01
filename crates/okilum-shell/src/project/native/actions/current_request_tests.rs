@@ -18,6 +18,7 @@ fn request(id: &str, kind: &str) -> Request {
         answerable: true,
         dismissible: kind == "user_input_request",
         response_mode: Some("live".into()),
+        approval_detail: None,
         reason: None,
     }
 }
@@ -389,10 +390,23 @@ fn a_long_unconfirmed_message_cannot_bury_the_current_request(cx: &mut TestAppCo
     );
     let panel = visual.debug_bounds("project-native-actions").unwrap();
     let form = visual.debug_bounds("project-current-request").unwrap();
+    eprintln!("short current form vs retained recovery: panel={panel:?}; form={form:?}");
     assert!(
         form.origin.y >= panel.origin.y && form.bottom() <= panel.bottom(),
         "the current form is visible before long recovery details"
     );
+    for selector in [
+        "respond-question",
+        "question-attach-question-q",
+        "question-paste-question-q",
+    ] {
+        let control = bounds(visual, selector)
+            .expect("positive control: response and attachment actions remain available");
+        assert!(
+            control.origin.y >= panel.origin.y && control.bottom() <= panel.bottom(),
+            "{selector} stays visible in the bounded short form"
+        );
+    }
     click(visual, "answer-question-q-0");
     assert_eq!(answers(&view, visual, "question")["q"], json!([" exact "]));
     click(visual, "answer-custom-question-q");
@@ -647,6 +661,7 @@ fn a_real_click_deferred_across_a_conversation_switch_cannot_answer_a_reused_req
         );
         assert!(
             actions.state.allows(&Intent::Respond {
+                attachments_by_question_id: Default::default(),
                 request_id: "same".into(),
                 decision: Some("accept".into()),
                 answers: None
@@ -772,6 +787,7 @@ fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_adv
             let actions = view.native.actions.read(cx);
             assert_eq!(actions.records.len(), index + 1);
             let expected = Intent::Respond {
+                attachments_by_question_id: Default::default(),
                 request_id: id.clone(),
                 decision: Some((*decision).into()),
                 answers: None,

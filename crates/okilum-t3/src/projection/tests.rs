@@ -366,11 +366,13 @@ fn action_controls_follow_live_requests_and_capabilities_and_never_use_inherited
         }
     )));
     assert!(state.allows(&Intent::Respond {
+        attachments_by_question_id: Default::default(),
         request_id: "request".into(),
         decision: Some("accept".into()),
         answers: None
     }));
     assert!(!state.allows(&Intent::Respond {
+        attachments_by_question_id: Default::default(),
         request_id: "request".into(),
         decision: Some("acceptAlways".into()),
         answers: None
@@ -420,6 +422,7 @@ fn live_question_answers_preserve_option_values_and_multi_select() {
         ("many".into(), json!(["A", "B"])),
     ]);
     assert!(state.allows(&Intent::Respond {
+        attachments_by_question_id: Default::default(),
         request_id: "request".into(),
         decision: None,
         answers: Some(answers.clone())
@@ -427,6 +430,7 @@ fn live_question_answers_preserve_option_values_and_multi_select() {
     let mut invalid = answers;
     invalid.insert("one".into(), json!("value"));
     assert!(!state.allows(&Intent::Respond {
+        attachments_by_question_id: Default::default(),
         request_id: "request".into(),
         decision: None,
         answers: Some(invalid)
@@ -455,6 +459,7 @@ fn request_model(items: Vec<Value>, requests: Value) -> Projection {
 
 fn question_response(request: &str, answers: Value) -> crate::actions::Intent {
     crate::actions::Intent::Respond {
+        attachments_by_question_id: Default::default(),
         request_id: request.into(),
         decision: None,
         answers: Some(serde_json::from_value(answers).unwrap()),
@@ -625,6 +630,7 @@ fn approvals_are_live_only_and_absent_options_offer_t3_fallback_decisions() {
     item["requestId"] = json!("request");
     let request = json!({"id":"request","kind":"command","status":"pending","responseCapability":{"type":"live"}});
     let approve = |decision: &str| Intent::Respond {
+        attachments_by_question_id: Default::default(),
         request_id: "request".into(),
         decision: Some(decision.into()),
         answers: None,

@@ -17,6 +17,7 @@ fn choice(id: &str, value: &str, custom: bool) -> Value {
 }
 fn request(questions: Vec<Value>) -> Request {
     Request {
+        approval_detail: None,
         id: ID.into(),
         item: json!({"id":"wizard-row","threadId":THREAD,"requestId":ID,"type":"user_input_request","status":"pending","questions":questions}),
         answerable: true,
@@ -83,7 +84,7 @@ type Fixture<'a> = (
     Rc<RefCell<Option<Request>>>,
 );
 
-fn fixture(cx: &mut TestAppContext, environment: Option<Environment>) -> Fixture<'_> {
+pub(super) fn fixture(cx: &mut TestAppContext, environment: Option<Environment>) -> Fixture<'_> {
     // The autonomous RPC fixture uses real sockets; it never waits for a UI step.
     cx.executor().allow_parking();
     cx.update(|cx| {
@@ -122,7 +123,7 @@ fn fixture(cx: &mut TestAppContext, environment: Option<Environment>) -> Fixture
     view.update(visual, |view, _| view.active = true);
     (view, visual, temp, armed, switches, replacement)
 }
-fn show(view: &Entity<ProjectView>, visual: &mut VisualTestContext, request: Request) {
+pub(super) fn show(view: &Entity<ProjectView>, visual: &mut VisualTestContext, request: Request) {
     view.update_in(visual, |view, window, cx| {
         view.native.stream_ready = true;
         view.sync_native_action_surface(cx);
@@ -142,7 +143,7 @@ fn show(view: &Entity<ProjectView>, visual: &mut VisualTestContext, request: Req
     });
     visual.run_until_parked();
 }
-fn click(visual: &mut VisualTestContext, selector: &'static str) {
+pub(super) fn click(visual: &mut VisualTestContext, selector: &'static str) {
     let bounds = visual
         .debug_bounds(selector)
         .expect("positive control: real wizard button rendered");
@@ -159,7 +160,7 @@ fn key(visual: &mut VisualTestContext, name: &str) {
     visual.simulate_event(gpui::KeyUpEvent { keystroke });
     visual.run_until_parked();
 }
-fn tick(visual: &mut VisualTestContext, millis: u64) {
+pub(super) fn tick(visual: &mut VisualTestContext, millis: u64) {
     visual
         .executor()
         .advance_clock(Duration::from_millis(millis));
@@ -173,12 +174,16 @@ fn active(view: &Entity<ProjectView>, visual: &VisualTestContext) -> String {
             .into()
     })
 }
-fn input(view: &Entity<ProjectView>, visual: &VisualTestContext, id: &str) -> Entity<InputState> {
+pub(super) fn input(
+    view: &Entity<ProjectView>,
+    visual: &VisualTestContext,
+    id: &str,
+) -> Entity<InputState> {
     view.read_with(visual, |view, cx| {
         view.native.actions.read(cx).inputs[&(ID.into(), id.into())].clone()
     })
 }
-fn rpc(ack: bool) -> (Environment, Arc<Mutex<Vec<Value>>>, thread::JoinHandle<()>) {
+pub(super) fn rpc(ack: bool) -> (Environment, Arc<Mutex<Vec<Value>>>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let environment = Environment::new(
@@ -554,6 +559,7 @@ fn repeat_single_click_restarts_exact_200ms_and_multi_and_optional_never_auto_ad
         &view,
         visual,
         Request {
+            approval_detail: None,
             id: "optional".into(),
             item: json!({"id":"optional-row","type":"user_input_request","requestId":"optional","threadId":THREAD,"questions":optional.item["questions"]}),
             ..optional
@@ -639,10 +645,10 @@ fn pending_timers_are_invalidated_without_rearming_after_edits_navigation_and_au
             "scope" => {view.update(visual,|view,cx|{view.native.clear(); super::tests::inert_native(view); view.sync_native_action_surface(cx);}); show(&view,visual,template.clone());}
             "replacement" => {let mut replacement=template.clone(); replacement.item["id"]=json!("replacement-row"); show(&view,visual,replacement);}
             "priority" => view.update_in(visual,|view,window,cx|view.native.actions.update(cx,|actions,cx| {
-                let ready=actions.state.clone(); let mut queued=ready.clone(); queued.requests.push(Request{id:"approval".into(),item:json!({"id":"approval-row","type":"approval_request","requestId":"approval","threadId":THREAD}),answerable:true,dismissible:false,response_mode:Some("live".into()),reason:None}); actions.set_state(queued,window,cx); actions.set_state(ready,window,cx);
+                let ready=actions.state.clone(); let mut queued=ready.clone(); queued.requests.push(Request { approval_detail: None,id:"approval".into(),item:json!({"id":"approval-row","type":"approval_request","requestId":"approval","threadId":THREAD}),answerable:true,dismissible:false,response_mode:Some("live".into()),reason:None}); actions.set_state(queued,window,cx); actions.set_state(ready,window,cx);
             })),
             "retained" => view.update(visual,|view,cx|view.native.actions.update(cx,|actions,cx| {
-                actions.records.push(Record {command:okilum_t3::actions::Command::new(THREAD,Intent::Respond {request_id:ID.into(),decision:None,answers:Some(BTreeMap::from([("one".into(),json!(" exact ")),("two".into(),json!("second")),("three".into(),json!("complete"))]))}),sequence:None}); actions.cancel_retained_transitions(); cx.notify();
+                actions.records.push(Record {command:okilum_t3::actions::Command::new(THREAD,Intent::Respond { attachments_by_question_id: Default::default(),request_id:ID.into(),decision:None,answers:Some(BTreeMap::from([("one".into(),json!(" exact ")),("two".into(),json!("second")),("three".into(),json!("complete"))]))}),sequence:None}); actions.cancel_retained_transitions(); cx.notify();
             })),
             "resolved" => view.update_in(visual,|view,window,cx|view.native.actions.update(cx,|actions,cx|actions.set_state(State {ready:true,..Default::default()},window,cx))),
             "parent-paused" => view.update(visual,|view,_|view.active=false),

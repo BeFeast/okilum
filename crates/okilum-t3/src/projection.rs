@@ -442,7 +442,25 @@ impl Projection {
                 if matches!(
                     payload["type"].as_str(),
                     Some("approval_request" | "user_input_request")
-                ) {
+                ) || ((payload["type"] == "command_execution"
+                    || self
+                        .items
+                        .get(&row_key.item)
+                        .is_some_and(|old| old["type"] == "command_execution"))
+                    && self.items.get(&row_key.item).is_none_or(|old| {
+                        [
+                            "type",
+                            "threadId",
+                            "runId",
+                            "providerThreadId",
+                            "providerTurnId",
+                            "nativeItemRef",
+                            "input",
+                        ]
+                        .iter()
+                        .any(|field| old[*field] != payload[*field])
+                    }))
+                {
                     self.actions_dirty = true;
                 }
                 let interrupt = payload["type"] == "run_interrupt_request"
@@ -597,6 +615,11 @@ impl Projection {
             page_keys.insert(row.key.clone());
             page_order.push(row.key.clone());
             if row.local {
+                if row.item["type"] == "command_execution"
+                    && !self.items.contains_key(&row.key.item)
+                {
+                    self.actions_dirty = true;
+                }
                 self.items
                     .entry(row.key.item.clone())
                     .or_insert_with(|| row.item.clone());

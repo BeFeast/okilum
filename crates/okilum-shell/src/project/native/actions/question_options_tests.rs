@@ -44,6 +44,7 @@ fn fixture(cx: &mut TestAppContext) -> Fixture<'_> {
 
 fn request(multi: bool) -> Request {
     Request {
+        approval_detail: None,
         id: ID.into(),
         item: json!({"id":"options-row","threadId":THREAD,"requestId":ID,
         "type":"user_input_request","status":"pending","questions":[

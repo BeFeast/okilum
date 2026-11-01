@@ -13,6 +13,7 @@ fn question(id: &str, required: bool) -> Value {
 
 fn request(questions: Vec<Value>) -> Request {
     Request {
+        approval_detail: None,
         id: "runtime-request".into(),
         item: json!({
             "id": "request-row", "requestId": "runtime-request", "threadId": "thread",
@@ -35,6 +36,7 @@ fn answers(values: &[(&str, Value)]) -> BTreeMap<String, Value> {
 
 fn intent(request: &Request, answers: &BTreeMap<String, Value>) -> Intent {
     Intent::Respond {
+        attachments_by_question_id: Default::default(),
         request_id: request.id.clone(),
         decision: None,
         answers: Some(answers.clone()),

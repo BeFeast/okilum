@@ -1,5 +1,5 @@
 //! Request-local presentation only. Answer validity remains the backend's rule.
-use okilum_t3::actions::{valid_answers, Request};
+use okilum_t3::actions::{valid_answers_with_attachments, QuestionAttachments, Request};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashSet},
@@ -177,10 +177,20 @@ mod state_tests;
 
 /// A one-question projection preserves the authoritative response mode. Missing
 /// optional answers can advance; final submission still uses full State::allows.
+#[cfg(test)]
 pub(super) fn question_complete(
     request: &Request,
     question: &str,
     answers: &BTreeMap<String, Value>,
+) -> bool {
+    question_complete_with_attachments(request, question, answers, &BTreeMap::new())
+}
+
+pub(super) fn question_complete_with_attachments(
+    request: &Request,
+    question: &str,
+    answers: &BTreeMap<String, Value>,
+    attachments: &QuestionAttachments,
 ) -> bool {
     if question_ids(&request.item).is_none() {
         return false;
@@ -206,5 +216,10 @@ pub(super) fn question_complete(
         .map(|answer| (question.to_owned(), answer.clone()))
         .into_iter()
         .collect();
-    valid_answers(&item, &answer)
+    let files = attachments
+        .get(question)
+        .map(|files| (question.to_owned(), files.clone()))
+        .into_iter()
+        .collect();
+    valid_answers_with_attachments(&item, &answer, &files)
 }
