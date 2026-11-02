@@ -1,7 +1,293 @@
-//! Local capture composer. Parent mounts the entity; all draft/save IO is serial
+//! Local capture composer and explicit menu entrypoint; all draft/save IO is serial
 //! on the background executor. No reader or Brain protocol is extended.
 use super::*;
-use gpui_component::input::{Textarea, TextareaState};
+use gpui_component::{
+    input::{Textarea, TextareaState},
+    menu::PopupMenuItem,
+    WindowExt as _,
+};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    rc::Rc,
+};
+mod namespace;
+use namespace::{Binding, PreparedNamespace, Snapshot};
+
+type EntryKey = (WindowId, PathBuf);
+// A non-owning singleton index, not a second owner/controller. The sole composer
+// retains its own entity/tasks until its durable CaptureClosed event.
+thread_local! { static ENTRIES: RefCell<HashMap<EntryKey, EntrySlot>> = RefCell::new(HashMap::new()); }
+struct EntrySlot {
+    reader: WeakEntity<Reader>,
+    snapshot: Snapshot,
+    generation: String,
+    composer: Option<WeakEntity<CaptureComposer>>,
+    task: Option<Task<()>>,
+}
+fn binding(reader: &Reader) -> Binding {
+    let mut indexes: Vec<PathBuf> = reader.index_dir.iter().cloned().collect();
+    if let Some(lease) = &reader.cache_lease {
+        indexes.push(lease.path.clone());
+    }
+    Binding {
+        root: reader.vault_root.clone(),
+        vault_root: reader.vault.root.clone(),
+        session: reader.session_directory.clone(),
+        indexes,
+        single_file: reader.single_file,
+        ready: !reader.loading.as_ref().is_some_and(|load| load.active)
+            && !reader.incremental_initializing
+            && reader
+                .cache_lease
+                .as_ref()
+                .map_or(true, |lease| lease.root == reader.vault_root),
+    }
+}
+fn current(reader: &WeakEntity<Reader>, snapshot: &Snapshot, cx: &App) -> anyhow::Result<()> {
+    let entity = reader
+        .upgrade()
+        .ok_or_else(|| anyhow::anyhow!("The captured Reader was closed"))?;
+    snapshot.matches(&binding(entity.read(cx)))
+}
+fn notice(error: impl std::fmt::Display, window: &mut Window, cx: &mut App) {
+    reader_toast::transient(format!("Quick capture unavailable: {error}"), window, cx);
+}
+
+/// Parent's only menu hook. Snapshot the actual Reader/root/session at MENU OPEN.
+/// Namespace provisioning and composer publication require the explicit click.
+pub(crate) fn menu_item(
+    reader: WeakEntity<Reader>,
+    captured_root: PathBuf,
+    cx: &App,
+) -> PopupMenuItem {
+    let snapshot = reader
+        .upgrade()
+        .ok_or_else(|| anyhow::anyhow!("The captured Reader was closed"))
+        .and_then(|entity| Snapshot::capture(captured_root, &binding(entity.read(cx))))
+        .map_err(|error| format!("{error:#}"));
+    PopupMenuItem::new("Quick capture…").on_click(move |_, window, cx| {
+        let snapshot = match &snapshot {
+            Ok(snapshot) => snapshot.clone(),
+            Err(error) => {
+                notice(error, window, cx);
+                return;
+            }
+        };
+        if let Err(error) = current(&reader, &snapshot, cx) {
+            notice(error, window, cx);
+            return;
+        }
+        let key = (window.window_handle().window_id(), snapshot.root.clone());
+        let retained = ENTRIES.with(|entries| {
+            let entries = entries.borrow();
+            let Some(slot) = entries.get(&key) else {
+                return Ok(None);
+            };
+            anyhow::ensure!(
+                slot.reader.entity_id() == reader.entity_id() && slot.snapshot == snapshot,
+                "A capture is retained for an earlier Reader/session; it will not be retargeted"
+            );
+            anyhow::ensure!(
+                slot.task.is_none(),
+                "Namespace preparation is already running for this window/vault"
+            );
+            Ok(slot.composer.as_ref().and_then(|view| view.upgrade()))
+        });
+        let retained: Option<Entity<CaptureComposer>> = match retained {
+            Ok(view) => view,
+            Err(error) => {
+                notice(error, window, cx);
+                return;
+            }
+        };
+        if window.has_active_dialog(cx) {
+            if let Some(view) = &retained {
+                let state = view.read(cx);
+                if state.entry_visible.get() && state.entry_focus.contains_focused(window, cx) {
+                    Focusable::focus_handle(state.text.read(cx), cx).focus(window, cx);
+                    return;
+                }
+            }
+            notice(
+                "Close the current dialog first; any existing capture remains retained",
+                window,
+                cx,
+            );
+            return;
+        }
+        let generation = uuid::Uuid::new_v4().to_string();
+        ENTRIES.with(|entries| {
+            entries.borrow_mut().insert(
+                key.clone(),
+                EntrySlot {
+                    reader: reader.clone(),
+                    snapshot: snapshot.clone(),
+                    generation: generation.clone(),
+                    composer: retained.as_ref().map(Entity::downgrade),
+                    task: None,
+                },
+            );
+        });
+        let source = snapshot.clone();
+        let existing_namespace = retained
+            .as_ref()
+            .and_then(|view| view.read(cx).entry_namespace.clone());
+        let work = cx.background_executor().spawn(async move {
+            if let Some(namespace) = existing_namespace {
+                namespace.validate()?;
+                Ok(namespace)
+            } else {
+                source.prepare().map(Arc::new)
+            }
+        });
+        let asking_window = window.window_handle();
+        let task_key = key.clone();
+        let owner = reader.clone();
+        let token = generation.clone();
+        let task = cx.spawn(async move |cx| {
+            let result: anyhow::Result<Arc<PreparedNamespace>> = work.await;
+            let delivered = asking_window.update(cx, |_, window, cx| {
+                let task = ENTRIES.with(|entries| {
+                    let mut entries = entries.borrow_mut();
+                    let slot = entries.get_mut(&task_key)?;
+                    if slot.generation != token {
+                        return None;
+                    }
+                    slot.task.take()
+                });
+                let Some(task) = task else {
+                    notice(
+                        "Preparation completion is stale; retained capture was not replaced",
+                        window,
+                        cx,
+                    );
+                    return;
+                };
+                let prepared = match result.and_then(|prepared| {
+                    current(&owner, &snapshot, cx)?;
+                    anyhow::ensure!(
+                        prepared.root.as_os_str() == snapshot.root.as_os_str()
+                            && prepared.session.as_os_str() == snapshot.session.as_os_str(),
+                        "Prepared namespace differs from captured session"
+                    );
+                    Ok(prepared)
+                }) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        if retained.is_none() {
+                            ENTRIES.with(|entries| {
+                                entries.borrow_mut().remove(&task_key);
+                            });
+                        }
+                        task.detach();
+                        notice(error, window, cx);
+                        return;
+                    }
+                };
+                let view = retained.unwrap_or_else(|| {
+                    cx.new(|cx| {
+                        CaptureComposer::new(
+                            owner.clone(),
+                            prepared.root.clone(),
+                            prepared.drafts.clone(),
+                            prepared.records.clone(),
+                            window,
+                            cx,
+                        )
+                    })
+                });
+                view.update(cx, |this, cx| {
+                    this.entry_snapshot = Some(snapshot.clone());
+                    this.entry_namespace = Some(prepared);
+                    this.entry_key = Some(task_key.clone());
+                    this.entry_task = Some(task);
+                    this.entry_retained = Some(cx.entity());
+                    if this.entry_closed.is_none() {
+                        this.entry_closed = Some(cx.subscribe_in(
+                            &cx.entity(),
+                            window,
+                            |this, _, _: &CaptureClosed, window, cx| {
+                                this.entry_close_ready = true;
+                                this.finish_entry_close(window, cx);
+                            },
+                        ));
+                    }
+                });
+                ENTRIES.with(|entries| {
+                    if let Some(slot) = entries.borrow_mut().get_mut(&task_key) {
+                        slot.composer = Some(view.downgrade());
+                    }
+                });
+                show_composer(view, window, cx);
+            });
+            if delivered.is_err() {
+                ENTRIES.with(|entries| {
+                    let mut entries = entries.borrow_mut();
+                    if let Some(slot) = entries.get_mut(&task_key) {
+                        if slot.generation == token {
+                            if let Some(task) = slot.task.take() {
+                                task.detach();
+                            }
+                            if slot.composer.is_none() {
+                                entries.remove(&task_key);
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        ENTRIES.with(|entries| {
+            if let Some(slot) = entries.borrow_mut().get_mut(&key) {
+                if slot.generation == generation {
+                    slot.task = Some(task);
+                }
+            }
+        });
+    })
+}
+struct DialogLease(Rc<Cell<bool>>);
+impl Drop for DialogLease {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+fn show_composer(view: Entity<CaptureComposer>, window: &mut Window, cx: &mut App) {
+    if window.has_active_dialog(cx) {
+        notice("Another dialog opened during preparation; capture is retained. Close it and choose Quick capture again", window, cx);
+        return;
+    }
+    let visible = view.read(cx).entry_visible.clone();
+    visible.set(true);
+    let lease = Rc::new(DialogLease(visible));
+    let cancel = view.downgrade();
+    let content = view.clone();
+    window.open_dialog(cx, move |dialog, _, _| {
+        let _lease = lease.clone();
+        let cancel = cancel.clone();
+        dialog
+            .title("Quick capture")
+            .width(px(640.))
+            .overlay_closable(false)
+            .keyboard(false)
+            .close_button(false)
+            .on_ok(|_, _, _| false)
+            .on_cancel(move |_, _, cx| {
+                let _ = cancel.update(cx, |this, cx| this.request_close(cx));
+                false
+            })
+            .child(
+                div()
+                    .id("capture-composer-dialog")
+                    .max_h(px(620.))
+                    .overflow_y_scroll()
+                    .child(content.clone()),
+            )
+            .footer(div())
+    });
+    Focusable::focus_handle(view.read(cx).text.read(cx), cx).focus(window, cx);
+}
+
 use okilum_core::capture::{self, ComposerDraft, CopyPreview, CopySource, Receipt, RecoveryInbox};
 
 /// Emitted after a durable checkpoint when Cancel closes the mounted composer.
@@ -33,6 +319,16 @@ pub(crate) struct CaptureComposer {
     persisted: Option<u64>,
     queue: async_channel::Sender<Work>,
     _inputs: Vec<Subscription>,
+    worker: Option<Task<()>>,
+    entry_snapshot: Option<Snapshot>,
+    entry_namespace: Option<Arc<PreparedNamespace>>,
+    entry_key: Option<EntryKey>,
+    entry_task: Option<Task<()>>,
+    entry_closed: Option<Subscription>,
+    entry_retained: Option<Entity<Self>>,
+    entry_visible: Rc<Cell<bool>>,
+    entry_focus: FocusHandle,
+    entry_close_ready: bool,
 }
 impl EventEmitter<CaptureClosed> for CaptureComposer {}
 
@@ -54,6 +350,7 @@ enum Work {
 }
 
 enum Completed {
+    StorageHeld(String),
     Recovery(anyhow::Result<RecoveryInbox>),
     Inspected(anyhow::Result<Vec<capture::DismissedRecovery>>),
     History(anyhow::Result<capture::PresentationHistory>),
@@ -101,6 +398,7 @@ impl CaptureComposer {
                 && !this.busy
                 && !this.loading
                 && !this.legacy_selected
+                && !this.entry_close_ready
             {
                 this.draft.text = this.text.read(cx).value().to_string();
                 this.checkpoint(cx);
@@ -111,6 +409,7 @@ impl CaptureComposer {
                 && !this.busy
                 && !this.loading
                 && !this.legacy_selected
+                && !this.entry_close_ready
             {
                 this.draft.folder = Some(PathBuf::from(this.folder.read(cx).value().as_str()));
                 this.checkpoint(cx);
@@ -118,12 +417,14 @@ impl CaptureComposer {
         });
         let (queue, receiver) = async_channel::unbounded();
         let worker_root = root.clone();
-        cx.spawn_in(window, async move |this, cx| {
+        let worker = cx.spawn_in(window, async move |this, cx| {
             while let Ok(work) = receiver.recv().await {
                 let root = worker_root.clone();
                 let drafts = drafts.clone();
                 let records = records.clone();
+                let namespace = this.read_with(cx, |this, _| this.entry_namespace.clone()).ok().flatten();
                 let completed = cx.background_executor().spawn(async move {
+                    if let Some(namespace) = namespace { if let Err(error) = namespace.validate() { return Completed::StorageHeld(format!("Capture storage identity changed; draft retained: {error:#}")); } }
                     match work {
                         Work::InspectHistory => Completed::History(capture::inspect_presentation_history(&root, &records)),
                         Work::InspectDismissed => Completed::Inspected(capture::inspect_dismissed(&root, &records)),
@@ -144,6 +445,7 @@ impl CaptureComposer {
                 }).await;
                 let _ = this.update_in(cx, |this, window, cx| {
                     match completed {
+                        Completed::StorageHeld(error) => { this.busy = false; this.loading = false; this.error = Some(error); }
                         Completed::Recovery(result) => {
                             this.loading = false;
                             match result {
@@ -249,7 +551,10 @@ impl CaptureComposer {
                             this.busy = false;
                             this.checkpoint_error = false;
                             match result {
-                                Ok(()) => cx.emit(CaptureClosed),
+                                Ok(()) => {
+                                    this.busy = this.entry_key.is_some();
+                                    cx.emit(CaptureClosed);
+                                },
                                 Err(error) => this.error = Some(format!("Could not retain the draft. Keep this composer open: {error:#}")),
                             }
                         }
@@ -258,7 +563,7 @@ impl CaptureComposer {
                 });
                 // Drain queued checkpoints even if the mounted view was dropped.
             }
-        }).detach();
+        });
         // Recovery runs before any newly queued checkpoint or save.
         let _ = queue.try_send(Work::Recover);
         Self {
@@ -290,6 +595,16 @@ impl CaptureComposer {
             persisted: None,
             queue,
             _inputs: vec![text_input, folder_input, copy_folder_input],
+            worker: Some(worker),
+            entry_snapshot: None,
+            entry_namespace: None,
+            entry_key: None,
+            entry_task: None,
+            entry_closed: None,
+            entry_retained: None,
+            entry_visible: Rc::new(Cell::new(false)),
+            entry_focus: cx.focus_handle(),
+            entry_close_ready: false,
         }
     }
 
@@ -324,6 +639,13 @@ impl CaptureComposer {
             self.error = Some("This legacy intent has no vault binding. Choose a copy folder and preview the destination before Save copy.".into());
             cx.notify();
             return;
+        }
+        if let Some(snapshot) = &self.entry_snapshot {
+            if let Err(error) = current(&self.reader, snapshot, cx) {
+                self.error = Some(format!("{error:#}"));
+                cx.notify();
+                return;
+            }
         }
         if let Err(error) = self.draft.prepare_save() {
             self.checkpoint_error = false;
@@ -427,6 +749,13 @@ impl CaptureComposer {
             cx.notify();
             return;
         }
+        if let Some(snapshot) = &self.entry_snapshot {
+            if let Err(error) = current(&self.reader, snapshot, cx) {
+                self.error = Some(format!("{error:#}"));
+                cx.notify();
+                return;
+            }
+        }
         let Some(preview) = &self.copy_preview else {
             return;
         };
@@ -463,6 +792,40 @@ impl CaptureComposer {
         }
     }
 
+    fn request_close(&mut self, cx: &mut Context<Self>) {
+        if self.busy || self.loading {
+            self.error =
+                Some("Wait for the current capture operation; your draft remains retained.".into());
+            cx.notify();
+            return;
+        }
+        if self.legacy_selected {
+            cx.emit(CaptureClosed);
+            return;
+        }
+        self.busy = true;
+        self.enqueue(Work::Close(self.draft.clone()), cx);
+    }
+    fn finish_entry_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.entry_close_ready {
+            return;
+        }
+        // Do not close another modal that was opened while the checkpoint ran.
+        if self.entry_visible.get() && !self.entry_focus.contains_focused(window, cx) {
+            return;
+        }
+        if self.entry_visible.get() {
+            window.close_dialog(cx);
+        }
+        if let Some(key) = self.entry_key.take() {
+            ENTRIES.with(|entries| {
+                entries.borrow_mut().remove(&key);
+            });
+        }
+        self.entry_retained = None;
+        self.entry_closed = None;
+        self.entry_task = None;
+    }
     fn open_saved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(receipt) = &self.saved else { return };
         self.checkpoint_error = false;
@@ -484,10 +847,19 @@ impl CaptureComposer {
 }
 
 impl Render for CaptureComposer {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let locked =
-            self.busy || self.loading || self.draft.attempt.is_some() || self.legacy_selected;
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.entry_close_ready {
+            cx.defer_in(window, |this, window, cx| {
+                this.finish_entry_close(window, cx)
+            });
+        }
+        let locked = self.busy
+            || self.loading
+            || self.entry_close_ready
+            || self.draft.attempt.is_some()
+            || self.legacy_selected;
         let mut view = v_flex()
+            .track_focus(&self.entry_focus)
             .w_full()
             .gap_2()
             .p_4()
@@ -684,12 +1056,7 @@ impl Render for CaptureComposer {
                         .label("Cancel — keep draft")
                         .disabled(self.busy || self.loading)
                         .on_click(cx.listener(|this, _, _, cx| {
-                            if this.legacy_selected {
-                                cx.emit(CaptureClosed);
-                                return;
-                            }
-                            this.busy = true;
-                            this.enqueue(Work::Close(this.draft.clone()), cx);
+                            this.request_close(cx);
                         })),
                 )
                 .child(
@@ -710,5 +1077,15 @@ impl Render for CaptureComposer {
                         .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
                 ),
         )
+    }
+}
+
+// Legacy parent mounts also retain the previous queue-drain guarantee when an
+// element disappears: a failed UI update must not cancel already-authored IO.
+impl Drop for CaptureComposer {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            worker.detach();
+        }
     }
 }
