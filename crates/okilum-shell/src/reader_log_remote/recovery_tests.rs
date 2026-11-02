@@ -99,6 +99,9 @@ fn restore_applied_settings_recovers_failed_persisted_draft_without_query_or_row
         panel.filters.update(cx, |input, cx| {
             input.set_value("[invalid draft", window, cx)
         });
+        panel.url.update(cx, |input, cx| {
+            input.set_value("https://other.example/unimported-draft", window, cx)
+        });
         panel.key.update(cx, |input, cx| {
             input.set_value("synthetic-not-a-real-key", window, cx)
         });
@@ -117,6 +120,10 @@ fn restore_applied_settings_recovers_failed_persisted_draft_without_query_or_row
         assert_eq!(
             restored.discover, good.discover,
             "query, pinned/disabled/negated filters, time, columns and sort restore exactly"
+        );
+        assert!(
+            panel.url.read(cx).value().is_empty(),
+            "pending import URL cannot masquerade as the restored connection"
         );
         assert!(
             panel.key.read(cx).value().is_empty() && panel.key.read(cx).presentation().is_masked()

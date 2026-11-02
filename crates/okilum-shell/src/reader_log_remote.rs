@@ -204,6 +204,8 @@ impl Panel {
             return;
         };
         self.choose(source, window, cx);
+        self.url
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.message = "Last applied inputs restored. Loaded snapshot and its absolute range are unchanged; Apply explicitly to re-query, or Start the applied query.".into();
         cx.notify();
     }
