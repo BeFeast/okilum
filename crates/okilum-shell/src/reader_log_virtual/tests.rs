@@ -567,10 +567,8 @@ fn membership_follow_keeps_view_record_selection_marks_and_rejects_stale_or_stop
     panel.read_with(visual, |panel, _| {
         assert!(!panel.following && panel.worker.is_none())
     });
-    visual.simulate_click(
-        visual.debug_bounds("virtual-follow").unwrap().center(),
-        Modifiers::default(),
-    );
+    let follow = visual.debug_bounds("virtual-follow").unwrap();
+    visual.simulate_click(follow.center(), Modifiers::default());
     panel.update(visual, |panel, cx| {
         assert!(
             panel.following && !panel.watch && panel.worker.is_none(),

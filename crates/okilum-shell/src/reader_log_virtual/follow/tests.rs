@@ -160,7 +160,13 @@ fn follow_drains_bounded_append_backlog_without_requiring_another_event_or_membe
     for _ in 0..1400 {
         bytes.extend_from_slice(line.as_bytes());
     }
-    fs::write(f.vault.join("logs/a.log"), &bytes).unwrap();
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(f.vault.join("logs/a.log"))
+        .unwrap()
+        .write_all(&bytes[b"first\n".len()..])
+        .unwrap();
     let cancel = AtomicBool::new(false);
     let first = session
         .refresh(&plan, &f.change("logs/a.log"), &cancel)
