@@ -650,7 +650,8 @@ fn recover_record(
 const SESSION_PAGE_ITEMS: usize = 32;
 const MAX_RETAINED_SESSIONS: usize = 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionTarget {
     pub origin: String,
     pub environment_id: String,
@@ -727,7 +728,8 @@ impl SessionTarget {
 }
 
 /// Opaque exact operation/revision selection, not a list index or a title.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionSelection {
     target: SessionTarget,
     snapshot: String,
@@ -762,6 +764,358 @@ impl SessionSelection {
     pub fn matches_closure(&self, record: &ClosureRecord) -> bool {
         record.request_id == self.request_id
             && record.request_fingerprint == self.request_fingerprint
+    }
+}
+
+/// Fresh local restore invocation. Generation is supplied by the current owner;
+/// nonce prevents a previous process/window's same-numbered response matching it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestartRequest {
+    pub target: SessionTarget,
+    pub generation: u64,
+    nonce: String,
+}
+impl RestartRequest {
+    pub fn new(target: SessionTarget, generation: u64) -> Self {
+        Self {
+            target,
+            generation,
+            nonce: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+    pub fn accepts(&self, restored: &RestartState) -> bool {
+        self == &restored.request
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectionRevision {
+    sequence: u64,
+    digest: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedChoice {
+    pub target: SessionTarget,
+    pub revision: SelectionRevision,
+    pub selection: Option<SessionSelection>,
+}
+impl SavedChoice {
+    pub fn follows(&self, previous: &SelectionRevision) -> bool {
+        self.revision.sequence == previous.sequence.saturating_add(1)
+            && self.revision.digest.is_some()
+            && self.revision != *previous
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RestartState {
+    pub request: RestartRequest,
+    pub saved: SavedChoice,
+    pub recovered: Option<Recovered>,
+    pub held: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChoiceEntry {
+    version: u32,
+    target: SessionTarget,
+    sequence: u64,
+    previous_digest: Option<String>,
+    selection: Option<SessionSelection>,
+}
+
+/// Durable explicit choice only: no source copies, run/build receipts, network,
+/// resend, timer, or persisted history cursor. Never placed under the index.
+/// Immutable numbered entries provide cross-window compare-and-publish without
+/// locks that could strand restart after a crash. Nothing overwrites a decision.
+pub struct SelectionStore {
+    state: std::path::PathBuf,
+    directory: std::path::PathBuf,
+    target: SessionTarget,
+}
+const MAX_CHOICE_REVISIONS: usize = 1024;
+const MAX_CHOICE_BYTES: usize = 32 * 1024;
+
+impl SelectionStore {
+    pub fn new(state: &std::path::Path, target: &SessionTarget) -> Result<Self> {
+        field(
+            &target.origin,
+            2048,
+            "Saved selection origin exceeds its bound",
+        )?;
+        let normalized = crate::Environment::new("express-selection", &target.origin)?;
+        ensure!(
+            normalized.origin() == target.origin,
+            "Saved selection origin must be normalized"
+        );
+        for id in [
+            &target.environment_id,
+            &target.manager_project_id,
+            &target.manager_thread_id,
+            &target.executor_project_id,
+        ] {
+            field(id, 1024, "Saved selection target identity is invalid")?;
+        }
+        Ok(Self {
+            state: state.into(),
+            directory: state
+                .join("t3-express-selection")
+                .join(serialized_digest(target)?),
+            target: target.clone(),
+        })
+    }
+
+    /// Missing state means unselected, even if exactly one journal session exists.
+    /// Corruption/gaps never fall back to an older choice or a different session.
+    pub fn load(&self) -> Result<SavedChoice> {
+        use std::io::Read;
+        let mut files = std::collections::BTreeMap::new();
+        let entries = match std::fs::read_dir(&self.directory) {
+            Ok(entries) => Some(entries),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error).context("Cannot read saved Express choice; held"),
+        };
+        if let Some(entries) = entries {
+            for entry in entries {
+                let entry = entry?;
+                let name = entry.file_name();
+                let name = name.to_str().context("Invalid saved selection filename")?;
+                if name.starts_with(".choice-") && name.ends_with(".tmp") {
+                    continue;
+                }
+                ensure!(
+                    entry.file_type()?.is_file(),
+                    "Unexpected entry in saved selection journal; held"
+                );
+                let number: u64 = name
+                    .strip_suffix(".json")
+                    .context("Invalid saved selection revision filename")?
+                    .parse()?;
+                ensure!(
+                    name == format!("{number:020}.json")
+                        && number > 0
+                        && files.insert(number, entry.path()).is_none(),
+                    "Invalid or duplicated saved selection revision; held"
+                );
+                ensure!(
+                    files.len() <= MAX_CHOICE_REVISIONS,
+                    "Saved selection revision bound exceeded; held without truncation"
+                );
+            }
+        }
+        let mut saved = SavedChoice {
+            target: self.target.clone(),
+            revision: SelectionRevision {
+                sequence: 0,
+                digest: None,
+            },
+            selection: None,
+        };
+        for (sequence, path) in files {
+            ensure!(
+                sequence == saved.revision.sequence + 1,
+                "Saved selection revision gap; no older choice was restored"
+            );
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)?
+                .take((MAX_CHOICE_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)?;
+            ensure!(
+                bytes.len() <= MAX_CHOICE_BYTES,
+                "Saved selection exceeds its source bound; held"
+            );
+            let entry: ChoiceEntry = serde_json::from_slice(&bytes)
+                .context("Invalid saved selection; no older choice was restored")?;
+            ensure!(
+                entry.version == 1
+                    && entry.target == self.target
+                    && entry.sequence == sequence
+                    && entry.previous_digest == saved.revision.digest,
+                "Saved selection target or revision chain changed; held"
+            );
+            if let Some(selection) = &entry.selection {
+                self.validate_choice(selection)?;
+            }
+            saved.revision = SelectionRevision {
+                sequence,
+                digest: Some(serialized_digest(&entry)?),
+            };
+            saved.selection = entry.selection;
+        }
+        Ok(saved)
+    }
+
+    /// Called only for an explicit chooser click, using the revision already
+    /// loaded by that owner. Stale writers fail rather than replacing a choice.
+    pub fn remember(
+        &self,
+        journal: &MessageJournal,
+        environment: &crate::Environment,
+        expected: &SelectionRevision,
+        selection: &SessionSelection,
+    ) -> Result<SavedChoice> {
+        self.validate_choice(selection)?;
+        require_selection_snapshot(journal, &self.state, environment, selection)?;
+        self.publish(expected, Some(selection.clone()))
+    }
+
+    /// Explicit leave/new-draft action. The durable tombstone prevents restart
+    /// from reviving an earlier selection; neither journal nor draft is deleted.
+    pub fn forget(&self, expected: &SelectionRevision) -> Result<SavedChoice> {
+        self.publish(expected, None)
+    }
+
+    /// Pure local restart: restore only the exact saved choice. No history read
+    /// or acknowledgement lookup occurs; results require an explicit refresh.
+    pub fn restore(
+        &self,
+        journal: &MessageJournal,
+        environment: &crate::Environment,
+        request: &RestartRequest,
+    ) -> Result<RestartState> {
+        ensure!(
+            request.target == self.target && environment.origin() == self.target.origin,
+            "Restart target/origin differs from the saved-choice scope"
+        );
+        let saved = self.load()?;
+        let mut state = RestartState {
+            request: request.clone(),
+            saved,
+            recovered: None,
+            held: None,
+        };
+        let Some(selection) = &state.saved.selection else {
+            if self.load()?.revision != state.saved.revision {
+                state.held = Some(
+                    "Saved selection generation changed during restart; restore explicitly again."
+                        .into(),
+                );
+            }
+            return Ok(state);
+        };
+        let recovered = (|| {
+            let (snapshot, entries) =
+                retained_snapshot(journal, &self.state, environment, &self.target)?;
+            ensure!(
+                snapshot == selection.snapshot,
+                "Saved choice journal/closure revision changed; choose explicitly again"
+            );
+            let (_, request, record, closure) = entries.into_iter().find(|entry| entry.0.selection.as_ref() == Some(selection))
+                .context("Saved exact request/operation is missing, held or ambiguous; no other session was selected")?;
+            let recovered = Recovered { request: request.context("Saved request source is unavailable")?, record,
+                conversation_link: String::new(), result: None,
+                result_error: Some("Restored explicit selection locally. Result history has not been reconciled; refresh explicitly.".into()),
+                continuation: None, history_complete: false, closure,
+                selected_target: Some(self.target.clone()), selection_revision: Some(selection.snapshot.clone()) };
+            ensure!(
+                selection.matches(&recovered),
+                "Saved request/operation/target identity changed"
+            );
+            Ok::<_, anyhow::Error>(recovered)
+        })();
+        match recovered {
+            Ok(recovered) => state.recovered = Some(recovered),
+            Err(error) => state.held = Some(format!("Restart held: {error:#}")),
+        }
+        if self.load()?.revision != state.saved.revision {
+            state.recovered = None;
+            state.held = Some(
+                "Saved selection generation changed during restart; restore explicitly again."
+                    .into(),
+            );
+        }
+        Ok(state)
+    }
+
+    fn validate_choice(&self, choice: &SessionSelection) -> Result<()> {
+        ensure!(
+            choice.target == self.target,
+            "Saved choice belongs to another exact target"
+        );
+        ensure!(
+            choice
+                .request_id
+                .strip_prefix("okilum-express-")
+                .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+                && choice
+                    .operation_id
+                    .strip_prefix("okilum-")
+                    .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()),
+            "Saved choice request/operation identity is invalid"
+        );
+        for key in [
+            &choice.snapshot,
+            &choice.request_fingerprint,
+            &choice.record_fingerprint,
+        ] {
+            ensure!(
+                key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()),
+                "Saved choice source revision is invalid"
+            );
+        }
+        Ok(())
+    }
+
+    fn publish(
+        &self,
+        expected: &SelectionRevision,
+        selection: Option<SessionSelection>,
+    ) -> Result<SavedChoice> {
+        use std::io::Write;
+        let current = self.load()?;
+        ensure!(
+            current.revision == *expected,
+            "Saved selection generation changed; reload before choosing or forgetting"
+        );
+        ensure!(
+            expected.sequence < MAX_CHOICE_REVISIONS as u64,
+            "Saved choice revision bound reached; held without overwriting history"
+        );
+        let entry = ChoiceEntry {
+            version: 1,
+            target: self.target.clone(),
+            sequence: expected.sequence + 1,
+            previous_digest: expected.digest.clone(),
+            selection: selection.clone(),
+        };
+        let bytes = serde_json::to_vec(&entry)?;
+        ensure!(
+            bytes.len() <= MAX_CHOICE_BYTES,
+            "Saved selection exceeds its source bound"
+        );
+        std::fs::create_dir_all(&self.directory)?;
+        let temporary = self
+            .directory
+            .join(format!(".choice-{}.tmp", uuid::Uuid::new_v4()));
+        let outcome = (|| {
+            let mut file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            std::fs::hard_link(
+                &temporary,
+                self.directory.join(format!("{:020}.json", entry.sequence)),
+            )
+            .context(
+                "Another owner published this selection generation; reload without overwriting it",
+            )?;
+            #[cfg(unix)]
+            std::fs::File::open(&self.directory)?.sync_all()?;
+            Ok(SavedChoice {
+                target: self.target.clone(),
+                revision: SelectionRevision {
+                    sequence: entry.sequence,
+                    digest: Some(serialized_digest(&entry)?),
+                },
+                selection,
+            })
+        })();
+        let _ = std::fs::remove_file(temporary);
+        outcome
     }
 }
 
@@ -2488,6 +2842,276 @@ mod tests {
         assert!(fresh.rows.iter().all(|row| row.selection.is_some()));
         assert!(gateway.sends.lock().unwrap().is_empty());
         assert_eq!(journal.records().unwrap().len(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn restart_restores_only_a_durable_explicit_operation_without_history_or_send() {
+        let (directory, environment, journal, gateway, requests) = choices_fixture(3);
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "project").unwrap();
+        let store = SelectionStore::new(&directory, &target).unwrap();
+        let initial = store.load().unwrap();
+        let restart = RestartRequest::new(target.clone(), 1);
+        let empty = store.restore(&journal, &environment, &restart).unwrap();
+        assert!(empty.saved.selection.is_none());
+        assert!(
+            empty.recovered.is_none(),
+            "Even one or many retained sessions never create an implicit choice"
+        );
+        let latest = journal
+            .records()
+            .unwrap()
+            .into_iter()
+            .find(|record| record.message.text.contains(&requests[2].request_id))
+            .unwrap();
+        journal.send(&gateway, &latest).unwrap();
+        let original = journal.records().unwrap();
+        let page =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        let selection = page
+            .rows
+            .iter()
+            .find(|row| row.request_id.as_deref() == Some(requests[0].request_id.as_str()))
+            .unwrap()
+            .selection
+            .as_ref()
+            .unwrap();
+        let saved = store
+            .remember(&journal, &environment, &initial.revision, selection)
+            .unwrap();
+        assert!(saved.follows(&initial.revision));
+        let reopened = SelectionStore::new(&directory, &target).unwrap();
+        let restored = reopened.restore(&journal, &environment, &restart).unwrap();
+        assert!(restart.accepts(&restored));
+        assert_eq!(restored.saved, saved);
+        let local = restored.recovered.as_ref().unwrap();
+        assert!(selection.matches(local));
+        assert_eq!(local.request.draft, requests[0].draft);
+        assert_eq!(
+            local.record.message.client_request_id,
+            selection.operation_id()
+        );
+        assert!(
+            local.record.receipt.is_none(),
+            "Latest acknowledged session did not replace the explicit uncertain choice"
+        );
+        assert!(local.result.is_none() && !local.history_complete && local.continuation.is_none());
+        assert!(
+            local.conversation_link.is_empty(),
+            "Local restart cannot invent a freshly verified live link"
+        );
+        assert!(local
+            .result_error
+            .as_ref()
+            .unwrap()
+            .contains("refresh explicitly"));
+        let new_process = RestartRequest::new(target.clone(), 1);
+        assert!(
+            !new_process.accepts(&restored),
+            "Same-numbered generation in another process has a different nonce"
+        );
+        assert!(!RestartRequest::new(target.clone(), 2).accepts(&restored));
+        std::fs::write(store.directory.join(".choice-interrupted.tmp"), b"{partial").unwrap();
+        assert_eq!(
+            store.load().unwrap(),
+            saved,
+            "An unpublished interrupted write is not a choice"
+        );
+        let pointer =
+            std::fs::read_to_string(store.directory.join("00000000000000000001.json")).unwrap();
+        assert!(
+            !pointer.contains(&requests[0].draft.source.as_ref().unwrap().text),
+            "Source remains canonical in its original journal"
+        );
+        assert_eq!(journal.records().unwrap(), original);
+        assert_eq!(
+            gateway.sends.lock().unwrap().len(),
+            1,
+            "Only the fixture's explicit queue send occurred"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn saved_choice_generations_reject_stale_writers_and_forget_survives_restart() {
+        let (directory, environment, journal, gateway, requests) = choices_fixture(2);
+        let original = journal.records().unwrap();
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "project").unwrap();
+        let page =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        let choice = |index: usize| {
+            page.rows
+                .iter()
+                .find(|row| row.request_id.as_deref() == Some(requests[index].request_id.as_str()))
+                .unwrap()
+                .selection
+                .as_ref()
+                .unwrap()
+        };
+        let store = SelectionStore::new(&directory, &target).unwrap();
+        let initial = store.load().unwrap();
+        let first = store
+            .remember(&journal, &environment, &initial.revision, choice(0))
+            .unwrap();
+        let another_owner = SelectionStore::new(&directory, &target).unwrap();
+        assert!(another_owner
+            .remember(&journal, &environment, &initial.revision, choice(1))
+            .is_err());
+        assert!(another_owner.forget(&initial.revision).is_err());
+        assert_eq!(store.load().unwrap(), first);
+        let forgotten = store.forget(&first.revision).unwrap();
+        assert!(forgotten.follows(&first.revision));
+        assert!(forgotten.selection.is_none());
+        let restart = RestartRequest::new(target.clone(), 9);
+        let local = another_owner
+            .restore(&journal, &environment, &restart)
+            .unwrap();
+        assert_eq!(local.saved, forgotten);
+        assert!(
+            local.recovered.is_none(),
+            "Restart does not resurrect the previously selected request after explicit leave"
+        );
+        assert!(another_owner
+            .remember(&journal, &environment, &first.revision, choice(0))
+            .is_err());
+        let next = another_owner
+            .remember(&journal, &environment, &forgotten.revision, choice(1))
+            .unwrap();
+        let local = store.restore(&journal, &environment, &restart).unwrap();
+        assert_eq!(
+            local.recovered.unwrap().request.request_id,
+            requests[1].request_id
+        );
+        assert_eq!(local.saved, next);
+        assert_eq!(journal.records().unwrap(), original);
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn restart_holds_changed_missing_or_foreign_identity_instead_of_selecting_another_session() {
+        let (directory, environment, journal, gateway, requests) = choices_fixture(2);
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "project").unwrap();
+        let page =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        let selection = page
+            .rows
+            .iter()
+            .find(|row| row.request_id.as_deref() == Some(requests[0].request_id.as_str()))
+            .unwrap()
+            .selection
+            .as_ref()
+            .unwrap();
+        let store = SelectionStore::new(&directory, &target).unwrap();
+        let initial = store.load().unwrap();
+        let saved = store
+            .remember(&journal, &environment, &initial.revision, selection)
+            .unwrap();
+        let mut different_target = target.clone();
+        different_target.executor_project_id = "other-executor-project".into();
+        let foreign_request = RestartRequest::new(different_target.clone(), 1);
+        assert!(store
+            .restore(&journal, &environment, &foreign_request)
+            .is_err());
+        let foreign_store = SelectionStore::new(&directory, &different_target).unwrap();
+        assert!(foreign_store
+            .restore(&journal, &environment, &foreign_request)
+            .unwrap()
+            .recovered
+            .is_none());
+        assert!(foreign_store
+            .remember(
+                &journal,
+                &environment,
+                &foreign_store.load().unwrap().revision,
+                selection
+            )
+            .is_err());
+        let other_origin = crate::Environment::new("other", "https://other.example").unwrap();
+        assert!(store
+            .restore(
+                &journal,
+                &other_origin,
+                &RestartRequest::new(target.clone(), 1)
+            )
+            .is_err());
+        // A result/closure update is not permission to rebase an old saved
+        // catalog snapshot or to pick the remaining active session.
+        ClosureStore::new(&directory, &environment, &requests[0])
+            .unwrap()
+            .discard("Explicit closure changes the catalog revision")
+            .unwrap();
+        let held = store
+            .restore(
+                &journal,
+                &environment,
+                &RestartRequest::new(target.clone(), 2),
+            )
+            .unwrap();
+        assert!(held.recovered.is_none());
+        assert!(held.held.unwrap().contains("revision changed"));
+        assert_eq!(held.saved, saved);
+        // Remove only a test fixture's exact operation to prove absence never
+        // selects its healthy sibling. Product restart itself deletes nothing.
+        let scope = std::fs::read_dir(directory.join("t3-messages"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::remove_file(scope.join(format!("{}.json", selection.operation_id()))).unwrap();
+        let held = store
+            .restore(
+                &journal,
+                &environment,
+                &RestartRequest::new(target.clone(), 3),
+            )
+            .unwrap();
+        assert!(held.recovered.is_none() && held.held.is_some());
+        assert_eq!(journal.records().unwrap().len(), 1);
+        assert_eq!(store.load().unwrap(), saved);
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn corrupt_or_gapped_choice_head_never_falls_back_to_an_older_explicit_choice() {
+        let (directory, environment, journal, gateway, _) = choices_fixture(1);
+        let original = journal.records().unwrap();
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "project").unwrap();
+        let page =
+            list_retained(&gateway, &journal, &directory, &environment, &target, None).unwrap();
+        let selection = page.rows[0].selection.as_ref().unwrap();
+        let store = SelectionStore::new(&directory, &target).unwrap();
+        let initial = store.load().unwrap();
+        let first = store
+            .remember(&journal, &environment, &initial.revision, selection)
+            .unwrap();
+        let forgotten = store.forget(&first.revision).unwrap();
+        let third = store
+            .remember(&journal, &environment, &forgotten.revision, selection)
+            .unwrap();
+        assert!(third.follows(&forgotten.revision));
+        let head = store.directory.join("00000000000000000003.json");
+        let bytes = std::fs::read(&head).unwrap();
+        std::fs::write(&head, b"{incomplete").unwrap();
+        let restart = RestartRequest::new(target.clone(), 1);
+        assert!(store.restore(&journal, &environment, &restart).is_err());
+        assert!(store.forget(&third.revision).is_err());
+        std::fs::write(&head, &bytes).unwrap();
+        assert_eq!(
+            store.load().unwrap(),
+            third,
+            "Positive control: intact head restores the exact choice"
+        );
+        std::fs::remove_file(store.directory.join("00000000000000000002.json")).unwrap();
+        assert!(store.load().unwrap_err().to_string().contains("gap"));
+        assert!(store.restore(&journal, &environment, &restart).is_err());
+        assert_eq!(journal.records().unwrap(), original);
+        assert!(gateway.sends.lock().unwrap().is_empty());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -2,8 +2,9 @@
 //! using okilum_t3::express_session::Request and the existing Manager journal.
 use super::*;
 use okilum_t3::express_session::{
-    CloseReason, ClosureRecord, Draft, Platform, Recovered, RetainedCursor, RetainedPage,
-    SessionSelection, SessionTarget, SourceContext, Submission,
+    CloseReason, ClosureRecord, Draft, Platform, Recovered, RestartRequest, RestartState,
+    RetainedCursor, RetainedPage, SavedChoice, SelectionRevision, SessionSelection, SessionTarget,
+    SourceContext, Submission,
 };
 
 #[derive(Clone)]
@@ -37,6 +38,22 @@ pub(super) struct ClosureRequested {
     pub selection: Option<SessionChosen>,
 }
 
+#[derive(Clone)]
+pub(super) struct SelectionRestoreRequested(pub RestartRequest);
+
+#[derive(Clone)]
+pub(super) struct SelectionPersistenceRequested {
+    pub chosen: SessionChosen,
+    pub expected: SelectionRevision,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct SelectionForgetRequested {
+    pub target: SessionTarget,
+    pub expected: SelectionRevision,
+    pub generation: u64,
+}
+
 pub(super) struct Form {
     goal: Entity<InputState>,
     recipient: Entity<InputState>,
@@ -61,6 +78,10 @@ pub(super) struct Form {
     chooser_generation: u64,
     catalog_loading: bool,
     parked_draft: Option<Draft>,
+    restore_request: Option<RestartRequest>,
+    selection_revision: Option<SelectionRevision>,
+    selection_saving: bool,
+    pending_forget: Option<SelectionForgetRequested>,
     _inputs: Vec<Subscription>,
 }
 
@@ -70,6 +91,9 @@ impl EventEmitter<ContinueHistoryRequested> for Form {}
 impl EventEmitter<ClosureRequested> for Form {}
 impl EventEmitter<SessionsRequested> for Form {}
 impl EventEmitter<SessionChosen> for Form {}
+impl EventEmitter<SelectionRestoreRequested> for Form {}
+impl EventEmitter<SelectionPersistenceRequested> for Form {}
+impl EventEmitter<SelectionForgetRequested> for Form {}
 
 impl Form {
     /// Source must come from explicit selection with original-source revision.
@@ -111,13 +135,194 @@ impl Form {
             chooser_generation: 0,
             catalog_loading: false,
             parked_draft: None,
+            restore_request: None,
+            selection_revision: None,
+            selection_saving: false,
+            pending_forget: None,
             _inputs: inputs,
+        }
+    }
+
+    /// Owner handles this local-only read on startup or explicit restore. It
+    /// must supply the current approved target and retain its binding guard.
+    pub(super) fn begin_restore_selection(
+        &mut self,
+        target: SessionTarget,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.locked && self.parked_draft.is_none() {
+            self.parked_draft = Some(Draft {
+                goal: self.goal.read(cx).value().to_string(),
+                recipient: self.recipient.read(cx).value().to_string(),
+                platforms: self.platforms.clone(),
+                source: self.source.clone(),
+            });
+        }
+        self.chooser_generation = self.chooser_generation.wrapping_add(1);
+        let request = RestartRequest::new(target.clone(), self.chooser_generation);
+        self.chooser_target = Some(target);
+        self.session_selection = None;
+        self.session_page = None;
+        self.request_id = None;
+        self.conversation_link = None;
+        self.closed = None;
+        self.catalog_loading = false;
+        self.selection_saving = false;
+        self.pending_forget = None;
+        self.selection_revision = None;
+        self.begin_reconnect(cx);
+        self.notice = Some("Restoring saved explicit selection locally…".into());
+        self.restore_request = Some(request.clone());
+        cx.emit(SelectionRestoreRequested(request));
+    }
+
+    pub(super) fn selection_restored(
+        &mut self,
+        state: &RestartState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(request) = &self.restore_request else {
+            return;
+        };
+        if !request.accepts(state)
+            || request.generation != self.chooser_generation
+            || self.chooser_target.as_ref() != Some(&state.saved.target)
+        {
+            return;
+        }
+        self.restore_request = None;
+        self.selection_revision = Some(state.saved.revision.clone());
+        self.refreshing = false;
+        if let Some(held) = &state.held {
+            self.failed(held.clone(), true, cx);
+            return;
+        }
+        if let (Some(selection), Some(recovered)) = (&state.saved.selection, &state.recovered) {
+            if selection.matches(recovered) {
+                self.session_selection = Some(selection.clone());
+                self.recovered(recovered, window, cx);
+                // No SessionChosen event here: restart does not initiate history
+                // reads, dispatch, receipt refresh, closure, or any timer.
+                return;
+            }
+            self.failed(
+                "Saved selection identity is held; choose explicitly again.".into(),
+                true,
+                cx,
+            );
+        } else if state.saved.selection.is_none() && state.recovered.is_none() {
+            self.notice = Some("No saved explicit selection. Choose a retained session; none was selected automatically.".into());
+            cx.notify();
+        } else {
+            self.failed(
+                "Saved selection/source identity is incomplete; restart remains held.".into(),
+                true,
+                cx,
+            );
+        }
+    }
+
+    pub(super) fn selection_restore_failed(
+        &mut self,
+        request: &RestartRequest,
+        detail: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.restore_request.as_ref() == Some(request)
+            && request.generation == self.chooser_generation
+        {
+            self.restore_request = None;
+            self.failed(
+                format!("Saved selection held: {detail}. No other session was restored."),
+                true,
+                cx,
+            );
+        }
+    }
+
+    pub(super) fn selection_persisted(
+        &mut self,
+        request: &SelectionPersistenceRequested,
+        saved: &SavedChoice,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.selection_saving
+            || self.chooser_generation != request.chosen.generation
+            || self.session_selection.as_ref() != Some(&request.chosen.selection)
+            || self.selection_revision.as_ref() != Some(&request.expected)
+            || saved.target != *request.chosen.selection.target()
+            || !saved.follows(&request.expected)
+            || saved.selection.as_ref() != Some(&request.chosen.selection)
+        {
+            return;
+        }
+        self.selection_revision = Some(saved.revision.clone());
+        self.selection_saving = false;
+        // Continuation of this explicit chooser click, never a restart effect.
+        cx.emit(request.chosen.clone());
+        cx.notify();
+    }
+
+    pub(super) fn selection_persistence_failed(
+        &mut self,
+        request: &SelectionPersistenceRequested,
+        detail: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_saving
+            && self.chooser_generation == request.chosen.generation
+            && self.session_selection.as_ref() == Some(&request.chosen.selection)
+        {
+            self.selection_saving = false;
+            self.session_selection = None;
+            self.selection_revision = None;
+            self.failed(format!("Choice was not confirmed saved: {detail}. Restore saved state before choosing again."), true, cx);
+        }
+    }
+
+    pub(super) fn selection_forgotten(
+        &mut self,
+        request: &SelectionForgetRequested,
+        saved: &SavedChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_forget.as_ref() != Some(request)
+            || request.generation != self.chooser_generation
+            || saved.target != request.target
+            || saved.selection.is_some()
+            || !saved.follows(&request.expected)
+        {
+            return;
+        }
+        self.pending_forget = None;
+        self.selection_revision = Some(saved.revision.clone());
+        self.session_selection = None;
+        self.resume_draft_unchecked(window, cx);
+    }
+
+    pub(super) fn selection_forget_failed(
+        &mut self,
+        request: &SelectionForgetRequested,
+        detail: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_forget.as_ref() == Some(request)
+            && request.generation == self.chooser_generation
+        {
+            self.pending_forget = None;
+            self.selection_revision = None;
+            self.failed(format!("Leaving saved selection is unconfirmed: {detail}. Restore saved state; journal and draft are kept."), true, cx);
         }
     }
 
     /// Parent loads the approved exact target on its serial worker first.
     /// Listing/selecting never overwrites this form's independent draft.
     pub(super) fn begin_session_chooser(&mut self, target: SessionTarget, cx: &mut Context<Self>) {
+        if self.chooser_target.as_ref() != Some(&target) {
+            self.selection_revision = None;
+        }
         self.chooser_target = Some(target);
         self.request_session_page(None, cx);
     }
@@ -135,6 +340,9 @@ impl Form {
             });
         }
         self.chooser_generation = self.chooser_generation.wrapping_add(1);
+        self.restore_request = None;
+        self.selection_saving = false;
+        self.pending_forget = None;
         self.session_selection = None;
         self.session_page = None;
         self.request_id = None;
@@ -194,6 +402,14 @@ impl Form {
         if self.refreshing || self.chooser_target.as_ref() != Some(selection.target()) {
             return;
         }
+        let Some(expected) = self.selection_revision.clone() else {
+            self.notice = Some(
+                "Restore saved-selection state before choosing; no unsaved choice was applied."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        };
         self.chooser_generation = self.chooser_generation.wrapping_add(1);
         self.session_selection = Some(selection.clone());
         self.session_page = None;
@@ -204,13 +420,20 @@ impl Form {
         self.discard_confirm = false;
         self.begin_reconnect(cx);
         self.catalog_loading = false;
-        cx.emit(SessionChosen {
-            selection,
-            generation: self.chooser_generation,
+        self.selection_saving = true;
+        cx.emit(SelectionPersistenceRequested {
+            chosen: SessionChosen {
+                selection,
+                generation: self.chooser_generation,
+            },
+            expected,
         });
     }
 
     pub(super) fn selected_session(&self) -> Option<SessionChosen> {
+        if self.selection_saving || self.restore_request.is_some() {
+            return None;
+        }
         self.session_selection
             .clone()
             .map(|selection| SessionChosen {
@@ -248,6 +471,27 @@ impl Form {
     }
 
     fn resume_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(target) = self.chooser_target.clone() {
+            let Some(expected) = self.selection_revision.clone() else {
+                self.failed("Restore saved-selection state before leaving it; no durable choice was forgotten.".into(), true, cx);
+                return;
+            };
+            self.chooser_generation = self.chooser_generation.wrapping_add(1);
+            let request = SelectionForgetRequested {
+                target,
+                expected,
+                generation: self.chooser_generation,
+            };
+            self.pending_forget = Some(request.clone());
+            self.refreshing = true;
+            cx.emit(request);
+            cx.notify();
+        } else {
+            self.resume_draft_unchecked(window, cx);
+        }
+    }
+
+    fn resume_draft_unchecked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let parked = self.parked_draft.take();
         self.no_retained_request(cx);
         if let Some(draft) = parked {
@@ -315,6 +559,14 @@ impl Form {
 
     /// Only after reconnect returned Ok(None) for the still-current binding.
     pub(super) fn no_retained_request(&mut self, cx: &mut Context<Self>) {
+        if self.selection_revision.is_some() && self.session_selection.is_some() {
+            self.failed(
+                "Leave the saved choice explicitly before starting a new draft.".into(),
+                true,
+                cx,
+            );
+            return;
+        }
         self.locked = false;
         self.refreshing = false;
         self.build_links.clear();
@@ -332,6 +584,10 @@ impl Form {
         self.chooser_target = None;
         self.chooser_generation = self.chooser_generation.wrapping_add(1);
         self.catalog_loading = false;
+        self.restore_request = None;
+        self.selection_saving = false;
+        self.pending_forget = None;
+        self.selection_revision = None;
         cx.notify();
     }
 
@@ -371,7 +627,8 @@ impl Form {
         });
         self.platforms = draft.platforms.clone();
         self.source = draft.source.clone();
-        self.conversation_link = Some(recovered.conversation_link.clone());
+        self.conversation_link =
+            (!recovered.conversation_link.is_empty()).then(|| recovered.conversation_link.clone());
         self.build_links.clear();
         self.executor_link = None;
         self.notice = Some(if let Some(error) = &recovered.result_error {
@@ -511,6 +768,16 @@ impl Render for Form {
             .gap_2()
             .child("Express session");
         if let Some(target) = &self.chooser_target {
+            let restore_target = target.clone();
+            panel = panel.child(
+                Button::new("express-restore-saved-choice")
+                    .ghost()
+                    .label("Restore saved selection")
+                    .disabled(self.refreshing)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.begin_restore_selection(restore_target.clone(), cx)
+                    })),
+            );
             panel = panel
                 .child(format!(
                     "Target: {} · environment {} · Manager {}/{} · executor project {}",
