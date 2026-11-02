@@ -2,6 +2,53 @@ use super::*;
 use okilum_t3::ThreadSummary;
 
 impl ProjectView {
+    /// Read with the existing authenticated gateway. Refresh must never enter
+    /// the credential/sign-in path or restart the Manager conversation.
+    pub(super) fn refresh_executors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.active
+            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+            || self.executors_refreshing == Some(self.generation)
+        {
+            return;
+        }
+        let (Some(gateway), Some(area), Some(binding)) = (
+            self.gateway.clone(),
+            self.area.clone(),
+            self.binding.clone(),
+        ) else {
+            return;
+        };
+        let generation = self.generation;
+        self.executors_refreshing = Some(generation);
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    okilum_t3::executors::Snapshot::load(gateway.as_ref(), &area, &binding)
+                })
+                .await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                if this.executors_refreshing != Some(generation) {
+                    return;
+                }
+                this.executors_refreshing = None;
+                if this.generation != generation || !this.active {
+                    return;
+                }
+                match result {
+                    Ok(snapshot) => {
+                        this.executors = Some(snapshot);
+                        this.executors_error = None;
+                    }
+                    Err(error) => this.executors_error = Some(format!("{error:#}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(super) fn render_executors(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = v_flex()
             .id("project-executors-list")
@@ -9,14 +56,39 @@ impl ProjectView {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .gap_4();
+            .gap_4()
+            .child(
+                h_flex()
+                    .items_center()
+                    .child(div().flex_1().child("Executors"))
+                    .child(
+                        Button::new("project-executors-refresh")
+                            .debug_selector(|| "project-executors-refresh".into())
+                            .ghost()
+                            .small()
+                            .icon(IconName::RotateCw)
+                            .label("Refresh")
+                            .tooltip("Refresh executors using the current connection")
+                            .disabled(
+                                self.gateway.is_none()
+                                    || self.area.is_none()
+                                    || self.binding.is_none()
+                                    || self.executors_refreshing == Some(self.generation),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.refresh_executors(window, cx)
+                            })),
+                    ),
+            );
         if let Some(error) = &self.executors_error {
             list = list.child(div().text_color(cx.theme().danger).child(format!(
                 "Cannot refresh executors; previous rows are retained. {error}"
             )));
         }
         let Some(snapshot) = &self.executors else {
-            return list.child("Executor status has not loaded. Connect to T3; this view refreshes with manager polling.").into_any_element();
+            return list
+                .child("Executor status has not loaded. Connect to T3, then choose Refresh.")
+                .into_any_element();
         };
         list = list.child(div().child(format!(
             "Manager · {} registered executors",

@@ -22,6 +22,8 @@ pub struct Entry {
 pub struct Registry {
     pub manager: String,
     pub executors: Vec<Entry>,
+    manager_line: usize,
+    references: BTreeSet<String>,
 }
 
 impl Registry {
@@ -75,7 +77,7 @@ impl Registry {
             .collect::<Vec<_>>();
         ensure!(
             sections.len() == 1,
-            "Expected one Current threads / Текущие threads registry section"
+            "{file}: expected one ## Current threads / ## Текущие threads section"
         );
         let section = &lines[sections[0] + 1..];
         let end = section
@@ -94,12 +96,16 @@ impl Registry {
             .collect::<Vec<_>>();
         ensure!(
             tables.len() == 1,
-            "Expected one Role / Thread registry table"
+            "{file}:{}: expected one table beginning | Role | Thread |",
+            sections[0] + 1
         );
         let header = cells(section[tables[0]]);
         let task_column = header.iter().position(|cell| *cell == "Current task");
+        let kind_column = header.iter().position(|cell| *cell == "Kind");
         let mut roles = BTreeSet::new();
         let mut manager = None;
+        let mut manager_line = 0;
+        let mut references = BTreeSet::new();
         let mut executors = Vec::new();
         let mut ids = BTreeSet::new();
         for (offset, line) in section.iter().enumerate().skip(tables[0] + 1) {
@@ -113,10 +119,27 @@ impl Registry {
             {
                 continue;
             }
+            let line_number = sections[0] + 2 + offset;
             ensure!(
                 row.len() >= 2 && !row[0].is_empty(),
-                "Malformed executor registry row"
+                "{file}:{line_number}: expected a Role and Thread cell"
             );
+            let is_manager = row[0].eq_ignore_ascii_case("manager");
+            let kind = kind_column
+                .and_then(|column| row.get(column))
+                .copied()
+                .unwrap_or("");
+            let reference = match kind.to_ascii_lowercase().as_str() {
+                "" if kind_column.is_none() || is_manager => matches!(row[0].to_ascii_lowercase().as_str(), "decision-thread" | "decision thread" | "decisions"),
+                "reference" if !is_manager => true,
+                "executor" if !is_manager => false,
+                "manager" if is_manager => false,
+                _ => anyhow::bail!("{file}:{line_number}: role {:?}: expected Kind `manager` for Manager, or `executor` / `reference` for other rows", row[0]),
+            };
+            let leading = row[1]
+                .strip_prefix('`')
+                .and_then(|value| value.split_once('`'))
+                .map(|(id, _)| id);
             let values = row[1]
                 .split('`')
                 .enumerate()
@@ -126,20 +149,25 @@ impl Registry {
                 .collect::<Vec<_>>();
             ensure!(
                 values.len() == 1
+                    && leading == values.first().copied()
                     && values[0].len() > 4
                     && !values[0].chars().any(char::is_whitespace),
-                "Expected one inline mcp: thread ID per registry row"
+                "{file}:{line_number}: role {:?}: start the Thread cell with exactly one inline ID in backticks, `mcp:<id>`; put the title or Markdown link after it", row[0]
             );
             let id = values[0].to_owned();
             ensure!(
                 ids.insert(id.clone()),
-                "Duplicate thread ID in executor registry"
+                "{file}:{line_number}: role {:?}: duplicate thread ID in executor registry",
+                row[0]
             );
-            if row[0].eq_ignore_ascii_case("manager") {
+            if is_manager {
+                manager_line = line_number;
                 ensure!(
                     manager.replace(id).is_none(),
-                    "Multiple managers in current registry"
+                    "{file}:{line_number}: multiple Manager rows; keep exactly one"
                 );
+            } else if reference {
+                references.insert(id);
             } else {
                 ensure!(
                     executors.len() < MAX_EXECUTORS,
@@ -147,7 +175,8 @@ impl Registry {
                 );
                 ensure!(
                     roles.insert(row[0]),
-                    "Duplicate executor role in current registry"
+                    "{file}:{line_number}: duplicate executor role {:?}",
+                    row[0]
                 );
                 let current_task = task_column
                     .and_then(|column| row.get(column))
@@ -175,8 +204,14 @@ impl Registry {
             }
         }
         Ok(Self {
-            manager: manager.context("Current executor registry has no Manager row")?,
+            manager: manager.with_context(|| {
+                format!(
+                    "{file}: add a Manager row with the current thread ID in backticks, `mcp:<id>`"
+                )
+            })?,
             executors,
+            manager_line,
+            references,
         })
     }
 }
@@ -208,7 +243,9 @@ impl Snapshot {
         let registry = Registry::read(area)?;
         ensure!(
             Some(&registry.manager) == binding.manager.thread_id.as_ref(),
-            "Registry Manager differs from the area manifest; executor ownership was not inferred"
+            "{}:{}: Manager row uses `{}` but this project is bound to `{}`. Set the Thread cell to the bound Manager ID in backticks, `mcp:<id>`, or correct the project manifest; executor rows were not replaced",
+            area.join("ops/thread-ids.md").display(), registry.manager_line,
+            registry.manager, binding.manager.thread_id.as_deref().unwrap_or("no Manager")
         );
         Self::refresh(gateway, registry, &binding.executor.project_id)
     }
@@ -243,6 +280,9 @@ impl Snapshot {
             });
         }
         threads.remove(&registry.manager); // Explicit manager is not an unregistered executor.
+        for id in &registry.references {
+            threads.remove(id);
+        }
         Ok(Self {
             manager: registry.manager,
             registered,

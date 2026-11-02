@@ -264,7 +264,6 @@ impl ProjectView {
                 "Launch requested: message delivered to the manager conversation. Manager acceptance and T3 launch are not confirmed. Follow the manager chat and registered executor list."));
         }
         panel
-            .child(okilum_t3::models::SCHEDULED_TASK_LIMIT)
             .child(
                 Button::new("project-launch-submit")
                     .debug_selector(|| "project-launch-submit".into())
@@ -342,7 +341,10 @@ mod tests {
         let open = visual.debug_bounds("project-connection-menu").unwrap();
         visual.simulate_click(open.center(), Modifiers::default());
         visual.run_until_parked();
-        // Diagnostics, Open terminal, Executors, Request executor.
+        // Linux also has Rotation policy and Express session before Diagnostics.
+        #[cfg(target_os = "linux")]
+        visual.simulate_keystrokes("down down down down down down enter");
+        #[cfg(not(target_os = "linux"))]
         visual.simulate_keystrokes("down down down down enter");
         visual.run_until_parked();
         view.read_with(visual, |view, _| assert!(view.launch.open));

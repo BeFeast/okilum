@@ -135,6 +135,7 @@ pub(crate) struct ProjectView {
     executors_open: bool,
     executors: Option<okilum_t3::executors::Snapshot>,
     executors_error: Option<String>,
+    executors_refreshing: Option<u64>,
     model_target: Option<okilum_t3::models::Target>,
     model_ui: models::PickerUi,
     models: Option<okilum_t3::models::Snapshot>,
@@ -473,6 +474,7 @@ impl ProjectView {
             executors_open: false,
             executors: None,
             executors_error: None,
+            executors_refreshing: None,
             model_target: None,
             model_ui: Default::default(),
             models: None,
@@ -1983,8 +1985,9 @@ impl ProjectView {
                         .child(Input::new(&self.origin).flex_1())
                         .child(
                             Button::new("project-connect")
+                                .debug_selector(|| "project-connect".into())
                                 .ghost()
-                                .icon(IconName::RotateCw)
+                                .label("Reconnect")
                                 .tooltip("Reconnect using the saved T3 connection")
                                 .disabled(self.busy || self.model_busy)
                                 .on_click(

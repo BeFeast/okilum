@@ -176,3 +176,83 @@ fn malformed_current_task_reports_file_line_role_and_exact_value_without_guessin
         );
     }
 }
+
+#[test]
+fn link_only_or_ambiguous_thread_ids_name_file_physical_line_role_and_repair() {
+    for (role, original, line) in [
+        ("Manager", "`mcp:manager`", 5),
+        ("UI", "`mcp:ui` description", 6),
+    ] {
+        for cell in [
+            "[Thread](t3-thread://env/mcp:thread)",
+            "[Thread](`mcp:thread`)",
+            "`mcp:one` `mcp:two`",
+            "`mcp:`",
+            "`mcp:unclosed",
+            "`mcp:two words`",
+        ] {
+            // CRLF and non-ASCII prose must not change the physical line number.
+            let source = format!("# Registry 🧠\n{}", REGISTRY.replace(original, cell))
+                .replace('\n', "\r\n");
+            let error = Registry::parse_at(&source, "/fixture/area/ops/thread-ids.md")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!("/fixture/area/ops/thread-ids.md:{}", line + 1)),
+                "{error}"
+            );
+            assert!(
+                error.contains(role) && error.contains("`mcp:<id>`") && error.contains("backticks"),
+                "{error}"
+            );
+        }
+    }
+    let valid = REGISTRY.replace(
+        "`mcp:manager`",
+        "`mcp:manager` [Manager](t3-thread://env/mcp:manager)",
+    );
+    assert_eq!(Registry::parse(&valid).unwrap().manager, "mcp:manager");
+}
+
+#[test]
+fn decisions_and_explicit_references_never_establish_executor_ownership() {
+    let legacy = REGISTRY.replace(
+        "| Missing | `mcp:missing` | Code |",
+        "| decision-thread | `mcp:unregistered` | Decisions |",
+    );
+    let typed = "## Current threads\n| Role | Thread | Kind | Current task |\n|---|---|---|---|\n| Manager | `mcp:manager` | manager | |\n| UI | `mcp:ui` | executor | #1464 |\n| Architecture | `mcp:unregistered` | reference | not an issue |\n";
+    for source in [&legacy, typed] {
+        let registry = Registry::parse(source).unwrap();
+        assert_eq!(registry.executors.len(), 1);
+        let fake = Fake {
+            calls: Mutex::new(vec![]),
+            fail_questions: false,
+        };
+        let snapshot = Snapshot::refresh(&fake, registry, "executors").unwrap();
+        assert_eq!(snapshot.registered.len(), 1);
+        assert_eq!(snapshot.registered[0].entry.role, "UI");
+        assert!(
+            snapshot.unregistered.is_empty(),
+            "references must not reappear in the unregistered group"
+        );
+        assert_eq!(
+            *fake.calls.lock().unwrap(),
+            ["mcp:ui"],
+            "only executors get question queries"
+        );
+    }
+    for invalid in ["", "worker", "manager"] {
+        let error = Registry::parse(&typed.replace("| executor |", &format!("| {invalid} |")))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("ops/thread-ids.md:5")
+                && error.contains("Kind")
+                && error.contains("executor")
+                && error.contains("reference"),
+            "{error}"
+        );
+    }
+    // Existing free-form executor roles remain valid without a Kind column.
+    assert_eq!(Registry::parse(REGISTRY).unwrap().executors.len(), 2);
+}

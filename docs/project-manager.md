@@ -133,11 +133,40 @@ in an explicit unregistered group with ownership/question status not established
 A failed question read is unknown, never zero. PR actions accept HTTP(S) web
 URLs without embedded credentials.
 
-The existing serial manager poll refreshes this segment while it is selected;
-closing Project deactivates that poller. Metadata/registry errors retain the last
+The existing serial manager poll refreshes this segment while it is selected.
+**Refresh** also reloads the registry and executor status immediately through the
+current authenticated connection, without changing the Manager or starting sign-in.
+The separate **Reconnect** action in connection settings is named explicitly and
+has no refresh icon. Closing Project deactivates the poller. Metadata/registry errors retain the last
 executor projection and manager draft with an error. No area registry, manager
 binding, T3 resource or provider setting is written by this read-only slice.
 Runtime/live OAuth acceptance and ordinary human UI QA remain pending.
+
+Registry diagnostics name the actual file, physical line and role, including
+link-only IDs and a Manager that differs from the project binding. The Thread cell
+must begin with one inline ID in backticks, for example `mcp:<id>`; a descriptive
+Markdown link may follow it. The existing project-discovery diagnostic (#2068)
+and the executor-status parser both explain that repair.
+
+An optional **Kind** column distinguishes `executor` from `reference`. Manager may
+use `manager` or a blank Kind; every other row in a typed table must specify its
+Kind explicitly. References such as decision conversations do not establish
+executor ownership, query pending questions, or appear as unregistered executors.
+Without Kind, existing free-form executor roles remain compatible; the reserved
+roles `decision-thread`, `Decision thread` and `Decisions` identify references.
+Unknown Kind values fail with a file/line diagnostic instead of guessing. No
+existing registry is rewritten or migrated. Example:
+
+```markdown
+| Role | Thread | Kind |
+|---|---|---|
+| Manager | `mcp:manager` | manager |
+| Editing | `mcp:editing` | executor |
+| Architecture decisions | `mcp:decisions` | reference |
+```
+
+Scheduler model help uses plain language in Diagnostics only. Executor requests
+no longer repeat the internal scheduler/migration notice.
 
 ### Thread model controls (#1420, next production slice)
 
