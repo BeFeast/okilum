@@ -1079,7 +1079,7 @@ pub(crate) fn focused(reader: WeakEntity<super::Reader>, cx: &mut App) {
     cx.default_global::<LastReader>().0 = Some(reader);
 }
 
-fn opening_source(cx: &App) -> Option<WeakEntity<super::Reader>> {
+pub(crate) fn opening_source(cx: &App) -> Option<WeakEntity<super::Reader>> {
     let readers = readers(cx);
     readers
         .iter()

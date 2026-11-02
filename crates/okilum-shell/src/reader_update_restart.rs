@@ -15,8 +15,12 @@ pub(crate) enum Window {
 pub(crate) fn capture(cx: &App) -> Vec<Window> {
     let windows = cx.windows();
     let mut readers = reader_open::readers(cx);
-    // Keep the front window last, as ordinary session restoration does.
-    readers.sort_by_key(|reader| Some(reader.read(cx).reader_window) == cx.active_window());
+    // About/Settings may own focus when Restart is clicked. Keep the last
+    // focused document in front, as ordinary session restoration does.
+    let front = reader_open::opening_source(cx)
+        .and_then(|reader| reader.upgrade())
+        .map(|reader| reader.read(cx).reader_window);
+    readers.sort_by_key(|reader| Some(reader.read(cx).reader_window) == front);
     readers
         .iter()
         .filter_map(|reader| {
