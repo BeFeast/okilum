@@ -101,6 +101,9 @@ pub(super) fn check() {
                 &verifier,
             )?;
             *CHANNEL.lock().unwrap() = Some(chosen);
+            // Refresh About/Settings as soon as discovery finishes, even if
+            // the subsequent update feed request is slow or unavailable.
+            status::set(CheckStatus::Checking);
             let beta = chosen == Channel::Beta;
             match okilum_appimage::check(beta, current, &verifier)? {
                 Some(release) => {

@@ -29,6 +29,10 @@ if [ "${RUNNER_OS:-}" = macOS ]; then
     python3 scripts/updater/sparkle.py fetch "$RUNNER_TEMP/Sparkle.tar.xz"
     python3 scripts/updater/sparkle.py prepare --archive "$RUNNER_TEMP/Sparkle.tar.xz" --destination vendor/sparkle
 fi
+if [ "${RUNNER_OS:-Linux}" = Linux ]; then
+    # #2369: report the executed regressions even if a later desktop phase times out.
+    phase appimage-channel-tests cargo test --locked -p okilum-appimage --lib channel -- --test-threads=1
+fi
 phase build "$@"
 # Compile every workspace test target; fixture/API drift must block merge even
 # when its suite runs only during full overnight acceptance. Do not execute it.
@@ -37,7 +41,3 @@ phase workspace-test-check cargo check --locked --workspace --tests
 phase list-tests cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/fast-tests.txt"
 phase paste-tests cargo test --locked -p okilum-paste --lib -- --test-threads=1
-if [ "${RUNNER_OS:-Linux}" = Linux ]; then
-    # #2369: execute channel regressions in the required PR gate, not just check them.
-    phase appimage-channel-tests cargo test --locked -p okilum-appimage --lib channel -- --test-threads=1
-fi
