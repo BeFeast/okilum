@@ -913,6 +913,16 @@ impl Reader {
                 }
                 match event {
                     ClipboardPasteEvent::Applied { bytes, .. } => {
+                        if let Some(editing) = this
+                            .editing
+                            .as_ref()
+                            .filter(|editing| editing.input == input)
+                        {
+                            let stamp = input.read(cx).source_stamp();
+                            editing
+                                .table_grid
+                                .update(cx, |grid, cx| grid.claim_paste_edit(stamp, window, cx));
+                        }
                         eprintln!("Paste: inserted {bytes} bytes");
                         // A file too large to copy was linked where it is; say so.
                         let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());

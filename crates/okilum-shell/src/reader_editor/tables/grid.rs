@@ -117,6 +117,7 @@ pub(in crate::reader_editor) struct TableGrid {
     seen_document: gpui_component::Rope,
     formatted_stamp: Option<SourceStamp>,
     committed_grid_stamp: Option<SourceStamp>,
+    pending_silent: Option<(SourceStamp, gpui_component::Rope)>,
     error: Option<&'static str>,
     provider: Option<Arc<CachedProvider>>,
     base: Option<Arc<dyn ProjectionProvider>>,
@@ -150,6 +151,7 @@ impl TableGrid {
             seen_document: input.read(cx).text().clone(),
             formatted_stamp: None,
             committed_grid_stamp: None,
+            pending_silent: None,
             input,
             binding: None,
             cells: Vec::new(),
@@ -772,7 +774,22 @@ impl Render for TableGrid {
                 }),
             );
         root = root
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, window, cx| {
+                    // Capture the clicked cell before the popup takes focus. Its
+                    // action may dispatch while no native cell is focused.
+                    if let Some(selected) = this.cells.iter().enumerate().find_map(|(r, row)| {
+                        row.iter()
+                            .position(|cell| cell.read(cx).focus_handle(cx).is_focused(window))
+                            .map(|c| (r, c))
+                    }) {
+                        this.selected = selected;
+                    }
+                    this.source_history.boundary = true;
+                    cx.stop_propagation();
+                }),
+            )
             .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation());
         if self.binding.is_none() {
             return root;

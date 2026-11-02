@@ -55,6 +55,38 @@ fn table_range(text: &str, touched: Range<usize>) -> Option<Range<usize>> {
 }
 
 impl TableGrid {
+    /// Clipboard Applied follows the exact API's Silent source event. Claim
+    /// its preimage now, then defer past the Reader callback's entity borrow.
+    /// A later buffer revision invalidates this intent before it can arm.
+    pub(in crate::reader_editor) fn claim_paste_edit(
+        &mut self,
+        stamp: SourceStamp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, before)) = self
+            .pending_silent
+            .take()
+            .filter(|(pending, _)| *pending == stamp)
+        else {
+            return;
+        };
+        cx.defer_in(window, move |this, window, cx| {
+            if this.input.read(cx).source_stamp() != stamp {
+                return;
+            }
+            this.seen_document = before;
+            this.source_changed(
+                SourceMutation {
+                    stamp,
+                    reason: SourceMutationReason::Edit,
+                },
+                window,
+                cx,
+            );
+        });
+    }
+
     pub(super) fn source_changed(
         &mut self,
         event: SourceMutation,
@@ -62,6 +94,7 @@ impl TableGrid {
         cx: &mut Context<Self>,
     ) {
         self.idle = None;
+        self.pending_silent = None;
         // Several native transactions may publish before subscribers run.
         // Only the event for the current stamp advances the observed preimage.
         if self.input.read(cx).source_stamp() != event.stamp {
@@ -79,9 +112,13 @@ impl TableGrid {
         let before = std::mem::replace(&mut self.seen_document, text.clone());
         cx.notify();
         let owned_edit = self.committed_grid_stamp.take() == Some(event.stamp);
-        if self.formatted_stamp.take() == Some(event.stamp)
-            || (event.reason != SourceMutationReason::Edit && !owned_edit)
-        {
+        if self.formatted_stamp.take() == Some(event.stamp) {
+            return;
+        }
+        if event.reason != SourceMutationReason::Edit && !owned_edit {
+            if event.reason == SourceMutationReason::Silent {
+                self.pending_silent = Some((event.stamp, before));
+            }
             return;
         }
         let Some(reader) = self.reader.upgrade() else {
@@ -787,6 +824,67 @@ mod tests {
             value(&input, visual),
             preedit,
             "positive control: the committed candidate formats"
+        );
+    }
+
+    #[gpui::test]
+    fn exact_clipboard_paste_formats_once_and_undo_never_rearms_it(cx: &mut TestAppContext) {
+        use gpui_component::input::clipboard::{
+            ClipboardReadError, ClipboardReadRequest, ExactClipboardProvider,
+        };
+        struct Exact;
+        impl ExactClipboardProvider for Exact {
+            fn read_text_now(&self, _: &App) -> Option<Result<Option<String>, ClipboardReadError>> {
+                Some(Ok(Some("Привет😀".into())))
+            }
+            fn read_text(
+                &self,
+                _: ClipboardReadRequest,
+                _: &App,
+            ) -> Task<Result<Option<String>, ClipboardReadError>> {
+                Task::ready(Ok(Some("Привет😀".into())))
+            }
+        }
+        let (_reader, input, _grid, visual, _directory) = open(cx, false);
+        input.update_in(visual, |state, window, cx| {
+            state.set_exact_clipboard_provider(Some(Arc::new(Exact)), cx);
+            state.focus_handle(cx).focus(window, cx);
+            window.activate_window();
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("secondary-v");
+        visual.run_until_parked();
+        let pasted = SOURCE.replace("old", "Привет😀");
+        assert_eq!(
+            value(&input, visual),
+            pasted,
+            "positive control: exact paste was applied"
+        );
+        wait(visual, 800);
+        assert_ne!(
+            value(&input, visual),
+            pasted,
+            "the committed Silent paste arms formatting"
+        );
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        assert_eq!(
+            value(&input, visual),
+            pasted,
+            "one Undo removes only the format"
+        );
+        wait(visual, 900);
+        assert_eq!(
+            value(&input, visual),
+            pasted,
+            "an unclaimed Silent Undo never rearms"
+        );
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        assert_eq!(
+            value(&input, visual),
+            SOURCE,
+            "the paste keeps its original atomic Undo"
         );
     }
 }
