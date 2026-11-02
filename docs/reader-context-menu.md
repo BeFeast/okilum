@@ -20,9 +20,7 @@ heading links use a full Okilum address) and **Copy link text**; selection forma
 join that same popup when text is selected. Targets and copy payloads are captured
 for the press and accepted document generation.
 
-This is a partial implementation of #2025. Rich HTML selection, image address/Save as,
-and composition of selection groups with image/table menus remain follow-up slices. Existing image commands,
-table Markdown/TSV menus and the code-block Copy button are retained.
+This is a partial implementation of #2025. Table selection-group composition remains a follow-up slice. Existing table Markdown/TSV menus and the code-block Copy button are retained.
 
 ## Verification
 
@@ -62,3 +60,34 @@ plain text retained. No GPUI core patch or clipboard subprocess is introduced.
 Focused mock clipboard checks exercise the real Read and link menu actions,
 accepted-revision capture, plain/Markdown preservation, offer cancellation and
 writer refusal. These checks do not establish native desktop interoperability.
+
+## Image address and Save As
+
+The existing image popup offers **Copy image address** for the exact resolved
+file URL or HTTP(S) URL. It never fetches an image. Native Markdown Read also
+offers **Save image as…**, preserving the original bytes, metadata and animation
+rather than applying Copy image's PNG conversion. Selection formats join this
+same popup when a selection exists. Source/Live Preview keep their existing
+image actions plus address copy; Save As requires an accepted Read source.
+
+Save As captures the owning note, navigation generation, accepted canonical
+source and resolved image. A local file revision is captured before the picker
+and checked before/after reading and before publication. A changed accepted
+render, navigation or image discards the completion. Canceling the picker is a
+no-op: no byte read, temporary copy or HTTP request. Remote Save As downloads
+only after explicit destination selection, using the existing Copy image fetch
+policy (HTTP(S), 15 s, 50 MiB, five redirects, image response validation). It saves
+those response bytes, not a promise that a mutable server returned the same
+response previously displayed. Local saves are bounded at 64 MiB. Missing,
+ambiguous, outside-vault and unmaterialized iCloud images cannot be saved.
+
+Destination publication reserves the existing editor/recovery lock, stages and
+flushes bytes off the UI thread, then validates the source lease before atomic
+create-only publication. Existing files (including the original image, symlinks
+and concurrent creators) are never replaced, even if the OS picker confirmed
+Replace; choose a new filename instead. No source/draft/history is overwritten.
+Unix uses the existing descriptor-anchored exclusive publication primitive and
+folder sync; Windows uses the ordinary local-NTFS directory pins and native
+write-through no-replace rename. Platform restrictions/failures remain visible.
+A folder-sync failure reports that the copy may already exist; inspect it before
+retrying. No Save As action changes the note or its Undo history.
