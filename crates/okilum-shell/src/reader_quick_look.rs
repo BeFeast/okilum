@@ -3,6 +3,40 @@ use super::*;
 #[path = "reader_quick_look/media.rs"]
 mod media;
 
+// Pure cancellation authority; workers may finish a synchronous decoder call,
+// but lose permission to start another stage or publish after retirement.
+mod authority {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    #[derive(Clone)]
+    pub(super) struct Selection(std::path::PathBuf);
+    impl Selection {
+        pub(super) fn new(path: std::path::PathBuf) -> Self {
+            Self(path)
+        }
+        pub(super) fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    #[derive(Default)]
+    pub(super) struct Authority(Arc<AtomicBool>);
+    impl Authority {
+        pub(super) fn ticket(&self) -> Arc<AtomicBool> {
+            self.0.clone()
+        }
+        pub(super) fn permits(ticket: &AtomicBool) -> bool {
+            !ticket.load(Ordering::Acquire)
+        }
+    }
+    impl Drop for Authority {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+}
+
 enum MediaState {
     None,
     Loading,
@@ -12,6 +46,9 @@ enum MediaState {
 
 pub(super) struct Preview {
     rel: String,
+    selected: authority::Selection,
+    authority: authority::Authority,
+    pending: Option<Task<()>>,
     media: MediaState,
     text: Option<Entity<reader_plain_text::PlainTextPreview>>,
 }
@@ -42,33 +79,54 @@ impl Preview {
             })
         });
         let kind = media::kind(&rel);
-        if let Some(kind) = kind {
-            let task = cx
-                .background_executor()
-                .spawn(async move { load_media(&path, kind) });
-            cx.spawn(async move |this, cx| {
-                let result = task.await;
-                let _ = this.update(cx, |this, cx| {
-                    this.media = match result {
-                        Ok((image, notice)) => MediaState::Image(image, notice),
-                        Err(error) => {
-                            MediaState::Message(format!("Quick Look unavailable: {error:#}"))
-                        }
-                    };
-                    cx.notify();
-                });
-            })
-            .detach();
-        }
-        Self {
+
+        let mut this = Self {
             rel,
+            selected: authority::Selection::new(path),
+            authority: Default::default(),
+            pending: None,
             text,
             media: if kind.is_some() {
                 MediaState::Loading
             } else {
                 MediaState::None
             },
-        }
+        };
+        this.start_media(cx);
+        this
+    }
+
+    fn start_media(&mut self, cx: &mut Context<Self>) {
+        let Some(kind) = media::kind(&self.rel) else {
+            return;
+        };
+        // Replacing this authority retires any previous attempt before spawning.
+        self.authority = Default::default();
+        self.pending = None;
+        self.media = MediaState::Loading;
+        let ticket = self.authority.ticket();
+        let worker_ticket = ticket.clone();
+        let selected = self.selected.clone();
+        let task = cx
+            .background_executor()
+            .spawn(async move { load_media(selected.path(), kind, &worker_ticket) });
+        self.pending = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            if !authority::Authority::permits(&ticket) {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                if !authority::Authority::permits(&ticket) {
+                    return;
+                }
+                this.media = match result {
+                    Ok((image, notice)) => MediaState::Image(image, notice),
+                    Err(error) => MediaState::Message(format!("Quick Look unavailable: {error:#}")),
+                };
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 }
 
@@ -93,9 +151,22 @@ impl Render for Preview {
                     .child("Opening bounded preview…")
                     .into_any_element(),
             ),
-            MediaState::Message(message) => {
-                Some(div().px_6().child(message.clone()).into_any_element())
-            }
+            MediaState::Message(message) => Some(
+                v_flex()
+                    .px_6()
+                    .gap_3()
+                    .child(message.clone())
+                    .child(
+                        gpui_component::button::Button::new("quick-look-retry")
+                            .label("Retry preview")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if matches!(this.media, MediaState::Message(_)) {
+                                    this.start_media(cx);
+                                }
+                            })),
+                    )
+                    .into_any_element(),
+            ),
             MediaState::None => None,
         };
         v_flex()
@@ -124,7 +195,12 @@ impl Render for Preview {
 
 /// Decode only an in-memory bounded snapshot, never re-open a mutable path in
 /// the decoder. Each selection owns its result, including a late failure.
-fn load_media(path: &Path, kind: media::Kind) -> anyhow::Result<(Arc<RenderImage>, String)> {
+fn load_media(
+    path: &Path,
+    kind: media::Kind,
+    ticket: &std::sync::atomic::AtomicBool,
+) -> anyhow::Result<(Arc<RenderImage>, String)> {
+    anyhow::ensure!(authority::Authority::permits(ticket), "Preview retired");
     let limit = match kind {
         media::Kind::Image => media::IMAGE_BYTES,
         media::Kind::Pdf => media::PDF_BYTES,
@@ -136,6 +212,7 @@ fn load_media(path: &Path, kind: media::Kind) -> anyhow::Result<(Arc<RenderImage
         "File exceeds the Quick Look byte limit ({limit} bytes)"
     );
     let bytes = media::snapshot(file, limit)?;
+    anyhow::ensure!(authority::Authority::permits(ticket), "Preview retired");
     let (buffer, notice) = match kind {
         media::Kind::Image => {
             use image::ImageDecoder as _;
@@ -172,6 +249,7 @@ fn load_media(path: &Path, kind: media::Kind) -> anyhow::Result<(Arc<RenderImage
                         anyhow::anyhow!("This PDF could not be read")
                     }
                 })?;
+            anyhow::ensure!(authority::Authority::permits(ticket), "Preview retired");
             let bitmap = document
                 .renderer()
                 .render(0, 1024)
@@ -184,6 +262,7 @@ fn load_media(path: &Path, kind: media::Kind) -> anyhow::Result<(Arc<RenderImage
             )
         }
     };
+    anyhow::ensure!(authority::Authority::permits(ticket), "Preview retired");
     Ok((
         Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])),
         notice,
