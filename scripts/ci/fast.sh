@@ -37,3 +37,7 @@ phase workspace-test-check cargo check --locked --workspace --tests
 phase list-tests cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/fast-tests.txt"
 phase paste-tests cargo test --locked -p okilum-paste --lib -- --test-threads=1
+if [ "${RUNNER_OS:-Linux}" = Linux ]; then
+    # #2369: execute channel regressions in the required PR gate, not just check them.
+    phase appimage-channel-tests cargo test --locked -p okilum-appimage --lib channel -- --test-threads=1
+fi

@@ -205,7 +205,7 @@ pub(crate) fn channel() -> &'static str {
     };
     #[cfg(target_os = "linux")]
     if appimage::packaged() {
-        return if appimage::beta() { "Beta" } else { "Stable" };
+        return appimage::channel();
     }
     #[cfg(target_os = "linux")]
     return if env!("OKILUM_BUILD_VERSION") == "development" {

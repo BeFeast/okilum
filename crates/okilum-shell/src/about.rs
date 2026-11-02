@@ -26,6 +26,7 @@ pub(crate) fn show_about(window: &mut Window, cx: &mut App) {
 fn about_channel() -> String {
     match updater::channel() {
         channel @ ("Beta" | "Stable") => format!("{channel} channel"),
+        "Not determined" => "Update channel not determined".into(),
         // Linux: a package from an unidentified source says so below.
         _ if cfg!(target_os = "linux") => String::new(),
         other => other.into(),
