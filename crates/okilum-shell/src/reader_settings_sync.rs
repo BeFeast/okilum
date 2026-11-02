@@ -362,7 +362,7 @@ fn perform_scoped(
                 // Only the explicit consent action enters preparation. Keep the
                 // complete discovery inventory, not the selected config subset.
                 guard.check()?;
-                linux_runtime::prepare_managed(&state, &complete_configs)?;
+                linux_runtime::prepare_managed(&state, &complete_configs, || guard.check())?;
                 guard.check()?;
                 runtime = linux_runtime::inspect(&state, &complete_configs)?;
             }
