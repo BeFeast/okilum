@@ -291,6 +291,7 @@ mod origin_tests {
 #[cfg(target_os = "linux")]
 impl super::ProjectView {
     pub(super) fn draft_handoff_connection_changing(&mut self) {
+        self.revoke_rotation();
         self.draft_handoff_visibility(false);
     }
 

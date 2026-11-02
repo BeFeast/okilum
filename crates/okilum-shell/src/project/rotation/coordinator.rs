@@ -40,6 +40,10 @@ impl Drop for Coordinator {
     }
 }
 impl Coordinator {
+    pub(in crate::project) fn revocation_token(&self) -> Arc<AtomicBool> {
+        self.valid.clone()
+    }
+
     /// checkpoint was loaded by the owner off the UI thread. The native draft
     /// is captured here, not supplied by an asynchronous preview callback.
     pub fn mount(

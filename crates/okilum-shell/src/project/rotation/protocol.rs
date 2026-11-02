@@ -110,6 +110,7 @@ impl Execution {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
     use okilum_t3::{
         chat_drafts::Draft,
         rotation::{Policy, Slot},

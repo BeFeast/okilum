@@ -108,6 +108,10 @@ pub(crate) struct ProjectView {
     #[cfg(target_os = "linux")]
     rotation_epoch: u64,
     #[cfg(target_os = "linux")]
+    rotation_connection_epoch: Option<u64>,
+    #[cfg(target_os = "linux")]
+    rotation_validity: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(target_os = "linux")]
     rotation_resolver: Option<rotation::coordinator::OwnerResolver>,
     #[cfg(target_os = "linux")]
     rotation_expected_owner: Option<okilum_t3::rotation::Owner>,
@@ -437,6 +441,10 @@ impl ProjectView {
             #[cfg(target_os = "linux")]
             rotation_epoch: 0,
             #[cfg(target_os = "linux")]
+            rotation_connection_epoch: None,
+            #[cfg(target_os = "linux")]
+            rotation_validity: None,
+            #[cfg(target_os = "linux")]
             rotation_resolver: None,
             #[cfg(target_os = "linux")]
             rotation_expected_owner: None,
@@ -497,13 +505,28 @@ impl ProjectView {
     pub(super) fn invalidate_rotation(&mut self, cx: &mut Context<Self>) {
         // Revoke before dropping/hiding the retained surface, including while a
         // draft barrier or store read is outstanding. Durable claims stay intact.
-        if let Some(coordinator) = self.rotation.take() {
+        if let Some(coordinator) = &self.rotation {
             coordinator.update(cx, |coordinator, cx| coordinator.invalidate(cx));
         }
-        self.rotation_epoch = self
-            .rotation_epoch
-            .checked_add(1)
-            .expect("Rotation mount generation exhausted");
+        self.revoke_rotation();
+    }
+
+    /// Also callable from the existing synchronous handoff lifecycle hook,
+    /// before the next paint or an async draft/store completion can run.
+    #[cfg(target_os = "linux")]
+    pub(super) fn revoke_rotation(&mut self) {
+        let active = self.rotation_resolver.is_some() || self.rotation.is_some();
+        if let Some(valid) = self.rotation_validity.take() {
+            valid.store(false, std::sync::atomic::Ordering::Release);
+        }
+        self.rotation = None;
+        if active {
+            self.rotation_epoch = self
+                .rotation_epoch
+                .checked_add(1)
+                .expect("Rotation mount generation exhausted");
+        }
+        self.rotation_connection_epoch = None;
         self.rotation_resolver = None;
         self.rotation_expected_owner = None;
         self.rotation_notice = None;
@@ -516,7 +539,22 @@ impl ProjectView {
         if !view.active
             || view.section != ProjectSection::Manager
             || view.executors_open
+            || !view.draft_handoff_surface_is_visible()
+            || !view.draft_handoff_owner_ready(cx)
+            || view.typed_scope().is_none()
+            || view.native.deleted()
+            || view.rotation_connection_epoch != Some(view.native.connection_epoch)
             || !reader_features::enabled(reader_features::Feature::Agents, cx)
+        {
+            return None;
+        }
+        let client = view.native.model_client()?;
+        if !client.access_allowed()
+            || view
+                .threads
+                .handoff_revoked
+                .as_ref()
+                .is_some_and(|revoked| Arc::ptr_eq(revoked, &client))
         {
             return None;
         }
@@ -550,7 +588,9 @@ impl ProjectView {
     ) {
         self.invalidate_rotation(cx);
         self.rotation_resolver = Some(owner);
+        self.rotation_connection_epoch = Some(self.native.connection_epoch);
         let Some(expected_owner) = Self::rotation_owner(self, cx) else {
+            self.revoke_rotation();
             return;
         };
         self.rotation_expected_owner = Some(expected_owner.clone());
@@ -591,11 +631,18 @@ impl ProjectView {
                     Err(error) => Err(error),
                 };
                 project.update(cx, |view, cx| {
-                    if view.rotation_epoch != epoch {
+                    if view.rotation_epoch != epoch
+                        || Self::rotation_owner(view, cx).as_ref() != Some(&expected_owner)
+                    {
                         return;
                     }
                     match mounted {
-                        Ok(coordinator) => view.rotation = coordinator,
+                        Ok(coordinator) => {
+                            view.rotation_validity = coordinator
+                                .as_ref()
+                                .map(|coordinator| coordinator.read(cx).revocation_token());
+                            view.rotation = coordinator;
+                        }
                         Err(error) => view.rotation_notice = Some(error),
                     }
                     cx.notify();
@@ -861,12 +908,12 @@ impl ProjectView {
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(target_os = "linux")]
         if !active {
-            self.draft_suspend_typed(cx);
-            self.typed_invalidate(false, cx);
+            self.invalidate_rotation(cx);
         }
         #[cfg(target_os = "linux")]
         if !active {
-            self.invalidate_rotation(cx);
+            self.draft_suspend_typed(cx);
+            self.typed_invalidate(false, cx);
         }
         self.active = active;
         self.sync_resource_lifecycle(cx);

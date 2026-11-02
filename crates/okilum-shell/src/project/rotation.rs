@@ -76,6 +76,10 @@ pub(super) mod coordinator;
 #[path = "rotation/protocol.rs"]
 mod protocol;
 
+#[cfg(test)]
+#[path = "rotation/lifecycle_tests.rs"]
+mod lifecycle_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Action {
     Resume,
@@ -303,6 +307,7 @@ impl PendingReview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
     fn owner() -> Owner {
         Owner {
             origin: "fixture".into(),
@@ -410,6 +415,7 @@ pub(super) fn calendar_day(day: i64) -> String {
 #[cfg(test)]
 mod reconciliation_tests {
     use super::*;
+    use ::core::prelude::v1::test;
     use okilum_t3::rotation::{Policy, Recovery};
     struct Fixture {
         path: std::path::PathBuf,
