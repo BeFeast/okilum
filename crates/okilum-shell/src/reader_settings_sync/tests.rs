@@ -445,7 +445,7 @@ fn guided_worker(
     calls
 }
 
-fn assert_visible(visual: &mut VisualTestContext, selector: &str) {
+fn assert_visible(visual: &mut VisualTestContext, selector: &'static str) {
     let panel = visual
         .debug_bounds("sync-panel")
         .expect("Sync panel is rendered");

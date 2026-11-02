@@ -34,7 +34,7 @@ pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runti
         .context("Sync state parent unavailable")?
         .join("managed/prepared/syncthing/config.xml");
     if managed.try_exists()? && !configs.contains(&managed) {
-        configs.push(managed);
+        configs.push(managed.clone());
     }
     let inventory = daemon::discover(&configs);
     let saved = selection_path(state)?;
