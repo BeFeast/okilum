@@ -5,6 +5,9 @@ use gpui_component::input::{Input, InputState};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
 
 #[cfg(target_os = "linux")]
+pub(crate) use linux_runtime::managed_service_directory;
+
+#[cfg(target_os = "linux")]
 type DaemonIdentityForNetwork = okilum_sync_controller::daemon::DaemonIdentity;
 
 struct BackgroundSync(Entity<SyncSettings>);

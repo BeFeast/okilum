@@ -35,6 +35,7 @@ class FastScript(unittest.TestCase):
                 calls = commands.read_text().splitlines()
                 if platform == 'Linux':
                     self.assertEqual(calls.pop(0), 'test --locked -p okilum-appimage --lib channel -- --test-threads=1')
+                    self.assertEqual(calls.pop(1), 'test --offline --locked -p okilum-shell --bin okilum')
                 self.assertEqual(len(calls), 2 if check_status else 4)
                 self.assertEqual('--no-default-features' in calls[0], platform == 'Windows')
                 self.assertTrue(calls[0].startswith('build --locked -p okilum-shell -p okilum-sync-supervisor'))

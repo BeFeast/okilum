@@ -38,28 +38,31 @@ impl Render for Host {
                     return;
                 }
                 let project = project.clone();
-                // Runs after the real button click but before its deferred
-                // dispatch, reproducing an intervening conversation switch.
+                // Button callbacks are themselves deferred. Queue the switch
+                // one turn later so the real click first passes its rendered
+                // approval lease, then changes scope before parent dispatch.
                 window.defer(cx, move |window, cx| {
-                    project.update(cx, |view, cx| {
-                        view.chat = Some(Conversation::new("replacement"));
-                        view.binding.as_mut().unwrap().manager.thread_id =
-                            Some("replacement".into());
-                        view.sync_native_action_surface(cx);
-                        let mut next = request("same", "approval_request");
-                        next.item["threadId"] = json!("replacement");
-                        view.native.actions.update(cx, |actions, cx| {
-                            actions.set_state(
-                                State {
-                                    ready: true,
-                                    requests: vec![next],
-                                    ..Default::default()
-                                },
-                                window,
-                                cx,
-                            );
+                    window.defer(cx, move |window, cx| {
+                        project.update(cx, |view, cx| {
+                            view.chat = Some(Conversation::new("replacement"));
+                            view.binding.as_mut().unwrap().manager.thread_id =
+                                Some("replacement".into());
+                            view.sync_native_action_surface(cx);
+                            let mut next = request("same", "approval_request");
+                            next.item["threadId"] = json!("replacement");
+                            view.native.actions.update(cx, |actions, cx| {
+                                actions.set_state(
+                                    State {
+                                        ready: true,
+                                        requests: vec![next],
+                                        ..Default::default()
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            });
+                            cx.notify();
                         });
-                        cx.notify();
                     });
                 });
             })
@@ -435,6 +438,9 @@ fn forbidden_custom_is_not_rendered_or_sent_and_message_choices_keep_exact_value
     input(&view, visual, "closed").update_in(visual, |input, window, cx| {
         input.set_value("must not leak", window, cx)
     });
+    // #2193: observing an answer edit revokes the old rendered control lease.
+    // Let the new button render before exercising its real click.
+    visual.run_until_parked();
     assert_eq!(
         answers(&view, visual, "closed")["q"],
         json!("[\" exact \",\"β\"]")
