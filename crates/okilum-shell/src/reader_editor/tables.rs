@@ -211,6 +211,12 @@ impl Reader {
             input.update(cx, |state, cx| state.set_selected_range(edit.selection, cx));
             cx.stop_propagation();
         } else if self.apply_list_edit(&input, edit, window, cx) {
+            let stamp = input.read(cx).source_stamp();
+            if let Some(editing) = &self.editing {
+                editing
+                    .table_grid
+                    .update(cx, |grid, _| grid.mark_source_edit(stamp));
+            }
             cx.stop_propagation();
         }
     }

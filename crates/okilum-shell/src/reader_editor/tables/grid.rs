@@ -116,6 +116,7 @@ pub(in crate::reader_editor) struct TableGrid {
     idle: Option<Task<()>>,
     seen_document: gpui_component::Rope,
     formatted_stamp: Option<SourceStamp>,
+    committed_grid_stamp: Option<SourceStamp>,
     error: Option<&'static str>,
     provider: Option<Arc<CachedProvider>>,
     base: Option<Arc<dyn ProjectionProvider>>,
@@ -148,6 +149,7 @@ impl TableGrid {
             idle: None,
             seen_document: input.read(cx).text().clone(),
             formatted_stamp: None,
+            committed_grid_stamp: None,
             input,
             binding: None,
             cells: Vec::new(),
@@ -163,6 +165,12 @@ impl TableGrid {
             #[cfg(test)]
             history_dispatches: 0,
         }
+    }
+
+    /// Exact source APIs intentionally emit Silent mutations, just like Undo.
+    /// Attribute an accepted table edit before its deferred source event runs.
+    pub(super) fn mark_source_edit(&mut self, stamp: SourceStamp) {
+        self.committed_grid_stamp = Some(stamp);
     }
 
     /// Open only an exact currently classified top-level table. The caller may
@@ -549,6 +557,7 @@ impl TableGrid {
             let state = self.input.read(cx);
             self.source_history
                 .record(before, state.source_stamp(), typing_cell);
+            self.committed_grid_stamp = Some(state.source_stamp());
             self.binding = Some(Binding {
                 stamp: state.source_stamp(),
                 document: state.value().to_string(),
@@ -762,6 +771,9 @@ impl Render for TableGrid {
                     cx.stop_propagation();
                 }),
             );
+        root = root
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation());
         if self.binding.is_none() {
             return root;
         }

@@ -78,8 +78,9 @@ impl TableGrid {
         let text = self.input.read(cx).text().clone();
         let before = std::mem::replace(&mut self.seen_document, text.clone());
         cx.notify();
+        let owned_edit = self.committed_grid_stamp.take() == Some(event.stamp);
         if self.formatted_stamp.take() == Some(event.stamp)
-            || event.reason != SourceMutationReason::Edit
+            || (event.reason != SourceMutationReason::Edit && !owned_edit)
         {
             return;
         }
@@ -334,7 +335,15 @@ mod tests {
             SOURCE,
             "opening or focusing never formats untouched source"
         );
-        visual.simulate_input("Привет😀");
+        if grid_mode {
+            visual.simulate_input("Привет😀");
+        } else {
+            // One committed replacement supplies one prior source Undo entry;
+            // the grid path above exercises grouping across real keystrokes.
+            input.update_in(visual, |state, window, cx| {
+                state.replace_text_in_range(None, "Привет😀", window, cx);
+            });
+        }
         visual.run_until_parked();
         let typed = SOURCE.replace("old", "Привет😀");
         assert_eq!(
@@ -362,6 +371,10 @@ mod tests {
             "display-width delimiter: {formatted}"
         );
         if let Some(cell) = cell {
+            assert!(
+                visual.debug_bounds("editable-table-grid").is_some(),
+                "formatting keeps the editable grid painted"
+            );
             assert_eq!(
                 grid.read_with(visual, |grid, _| grid.cells[1][0].clone()),
                 cell
@@ -649,6 +662,10 @@ mod tests {
             visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
             visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
             visual.run_until_parked();
+            assert!(
+                visual.debug_bounds("editable-table-grid").is_some(),
+                "right-click keeps the cell editor mounted"
+            );
             visual.simulate_keystrokes("up");
             visual.run_until_parked();
             visual.simulate_keystrokes("right");
@@ -660,6 +677,22 @@ mod tests {
             visual.simulate_keystrokes("enter");
             visual.run_until_parked();
             let changed = value(&input, visual);
+            match index {
+                1 => assert_eq!(changed.lines().count(), SOURCE.lines().count() + 1),
+                2 => {
+                    assert_eq!(changed.lines().count(), SOURCE.lines().count() - 1);
+                    assert!(!changed.contains("old"));
+                }
+                3 => assert!(changed.contains("| Имя | | 值 |")),
+                4 => {
+                    assert!(!changed.contains("Имя"));
+                    assert!(changed.contains("😀") && changed.contains("東京"));
+                }
+                6 => assert!(changed.contains("|:--:|--:|")),
+                7 => assert!(changed.contains("|--:|--:|")),
+                8 => assert!(changed.contains("| :--- | ---: |")),
+                _ => {}
+            }
             // Left alignment is already authored in SOURCE, so it is a no-op.
             if index != 5 {
                 assert_ne!(
@@ -701,6 +734,10 @@ mod tests {
             "positive control: previous edited table formats after focus moved"
         );
         assert!(formatted.ends_with(&SOURCE[SOURCE.find("\n\nUntouched").unwrap()..]));
+        assert!(
+            visual.debug_bounds("editable-table-grid").is_some(),
+            "the relocated grid remains painted"
+        );
         assert_eq!(
             grid.read_with(visual, |grid, _| grid.cells[1][1].clone()),
             cell
