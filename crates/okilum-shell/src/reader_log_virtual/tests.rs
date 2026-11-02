@@ -631,6 +631,7 @@ fn membership_follow_keeps_view_record_selection_marks_and_rejects_stale_or_stop
     let update = session
         .refresh(&plan, &changes, &std::sync::atomic::AtomicBool::new(false))
         .unwrap();
+    let pending_sources = update.sources.clone();
     panel.update(visual, |panel, cx| {
         panel.receive(
             0,
@@ -658,5 +659,16 @@ fn membership_follow_keeps_view_record_selection_marks_and_rejects_stale_or_stop
     panel.read_with(visual, |panel, cx| {
         assert_eq!(panel.view.as_ref().unwrap().entity_id(), identity);
         assert_eq!(panel.view.as_ref().unwrap().read(cx).total(), 4);
+    });
+    panel.update(visual, |panel, cx| {
+        panel.pending_follow = Some(pending_sources);
+        panel.following = false;
+        panel.watch = false; // Snapshot fixture: no real watcher is installed.
+        panel.start(cx);
+        assert!(
+            panel.pending_follow.is_none() && panel.pending.is_none(),
+            "new Start fences previous unpainted batches"
+        );
+        panel.stop(cx);
     });
 }

@@ -344,6 +344,10 @@ impl Panel {
                 return;
             }
         };
+        // A prior successful batch may be queued for paint when a new run
+        // starts. It cannot be applied over the new generation's initial result.
+        self.pending = None;
+        self.pending_follow = None;
         self.run_name = definition.name.clone();
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
