@@ -445,7 +445,7 @@ mod tests {
             (index, reader.draft_outline.lines[index] as u32)
         });
         let row = visual
-            .debug_bounds(format!("reader-outline-row-{index}"))
+            .debug_bounds(&format!("reader-outline-row-{index}"))
             .expect("current draft heading row is painted");
         visual.simulate_click(row.center(), Modifiers::default());
         settle(visual);
