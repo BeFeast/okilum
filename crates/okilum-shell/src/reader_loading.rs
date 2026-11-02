@@ -1600,6 +1600,7 @@ impl Reader {
         }
         self.watcher = None;
         self.quick_folders.clear();
+        self.quick_folder_refreshes.clear();
         self.watcher_poll_active = false;
         self.watcher_generation = self.watcher_generation.wrapping_add(1);
         self.deferred_vault_changes = Default::default();
@@ -7285,9 +7286,18 @@ fn quick_folder(
     cancel: &Cancellation,
 ) -> Result<Vault> {
     use okilum_core::vault::{EntryKind, VaultEntry};
-    let directory = root.join(folder).canonicalize()?;
-    if !directory.starts_with(root) {
-        bail!("Folder is outside the quick viewer root");
+    anyhow::ensure!(
+        Path::new(folder)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_))),
+        "Invalid quick viewer folder path"
+    );
+    let canonical_root = root.canonicalize()?;
+    let root = canonical_root.as_path();
+    let requested = root.join(folder);
+    let directory = requested.canonicalize()?;
+    if directory != requested || !directory.starts_with(root) {
+        bail!("Folder is outside the quick viewer root or redirects through a symlink");
     }
     let mut entries: Vec<_> = previous
         .iter()
@@ -7354,6 +7364,45 @@ fn quick_vault(root: &Path, mut entries: Vec<okilum_core::vault::VaultEntry>) ->
     vault
 }
 
+/// A shallow listing may finish after a newer refresh or after its parent was
+/// removed. Keep per-folder request identity as well as the Reader lifecycle.
+struct QuickFolderRefresh {
+    root: PathBuf,
+    folder: String,
+    loading: Option<u64>,
+    watcher: u64,
+    identity: Arc<()>,
+}
+
+impl QuickFolderRefresh {
+    fn begin(reader: &mut Reader, folder: String) -> Self {
+        let identity = Arc::new(());
+        reader.quick_folders.insert(folder.clone());
+        reader
+            .quick_folder_refreshes
+            .insert(folder.clone(), identity.clone());
+        Self {
+            root: reader.vault_root.clone(),
+            folder,
+            loading: reader.loading.as_ref().map(|load| load.generation),
+            watcher: reader.watcher_generation,
+            identity,
+        }
+    }
+
+    fn is_current(&self, reader: &Reader) -> bool {
+        reader.single_file
+            && reader.vault_root == self.root
+            && reader.loading.as_ref().map(|load| load.generation) == self.loading
+            && reader.watcher_generation == self.watcher
+            && reader.quick_folders.contains(&self.folder)
+            && reader
+                .quick_folder_refreshes
+                .get(&self.folder)
+                .is_some_and(|identity| Arc::ptr_eq(identity, &self.identity))
+    }
+}
+
 impl Reader {
     fn refresh_quick_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refresh_single_folder_document(window, cx);
@@ -7366,6 +7415,8 @@ impl Reader {
                     entry.path == *folder && entry.kind == okilum_core::vault::EntryKind::Directory
                 })
         });
+        self.quick_folder_refreshes
+            .retain(|folder, _| self.quick_folders.contains(folder));
         self.vault = Arc::new(vault);
         self.quick_open.inventory = Some(Arc::new(okilum_core::quick_open::inventory(
             self.vault.notes.clone(),
@@ -7477,71 +7528,74 @@ impl Reader {
     }
 
     pub(crate) fn load_quick_folder(&mut self, folder: String, cx: &mut Context<Self>) {
-        self.quick_folders.insert(folder.clone());
-        let root = self.vault_root.clone();
-        let generation = self.loading.as_ref().map(|l| l.generation);
+        let refresh = QuickFolderRefresh::begin(self, folder);
+        let root = refresh.root.clone();
+        let folder = refresh.folder.clone();
         cx.spawn(async move |this, cx| {
-            let expected_root = root.clone();
-            let expected_folder = folder.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move { quick_folder(&root, &folder, &[], &Cancellation::default()) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if !this.single_file
-                    || this.vault_root != expected_root
-                    || this.loading.as_ref().map(|l| l.generation) != generation
-                {
-                    return;
-                }
-                match result {
-                    Ok(vault) => {
-                        let mut entries: Vec<_> = this
-                            .vault
-                            .entries
-                            .iter()
-                            .filter(|entry| {
-                                Path::new(&entry.path).parent() != Some(Path::new(&expected_folder))
-                            })
-                            .cloned()
-                            .collect();
-                        entries.extend(vault.entries);
-                        // A removed parent must also discard already-browsed descendants.
-                        let directories: std::collections::BTreeSet<_> = entries
-                            .iter()
-                            .filter(|entry| entry.kind == okilum_core::vault::EntryKind::Directory)
-                            .map(|entry| Path::new(&entry.path).to_owned())
-                            .collect();
-                        entries.retain(|entry| {
-                            Path::new(&entry.path)
-                                .ancestors()
-                                .skip(1)
-                                .take_while(|parent| !parent.as_os_str().is_empty())
-                                .all(|parent| directories.contains(parent))
-                        });
-                        let mut updated = quick_vault(&expected_root, entries);
-                        updated.unreadable = this
-                            .vault
-                            .unreadable
-                            .iter()
-                            .filter(|warning| {
-                                warning.path.parent()
-                                    != Some(expected_root.join(&expected_folder).as_path())
-                            })
-                            .cloned()
-                            .collect();
-                        updated.unreadable.extend(vault.unreadable);
-                        updated.inventory_complete = updated.unreadable.is_empty();
-                        this.publish_quick_folder(updated, cx);
-                    }
-                    Err(error) => {
-                        this.link_notice = Some(format!("Cannot list folder: {error:#}").into());
-                        cx.notify();
-                    }
-                }
+                this.publish_quick_folder_refresh(refresh, result, cx);
             });
         })
         .detach();
+    }
+
+    fn publish_quick_folder_refresh(
+        &mut self,
+        refresh: QuickFolderRefresh,
+        result: Result<Vault>,
+        cx: &mut Context<Self>,
+    ) {
+        if !refresh.is_current(self) {
+            return;
+        }
+        match result {
+            Ok(vault) => {
+                let mut entries: Vec<_> = self
+                    .vault
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        Path::new(&entry.path).parent() != Some(Path::new(&refresh.folder))
+                    })
+                    .cloned()
+                    .collect();
+                entries.extend(vault.entries);
+                // A removed parent must also discard already-browsed descendants.
+                let directories: std::collections::BTreeSet<_> = entries
+                    .iter()
+                    .filter(|entry| entry.kind == okilum_core::vault::EntryKind::Directory)
+                    .map(|entry| Path::new(&entry.path).to_owned())
+                    .collect();
+                entries.retain(|entry| {
+                    Path::new(&entry.path)
+                        .ancestors()
+                        .skip(1)
+                        .take_while(|parent| !parent.as_os_str().is_empty())
+                        .all(|parent| directories.contains(parent))
+                });
+                let mut updated = quick_vault(&refresh.root, entries);
+                updated.unreadable = self
+                    .vault
+                    .unreadable
+                    .iter()
+                    .filter(|warning| {
+                        warning.path.parent() != Some(refresh.root.join(&refresh.folder).as_path())
+                    })
+                    .cloned()
+                    .collect();
+                updated.unreadable.extend(vault.unreadable);
+                updated.inventory_complete = updated.unreadable.is_empty();
+                self.publish_quick_folder(updated, cx);
+            }
+            Err(error) => {
+                self.link_notice = Some(format!("Cannot list folder: {error:#}").into());
+                cx.notify();
+            }
+        }
     }
 }
 
@@ -7549,6 +7603,122 @@ impl Reader {
 mod quick_view_tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    fn folder_reader<'a>(
+        cx: &'a mut TestAppContext,
+        fixture: &Path,
+    ) -> (Entity<Reader>, &'a mut VisualTestContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(fixture.join("notes")),
+                        session_directory: Some(fixture.join("state")),
+                        panel_settings_override: Some(fixture.join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        visual.run_until_parked();
+        (reader.unwrap(), visual)
+    }
+
+    fn listing(root: &Path, folder: &str) -> Result<Vault> {
+        quick_folder(root, folder, &[], &Cancellation::default())
+    }
+
+    #[gpui::test]
+    fn quick_folder_newer_listing_wins_over_old_results_and_errors(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("notes");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("old.md"), "# Old").unwrap();
+        let (reader, visual) = folder_reader(cx, fixture.path());
+        reader.update_in(visual, |r, _, cx| {
+            assert!(r.single_file && r.searcher.is_none() && r.index_dir.is_none());
+            let old = QuickFolderRefresh::begin(r, String::new());
+            let old_listing = listing(&r.vault_root, "");
+            let failed = QuickFolderRefresh::begin(r, String::new());
+            std::fs::rename(root.join("old.md"), root.join("new.md")).unwrap();
+            let newest = QuickFolderRefresh::begin(r, String::new());
+            let newest_listing = listing(&r.vault_root, "");
+            r.publish_quick_folder_refresh(newest, newest_listing, cx);
+            assert!(r.vault.entries.iter().any(|e| e.path == "new.md"));
+            r.publish_quick_folder_refresh(old, old_listing, cx);
+            r.publish_quick_folder_refresh(failed, Err(anyhow::anyhow!("obsolete error")), cx);
+            assert!(r.vault.entries.iter().any(|e| e.path == "new.md"));
+            assert!(!r.vault.entries.iter().any(|e| e.path == "old.md"));
+            assert!(!r
+                .link_notice
+                .as_deref()
+                .is_some_and(|s| s.contains("obsolete error")));
+            // Watcher replacement invalidates an otherwise newest listing too.
+            let obsolete_watch = QuickFolderRefresh::begin(r, String::new());
+            r.watcher_generation = r.watcher_generation.wrapping_add(1);
+            r.publish_quick_folder_refresh(
+                obsolete_watch,
+                Ok(quick_vault(&r.vault_root, vec![])),
+                cx,
+            );
+            assert!(r.vault.entries.iter().any(|e| e.path == "new.md"));
+        });
+    }
+
+    #[gpui::test]
+    fn quick_folder_removed_parent_invalidates_old_descendant_listing(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("notes");
+        std::fs::create_dir_all(root.join("child/nested")).unwrap();
+        std::fs::write(root.join("child/nested/old.md"), "# Old").unwrap();
+        let (reader, visual) = folder_reader(cx, fixture.path());
+        reader.update_in(visual, |r, _, cx| {
+            let child = QuickFolderRefresh::begin(r, "child".into());
+            r.publish_quick_folder_refresh(child, listing(&r.vault_root, "child"), cx);
+            let stale = QuickFolderRefresh::begin(r, "child/nested".into());
+            let stale_listing = listing(&r.vault_root, "child/nested");
+            std::fs::remove_dir_all(root.join("child")).unwrap();
+            let removed = QuickFolderRefresh::begin(r, String::new());
+            r.publish_quick_folder_refresh(removed, listing(&r.vault_root, ""), cx);
+            assert!(!r.quick_folders.contains("child/nested"));
+            // Recreating the same paths must not revive the previous request.
+            std::fs::create_dir_all(root.join("child/nested")).unwrap();
+            let restored = QuickFolderRefresh::begin(r, String::new());
+            r.publish_quick_folder_refresh(restored, listing(&r.vault_root, ""), cx);
+            let child = QuickFolderRefresh::begin(r, "child".into());
+            r.publish_quick_folder_refresh(child, listing(&r.vault_root, "child"), cx);
+            let nested = QuickFolderRefresh::begin(r, "child/nested".into());
+            r.publish_quick_folder_refresh(nested, listing(&r.vault_root, "child/nested"), cx);
+            r.publish_quick_folder_refresh(stale, stale_listing, cx);
+            assert!(r.vault.entries.iter().any(|e| e.path == "child/nested"));
+            assert!(!r.vault.entries.iter().any(|e| e.path.ends_with("old.md")));
+        });
+    }
+
+    #[test]
+    fn quick_folder_rejects_traversal_and_redirected_directories() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("notes");
+        std::fs::create_dir_all(root.join("child")).unwrap();
+        std::fs::write(root.join("child/inside.md"), "# Inside").unwrap();
+        assert_eq!(listing(&root, "child").unwrap().notes.len(), 1);
+        assert!(listing(&root, "child/..").is_err());
+        assert!(listing(&root, root.to_str().unwrap()).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("child"), root.join("redirect")).unwrap();
+            assert!(listing(&root, "redirect").is_err());
+        }
+    }
 
     #[test]
     fn quick_first_has_no_cache_and_siblings_are_shallow() {
