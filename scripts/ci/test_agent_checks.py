@@ -65,7 +65,7 @@ class VerdictTests(unittest.TestCase):
     def test_worker_lane_has_no_secrets_or_publication(self):
         workflow = (ROOT / ".github/workflows/agent-checks.yml").read_text()
         self.assertNotIn("secrets.", workflow)
-        self.assertIn("branches: ['agent-checks/**']", workflow)
+        self.assertIn("branches: ['agent-checks/**', 'agent-checks-benchmark/**']", workflow)
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("contents: read", workflow)
         self.assertIn("cancel-in-progress: true", workflow)
