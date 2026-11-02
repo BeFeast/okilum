@@ -10,7 +10,8 @@ suite() {
     "$@" || failed=1
 }
 suite cargo test -p okilum-appimage --all-features --no-fail-fast
-suite cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-fail-fast
+# Preserve assertion diagnostics even if a later native task aborts the process.
+suite cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-fail-fast -- --nocapture
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.
 suite cargo test --locked -p okilum-core --lib unix_publish:: --no-fail-fast
 suite cargo test --locked -p okilum-core --lib file_editor::network_save_tests:: --no-fail-fast
