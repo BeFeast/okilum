@@ -243,6 +243,77 @@ mod acceptance_tests {
         source_projection::Snapshot,
     };
     #[test]
+    fn marker_proofs_reuse_unchanged_bytes_but_reject_changed_protected_source() {
+        use crate::source_projection::{
+            project_reusing, Active, FallbackReason, Plan, Region, MAX_WORK,
+        };
+        let text = Text::from_rope(Rope::from_str("a*b*c"));
+        let original = Snapshot::from_rope("marker-proof", 1, text.clone(), None);
+        let plan = |snapshot: &Snapshot, marker: Range<usize>| {
+            Plan::new(
+                snapshot,
+                vec![Region::Conceal {
+                    block: 0..snapshot.text().len(),
+                    markers: vec![marker],
+                }],
+            )
+        };
+        let first = project_reusing(
+            &original,
+            &plan(&original, 1..2),
+            &Active::default(),
+            MAX_WORK,
+            None,
+        )
+        .unwrap();
+        for replacement in ["\n", "\r", "\u{feff}"] {
+            let changed = text.replace(1..2, replacement);
+            let snapshot = Snapshot::from_rope(
+                "marker-proof",
+                2,
+                changed,
+                Some(Edit {
+                    previous: text.id(),
+                    old: 1..2,
+                    inserted: replacement.len(),
+                }),
+            );
+            let result = project_reusing(
+                &snapshot,
+                &plan(&snapshot, 1..1 + replacement.len()),
+                &Active::default(),
+                MAX_WORK,
+                Some(&first),
+            );
+            assert_eq!(result.unwrap_err().reason, FallbackReason::ProtectedSource);
+        }
+        let changed = text.replace(4..5, "q");
+        let snapshot = Snapshot::from_rope(
+            "marker-proof",
+            2,
+            changed,
+            Some(Edit {
+                previous: text.id(),
+                old: 4..5,
+                inserted: 1,
+            }),
+        );
+        reset_work();
+        let next = project_reusing(
+            &snapshot,
+            &plan(&snapshot, 1..2),
+            &Active::default(),
+            MAX_WORK,
+            Some(&first),
+        )
+        .unwrap();
+        let work = take_work();
+        assert_eq!(next.display(), "ab*q");
+        assert_eq!(work.flattened_bytes, 0);
+        assert_eq!(work.display_builds, 0);
+    }
+
+    #[test]
     fn issue2403_single_logical_line_reports_line_proportional_work() {
         for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
             let text = Text::from_rope(Rope::from_str(&"a".repeat(bytes)));

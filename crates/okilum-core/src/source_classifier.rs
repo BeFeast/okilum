@@ -415,15 +415,7 @@ fn classify_parsed_reusing<'a>(
                     .filter(|r| r.start <= marker.start && r.end >= marker.end)
                     .min_by_key(|r| r.len())
                     .cloned()
-                    .unwrap_or_else(|| {
-                        // Heading marker reveal scopes are prepared with the
-                        // canonical worker inventory, never rescanned in compose.
-                        if matches!(value, NodeValue::Heading(h) if !h.setext) {
-                            block.clone()
-                        } else {
-                            marker.clone()
-                        }
-                    });
+                    .unwrap_or_else(|| marker.clone());
                 (marker.clone(), scope)
             }));
             links.extend(candidate.links);

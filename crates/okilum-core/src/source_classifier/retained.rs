@@ -181,6 +181,37 @@ impl RetainedPresentation {
             projection: self.base.clone()?,
         };
 
+        // Canonical plan bounds already include the closing heading marker.
+        // Reuse that inventory and Rope line coordinates; do not read every
+        // unchanged heading's source suffix on each key.
+        let headings: Vec<_> = self
+            .styles
+            .iter()
+            .filter(|s| matches!(s.style, Style::Heading(_)))
+            .map(|s| s.range.clone())
+            .collect();
+        let heading_scope = |marker: &Range<usize>| {
+            let index = headings
+                .binary_search_by_key(&marker.end, |h| h.start)
+                .or_else(|_| headings.binary_search_by_key(&marker.start, |h| h.end))
+                .ok()?;
+            let h = &headings[index];
+            let text = self.snapshot.text();
+            let start = text.line_bounds(h.start).start;
+            let mut end = text.line_bounds(h.end).end;
+            if end > 0 && text.byte(end - 1) == Some(b'\n') {
+                end -= 1;
+            }
+            if end > 0 && text.byte(end - 1) == Some(b'\r') {
+                end -= 1;
+            }
+            let region = self
+                .plan
+                .regions()
+                .iter()
+                .find(|r| r.block().start <= h.start && h.end <= r.block().end)?;
+            Some(start.min(marker.start)..end.min(region.block().end).max(marker.end))
+        };
         let regions = self
             .plan
             .regions()
@@ -192,14 +223,15 @@ impl RetainedPresentation {
                     markers: markers
                         .iter()
                         .filter(|marker| {
-                            let scope = self
-                                .marker_scopes
-                                .binary_search_by_key(&marker.start, |(m, _)| m.start)
-                                .ok()
-                                .map_or_else(
-                                    || (*marker).clone(),
-                                    |i| self.marker_scopes[i].1.clone(),
-                                );
+                            let scope = heading_scope(marker).unwrap_or_else(|| {
+                                self.marker_scopes
+                                    .binary_search_by_key(&marker.start, |(m, _)| m.start)
+                                    .ok()
+                                    .map_or_else(
+                                        || (*marker).clone(),
+                                        |i| self.marker_scopes[i].1.clone(),
+                                    )
+                            });
                             let touched = reveal.touches(&scope);
                             !touched
                         })
