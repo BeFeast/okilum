@@ -20,7 +20,7 @@ heading links use a full Okilum address) and **Copy link text**; selection forma
 join that same popup when text is selected. Targets and copy payloads are captured
 for the press and accepted document generation.
 
-This is a partial implementation of #2025. Table selection-group composition remains a follow-up slice. Existing table Markdown/TSV menus and the code-block Copy button are retained.
+Read selection copy formats now also join the existing table popup, after its unchanged Copy table as Markdown/TSV commands. Both groups retain their own accepted snapshots; a selected multi-block document is not replaced by the clicked table. Live Preview/editor TableGrid routing and the code-block Copy button remain unchanged.
 
 ## Verification
 
