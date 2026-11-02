@@ -504,6 +504,9 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
     db["transfers"][0]["phase"] = json!("bidirectional");
     db["transfers"][0]["witness"] = before.clone();
     db["attached"][0]["label"] = json!(old_label);
+    // Another computer's selected catalog must stay selected during migration.
+    db["catalog_peer"] = json!(uuid::Uuid::new_v4());
+    db["catalog"] = json!([{"id":"other-vault","label":"Other selected catalog"}]);
     fs::write(&file, serde_json::to_vec(&db)?)?;
     fs::write(
         pair.target.vault.join("local-sentinel.md"),
@@ -522,6 +525,7 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
         "migration changed more than label"
     );
     assert_eq!(migrated.attached[0].label, *label);
+    assert_eq!(migrated.catalog[0].label, "Other selected catalog");
     assert_eq!(
         fs::read_to_string(pair.target.vault.join("local-sentinel.md"))?,
         "preserved local bytes"

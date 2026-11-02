@@ -100,9 +100,12 @@ become a selected client. Supporting external v2.1.7 does not replace the packag
 runtime, its provenance, installation gates or native evidence.
 
 The empty-folder path starts **receiveonly**, keeps staggered versioning at 30
-days and retains conflict copies on that new local folder. A durable UUID label,
+days and retains conflict copies on that new local folder. A durable ownership
+UUID, initial paused-folder UUID label,
 exact expanded configuration witness, canonical path and directory device/inode
-bind ownership. Only that new owned folder may become **sendreceive** after the
+bind ownership. The display label can then change through the witnessed name
+intent described below. Only that new owned folder may become **sendreceive** after
+the
 guarded direct-peer readiness interval. Two fresh authenticated source observations
 surround local scans; source generation/start time/configuration and counters must
 remain stable, the initial remote sequence must be received, and both sides must

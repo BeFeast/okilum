@@ -767,7 +767,27 @@ impl Controller {
             let label = match cached {
                 Some(label) => label,
                 None => {
-                    self.catalog(transfer.peer)?
+                    let paired = self
+                        .shared
+                        .db
+                        .lock()
+                        .unwrap()
+                        .peers
+                        .get(&transfer.peer)
+                        .cloned()
+                        .context("unknown paired computer")?;
+                    // Background migration must not replace the catalog selected in Settings.
+                    let Reply::Catalog { catalog } = self.call(
+                        paired.endpoint,
+                        transfer.peer,
+                        &paired.key,
+                        &paired.public,
+                        Operation::Catalog {},
+                    )?
+                    else {
+                        anyhow::bail!("authorized receiver catalog unavailable");
+                    };
+                    catalog
                         .into_iter()
                         .find(|v| v.id == transfer.vault)
                         .context("authorized receiver name unavailable")?
