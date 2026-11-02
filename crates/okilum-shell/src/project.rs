@@ -28,6 +28,8 @@ mod discuss_handoff;
 mod drafts;
 mod executors;
 #[cfg(target_os = "linux")]
+mod express_session;
+#[cfg(target_os = "linux")]
 mod feed;
 mod launch;
 #[cfg(target_os = "linux")]
@@ -119,6 +121,8 @@ pub(crate) struct ProjectView {
     rotation_notice: Option<String>,
     #[cfg(target_os = "linux")]
     rotation_policy: rotation::policy_owner::State,
+    #[cfg(target_os = "linux")]
+    express: express_session::State,
     state: Option<PathBuf>,
     environment: Option<Environment>,
     project_override: bool,
@@ -454,6 +458,8 @@ impl ProjectView {
             rotation_notice: None,
             #[cfg(target_os = "linux")]
             rotation_policy: Default::default(),
+            #[cfg(target_os = "linux")]
+            express: Default::default(),
             state,
             environment: None,
             project_override: true,
@@ -519,6 +525,7 @@ impl ProjectView {
     /// before the next paint or an async draft/store completion can run.
     #[cfg(target_os = "linux")]
     pub(super) fn revoke_rotation(&mut self) {
+        self.express.revoke();
         self.rotation_policy.revoke_requests();
         let active = self.rotation_resolver.is_some() || self.rotation.is_some();
         if let Some(valid) = self.rotation_validity.take() {
@@ -1110,7 +1117,9 @@ impl ProjectView {
                         let sign_out = env.clone();
                         let terminal_area = terminal_area.clone();
                         #[cfg(target_os = "linux")]
-                        let menu = menu.item(rotation::policy_owner::menu_item(owner.clone(), cx));
+                        let menu = menu
+                            .item(rotation::policy_owner::menu_item(owner.clone(), cx))
+                            .item(express_session::menu_item(owner.clone(), cx));
                         menu.item(PopupMenuItem::new("Diagnostics").on_click(move |_, _, cx| {
                             let _ = diagnostics.update(cx, |this, cx| {
                                 this.connection_details = true;
@@ -2192,6 +2201,10 @@ impl Render for ProjectView {
         #[cfg(target_os = "linux")]
         let surface = surface.when(self.rotation_policy.is_open(), |surface| {
             surface.child(self.render_rotation_policy(window, cx))
+        });
+        #[cfg(target_os = "linux")]
+        let surface = surface.when(self.express.is_open(), |surface| {
+            surface.child(self.render_express_session(cx))
         });
         surface
             .child(div().flex_1().min_h_0().child(content))
