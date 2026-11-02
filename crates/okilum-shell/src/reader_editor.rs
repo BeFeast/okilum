@@ -916,7 +916,7 @@ impl Reader {
                         if let Some(editing) = this
                             .editing
                             .as_ref()
-                            .filter(|editing| editing.input == input)
+                            .filter(|editing| editing.input == *input)
                         {
                             let stamp = input.read(cx).source_stamp();
                             editing

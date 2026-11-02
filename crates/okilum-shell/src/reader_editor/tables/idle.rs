@@ -206,6 +206,13 @@ impl TableGrid {
             }
             return;
         }
+        // Only disjoint leases can be relocated. Never retain old cell spans
+        // after replacing an overlapping, differently classified table range.
+        if self.binding.as_ref().is_some_and(|binding| {
+            binding.table.start < range.end && range.start < binding.table.end
+        }) {
+            return;
+        }
         // A click into another table is not a buffer mutation. Format the
         // touched table and relocate the other grid's lease without rebuilding
         // its native inputs or discarding pending composition/text.
@@ -886,5 +893,90 @@ mod tests {
             SOURCE,
             "the paste keeps its original atomic Undo"
         );
+    }
+
+    #[gpui::test]
+    fn deleting_the_final_row_keeps_the_idle_grid_lease_and_atomic_undo(cx: &mut TestAppContext) {
+        let (_reader, input, grid, visual, _directory) = open(cx, true);
+        grid.update_in(visual, |grid, window, cx| {
+            grid.focus_cell(2, 0, window, cx);
+        });
+        visual.dispatch_action(TableDeleteRow);
+        visual.run_until_parked();
+        let deleted = value(&input, visual);
+        assert!(
+            !deleted.contains("next"),
+            "positive control: final row deleted"
+        );
+        assert!(
+            !deleted.contains("| 😀 |\n\n\nUntouched"),
+            "no additional blank line appears"
+        );
+        wait(visual, 800);
+        assert_ne!(
+            value(&input, visual),
+            deleted,
+            "the deleted table still formats"
+        );
+        assert!(visual.debug_bounds("editable-table-grid").is_some());
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        assert_eq!(value(&input, visual), deleted, "format is one Undo step");
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        assert_eq!(
+            value(&input, visual),
+            SOURCE,
+            "row deletion is one earlier Undo step"
+        );
+    }
+
+    #[gpui::test]
+    fn literal_header_block_markers_stay_a_table_before_save_and_after_idle(
+        cx: &mut TestAppContext,
+    ) {
+        let (reader, input, grid, visual, directory) = open(cx, false);
+        let bare = SOURCE
+            .replace("| Имя | 值 |", "Имя | 值")
+            .replace("|:--|--:|", ":--|--:")
+            .replace("| old | 😀 |", "old | 😀")
+            .replace("| next | 東京 |", "next | 東京");
+        input.update_in(visual, |state, window, cx| {
+            state.set_value(bare.clone(), window, cx)
+        });
+        visual.run_until_parked();
+        let at = bare.find("Имя").unwrap();
+        let range = table_range(&bare, at..at).expect("positive control: bare table admitted");
+        let stamp = input.read_with(visual, |state, _| state.source_stamp());
+        grid.update_in(visual, |grid, window, cx| {
+            assert!(grid.open_cell(range.clone(), stamp, &bare[range], 0, 0, window, cx));
+        });
+        visual.run_until_parked();
+        visual.simulate_input("# Заголовок😀");
+        visual.run_until_parked();
+        let typed = value(&input, visual);
+        let at = typed.find("# Заголовок").unwrap();
+        assert!(
+            table_range(&typed, at..at).is_some(),
+            "literal header text cannot turn the file into a heading"
+        );
+        reader.update(visual, |reader, cx| assert!(reader.save_source(cx)));
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
+            typed
+        );
+        let cell = grid.read_with(visual, |grid, _| grid.cells[0][0].clone());
+        wait(visual, 800);
+        let formatted = value(&input, visual);
+        assert_ne!(
+            formatted, typed,
+            "positive control: the same table formats after idle"
+        );
+        assert!(formatted.contains("| # Заголовок😀"));
+        assert_eq!(
+            grid.read_with(visual, |grid, _| grid.cells[0][0].clone()),
+            cell
+        );
+        assert!(visual.debug_bounds("editable-table-grid").is_some());
     }
 }

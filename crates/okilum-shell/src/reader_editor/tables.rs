@@ -385,4 +385,100 @@ mod tests {
     fn table_keys_and_structural_action_use_editor_undo_in_live_preview(cx: &mut TestAppContext) {
         exercise_keys(cx, true);
     }
+
+    #[test]
+    fn final_row_and_bare_column_deletion_keep_exact_classifier_ranges() {
+        let source = "Before\n\nA | B\n--- | ---\none | two\n\nAfter\n";
+        for (cell, command) in [("one", Command::DeleteRow), ("two", Command::DeleteColumn)] {
+            let at = source.find(cell).unwrap();
+            let edit = change(source, at..at, command)
+                .expect("positive control: admitted structural edit");
+            let mut updated = source.to_owned();
+            for (range, replacement) in edit.edits.iter().rev() {
+                updated.replace_range(range.clone(), replacement);
+            }
+            let snapshot = Snapshot::new("table-delete-regression", 0, updated.as_str());
+            let classified = source_classifier::classify(&snapshot);
+            let table = classified
+                .decorations_for(&snapshot)
+                .unwrap()
+                .iter()
+                .find(|marker| marker.kind == Kind::Table)
+                .expect("the edited table remains classified");
+            assert_eq!(table.range.start, "Before\n\n".len());
+            assert_eq!(
+                table.range.end,
+                updated.find("\n\nAfter").unwrap(),
+                "a grid lease excludes the surrounding newline"
+            );
+        }
+    }
+
+    #[test]
+    fn editing_bare_cell_block_markers_keeps_a_classified_table_and_exact_values() {
+        let source = "Name|Value\n---|---\nold|neighbor";
+        for row in [0, 1] {
+            for value in [
+                "# Heading 😀",
+                "> quote",
+                "- item",
+                "```",
+                "<div>",
+                "1. task",
+                "    indented",
+                "[ref]: target",
+            ] {
+                let (cells, changed) = model::CellGrid::new(source)
+                    .unwrap()
+                    .replace_text(source, row, 0, value)
+                    .unwrap();
+                assert_eq!(model::cell_text(cells.value(row, 0).unwrap()), value);
+                let snapshot = Snapshot::new("literal-table-cell", 0, changed.source.as_str());
+                let classified = source_classifier::classify(&snapshot);
+                assert!(
+                    classified
+                        .decorations_for(&snapshot)
+                        .unwrap()
+                        .iter()
+                        .any(|marker| marker.kind == Kind::Table
+                            && marker.range == (0..changed.source.len())),
+                    "positive control: {value:?} remains inside the complete GFM table"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clearing_either_bare_cell_keeps_empty_cell_identity_and_gfm_shape() {
+        let source = "Name|Value\n---|---\nold|neighbor";
+        for row in [0, 1] {
+            for column in [0, 1] {
+                for value in ["", "    "] {
+                    let (cells, changed) = model::CellGrid::new(source)
+                        .unwrap()
+                        .replace_text(source, row, column, value)
+                        .unwrap();
+                    assert_eq!(model::cell_text(cells.value(row, column).unwrap()), value);
+                    let (cells, typed) = cells
+                        .replace_text(&changed.source, row, column, "fresh😀")
+                        .unwrap();
+                    assert_eq!(
+                        model::cell_text(cells.value(row, column).unwrap()),
+                        "fresh😀",
+                        "positive control: the empty cell accepts new text"
+                    );
+                    for text in [&changed.source, &typed.source] {
+                        let snapshot = Snapshot::new("empty-table-cell", 0, text.as_str());
+                        let classified = source_classifier::classify(&snapshot);
+                        assert!(classified
+                            .decorations_for(&snapshot)
+                            .unwrap()
+                            .iter()
+                            .any(|marker| marker.kind == Kind::Table
+                                && marker.range == (0..text.len())));
+                    }
+                }
+            }
+        }
+    }
 }
