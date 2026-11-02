@@ -12,25 +12,33 @@ pub const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 pub struct LogFile {
     path: PathBuf,
+    pub(super) handle: Arc<std::fs::File>,
+    identity: super::tail::FileIdentity,
     snapshot: Arc<LogSnapshot>,
 }
 impl LogFile {
     pub fn open(path: &Path) -> Result<Self> {
         let file = super::tail::open_shared(path).context("The log file cannot be opened")?;
+        let identity = super::tail::identity(&file)?;
         let snapshot = if let Some(ext) = super::compression(path) {
             let lease = super::snapshot::reserve(super::window::WINDOW_BYTES + 40 * 1024 * 1024)?;
-            LogSnapshot::decoded(decompress(file, ext)?, lease)?
+            LogSnapshot::decoded(decompress(file.try_clone()?, ext)?, lease)?
         } else {
             LogSnapshot::read(&file, false, None)?
         };
         Ok(Self {
             path: path.to_owned(),
+            handle: Arc::new(file),
+            identity,
             snapshot,
         })
     }
     pub fn with_regex(mut self, regex: Arc<super::regex_text::RegexParser>) -> Result<Self> {
         LogSnapshot::mutable(&mut self.snapshot)?.set_regex(regex);
         Ok(self)
+    }
+    pub fn identity(&self) -> super::tail::FileIdentity {
+        self.identity
     }
     pub fn path(&self) -> &Path {
         &self.path

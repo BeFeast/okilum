@@ -109,9 +109,32 @@ requires review before retrying and does not claim rollback. Save never rescans 
 replaces the retained source-locked result. Closing before Save does not persist
 unsubmitted form edits; invalid typed fields remain in the open form.
 
-Automatic membership/rotation Follow remains open. Full Follow must keep existing `LogTail`
-sessions, consume reset segments and avoid duplicating a moved source. #1382
-remains open for full Follow and native acceptance; a usable desktop
+**Follow additions + appends** is an explicit opt-in before Start. The worker keeps
+existing uncompressed LogTail sessions built from the selected handle/snapshot,
+not a pathname reopened to enable Follow. Notifications trigger bounded discovery
+of new matching identities and append reads; retained identities (including
+hard-link/renamed aliases) are excluded from discovery. Criteria and relative time
+bounds freeze at Start. New rows update the same source-locked LogView with stable
+source slots, record selection and marks; parser/source changes stay locked.
+A single large append drains through bounded reads without requiring another
+notification; catch-up does not repeat membership enumeration. No periodic
+membership scan or automatic Start is added.
+
+This first Follow slice deliberately **pauses** on removal, rotation/truncation,
+record-window/reindex changes, incomplete selection/watch coverage, Stop or bounds.
+The last successful snapshot, selection and marks remain available. Watch directory
+coverage is refreshed before discovery and queued events drained afterwards. Stop
+wakes idle waits and suppresses late batches; an active bounded read/selection
+finishes before cleanup. No gap-free rotation claim is made. Existing compressed
+sources stay frozen; a changed compressed source or newly discovered compressed
+rotation requires explicit Rescan rather than guessing whether records are new.
+Retained session limits are 128 identities, 16 MiB per source and 64 MiB total;
+shared process snapshot leases still apply. Snapshot/Watch changes modes remain.
+
+Automatic rotation-segment continuation remains open. Full Follow must consume
+reset segments, preserve their history/marks, and avoid duplicating moved or
+compressed copies before it can claim those boundaries. #1382
+remains open for rotation continuation and native acceptance; a usable desktop
 snapshot flow does not establish them.
 
 ## Verification boundary

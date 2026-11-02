@@ -167,6 +167,7 @@ fn open_with_regex(
 enum State {
     Indexing,
     Ready(LogDocument),
+    Held(Arc<HeldSource>),
     Following { rel: String },
     Failed(String),
     Remote(Arc<okilum_core::remote_log::EventWindow>),
@@ -433,15 +434,43 @@ enum SourceData {
     Segment(Arc<Segment>),
     /// An added file while follow mode is on.
     Tail(Box<LogTail>),
+    Held(Arc<HeldSource>),
 }
 
 impl SourceData {
     fn data(&self) -> &dyn LogData {
         match self {
             SourceData::File(file) => file.as_ref(),
+            SourceData::Held(source) => source.as_ref(),
             SourceData::Segment(segment) => segment.as_ref(),
             SourceData::Tail(tail) => tail.as_ref(),
         }
+    }
+}
+
+/// An immutable revision from an externally owned virtual-source session.
+struct HeldSource {
+    path: PathBuf,
+    snapshot: Arc<LogSnapshot>,
+}
+impl LogData for HeldSource {
+    fn index(&self) -> &LogIndex {
+        self.snapshot.index()
+    }
+    fn bytes(&self) -> &[u8] {
+        self.snapshot.bytes()
+    }
+    fn raw(&self, row: usize) -> Option<&[u8]> {
+        self.snapshot.raw(row)
+    }
+    fn record(&self, row: usize) -> Option<Record> {
+        self.snapshot.record(row)
+    }
+    fn path(&self) -> &Path {
+        &self.path
+    }
+    fn window(&self) -> WindowInfo {
+        self.snapshot.window()
     }
 }
 
@@ -854,6 +883,9 @@ impl LogView {
 
     /// The records shown: the followed file once follow has opened it.
     fn data(&self) -> Option<&dyn LogData> {
+        if let State::Held(source) = &self.state {
+            return Some(source.as_ref());
+        }
         if let State::Remote(data) = &self.state {
             return Some(data.as_ref());
         }
@@ -868,6 +900,9 @@ impl LogView {
 
     fn snapshot_of(&self, source: usize) -> Option<Snapshot> {
         if source == 0 {
+            if let State::Held(source) = &self.state {
+                return Some(Snapshot::Held(source.snapshot.clone()));
+            }
             if let State::Remote(data) = &self.state {
                 return Some(Snapshot::Remote(data.clone()));
             }
@@ -880,6 +915,7 @@ impl LogView {
             (0, None) => self.file().cloned().map(Snapshot::File),
             (n, _) => self.extra.get(n - 1).map(|extra| match &extra.data {
                 SourceData::File(file) => Snapshot::File(file.clone()),
+                SourceData::Held(source) => Snapshot::Held(source.snapshot.clone()),
                 SourceData::Segment(segment) => Snapshot::Segment(segment.clone()),
                 SourceData::Tail(tail) => Snapshot::Held(tail.snapshot()),
             }),
@@ -3673,6 +3709,7 @@ impl LogView {
         let path = data.path().to_owned();
         let rel = match &self.state {
             State::Ready(document) => document.rel.clone(),
+            State::Held(source) => source.path.to_string_lossy().into_owned(),
             State::Following { rel } => rel.clone(),
             _ => return,
         };
@@ -4431,6 +4468,7 @@ impl LogView {
                 "{} loaded remote events · Local filters affect loaded rows only",
                 grouped(data.events.len() as u64)
             ),
+            (State::Held(source), _) => index_status(source.index()),
             (State::Indexing, _) => "Indexing…".to_owned(),
             (State::Failed(error), _) => format!("Cannot show this log: {error}"),
             (State::Ready(_) | State::Following { .. }, Some(follow)) => {
@@ -4576,7 +4614,7 @@ impl Render for LogView {
             )
         } else {
             let message = match &self.state {
-                State::Ready(_) | State::Following { .. } => "This log is empty",
+                State::Ready(_) | State::Held(_) | State::Following { .. } => "This log is empty",
                 State::Remote(_) => "No remote events loaded",
                 State::Stream(_) => "No complete stream lines loaded",
                 State::Indexing | State::Failed(_) => "",

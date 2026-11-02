@@ -537,3 +537,118 @@ fn canonical_save_button_keeps_original_identity_snapshot_draft_and_explicit_sta
         "Conflict draft"
     );
 }
+
+#[gpui::test]
+fn membership_follow_keeps_view_record_selection_marks_and_rejects_stale_or_stopped_batches(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(crate::test_init);
+    let (_dir, vault, path) = fixture();
+    let definition = model::load(&vault, &path).unwrap().definition;
+    let plan = definition.plan(&vault, &path, 0).unwrap();
+    let selection = plan.select(|_, _| {});
+    let mut session = follow::Session::new(&selection).unwrap();
+    let mut panel = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut panel = Panel::new(vault.clone(), window, cx);
+            panel.configure(model::load(&vault, &path).unwrap(), window, cx);
+            panel
+        });
+        panel = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1400.), px(900.)));
+    visual.run_until_parked();
+    let panel = panel.unwrap();
+    panel.read_with(visual, |panel, _| {
+        assert!(!panel.following && panel.worker.is_none())
+    });
+    visual.simulate_click(
+        visual.debug_bounds("virtual-follow").unwrap().center(),
+        Modifiers::default(),
+    );
+    panel.update(visual, |panel, cx| {
+        assert!(
+            panel.following && !panel.watch && panel.worker.is_none(),
+            "opting in never starts I/O"
+        );
+        panel.generation = 1;
+        panel.run_name = "Follow fixture".into();
+        panel.receive(
+            1,
+            worker::Frame::Ready {
+                selection,
+                elapsed: Duration::ZERO,
+                watching: true,
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    let identity = panel.update(visual, |panel, cx| {
+        let view = panel.view.as_ref().unwrap();
+        let identity = view.entity_id();
+        view.update(cx, |view, cx| {
+            view.selected = view.id_of(1, 0);
+            view.anchor = view.selected;
+            view.marks.insert((1, 0));
+            view.set_text("second".into(), cx);
+        });
+        identity
+    });
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(vault.join("logs/a.log"))
+        .unwrap()
+        .write_all(b"appended\n")
+        .unwrap();
+    std::fs::write(vault.join("logs/c.log"), "new member\n").unwrap();
+    let changes = vec![okilum_core::log::virtual_log::watcher::Change::Changed(
+        vec![vault.join("logs/a.log"), vault.join("logs/c.log")],
+    )];
+    let update = session
+        .refresh(&plan, &changes, &std::sync::atomic::AtomicBool::new(false))
+        .unwrap();
+    panel.update(visual, |panel, cx| {
+        panel.receive(1, worker::Frame::Updated(update), cx)
+    });
+    visual.run_until_parked();
+    panel.read_with(visual, |panel, cx| {
+        let view = panel.view.as_ref().unwrap();
+        assert_eq!(view.entity_id(), identity);
+        let view = view.read(cx);
+        assert_eq!(view.total(), 4);
+        assert_eq!(view.visible_len(), 1);
+        assert!(!view.filtering);
+        assert_eq!(view.locate(view.selected.unwrap()), Some((1, 0)));
+        assert_eq!(view.locate(view.anchor.unwrap()), Some((1, 0)));
+        assert!(view.marks.contains(&(1, 0)) && view.source_locked);
+    });
+    std::fs::write(vault.join("logs/d.log"), "late member\n").unwrap();
+    let update = session
+        .refresh(&plan, &changes, &std::sync::atomic::AtomicBool::new(false))
+        .unwrap();
+    panel.update(visual, |panel, cx| {
+        panel.receive(
+            0,
+            worker::Frame::Updated(follow::Update {
+                sources: update.sources.clone(),
+                candidates: update.candidates.clone(),
+                more: update.more,
+            }),
+            cx,
+        );
+        assert!(panel.pending_follow.is_none());
+        panel.stopping = true;
+        panel.receive(1, worker::Frame::Updated(update), cx);
+        assert!(panel.pending_follow.is_none() && !panel.active && !panel.stopping);
+    });
+    visual.run_until_parked();
+    panel.read_with(visual, |panel, cx| {
+        assert_eq!(panel.view.as_ref().unwrap().entity_id(), identity);
+        assert_eq!(panel.view.as_ref().unwrap().read(cx).total(), 4);
+    });
+}

@@ -167,7 +167,17 @@ impl SelectionPlan {
     }
 
     /// Progress fires after every opened candidate, including failed reads. No writes.
-    pub fn select(&self, mut progress: impl FnMut(usize, u64)) -> Selection {
+    pub fn select(&self, progress: impl FnMut(usize, u64)) -> Selection {
+        self.select_excluding(&std::collections::HashSet::new(), progress)
+    }
+
+    /// Retained Follow identities are not reopened/reindexed during membership
+    /// discovery, even after a rename or via another canonical-path alias.
+    pub fn select_excluding(
+        &self,
+        retained: &std::collections::HashSet<super::tail::FileIdentity>,
+        mut progress: impl FnMut(usize, u64),
+    ) -> Selection {
         let mut result = Selection {
             candidates: Vec::new(),
             files: Vec::new(),
@@ -225,7 +235,11 @@ impl SelectionPlan {
                     Ok(canonical) if !canonical.starts_with(&self.root) => Reason::OutsideRoot,
                     Ok(canonical) if selected_paths.contains(&canonical) => Reason::DuplicateSource,
                     Ok(canonical) => {
-                        let reason = self.check(&path, &mut result, &mut progress);
+                        let reason = match super::tail::path_identity(&path) {
+                            Ok(Some(id)) if retained.contains(&id) => Reason::DuplicateSource,
+                            Ok(_) => self.check(&path, retained, &mut result, &mut progress),
+                            Err(error) => Reason::Unreadable(error.to_string()),
+                        };
                         if reason == Reason::Matched {
                             selected_paths.insert(canonical);
                         }
@@ -243,6 +257,7 @@ impl SelectionPlan {
     fn check(
         &self,
         path: &Path,
+        retained: &std::collections::HashSet<super::tail::FileIdentity>,
         result: &mut Selection,
         progress: &mut impl FnMut(usize, u64),
     ) -> Reason {
@@ -265,6 +280,10 @@ impl SelectionPlan {
             Ok(file) => file,
             Err(error) => return Reason::Unreadable(error.to_string()),
         };
+        // Close replacement races after the pre-open identity observation.
+        if retained.contains(&file.identity()) {
+            return Reason::DuplicateSource;
+        }
         result.decoded_bytes_checked += file.bytes().len() as u64;
         if file.bytes().len() as u64 > MAX_FILE_BYTES
             || result.decoded_bytes_checked > MAX_TOTAL_BYTES
