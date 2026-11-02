@@ -5373,6 +5373,9 @@ impl Reader {
 
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.typed_navigation.active.set(false);
+        if let Some(preview) = self.render_tree_quick_look() {
+            return preview;
+        }
         if let Some(preview) = self.render_timeline_preview(window, cx) {
             return preview;
         }

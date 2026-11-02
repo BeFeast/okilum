@@ -1558,6 +1558,9 @@ impl Reader {
             && self.vault_root == pending.intent.root
             && self.current_rel == pending.rel
             && self.document_ready();
+        if self.vault_root != pending.intent.root {
+            self.tree_preview.close();
+        }
         self.vault_root = pending.intent.root.clone();
         let opts = &self.loading.as_ref().unwrap().opts;
         self.single_file = pending.intent.single_file;
