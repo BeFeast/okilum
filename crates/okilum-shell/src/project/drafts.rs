@@ -9,7 +9,15 @@ use std::sync::{mpsc, Mutex, OnceLock};
 type Key = (String, String, String);
 type ChatDraft = Draft<Attachment>;
 type Saved = Snapshot<Attachment>;
-pub(super) type Barrier = oneshot::Receiver<Result<(), String>>;
+type DiskBarrier = oneshot::Receiver<Result<(), String>>;
+pub(super) type Barrier = Task<Result<Result<(), String>, oneshot::Canceled>>;
+
+/// Only a Send background task may wait on the process-wide OS worker. In
+/// particular, its reply must never own the waker of a window-local task: the
+/// worker can complete after that window (or its test scheduler) has gone away.
+fn wait_for_disk(barrier: DiskBarrier, executor: &gpui::BackgroundExecutor) -> Barrier {
+    executor.spawn(async move { futures::executor::block_on(barrier) })
+}
 
 /// One atomic composer value: metadata is local operational state, not an
 /// attachment, source-text annotation, or a T3 transport field.
@@ -164,6 +172,7 @@ fn install_shutdown(cx: &mut App) {
         if let Ok(sender) = queue() {
             let _ = sender.send(Work::Drain(reply));
         }
+        let barrier = wait_for_disk(barrier, cx.background_executor());
         async move {
             if !matches!(barrier.await, Ok(Ok(()))) {
                 eprintln!("Manager draft could not be flushed before quit");
@@ -209,7 +218,7 @@ impl Writer {
         let _ = self.sender.send(Work::Save(self.pending.clone()));
     }
 
-    fn barrier(&self) -> Barrier {
+    fn barrier(&self) -> DiskBarrier {
         let (sender, receiver) = oneshot::channel();
         let _ = self.sender.send(Work::Flush(self.pending.clone(), sender));
         receiver
@@ -640,7 +649,10 @@ impl ProjectView {
             epoch: self.threads.draft.epoch,
             snapshot,
         };
-        Ok((checkpoint, writer.barrier()))
+        Ok((
+            checkpoint,
+            wait_for_disk(writer.barrier(), cx.background_executor()),
+        ))
     }
 
     pub(super) fn draft_checkpoint_matches(&self, checkpoint: &DraftCheckpoint, cx: &App) -> bool {
@@ -681,7 +693,7 @@ impl ProjectView {
         let Some(writer) = self.threads.draft.writer.as_ref() else {
             return;
         };
-        let barrier = writer.barrier();
+        let barrier = wait_for_disk(writer.barrier(), cx.background_executor());
         let key = self.threads.draft.key.clone();
         let epoch = self.threads.draft.epoch;
         cx.spawn_in(window, async move |this, cx| {
@@ -855,6 +867,64 @@ fn merge_initial(initial: Option<ChatDraft>, saved: ChatDraft) -> Result<ChatDra
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn disk_reply_probe_detects_an_unbridged_foreground_waker() {
+        let dispatcher = Arc::new(gpui::TestDispatcher::new(0));
+        let foreground = gpui::ForegroundExecutor::new(dispatcher.clone());
+        let (reply, barrier) = oneshot::channel::<Result<(), String>>();
+        foreground.spawn(async move { barrier.await }).detach();
+        assert!(dispatcher.tick(false));
+        dispatcher.drain_tasks();
+        assert!(std::thread::spawn(move || reply.send(Ok(())))
+            .join()
+            .unwrap()
+            .is_ok());
+        // Retire the unsafe runnable on its owner before asking the scheduler
+        // for its verdict. Ending it before the raw reply would abort the whole
+        // process in the local future's destructor, as in the original defect.
+        dispatcher.drain_tasks();
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatcher.scheduler().end_test();
+        }))
+        .expect_err("positive control: a raw disk reply must fail the scheduler audit");
+        let message = failure
+            .downcast_ref::<String>()
+            .expect("scheduler panic describes the foreign wake");
+        assert!(message.contains("Detected activity on thread"), "{message}");
+    }
+
+    #[test]
+    fn disk_reply_after_local_task_teardown_cannot_wake_the_finished_ui_executor() {
+        let dispatcher = Arc::new(gpui::TestDispatcher::new(0));
+        let background = gpui::BackgroundExecutor::new(dispatcher.clone());
+        let foreground = gpui::ForegroundExecutor::new(dispatcher.clone());
+        let (reply, barrier) = oneshot::channel();
+        let started = std::rc::Rc::new(std::cell::Cell::new(false));
+        let observed = started.clone();
+        let task = foreground.spawn(async move {
+            observed.set(true);
+            wait_for_disk(barrier, &background).await
+        });
+        // Poll the local waiter, but hold disk completion until after teardown.
+        assert!(dispatcher.tick(false));
+        assert!(
+            started.get(),
+            "positive control: the local waiter was polled"
+        );
+        // Edit notifications are detached, so teardown must retire their
+        // receivers even without a retained local Task handle to cancel.
+        task.detach();
+        dispatcher.drain_tasks();
+        dispatcher.scheduler().end_test();
+        let result = std::thread::spawn(move || reply.send(Ok(())))
+            .join()
+            .expect("late disk completion must not touch a finished UI scheduler");
+        assert!(
+            result.is_err(),
+            "the cancelled waiter released its receiver"
+        );
+    }
 
     #[test]
     fn first_connection_preserves_early_input_without_overwriting_a_different_saved_draft() {
@@ -1200,17 +1270,19 @@ mod tests {
         // thread; use GPUI's documented mixed real-I/O test mode.
         cx.executor().allow_parking();
         cx.update(crate::test_init);
+        cx.update(reader_features::enable_test_modules);
         let state = tempfile::tempdir().unwrap();
         let mut project = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
-                let mut view = super::super::fixture::view(
-                    state.path().to_owned(),
-                    Arc::new(super::super::fixture::Fake::default()),
-                    window,
-                    cx,
-                );
-                view.active = false;
+                // A mounted composer has an active typed owner (#2321/#2324).
+                // No gateway is needed for this durable local-history test.
+                let mut view = ProjectView::empty(Some(state.path().to_owned()), window, cx);
+                view.binding = Some(binding("fixture-managers", "mcp:fixture-manager"));
+                view.environment =
+                    Some(Environment::new("fixture", "https://drafts.invalid").unwrap());
+                view.chat = Some(Conversation::new("mcp:fixture-manager"));
+                view.active = true;
                 view.draft_restore(window, cx);
                 view
             });

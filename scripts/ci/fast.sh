@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Process v2: real desktop build + deterministic parsing unit tests, no native suites.
+# Real desktop build, Linux headless shell suite and parsing unit tests.
 set -euo pipefail
 source "$(dirname "$0")/test-nofile.sh"
 export CARGO_INCREMENTAL=0
@@ -34,6 +34,11 @@ if [ "${RUNNER_OS:-Linux}" = Linux ]; then
     phase appimage-channel-tests cargo test --locked -p okilum-appimage --lib channel -- --test-threads=1
 fi
 phase build "$@"
+if [ "${RUNNER_OS:-Linux}" = Linux ]; then
+    # #2415: checking test targets cannot detect stale runtime contracts or
+    # cross-executor task teardown. Execute the whole headless shell binary.
+    phase shell-binary-tests cargo test --offline --locked -p okilum-shell --bin okilum
+fi
 # Compile every workspace test target; fixture/API drift must block merge even
 # when its suite runs only during full overnight acceptance. Do not execute it.
 phase workspace-test-check cargo check --locked --workspace --tests

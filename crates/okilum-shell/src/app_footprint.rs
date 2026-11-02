@@ -464,11 +464,7 @@ pub(crate) fn uninstall_data(assume_yes: bool) -> i32 {
     }
     use std::io::{BufRead, Write};
     let state = crate::reader_history::state_directory().ok();
-    let units = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|config| config.join("systemd/user"));
+    let units = crate::reader_settings_sync::managed_service_directory().ok();
     if let Some(reason) = blocked(state.as_deref(), units.as_deref()) {
         eprintln!("{reason}\nNothing was removed.");
         return 2;
@@ -1098,7 +1094,7 @@ mod tests {
         ("crates/okilum-shell/src/linux_sprint.rs", 5),
         // Roots, crash dumps, the Velopack log folder, the Linux sync units,
         // the drafts export and the macOS home (all in the inventory).
-        ("crates/okilum-shell/src/app_footprint.rs", 13),
+        ("crates/okilum-shell/src/app_footprint.rs", 11),
         // Suggests ~/Downloads in the export dialog: the user picks the target.
         ("crates/okilum-shell/src/brain/context_ui.rs", 1),
         // Brain outboxes and profile: all under the `~/.config/okilum` root.
@@ -1116,7 +1112,13 @@ mod tests {
         ("crates/okilum-shell/src/reader_open.rs", 6),
         // Sync lives under the state root; its systemd unit is removed by
         // the sync controller (Linux part of #974).
-        ("crates/okilum-shell/src/reader_settings_sync.rs", 3),
+        ("crates/okilum-shell/src/reader_settings_sync.rs", 1),
+        // Managed Sync units share a systemd base. Uninstall checks the same
+        // producer path and refuses until the controller has removed its unit.
+        (
+            "crates/okilum-shell/src/reader_settings_sync/linux_runtime.rs",
+            2,
+        ),
         // Moves notes to the system trash; not an app-owned location.
         ("crates/okilum-shell/src/reader_trash_fs.rs", 2),
         ("crates/okilum-shell/src/workspace.rs", 3),
