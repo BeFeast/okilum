@@ -170,3 +170,36 @@ two actual managed preparations and the pinned unchanged 2.1.6 binary. PR CI's
 `sync-source-sharing` job explicitly runs all three ignored tests and verifies
 each name plus `3 passed`, including skipped-share and nonempty refusal controls.
 Native idunn/muninn acceptance belongs to the Sync owner after beta delivery.
+
+## Guided Linux first run (#2368)
+
+The welcome screen's **Get notes from another computer** opens Settings directly
+at the receiving pairing step and persists Sync module consent. Opening Sync (or
+starting either pairing action) prepares the bundled Linux runtime implicitly
+only when the complete authenticated inventory has neither an existing candidate
+nor an unavailable configuration. The bootstrap retains its final process/config
+rescan, checksum, private state and identity guards. A discovered external instance,
+even a single one, requires explicit **Use connection**; it never authorizes a
+second daemon or an implicit takeover. Ordinary Refresh never bootstraps.
+
+Action completions publish the new runtime and controller snapshot immediately.
+An invitation, pending confirmation, initial receive or paired computer keeps the
+revocable background refresh alive. The current status, URL/Copy, confirmation,
+waiting state and error are above the independently scrollable remaining steps.
+The owned Settings window keeps its opaque surface and full content height; Sync
+uses one internal scroll viewport rather than nested unbounded content.
+
+After approval, the receiving computer chooses a vault and a local folder. The
+new-folder dialog proposes a safe single component of the vault name under HOME;
+the existing-folder picker remains available. Creating that explicitly chosen
+folder reuses the new-vault empty-directory guard. The controller still refuses
+unknown nonempty destinations and retains its receiveonly/readiness/promotion
+rules. A vault selected in this session opens automatically after the controller
+reports initial receive complete; refreshes never open unrelated attached vaults.
+Disabling Sync revokes work and outstanding picker results.
+
+Shell tests replace only the blocking worker boundary and exercise real welcome
+clicks, module persistence, action completion, timer-driven incoming/confirmation
+publication and result bounds in the Settings viewport. Separate inventory-policy
+tests retain positive controls for implicit preparation and negative controls for
+existing/unavailable instances. Native beta recording remains separate acceptance.

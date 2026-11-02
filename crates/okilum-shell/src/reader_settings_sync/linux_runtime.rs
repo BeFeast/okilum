@@ -34,7 +34,7 @@ pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runti
         .context("Sync state parent unavailable")?
         .join("managed/prepared/syncthing/config.xml");
     if managed.try_exists()? && !configs.contains(&managed) {
-        configs.push(managed);
+        configs.push(managed.clone());
     }
     let inventory = daemon::discover(&configs);
     let saved = selection_path(state)?;
@@ -67,7 +67,10 @@ pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runti
         choice.identity.connect()?;
         choice.selected = true;
         Some(choice.identity.config_file.clone())
-    } else if choices.len() == 1 && inventory.unavailable.is_empty() {
+    } else if choices.len() == 1
+        && inventory.unavailable.is_empty()
+        && choices[0].identity.config_file == managed
+    {
         choices[0].selected = true;
         Some(choices[0].identity.config_file.clone())
     } else {
@@ -178,7 +181,20 @@ mod tests {
     }
 }
 
-/// Explicit button only; never called by inspect/Read or on selection failure.
+/// Pairing entry can prepare only after a complete, empty external inventory.
+/// Unavailable, incompatible and unselected external instances cannot imply absence.
+pub(super) fn prepare_for_pairing(
+    runtime: Runtime,
+    prepare: impl FnOnce() -> anyhow::Result<Runtime>,
+) -> anyhow::Result<Runtime> {
+    if runtime.inventory.candidates.is_empty() && runtime.inventory.unavailable.is_empty() {
+        prepare()
+    } else {
+        Ok(runtime)
+    }
+}
+
+/// Explicit pairing consent only; never called by inspect/Read or selection failure.
 pub(super) fn prepare_managed(
     state: &Path,
     configs: &[PathBuf],
@@ -221,4 +237,59 @@ pub(super) fn prepare_managed(
     temporary.persist(&file)?;
     std::fs::File::open(parent)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod guided_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    #[test]
+    fn guided_first_run_prepares_only_with_complete_absence_of_existing_syncthing(
+    ) -> anyhow::Result<()> {
+        let runtime = |unavailable, candidates| Runtime {
+            configs: vec![],
+            choices: vec![],
+            inventory: Discovery {
+                unavailable,
+                candidates,
+            },
+        };
+        let called = std::cell::Cell::new(false);
+        prepare_for_pairing(runtime(vec![], vec![]), || {
+            called.set(true);
+            Ok(runtime(vec![], vec![]))
+        })?;
+        assert!(
+            called.get(),
+            "positive control: fresh pairing invokes bundled preparation implicitly"
+        );
+        called.set(false);
+        let external = daemon::Candidate {
+            identity: DaemonIdentity {
+                config_file: PathBuf::from("/external/config.xml"),
+                device_id: "external".into(),
+                certificate_hash: "external".into(),
+            },
+            folders: vec![],
+            version: "v2.1.7".into(),
+        };
+        let existing = prepare_for_pairing(runtime(vec![], vec![external]), || {
+            called.set(true);
+            anyhow::bail!("must not prepare")
+        })?;
+        assert!(!called.get());
+        assert!(
+            existing.choices.is_empty(),
+            "external inventory never grants implicit selection"
+        );
+        prepare_for_pairing(
+            runtime(vec![PathBuf::from("/unavailable.xml")], vec![]),
+            || {
+                called.set(true);
+                anyhow::bail!("must not prepare")
+            },
+        )?;
+        assert!(!called.get(), "unavailable inventory is not absence");
+        Ok(())
+    }
 }

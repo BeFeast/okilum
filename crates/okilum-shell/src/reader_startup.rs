@@ -29,7 +29,13 @@ pub(crate) fn supersede(cx: &mut App) {
     let Some(entry) = state.entry else {
         return;
     };
-    if cx.windows().iter().any(|window| *window != entry) {
+    // Owned tools (including first-run Sync Settings) do not replace the start
+    // window. Keep its owner alive until the received vault window really exists.
+    if cx
+        .windows()
+        .iter()
+        .any(|window| *window != entry && super::reader_owned_windows::owner(*window, cx) != entry)
+    {
         cx.global_mut::<Startup>().entry = None;
         let _ = entry.update(cx, |_, window, _| window.remove_window());
     }
@@ -511,6 +517,16 @@ impl Render for Entry {
                             }),
                     ),
             )
+            .when(cfg!(any(target_os = "linux", target_os = "macos")), |card| {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                let card = card.child(
+                    Button::new("startup-sync-pairing")
+                        .debug_selector(|| "startup-sync-pairing".into())
+                        .label("Get notes from another computer")
+                        .on_click(|_, window, cx| super::reader_settings::show_sync_pairing(window, cx)),
+                );
+                card
+            })
             // Someone without notes yet: any folder works (#1357).
             .child(
                 div()
