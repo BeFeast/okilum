@@ -9,6 +9,34 @@ pub(super) use draft::DraftOutline;
 
 const STALE_HEADING: &str = "The outline is updating. Click the heading again when it refreshes.";
 
+#[cfg(test)]
+thread_local! {
+    static OUTLINE_PUBLICATION_HOLD: std::cell::RefCell<Option<(
+        String,
+        futures::channel::oneshot::Sender<()>,
+        futures::channel::oneshot::Receiver<()>,
+    )>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+async fn hold_outline_publication(source: &str) {
+    let hold = OUTLINE_PUBLICATION_HOLD.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot
+            .as_ref()
+            .is_some_and(|(expected, _, _)| expected == source)
+        {
+            slot.take()
+        } else {
+            None
+        }
+    });
+    if let Some((_, reached, release)) = hold {
+        let _ = reached.send(());
+        let _ = release.await;
+    }
+}
+
 impl Reader {
     pub(super) fn visible_outline(&self) -> &[HeadingEntry] {
         if self.editing.is_some() {
@@ -46,6 +74,8 @@ impl Reader {
                         (snapshot, cache)
                     })
                     .await;
+                #[cfg(test)]
+                hold_outline_publication(&snapshot.source).await;
                 cache = next_cache;
                 let Ok(done) = this.update(cx, |this, cx| {
                     if this
@@ -292,6 +322,305 @@ mod tests {
     #[gpui::test]
     fn live_edit_and_save_refresh_outline_without_leaving_live(cx: &mut TestAppContext) {
         edit_and_save_refresh_outline(cx, true);
+    }
+
+    struct MountedDraft {
+        reader: Entity<Reader>,
+        input: Entity<EditorState>,
+        file: std::path::PathBuf,
+        original: String,
+        _directory: tempfile::TempDir,
+    }
+
+    fn mount_draft(cx: &mut TestAppContext, live: bool) -> (MountedDraft, &mut VisualTestContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let original = format!(
+            "# Existing\r\n\r\n{}## Tail 🎯\r\n\r\n{}",
+            "Body Ω paragraph.\r\n\r\n".repeat(80),
+            "After target Ω paragraph.\r\n\r\n".repeat(80)
+        );
+        let file = root.join("note.md");
+        std::fs::write(&file, &original).unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root),
+                        note: Some("note.md".into()),
+                        session_directory: Some(directory.path().join("state")),
+                        index_dir: Some(directory.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(760.)));
+        settle(visual);
+        reader.update_in(visual, |reader, window, cx| {
+            reader.panels.open(reader_layout::Panel::Backlinks);
+            if live {
+                reader.open_live_preview(window, cx);
+            } else {
+                reader.toggle_source(window, cx);
+            }
+            cx.notify();
+        });
+        settle(visual);
+        let input = reader.update_in(visual, |reader, window, cx| {
+            assert_eq!(
+                reader.live_preview_shown(),
+                live,
+                "requested surface mounted"
+            );
+            let input = reader.editing.as_ref().unwrap().input().clone();
+            input.update(cx, |input, cx| input.set_selected_range(0..0, cx));
+            input.read(cx).focus_handle(cx).focus(window, cx);
+            input
+        });
+        (
+            MountedDraft {
+                reader,
+                input,
+                file,
+                original,
+                _directory: directory,
+            },
+            visual,
+        )
+    }
+
+    fn assert_draft(
+        fixture: &MountedDraft,
+        visual: &mut VisualTestContext,
+        source: &str,
+        headings: &[&str],
+    ) {
+        fixture.reader.read_with(visual, |reader, cx| {
+            assert_eq!(fixture.input.read(cx).value().as_ref(), source);
+            assert_eq!(
+                reader.draft_outline.source, source,
+                "exact accepted input snapshot"
+            );
+            assert!(!reader.draft_outline.pending);
+            assert!(reader.draft_outline.worker.is_none(), "worker completed");
+            assert_eq!(
+                reader
+                    .visible_outline()
+                    .iter()
+                    .map(|h| h.text.as_str())
+                    .collect::<Vec<_>>(),
+                headings
+            );
+            assert_eq!(reader.outline_list.item_count(), headings.len());
+            assert_eq!(
+                reader.outline.len(),
+                2,
+                "saved Reader inventory remains distinct"
+            );
+        });
+        assert_eq!(
+            std::fs::read_to_string(&fixture.file).unwrap(),
+            fixture.original,
+            "outline refresh does not require a save or an autosave clock advance"
+        );
+    }
+
+    fn click_draft_tail(fixture: &MountedDraft, visual: &mut VisualTestContext) {
+        let (index, line) = fixture.reader.read_with(visual, |reader, _| {
+            let index = reader.visible_outline().len() - 1;
+            assert_eq!(reader.visible_outline()[index].text, "Tail 🎯");
+            (index, reader.draft_outline.lines[index] as u32)
+        });
+        let row = visual
+            .debug_bounds(format!("reader-outline-row-{index}"))
+            .expect("current draft heading row is painted");
+        visual.simulate_click(row.center(), Modifiers::default());
+        settle(visual);
+        fixture.reader.read_with(visual, |reader, cx| {
+            let input = fixture.input.read(cx);
+            assert_eq!(input.cursor_position().line, line);
+            assert_eq!(input.top_visible_line(), Some(line as usize));
+            assert!(
+                input.scroll_offset().y < px(-100.),
+                "visible editor actually scrolled"
+            );
+            assert_eq!(reader.current_section(cx), Some(index));
+            assert!(reader.link_notice.is_none());
+            assert_eq!(
+                reader
+                    .content
+                    .read(cx)
+                    .list_state()
+                    .logical_scroll_top()
+                    .item_ix,
+                0,
+                "hidden saved Reader is not the click destination"
+            );
+        });
+    }
+
+    fn draft_edit_click_undo_redo(cx: &mut TestAppContext, live: bool) {
+        let (fixture, visual) = mount_draft(cx, live);
+        assert_draft(
+            &fixture,
+            visual,
+            &fixture.original,
+            &["Existing", "Tail 🎯"],
+        );
+        let edited = format!("## Draft Ω\r\n\r\n{}", fixture.original);
+        visual.simulate_input("## Draft Ω\r\n\r\n");
+        settle(visual);
+        assert_draft(
+            &fixture,
+            visual,
+            &edited,
+            &["Draft Ω", "Existing", "Tail 🎯"],
+        );
+        click_draft_tail(&fixture, visual);
+        visual.dispatch_action(gpui_component::input::Undo);
+        settle(visual);
+        assert_draft(
+            &fixture,
+            visual,
+            &fixture.original,
+            &["Existing", "Tail 🎯"],
+        );
+        click_draft_tail(&fixture, visual);
+        visual.dispatch_action(gpui_component::input::Redo);
+        settle(visual);
+        assert_draft(
+            &fixture,
+            visual,
+            &edited,
+            &["Draft Ω", "Existing", "Tail 🎯"],
+        );
+        click_draft_tail(&fixture, visual);
+    }
+
+    #[gpui::test]
+    fn draft_1320_source_refresh_click_undo_redo(cx: &mut TestAppContext) {
+        draft_edit_click_undo_redo(cx, false);
+    }
+
+    #[gpui::test]
+    fn draft_1320_live_refresh_click_undo_redo(cx: &mut TestAppContext) {
+        draft_edit_click_undo_redo(cx, true);
+    }
+
+    fn hold_publication(
+        source: &str,
+    ) -> (
+        futures::channel::oneshot::Receiver<()>,
+        futures::channel::oneshot::Sender<()>,
+    ) {
+        let (reached, waiting) = futures::channel::oneshot::channel();
+        let (release, held) = futures::channel::oneshot::channel();
+        OUTLINE_PUBLICATION_HOLD.with(|slot| {
+            assert!(slot.borrow().is_none(), "independent publication hold");
+            *slot.borrow_mut() = Some((source.to_owned(), reached, held));
+        });
+        (waiting, release)
+    }
+
+    fn draft_coalescing_and_stale_rows(cx: &mut TestAppContext, live: bool) {
+        let (fixture, visual) = mount_draft(cx, live);
+        let intermediate = format!("## Intermediate\r\n\r\n{}", fixture.original);
+        let (mut first_reached, first_release) = hold_publication(&intermediate);
+        visual.simulate_input("## Intermediate\r\n\r\n");
+        settle(visual);
+        assert_eq!(
+            first_reached.try_recv().unwrap(),
+            Some(()),
+            "positive control: real parser completed and publication is held"
+        );
+        let selected = fixture
+            .input
+            .read_with(visual, |input, _| input.selected_range());
+        let stale_row = visual
+            .debug_bounds("reader-outline-row-1")
+            .expect("previous snapshot row remains painted while refreshing");
+        visual.simulate_click(stale_row.center(), Modifiers::default());
+        settle(visual);
+        fixture.reader.read_with(visual, |reader, cx| {
+            assert_eq!(reader.link_notice.as_deref(), Some(STALE_HEADING));
+            assert_eq!(
+                fixture.input.read(cx).selected_range(),
+                selected,
+                "stale painted row cannot move the caret"
+            );
+        });
+        fixture
+            .input
+            .update(visual, |input, cx| input.set_selected_range(0..0, cx));
+        visual.simulate_input("# Latest\r\n\r\n");
+        let latest = format!("# Latest\r\n\r\n{intermediate}");
+        let (mut latest_reached, latest_release) = hold_publication(&latest);
+        first_release.send(()).unwrap();
+        settle(visual);
+        assert_eq!(
+            latest_reached.try_recv().unwrap(),
+            Some(()),
+            "coalesced worker parsed the latest input after rejecting the held result"
+        );
+        fixture.reader.read_with(visual, |reader, _| {
+            assert_eq!(
+                reader.draft_outline.source, fixture.original,
+                "obsolete parser result was never installed before the latest publication"
+            );
+            assert!(reader.draft_outline.pending);
+            assert!(reader.draft_outline.worker.is_some());
+            assert_eq!(reader.visible_outline().len(), 2);
+        });
+        latest_release.send(()).unwrap();
+        settle(visual);
+        assert_draft(
+            &fixture,
+            visual,
+            &latest,
+            &["Latest", "Intermediate", "Existing", "Tail 🎯"],
+        );
+        // Queue a valid landing, then move the caret before that task runs.
+        // The deferred handoff must not reclaim the user's newer selection.
+        fixture.reader.update_in(visual, |reader, window, cx| {
+            let heading = reader.visible_outline().last().unwrap().clone();
+            assert_ne!(
+                fixture.input.read(cx).selected_range(),
+                0..0,
+                "positive control: the user's new caret differs from the captured selection"
+            );
+            reader.open_outline_heading(heading, window, cx);
+            fixture
+                .input
+                .update(cx, |input, cx| input.set_selected_range(0..0, cx));
+        });
+        settle(visual);
+        fixture
+            .input
+            .read_with(visual, |input, _| assert_eq!(input.selected_range(), 0..0));
+        click_draft_tail(&fixture, visual);
+    }
+
+    #[gpui::test]
+    fn draft_1320_source_coalesces_and_rejects_stale_rows(cx: &mut TestAppContext) {
+        draft_coalescing_and_stale_rows(cx, false);
+    }
+
+    #[gpui::test]
+    fn draft_1320_live_coalesces_and_rejects_stale_rows(cx: &mut TestAppContext) {
+        draft_coalescing_and_stale_rows(cx, true);
     }
 
     #[derive(Clone, Copy, Debug)]
