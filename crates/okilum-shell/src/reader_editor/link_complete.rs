@@ -59,9 +59,14 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
     if lists::in_code(text, line_start) {
         return None;
     }
-    if matches!(query.kind, Kind::Note | Kind::Heading(_)) {
+    if !matches!(query.kind, Kind::Language) {
         // Inline code may cross a soft line break, but not a blank paragraph.
-        let prefix = &text[..query.start - 2];
+        let delimiter = if matches!(query.kind, Kind::Note | Kind::Heading(_)) {
+            query.start - 2
+        } else {
+            query.start
+        };
+        let prefix = &text[..delimiter];
         let paragraph = prefix.rfind("\n\n").map_or(prefix, |at| &prefix[at + 2..]);
         if providers::in_inline_code(paragraph) {
             return None;
@@ -75,6 +80,14 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
 fn line_query(before: &str, line_start: usize, caret: usize) -> Option<LinkQuery> {
     let (kind, offset, query) = providers::trigger(before, true)?;
     let start = line_start + offset;
+    let delimiter = if matches!(kind, Kind::Note | Kind::Heading(_)) {
+        offset - 2
+    } else {
+        offset
+    };
+    if !matches!(kind, Kind::Language) && providers::in_inline_code(&before[..delimiter]) {
+        return None;
+    }
     Some(LinkQuery {
         start,
         caret,
@@ -697,7 +710,7 @@ pub(super) struct State {
     )>,
     pub open: Option<Open>,
     pending: Option<LinkQuery>,
-    accept_pending: bool,
+    accept_pending: Option<Trigger>,
     pasted: Option<SourceStamp>,
     /// The `[[` whose list Escape closed (or a choice completed); it stays
     /// closed until the caret leaves that link.
@@ -741,7 +754,7 @@ impl Reader {
             let state = &mut editing.link_complete;
             state.pasted = Some(stamp);
             state.pending = None;
-            state.accept_pending = false;
+            state.accept_pending = None;
             state.open = None;
             state.task = None;
             cx.notify();
@@ -820,7 +833,7 @@ impl Reader {
         let state = &mut editing.link_complete;
         state.task = None;
         state.pending = None;
-        state.accept_pending = false;
+        state.accept_pending = None;
         state.heading_source = None;
         state.heading_accepting = false;
         let Some(query) = query else {
@@ -931,8 +944,30 @@ impl Reader {
                     let accept = std::mem::take(&mut editing.link_complete.accept_pending);
                     editing.link_complete.heading_source = enriched.heading;
                     publish(&mut editing.link_complete, query, enriched.rows);
-                    if accept {
-                        this.link_complete_accept(None, Trigger::Enter, window, cx);
+                    if let Some(trigger) = accept {
+                        if this
+                            .editing
+                            .as_ref()
+                            .is_some_and(|editing| editing.link_complete.open.is_some())
+                        {
+                            this.link_complete_accept(None, trigger, window, cx);
+                        } else if this.ime_allows(trigger, cx)
+                            && input_entity.read(cx).focus_handle(cx).is_focused(window)
+                        {
+                            // An empty result (including code context) must not
+                            // eat the user's ordinary Enter or Tab.
+                            match trigger {
+                                Trigger::Enter => window.dispatch_action(
+                                    Box::new(Enter {
+                                        secondary: false,
+                                        shift: false,
+                                    }),
+                                    cx,
+                                ),
+                                Trigger::Tab => window.dispatch_action(Box::new(IndentInline), cx),
+                                _ => {}
+                            }
+                        }
                     }
                     this.refresh_link_complete_metadata(cx);
                     cx.notify();
@@ -1110,7 +1145,7 @@ impl Reader {
                 .map(|open| open.query.start)
                 .or_else(|| state.pending.take().map(|query| query.start));
             state.pending = None;
-            state.accept_pending = false;
+            state.accept_pending = None;
             state.task = None;
         }
         cx.stop_propagation();
@@ -1160,7 +1195,7 @@ impl Reader {
                     .as_ref()
                     .is_some_and(|query| matches!(query.kind, Kind::Note))
             {
-                editing.link_complete.accept_pending = true;
+                editing.link_complete.accept_pending = Some(trigger);
                 cx.stop_propagation();
             }
             return;
@@ -2366,12 +2401,34 @@ mod tests {
             .as_ref()
             .unwrap()
             .link_complete
-            .accept_pending));
+            .accept_pending
+            .is_some()));
         release.send(()).unwrap();
         visual.run_until_parked();
         assert_eq!(shown(&note, visual), "[[Archive/Roadmap]]|");
         undo(visual);
         assert_eq!(shown(&note, visual), "[[road|", "one-step Undo");
+    }
+
+    #[gpui::test]
+    fn pending_enter_with_no_match_returns_to_the_editor(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        let (mut reached, release) = hold_notes();
+        set(&note, visual, "[[zzzz|");
+        assert_eq!(
+            reached.try_recv(),
+            Ok(Some(())),
+            "positive control: empty search actually ran"
+        );
+        keys(visual, "enter");
+        assert_eq!(shown(&note, visual), "[[zzzz|");
+        release.send(()).unwrap();
+        visual.run_until_parked();
+        assert!(
+            shown(&note, visual).contains('\n'),
+            "no match leaves ordinary Enter available"
+        );
+        assert!(offered(&note, visual).is_none());
     }
 
     #[gpui::test]
