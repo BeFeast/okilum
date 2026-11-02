@@ -33,6 +33,10 @@ impl Selection {
 }
 
 fn read_selected_source(root: &Path, rel: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        root.canonicalize()? == root,
+        "The opened folder has been redirected"
+    );
     let path = super::checked_path(root, rel)?;
     Ok(std::fs::read_to_string(path)?)
 }
@@ -91,7 +95,7 @@ mod tests {
     #[test]
     fn source_reads_refuse_paths_escaping_the_open_root() {
         let fixture = fixture();
-        let root = fixture.path().join("notes");
+        let root = fixture.path().join("notes").canonicalize().unwrap();
         let outside = fixture.path().join("outside.md");
         std::fs::write(&outside, "outside bytes").unwrap();
         assert_eq!(
@@ -104,6 +108,16 @@ mod tests {
         {
             std::os::unix::fs::symlink(&outside, root.join("redirect.md")).unwrap();
             assert!(read_selected_source(&root, "redirect.md").is_err());
+            let outside_root = fixture.path().join("outside-folder");
+            std::fs::create_dir(&outside_root).unwrap();
+            std::fs::write(outside_root.join("start.md"), "outside selected bytes").unwrap();
+            assert_eq!(
+                read_selected_source(&outside_root.canonicalize().unwrap(), "start.md").unwrap(),
+                "outside selected bytes"
+            );
+            std::fs::rename(&root, fixture.path().join("old-notes")).unwrap();
+            std::os::unix::fs::symlink(outside_root, &root).unwrap();
+            assert!(read_selected_source(&root, "start.md").is_err());
         }
         assert_eq!(std::fs::read_to_string(outside).unwrap(), "outside bytes");
     }
@@ -210,6 +224,91 @@ mod tests {
             assert!(r.single_file && r.searcher.is_none() && r.index_dir.is_none());
             assert!(r.shared_session.is_none());
             assert!(!listed(r, "unexpanded/hidden.md"));
+        });
+        assert!(!root.join(".okilum").exists());
+    }
+
+    #[gpui::test]
+    fn folder_launch_tracks_external_nested_changes_without_vault_enrollment(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = fixture();
+        let root = fixture.path().join("notes");
+        std::fs::create_dir_all(root.join("child/unexpanded")).unwrap();
+        std::fs::write(root.join("child/unexpanded/hidden.md"), "# Hidden").unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        open_path: Some(root.clone()),
+                        session_directory: Some(fixture.path().join("state")),
+                        panel_settings_override: Some(fixture.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.single_file && listed(r, "child"));
+            assert!(!listed(r, "child/unexpanded"));
+        });
+        reader.update_in(visual, |r, _, cx| r.load_quick_folder("child".into(), cx));
+        visual.run_until_parked();
+        std::fs::write(
+            root.join("child/external.md"),
+            "# Nested
+",
+        )
+        .unwrap();
+        std::fs::write(root.join("child/image.png"), b"attachment").unwrap();
+        settle(visual, &reader, |r, _| {
+            listed(r, "child/external.md") && listed(r, "child/image.png")
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("child/external.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        // Atomic replacement, as used by external editors, must keep the watch.
+        std::fs::write(
+            root.join("child/replacement.md"),
+            "# Replaced
+",
+        )
+        .unwrap();
+        // Remove first so this fixture uses portable filesystem operations on Windows too.
+        std::fs::remove_file(root.join("child/external.md")).unwrap();
+        std::fs::rename(
+            root.join("child/replacement.md"),
+            root.join("child/external.md"),
+        )
+        .unwrap();
+        std::fs::rename(root.join("child/image.png"), root.join("child/renamed.png")).unwrap();
+        settle(visual, &reader, |r, _| {
+            r.note_source.contains("Replaced")
+                && listed(r, "child/renamed.png")
+                && !listed(r, "child/image.png")
+        });
+        std::fs::remove_dir_all(root.join("child")).unwrap();
+        settle(visual, &reader, |r, _| {
+            !listed(r, "child") && r.deleted_note.is_some()
+        });
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "child/external.md");
+            assert!(r.note_source.contains("Replaced"));
+            assert!(!listed(r, "child/unexpanded/hidden.md"));
+            assert!(r.single_file && r.searcher.is_none() && r.index_dir.is_none());
+            assert!(r.shared_session.is_none());
         });
         assert!(!root.join(".okilum").exists());
     }

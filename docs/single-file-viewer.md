@@ -12,7 +12,11 @@ recursive watcher, backlinks reconciliation, or Inbox computation in quick mode.
 Already browsed directories use non-recursive subscriptions through the vault
 watcher debounce and change-delivery path. External creates, deletes and renames
 refresh only those shallow inventories, including attachments; unexpanded
-subtrees remain unenumerated. Completed local paste/drop files publish only
+subtrees remain unenumerated. Each shallow listing has its own request identity;
+older results and errors cannot overwrite a newer listing or revive a removed
+parent's descendants. Root, load and watcher replacement also invalidate pending
+listings. Redirected directory paths are refused, including symlinks within the
+opened root. Completed local paste/drop files publish only
 their known paths and ancestors, without enumerating attachment-folder siblings.
 Session and source-edit history remain durable application state outside the
 notes, and session restore preserves quick mode. Rescan and source saves do not

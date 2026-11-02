@@ -1709,6 +1709,7 @@ struct Reader {
     /// loop only borrows it through the entity.
     watcher: Option<VaultWatcher>,
     quick_folders: std::collections::BTreeSet<String>,
+    quick_folder_refreshes: std::collections::BTreeMap<String, Arc<()>>,
     watcher_generation: u64,
     watcher_poll_active: bool,
     #[cfg(test)]
@@ -2009,6 +2010,7 @@ impl Reader {
             vault_root: vault_root.clone(),
             watcher: None,
             quick_folders: Default::default(),
+            quick_folder_refreshes: Default::default(),
             watcher_generation: 0,
             watcher_poll_active: false,
             #[cfg(test)]

@@ -185,3 +185,7 @@ run_tests okilum-shell --bins reader_trash_fs::vault_trash_inventory_tests::
 
 # #588: one-use fresh preparation never regenerates partial state.
 run_tests okilum-sync-controller --lib sidecar::macos::preparation::
+
+# #2347: bounded folder watches and stale shallow-listing publication guards.
+run_tests okilum-shell --bins reader_files::single_folder_watch::tests::
+run_tests okilum-shell --bins reader_loading::quick_view_tests::quick_folder_
