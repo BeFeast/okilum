@@ -119,6 +119,13 @@ pub(crate) fn restore(mut base: Opts, cx: &mut App) -> Task<bool> {
                 }
             }
         }
+        // If every saved vault disappeared, use the normal start screen /
+        // missing-folder notice instead of leaving an invisible application.
+        cx.update(|cx| {
+            if cx.windows().is_empty() {
+                reader_startup::launch(base, cx);
+            }
+        });
         opened
     })
 }
@@ -353,6 +360,35 @@ mod tests {
                 1,
                 "the failed target is surfaced in an error window"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn update_restart_with_only_missing_vaults_keeps_a_visible_start_window(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_open::install(cx);
+            restore(
+                Opts {
+                    restart_windows: vec![Window::Vault {
+                        root: fixture.path().join("missing-vault"),
+                        note: None,
+                    }],
+                    session_directory: Some(fixture.path().join("state")),
+                    cache_base_override: Some(fixture.path().join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .detach();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(capture(cx).is_empty());
+            assert_eq!(cx.windows().len(), 1, "normal startup remains available");
         });
     }
 }
