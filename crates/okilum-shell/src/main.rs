@@ -97,6 +97,8 @@ mod reader_move;
 #[cfg(any(unix, windows))]
 mod reader_move_picker;
 mod reader_navigation;
+mod reader_document;
+mod reader_panes;
 mod reader_obsidian;
 mod reader_open;
 mod reader_open_windows;
