@@ -183,6 +183,7 @@ fn typed_1478_history_recall_replaces_the_old_token_instead_of_prepending_it(
         let composer = cx.new(|cx| {
             let mut composer = Composer::new(input, cx);
             composer.bind_history(feed);
+            composer.set_controls(true, false, cx);
             let mut draft = TypedDraft::from_text("BUG ".into());
             assert!(draft.detect_token());
             composer.restore_typed_context(scope(), draft.text.clone(), Some(draft.retained_metadata()), window, cx).unwrap();

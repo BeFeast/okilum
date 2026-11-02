@@ -119,6 +119,7 @@ fn typed_1478_snapshot_caches_data_only_and_tracks_native_role_identity_and_remo
         feed.apply_native(
             NativeChanges {
                 removed: vec![key("thread", "preallocated")],
+                order: Some(vec![key("thread", "manager"), key("foreign", "secret")]),
                 ..Default::default()
             },
             &[],
