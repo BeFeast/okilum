@@ -923,6 +923,7 @@ impl Reader {
                                 .table_grid
                                 .update(cx, |grid, cx| grid.claim_paste_edit(stamp, window, cx));
                         }
+                        this.suppress_pasted_completion(cx);
                         eprintln!("Paste: inserted {bytes} bytes");
                         // A file too large to copy was linked where it is; say so.
                         let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());

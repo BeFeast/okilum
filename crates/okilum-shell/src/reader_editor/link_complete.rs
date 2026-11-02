@@ -52,18 +52,21 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
     }
     let line_start = text[..caret].rfind('\n').map_or(0, |at| at + 1);
     let before = &text[line_start..caret];
-    let (kind, offset, query) = providers::trigger(before, true)?;
-    let start = line_start + offset;
-    let delimiter = match kind {
-        Kind::Note | Kind::Heading(_) => offset - 2,
-        _ => offset,
-    };
-    if !matches!(kind, Kind::Language) && before[..delimiter].matches('`').count() % 2 == 1 {
+    let query = line_query(before, line_start, caret)?;
+    if before.starts_with("    ") || before.starts_with('\t') {
         return None;
     }
     if lists::in_code(text, line_start) {
         return None;
     }
+    Some(query)
+}
+
+/// The UI only copies the bounded prefix of the caret's line. Full Markdown
+/// context is validated on the worker before any rows can be published.
+fn line_query(before: &str, line_start: usize, caret: usize) -> Option<LinkQuery> {
+    let (kind, offset, query) = providers::trigger(before, true)?;
+    let start = line_start + offset;
     Some(LinkQuery {
         start,
         caret,
@@ -90,8 +93,8 @@ pub(super) struct Candidate {
 pub(super) struct Index {
     vault: Arc<Vault>,
     show_hidden: bool,
-    /// (lowercase title, lowercase path without `.md`, index into `vault.notes`)
-    notes: std::sync::OnceLock<Vec<(String, String, usize)>>,
+    /// (lowercase title, lowercase path without `.md`, title length, vault index)
+    notes: std::sync::OnceLock<Vec<(String, String, usize, usize)>>,
 }
 
 impl Index {
@@ -111,6 +114,7 @@ impl Index {
     pub(super) fn search(&self, query: &str, from: &str) -> Vec<Candidate> {
         let query = query.trim().to_lowercase();
         let from_folder = folder_of(from);
+        let matcher = providers::Matcher::new(&query);
         let notes = self.notes.get_or_init(|| {
             self.vault
                 .notes
@@ -119,25 +123,23 @@ impl Index {
                 .filter(|(_, note)| self.show_hidden || !reader_tree::hidden(&note.path))
                 .filter(|(_, note)| !note.path.contains(NAME_END))
                 .map(|(at, note)| {
-                    (
-                        note.title.to_lowercase(),
-                        strip_md(&note.path).to_lowercase(),
-                        at,
-                    )
+                    let title = note.title.to_lowercase();
+                    let length = title.chars().count();
+                    (title, strip_md(&note.path).to_lowercase(), length, at)
                 })
                 .collect()
         });
         let mut ranked: Vec<(u8, usize, &str, usize)> = notes
             .iter()
-            .filter(|(_, _, at)| self.vault.notes[*at].path != from)
-            .filter_map(|(title, path, at)| {
+            .filter(|(_, _, _, at)| self.vault.notes[*at].path != from)
+            .filter_map(|(title, path, length, at)| {
                 let score = if query.is_empty() {
                     // Nothing typed yet: the note's neighbours first.
                     u8::from(folder_of(&self.vault.notes[*at].path) != from_folder)
                 } else {
-                    score(&query, title, path)?
+                    matcher.score(title, path)?
                 };
-                Some((score, title.chars().count(), path.as_str(), *at))
+                Some((score, *length, path.as_str(), *at))
             })
             .collect();
         ranked.sort_unstable();
@@ -167,11 +169,6 @@ fn strip_md(path: &str) -> &str {
 
 fn folder_of(path: &str) -> &str {
     path.rfind('/').map_or("", |at| &path[..at])
-}
-
-/// Lower is better; `None` does not match. Both sides are lowercase.
-fn score(query: &str, title: &str, path: &str) -> Option<u8> {
-    providers::score(query, title, path)
 }
 
 /// The shortest trailing part of the note's path that resolves to it alone
@@ -313,14 +310,12 @@ fn catalog(query: &LinkQuery) -> Vec<Candidate> {
 
 fn rank_rows(query: &str, items: Vec<Candidate>) -> Vec<Candidate> {
     let query = query.to_lowercase();
+    let matcher = providers::Matcher::new(&query);
     let mut ranked: Vec<_> = items
         .into_iter()
         .filter_map(|item| {
-            let score = score(
-                &query,
-                &item.title.to_lowercase(),
-                &item.title.to_lowercase(),
-            )?;
+            let title = item.title.to_lowercase();
+            let score = matcher.score(&title, &title)?;
             Some((score, item))
         })
         .collect();
@@ -501,17 +496,40 @@ type HeadingHold = (
 );
 #[cfg(test)]
 thread_local! {
+    static NOTE_READ_HOLD: std::cell::RefCell<Option<HeadingHold>> = const { std::cell::RefCell::new(None) };
     static HEADING_READ_HOLD: std::cell::RefCell<Option<HeadingHold>> = const { std::cell::RefCell::new(None) };
     static HEADING_ACCEPT_HOLD: std::cell::RefCell<Option<HeadingHold>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Filesystem stamps can repeat for a rapid same-size rewrite with restored
-/// mtime. Exact bounded prefix bytes are part of this derived metadata revision,
-/// so a stamp alone never authorizes parsing-cache reuse (at most 8 MiB/128 notes).
+/// Disposable presentation metadata. Native identity/change time catches
+/// replacements and restored-mtime rewrites; a new vault snapshot also clears
+/// the cache (watcher invalidation, including coarse/network filesystems).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MetadataRevision {
-    source: SourceRevision,
-    prefix: String,
+    len: u64,
+    modified: std::time::SystemTime,
+    created: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    native: (u64, u64, i64, i64),
+}
+
+impl MetadataRevision {
+    fn read(path: &std::path::Path) -> std::io::Result<Self> {
+        let meta = std::fs::symlink_metadata(path)?;
+        if !meta.is_file() {
+            return Err(std::io::Error::other("Not a regular note"));
+        }
+        Ok(Self {
+            len: meta.len(),
+            modified: meta.modified()?,
+            created: meta.created().ok(),
+            #[cfg(unix)]
+            native: {
+                use std::os::unix::fs::MetadataExt;
+                (meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec())
+            },
+        })
+    }
 }
 
 /// One visible page, bound to the exact editor context. It is also the
@@ -592,6 +610,8 @@ fn metadata_prefix(path: &std::path::Path) -> std::io::Result<String> {
             "Completion metadata source is unavailable",
         ));
     }
+    #[cfg(test)]
+    METADATA_READS.with(|reads| reads.set(reads.get() + 1));
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(MAX_METADATA_BYTES)
@@ -639,29 +659,16 @@ fn cached_type_badge(
         return None;
     }
     let full_path = root.join(path);
-    let before = SourceRevision::read(&full_path).ok()?;
-    let revision = MetadataRevision {
-        source: before.clone(),
-        prefix: metadata_prefix(&full_path).ok()?,
-    };
-    let cached = if before.is_precise() {
-        cache.lock().ok()?.get(root, path, &revision).cloned()
-    } else {
-        None // Coarse revisions cannot authorize reuse.
-    };
-    let badge = match cached {
-        Some(badge) => badge,
-        None => type_badge(&revision.prefix),
-    };
-    if SourceRevision::read(&full_path).ok()? != before {
+    let before = MetadataRevision::read(&full_path).ok()?;
+    if let Some(badge) = cache.lock().ok()?.get(root, path, &before).cloned() {
+        return badge;
+    }
+    let prefix = metadata_prefix(&full_path).ok()?;
+    let badge = type_badge(&prefix);
+    if MetadataRevision::read(&full_path).ok()? != before {
         return None;
     }
-    if before.is_precise() {
-        cache
-            .lock()
-            .ok()?
-            .insert(root, path, revision, badge.clone());
-    }
+    cache.lock().ok()?.insert(root, path, before, badge.clone());
     badge
 }
 
@@ -681,6 +688,9 @@ pub(super) struct State {
         bool,
     )>,
     pub open: Option<Open>,
+    pending: Option<LinkQuery>,
+    accept_pending: bool,
+    pasted: Option<SourceStamp>,
     /// The `[[` whose list Escape closed (or a choice completed); it stays
     /// closed until the caret leaves that link.
     dismissed: Option<usize>,
@@ -698,9 +708,42 @@ pub(super) struct State {
     preferred: Option<(Kind, usize, String, String)>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static REFRESH_TIMES: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
+    static METADATA_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+struct RefreshTiming(std::time::Instant);
+#[cfg(test)]
+impl Drop for RefreshTiming {
+    fn drop(&mut self) {
+        REFRESH_TIMES.with(|samples| {
+            samples
+                .borrow_mut()
+                .push(self.0.elapsed().as_secs_f64() * 1000.0)
+        });
+    }
+}
+
 impl Reader {
+    pub(super) fn suppress_pasted_completion(&mut self, cx: &mut Context<Self>) {
+        if let Some(editing) = self.editing.as_mut() {
+            let stamp = editing.input.read(cx).source_stamp();
+            let state = &mut editing.link_complete;
+            state.pasted = Some(stamp);
+            state.pending = None;
+            state.accept_pending = false;
+            state.open = None;
+            state.task = None;
+            cx.notify();
+        }
+    }
+
     /// Recompute the list after the text or the caret changed.
     pub(super) fn refresh_link_complete(&mut self, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        let _timing = RefreshTiming(std::time::Instant::now());
         let emoji = reader_ui_state::emoji_completion(cx);
         let show_hidden = self.sidebar.show_hidden;
         let vault = self.vault.clone();
@@ -737,6 +780,7 @@ impl Reader {
             editing.link_complete.preferred = None;
             editing.link_complete.dismissed = None;
             editing.link_complete.metadata_page = None;
+            editing.link_complete.metadata_cache = Default::default();
         }
         let selection = seen.1.clone();
         let expected_seen = seen.clone();
@@ -748,26 +792,27 @@ impl Reader {
         let query = (editing.markdown
             && selection.is_empty()
             && input.is_editable()
-            && !input.ime_composing())
+            && !input.ime_composing()
+            && editing.link_complete.pasted != Some(input.source_stamp()))
         .then(|| {
             let row = input.cursor_position().line as usize;
-            let line = input.text().slice_line(row).to_string();
-            (line.contains("[[")
-                || line.contains(':')
-                || line.starts_with('/')
-                || line.starts_with("```"))
-            .then(|| link_query(&input.value(), selection.start))
-            .flatten()
-            .filter(|query| emoji || !matches!(query.kind, Kind::Emoji))
+            let start = input.text().line_start_offset(row);
+            let len = selection.start.checked_sub(start)?;
+            // Even a pathological single-line note cannot allocate on the key path.
+            if len > 1024 {
+                return None;
+            }
+            let line = input.text().slice(start..selection.start).to_string();
+            line_query(&line, start, selection.start)
+                .filter(|query| emoji || !matches!(query.kind, Kind::Emoji))
         })
         .flatten();
-        let source = query
-            .as_ref()
-            .filter(|q| matches!(q.kind, Kind::Heading(_)))
-            .map(|_| input.value().to_string());
+        let source = input.text().clone();
         let input_entity = editing.input.clone();
         let state = &mut editing.link_complete;
         state.task = None;
+        state.pending = None;
+        state.accept_pending = false;
         state.heading_source = None;
         state.heading_accepting = false;
         let Some(query) = query else {
@@ -796,6 +841,7 @@ impl Reader {
         {
             state.index = Some(Arc::new(Index::new(vault, show_hidden)));
         }
+        state.pending = Some(query.clone());
         publish(state, query.clone(), Vec::new());
         {
             let expected_vault = self.vault.clone();
@@ -806,20 +852,24 @@ impl Reader {
             let hold = if matches!(query.kind, Kind::Heading(_)) {
                 HEADING_READ_HOLD.with(|hold| hold.borrow_mut().take())
             } else {
-                None
+                NOTE_READ_HOLD.with(|hold| hold.borrow_mut().take())
             };
             state.task = Some(cx.spawn(async move |this, cx| {
                 let worker_query = query.clone();
                 let enriched = cx
                     .background_executor()
                     .spawn(async move {
+                        let source = source.to_string();
+                        if link_query(&source, worker_query.caret).as_ref() != Some(&worker_query) {
+                            return Enriched::default();
+                        }
                         let items = match worker_query.kind {
                             Kind::Note => index.search(&worker_query.query, &from),
                             Kind::Heading(_) => Vec::new(),
                             _ => catalog(&worker_query),
                         };
                         let mut enriched =
-                            enrich_bound(&vault, &from, source.as_deref(), &worker_query, items);
+                            enrich_bound(&vault, &from, Some(&source), &worker_query, items);
                         #[cfg(test)]
                         if let Some((ready, held)) = hold {
                             let _ = ready.send(());
@@ -833,7 +883,7 @@ impl Reader {
                             enriched = enrich_bound(
                                 &vault,
                                 &from,
-                                source.as_deref(),
+                                Some(&source),
                                 &worker_query,
                                 Vec::new(),
                             );
@@ -841,7 +891,7 @@ impl Reader {
                         enriched
                     })
                     .await;
-                let _ = this.update(cx, |this, cx| {
+                let _ = this.update_in_own_window(cx, |this, window, cx| {
                     if !Arc::ptr_eq(&this.vault, &expected_vault)
                         || this.current_rel != from_expected
                     {
@@ -869,8 +919,13 @@ impl Reader {
                     {
                         return;
                     }
+                    editing.link_complete.pending = None;
+                    let accept = std::mem::take(&mut editing.link_complete.accept_pending);
                     editing.link_complete.heading_source = enriched.heading;
                     publish(&mut editing.link_complete, query, enriched.rows);
+                    if accept {
+                        this.link_complete_accept(None, Trigger::Enter, window, cx);
+                    }
                     this.refresh_link_complete_metadata(cx);
                     cx.notify();
                 });
@@ -966,7 +1021,9 @@ impl Reader {
     /// The editor while its link list is open and may take keys.
     fn link_complete_input(&self, window: &Window, cx: &App) -> Option<Entity<EditorState>> {
         let editing = self.editing.as_ref()?;
-        editing.link_complete.open.as_ref()?;
+        if editing.link_complete.open.is_none() && editing.link_complete.pending.is_none() {
+            return None;
+        }
         let input = editing.input.read(cx);
         let current = (
             input.source_stamp(),
@@ -984,7 +1041,11 @@ impl Reader {
         {
             return None;
         }
-        if matches!(editing.link_complete.open.as_ref()?.query.kind, Kind::Emoji)
+        if editing
+            .link_complete
+            .open
+            .as_ref()
+            .is_some_and(|open| matches!(open.query.kind, Kind::Emoji))
             && !reader_ui_state::emoji_completion(cx)
         {
             return None;
@@ -1008,6 +1069,9 @@ impl Reader {
             return;
         };
         let count = open.items.len() as isize;
+        if count == 0 {
+            return;
+        }
         open.selected = (open.selected as isize + delta).rem_euclid(count) as usize;
         self.refresh_link_complete_metadata(cx);
         cx.stop_propagation();
@@ -1031,7 +1095,14 @@ impl Reader {
         }
         if let Some(editing) = self.editing.as_mut() {
             let state = &mut editing.link_complete;
-            state.dismissed = state.open.take().map(|open| open.query.start);
+            state.dismissed = state
+                .open
+                .take()
+                .map(|open| open.query.start)
+                .or_else(|| state.pending.take().map(|query| query.start));
+            state.pending = None;
+            state.accept_pending = false;
+            state.task = None;
         }
         cx.stop_propagation();
         cx.notify();
@@ -1065,6 +1136,7 @@ impl Reader {
         if !self.ime_allows(trigger, cx) {
             return;
         }
+        self.refresh_link_complete(cx);
         let Some(input) = self.link_complete_input(window, cx) else {
             return;
         };
@@ -1072,6 +1144,16 @@ impl Reader {
             return;
         };
         let Some(open) = editing.link_complete.open.take() else {
+            if choice.is_none()
+                && editing
+                    .link_complete
+                    .pending
+                    .as_ref()
+                    .is_some_and(|query| matches!(query.kind, Kind::Note))
+            {
+                editing.link_complete.accept_pending = true;
+                cx.stop_propagation();
+            }
             return;
         };
         let Some(item) = open.items.get(choice.unwrap_or(open.selected)) else {
@@ -1389,6 +1471,47 @@ mod tests {
             open.items[15].badge, None,
             "missing source cannot reuse a badge"
         );
+    }
+
+    #[test]
+    fn metadata_cache_skips_bytes_until_native_revision_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Plan.md");
+        std::fs::write(&path, "---\ntype: project\n---\n").unwrap();
+        let cache = std::sync::Mutex::new(providers::MetadataCache::default());
+        METADATA_READS.with(|reads| reads.set(0));
+        assert_eq!(
+            cached_type_badge(directory.path(), "Plan.md", &cache).as_deref(),
+            Some("project")
+        );
+        assert_eq!(
+            METADATA_READS.with(|reads| reads.get()),
+            1,
+            "positive control: real prefix read"
+        );
+        for _ in 0..30 {
+            assert_eq!(
+                cached_type_badge(directory.path(), "Plan.md", &cache).as_deref(),
+                Some("project")
+            );
+        }
+        assert_eq!(
+            METADATA_READS.with(|reads| reads.get()),
+            1,
+            "typing does not reopen unchanged notes"
+        );
+        std::fs::write(&path, "---\ntype: contact\n---\n").unwrap();
+        assert_eq!(
+            cached_type_badge(directory.path(), "Plan.md", &cache).as_deref(),
+            Some("contact")
+        );
+        assert_eq!(
+            METADATA_READS.with(|reads| reads.get()),
+            2,
+            "changed note read again"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(cached_type_badge(directory.path(), "Plan.md", &cache), None);
     }
 
     #[test]
@@ -1848,6 +1971,14 @@ mod tests {
     }
 
     fn open(cx: &mut TestAppContext) -> (Note, &mut VisualTestContext) {
+        open_fixture(cx, &[], "\n")
+    }
+
+    fn open_fixture<'a>(
+        cx: &'a mut TestAppContext,
+        corpus: &[String],
+        source: &str,
+    ) -> (Note, &'a mut VisualTestContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             bind_keys(cx);
@@ -1857,9 +1988,17 @@ mod tests {
         for folder in ["Projects", "Archive"] {
             std::fs::create_dir_all(root.join(folder)).unwrap();
         }
-        std::fs::write(root.join("note.md"), "\n").unwrap();
-        for note in ["Recipes.md", "Projects/Roadmap.md", "Archive/Roadmap.md"] {
-            std::fs::write(root.join(note), "# x\n").unwrap();
+        std::fs::write(root.join("note.md"), source).unwrap();
+        let defaults =
+            ["Recipes.md", "Projects/Roadmap.md", "Archive/Roadmap.md"].map(String::from);
+        for note in if corpus.is_empty() {
+            &defaults[..]
+        } else {
+            corpus
+        } {
+            let path = root.join(note);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "# x\n").unwrap();
         }
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -2065,12 +2204,9 @@ mod tests {
         assert_eq!(shown(&note, visual), "# Unsaved\n\n[[#Unsaved]]|");
         undo(visual);
         assert_eq!(shown(&note, visual), "# Unsaved\n\n[[#Un|");
-        assert!(note.reader.read_with(visual, |reader, _| reader
-            .editing
-            .as_ref()
-            .unwrap()
-            .live_preview
-            .enabled));
+        assert!(note.reader.read_with(visual, |reader, _| {
+            reader.editing.as_ref().unwrap().live_preview.enabled
+        }));
     }
 
     #[gpui::test]
@@ -2186,6 +2322,258 @@ mod tests {
             undo(visual);
             assert_eq!(shown(&note, visual), source);
         }
+    }
+
+    fn hold_notes() -> (
+        futures::channel::oneshot::Receiver<()>,
+        futures::channel::oneshot::Sender<()>,
+    ) {
+        let (ready, reached) = futures::channel::oneshot::channel();
+        let (release, held) = futures::channel::oneshot::channel();
+        NOTE_READ_HOLD.with(|slot| *slot.borrow_mut() = Some((ready, held)));
+        (reached, release)
+    }
+
+    #[gpui::test]
+    fn enter_while_changed_note_query_is_pending_accepts_fresh_best_once(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        set(&note, visual, "[[rec|");
+        assert_eq!(
+            offered(&note, visual).unwrap()[0],
+            "Recipes.md",
+            "positive control: previous best"
+        );
+        let (mut reached, release) = hold_notes();
+        set(&note, visual, "[[road|");
+        assert_eq!(reached.try_recv(), Ok(Some(())), "actual note worker held");
+        keys(visual, "enter");
+        assert_eq!(
+            shown(&note, visual),
+            "[[road|",
+            "Enter waits without a newline"
+        );
+        assert!(note.reader.read_with(visual, |r, _| r
+            .editing
+            .as_ref()
+            .unwrap()
+            .link_complete
+            .accept_pending));
+        release.send(()).unwrap();
+        visual.run_until_parked();
+        assert_eq!(shown(&note, visual), "[[Archive/Roadmap]]|");
+        undo(visual);
+        assert_eq!(shown(&note, visual), "[[road|", "one-step Undo");
+    }
+
+    #[gpui::test]
+    fn pending_enter_cannot_outlive_escape_caret_source_or_ime(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        for cancel in ["escape", "caret", "source", "ime"] {
+            let (mut reached, release) = hold_notes();
+            set(&note, visual, "[[road|");
+            assert_eq!(
+                reached.try_recv(),
+                Ok(Some(())),
+                "positive control: {cancel} worker held"
+            );
+            keys(visual, "enter");
+            match cancel {
+                "escape" => keys(visual, "escape"),
+                "caret" => {
+                    note.input
+                        .update(visual, |i, cx| i.set_selected_range(0..0, cx));
+                    visual.run_until_parked();
+                }
+                "source" => set(&note, visual, "plain|"),
+                "ime" => {
+                    use gpui::EntityInputHandler as _;
+                    visual.update(|window, cx| {
+                        note.input.update(cx, |i, cx| {
+                            i.replace_and_mark_text_in_range(None, "に", Some(1..1), window, cx)
+                        })
+                    });
+                    visual.run_until_parked();
+                }
+                _ => unreachable!(),
+            }
+            let draft = shown(&note, visual);
+            let _ = release.send(());
+            visual.run_until_parked();
+            assert_eq!(
+                shown(&note, visual),
+                draft,
+                "{cancel} cancels queued acceptance"
+            );
+            if cancel == "escape" {
+                assert!(offered(&note, visual).is_none());
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn paste_ending_in_a_trigger_stays_closed_but_typing_resumes(cx: &mut TestAppContext) {
+        use gpui_component::input::Paste;
+        let (note, visual) = open(cx);
+        for text in ["[[", "[[rec", "/", ":smi", "```ru"] {
+            set(&note, visual, "|");
+            visual
+                .update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned())));
+            visual.dispatch_action(Paste);
+            visual.run_until_parked();
+            assert_eq!(
+                shown(&note, visual),
+                format!("{text}|"),
+                "actual paste inserted"
+            );
+            assert!(
+                offered(&note, visual).is_none(),
+                "paste {text} must not open popup"
+            );
+        }
+        set(&note, visual, "|");
+        typed(visual, "[[rec");
+        assert!(
+            offered(&note, visual).is_some(),
+            "positive control: typing opens popup"
+        );
+    }
+
+    #[gpui::test]
+    fn actual_popup_suppresses_code_and_reopens_in_prose(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        for source in [
+            "`[[rec|`",
+            "``[[rec|``",
+            "```rust\n[[rec|\n```",
+            "~~~\n[[rec|\n~~~",
+            "    [[rec|",
+            "\t[[rec|",
+        ] {
+            set(&note, visual, source);
+            assert!(offered(&note, visual).is_none(), "code: {source}");
+        }
+        set(&note, visual, "```rust\n[[rec\n```\n[[rec|");
+        assert_eq!(
+            offered(&note, visual).unwrap()[0],
+            "Recipes.md",
+            "positive control: after code"
+        );
+    }
+
+    /// Exercise the real popup, worker, resolver and Undo with an on-disk
+    /// synthetic inventory. Rank is measured for named intents, not inferred
+    /// from a scorer-only fixture or claimed for every possible note title.
+    #[gpui::test]
+    fn intended_notes_in_5576_are_selectable_with_three_or_four_characters(
+        cx: &mut TestAppContext,
+    ) {
+        let intents = [
+            ("rec", "Kitchen/Recipes.md"),
+            ("road", "Projects/Roadmap.md"),
+            ("road", "Archive/Roadmap.md"),
+            ("mac", "Hardware/Macbook.md"),
+            ("quan", "Science/Quantum.md"),
+            ("éla", "Writing/Élan.md"),
+            ("slee", "Health/Sleep.md"),
+            ("w/no", "Work/Notes.md"),
+            ("guit", "Music/Guitar.md"),
+            ("rus", "Code/Rust.md"),
+            ("tok", "Travel/Tokyo.md"),
+            ("budg", "Finance/Budget.md"),
+        ];
+        let mut corpus: Vec<String> = intents.iter().map(|(_, path)| (*path).into()).collect();
+        let topics = [
+            "biology",
+            "calculus",
+            "history",
+            "design",
+            "gardening",
+            "photography",
+        ];
+        while corpus.len() < 5575 {
+            let n = corpus.len();
+            corpus.push(format!(
+                "Library/Group {}/Observation {n:04} about {}.md",
+                n % 73,
+                topics[n % topics.len()]
+            ));
+        }
+        let (note, visual) = open_fixture(cx, &corpus, "\n");
+        assert_eq!(
+            note.reader.read_with(visual, |r, _| r.vault.notes.len()),
+            5576
+        );
+        let mut measurements = Vec::new();
+        REFRESH_TIMES.with(|times| times.borrow_mut().clear());
+        for (query, path) in intents {
+            set(&note, visual, "See [[|");
+            let start = std::time::Instant::now();
+            typed(visual, query);
+            let offered = offered(&note, visual).expect("actual worker published candidates");
+            let rank = offered
+                .iter()
+                .position(|p| p == path)
+                .expect("intended note found");
+            assert!(rank < MAX_ROWS, "{query}: intended {path} at rank {rank}");
+            for _ in 0..rank {
+                keys(visual, "down");
+            }
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                visual
+                    .debug_bounds(
+                        [
+                            "link-complete-0",
+                            "link-complete-1",
+                            "link-complete-2",
+                            "link-complete-3",
+                            "link-complete-4",
+                            "link-complete-5",
+                            "link-complete-6",
+                            "link-complete-7"
+                        ][rank]
+                    )
+                    .is_some(),
+                "intended row painted"
+            );
+            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            let target = note
+                .reader
+                .read_with(visual, |r, _| target_for(&r.vault, path, "note.md"));
+            keys(visual, "enter");
+            assert_eq!(shown(&note, visual), format!("See [[{target}]]|"));
+            undo(visual);
+            assert_eq!(
+                shown(&note, visual),
+                format!("See [[{query}|"),
+                "single acceptance Undo"
+            );
+            measurements.push(serde_json::json!({"query": query, "characters": query.chars().count(),
+                "intended": path, "rank_one_based": rank + 1, "candidates": offered.len(), "query_to_draw_ms": elapsed}));
+        }
+        let mut refresh_ms = REFRESH_TIMES.with(|times| times.borrow().clone());
+        assert!(
+            refresh_ms.len() >= intents.len() * 3,
+            "positive control: actual UI refresh callbacks sampled"
+        );
+        refresh_ms.sort_by(f64::total_cmp);
+        let max_ms = *refresh_ms.last().unwrap();
+        assert!(
+            max_ms < 16.0,
+            "UI completion refresh exceeds one 60 Hz frame: {max_ms} ms"
+        );
+        println!(
+            "COMPLETION_UI_REFRESH {}",
+            serde_json::json!({"notes": 5576, "samples": refresh_ms.len(),
+                "p50_ms": refresh_ms[refresh_ms.len()/2], "p95_ms": refresh_ms[refresh_ms.len()*95/100],
+                "max_ms": max_ms, "budget_ms": 16,
+                "boundary": "synchronous refresh_link_complete; ranking/context validation on background executor"})
+        );
+        println!(
+            "COMPLETION_5576 {}",
+            serde_json::json!({"corpus": "synthetic-topic-and-folder-inventory",
+            "notes": 5576, "boundary": "GPUI-test-worker-to-popup-draw", "measurements": measurements})
+        );
     }
 
     #[gpui::test]
