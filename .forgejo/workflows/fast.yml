@@ -78,4 +78,6 @@ jobs:
           mkdir -p "$CARGO_TARGET_DIR"
           exec 9>"$HOME/.cache/okilum-sync-source-sharing/gate.lock"
           flock -w 600 9
+          scripts/vendor-setup.sh 9>&-
+          scripts/vendor-setup.sh --verify 9>&-
           bash scripts/ci/sync-source-sharing.sh 9>&-

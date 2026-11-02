@@ -123,8 +123,8 @@ external administrative writers still require coordination.
 Current explicit missing boundaries: fresh macOS native absence inventory and
 signed-package/offline staging composition; native acceptance;
 automatic application listener restoration after process restart; symmetric
-catalog serving from a formerly receiving computer; later catalog authorization
-changes and peer removal. A running source controller serves additional authorized
+catalog serving from a formerly receiving computer; general catalog authorization
+changes and peer removal (ordinary-source sharing below grants its own additions). A running source controller serves additional authorized
 vault selections without a new URL, and paired identities/capabilities are durable,
 but these missing lifecycle boundaries must not be presented as delivered.
 
