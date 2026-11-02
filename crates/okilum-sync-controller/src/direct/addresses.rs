@@ -345,6 +345,30 @@ mod tests {
             },
         )?;
         assert_eq!(peer.addresses, ["tcp://10.0.0.1:22000"]);
+        remember(
+            &mut peer,
+            &Transport {
+                device: device.clone(),
+                addresses: vec![],
+            },
+        )?;
+        assert_eq!(
+            peer.addresses,
+            ["tcp://10.0.0.1:22000"],
+            "startup erased usable hints"
+        );
+        remember(
+            &mut peer,
+            &Transport {
+                device: device.clone(),
+                addresses: vec!["tcp://10.0.0.2:23000".into()],
+            },
+        )?;
+        assert_eq!(
+            peer.addresses,
+            ["tcp://10.0.0.2:23000"],
+            "new endpoint retained stale hints"
+        );
         let before = serde_json::to_value(&peer)?;
         assert!(remember(
             &mut peer,

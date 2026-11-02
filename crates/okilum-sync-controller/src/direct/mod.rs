@@ -118,7 +118,7 @@ struct Paired {
     allowed: Vec<String>,
     #[serde(default)]
     syncthing_device: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     addresses: Vec<String>,
 }
 #[derive(Serialize, Deserialize)]
@@ -733,7 +733,11 @@ impl Controller {
             &Response {
                 nonce: message.nonce,
                 result: reply,
-                transport: self.local_transport()?,
+                transport: if message.transport.is_some() {
+                    self.local_transport()?
+                } else {
+                    None
+                },
             },
         )?;
         wire::write(stream, &response)

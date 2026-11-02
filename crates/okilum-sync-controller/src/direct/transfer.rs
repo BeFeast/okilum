@@ -66,11 +66,12 @@ pub(super) fn share(
     let devices = config["devices"]
         .as_array()
         .context("invalid device inventory")?;
-    let addresses = if super::addresses::managed(&[source.daemon.config_file.clone()])?.is_some() {
-        super::addresses::with_dynamic(addresses)
-    } else {
-        vec!["dynamic".into()]
-    };
+    let addresses =
+        if super::addresses::managed(std::slice::from_ref(&source.daemon.config_file))?.is_some() {
+            super::addresses::with_dynamic(addresses)
+        } else {
+            vec!["dynamic".into()]
+        };
     if !devices.iter().any(|d| d["deviceID"] == device) {
         api.add_device(
             &json!({"deviceID":device,"name":"Okilum paired computer","addresses":addresses,
