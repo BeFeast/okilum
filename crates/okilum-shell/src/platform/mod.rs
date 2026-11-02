@@ -10,6 +10,7 @@ pub mod wayland_note_clipboard;
 pub(crate) mod windows_note_clipboard;
 
 pub mod labels;
+pub(crate) mod rich_clipboard;
 
 /// Right-to-left glyph order for the Windows text system (#1121).
 #[cfg(any(windows, test))]
