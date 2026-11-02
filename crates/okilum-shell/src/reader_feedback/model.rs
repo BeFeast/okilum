@@ -8,6 +8,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "draft.rs"]
+pub(super) mod draft;
+
 pub(super) const ENDPOINT: &str = "https://pomoi.co/api/feedback/okilum";
 const FALLBACK_ENDPOINT: &str = "https://feedback.befeast.com/api/feedback/okilum";
 pub(super) const MAX_IMAGE: usize = 8 * 1024 * 1024;
@@ -92,12 +95,107 @@ pub(super) struct Report {
 
 /// A user-chosen screen recording. Only the path is kept; the file is
 /// streamed from disk on Send, so a 90 MB clip never sits in memory.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Video {
     pub path: std::path::PathBuf,
     pub name: String,
     pub size: u64,
+    #[serde(skip)]
     pub mime: &'static str,
+    pub identity: VideoIdentity,
+}
+/// Content and filesystem identity captured at explicit selection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct VideoIdentity {
+    digest: [u8; 32],
+    modified: Option<std::time::SystemTime>,
+    created: Option<std::time::SystemTime>,
+    filesystem_file: Option<(u64, u64)>,
+}
+fn video_identity(file: &mut std::fs::File) -> Result<VideoIdentity> {
+    use sha2::{Digest, Sha256};
+    let before = file.metadata()?;
+    ensure!(
+        before.is_file() && before.len() > 0 && before.len() <= MAX_VIDEO,
+        "The selected video is not a supported nonempty regular file. Select it again."
+    );
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        ensure!(
+            total <= MAX_VIDEO,
+            "The selected video grew. Select it again."
+        );
+        digest.update(&buffer[..read]);
+    }
+    let after = file.metadata()?;
+    ensure!(
+        before.len() == total
+            && after.len() == total
+            && before.modified().ok() == after.modified().ok(),
+        "The selected video changed. Select it again."
+    );
+    #[cfg(unix)]
+    let filesystem_file = {
+        use std::os::unix::fs::MetadataExt;
+        Some((before.dev(), before.ino()))
+    };
+    #[cfg(windows)]
+    let filesystem_file = {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+        let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: the File owns a live handle and information is writable.
+        ensure!(
+            unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } != 0,
+            "Couldn't identify the selected video: {}",
+            std::io::Error::last_os_error()
+        );
+        Some((
+            u64::from(information.dwVolumeSerialNumber),
+            (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+        ))
+    };
+    #[cfg(not(any(unix, windows)))]
+    let filesystem_file = None;
+    file.rewind()?;
+    Ok(VideoIdentity {
+        digest: digest.finalize().into(),
+        modified: before.modified().ok(),
+        created: before.created().ok(),
+        filesystem_file,
+    })
+}
+/// Freeze the verified selection before HTTP begins. An in-place source edit
+/// during upload cannot change bytes already approved by the user.
+fn selected_video_snapshot(video: &Video) -> Result<std::fs::File> {
+    ensure!(
+        std::fs::metadata(&video.path)?.is_file(),
+        "The selected video is no longer a regular file. Select it again."
+    );
+    let mut source = std::fs::File::open(&video.path)
+        .context("The selected video is unavailable. Select it again or remove it.")?;
+    ensure!(
+        video_identity(&mut source)? == video.identity,
+        "The selected video changed or was replaced. Select it again or remove it."
+    );
+    let mut snapshot = tempfile::tempfile()?;
+    std::io::copy(&mut source.take(MAX_VIDEO + 1), &mut snapshot)?;
+    snapshot.rewind()?;
+    let identity = video_identity(&mut snapshot)?;
+    ensure!(
+        identity.digest == video.identity.digest && snapshot.metadata()?.len() == video.size,
+        "The selected video changed while preparing it. Select it again."
+    );
+    Ok(snapshot)
 }
 impl Video {
     pub fn size_label(&self) -> String {
@@ -135,7 +233,14 @@ pub(super) fn video_mime(path: &Path) -> Option<&'static str> {
 }
 pub(super) fn video_file(path: &Path) -> Result<Video> {
     let mime = video_mime(path).context("Choose an MP4, MOV or WebM video.")?;
-    let metadata = std::fs::metadata(path).context("Couldn't read the video file.")?;
+    ensure!(
+        std::fs::metadata(path)
+            .context("Couldn't read the video file.")?
+            .is_file(),
+        "Choose an MP4, MOV or WebM video file."
+    );
+    let mut file = std::fs::File::open(path).context("Couldn't read the video file.")?;
+    let metadata = file.metadata()?;
     ensure!(metadata.is_file(), "Choose an MP4, MOV or WebM video file.");
     ensure!(metadata.len() > 0, "The video file is empty.");
     ensure!(
@@ -152,6 +257,7 @@ pub(super) fn video_file(path: &Path) -> Result<Video> {
         name,
         size: metadata.len(),
         mime,
+        identity: video_identity(&mut file)?,
     })
 }
 impl Report {
@@ -176,7 +282,10 @@ impl Report {
         );
         if let Some(video) = &self.video {
             // Re-check on Send: the file may have changed since it was attached.
-            video_file(&video.path)?;
+            ensure!(
+                video_file(&video.path)? == *video,
+                "The selected video changed or was replaced. Select it again or remove it."
+            );
         }
         Ok(())
     }
@@ -213,18 +322,58 @@ pub(super) struct Receipt {
     pub delivery_endpoint: Option<String>,
 }
 
+/// Shared abort future spans both endpoints and the entire response body.
+pub(super) type CancelSignal = futures_util::future::Shared<
+    futures_util::future::BoxFuture<'static, Result<(), futures_util::future::Aborted>>,
+>;
+
 pub(super) fn send(report: Report) -> Result<Receipt> {
     send_using(ENDPOINT, FALLBACK_ENDPOINT, &report)
 }
+pub(super) fn send_cancellable(report: Report, cancel: CancelSignal) -> Result<Receipt> {
+    send_using_cancellable(ENDPOINT, FALLBACK_ENDPOINT, &report, Some(cancel))
+}
 fn send_using(primary: &str, fallback: &str, report: &Report) -> Result<Receipt> {
-    okilum_http::primary_then_fallback(primary, fallback, |endpoint| send_to(endpoint, report))
+    send_using_cancellable(primary, fallback, report, None)
+}
+fn send_using_cancellable(
+    primary: &str,
+    fallback: &str,
+    report: &Report,
+    cancel: Option<CancelSignal>,
+) -> Result<Receipt> {
+    okilum_http::primary_then_fallback(primary, fallback, |endpoint| {
+        send_to_cancellable(endpoint, report, cancel.clone())
+    })
 }
 fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
+    send_to_cancellable(endpoint, report, None)
+}
+fn send_to_cancellable(
+    endpoint: &str,
+    report: &Report,
+    cancel: Option<CancelSignal>,
+) -> Result<Receipt> {
+    use futures_util::{
+        future::{select, Either},
+        FutureExt,
+    };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("Create Feedback network runtime")?
-        .block_on(send_to_async(endpoint, report))
+        .block_on(async {
+            let Some(cancel) = cancel else {
+                return send_to_async(endpoint, report).await;
+            };
+            // Poll cancellation first: an already cancelled primary/fallback
+            // must never open another connection. Dropping the losing request
+            // future also drops the streaming file and response body.
+            match select(cancel, send_to_async(endpoint, report).boxed()).await {
+                Either::Left(_) => bail!("Sending cancelled. Your draft and attachments are kept. The server may already have received the report; check before retrying."),
+                Either::Right((result, _)) => result,
+            }
+        })
 }
 async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
     use futures_util::TryStreamExt;
@@ -274,8 +423,10 @@ async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
         form = form.text("log", log.clone());
     }
     if let Some(video) = &report.video {
-        let file = std::fs::File::open(&video.path)
-            .context("Couldn't open the attached video. Your draft is kept.")?;
+        let selected = video.clone();
+        let file = tokio::task::spawn_blocking(move || selected_video_snapshot(&selected))
+            .await
+            .context("Prepare the selected video")??;
         let length = file.metadata()?.len();
         ensure!(
             length <= MAX_VIDEO,
@@ -488,3 +639,102 @@ pub(super) fn image_file(path: &Path) -> Result<(Arc<Vec<u8>>, image::RgbaImage)
 #[cfg(test)]
 #[path = "model_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use futures_util::{future::AbortHandle, FutureExt};
+    use std::net::TcpListener;
+
+    fn signal() -> (AbortHandle, CancelSignal) {
+        let (abort, registration) = AbortHandle::new_pair();
+        (
+            abort,
+            futures_util::future::Abortable::new(std::future::pending(), registration)
+                .boxed()
+                .shared(),
+        )
+    }
+
+    fn draft() -> Report {
+        Report {
+            text: "Keep this draft".into(),
+            kind: Kind::Bug,
+            meta: tests::meta(),
+            screenshot: Some(Arc::new(vec![1, 2, 3])),
+            log: None,
+            video: None,
+        }
+    }
+
+    #[test]
+    fn cancelled_before_send_contacts_neither_endpoint() {
+        let primary = TcpListener::bind("127.0.0.1:0").unwrap();
+        let fallback = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (abort, cancel) = signal();
+        abort.abort();
+        let error = send_using_cancellable(
+            &format!("http://{}", primary.local_addr().unwrap()),
+            &format!("http://{}", fallback.local_addr().unwrap()),
+            &draft(),
+            Some(cancel),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Sending cancelled"));
+        for listener in [primary, fallback] {
+            listener.set_nonblocking(true).unwrap();
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    #[test]
+    fn cancellation_drops_active_receipt_and_never_falls_back() {
+        use std::io::Write;
+        let primary = TcpListener::bind("127.0.0.1:0").unwrap();
+        let fallback = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", primary.local_addr().unwrap());
+        let alternate = format!("http://{}", fallback.local_addr().unwrap());
+        let (abort, cancel) = signal();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = primary.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = [0; 4096];
+            assert!(
+                socket.read(&mut bytes).unwrap() > 0,
+                "positive control: real request arrived"
+            );
+            socket
+                .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 1000\r\n\r\n{")
+                .unwrap();
+            abort.abort();
+            // The body deliberately never completes. Cancellation must drop it.
+            loop {
+                match socket.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                    Err(error) => panic!("request was not closed: {error}"),
+                }
+            }
+        });
+        let report = draft();
+        let error =
+            send_using_cancellable(&endpoint, &alternate, &report, Some(cancel)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("server may already have received"));
+        assert_eq!(report.text, "Keep this draft");
+        assert_eq!(report.screenshot.as_deref().unwrap().as_slice(), &[1, 2, 3]);
+        server.join().unwrap();
+        fallback.set_nonblocking(true).unwrap();
+        assert_eq!(
+            fallback.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}

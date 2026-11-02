@@ -7,6 +7,7 @@ use gpui_component::{
 };
 mod model;
 pub(crate) mod sprint;
+mod video;
 use model::{Kind, Metadata, Receipt, Report};
 
 gpui::actions!(
@@ -240,10 +241,11 @@ fn show_for(owner: WindowId, meta: Metadata, send_immediately: bool, cx: &mut Ap
         view.update(cx, |view, _| view.visible = true);
         let weak = view.downgrade();
         window.on_window_should_close(cx, move |_, cx| {
-            weak.update(cx, |view, _| {
+            weak.update(cx, |view, cx| {
                 if matches!(view.state, SendState::Sending) {
                     return false;
                 }
+                view.checkpoint(cx);
                 view.visible = false;
                 true
             })
@@ -314,10 +316,11 @@ impl Render for FeedbackWindow {
                 submit_view.update(cx, |view, cx| view.send(cx));
             })
             .capture_action(move |_: &CloseFeedback, window, cx| {
-                let sending = view.update(cx, |view, _| {
+                let sending = view.update(cx, |view, cx| {
                     if matches!(view.state, SendState::Sending) {
                         return true;
                     }
+                    view.checkpoint(cx);
                     view.visible = false;
                     false
                 });
@@ -344,6 +347,31 @@ fn screenshot_hint() -> &'static str {
     } else {
         "GNOME screenshot: PrtSc. Paste or drop the image here."
     }
+}
+
+fn feedback_draft_root() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        TEST_DRAFT_ROOT.with(|root| root.borrow().clone())
+    }
+    #[cfg(not(test))]
+    {
+        reader_layout::config_base().map(|base| base.join("okilum/feedback-drafts"))
+    }
+}
+
+#[cfg(test)]
+struct SendHold {
+    reached: async_channel::Sender<()>,
+    release: async_channel::Receiver<()>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_DRAFT_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    // Holds only the existing sender's scheduling boundary, keyed to its view.
+    // The original Sender, cancellation signal and completion path still run.
+    static TEST_SEND_HOLD: std::cell::RefCell<Option<(EntityId, SendHold)>> = const { std::cell::RefCell::new(None) };
 }
 
 enum SendState {
@@ -383,8 +411,17 @@ struct FeedbackView {
     state: SendState,
     sender: Sender,
     _send: Option<Task<()>>,
+    send_abort: Option<futures_util::future::AbortHandle>,
+    send_cancel: Arc<std::sync::Mutex<Option<model::CancelSignal>>>,
     _image: Option<Task<()>>,
+    draft_store: Option<model::draft::Store>,
+    saved_drafts: Vec<(model::draft::Store, model::draft::Saved)>,
+    persistence_error: Option<String>,
+    recovery_error: Option<String>,
+    unavailable_screenshot: Option<String>,
+    video_needs_reselect: bool,
     _text: Subscription,
+    _draft_checkpoint: Option<Task<()>>,
 }
 impl FeedbackView {
     fn new(meta: Metadata, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -395,14 +432,47 @@ impl FeedbackView {
         });
         let subscription = cx.subscribe(
             &text,
-            |_, _, event: &gpui_component::input::InputEvent, cx| {
+            |this, _, event: &gpui_component::input::InputEvent, cx| {
                 if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.schedule_checkpoint(cx);
                     cx.notify();
                 }
             },
         );
         let log_path = reader_diagnostics::feedback_log_path(cx).ok();
         let sprint_log = log_path.clone();
+        let send_cancel = Arc::new(std::sync::Mutex::new(None::<model::CancelSignal>));
+        let cancellation = send_cancel.clone();
+        let (saved_drafts, recovery_error) = match feedback_draft_root()
+            .map(|root| model::draft::discover(&root))
+            .transpose()
+        {
+            Ok(saved) => {
+                let (drafts, errors) = saved.unwrap_or_default();
+                (drafts, (!errors.is_empty()).then(|| errors.join("\n")))
+            }
+            Err(error) => (
+                Vec::new(),
+                Some(format!(
+                    "Couldn't read saved Feedback drafts: {error}. Their files have been kept."
+                )),
+            ),
+        };
+        let saved_drafts = saved_drafts
+            .into_iter()
+            .filter(|(store, _)| {
+                !cx.try_global::<Drafts>().is_some_and(|drafts| {
+                    drafts.0.values().any(|draft| {
+                        draft
+                            .view
+                            .read(cx)
+                            .draft_store
+                            .as_ref()
+                            .is_some_and(|active| active.directory == store.directory)
+                    })
+                })
+            })
+            .collect();
         Self {
             text,
             meta,
@@ -419,12 +489,203 @@ impl FeedbackView {
             log_path,
             state: SendState::Compose,
             sender: Arc::new(move |report| {
-                model::send(sprint::enrich(report, sprint_log.as_deref())?)
+                let report = sprint::enrich(report, sprint_log.as_deref())?;
+                let cancel = cancellation
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                match cancel {
+                    Some(cancel) => model::send_cancellable(report, cancel),
+                    None => model::send(report),
+                }
             }),
             _send: None,
+            send_abort: None,
+            send_cancel,
             _image: None,
+            draft_store: None,
+            saved_drafts,
+            persistence_error: None,
+            recovery_error,
+            unavailable_screenshot: None,
+            video_needs_reselect: false,
             _text: subscription,
+            _draft_checkpoint: None,
         }
+    }
+    fn schedule_checkpoint(&mut self, cx: &mut Context<Self>) {
+        // Coalesce authored text changes. Send and window close synchronously
+        // flush the latest state before crossing their lifecycle boundaries.
+        self._draft_checkpoint = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.checkpoint(cx);
+                cx.notify();
+            });
+        }));
+    }
+    /// Commit authored data before any network request; failures stay visible
+    /// and stop Send rather than pretending restart recovery is available.
+    fn checkpoint(&mut self, cx: &App) -> bool {
+        if self.draft_store.is_none() {
+            if self.text.read(cx).value().is_empty() && self.image.is_none() && self.video.is_none()
+            {
+                return true;
+            }
+            let Some(root) = feedback_draft_root() else {
+                #[cfg(test)]
+                return true;
+                #[cfg(not(test))]
+                {
+                    self.persistence_error = Some("Couldn't locate Feedback draft storage. Sending is stopped; copy your report before closing.".into());
+                    return false;
+                }
+            };
+            self.draft_store = Some(model::draft::Store::new(
+                root.join(uuid::Uuid::new_v4().to_string()),
+            ));
+        }
+        let status = match &self.state {
+            SendState::Compose => "Saved draft. Review it before sending.".to_string(),
+            SendState::Sending => "Sending was interrupted. Delivery is uncertain; check whether an issue was created before retrying.".to_string(),
+            SendState::Failed(error) => error.clone(),
+            SendState::Sent(receipt) => format!("Sent: {}", receipt.issue_url),
+        };
+        let saved = model::draft::Saved {
+            version: 1,
+            text: self.text.read(cx).value().to_string(),
+            feature: self.kind == Kind::Feature,
+            include_log: self.include_log,
+            video: self.video.clone(),
+            screenshot: self.unavailable_screenshot.clone(),
+            status,
+            sent: matches!(self.state, SendState::Sent(_)),
+        };
+        let screenshot = self.image.as_ref().map(|image| image.png.as_slice());
+        match self.draft_store.as_mut().unwrap().save(saved, screenshot) {
+            Ok(()) => {
+                self.persistence_error = None;
+                true
+            }
+            Err(error) => {
+                self.persistence_error = Some(format!("Couldn't save Feedback draft: {error}. Sending is stopped; copy the report before closing."));
+                false
+            }
+        }
+    }
+    fn reopen_saved_revision(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy() || self.attaching {
+            return;
+        }
+        let Some(previous) = self.draft_store.take() else {
+            return;
+        };
+        // Preserve unsaved authored changes under a new identity before loading
+        // a revision changed by another window/process.
+        if !self.checkpoint(cx) {
+            self.draft_store = Some(previous);
+            cx.notify();
+            return;
+        }
+        match model::draft::Store::load(previous.directory) {
+            Ok(loaded) => {
+                let index = self.saved_drafts.len();
+                self.saved_drafts.push(loaded);
+                self.restore_draft(index, window, cx);
+            }
+            Err(error) => {
+                self.persistence_error = Some(format!("Couldn't reopen the saved revision: {error}. The current draft was kept as a separate copy."));
+                cx.notify();
+            }
+        }
+    }
+    fn restore_draft(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy() || self.attaching || index >= self.saved_drafts.len() {
+            return;
+        }
+        if (!self.text.read(cx).value().is_empty() || self.image.is_some() || self.video.is_some())
+            && !self.checkpoint(cx)
+        {
+            cx.notify();
+            return;
+        }
+        let (store, _) = &self.saved_drafts[index];
+        if cx.try_global::<Drafts>().is_some_and(|drafts| {
+            drafts.0.values().any(|draft| {
+                draft.view.entity_id() != cx.entity_id()
+                    && draft
+                        .view
+                        .read(cx)
+                        .draft_store
+                        .as_ref()
+                        .is_some_and(|active| active.directory == store.directory)
+            })
+        }) {
+            self.persistence_error =
+                Some("This saved draft is already open in another Feedback window.".into());
+            cx.notify();
+            return;
+        }
+        self._draft_checkpoint = None;
+        let (store, _) = self.saved_drafts.remove(index);
+        // Re-read the committed revision at the explicit selection boundary.
+        let (store, saved) = match model::draft::Store::load(store.directory.clone()) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.persistence_error = Some(format!("Couldn't reopen Feedback draft: {error}"));
+                cx.notify();
+                return;
+            }
+        };
+        if saved.sent {
+            self.persistence_error = Some("This draft has already been sent. Its saved receipt is kept; it will not be resent.".into());
+            cx.notify();
+            return;
+        }
+        let image = store.screenshot(&saved).and_then(|bytes| {
+            bytes
+                .map(|bytes| {
+                    let preview = image::load_from_memory(&bytes)?.into_rgba8();
+                    Ok(Attachment {
+                        png: Arc::new(bytes),
+                        preview: Arc::new(RenderImage::new(vec![image::Frame::new(preview)])),
+                    })
+                })
+                .transpose()
+        });
+        self.image = None;
+        self.unavailable_screenshot = None;
+        self.image_error = None;
+        match image {
+            Ok(image) => self.image = image,
+            Err(error) => {
+                self.unavailable_screenshot = saved.screenshot.clone();
+                self.image_error = Some(format!("Couldn't restore the selected screenshot: {error}. Remove it or attach it again."));
+            }
+        }
+        self.video = saved.video;
+        self.video_needs_reselect = self.video.as_ref().is_some_and(|video| {
+            model::video_file(&video.path).map_or(true, |current| current != *video)
+        });
+        self.video_error = self.video_needs_reselect.then(|| "The selected video changed, was replaced or is unavailable. Select it again or remove it before retrying.".into());
+        self.kind = if saved.feature {
+            Kind::Feature
+        } else {
+            Kind::Bug
+        };
+        self.include_log = saved.include_log;
+        self.image_note = None;
+        self.state = SendState::Failed(format!(
+            "Reopened saved draft. {} Review the attachments and explicitly choose Retry.",
+            saved.status
+        ));
+        self.draft_store = Some(store);
+        self.persistence_error = None;
+        self.text
+            .update(cx, |text, cx| text.set_value(saved.text, window, cx));
+        cx.notify();
     }
     fn remount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.text.read(cx).value();
@@ -441,8 +702,9 @@ impl FeedbackView {
         });
         self._text = cx.subscribe(
             &self.text,
-            |_, _, event: &gpui_component::input::InputEvent, cx| {
+            |this, _, event: &gpui_component::input::InputEvent, cx| {
                 if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.schedule_checkpoint(cx);
                     cx.notify();
                 }
             },
@@ -478,35 +740,98 @@ impl FeedbackView {
     fn can_send(&self, cx: &App) -> bool {
         !self.busy()
             && !self.attaching
+            && self.unavailable_screenshot.is_none()
+            && !self.video_needs_reselect
             && report_text(&self.text.read(cx).value(), sprint::enabled()).is_some()
     }
     fn send(&mut self, cx: &mut Context<Self>) {
         if !self.can_send(cx) {
             return;
         }
+        self._draft_checkpoint = None;
         let report = match self.report(cx) {
             Ok(report) => report,
             Err(error) => {
                 self.state = SendState::Failed(error.to_string());
+                self.checkpoint(cx);
                 cx.notify();
                 return;
             }
         };
+        use futures_util::FutureExt;
+        let (abort, registration) = futures_util::future::AbortHandle::new_pair();
+        let cancel =
+            futures_util::future::Abortable::new(std::future::pending::<()>(), registration)
+                .boxed()
+                .shared();
+        *self.send_cancel.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel);
+        self.send_abort = Some(abort);
         self.state = SendState::Sending;
+        if !self.checkpoint(cx) {
+            self.send_abort = None;
+            *self.send_cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.state =
+                SendState::Failed("Sending stopped because the draft could not be saved.".into());
+            cx.notify();
+            return;
+        }
         let sender = self.sender.clone();
+        let selected_video = report.video.clone();
+        #[cfg(test)]
+        let hold = TEST_SEND_HOLD.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot
+                .as_ref()
+                .is_some_and(|(owner, _)| *owner == cx.entity_id())
+            {
+                slot.take().map(|(_, hold)| hold)
+            } else {
+                None
+            }
+        });
         self._send = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { sender(report) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    if let Some(hold) = hold {
+                        hold.reached.try_send(()).expect("mounted sender reached");
+                        hold.release.recv().await.expect("mounted sender released");
+                    }
+                    let result = sender(report);
+                    // Validate on the worker after a failed/cancelled provider
+                    // completion. Hashing a recording must not block the UI.
+                    let selection_error = result
+                        .as_ref()
+                        .err()
+                        .and_then(|_| video::recovery_error(selected_video.as_ref()));
+                    (result, selection_error)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.send_abort = None;
+                *this.send_cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let (result, selection_error) = result;
+                if result.is_err() {
+                    this.video_needs_reselect = selection_error.is_some();
+                    this.video_error = selection_error;
+                }
                 this.state = match result {
                     Ok(receipt) => SendState::Sent(receipt),
                     Err(error) => SendState::Failed(error.to_string()),
                 };
+                this.checkpoint(cx);
                 cx.notify();
             });
         }));
+        cx.notify();
+    }
+    fn cancel_send(&mut self, cx: &mut Context<Self>) {
+        if let Some(abort) = &self.send_abort {
+            abort.abort();
+        }
+        // Remain busy until the transport acknowledges cancellation. A new
+        // Send cannot race an old upload or consume its completion.
         cx.notify();
     }
     fn copy(&mut self, cx: &mut Context<Self>) {
@@ -555,6 +880,7 @@ impl FeedbackView {
                 this.attaching = false;
                 match result {
                     Ok((png, preview)) => {
+                        this.unavailable_screenshot = None;
                         this.image = Some(Attachment {
                             png,
                             preview: Arc::new(RenderImage::new(vec![image::Frame::new(preview)])),
@@ -562,6 +888,7 @@ impl FeedbackView {
                     }
                     Err(error) => this.image_error = Some(error.to_string()),
                 }
+                this.checkpoint(cx);
                 cx.notify();
             });
         }));
@@ -572,8 +899,10 @@ impl FeedbackView {
         self._image = None;
         self.attaching = false;
         self.image = None;
+        self.unavailable_screenshot = None;
         self.image_error = None;
         self.image_note = None;
+        self.checkpoint(cx);
         cx.notify();
     }
     /// Says so when a paste replaces the screenshot: a report takes one.
@@ -585,8 +914,8 @@ impl FeedbackView {
             Some("Attached the pasted image as the screenshot.".into())
         };
     }
-    /// Attaches a video by path. Only metadata is read here; the file is
-    /// streamed on Send. A rejected file keeps any previous video.
+    /// Captures an explicit video selection and its identity. A rejected
+    /// replacement keeps the previous selection; transport verifies it again.
     fn attach_video(&mut self, path: &Path, cx: &mut Context<Self>) {
         if self.busy() {
             return;
@@ -594,7 +923,9 @@ impl FeedbackView {
         match model::video_file(path) {
             Ok(video) => {
                 self.video = Some(video);
+                self.video_needs_reselect = false;
                 self.video_error = None;
+                self.checkpoint(cx);
             }
             Err(error) => self.video_error = Some(error.to_string()),
         }
@@ -605,7 +936,9 @@ impl FeedbackView {
             return;
         }
         self.video = None;
+        self.video_needs_reselect = false;
         self.video_error = None;
+        self.checkpoint(cx);
         cx.notify();
     }
     /// Routes dropped or pasted files: videos (mp4/mov/webm) to the video
@@ -798,6 +1131,43 @@ impl Render for FeedbackView {
                 )
                 .into_any_element();
         }
+        for (index, (_, saved)) in self.saved_drafts.iter().enumerate() {
+            let title: String = saved.text.chars().take(60).collect();
+            body = body.child(
+                Button::new(("feedback-reopen-draft", index))
+                    .when(cfg!(test), |button| {
+                        button.debug_selector(move || format!("feedback-reopen-draft-{index}"))
+                    })
+                    .small()
+                    .ghost()
+                    .disabled(busy || self.attaching)
+                    .label(format!(
+                        "Reopen saved draft: {}",
+                        if title.is_empty() { "Untitled" } else { &title }
+                    ))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.restore_draft(index, window, cx)
+                    })),
+            );
+        }
+        for error in [&self.recovery_error, &self.persistence_error]
+            .into_iter()
+            .flatten()
+        {
+            body = body.child(div().text_sm().child(error.clone()));
+        }
+        if self.persistence_error.is_some() && self.draft_store.is_some() {
+            body = body.child(
+                Button::new("feedback-reopen-revision")
+                    .small()
+                    .ghost()
+                    .disabled(busy || self.attaching)
+                    .label("Reopen saved revision; keep current draft as a copy")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.reopen_saved_revision(window, cx)),
+                    ),
+            );
+        }
         body = body
             .child(
                 div()
@@ -815,6 +1185,7 @@ impl Render for FeedbackView {
                         .label(label)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.kind = kind;
+                            this.checkpoint(cx);
                             cx.notify();
                         }))
                 }),
@@ -848,7 +1219,7 @@ impl Render for FeedbackView {
                             .label("Attach video…")
                             .on_click(cx.listener(|this, _, _, cx| this.video_picker(cx))),
                     )
-                    .when(self.image.is_some() || self.attaching, |row| {
+                    .when(self.image.is_some() || self.attaching || self.unavailable_screenshot.is_some(), |row| {
                         row.child(
                             Button::new("feedback-remove")
                                 .debug_selector(|| "feedback-remove".into())
@@ -976,6 +1347,7 @@ impl Render for FeedbackView {
                     .disabled(busy)
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.include_log = *checked;
+                        this.checkpoint(cx);
                         cx.notify();
                     })),
             )
@@ -1017,11 +1389,31 @@ impl Render for FeedbackView {
                         Button::new("feedback-cancel")
                             .debug_selector(|| "feedback-cancel".into())
                             .ghost()
-                            .disabled(matches!(self.state, SendState::Sending))
-                            .label("Cancel")
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(CloseFeedback), cx)
-                            }),
+                            .disabled(
+                                self.send_abort
+                                    .as_ref()
+                                    .is_some_and(|abort| abort.is_aborted()),
+                            )
+                            .label(
+                                if self
+                                    .send_abort
+                                    .as_ref()
+                                    .is_some_and(|abort| abort.is_aborted())
+                                {
+                                    "Cancelling…"
+                                } else if matches!(self.state, SendState::Sending) {
+                                    "Cancel sending"
+                                } else {
+                                    "Cancel"
+                                },
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if matches!(this.state, SendState::Sending) {
+                                    this.cancel_send(cx);
+                                } else {
+                                    window.dispatch_action(Box::new(CloseFeedback), cx);
+                                }
+                            })),
                     )
                     .child(
                         Button::new("feedback-send")
@@ -1038,3 +1430,434 @@ impl Render for FeedbackView {
 #[cfg(test)]
 #[path = "reader_feedback/ui_tests.rs"]
 mod ui_tests;
+
+#[cfg(test)]
+mod recovery_mounted_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use futures_util::FutureExt;
+
+    struct TestRoots;
+    impl Drop for TestRoots {
+        fn drop(&mut self) {
+            TEST_SEND_HOLD.with(|slot| slot.borrow_mut().take());
+            TEST_DRAFT_ROOT.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    struct Fixture {
+        _roots: TestRoots,
+        directory: tempfile::TempDir,
+        drafts: PathBuf,
+        note: PathBuf,
+    }
+
+    fn draw(visual: &mut VisualTestContext) {
+        visual.run_until_parked();
+        for _ in 0..2 {
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            visual.run_until_parked();
+        }
+    }
+
+    fn click(visual: &mut VisualTestContext, selector: &'static str) {
+        let bounds = visual
+            .debug_bounds(selector)
+            .expect("real Feedback control painted");
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        draw(visual);
+    }
+
+    fn mount(cx: &mut TestAppContext) -> (Fixture, &mut VisualTestContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = directory.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        let note = vault.join("start.md");
+        std::fs::write(&note, "# Feedback fixture\n").unwrap();
+        let drafts = directory.path().join("operational/feedback-drafts");
+        TEST_DRAFT_ROOT.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(drafts.clone());
+        });
+        cx.update(|cx| {
+            crate::test_init(cx);
+            version_info::install(cx);
+            bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(vault),
+                        note: Some("start.md".into()),
+                        session_directory: Some(directory.path().join("state")),
+                        index_dir: Some(directory.path().join("index")),
+                        panel_settings_override: Some(directory.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            Root::new(reader, window, cx)
+        });
+        visual.simulate_resize(size(px(1200.), px(900.)));
+        draw(visual);
+        (
+            Fixture {
+                _roots: TestRoots,
+                directory,
+                drafts,
+                note,
+            },
+            visual,
+        )
+    }
+
+    fn open(reader: &mut VisualTestContext) -> (Entity<FeedbackView>, VisualTestContext) {
+        reader.update(|window, _| window.activate_window());
+        draw(reader);
+        click(reader, "reader-feedback");
+        let (view, handle) = reader.update(|window, cx| {
+            let draft = &cx.global::<Drafts>().0[&window.window_handle().window_id()];
+            (draft.view.clone(), draft.window)
+        });
+        let mut feedback = VisualTestContext::from_window(handle.into(), &reader.cx);
+        feedback.simulate_resize(size(px(600.), px(900.)));
+        draw(&mut feedback);
+        assert!(feedback.debug_bounds("feedback-form").is_some());
+        feedback.update(|window, cx| {
+            assert!(Focusable::focus_handle(view.read(cx).text.read(cx), cx).is_focused(window));
+        });
+        (view, feedback)
+    }
+
+    fn choose(visual: &mut VisualTestContext, path: &Path, video: bool) {
+        click(
+            visual,
+            if video {
+                "feedback-attach-video"
+            } else {
+                "feedback-attach"
+            },
+        );
+        assert!(visual.did_prompt_for_paths(), "actual picker route reached");
+        visual.simulate_path_prompt_response(|options| {
+            assert!(options.files && !options.directories && !options.multiple);
+            Some(vec![path.to_owned()])
+        });
+        draw(visual);
+        assert!(visual
+            .debug_bounds(if video {
+                "feedback-video"
+            } else {
+                "feedback-preview"
+            })
+            .is_some());
+    }
+
+    fn hold(
+        view: &Entity<FeedbackView>,
+    ) -> (async_channel::Receiver<()>, async_channel::Sender<()>) {
+        let (reached, started) = async_channel::bounded(1);
+        let (release, wait) = async_channel::bounded(1);
+        TEST_SEND_HOLD.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some((
+                view.entity_id(),
+                SendHold {
+                    reached,
+                    release: wait,
+                },
+            ));
+        });
+        (started, release)
+    }
+
+    fn receipt() -> Receipt {
+        Receipt {
+            issue_number: 2801,
+            issue_url: "https://git.oklabs.uk/BeFeast/okilum/issues/2801".into(),
+            delivery_endpoint: None,
+        }
+    }
+
+    fn saved(
+        view: &Entity<FeedbackView>,
+        visual: &VisualTestContext,
+    ) -> (model::draft::Store, model::draft::Saved) {
+        let directory = view.read_with(visual, |view, _| {
+            view.draft_store.as_ref().unwrap().directory.clone()
+        });
+        model::draft::Store::load(directory).unwrap()
+    }
+
+    fn forget_closed_view(reader: &mut VisualTestContext, view: Entity<FeedbackView>) {
+        reader.update(|window, cx| {
+            let draft = cx
+                .global_mut::<Drafts>()
+                .0
+                .remove(&window.window_handle().window_id())
+                .unwrap();
+            assert_eq!(draft.view, view);
+        });
+        drop(view);
+        draw(reader);
+    }
+
+    #[gpui::test]
+    fn feedback28_cancel_keeps_durable_draft_until_ack_and_retry_preserves_receipt(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, reader) = mount(cx);
+        let path = f.directory.path().join("selected.webm");
+        std::fs::write(&path, b"original video").unwrap();
+        let (view, mut feedback) = open(reader);
+        feedback.simulate_input("Keep this feedback Ω");
+        choose(&mut feedback, &path, true);
+        let selected = view.read_with(&feedback, |view, _| view.video.clone().unwrap());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        view.update(&mut feedback, |view, _| {
+            let cancellation = view.send_cancel.clone();
+            view.sender = Arc::new(move |_| {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let signal = cancellation.lock().unwrap().clone().expect("real send cancellation signal");
+                assert!(matches!(signal.now_or_never(), Some(Err(_))), "real Cancel action aborted this attempt");
+                anyhow::bail!("Sending cancelled. The server may already have received the report; check before retrying.")
+            });
+        });
+        let (started, release) = hold(&view);
+        click(&mut feedback, "feedback-send");
+        started
+            .try_recv()
+            .expect("real Send reached worker scheduling boundary");
+        assert!(saved(&view, &feedback)
+            .1
+            .status
+            .contains("Delivery is uncertain"));
+        click(&mut feedback, "feedback-cancel");
+        view.read_with(&feedback, |view, cx| {
+            assert!(matches!(view.state, SendState::Sending));
+            assert!(view.send_abort.as_ref().unwrap().is_aborted());
+            assert!(
+                !view.can_send(cx),
+                "Retry waits for transport acknowledgement"
+            );
+            assert_eq!(view.video.as_ref(), Some(&selected));
+        });
+        click(&mut feedback, "feedback-send");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        release.try_send(()).unwrap();
+        draw(&mut feedback);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let (_, recovered) = saved(&view, &feedback);
+        assert_eq!(recovered.text, "Keep this feedback Ω");
+        assert_eq!(recovered.video.as_ref(), Some(&selected));
+        assert!(recovered
+            .status
+            .contains("server may already have received"));
+        let old_id = view.entity_id();
+        feedback.simulate_keystrokes("escape");
+        draw(reader);
+        let (reopened, mut feedback) = open(reader);
+        assert_eq!(
+            reopened.entity_id(),
+            old_id,
+            "ordinary reopen retains this failed draft"
+        );
+        reopened.update(&mut feedback, |view, _| {
+            view.sender = Arc::new(|report| {
+                assert_eq!(report.text, "Keep this feedback Ω");
+                Ok(receipt())
+            });
+        });
+        click(&mut feedback, "feedback-send");
+        assert!(feedback.debug_bounds("feedback-issue").is_some());
+        let (_, sent) = saved(&reopened, &feedback);
+        assert!(sent.sent && sent.status.contains(&receipt().issue_url));
+        assert!(
+            model::draft::discover(&f.drafts).unwrap().0.is_empty(),
+            "sent receipt is retained and excluded from retry discovery"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&f.note).unwrap(),
+            "# Feedback fixture\n"
+        );
+    }
+
+    #[gpui::test]
+    fn feedback28_changed_video_completion_blocks_retry_until_picker_reselection(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, reader) = mount(cx);
+        let path = f.directory.path().join("selected.webm");
+        std::fs::write(&path, b"original").unwrap();
+        let (view, mut feedback) = open(reader);
+        feedback.simulate_input("Keep exact selected video");
+        choose(&mut feedback, &path, true);
+        let selected = view.read_with(&feedback, |view, _| view.video.clone().unwrap());
+        let requests = Arc::new(std::sync::Mutex::new(Vec::<Report>::new()));
+        let record = requests.clone();
+        view.update(&mut feedback, |view, _| {
+            view.sender = Arc::new(move |report| {
+                record.lock().unwrap().push(report);
+                anyhow::bail!("offline provider failure")
+            });
+        });
+        let (started, release) = hold(&view);
+        click(&mut feedback, "feedback-send");
+        started.try_recv().unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, b"replaced").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        release.try_send(()).unwrap();
+        draw(&mut feedback);
+        assert!(feedback.debug_bounds("feedback-video-error").is_some());
+        view.read_with(&feedback, |view, cx| {
+            assert!(matches!(view.state, SendState::Failed(_)));
+            assert!(view.video_needs_reselect && !view.can_send(cx));
+            assert_eq!(
+                view.video.as_ref(),
+                Some(&selected),
+                "completion preserves authored identity"
+            );
+        });
+        click(&mut feedback, "feedback-send");
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            1,
+            "blocked Retry cannot call the provider"
+        );
+        assert_eq!(saved(&view, &feedback).1.video.as_ref(), Some(&selected));
+        choose(&mut feedback, &path, true);
+        let reselected = view.read_with(&feedback, |view, cx| {
+            assert!(view.can_send(cx));
+            assert!(!view.video_needs_reselect && view.video_error.is_none());
+            view.video.clone().unwrap()
+        });
+        assert_ne!(reselected, selected);
+        let record = requests.clone();
+        view.update(&mut feedback, |view, _| {
+            view.sender = Arc::new(move |report| {
+                record.lock().unwrap().push(report);
+                Ok(receipt())
+            });
+        });
+        click(&mut feedback, "feedback-send");
+        assert!(feedback.debug_bounds("feedback-issue").is_some());
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].video.as_ref(), Some(&selected));
+        assert_eq!(requests[1].video.as_ref(), Some(&reselected));
+        assert_eq!(
+            std::fs::read_to_string(&f.note).unwrap(),
+            "# Feedback fixture\n"
+        );
+    }
+
+    #[gpui::test]
+    fn feedback28_restart_missing_video_keeps_choice_until_actual_remove(cx: &mut TestAppContext) {
+        let (f, reader) = mount(cx);
+        let path = f.directory.path().join("selected.mov");
+        std::fs::write(&path, b"original video").unwrap();
+        let (view, mut feedback) = open(reader);
+        feedback.simulate_input("Restart recovery Ω");
+        choose(&mut feedback, &path, true);
+        let selected = view.read_with(&feedback, |view, _| view.video.clone().unwrap());
+        feedback.simulate_keystrokes("escape");
+        draw(reader);
+        forget_closed_view(reader, view);
+        std::fs::remove_file(&path).unwrap();
+        let (view, mut feedback) = open(reader);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let record = calls.clone();
+        view.update(&mut feedback, |view, _| {
+            view.sender = Arc::new(move |report| {
+                record.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(report.text, "Restart recovery Ω");
+                assert!(report.video.is_none());
+                Ok(receipt())
+            });
+        });
+        click(&mut feedback, "feedback-reopen-draft-0");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "explicit recovery never auto-sends"
+        );
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.text.read(cx).value(), "Restart recovery Ω");
+            assert_eq!(view.video.as_ref(), Some(&selected));
+            assert!(view.video_needs_reselect && !view.can_send(cx));
+        });
+        click(&mut feedback, "feedback-send");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        click(&mut feedback, "feedback-remove-video");
+        assert!(saved(&view, &feedback).1.video.is_none());
+        click(&mut feedback, "feedback-send");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(feedback.debug_bounds("feedback-issue").is_some());
+        assert_eq!(
+            std::fs::read_to_string(&f.note).unwrap(),
+            "# Feedback fixture\n"
+        );
+    }
+
+    #[gpui::test]
+    fn feedback28_restart_changed_screenshot_keeps_identity_until_actual_remove(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, reader) = mount(cx);
+        let path = f.directory.path().join("selected.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([30, 60, 90, 255]))
+            .save(&path)
+            .unwrap();
+        let (view, mut feedback) = open(reader);
+        feedback.simulate_input("Keep screenshot choice");
+        choose(&mut feedback, &path, false);
+        feedback.simulate_keystrokes("escape");
+        draw(reader);
+        let (store, before) = saved(&view, &feedback);
+        let identity = before.screenshot.unwrap();
+        forget_closed_view(reader, view);
+        std::fs::write(store.directory.join(&identity), b"changed screenshot bytes").unwrap();
+        let (view, mut feedback) = open(reader);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let record = calls.clone();
+        view.update(&mut feedback, |view, _| {
+            view.sender = Arc::new(move |report| {
+                record.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(report.text, "Keep screenshot choice");
+                assert!(report.screenshot.is_none());
+                Ok(receipt())
+            });
+        });
+        click(&mut feedback, "feedback-reopen-draft-0");
+        view.read_with(&feedback, |view, cx| {
+            assert_eq!(view.unavailable_screenshot.as_ref(), Some(&identity));
+            assert!(view.image.is_none() && view.image_error.is_some());
+            assert!(!view.can_send(cx));
+        });
+        click(&mut feedback, "feedback-send");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        click(&mut feedback, "feedback-remove");
+        assert!(saved(&view, &feedback).1.screenshot.is_none());
+        click(&mut feedback, "feedback-send");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(feedback.debug_bounds("feedback-issue").is_some());
+        assert_eq!(
+            std::fs::read_to_string(&f.note).unwrap(),
+            "# Feedback fixture\n"
+        );
+    }
+}
