@@ -1,34 +1,22 @@
 use crate::project::*;
-use okilum_t3::rotation::{Checkpoint, Owner, Policy, PolicyStore, Slot};
+use okilum_t3::rotation::{Checkpoint, Owner, PolicyStore, TzifResolver};
 use std::sync::atomic::Ordering;
 
 // The explicit test policy supplies its own revision; neither a saved claim
 // nor the native connection counter can grant that authority.
-fn policy_owner(view: &ProjectView, _: &App) -> Option<Owner> {
-    let binding = view.binding.as_ref()?;
-    Some(Owner {
-        origin: view.environment.as_ref()?.origin(),
-        project: binding.manager.project_id.clone()?,
-        manager: binding.manager.thread_id.clone()?,
-        revision: 7,
-    })
+fn policy_owner(view: &ProjectView, cx: &App) -> Option<Owner> {
+    super::policy_owner::canonical_owner(view, cx)
 }
 
 fn pending(store: &PolicyStore, owner: Owner) -> Checkpoint {
+    let checkpoint = store.load().unwrap().unwrap();
     store
-        .save(
-            0,
-            Checkpoint {
-                revision: 0,
-                owner,
-                policy: Policy::new(true, "Asia/Jerusalem", ["08:30", "20:30"]).unwrap(),
-                through: 100,
-                pending: Some(Slot {
-                    day: 0,
-                    minute: 510,
-                    utc: Some(99),
-                }),
-            },
+        .claim(
+            checkpoint.revision,
+            &owner,
+            checkpoint.through + 22 * 3600,
+            &TzifResolver::new("/usr/share/zoneinfo"),
+            None,
         )
         .unwrap()
 }
@@ -43,7 +31,7 @@ fn rotation_1473_close_and_connection_change_revoke_mounted_claim_without_touchi
         bind_keys(cx);
     });
     let state = tempfile::tempdir().unwrap();
-    let store = Arc::new(PolicyStore::new(state.path().join("rotation-fixture")));
+    let mut store = None;
     let mut owner = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let project = cx.new(|cx| {
@@ -62,10 +50,12 @@ fn rotation_1473_close_and_connection_change_revoke_mounted_claim_without_touchi
     visual.run_until_parked();
     let (claim, before) = project.update_in(visual, |view, window, cx| {
         view.draft_handoff_surface_visible(true, cx);
-        let claim = pending(&store, policy_owner(view, cx).unwrap());
+        let policy = super::policy_owner::tests::seed(view, cx);
+        store = Some(policy.clone());
+        let claim = pending(&policy, policy_owner(view, cx).unwrap());
         let before = view.composer_snapshot(cx);
         view.mount_pending_rotation(
-            store.clone(),
+            policy,
             Some("Reviewed source\n".into()),
             policy_owner,
             window,
@@ -73,6 +63,7 @@ fn rotation_1473_close_and_connection_change_revoke_mounted_claim_without_touchi
         );
         (claim, before)
     });
+    let store = store.unwrap();
     visual.run_until_parked();
     let old = project.update_in(visual, |view, _, cx| {
         assert!(
@@ -81,11 +72,21 @@ fn rotation_1473_close_and_connection_change_revoke_mounted_claim_without_touchi
         );
         let valid = view.rotation_validity.as_ref().unwrap().clone();
         let epoch = view.rotation_epoch;
+        let authority = view
+            .rotation_policy
+            .authority_for(&claim.owner, &store)
+            .unwrap();
+        let authority_before = authority.load().unwrap().unwrap().record;
         view.draft_handoff_surface_visible(true, cx);
         assert!(valid.load(Ordering::Acquire));
         assert_eq!(
             view.rotation_epoch, epoch,
             "identical repaint preserves the lease"
+        );
+        assert_eq!(
+            authority.load().unwrap().unwrap().record,
+            authority_before,
+            "same visibility cannot allocate policy authority"
         );
         view.draft_handoff_surface_visible(false, cx);
         assert!(
@@ -129,7 +130,7 @@ fn rotation_1473_held_mount_refuses_a_closed_surface_and_fresh_mount_still_works
     cx.executor().allow_parking();
     cx.update(|cx| crate::test_init(cx));
     let state = tempfile::tempdir().unwrap();
-    let store = Arc::new(PolicyStore::new(state.path().join("rotation-fixture")));
+    let mut store = None;
     let mut owner = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let project = cx.new(|cx| discuss_handoff::native_tests::view(state.path(), window, cx));
@@ -141,9 +142,11 @@ fn rotation_1473_held_mount_refuses_a_closed_surface_and_fresh_mount_still_works
     visual.run_until_parked();
     let claim = project.update_in(visual, |view, window, cx| {
         view.draft_handoff_surface_visible(true, cx);
-        let claim = pending(&store, policy_owner(view, cx).unwrap());
+        let policy = super::policy_owner::tests::seed(view, cx);
+        store = Some(policy.clone());
+        let claim = pending(&policy, policy_owner(view, cx).unwrap());
         view.mount_pending_rotation(
-            store.clone(),
+            policy,
             Some("Reviewed source\n".into()),
             policy_owner,
             window,
@@ -153,6 +156,7 @@ fn rotation_1473_held_mount_refuses_a_closed_surface_and_fresh_mount_still_works
         view.draft_handoff_surface_visible(false, cx);
         claim
     });
+    let store = store.unwrap();
     visual.run_until_parked();
     project.update_in(visual, |view, window, cx| {
         assert!(view.rotation.is_none());
@@ -169,7 +173,7 @@ fn rotation_1473_held_mount_refuses_a_closed_surface_and_fresh_mount_still_works
         );
         let owner = ProjectView::rotation_owner(view, cx).unwrap();
         assert_eq!(
-            owner.revision, 7,
+            owner.revision, claim.owner.revision,
             "policy authority remains independent of connection epoch"
         );
         view.native.connection_epoch += 1;

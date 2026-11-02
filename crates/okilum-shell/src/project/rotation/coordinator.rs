@@ -1,6 +1,6 @@
 //! Linux native reconciliation adapter for frozen slot23 APIs ce1ed704d/5f7c3657e.
-//! Owner11 retains this Entity, mounts it in its project panel slot and calls
-//! invalidate BEFORE hide/rebind/feature disable. No project.rs field is assumed.
+//! The configured policy surface retains this Entity and invalidates it before
+//! hide/rebind/feature disable. Persistence uses its canonical identity lock.
 use super::{
     panel::ReconciliationPanel, protocol::Execution, Action, Checkpoint, Owner, PendingReview,
     PolicyStore, Requested,
@@ -14,7 +14,7 @@ use std::sync::{
     Arc,
 };
 
-/// Owner11 supplies its canonical rotation owner (including policy/lifecycle
+/// The configured policy surface supplies its canonical rotation owner (including policy/lifecycle
 /// revision). None revokes access. This callback is always read on the UI thread.
 pub(in crate::project) type OwnerResolver = fn(&ProjectView, &App) -> Option<Owner>;
 #[derive(Clone)]
@@ -26,7 +26,7 @@ impl EventEmitter<Resolved> for Coordinator {}
 
 pub(in crate::project) struct Coordinator {
     view: WeakEntity<ProjectView>,
-    store: Arc<PolicyStore>,
+    authority: Arc<super::policy_owner::Store>,
     owner: OwnerResolver,
     flow: Execution,
     panel: Entity<ReconciliationPanel>,
@@ -55,11 +55,14 @@ impl Coordinator {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<Entity<Self>, String> {
-        let snapshot = view.update(cx, |view, cx| {
+        let (snapshot, authority) = view.update(cx, |view, cx| {
             live_owner(view, owner, cx)
                 .filter(|live| live == &checkpoint.owner)
                 .ok_or("Rotation target is no longer active")?;
-            Ok::<_, String>(view.composer_snapshot(cx))
+            let authority = view
+                .rotation_policy
+                .authority_for(&checkpoint.owner, &store)?;
+            Ok::<_, String>((view.composer_snapshot(cx), authority))
         })?;
         let review = PendingReview::open(checkpoint, exact_source, snapshot.clone())?;
         let panel = cx.new(|_| ReconciliationPanel::new(&review));
@@ -74,7 +77,7 @@ impl Coordinator {
             );
             Self {
                 view: weak,
-                store,
+                authority,
                 owner,
                 flow: Execution::new(review, snapshot),
                 panel,
@@ -117,17 +120,21 @@ impl Coordinator {
             self.fail(error, cx);
             return;
         }
-        let store = self.store.clone();
+        let authority = self.authority.clone();
         let valid = self.valid.clone();
         let expected = event.expected.clone();
         cx.spawn_in(window, async move |this, cx| {
             // Every disk boundary compares the entire captured record, not only
             // its revision. A reused directory cannot authorize another target.
-            let disk_store = store.clone();
             let disk_expected = expected.clone();
+            let disk_authority = authority.clone();
             let loaded = cx
                 .background_executor()
-                .spawn(async move { load_exact(&disk_store, &disk_expected) })
+                .spawn(async move {
+                    disk_authority.with_current(&disk_expected.owner, |policy| {
+                        load_exact(policy, &disk_expected)
+                    })
+                })
                 .await;
             let outcome: Result<Checkpoint, String> = async {
                 let loaded = loaded?;
@@ -144,11 +151,15 @@ impl Coordinator {
                         }
                         Err(_) => return Err("Draft writer stopped; claim preserved".into()),
                     }
-                    let disk_store = store.clone();
                     let disk_expected = expected.clone();
+                    let disk_authority = authority.clone();
                     let fresh = cx
                         .background_executor()
-                        .spawn(async move { load_exact(&disk_store, &disk_expected) })
+                        .spawn(async move {
+                            disk_authority.with_current(&disk_expected.owner, |policy| {
+                                load_exact(policy, &disk_expected)
+                            })
+                        })
                         .await?;
                     this.update_in(cx, |this, _, cx| this.after_barrier(&fresh, &receipt, cx))
                         .map_err(|e| e.to_string())??
@@ -166,11 +177,15 @@ impl Coordinator {
                         if !valid.load(Ordering::Acquire) {
                             return Err("Rotation target invalidated before acknowledgement".into());
                         }
-                        load_exact(&store, &disk_expected)?;
-                        if !valid.load(Ordering::Acquire) {
-                            return Err("Rotation target invalidated before acknowledgement".into());
-                        }
-                        store.save(disk_expected.revision, next)
+                        authority.with_current(&disk_expected.owner, |policy| {
+                            load_exact(policy, &disk_expected)?;
+                            if !valid.load(Ordering::Acquire) {
+                                return Err(
+                                    "Rotation target invalidated before acknowledgement".into()
+                                );
+                            }
+                            policy.save(disk_expected.revision, next)
+                        })
                     })
                     .await
             }
@@ -264,3 +279,7 @@ fn unix_now() -> Result<i64, String> {
         .map_err(|e| e.to_string())?;
     i64::try_from(elapsed.as_secs()).map_err(|_| "Clock is outside supported range".into())
 }
+
+#[cfg(test)]
+#[path = "coordinator_tests.rs"]
+mod tests;

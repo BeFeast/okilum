@@ -68,6 +68,7 @@ pub(super) fn prepare_recovery(
 
 #[path = "rotation/panel.rs"]
 pub(super) mod panel;
+pub(super) mod policy_owner;
 
 // Frozen slot23 snapshot includes the complete retained typed metadata.
 pub(super) use super::drafts::ComposerSnapshot;

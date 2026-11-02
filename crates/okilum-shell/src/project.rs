@@ -117,6 +117,8 @@ pub(crate) struct ProjectView {
     rotation_expected_owner: Option<okilum_t3::rotation::Owner>,
     #[cfg(target_os = "linux")]
     rotation_notice: Option<String>,
+    #[cfg(target_os = "linux")]
+    rotation_policy: rotation::policy_owner::State,
     state: Option<PathBuf>,
     environment: Option<Environment>,
     project_override: bool,
@@ -450,6 +452,8 @@ impl ProjectView {
             rotation_expected_owner: None,
             #[cfg(target_os = "linux")]
             rotation_notice: None,
+            #[cfg(target_os = "linux")]
+            rotation_policy: Default::default(),
             state,
             environment: None,
             project_override: true,
@@ -515,6 +519,7 @@ impl ProjectView {
     /// before the next paint or an async draft/store completion can run.
     #[cfg(target_os = "linux")]
     pub(super) fn revoke_rotation(&mut self) {
+        self.rotation_policy.revoke_requests();
         let active = self.rotation_resolver.is_some() || self.rotation.is_some();
         if let Some(valid) = self.rotation_validity.take() {
             valid.store(false, std::sync::atomic::Ordering::Release);
@@ -1097,13 +1102,15 @@ impl ProjectView {
                     .small()
                     .icon(IconName::Ellipsis)
                     .tooltip("Manager options")
-                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
                         let change = owner.clone();
                         let diagnostics = owner.clone();
                         let executors = owner.clone();
                         let launch = owner.clone();
                         let sign_out = env.clone();
                         let terminal_area = terminal_area.clone();
+                        #[cfg(target_os = "linux")]
+                        let menu = menu.item(rotation::policy_owner::menu_item(owner.clone(), cx));
                         menu.item(PopupMenuItem::new("Diagnostics").on_click(move |_, _, cx| {
                             let _ = diagnostics.update(cx, |this, cx| {
                                 this.connection_details = true;
@@ -2182,6 +2189,10 @@ impl Render for ProjectView {
             .when_some(self.rotation.clone(), |surface, coordinator| {
                 surface.child(coordinator)
             });
+        #[cfg(target_os = "linux")]
+        let surface = surface.when(self.rotation_policy.is_open(), |surface| {
+            surface.child(self.render_rotation_policy(window, cx))
+        });
         surface
             .child(div().flex_1().min_h_0().child(content))
             .into_any_element()
