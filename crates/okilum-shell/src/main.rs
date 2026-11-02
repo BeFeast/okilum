@@ -40,6 +40,7 @@ mod quick_open;
 mod reader_app_menu;
 mod reader_archive;
 mod reader_cache;
+mod reader_capture;
 mod reader_code;
 mod reader_code_file;
 mod reader_code_language;
@@ -6983,6 +6984,7 @@ fn reader_more_menu(
                 menu.menu("New note…", Box::new(NewNote))
                     .menu("New Folder", Box::new(NewFolder))
                     .menu("New note from template…", Box::new(NewFromTemplate))
+                    .item(reader_capture::menu_item(reader.clone(), vault.clone(), cx))
                     .menu("Recover notes…", Box::new(RecoverUnsavedNotes))
                     .menu("Recover link moves…", Box::new(RecoverLinkMoves))
             })
