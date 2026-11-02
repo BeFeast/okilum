@@ -138,14 +138,18 @@ pub(super) fn open<T: DeserializeOwned>(
 }
 pub(super) fn read<T: DeserializeOwned>(stream: &mut TcpStream) -> Result<T> {
     let mut length = [0; 4];
-    stream.read_exact(&mut length)?;
+    stream
+        .read_exact(&mut length)
+        .context("read pairing frame length (socket receive timeout may report WouldBlock)")?;
     let length = u32::from_be_bytes(length) as usize;
     ensure!(
         length > 0 && length <= MAX_FRAME,
         "pairing frame exceeds bound"
     );
     let mut body = vec![0; length];
-    stream.read_exact(&mut body)?;
+    stream
+        .read_exact(&mut body)
+        .context("read pairing frame body (socket receive timeout may report WouldBlock)")?;
     Ok(serde_json::from_slice(&body)?)
 }
 pub(super) fn write<T: Serialize>(stream: &mut TcpStream, value: &T) -> Result<()> {

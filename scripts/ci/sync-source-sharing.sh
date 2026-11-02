@@ -11,11 +11,17 @@ fi
 (cd "$cache"; echo "524ef4e1df1850b719e2378c8369956f4e5f2ab9a46fdf7f45f2b925012147aa  $archive" | sha256sum --check)
 tar -xzf "$cache/$archive" -C "$cache"
 export OKILUM_SYNC_DIRECT_CLIENT="$cache/syncthing-linux-amd64-v2.1.6/syncthing"
-# A filter typo must fail, even though cargo considers zero matching tests green.
-log="${RUNNER_TEMP:?}/sync-source-sharing.log"
+# Compile once; concurrent trials execute independent fixture processes rather
+# than serializing on Cargo's target lock. Every trial checks all five test names.
 cargo test --locked -p okilum-sync-controller --lib direct:: -- --nocapture
-RUST_BACKTRACE=1 cargo test --locked -p okilum-sync-controller --test direct_bidirectional source_sharing:: -- --ignored --nocapture --test-threads=1 | tee "$log"
-for name in managed_source_share_empty_receive_and_bidirectional_hashes managed_source_skipped_share_negative_control managed_source_nonempty_destination_refused_without_writes managed_peer_addresses_without_discovery_negative_then_hashes_and_restart managed_receiver_catalog_name_and_7504_label_reconcile; do
-    grep -Fx "test source_sharing::$name ... ok" "$log"
-done
-grep -F 'test result: ok. 5 passed;' "$log"
+artifacts=$(mktemp)
+trap 'rm -f "$artifacts"' EXIT
+cargo test --locked -p okilum-sync-controller --test direct_bidirectional --no-run --message-format=json > "$artifacts"
+executable=$(python3 - "$artifacts" <<'PYTHON'
+import json, sys
+matches = [v['executable'] for line in open(sys.argv[1]) if (v := json.loads(line)).get('reason') == 'compiler-artifact' and v.get('executable') and v['target']['name'] == 'direct_bidirectional']
+assert len(matches) == 1, matches
+print(matches[0])
+PYTHON
+)
+python3 scripts/ci/sync-source-sharing-runs.py "$executable" "$@"
