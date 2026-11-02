@@ -696,7 +696,16 @@ fn perform_with_locations(
             _ => None,
         };
         #[cfg(target_os = "linux")]
-        let operation_for_inventory = matches!(&operation, Operation::Share(_));
+        let refresh_inventory_after_action = !matches!(
+            &operation,
+            Operation::EnterPairing
+                | Operation::Begin(_)
+                | Operation::Redeem(_, _)
+                | Operation::Approve(_)
+                | Operation::Reject(_)
+                | Operation::Cancel
+                | Operation::Catalog(_)
+        );
         let mut inspected = None;
         let snapshot = match operation {
             Operation::Read | Operation::EnterPairing => controller.refresh()?,
@@ -739,7 +748,7 @@ fn perform_with_locations(
         guard.check()?;
         // Publish folder counts from the same completed action as the snapshot.
         #[cfg(target_os = "linux")]
-        let runtime = if selected_destination.is_some() || operation_for_inventory {
+        let runtime = if refresh_inventory_after_action {
             linux_runtime::inspect(&state, &complete_configs)?
         } else {
             runtime
