@@ -3,7 +3,11 @@ import copy
 import importlib.util
 import contextlib
 import io
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -132,6 +136,40 @@ class HelperFlowTests(unittest.TestCase):
                         "bash scripts/ci/vendor-tests.sh",
                         "cargo test -p okilum-core --no-default-features --test portable_reader"):
             self.assertIn(command, suites)
+
+    def test_linux_suites_keep_the_first_failure_and_still_execute_later_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / 'scripts/ci'
+            scripts.mkdir(parents=True)
+            for name in ('linux-rust-tests.sh', 'test-nofile.sh'):
+                shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
+            (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
+            fake = root / 'bin'
+            fake.mkdir()
+            cargo = fake / 'cargo'
+            cargo.write_text('#!/usr/bin/env bash\n'
+                             'echo "$* sprint=${OKILUM_SPRINT_BUILD:-0}" >> "$CALL_LOG"\n'
+                             'if [[ "$FAIL_FIRST" = 1 && ! -e "$FAIL_MARKER" ]]; then\n'
+                             '  touch "$FAIL_MARKER"; exit 7\n'
+                             'fi\n')
+            cargo.chmod(0o755)
+            counts = []
+            for fail in ('0', '1'):
+                log = root / ('calls-' + fail)
+                result = subprocess.run(['bash', str(scripts / 'linux-rust-tests.sh')], cwd=root,
+                                        env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
+                                             'CALL_LOG': str(log), 'FAIL_FIRST': fail,
+                                             'FAIL_MARKER': str(root / 'failed')},
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, int(fail), result.stdout + result.stderr)
+                calls = log.read_text().splitlines()
+                self.assertGreater(len(calls), 20)  # positive control: the full list fired
+                self.assertTrue(any('sprint=1' in call for call in calls))
+                self.assertIn('vendor-tests', calls)
+                self.assertIn('sidecar::macos::preparation::', calls[-1])
+                counts.append(len(calls))
+            self.assertEqual(counts[0], counts[1])
 
 
 if __name__ == "__main__":
