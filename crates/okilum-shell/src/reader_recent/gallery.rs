@@ -79,6 +79,7 @@ pub(crate) struct Gallery {
     scroll: ScrollHandle,
     generation: u64,
     theme_revision: u64,
+    suspended: bool,
     requests: async_channel::Sender<Work>,
     pending: async_channel::Receiver<Work>,
     _task: Task<()>,
@@ -105,6 +106,7 @@ impl Gallery {
             query: String::new(),
             generation: 0,
             theme_revision: 0,
+            suspended: false,
             requests,
             pending,
             _task: task,
@@ -123,6 +125,7 @@ impl Gallery {
         renames: &[(String, String)],
         cx: &mut Context<Self>,
     ) {
+        self.suspended = false;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let old_visible: Vec<_> = self
@@ -159,6 +162,24 @@ impl Gallery {
         while self.pending.try_recv().is_ok() {}
         let _ = self.requests.try_send(Work { generation, jobs });
         cx.notify();
+    }
+
+    /// Explicit recovery uses the last accepted scoped inventory. Refresh verifies
+    /// revisions off-thread before reusing any image, and invalidates older jobs.
+    /// Coalesce with remaining loading cards so Retry cannot strand their queue.
+    pub(crate) fn retry(&mut self, relative: &str, cx: &mut Context<Self>) {
+        if self.suspended {
+            return;
+        }
+        let Some(index) = self.entries.iter().position(|entry| entry.path == relative) else {
+            return;
+        };
+        if !matches!(self.previews[index], Preview::Unavailable(_)) {
+            return;
+        }
+        self.cache.remove(relative);
+        self.presentation_keys.remove(relative);
+        self.refresh(self.entries.clone(), &[], cx);
     }
 
     fn worker(
@@ -221,6 +242,7 @@ impl Gallery {
 
     /// Closing retains derived previews but stops queued/obsolete source work.
     pub(crate) fn suspend(&mut self, cx: &mut Context<Self>) {
+        self.suspended = true;
         self.generation = self.generation.wrapping_add(1);
         while self.pending.try_recv().is_ok() {}
         cx.notify();
@@ -362,7 +384,14 @@ impl Render for Gallery {
                                 cx,
                             ),
                             Preview::Unavailable(reason) => {
-                                div().text_xs().child(reason.clone()).into_any_element()
+                                let retry_path = relative.clone();
+                                v_flex().gap_2().child(div().text_xs().child(reason.clone()))
+                                    .child(Button::new(("recent-preview-retry", index)).small().label("Retry preview")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.retry(&retry_path, cx);
+                                        })))
+                                    .into_any_element()
                             }
                         };
                         v_flex()
@@ -563,6 +592,53 @@ mod selection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn retry_recovers_replaced_unreadable_image_without_changing_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("broken.png");
+        std::fs::write(&path, b"invalid image").unwrap();
+        let entries = vec![reader_title_nav::Entry {
+            path: "broken.png".into(),
+            label: "broken".into(),
+            location: None,
+            age: None,
+            folder: false,
+        }];
+        let gallery = cx.new(|cx| Gallery::new(fixture.path().into(), entries, cx));
+        cx.run_until_parked();
+        gallery.read_with(cx, |view, _| {
+            assert!(
+                matches!(view.previews[0], Preview::Unavailable(_)),
+                "positive control: real decoder rejected invalid bytes"
+            );
+            assert_eq!(view.selected_path(), Some("broken.png"));
+        });
+        let replacement = fixture.path().join("replacement.png");
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([7, 8, 9, 255]))
+            .save(&replacement)
+            .unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        gallery.update(cx, |view, cx| view.retry("broken.png", cx));
+        cx.run_until_parked();
+        gallery.read_with(cx, |view, _| {
+            let Preview::Image(image) = &view.previews[0] else {
+                panic!("Retry must decode the replacement")
+            };
+            assert_eq!(&image.as_bytes(0).unwrap()[..4], &[9, 8, 7, 255]);
+            assert_eq!(view.selected_path(), Some("broken.png"));
+        });
+        gallery.update(cx, |view, cx| {
+            view.previews[0] = Preview::Unavailable("fixture failure after recovery".into());
+            view.suspend(cx);
+            let generation = view.generation;
+            view.retry("broken.png", cx);
+            assert_eq!(view.generation, generation, "closed galleries reject Retry");
+        });
+    }
+
     #[test]
     fn cache_reuses_image_and_invalidates_same_path_replacement() {
         let fixture = tempfile::tempdir().unwrap();
