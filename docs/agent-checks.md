@@ -45,6 +45,7 @@ per-step timestamps/conclusions and the last 100 failed log lines. Exit codes:
 setup failure, missing checks, OOM/disk exhaustion). Retry infrastructure once.
 Its bounded discovery waits and `gh run watch` run inside one helper process;
 do not add thread polling or launch Cargo on the orchestration host.
+Watch refreshes once per minute to leave API quota for concurrent workers.
 
 ```bash
 # Repeat the identical source to measure warm cache (new attempt, same run).
