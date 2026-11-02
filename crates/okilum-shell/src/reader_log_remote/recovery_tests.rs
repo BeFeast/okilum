@@ -235,6 +235,9 @@ fn restore_applied_control_requires_successful_history_and_waits_for_pending_cre
         );
         panel.busy = false;
         panel.credential_pending = false;
+        // The real credential completion notifies the panel. A rejected stale
+        // receipt above correctly does not repaint a manually changed fixture.
+        cx.notify();
     });
     visual.run_until_parked();
     let restore = visual.debug_bounds("remote-restore-applied").unwrap();
