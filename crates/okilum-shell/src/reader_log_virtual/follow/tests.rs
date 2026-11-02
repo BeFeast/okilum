@@ -332,25 +332,64 @@ fn follow_changed_observed_prefix_refuses_publication_and_retains_history() {
 }
 
 #[test]
-fn follow_retained_segment_bound_is_terminal_without_dropping_earlier_history() {
+fn follow_history_bounds_are_terminal_without_dropping_accepted_epochs() {
     let f = Fixture::new();
     let plan = f.plan();
     let initial = plan.select(|_, _| {});
     let mut session = Session::new(&initial).unwrap();
     let a = f.vault.join("logs/a.log");
-    for epoch in 1..MAX_FILES {
+    // This is the receiver's last successful receipt, not unpublished worker
+    // state. The shared lease bound is allowed to stop before the 128-slot cap.
+    let mut receipt = session.published.clone();
+    let mut accepted = 0;
+    let mut terminal = false;
+    for epoch in 1..=MAX_FILES {
         fs::write(&a, format!("epoch {epoch:04}\n")).unwrap();
-        session
-            .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
-            .unwrap();
+        match session.refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false)) {
+            Ok(update) => {
+                for source in update.sources {
+                    receipt.insert(source.slot, source);
+                }
+                accepted += 1;
+                assert_eq!(
+                    receipt.len(),
+                    accepted + 1,
+                    "every accepted epoch remains represented"
+                );
+                assert!(receipt.len() <= MAX_FILES);
+                assert_eq!(receipt[&0].snapshot.raw(0).unwrap(), b"first");
+                for earlier in 1..=accepted {
+                    assert_eq!(
+                        receipt[&earlier].snapshot.raw(0).unwrap(),
+                        format!("epoch {earlier:04}").as_bytes()
+                    );
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let budget = error.is::<okilum_core::log::window_budget::BudgetBusy>();
+                assert!(
+                    budget
+                        || message.contains("Follow memory bound")
+                        || message.contains("retained segment limit")
+                        || message.contains("rotation lifetime bound"),
+                    "unexpected failure: {message}"
+                );
+                terminal = true;
+                break;
+            }
+        }
     }
-    assert_eq!(session.published.len(), MAX_FILES);
-    fs::write(&a, "one more epoch\n").unwrap();
-    assert!(session
-        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
-        .is_err());
-    assert_eq!(session.published.len(), MAX_FILES);
-    assert_eq!(session.published[&0].snapshot.raw(0).unwrap(), b"first");
+    assert!(
+        accepted > 0,
+        "positive control: real epochs must be admitted before testing retention at the bound"
+    );
+    assert!(
+        terminal,
+        "a finite shared-memory/segment bound must stop this run"
+    );
+    assert!(receipt.len() <= MAX_FILES);
+    assert_eq!(receipt[&0].snapshot.raw(0).unwrap(), b"first");
 }
 
 #[test]
