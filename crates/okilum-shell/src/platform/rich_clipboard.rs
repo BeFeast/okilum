@@ -1,7 +1,7 @@
 //! Standard native HTML + plain offers, outside GPUI core. The native owner is
 //! held for the app lifetime (required by X11). Test writers never open a board.
 use anyhow::{ensure, Result};
-use gpui::{App, ClipboardEntry, ClipboardItem, Global, Window};
+use gpui::{App, AppContext, ClipboardEntry, ClipboardItem, Global, Window};
 use serde::{Deserialize, Serialize};
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -56,7 +56,7 @@ fn begin(plain: &str, cx: &mut App) -> Result<Pending> {
     Ok(pending)
 }
 fn still_pending(pending: &Pending, plain: &str, cx: &App) -> bool {
-    cx.read_from_clipboard().is_some_and(|item| item.into_entries().iter().any(|entry| {
+    cx.read_from_clipboard().is_some_and(|item| item.into_entries().any(|entry| {
         matches!(entry, ClipboardEntry::String(text) if text.text == plain && text.metadata_json::<Pending>().as_ref() == Some(pending))
     }))
 }
@@ -67,6 +67,10 @@ fn finish(pending: &Pending, plain: String, html: Result<String>, cx: &mut App) 
     // Consume the marker; native set_html follows this canonical plain write.
     cx.write_to_clipboard(ClipboardItem::new_string(plain.clone()));
     let html = html?;
+    ensure!(
+        plain.is_empty() || !html.trim().is_empty(),
+        "Selection has no formatted content"
+    );
     ensure!(
         plain.len().saturating_add(html.len()) <= MAX_BYTES,
         "Formatted clipboard exceeds 8 MiB"
