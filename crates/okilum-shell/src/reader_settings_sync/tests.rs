@@ -1284,3 +1284,37 @@ fn sync_2419_share_menu_opens_sync_with_module_off(cx: &mut TestAppContext) {
     assert_visible(&mut settings, "sync-add-computer");
     assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
 }
+
+#[gpui::test]
+fn sync_2419_first_use_keeps_sync_off_when_preferences_cannot_be_saved(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_features::install(directory.path(), cx);
+    });
+    std::fs::create_dir(directory.path().join("features.json")).unwrap();
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    cx.update(|cx| reader_settings::show(None, cx));
+    cx.run_until_parked();
+    let settings = cx.update(|cx| cx.windows()[0]);
+    let mut visual = VisualTestContext::from_window(settings, cx);
+    visual.run_until_parked();
+    let entry = visual.debug_bounds("settings-section-Sync").unwrap();
+    visual.simulate_click(entry.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert!(!reader_features::enabled(
+            reader_features::Feature::Sync,
+            cx
+        ));
+        assert!(reader_features::error(cx).is_some());
+    });
+    assert!(
+        visual.debug_bounds("settings-feature-sync").is_some(),
+        "failed enable opens Features with the save error"
+    );
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "failed consent must not reach the controller"
+    );
+}

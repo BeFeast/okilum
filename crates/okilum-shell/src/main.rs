@@ -7012,7 +7012,9 @@ fn reader_more_menu(
             )
             .map(|menu| {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
-                let menu = menu.item(reader_settings::share_sync_menu_item(settings_reader_for_sync.clone()));
+                let menu = menu.item(reader_settings::share_sync_menu_item(
+                    settings_reader_for_sync.clone(),
+                ));
                 menu
             })
             .menu("Keyboard shortcuts", Box::new(ToggleShortcutSheet))
