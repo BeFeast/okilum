@@ -1322,7 +1322,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         visual.simulate_keystrokes("cmd-shift-z");
         #[cfg(not(target_os = "macos"))]
-        visual.simulate_keystrokes("ctrl-shift-z");
+        visual.simulate_keystrokes("ctrl-y");
         visual.run_until_parked();
         input.read_with(visual, |i, _| {
             assert_eq!(i.value().as_ref(), format!("x{}", &original[1..]))
