@@ -470,8 +470,16 @@ fn existing_input_identity_and_structure_caps_refuse_before_unsafe_publication()
             Some(Error::Source(SourceReason::UnsupportedOrAmbiguous))
         );
     }
-    let positive = source(1, &"a".repeat(MAX_BYTES));
+    // This unwired authority retains UTF-16 pairs for every grapheme; its
+    // independent index-memory cap still applies after Reader byte admission grows.
+    let positive = source(1, &"🧠".repeat(MAX_BYTES / 4));
+    assert_eq!(positive.source().len(), MAX_BYTES);
     assert!(build(&positive).blocks(&positive, known()).is_ok());
+    assert_eq!(
+        BlockIndex::build(source(1, &"a".repeat(MAX_BYTES)), ParseContext::LivePreview).err(),
+        Some(Error::Source(SourceReason::StructureLimit)),
+        "positive control: the separate retained-index budget is still enforced"
+    );
     let excessive = source(1, &"[unused]: /a\n".repeat(MAX_RANGES));
     assert_eq!(
         BlockIndex::build(excessive, ParseContext::LivePreview).err(),

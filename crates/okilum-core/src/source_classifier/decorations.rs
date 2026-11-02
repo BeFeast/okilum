@@ -122,7 +122,7 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                 let Some(range) = context.range(node) else {
                     continue;
                 };
-                let start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+                let start = context.line_start(node.data.borrow().sourcepos.start.line - 1);
                 let Some(text) = context.source.get(start..range.end) else {
                     continue;
                 };
@@ -164,7 +164,7 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                     .is_some_and(|p| matches!(p.data.borrow().value, NodeValue::Document)) =>
             {
                 if let Some(range) = context.range(node) {
-                    let start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+                    let start = context.line_start(node.data.borrow().sourcepos.start.line - 1);
                     if let Some(text) = context.source.get(start..range.end) {
                         // The block covers the whole line, trailing blanks too:
                         // a caret there is inside it and reveals the source.
@@ -277,10 +277,10 @@ fn quote_markers<'a>(node: &'a AstNode<'a>, context: &Context<'_>) -> Option<Vec
         .filter(|ancestor| matches!(ancestor.data.borrow().value, NodeValue::BlockQuote))
         .count();
     let pos = node.data.borrow().sourcepos;
-    let column = scope.start - *context.lines.get(pos.start.line - 1)?;
+    let column = scope.start - context.index.line_start(pos.start.line - 1)?;
     let mut markers = Vec::new();
     for line in pos.start.line..=pos.end.line {
-        let start = *context.lines.get(line - 1)?;
+        let start = context.index.line_start(line - 1)?;
         // The first line's offset is AST-proven (its prefix may hold a list
         // marker). Later lines: this quote's delimiter is the depth-th `>`
         // after only spaces and parent delimiters, near the first column.
@@ -407,7 +407,7 @@ fn whole_line_block<'a>(
     kind: Kind,
 ) -> Option<Marker> {
     let range = context.range(node)?;
-    let start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+    let start = context.line_start(node.data.borrow().sourcepos.start.line - 1);
     let text = context.source.get(start..range.end)?;
     let mut end = start;
     let mut offset = start;

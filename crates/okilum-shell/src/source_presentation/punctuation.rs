@@ -3,22 +3,56 @@
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static INDEXED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 pub(super) fn replacements(
     source: &str,
     eligible: impl Fn(&Range<usize>) -> bool,
 ) -> Vec<(Range<usize>, &'static str)> {
+    INDEXED_BYTES.with(|n| n.set(n.get() + source.len()));
+    let boundaries: Vec<_> = source
+        .grapheme_indices(true)
+        .map(|(at, _)| at)
+        .chain(std::iter::once(source.len()))
+        .collect();
+    replacements_indexed(source, eligible, |range| {
+        boundaries.binary_search(&range.start).is_ok()
+            && boundaries.binary_search(&range.end).is_ok()
+    })
+}
+
+/// Production supplies the already retained canonical source index. Quote
+/// admission must not segment every unchanged prose paragraph on each key.
+pub(super) fn replacements_indexed(
+    source: &str,
+    eligible: impl Fn(&Range<usize>) -> bool,
+    boundary: impl Fn(&Range<usize>) -> bool,
+) -> Vec<(Range<usize>, &'static str)> {
     let mut out = Vec::new();
+    if !source.contains(['"', '\'']) && !source.contains("--") && !source.contains("...") {
+        return out;
+    }
     // A blank line resets language and quote pairing, including CRLF notes.
     let mut paragraph = 0;
     let mut at = 0;
     for line in source.split_inclusive('\n') {
         if line.trim().is_empty() {
-            scan(source, paragraph..at, &eligible, &mut out);
+            scan(source, paragraph..at, &eligible, &boundary, &mut out);
             paragraph = at + line.len();
         }
         at += line.len();
     }
-    scan(source, paragraph..source.len(), &eligible, &mut out);
+    scan(
+        source,
+        paragraph..source.len(),
+        &eligible,
+        &boundary,
+        &mut out,
+    );
     out.sort_by_key(|(range, _)| range.start);
     out
 }
@@ -27,6 +61,7 @@ fn scan(
     source: &str,
     paragraph: Range<usize>,
     eligible: &impl Fn(&Range<usize>) -> bool,
+    boundary: &impl Fn(&Range<usize>) -> bool,
     out: &mut Vec<(Range<usize>, &'static str)>,
 ) {
     let text = &source[paragraph.clone()];
@@ -34,13 +69,6 @@ fn scan(
         (('а'..='я').contains(&ch) || ('А'..='Я').contains(&ch) || ch == 'ё' || ch == 'Ё')
             && eligible(&(paragraph.start + at..paragraph.start + at + ch.len_utf8()))
     });
-    // Derive boundaries from the complete paragraph, not a suffix starting at
-    // a quote: that suffix could hide an attached mark or preceding joiner.
-    let boundaries: Vec<_> = text
-        .grapheme_indices(true)
-        .map(|(at, _)| paragraph.start + at)
-        .chain(std::iter::once(paragraph.end))
-        .collect();
     let mut double = None;
     let mut single = None;
     let mut at = paragraph.start;
@@ -70,9 +98,9 @@ fn scan(
                     out.push((range, glyph));
                 }
             } else if ch == '"' || ch == '\'' {
-                let admitted = eligible(&range)
-                    && boundaries.binary_search(&range.start).is_ok()
-                    && boundaries.binary_search(&range.end).is_ok();
+                // Check the complete canonical source, never a suffix starting
+                // at the quote that could hide an attached mark or joiner.
+                let admitted = eligible(&range) && boundary(&range);
                 // Bidi formatting controls affect visual order, not quote
                 // boundaries. Keep every authored byte and pair in logical
                 // source order, including isolates around embedded LTR text.

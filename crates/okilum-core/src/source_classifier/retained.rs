@@ -83,15 +83,27 @@ thread_local! {
 }
 
 impl RetainedPresentation {
+    pub(super) fn base_projection(&self) -> Option<&crate::source_projection::Projection> {
+        self.base.as_deref().ok()
+    }
+
     pub fn new(classified: &Classification) -> Self {
+        Self::new_reusing(classified, None)
+    }
+
+    /// Worker refreshes reuse the exact predecessor's boundary indexes too.
+    /// Reclassification must not undo incremental input-path work at adoption.
+    pub fn new_reusing(classified: &Classification, previous: Option<&Self>) -> Self {
         #[cfg(test)]
         TEST_RETAINED_BUILDS.with(|count| count.set(count.get() + 1));
         Self {
             snapshot: classified.snapshot.clone(),
-            base: crate::source_projection::project(
+            base: crate::source_projection::project_reusing(
                 &classified.snapshot,
                 &classified.plan,
                 &Active::default(),
+                crate::source_projection::MAX_WORK,
+                previous.and_then(|p| p.base.as_deref().ok()),
             )
             .map(Arc::new),
             plan: classified.plan.clone(),
@@ -223,10 +235,12 @@ impl RetainedPresentation {
         if !revealed {
             return Ok(reveal);
         }
-        reveal.projection = Arc::new(crate::source_projection::project(
+        reveal.projection = Arc::new(crate::source_projection::project_reusing(
             &self.snapshot,
             &Plan::new(&self.snapshot, regions),
             &Active::default(),
+            crate::source_projection::MAX_WORK,
+            self.base.as_deref().ok(),
         )?);
         Ok(reveal)
     }
@@ -358,7 +372,14 @@ impl RetainedPresentation {
             .cloned()
             .collect();
         let plan = Plan::new(current, regions);
-        let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
+        let base = crate::source_projection::project_reusing(
+            current,
+            &plan,
+            &Active::default(),
+            crate::source_projection::MAX_WORK,
+            self.base.as_deref().ok(),
+        )
+        .ok()?;
         Some(Self {
             snapshot: current.clone(),
             base: Ok(Arc::new(base)),
@@ -847,7 +868,14 @@ impl RetainedPresentation {
         contexts.extend(classified.iter().flat_map(|c| &c.contexts).map(offset));
         contexts.sort_by_key(|c| c.start);
         let plan = Plan::new(current, regions);
-        let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
+        let base = crate::source_projection::project_reusing(
+            current,
+            &plan,
+            &Active::default(),
+            crate::source_projection::MAX_WORK,
+            self.base.as_deref().ok(),
+        )
+        .ok()?;
         Some(Self {
             snapshot: current.clone(),
             base: Ok(Arc::new(base)),
@@ -873,10 +901,12 @@ impl RetainedPresentation {
         if old == new {
             return Some(Self {
                 snapshot: current.clone(),
-                base: crate::source_projection::project(
+                base: crate::source_projection::project_reusing(
                     current,
                     &Plan::new(current, self.plan.regions().to_vec()),
                     &Active::default(),
+                    crate::source_projection::MAX_WORK,
+                    self.base.as_deref().ok(),
                 )
                 .map(Arc::new),
                 plan: Plan::new(current, self.plan.regions().to_vec()),
@@ -1059,7 +1089,14 @@ impl RetainedPresentation {
             .collect();
         let plan = Plan::new(current, regions);
         // Build and validate once per revision, then reuse during reveal/IME.
-        let base = crate::source_projection::project(current, &plan, &Active::default()).ok()?;
+        let base = crate::source_projection::project_reusing(
+            current,
+            &plan,
+            &Active::default(),
+            crate::source_projection::MAX_WORK,
+            self.base.as_deref().ok(),
+        )
+        .ok()?;
         let result = Self {
             contexts,
             references: self.references.clone(),

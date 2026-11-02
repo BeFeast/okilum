@@ -41,3 +41,9 @@ phase workspace-test-check cargo check --locked --workspace --tests
 phase list-tests cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/fast-tests.txt"
 phase paste-tests cargo test --locked -p okilum-paste --lib -- --test-threads=1
+
+# The scoped Live Preview gate uses the same locked warm build helper. Ordinary
+# fast admission keeps its existing scope; the separate gate executes GUI tests.
+if [ "${OKILUM_LIVE_PREVIEW_TESTS:-0}" = 1 ]; then
+    phase live-preview-regressions bash scripts/ci/live-preview-tests.sh
+fi

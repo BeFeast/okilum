@@ -1,0 +1,77 @@
+--- a/crates/base/src/input/projection_layout.rs
++++ b/crates/base/src/input/projection_layout.rs
+@@ -120,6 +120,11 @@
+     }
+ }
+ 
++#[cfg(test)]
++thread_local! {
++    static HIT_GRAPHEME_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
+ /// Clip a *displayed user hit*, never a native canonical replacement range.
+ /// The zero-width CR at a CRLF line ending belongs to the preceding visual row.
+ pub(super) fn clip_hit_offset(
+@@ -138,11 +143,20 @@
+     {
+         return Some(offset - 1);
+     }
+-    let mut previous = 0;
+-    for boundary in text
++    // LF is an unconditional grapheme break. Search backwards only to the
++    // current logical line, then segment from its proven boundary. This also
++    // accepts a hit inside a UTF-8 scalar without slicing at that byte.
++    let start = text.as_bytes()[..offset].iter().rposition(|&b| b == b'\n')
++        .map_or(0, |at| at + 1);
++    let mut previous = start;
++    for boundary in text[start..]
+         .grapheme_indices(true)
+-        .map(|(i, _)| i)
++        .map(|(i, _)| start + i)
+         .chain(std::iter::once(text.len()))
++        .inspect(|_| {
++            #[cfg(test)]
++            HIT_GRAPHEME_STEPS.with(|n| n.set(n.get() + 1));
++        })
+     {
+         if boundary == offset {
+             return Some(offset);
+@@ -417,4 +431,37 @@
+             None
+         );
+     }
+-}
++    #[test]
++    fn distant_hit_clipping_segments_only_its_line_and_matches_the_whole_source_oracle() {
++        use unicode_segmentation::UnicodeSegmentation as _;
++        let line = "row e\u{301} אבג 👩\u{200d}💻 🇺🇸\r\n";
++        for rows in [700, 12000] {
++            let text = line.repeat(rows);
++            let boundaries: Vec<_> = text.grapheme_indices(true).map(|(at, _)| at)
++                .chain(std::iter::once(text.len())).collect();
++            assert!(boundaries.len() > rows * 8,
++                "positive control: the cold oracle segments all unchanged rows");
++            for offset in text.len() - line.len()..=text.len() {
++                for bias in [ConcealBias::Left, ConcealBias::Right] {
++                    let expected = if offset > 0
++                        && text.as_bytes().get(offset - 1) == Some(&b'\r')
++                        && text.as_bytes().get(offset) == Some(&b'\n') {
++                        Some(offset - 1)
++                    } else {
++                        Some(match boundaries.binary_search(&offset) {
++                            Ok(_) => offset,
++                            Err(at) if bias == ConcealBias::Left => boundaries[at - 1],
++                            Err(at) => boundaries[at],
++                        })
++                    };
++                    HIT_GRAPHEME_STEPS.with(|n| n.set(0));
++                    assert_eq!(clip_hit_offset(&text, offset, bias), expected,
++                        "row count {rows}, byte {offset}, bias {bias:?}");
++                    assert!(HIT_GRAPHEME_STEPS.with(|n| n.get()) <= line.len() + 1,
++                        "caret/hit lookup must never segment the whole note");
++                }
++            }
++        }
++    }
++
++}

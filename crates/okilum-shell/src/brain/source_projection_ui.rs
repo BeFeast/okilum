@@ -246,12 +246,17 @@ impl BrainView {
             input,
             request,
         } = job;
+        let previous = self
+            .source_projection
+            .accepted
+            .as_ref()
+            .map(|(_, p)| p.clone());
         self.source_projection.foreground = Some(cx.spawn_in(window, {
             let module_access =
                 crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
             async move |this, cx| {
                 okilum_t3::scope_network(module_access, async move {
-                    // Only immutable owned input/request cross to the worker. The Rc
+                    // Only owned snapshots/providers cross to the worker. The Rc
                     // marker, guard, native entity and UI context stay foreground.
                     let produced = cx
                         .background_executor()
@@ -259,12 +264,20 @@ impl BrainView {
                             #[cfg(test)]
                             {
                                 okilum_core::open_diagnostics::capture(|| {
-                                    CachedProvider::classify_navigation(request, input)
+                                    CachedProvider::classify_navigation_reusing(
+                                        request,
+                                        input,
+                                        previous.as_deref(),
+                                    )
                                 })
                             }
                             #[cfg(not(test))]
                             {
-                                CachedProvider::classify_navigation(request, input)
+                                CachedProvider::classify_navigation_reusing(
+                                    request,
+                                    input,
+                                    previous.as_deref(),
+                                )
                             }
                         }))
                         .await;
@@ -427,7 +440,8 @@ mod tests {
                 "presentation never protects source"
             );
         });
-        for len in [65536, 65537, 256 * 1024] {
+        let limit = okilum_core::source_classifier::MAX_BYTES;
+        for len in [65536, 65537, 256 * 1024, limit, limit + 1] {
             let value = format!("\u{feff}# {}\r\n", "x".repeat(len - 7));
             assert_eq!(value.len(), len);
             view.update_in(cx, |v, window, cx| {
@@ -435,13 +449,13 @@ mod tests {
                 assert_eq!(v.source.entity_id(), entity);
                 assert!(v.source_editable);
                 assert_eq!(v.source.value(cx).as_bytes(), value.as_bytes());
-                assert_eq!(v.projection_snapshot(cx).is_some(), len <= 65536);
+                assert_eq!(v.projection_snapshot(cx).is_some(), len <= limit);
                 v.toggle_source_projection(window, cx);
                 v.toggle_source_projection(window, cx);
             });
             cx.run_until_parked();
             view.update_in(cx, |v, _, cx| {
-                assert_eq!(v.source_projection.accepted.is_some(), len <= 65536);
+                assert_eq!(v.source_projection.accepted.is_some(), len <= limit);
                 assert_eq!(v.source.value(cx).as_bytes(), value.as_bytes());
                 let request = source_write(
                     v.source_snapshot.as_ref().unwrap(),

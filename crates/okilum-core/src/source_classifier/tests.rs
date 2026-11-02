@@ -14,6 +14,48 @@ fn display(source: &str) -> String {
 }
 
 #[test]
+fn background_refresh_reuses_indexes_through_classification_and_publication() {
+    use crate::source_projection::boundary_index::INDEXED_BYTES;
+    for bytes in [130 * 1024, MAX_BYTES] {
+        let paragraph = format!(
+            "Paragraph **bold** e\u{301} 👩\u{200d}💻 {}\r\n\r\n",
+            "a".repeat(2048)
+        );
+        let mut text = paragraph.repeat(bytes / paragraph.len());
+        text.push_str(&"z".repeat(bytes - text.len()));
+        let original = snapshot(&text);
+        let mut previous = RetainedPresentation::new(&classify(&original));
+        for (generation, at) in [0, text.rfind("aaaa").unwrap()].into_iter().enumerate() {
+            text.replace_range(at..at + 1, "q");
+            let current = Snapshot::new("synthetic.md", generation as u64 + 8, text.as_str());
+            INDEXED_BYTES.with(|n| n.set(0));
+            let cold = classify(&current);
+            let cold = RetainedPresentation::new(&cold);
+            assert!(
+                INDEXED_BYTES.with(|n| n.get()) > bytes,
+                "positive control: cold canonical classification and publication segment the note"
+            );
+            INDEXED_BYTES.with(|n| n.set(0));
+            let classified = classify_reusing(&current, Some(&previous));
+            let retained = RetainedPresentation::new_reusing(&classified, Some(&previous));
+            assert!(
+                INDEXED_BYTES.with(|n| n.get()) < 32 * 1024,
+                "worker refresh must segment only edited lines, including validation and adoption"
+            );
+            assert_eq!(retained.styles(), cold.styles());
+            let actual = retained.project(&Active::default()).unwrap();
+            let expected = cold.project(&Active::default()).unwrap();
+            assert_eq!(actual.display(), expected.display());
+            assert!(
+                !actual.display().contains("**"),
+                "Markdown is actually projected"
+            );
+            previous = retained;
+        }
+    }
+}
+
+#[test]
 fn supported_forms_have_exact_authored_display() {
     for (source, expected) in [
         ("", ""),
@@ -432,7 +474,12 @@ fn input_and_structure_limits_preserve_exact_source() {
         classify(&snapshot(&over)).reasons(),
         &[SourceReason::InputLimit]
     );
-    assert_eq!(display(&over), over);
+    // Classification and native projection now share the same byte ceiling.
+    // Oversized bytes travel through SourceFallback, not a projected identity map.
+    let current = snapshot(&over);
+    let rejected = project(&current, classify(&current).plan(), &Active::default()).unwrap_err();
+    assert_eq!(rejected.reason, FallbackReason::SourceLimit);
+    assert_eq!(rejected.source(), over);
     let nodes = "**x** ".repeat(1500);
     assert_eq!(
         classify(&snapshot(&nodes)).reasons(),
@@ -598,7 +645,7 @@ fn heading_navigation_refuses_duplicates_and_unsupported_targets() {
     assert!(classify(&snapshot(&raw))
         .heading_offset("Huge")
         .unwrap_err()
-        .contains("64 KiB"));
+        .contains("1 MiB"));
 }
 
 #[test]

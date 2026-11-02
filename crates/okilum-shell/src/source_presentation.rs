@@ -160,13 +160,32 @@ impl CachedProvider {
         request: navigation_inventory::Request,
         input: navigation_inventory::Input,
     ) -> Result<(Self, navigation_inventory::Completion), navigation_inventory::Error> {
+        Self::classify_navigation_reusing(request, input, None)
+    }
+    pub(crate) fn classify_navigation_reusing(
+        request: navigation_inventory::Request,
+        input: navigation_inventory::Input,
+        previous: Option<&Self>,
+    ) -> Result<(Self, navigation_inventory::Completion), navigation_inventory::Error> {
         let completion = request.compute();
         let links = completion.view(&input)?.legacy_links().to_vec();
-        Ok((Self::from_links(input.source, links), completion))
+        Ok((
+            Self::from_links_reusing(input.source, links, previous),
+            completion,
+        ))
     }
     fn from_links(source: SourceSnapshot, links: Vec<source_classifier::NoteLink>) -> Self {
+        Self::from_links_reusing(source, links, None)
+    }
+    fn from_links_reusing(
+        source: SourceSnapshot,
+        links: Vec<source_classifier::NoteLink>,
+        previous: Option<&Self>,
+    ) -> Self {
         let snapshot = core_snapshot(&source);
-        let classified = source_classifier::classify(&snapshot);
+        // Release the old provider's lock before the background canonical parse.
+        let predecessor = previous.and_then(|p| p.retained.lock().ok().map(|r| r.clone()));
+        let classified = source_classifier::classify_reusing(&snapshot, predecessor.as_ref());
         let tables = classified
             .decorations_for(&snapshot)
             .unwrap_or_default()
@@ -199,7 +218,10 @@ impl CachedProvider {
             source,
             syntax,
             fenced_blocks,
-            retained: Mutex::new(RetainedPresentation::new(&classified)),
+            retained: Mutex::new(RetainedPresentation::new_reusing(
+                &classified,
+                predecessor.as_ref(),
+            )),
             classified,
             links,
             tables,
@@ -300,19 +322,30 @@ impl CachedProvider {
             if reveal.is_raw(snapshot, block) {
                 continue;
             }
-            let candidates = punctuation::replacements(&source[block.clone()], |local| {
-                let range = block.start + local.start..block.start + local.end;
-                !markers
-                    .iter()
-                    .any(|m| m.start < range.end && range.start < m.end)
-                    && !styles.iter().any(|s| {
-                        matches!(
-                            s.style,
-                            Style::Code | Style::CodeBlock | Style::Math | Style::Definition
-                        ) && s.range.start < range.end
-                            && range.start < s.range.end
-                    })
-            });
+            let candidates = punctuation::replacements_indexed(
+                &source[block.clone()],
+                |local| {
+                    let range = block.start + local.start..block.start + local.end;
+                    !markers
+                        .iter()
+                        .any(|m| m.start < range.end && range.start < m.end)
+                        && !styles.iter().any(|s| {
+                            matches!(
+                                s.style,
+                                Style::Code | Style::CodeBlock | Style::Math | Style::Definition
+                            ) && s.range.start < range.end
+                                && range.start < s.range.end
+                        })
+                },
+                |local| {
+                    retained
+                        .validate_active(&Active {
+                            selection: Some(block.start + local.start..block.start + local.end),
+                            composition: None,
+                        })
+                        .is_ok()
+                },
+            );
             for (range, glyph) in candidates {
                 let (Some(start), Some(end)) =
                     (map(block.start + range.start), map(block.start + range.end))
@@ -446,7 +479,8 @@ impl CachedProvider {
         if let Some(theme) = syntax_theme {
             // Native StyleCursor accepts unsorted ranges and retains provider
             // order: later semantic colors override broad Markdown captures.
-            self.syntax.project(source, &projection, theme, &mut styles);
+            self.syntax
+                .project_retained(source, &projection, theme, &mut styles, Some(&retained));
         }
         let line_scales = heading_line_scales(&projection, retained.styles());
         let math = self.math_overlay(&projection, retained.styles(), &retained, &reveal_snapshot);
@@ -459,12 +493,13 @@ impl CachedProvider {
             math.as_ref()
                 .map_or(projection.display(), |math| math.text.as_str()),
         );
-        let blocks = table_blocks(
+        let blocks = table_blocks_indexed(
             &source.text,
             self.current_tables(&current, &source.text),
             std::iter::once(active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0))
                 .chain(active.composition.as_ref().map(raw_range))
                 .chain(active.replacement.as_ref().map(raw_range)),
+            |at| projection.source_line_at(at),
         );
         Some(Arc::new(MappedProjection {
             source: source.clone(),
@@ -763,9 +798,20 @@ fn table_blocks(
     tables: Vec<Range<usize>>,
     active: impl Iterator<Item = Range<usize>> + Clone,
 ) -> Vec<ProjectionBlock> {
+    table_blocks_indexed(text, tables, active, |at| {
+        text.as_bytes()[..at]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+    })
+}
+fn table_blocks_indexed(
+    text: &str,
+    tables: Vec<Range<usize>>,
+    active: impl Iterator<Item = Range<usize>> + Clone,
+    line_of: impl Fn(usize) -> usize,
+) -> Vec<ProjectionBlock> {
     use std::hash::{Hash, Hasher};
-    let newlines: Vec<usize> = text.match_indices('\n').map(|(at, _)| at).collect();
-    let line_of = |at: usize| newlines.partition_point(|&nl| nl < at);
     tables
         .into_iter()
         .filter(|table| {
@@ -869,8 +915,29 @@ pub(crate) fn heading_scale(level: u8) -> f32 {
 trait PresentationMap {
     fn display_text(&self) -> &str;
     fn map_source(&self, offset: usize) -> Option<usize>;
+    fn display_line_at(&self, byte: usize) -> usize {
+        self.display_text().as_bytes()[..byte]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+    }
+    fn display_line_start(&self, line: usize) -> Option<usize> {
+        if line == 0 {
+            return Some(0);
+        }
+        self.display_text()
+            .match_indices('\n')
+            .nth(line - 1)
+            .map(|(at, _)| at + 1)
+    }
 }
 impl PresentationMap for Projection {
+    fn display_line_at(&self, byte: usize) -> usize {
+        self.display_line_at(byte)
+    }
+    fn display_line_start(&self, line: usize) -> Option<usize> {
+        self.display_line_start(line)
+    }
     fn display_text(&self) -> &str {
         self.display()
     }
@@ -879,6 +946,12 @@ impl PresentationMap for Projection {
     }
 }
 impl<T: PresentationMap> PresentationMap for Arc<T> {
+    fn display_line_at(&self, byte: usize) -> usize {
+        self.as_ref().display_line_at(byte)
+    }
+    fn display_line_start(&self, line: usize) -> Option<usize> {
+        self.as_ref().display_line_start(line)
+    }
     fn display_text(&self) -> &str {
         self.as_ref().display_text()
     }
@@ -903,14 +976,13 @@ fn heading_line_scales(
     styles: &[source_classifier::StyleSpan],
 ) -> Vec<LineScale> {
     let display = projection.display_text();
-    let newlines: Vec<usize> = display.match_indices('\n').map(|(at, _)| at).collect();
     let mut scales: Vec<LineScale> = styles
         .iter()
         .filter_map(|style| match style.style {
             Style::Heading(level) => {
                 let start = projection.map_source(style.range.start)?;
-                let line = newlines.partition_point(|&at| at < start);
-                let line_start = line.checked_sub(1).map_or(0, |prev| newlines[prev] + 1);
+                let line = projection.display_line_at(start);
+                let line_start = projection.display_line_start(line)?;
                 let scale = heading_scale(level);
                 // Only a bare revealed marker hangs: a quote or list prefix
                 // before it stays in the text so per-row markers keep aligning.
@@ -1162,6 +1234,48 @@ mod tests {
             anchor: SourceByte(source.text.len()),
             head: SourceByte(source.text.len()),
             ..ActiveSource::default()
+        }
+    }
+
+    #[test]
+    fn large_prose_punctuation_uses_retained_canonical_boundaries() {
+        for bytes in [130 * 1024, source_classifier::MAX_BYTES] {
+            let line = format!(
+                "Prose **bold** \"Hello\" ... e\u{301} {}\r\n\r\n",
+                "a".repeat(2048)
+            );
+            let mut text = line.repeat(bytes / line.len());
+            text.push_str(&"z".repeat(bytes - text.len()));
+            let note = source(&text);
+            punctuation::INDEXED_BYTES.with(|n| n.set(0));
+            let cold = punctuation::replacements(&text, |_| true);
+            assert!(
+                !cold.is_empty(),
+                "positive control: quotes and ellipses are decorated"
+            );
+            assert_eq!(
+                punctuation::INDEXED_BYTES.with(|n| n.get()),
+                bytes,
+                "positive control: standalone punctuation builds a whole-note boundary index"
+            );
+            let provider = CachedProvider::classify(note.clone());
+            punctuation::INDEXED_BYTES.with(|n| n.set(0));
+            let initial = provider.compose(&note, &inactive(&note)).unwrap();
+            assert!(initial.text().contains("“Hello” …"));
+            let edited = SourceSnapshot {
+                stamp: SourceStamp {
+                    generation: note.stamp.generation + 1,
+                    ..note.stamp
+                },
+                text: text.replacen("Prose", "qrose", 1).into(),
+            };
+            let frame = provider.compose(&edited, &inactive(&edited)).unwrap();
+            assert!(frame.text().contains("“Hello” …"));
+            assert_eq!(
+                punctuation::INDEXED_BYTES.with(|n| n.get()),
+                0,
+                "compose must use the retained source index, including after an edit"
+            );
         }
     }
 

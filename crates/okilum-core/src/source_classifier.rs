@@ -2,8 +2,8 @@
 //! No renderer output, decoded AST literal, native buffer, or backend participates.
 use std::ops::Range;
 
+use crate::source_projection::boundary_index::Index;
 use comrak::{nodes::AstNode, nodes::NodeValue, Arena, Options};
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::source_projection::{self, Active, MapError, Plan, Region, Snapshot};
 
@@ -18,7 +18,7 @@ mod retained;
 pub(crate) mod structural;
 pub use retained::{RetainedPresentation, RevealSnapshot};
 
-pub const MAX_BYTES: usize = 64 * 1024;
+pub const MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_NODES: usize = 4096;
 pub const MAX_DEPTH: usize = 32;
 pub const MAX_STYLES_AND_REASONS: usize = 4096;
@@ -156,7 +156,7 @@ impl Classification {
         target: &str,
     ) -> Result<usize, &'static str> {
         if self.snapshot.source().len() > MAX_BYTES {
-            return Err("Heading navigation supports saved target notes up to 64 KiB.");
+            return Err("Heading navigation supports saved target notes up to 1 MiB.");
         }
         if target.starts_with('^') {
             return Err(
@@ -215,6 +215,20 @@ pub fn classify(snapshot: &Snapshot) -> Classification {
     classify_with(snapshot, &[])
 }
 
+/// Background refreshes preserve the predecessor's grapheme/newline indexes.
+/// Parsing remains canonical; no old classification or AST offsets are reused.
+pub fn classify_reusing(
+    snapshot: &Snapshot,
+    previous: Option<&RetainedPresentation>,
+) -> Classification {
+    classify_fragment_reusing(
+        snapshot,
+        &[],
+        true,
+        previous.and_then(|p| p.base_projection()),
+    )
+}
+
 /// `references` resolve uses whose definitions lie outside a local fragment.
 pub(crate) fn classify_with(snapshot: &Snapshot, references: &[Reference]) -> Classification {
     classify_fragment(snapshot, references, true)
@@ -232,6 +246,15 @@ pub(crate) fn classify_fragment(
     references: &[Reference],
     allow_frontmatter: bool,
 ) -> Classification {
+    classify_fragment_reusing(snapshot, references, allow_frontmatter, None)
+}
+
+fn classify_fragment_reusing(
+    snapshot: &Snapshot,
+    references: &[Reference],
+    allow_frontmatter: bool,
+    previous: Option<&source_projection::Projection>,
+) -> Classification {
     let source = snapshot.source();
     if source.len() > MAX_BYTES {
         return fallback(snapshot, SourceReason::InputLimit);
@@ -245,13 +268,13 @@ pub(crate) fn classify_fragment(
     {
         return fallback(snapshot, SourceReason::ParserCoordinates);
     }
-    let context = Context::new(source);
+    let context = Context::new_reusing(snapshot, previous);
     let arena = Arena::new();
     let options = canonical_options(source, references, allow_frontmatter);
     #[cfg(test)]
     TEST_PARSE_CALLS.with(|count| count.set(count.get() + 1));
     let root = comrak::parse_document(&arena, source, &options);
-    classify_parsed(snapshot, &context, root, allow_frontmatter)
+    classify_parsed_reusing(snapshot, &context, root, allow_frontmatter, previous)
 }
 
 /// A closed configuration shared with structural authority. Arbitrary option or
@@ -290,6 +313,16 @@ fn classify_parsed<'a>(
     context: &Context<'_>,
     root: &'a AstNode<'a>,
     allow_frontmatter: bool,
+) -> Classification {
+    classify_parsed_reusing(snapshot, context, root, allow_frontmatter, None)
+}
+
+fn classify_parsed_reusing<'a>(
+    snapshot: &Snapshot,
+    context: &Context<'_>,
+    root: &'a AstNode<'a>,
+    allow_frontmatter: bool,
+    previous: Option<&source_projection::Projection>,
 ) -> Classification {
     let source = snapshot.source();
     let first_line = source.trim_start_matches('\u{feff}').lines().next();
@@ -331,7 +364,8 @@ fn classify_parsed<'a>(
             let Some(range) = context.range(node) else {
                 return fallback(snapshot, SourceReason::ParserCoordinates);
             };
-            contexts.push(context.lines[node.data.borrow().sourcepos.start.line - 1]..range.end);
+            contexts
+                .push(context.line_start(node.data.borrow().sourcepos.start.line - 1)..range.end);
         }
     }
     for node in blocks {
@@ -341,7 +375,7 @@ fn classify_parsed<'a>(
         };
         // Include authored indentation/BOM in the reveal block, while marker
         // coordinates continue to come from the exact AST/raw range.
-        block.start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+        block.start = context.line_start(node.data.borrow().sourcepos.start.line - 1);
         let mut candidate = Candidate::default();
         let valid = context.block(node, &mut candidate).is_some()
             && candidate
@@ -404,7 +438,7 @@ fn classify_parsed<'a>(
     }
     // The parser consumes reference definitions; their rows remain raw Source
     // at their own height. Only top-level rows no block covers are styled.
-    let mut covered = vec![false; context.lines.len()];
+    let mut covered = vec![false; context.index.line_at(source.len()) + 1];
     for node in root.children() {
         let pos = node.data.borrow().sourcepos;
         for line in pos.start.line..=pos.end.line {
@@ -413,14 +447,11 @@ fn classify_parsed<'a>(
             }
         }
     }
-    for (index, &start) in context.lines.iter().enumerate() {
-        let end = context
-            .lines
-            .get(index + 1)
-            .copied()
-            .unwrap_or(source.len());
+    for (index, &is_covered) in covered.iter().enumerate() {
+        let start = context.line_start(index);
+        let end = context.index.line_start(index + 1).unwrap_or(source.len());
         let row = source[start..end].trim_end_matches(['\r', '\n']);
-        if !covered[index] && definition_row(row) {
+        if !is_covered && definition_row(row) {
             styles.push(StyleSpan {
                 range: start..start + row.len(),
                 style: Style::Definition,
@@ -435,7 +466,7 @@ fn classify_parsed<'a>(
             continue;
         }
         if let Some(mut range) = context.range(node) {
-            range.start = context.lines[node.data.borrow().sourcepos.start.line - 1];
+            range.start = context.line_start(node.data.borrow().sourcepos.start.line - 1);
             if context.boundary(range.start) && context.boundary(range.end) {
                 styles.push(StyleSpan {
                     range,
@@ -450,7 +481,15 @@ fn classify_parsed<'a>(
         return fallback(snapshot, SourceReason::StructureLimit);
     }
     let plan = Plan::new(snapshot, regions);
-    if source_projection::project(snapshot, &plan, &Active::default()).is_err() {
+    if source_projection::project_reusing(
+        snapshot,
+        &plan,
+        &Active::default(),
+        source_projection::MAX_WORK,
+        previous,
+    )
+    .is_err()
+    {
         return fallback(snapshot, SourceReason::ProjectionBoundary);
     }
     Classification {
@@ -515,44 +554,48 @@ struct Candidate {
 
 struct Context<'s> {
     source: &'s str,
-    lines: Vec<usize>,
-    boundaries: Vec<bool>,
+    index: Index,
 }
 
 impl<'s> Context<'s> {
     fn new(source: &'s str) -> Self {
-        let lines = std::iter::once(0)
-            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
-        let mut boundaries = vec![false; source.len() + 1];
-        for (i, _) in source.grapheme_indices(true) {
-            boundaries[i] = true;
-        }
-        boundaries[source.len()] = true;
         Self {
             source,
-            lines,
-            boundaries,
+            index: Index::new(source),
         }
     }
+    fn new_reusing(
+        snapshot: &'s Snapshot,
+        previous: Option<&source_projection::Projection>,
+    ) -> Self {
+        Self {
+            source: snapshot.source(),
+            index: previous
+                .and_then(|p| p.source_index_for(snapshot))
+                .unwrap_or_else(|| Index::new(snapshot.source())),
+        }
+    }
+    fn line_start(&self, line: usize) -> usize {
+        self.index
+            .line_start(line)
+            .expect("canonical parser line exists")
+    }
     fn boundary(&self, offset: usize) -> bool {
-        self.boundaries.get(offset) == Some(&true)
+        self.index.binary_search(&offset).is_ok()
     }
     fn range(&self, node: &AstNode<'_>) -> Option<Range<usize>> {
         let pos = node.data.borrow().sourcepos;
-        let start_line = *self.lines.get(pos.start.line.checked_sub(1)?)?;
-        let end_line = *self.lines.get(pos.end.line.checked_sub(1)?)?;
+        let start_line = self.index.line_start(pos.start.line.checked_sub(1)?)?;
+        let end_line = self.index.line_start(pos.end.line.checked_sub(1)?)?;
         let start = start_line.checked_add(pos.start.column.checked_sub(1)?)?;
         let end = end_line.checked_add(pos.end.column)?;
         let end_limit = self
-            .lines
-            .get(pos.end.line)
-            .copied()
+            .index
+            .line_start(pos.end.line)
             .unwrap_or(self.source.len());
         let start_limit = self
-            .lines
-            .get(pos.start.line)
-            .copied()
+            .index
+            .line_start(pos.start.line)
             .unwrap_or(self.source.len());
         if start >= start_limit || end > end_limit || start >= end {
             return None;

@@ -174,7 +174,7 @@ impl BrainView {
             );
         }
         if self.source.value(cx).len() > okilum_core::source_classifier::MAX_BYTES {
-            return Err("Open link at caret supports notes up to 64 KiB. Use Source and its rendered preview.");
+            return Err("Open link at caret supports notes up to 1 MiB. Use Source and its rendered preview.");
         }
         if self.preview_loading || self.preview_error.is_some() {
             return Err("Wait for the current note preview, then open the link again.");
