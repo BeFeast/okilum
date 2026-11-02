@@ -8,7 +8,7 @@ use okilum_t3::express_session::{
 };
 
 #[derive(Clone)]
-pub(super) struct Requested(pub Draft);
+pub(super) struct Requested(pub Draft, pub String);
 
 #[derive(Clone)]
 pub(super) struct RefreshRequested;
@@ -59,6 +59,7 @@ pub(super) struct Form {
     recipient: Entity<InputState>,
     platforms: Vec<Platform>,
     source: Option<SourceContext>,
+    request_nonce: Option<String>,
     locked: bool,
     refreshing: bool,
     notice: Option<String>,
@@ -116,6 +117,7 @@ impl Form {
             recipient,
             platforms: Vec::new(),
             source,
+            request_nonce: None,
             locked: false,
             refreshing: false,
             notice: None,
@@ -158,7 +160,11 @@ impl Form {
                 source: self.source.clone(),
             });
         }
-        self.chooser_generation = self.chooser_generation.wrapping_add(1);
+        self.request_nonce = None;
+        self.chooser_generation = self
+            .chooser_generation
+            .checked_add(1)
+            .expect("Express chooser generation exhausted");
         let request = RestartRequest::new(target.clone(), self.chooser_generation);
         self.chooser_target = Some(target);
         self.session_selection = None;
@@ -339,7 +345,11 @@ impl Form {
                 source: self.source.clone(),
             });
         }
-        self.chooser_generation = self.chooser_generation.wrapping_add(1);
+        self.request_nonce = None;
+        self.chooser_generation = self
+            .chooser_generation
+            .checked_add(1)
+            .expect("Express chooser generation exhausted");
         self.restore_request = None;
         self.selection_saving = false;
         self.pending_forget = None;
@@ -410,7 +420,11 @@ impl Form {
             cx.notify();
             return;
         };
-        self.chooser_generation = self.chooser_generation.wrapping_add(1);
+        self.request_nonce = None;
+        self.chooser_generation = self
+            .chooser_generation
+            .checked_add(1)
+            .expect("Express chooser generation exhausted");
         self.session_selection = Some(selection.clone());
         self.session_page = None;
         self.request_id = None;
@@ -476,7 +490,11 @@ impl Form {
                 self.failed("Restore saved-selection state before leaving it; no durable choice was forgotten.".into(), true, cx);
                 return;
             };
-            self.chooser_generation = self.chooser_generation.wrapping_add(1);
+            self.request_nonce = None;
+            self.chooser_generation = self
+                .chooser_generation
+                .checked_add(1)
+                .expect("Express chooser generation exhausted");
             let request = SelectionForgetRequested {
                 target,
                 expected,
@@ -582,7 +600,11 @@ impl Form {
         self.session_page = None;
         self.session_selection = None;
         self.chooser_target = None;
-        self.chooser_generation = self.chooser_generation.wrapping_add(1);
+        self.request_nonce = None;
+        self.chooser_generation = self
+            .chooser_generation
+            .checked_add(1)
+            .expect("Express chooser generation exhausted");
         self.catalog_loading = false;
         self.restore_request = None;
         self.selection_saving = false;
@@ -728,7 +750,9 @@ impl Form {
             Ok(()) => {
                 self.locked = true;
                 self.notice = Some("Requesting express session…".into());
-                cx.emit(Requested(draft));
+                let nonce = uuid::Uuid::new_v4().to_string();
+                self.request_nonce = Some(nonce.clone());
+                cx.emit(Requested(draft, nonce));
             }
             Err(error) => self.notice = Some(error.to_string()),
         }
@@ -1011,3 +1035,870 @@ impl Render for Form {
         panel
     }
 }
+
+// Parent integration stays here so the shared mount contains no second
+// controller, transport, lifecycle policy, or background polling loop.
+use okilum_t3::express_session::{self as model, Request, SelectionStore};
+use okilum_t3::stream::NativeClient;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+type ExpressResult<T> = std::result::Result<T, String>;
+
+struct RetainedForm {
+    target: SessionTarget,
+    form: Entity<Form>,
+    recovered: Option<Recovered>,
+    _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Default)]
+pub(super) struct State {
+    forms: Vec<RetainedForm>,
+    active: Option<usize>,
+    epoch: u64,
+    // A menu can outlive a closed form. Remember that a ticket was captured so
+    // hide/rebind also invalidates it, without churning on repeated empty paints.
+    lifecycle_captured: AtomicBool,
+    authority: Option<Arc<AtomicBool>>,
+    // One outstanding background operation, including after revocation. A new
+    // menu open cannot queue a second job behind an obsolete one.
+    pending: Option<String>,
+}
+impl State {
+    pub(super) fn revoke(&mut self) {
+        if let Some(authority) = self.authority.take() {
+            authority.store(false, Ordering::Release);
+        }
+        let was_open = self.active.take().is_some();
+        let had_ticket = self.lifecycle_captured.swap(false, Ordering::AcqRel);
+        if !was_open && !had_ticket {
+            return;
+        }
+        self.epoch = self
+            .epoch
+            .checked_add(1)
+            .expect("Express lifecycle exhausted");
+    }
+    pub(super) fn is_open(&self) -> bool {
+        self.active.is_some() && self.authority.is_some()
+    }
+}
+
+#[derive(Clone)]
+struct OwnerTicket {
+    target: SessionTarget,
+    generation: u64,
+    connection: u64,
+    epoch: u64,
+    scope: composer::TypedScope,
+    client: Arc<NativeClient>,
+    state: PathBuf,
+    area: PathBuf,
+    binding: AreaBinding,
+}
+impl OwnerTicket {
+    fn capture(view: &ProjectView, cx: &App) -> ExpressResult<Self> {
+        if !view.active
+            || view.section != ProjectSection::Manager
+            || view.executors_open
+            || !view.draft_handoff_surface_is_visible()
+            || !view.draft_handoff_owner_ready(cx)
+            || view.native.deleted()
+            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+        {
+            return Err("Open the current ready Manager before opening Express".into());
+        }
+        let client = view
+            .native
+            .model_client()
+            .ok_or("Manager client is unavailable")?;
+        if !client.access_allowed()
+            || view
+                .threads
+                .handoff_revoked
+                .as_ref()
+                .is_some_and(|old| Arc::ptr_eq(old, &client))
+        {
+            return Err("Manager access was revoked".into());
+        }
+        let environment = view.environment.as_ref().ok_or("No Manager environment")?;
+        if client.origin() != environment.origin() {
+            return Err("Manager client belongs to another origin".into());
+        }
+        if reader_t3_settings::signed_out(&environment.origin(), cx) {
+            return Err("Manager is signed out".into());
+        }
+        let binding = view.binding.clone().ok_or("No Manager binding")?;
+        let target = SessionTarget {
+            origin: environment.origin(),
+            environment_id: view
+                .identity
+                .as_ref()
+                .ok_or("Manager server identity is not verified; open Diagnostics to reconnect it")?
+                .environment_id
+                .clone(),
+            manager_project_id: binding
+                .manager
+                .project_id
+                .clone()
+                .ok_or("No Manager project")?,
+            manager_thread_id: binding
+                .manager
+                .thread_id
+                .clone()
+                .ok_or("No Manager thread")?,
+            executor_project_id: binding.executor.project_id.clone(),
+        };
+        let scope = view
+            .typed_scope()
+            .ok_or("Manager draft owner is not ready")?;
+        if view.chat.as_ref().map(|chat| chat.thread_id.as_str())
+            != Some(target.manager_thread_id.as_str())
+            || scope.environment != target.origin
+            || scope.project != target.manager_project_id
+            || scope.thread != target.manager_thread_id
+        {
+            return Err("Manager identity differs from its binding".into());
+        }
+        let state = view
+            .state
+            .clone()
+            .ok_or("Durable application state is unavailable")?;
+        SelectionStore::new(&state, &target).map_err(|e| e.to_string())?;
+        view.express
+            .lifecycle_captured
+            .store(true, Ordering::Release);
+        Ok(Self {
+            target,
+            generation: view.generation,
+            connection: view.native.connection_epoch,
+            epoch: view.express.epoch,
+            scope: scope.clone(),
+            client,
+            state,
+            area: view.area.clone().ok_or("Project source is unavailable")?,
+            binding,
+        })
+    }
+    fn current(&self, view: &ProjectView, cx: &App) -> bool {
+        Self::capture(view, cx).is_ok_and(|now| {
+            now.target == self.target
+                && now.generation == self.generation
+                && now.connection == self.connection
+                && now.epoch == self.epoch
+                && now.scope == self.scope
+                && now.state == self.state
+                && now.area == self.area
+                && now.binding == self.binding
+                && Arc::ptr_eq(&now.client, &self.client)
+        })
+    }
+    fn open(&self, view: &mut ProjectView, window: &mut Window, cx: &mut Context<ProjectView>) {
+        if self.current(view, cx) {
+            view.open_express_session(window, cx);
+        } else {
+            view.error = Some(
+                "Manager changed or access was revoked. Reopen its menu before opening Express."
+                    .into(),
+            );
+            cx.notify();
+        }
+    }
+    fn local_current(&self, authority: &AtomicBool) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            authority.load(Ordering::Acquire) && self.client.access_allowed(),
+            "Express owner was revoked; no action was applied"
+        );
+        let current = okilum_t3::projects::Project::read(&self.area)?.native_binding()?;
+        anyhow::ensure!(
+            current.as_ref() == Some(&self.binding),
+            "Project binding changed; Express remains held"
+        );
+        Ok(())
+    }
+}
+
+pub(super) fn menu_item(
+    owner: WeakEntity<ProjectView>,
+    cx: &mut App,
+) -> gpui_component::menu::PopupMenuItem {
+    let ticket = owner
+        .upgrade()
+        .ok_or("Project view closed".into())
+        .and_then(|view| OwnerTicket::capture(view.read(cx), cx));
+    gpui_component::menu::PopupMenuItem::new("Express session…").on_click(move |_, window, cx| {
+        let _ = owner.update(cx, |view, cx| {
+            match &ticket {
+                Ok(ticket) => ticket.open(view, window, cx),
+                _ => {
+                    view.error = Some("Manager changed or access was revoked. Reopen its menu before opening Express.".into());
+                    cx.notify();
+                }
+            }
+        });
+    })
+}
+
+struct Work {
+    owner: OwnerTicket,
+    authority: Arc<AtomicBool>,
+    environment: Environment,
+    journal: MessageJournal,
+    // Captured explicitly. Native-only connections refuse these gateway reads;
+    // there is no bridge, newly created connection, or hidden fallback here.
+    gateway: Option<Arc<dyn ManagerGateway>>,
+}
+impl Work {
+    fn current(&self) -> anyhow::Result<()> {
+        self.owner.local_current(&self.authority)
+    }
+    fn store(&self) -> anyhow::Result<SelectionStore> {
+        self.current()?;
+        SelectionStore::new(&self.owner.state, &self.owner.target)
+    }
+    fn gateway(&self) -> anyhow::Result<&dyn ManagerGateway> {
+        self.current()?;
+        self.gateway.as_deref().ok_or_else(|| anyhow::anyhow!("This Manager has no supported paired gateway for Express; nothing was connected or sent"))
+    }
+}
+
+impl ProjectView {
+    fn express_form_current(&self, form: &Entity<Form>) -> bool {
+        self.express
+            .active
+            .and_then(|i| self.express.forms.get(i))
+            .is_some_and(|session| session.form == *form)
+    }
+
+    fn open_express_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = match OwnerTicket::capture(self, cx) {
+            Ok(ticket) => ticket.target,
+            Err(error) => {
+                self.error = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        if self.express.pending.is_some() {
+            self.error = Some("The previous Express operation is still completing; no second operation was queued.".into());
+            cx.notify();
+            return;
+        }
+        self.express.revoke();
+        let index = self
+            .express
+            .forms
+            .iter()
+            .position(|session| session.target == target)
+            .unwrap_or_else(|| {
+                let form = cx.new(|cx| Form::new(None, window, cx));
+                let subscriptions = vec![
+                    cx.subscribe_in(
+                        &form,
+                        window,
+                        |view, form, event: &SelectionRestoreRequested, window, cx| {
+                            view.express_restore(form, event.clone(), window, cx)
+                        },
+                    ),
+                    cx.subscribe_in(
+                        &form,
+                        window,
+                        |view, form, event: &SelectionPersistenceRequested, window, cx| {
+                            view.express_remember(form, event.clone(), window, cx)
+                        },
+                    ),
+                    cx.subscribe_in(
+                        &form,
+                        window,
+                        |view, form, event: &SelectionForgetRequested, window, cx| {
+                            view.express_forget(form, event.clone(), window, cx)
+                        },
+                    ),
+                    cx.subscribe_in(
+                        &form,
+                        window,
+                        |view, form, event: &SessionsRequested, window, cx| {
+                            view.express_sessions(form, event.clone(), window, cx)
+                        },
+                    ),
+                    cx.subscribe_in(
+                        &form,
+                        window,
+                        |view, form, event: &SessionChosen, window, cx| {
+                            view.express_selected(form, event.clone(), false, window, cx)
+                        },
+                    ),
+                    cx.subscribe_in(
+                        &form,
+                        window,
+                        |view, form, _: &RefreshRequested, window, cx| {
+                            if let Some(chosen) = form.read(cx).selected_session() {
+                                view.express_selected(form, chosen, false, window, cx);
+                            } else {
+                                view.express_hold(
+                                    &form,
+                                    "Choose an exact retained session before refreshing",
+                                    cx,
+                                );
+                            }
+                        },
+                    ),
+                    cx.subscribe_in(
+                        &form,
+                        window,
+                        |view, form, _: &ContinueHistoryRequested, window, cx| {
+                            if let Some(chosen) = form.read(cx).selected_session() {
+                                view.express_selected(form, chosen, true, window, cx);
+                            } else {
+                                view.express_hold(
+                                    &form,
+                                    "Choose an exact retained session before reading history",
+                                    cx,
+                                );
+                            }
+                        },
+                    ),
+                    cx.subscribe_in(
+                        &form,
+                        window,
+                        |view, form, event: &ClosureRequested, window, cx| {
+                            view.express_close_session(form, event.clone(), window, cx)
+                        },
+                    ),
+                    cx.subscribe_in(
+                        &form,
+                        window,
+                        |view, form, event: &Requested, window, cx| {
+                            view.express_request(form, event.clone(), window, cx)
+                        },
+                    ),
+                ];
+                self.express.forms.push(RetainedForm {
+                    target: target.clone(),
+                    form,
+                    recovered: None,
+                    _subscriptions: subscriptions,
+                });
+                self.express.forms.len() - 1
+            });
+        self.express.active = Some(index);
+        self.express.authority = Some(Arc::new(AtomicBool::new(true)));
+        let form = self.express.forms[index].form.clone();
+        // Explicit menu open restores only local state. No chooser/history read,
+        // acknowledgement lookup or resend is emitted by this restore.
+        form.update(cx, |form, cx| form.begin_restore_selection(target, cx));
+        cx.notify();
+    }
+
+    fn express_hold(&mut self, form: &Entity<Form>, detail: &str, cx: &mut Context<Self>) {
+        if self.express_form_current(form) {
+            form.update(cx, |form, cx| form.failed(detail.into(), true, cx));
+            self.error = Some(detail.into());
+            cx.notify();
+        }
+    }
+
+    // One serial lane on the existing background executor, not another worker
+    // or controller. Reject overlap rather than queuing stale user requests.
+    fn express_work<T: Send + 'static>(
+        &mut self,
+        form: Entity<Form>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        run: impl FnOnce(&Work) -> anyhow::Result<T> + Send + 'static,
+        apply: impl FnOnce(&mut Self, Entity<Form>, ExpressResult<T>, &mut Window, &mut Context<Self>)
+            + 'static,
+    ) {
+        if !self.express_form_current(&form) {
+            return;
+        }
+        if self.express.pending.is_some() {
+            self.express_hold(
+                &form,
+                "An Express operation is already pending; no second operation was queued",
+                cx,
+            );
+            return;
+        }
+        let owner = match OwnerTicket::capture(self, cx) {
+            Ok(owner) => owner,
+            Err(error) => {
+                self.express_hold(&form, &error, cx);
+                return;
+            }
+        };
+        let Some(authority) = self.express.authority.clone() else {
+            return;
+        };
+        let Some(environment) = self.environment.clone() else {
+            return;
+        };
+        let Some(journal) = self.journal() else {
+            return;
+        };
+        let gateway = self.gateway.clone();
+        let work = Work {
+            owner: owner.clone(),
+            authority: authority.clone(),
+            environment,
+            journal,
+            gateway: gateway.clone(),
+        };
+        let nonce = uuid::Uuid::new_v4().to_string();
+        self.express.pending = Some(nonce.clone());
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    work.current()?;
+                    let result = run(&work)?;
+                    work.current()?;
+                    Ok::<_, anyhow::Error>(result)
+                })
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let _ = this.update_in(cx, |view, window, cx| {
+                if view.express.pending.as_ref() != Some(&nonce) {
+                    return;
+                }
+                view.express.pending = None;
+                cx.notify();
+                let same_gateway = match (&gateway, &view.gateway) {
+                    (Some(expected), Some(current)) => Arc::ptr_eq(expected, current),
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !authority.load(Ordering::Acquire)
+                    || !owner.current(view, cx)
+                    || !same_gateway
+                    || !view.express_form_current(&form)
+                {
+                    return;
+                }
+                apply(view, form, result, window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn express_restore(
+        &mut self,
+        form: Entity<Form>,
+        event: SelectionRestoreRequested,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if form.read(cx).restore_request.as_ref() != Some(&event.0) {
+            return;
+        }
+        let request = event.0.clone();
+        self.express_work(
+            form,
+            window,
+            cx,
+            move |work| {
+                work.store()?
+                    .restore(&work.journal, &work.environment, &request)
+            },
+            move |view, form, result, window, cx| match result {
+                Ok(restored) => {
+                    if let Some(index) = view.express.active {
+                        view.express.forms[index].recovered = restored.recovered.clone();
+                    }
+                    form.update(cx, |form, cx| {
+                        form.selection_restored(&restored, window, cx)
+                    });
+                }
+                Err(error) => form.update(cx, |form, cx| {
+                    form.selection_restore_failed(&event.0, error, cx)
+                }),
+            },
+        );
+    }
+
+    fn express_remember(
+        &mut self,
+        form: Entity<Form>,
+        event: SelectionPersistenceRequested,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !form.read(cx).selection_saving
+            || form.read(cx).chooser_generation != event.chosen.generation
+            || form.read(cx).selection_revision.as_ref() != Some(&event.expected)
+            || form.read(cx).session_selection.as_ref() != Some(&event.chosen.selection)
+        {
+            return;
+        }
+        let request = event.clone();
+        self.express_work(
+            form,
+            window,
+            cx,
+            move |work| {
+                anyhow::ensure!(
+                    request.chosen.selection.target() == &work.owner.target,
+                    "Chosen target changed"
+                );
+                work.store()?.remember_if(
+                    &work.journal,
+                    &work.environment,
+                    &request.expected,
+                    &request.chosen.selection,
+                    || work.current(),
+                )
+            },
+            move |_, form, result, _, cx| {
+                form.update(cx, |form, cx| match result {
+                    Ok(saved) => form.selection_persisted(&event, &saved, cx),
+                    Err(error) => form.selection_persistence_failed(&event, error, cx),
+                })
+            },
+        );
+    }
+
+    fn express_forget(
+        &mut self,
+        form: Entity<Form>,
+        event: SelectionForgetRequested,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if form.read(cx).pending_forget.as_ref() != Some(&event) {
+            return;
+        }
+        let request = event.clone();
+        self.express_work(
+            form,
+            window,
+            cx,
+            move |work| {
+                anyhow::ensure!(
+                    request.target == work.owner.target,
+                    "Forgotten target changed"
+                );
+                work.store()?
+                    .forget_if(&request.expected, || work.current())
+            },
+            move |view, form, result, window, cx| {
+                if result.is_ok() {
+                    if let Some(index) = view.express.active {
+                        view.express.forms[index].recovered = None;
+                    }
+                }
+                form.update(cx, |form, cx| match result {
+                    Ok(saved) => form.selection_forgotten(&event, &saved, window, cx),
+                    Err(error) => form.selection_forget_failed(&event, error, cx),
+                });
+            },
+        );
+    }
+
+    fn express_sessions(
+        &mut self,
+        form: Entity<Form>,
+        event: SessionsRequested,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !form.read(cx).catalog_loading
+            || form.read(cx).chooser_generation != event.generation
+            || form.read(cx).chooser_target.as_ref() != Some(&event.target)
+        {
+            return;
+        }
+        let request = event.clone();
+        self.express_work(
+            form,
+            window,
+            cx,
+            move |work| {
+                anyhow::ensure!(
+                    request.target == work.owner.target,
+                    "Chooser target changed"
+                );
+                model::list_retained(
+                    work.gateway()?,
+                    &work.journal,
+                    &work.owner.state,
+                    &work.environment,
+                    &request.target,
+                    request.cursor.as_ref(),
+                )
+            },
+            move |_, form, result, _, cx| {
+                form.update(cx, |form, cx| match result {
+                    Ok(page) => form.present_sessions(&event, page, cx),
+                    Err(error) => form.sessions_failed(&event, error, cx),
+                })
+            },
+        );
+    }
+
+    fn express_selected(
+        &mut self,
+        form: Entity<Form>,
+        chosen: SessionChosen,
+        history: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !form.read(cx).selected_session().is_some_and(|now| {
+            now.generation == chosen.generation && now.selection == chosen.selection
+        }) {
+            return;
+        }
+        let previous = self
+            .express
+            .active
+            .and_then(|i| self.express.forms[i].recovered.clone());
+        let request = chosen.clone();
+        self.express_work(
+            form,
+            window,
+            cx,
+            move |work| {
+                anyhow::ensure!(
+                    request.selection.target() == &work.owner.target,
+                    "Selected target changed"
+                );
+                if history {
+                    model::continue_selected_history(
+                        work.gateway()?,
+                        &work.journal,
+                        &work.owner.state,
+                        &work.environment,
+                        &request.selection,
+                        previous.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!("No exact retained history to continue")
+                        })?,
+                    )
+                } else {
+                    model::reconnect_selected(
+                        work.gateway()?,
+                        &work.journal,
+                        &work.owner.state,
+                        &work.environment,
+                        &request.selection,
+                    )
+                }
+            },
+            move |view, form, result, window, cx| match result {
+                Ok(recovered) => {
+                    // Form validates exact request, operation, source snapshot and
+                    // chooser generation before presenting; keep the same token.
+                    if form.read(cx).selected_session().is_some_and(|now| {
+                        now.generation == chosen.generation && now.selection == chosen.selection
+                    }) && chosen.selection.matches(&recovered)
+                    {
+                        if let Some(index) = view.express.active {
+                            view.express.forms[index].recovered = Some(recovered.clone());
+                        }
+                    }
+                    form.update(cx, |form, cx| {
+                        form.recovered_selected(&chosen, &recovered, window, cx)
+                    });
+                }
+                Err(error) => form.update(cx, |form, cx| form.selection_failed(&chosen, error, cx)),
+            },
+        );
+    }
+
+    fn express_close_session(
+        &mut self,
+        form: Entity<Form>,
+        event: ClosureRequested,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.selection.as_ref().is_some_and(|chosen| {
+            form.read(cx).selected_session().is_some_and(|now| {
+                now.generation == chosen.generation && now.selection == chosen.selection
+            })
+        }) {
+            return;
+        }
+        let recovered = self
+            .express
+            .active
+            .and_then(|i| self.express.forms[i].recovered.clone());
+        let request = event.clone();
+        self.express_work(
+            form,
+            window,
+            cx,
+            move |work| {
+                let chosen = request.selection.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("Choose the exact retained request before closing")
+                })?;
+                anyhow::ensure!(
+                    chosen.selection.target() == &work.owner.target
+                        && chosen.selection.request_id() == request.request_id,
+                    "Closure target/request changed"
+                );
+                model::close_selected_if(
+                    work.gateway()?,
+                    &work.journal,
+                    &work.owner.state,
+                    &work.environment,
+                    &chosen.selection,
+                    recovered
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("No exact selected result"))?,
+                    &request.action,
+                    || work.current(),
+                )
+            },
+            move |_, form, result, _, cx| {
+                form.update(cx, |form, cx| match (result, &event.selection) {
+                    (Ok(record), Some(chosen)) => {
+                        form.closure_applied_selected(chosen, &record, cx)
+                    }
+                    (Err(error), _) => form.failed(error, true, cx),
+                    _ => form.failed("Closure identity was not confirmed".into(), true, cx),
+                })
+            },
+        );
+    }
+
+    fn express_request(
+        &mut self,
+        form: Entity<Form>,
+        event: Requested,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if form.read(cx).request_nonce.as_ref() != Some(&event.1) {
+            return;
+        }
+        // Express is an independent form, not the chat composer's typed draft.
+        // Its absent explicit metadata means Chat; never borrow a type token
+        // from the unrelated composer or clear that composer's draft.
+        self.express_work(form, window, cx, move |work| {
+            let target = &work.owner.target;
+            let request = Request::prepare(work.gateway()?, &target.manager_project_id, &target.manager_thread_id, event.0)?;
+            anyhow::ensure!(request.environment_id.as_ref() == Some(&target.environment_id), "Express environment changed");
+            let saved = work.store()?.load()?;
+            let mut attempted_id = None;
+            let result = request.submit_with_retainer(work.gateway()?, &work.journal, &work.owner.state, &work.environment,
+                || { work.current()?; anyhow::ensure!(work.owner.client.can_operate(), "Manager cannot send an Express request"); Ok(()) }, |message| {
+                    work.current()?;
+                    attempted_id = Some(message.client_request_id.clone());
+                    retain_annotation(&work.owner.state, &work.environment, target, &message)?;
+                    work.current()?;
+                    let record = work.journal.prepare_message(message)?;
+                    Ok(record)
+                }).map_err(|e| format!("{e:#}"));
+            let retained = attempted_id.is_some_and(|id| work.journal.records()
+                .map(|records| records.iter().any(|record| record.message.client_request_id == id)).unwrap_or(true));
+            Ok((result, retained, saved))
+        }, move |_, form, result, _, cx| {
+            form.update(cx, |form, cx| match result {
+                Ok((result, retained, saved)) => {
+                    form.request_nonce = None;
+                    form.chooser_target = Some(saved.target);
+                    form.selection_revision = Some(saved.revision);
+                    match result {
+                        Ok(submission) => {
+                            form.accepted(&submission, cx);
+                            form.notice = Some("Manager request retained. Choose this exact request to refresh its result; it was not selected automatically.".into());
+                        }
+                        Err(error) => form.failed(error, retained, cx),
+                    }
+                }
+                Err(error) => form.failed(error, false, cx),
+            });
+        });
+    }
+
+    pub(super) fn render_express_session(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(session) = self.express.active.and_then(|i| self.express.forms.get(i)) else {
+            return div().into_any_element();
+        };
+        v_flex()
+            .id("manager-express-surface")
+            .max_h(px(480.))
+            .overflow_y_scroll()
+            .child(session.form.clone())
+            .child(
+                Button::new("express-close-form")
+                    .ghost()
+                    .label("Close Express")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.express.revoke();
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+}
+
+/// The independent Express form has no type selector. Absence remains Chat;
+/// it must not inherit a token or classification from the parked chat composer.
+/// Retain this local source/owner annotation before the SAME journal message.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExpressAnnotation {
+    target: SessionTarget,
+    message: okilum_t3::OutgoingMessage,
+    metadata: Option<okilum_t3::message_types::Metadata>,
+}
+fn retain_annotation(
+    state: &Path,
+    environment: &Environment,
+    target: &SessionTarget,
+    message: &okilum_t3::OutgoingMessage,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        environment.origin() == target.origin && message.thread_id == target.manager_thread_id,
+        "Express annotation belongs to another owner"
+    );
+    let store = okilum_t3::chat_drafts::Store::<ExpressAnnotation>::new(
+        &state.join("t3-express-annotations"),
+        environment,
+        &target.manager_project_id,
+        &target.manager_thread_id,
+    );
+    let saved = store.load()?;
+    anyhow::ensure!(
+        saved.draft.text.is_empty(),
+        "Express annotations are malformed; nothing was sent"
+    );
+    let annotation = ExpressAnnotation {
+        target: target.clone(),
+        message: message.clone(),
+        metadata: None,
+    };
+    let mut ids = std::collections::HashSet::new();
+    for old in &saved.draft.attachments {
+        anyhow::ensure!(
+            old.target == *target
+                && old.message.thread_id == target.manager_thread_id
+                && old.metadata.is_none()
+                && ids.insert(&old.message.client_request_id),
+            "Express annotation identity is corrupt or ambiguous; nothing was sent"
+        );
+    }
+    if let Some(old) = saved
+        .draft
+        .attachments
+        .iter()
+        .find(|old| old.message.client_request_id == message.client_request_id)
+    {
+        anyhow::ensure!(
+            *old == annotation,
+            "Retained Express identity has different source; nothing was sent"
+        );
+        return Ok(());
+    }
+    let mut draft = saved.draft;
+    draft.attachments.push(annotation);
+    store.save(saved.revision, draft)?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "express_session_tests.rs"]
+mod tests;

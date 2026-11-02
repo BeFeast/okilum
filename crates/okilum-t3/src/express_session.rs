@@ -159,6 +159,45 @@ impl Request {
         journal: &MessageJournal,
         closure_scope: Option<(&std::path::Path, &crate::Environment)>,
     ) -> Result<Submission> {
+        self.submit_retaining(
+            gateway,
+            journal,
+            closure_scope,
+            || Ok(()),
+            |message| journal.prepare_message(message),
+        )
+    }
+
+    /// The owner retains its local annotation before publishing this exact
+    /// outgoing message. A failed retainer creates no journal intent or send;
+    /// an uncertain send is retried from the original journal record only.
+    pub fn submit_with_retainer(
+        &self,
+        gateway: &dyn ManagerGateway,
+        journal: &MessageJournal,
+        state: &std::path::Path,
+        environment: &crate::Environment,
+        authorize: impl Fn() -> Result<()>,
+        retain: impl FnOnce(crate::OutgoingMessage) -> Result<MessageRecord>,
+    ) -> Result<Submission> {
+        self.submit_retaining(
+            gateway,
+            journal,
+            Some((state, environment)),
+            authorize,
+            retain,
+        )
+    }
+
+    fn submit_retaining(
+        &self,
+        gateway: &dyn ManagerGateway,
+        journal: &MessageJournal,
+        closure_scope: Option<(&std::path::Path, &crate::Environment)>,
+        authorize: impl Fn() -> Result<()>,
+        retain: impl FnOnce(crate::OutgoingMessage) -> Result<MessageRecord>,
+    ) -> Result<Submission> {
+        authorize()?;
         let mut query = ThreadQuery::messages(&self.manager_thread_id);
         query.limit = Some(1);
         query.max_chars_per_item = Some(256);
@@ -199,11 +238,14 @@ impl Request {
             self.environment_id.as_deref() == Some(identity.environment_id.as_str()),
             "Express request server identity changed; nothing was sent"
         );
-        let record = journal.prepare(&self.message()?)?;
+        let message = crate::OutgoingMessage::queue(&self.manager_thread_id, self.message()?);
+        authorize()?;
+        let record = retain(message.clone())?;
         ensure!(
-            record.message.thread_id == self.manager_thread_id,
-            "Express request journal belongs to another Manager; nothing was sent"
+            record.message == message,
+            "Express retainer changed the exact outgoing identity or source; nothing was sent"
         );
+        authorize()?;
         let acknowledged = journal.send(gateway, &record)
             .context("Express request is retained but delivery is unconfirmed; use the existing Manager Retry")?;
         Ok(Submission {
@@ -354,14 +396,25 @@ impl ClosureStore {
     /// Explicit confirmed user action only. Discard closes local tracking; it
     /// does not stop an executor, retract a queued request, or erase its journal.
     pub fn discard(&self, reason: &str) -> Result<ClosureRecord> {
+        self.discard_if(reason, || Ok(()))
+    }
+
+    fn discard_if(
+        &self,
+        reason: &str,
+        authorize: impl Fn() -> Result<()>,
+    ) -> Result<ClosureRecord> {
         field(
             reason,
             1024,
             "Enter an explicit discard reason (at most 1024 bytes)",
         )?;
-        self.publish(CloseReason::Discard {
-            reason: reason.into(),
-        })
+        self.publish(
+            CloseReason::Discard {
+                reason: reason.into(),
+            },
+            authorize,
+        )
     }
 
     /// Explicit user action only; recheck both the exact Manager result source
@@ -372,6 +425,17 @@ impl ClosureStore {
         recovered: &Recovered,
         executor_project_id: &str,
     ) -> Result<ClosureRecord> {
+        self.close_follow_up_if(gateway, recovered, executor_project_id, || Ok(()))
+    }
+
+    fn close_follow_up_if(
+        &self,
+        gateway: &dyn ManagerGateway,
+        recovered: &Recovered,
+        executor_project_id: &str,
+        authorize: impl Fn() -> Result<()>,
+    ) -> Result<ClosureRecord> {
+        authorize()?;
         ensure!(
             fingerprint(&self.request)? == fingerprint(&recovered.request)?
                 && recovered.history_complete
@@ -447,16 +511,24 @@ impl ClosureStore {
             gateway.server_identity()?.environment_id == identity.environment_id,
             "Closure server identity changed"
         );
-        self.publish(CloseReason::FollowUpPr {
-            url: url.into(),
-            executor_thread_id: receipt.executor_thread_id,
-            manager_item_id: result.manager_item_id.clone(),
-            manager_item_revision: result.manager_item_revision.clone(),
-        })
+        self.publish(
+            CloseReason::FollowUpPr {
+                url: url.into(),
+                executor_thread_id: receipt.executor_thread_id,
+                manager_item_id: result.manager_item_id.clone(),
+                manager_item_revision: result.manager_item_revision.clone(),
+            },
+            authorize,
+        )
     }
 
-    fn publish(&self, reason: CloseReason) -> Result<ClosureRecord> {
+    fn publish(
+        &self,
+        reason: CloseReason,
+        authorize: impl Fn() -> Result<()>,
+    ) -> Result<ClosureRecord> {
         use std::io::Write;
+        authorize()?;
         if let Some(existing) = self.read()? {
             ensure!(
                 existing.reason == reason,
@@ -484,6 +556,7 @@ impl ClosureStore {
                 .open(&temporary)?;
             file.write_all(&serde_json::to_vec(&record)?)?;
             file.sync_all()?;
+            authorize()?;
             std::fs::hard_link(&temporary, &self.path)
                 .context("Closure already published or unavailable; reopen to reconcile")?;
             #[cfg(unix)]
@@ -956,15 +1029,35 @@ impl SelectionStore {
         expected: &SelectionRevision,
         selection: &SessionSelection,
     ) -> Result<SavedChoice> {
+        self.remember_if(journal, environment, expected, selection, || Ok(()))
+    }
+
+    pub fn remember_if(
+        &self,
+        journal: &MessageJournal,
+        environment: &crate::Environment,
+        expected: &SelectionRevision,
+        selection: &SessionSelection,
+        authorize: impl Fn() -> Result<()>,
+    ) -> Result<SavedChoice> {
+        authorize()?;
         self.validate_choice(selection)?;
         require_selection_snapshot(journal, &self.state, environment, selection)?;
-        self.publish(expected, Some(selection.clone()))
+        self.publish(expected, Some(selection.clone()), authorize)
     }
 
     /// Explicit leave/new-draft action. The durable tombstone prevents restart
     /// from reviving an earlier selection; neither journal nor draft is deleted.
     pub fn forget(&self, expected: &SelectionRevision) -> Result<SavedChoice> {
-        self.publish(expected, None)
+        self.forget_if(expected, || Ok(()))
+    }
+
+    pub fn forget_if(
+        &self,
+        expected: &SelectionRevision,
+        authorize: impl Fn() -> Result<()>,
+    ) -> Result<SavedChoice> {
+        self.publish(expected, None, authorize)
     }
 
     /// Pure local restart: restore only the exact saved choice. No history read
@@ -1062,8 +1155,10 @@ impl SelectionStore {
         &self,
         expected: &SelectionRevision,
         selection: Option<SessionSelection>,
+        authorize: impl Fn() -> Result<()>,
     ) -> Result<SavedChoice> {
         use std::io::Write;
+        authorize()?;
         let current = self.load()?;
         ensure!(
             current.revision == *expected,
@@ -1096,6 +1191,7 @@ impl SelectionStore {
                 .open(&temporary)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
+            authorize()?;
             std::fs::hard_link(
                 &temporary,
                 self.directory.join(format!("{:020}.json", entry.sequence)),
@@ -1445,6 +1541,29 @@ pub fn close_selected(
     recovered: &Recovered,
     intent: &ClosureIntent,
 ) -> Result<ClosureRecord> {
+    close_selected_if(
+        gateway,
+        journal,
+        state,
+        environment,
+        selection,
+        recovered,
+        intent,
+        || Ok(()),
+    )
+}
+
+pub fn close_selected_if(
+    gateway: &dyn ManagerGateway,
+    journal: &MessageJournal,
+    state: &std::path::Path,
+    environment: &crate::Environment,
+    selection: &SessionSelection,
+    recovered: &Recovered,
+    intent: &ClosureIntent,
+    authorize: impl Fn() -> Result<()>,
+) -> Result<ClosureRecord> {
+    authorize()?;
     ensure!(
         selection.matches(recovered),
         "Closure belongs to another explicit request/target selection"
@@ -1452,10 +1571,13 @@ pub fn close_selected(
     require_selection_snapshot(journal, state, environment, selection)?;
     let store = ClosureStore::new(state, environment, &recovered.request)?;
     match intent {
-        ClosureIntent::FollowUpPr => {
-            store.close_follow_up(gateway, recovered, &selection.target.executor_project_id)
-        }
-        ClosureIntent::Discard(reason) => store.discard(reason),
+        ClosureIntent::FollowUpPr => store.close_follow_up_if(
+            gateway,
+            recovered,
+            &selection.target.executor_project_id,
+            authorize,
+        ),
+        ClosureIntent::Discard(reason) => store.discard_if(reason, authorize),
     }
 }
 
@@ -2409,6 +2531,172 @@ mod tests {
             .is_err());
         std::fs::remove_dir_all(directory).unwrap();
     }
+    #[test]
+    fn express_1493_annotation_failure_never_creates_intent_and_retry_keeps_exact_message() {
+        let (directory, environment, journal, gateway, _) = choices_fixture(0);
+        let request = Request::prepare(&gateway, "project", "manager", draft()).unwrap();
+        let attempted = std::sync::Mutex::new(None);
+        assert!(request
+            .submit_with_retainer(
+                &gateway,
+                &journal,
+                &directory,
+                &environment,
+                || Ok(()),
+                |message| {
+                    *attempted.lock().unwrap() = Some(message);
+                    anyhow::bail!("offline annotation write failed")
+                }
+            )
+            .is_err());
+        assert!(
+            attempted.lock().unwrap().is_some(),
+            "positive control: annotation boundary actually ran"
+        );
+        assert!(journal.records().unwrap().is_empty());
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        gateway
+            .unsupported
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let retained = std::sync::Mutex::new(None);
+        assert!(request
+            .submit_with_retainer(
+                &gateway,
+                &journal,
+                &directory,
+                &environment,
+                || Ok(()),
+                |message| {
+                    *retained.lock().unwrap() = Some(message.clone());
+                    journal.prepare_message(message)
+                }
+            )
+            .is_err());
+        let record = journal.records().unwrap().pop().unwrap();
+        assert_eq!(record.message, retained.lock().unwrap().clone().unwrap());
+        assert_eq!(gateway.sends.lock().unwrap()[0], record.message);
+        gateway
+            .unsupported
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        journal.send(&gateway, &record).unwrap();
+        assert_eq!(gateway.sends.lock().unwrap()[1], record.message);
+        assert_eq!(journal.records().unwrap().len(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn express_1493_revocation_after_retention_prevents_send_and_keeps_original_intent() {
+        let (directory, environment, journal, gateway, _) = choices_fixture(0);
+        let request = Request::prepare(&gateway, "project", "manager", draft()).unwrap();
+        let current = std::sync::atomic::AtomicBool::new(true);
+        assert!(request
+            .submit_with_retainer(
+                &gateway,
+                &journal,
+                &directory,
+                &environment,
+                || {
+                    ensure!(current.load(std::sync::atomic::Ordering::SeqCst), "revoked");
+                    Ok(())
+                },
+                |message| {
+                    let record = journal.prepare_message(message)?;
+                    current.store(false, std::sync::atomic::Ordering::SeqCst);
+                    Ok(record)
+                }
+            )
+            .is_err());
+        assert_eq!(
+            journal.records().unwrap().len(),
+            1,
+            "positive control: intent was durably published"
+        );
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        let record = journal.records().unwrap().pop().unwrap();
+        journal.send(&gateway, &record).unwrap();
+        assert_eq!(gateway.sends.lock().unwrap()[0], record.message);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn express_1493_revoked_selection_and_closure_publication_preserve_cas_state() {
+        let (directory, environment, journal, gateway, _) = choices_fixture(1);
+        let target =
+            SessionTarget::load(&gateway, &environment, "project", "manager", "executors").unwrap();
+        let selection = list_retained(&gateway, &journal, &directory, &environment, &target, None)
+            .unwrap()
+            .rows[0]
+            .selection
+            .clone()
+            .unwrap();
+        let store = SelectionStore::new(&directory, &target).unwrap();
+        let before = store.load().unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        assert!(store
+            .remember_if(&journal, &environment, &before.revision, &selection, || {
+                ensure!(
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2,
+                    "revoked before publication"
+                );
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "positive control: reached actual publication boundary"
+        );
+        assert_eq!(store.load().unwrap().revision, before.revision);
+        let saved = store
+            .remember(&journal, &environment, &before.revision, &selection)
+            .unwrap();
+        assert_eq!(saved.selection.as_ref(), Some(&selection));
+        let recovered =
+            reconnect_selected(&gateway, &journal, &directory, &environment, &selection).unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        assert!(close_selected_if(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            &selection,
+            &recovered,
+            &ClosureIntent::Discard("Explicit offline reason".into()),
+            || {
+                ensure!(
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2,
+                    "revoked before closure publication"
+                );
+                Ok(())
+            }
+        )
+        .is_err());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(
+            ClosureStore::new(&directory, &environment, &recovered.request)
+                .unwrap()
+                .read()
+                .unwrap()
+                .is_none()
+        );
+        close_selected_if(
+            &gateway,
+            &journal,
+            &directory,
+            &environment,
+            &selection,
+            &recovered,
+            &ClosureIntent::Discard("Explicit offline reason".into()),
+            || Ok(()),
+        )
+        .unwrap();
+        let tombstone = store.forget_if(&saved.revision, || Ok(())).unwrap();
+        assert!(tombstone.selection.is_none());
+        assert_eq!(journal.records().unwrap().len(), 1);
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn choices_fixture(
         count: usize,
     ) -> (
