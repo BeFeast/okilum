@@ -1,4 +1,4 @@
-//! Window-owned read-only SSH quick view, with an injectable background loader.
+//! Window-owned SSH Markdown view with explicit guarded saves and local recovery.
 //! Remote source never enters the local Reader editor, vault or saved history.
 use okilum_core::{
     log::sftp::{OpenSsh, Transport},
@@ -201,6 +201,8 @@ fn literal_remote_html(body: &str) -> String {
     })
 }
 
+#[path = "reader_remote_markdown/editing.rs"]
+mod editing;
 pub(crate) use view::show;
 
 // Window-owned GPUI integration. Kept separate from the injectable controller:
@@ -239,25 +241,15 @@ mod view {
             ..TitleBar::window_options()
         };
         cx.open_window(options, move |window, cx| {
-            window.set_window_title("Remote Markdown · Read-only");
+            window.set_window_title("Remote Markdown");
             let panel = cx.new(|cx| {
-                let mut panel = Panel {
-                    controller: Controller::default(),
-                    content: None,
-                    prepared: None,
-                    notice: None,
-                    landing: None,
-                    reply_task: None,
-                    landing_task: None,
-                    landing_serial: 0,
-                };
+                let mut panel = Panel::new();
                 panel.open(source, heading, cx);
                 panel
             });
             let weak = panel.downgrade();
             window.on_window_should_close(cx, move |_, cx| {
-                let _ = weak.update(cx, |panel, cx| panel.stop(cx));
-                true
+                weak.update(cx, |panel, cx| panel.stop(cx)).unwrap_or(true)
             });
             cx.new(|cx| Root::new(panel, window, cx))
         })
@@ -265,17 +257,44 @@ mod view {
         .map_err(|error| io::Error::other(error.to_string()))
     }
 
-    struct Panel {
-        controller: Controller,
-        content: Option<Entity<TextViewState>>,
-        prepared: Option<Prepared>,
-        notice: Option<String>,
-        landing: Option<usize>,
-        reply_task: Option<Task<()>>,
-        landing_task: Option<Task<()>>,
-        landing_serial: u64,
+    pub(super) struct Panel {
+        pub(super) controller: Controller,
+        pub(super) content: Option<Entity<TextViewState>>,
+        pub(super) prepared: Option<Prepared>,
+        pub(super) notice: Option<String>,
+        pub(super) landing: Option<usize>,
+        pub(super) reply_task: Option<Task<()>>,
+        pub(super) landing_task: Option<Task<()>>,
+        pub(super) landing_serial: u64,
+        pub(super) requested_source: Option<Source>,
+        pub(super) edit: Option<editing::Editing>,
+        pub(super) edit_task: Option<Task<()>>,
+        pub(super) save_task: Option<Task<()>>,
+        pub(super) write_cancel: Option<Arc<AtomicBool>>,
+        pub(super) saver: editing::Saver,
+        pub(super) recovery_root: Option<std::path::PathBuf>,
     }
     impl Panel {
+        fn new() -> Self {
+            Self {
+                controller: Controller::default(),
+                content: None,
+                prepared: None,
+                notice: None,
+                landing: None,
+                reply_task: None,
+                landing_task: None,
+                landing_serial: 0,
+                requested_source: None,
+                edit: None,
+                edit_task: None,
+                save_task: None,
+                write_cancel: None,
+                saver: editing::default_saver(),
+                recovery_root: editing::recovery_root(),
+            }
+        }
+
         fn open(&mut self, source: Source, heading: Option<String>, cx: &mut Context<Self>) {
             self.open_with(source, heading, Controller::open, cx);
         }
@@ -288,12 +307,22 @@ mod view {
             load: impl FnOnce(&mut Controller, &str) -> io::Result<async_channel::Receiver<Reply>>,
             cx: &mut Context<Self>,
         ) {
+            if !self.protect(cx) {
+                return;
+            }
+            if let Some(cancel) = self.write_cancel.take() {
+                cancel.store(true, Ordering::Release);
+            }
+            self.save_task = None;
+            self.edit_task = None;
+            self.edit = None;
             self.landing_serial = self.landing_serial.wrapping_add(1);
             self.landing_task = None;
             self.landing = None;
             self.content = None;
             self.prepared = None;
             self.notice = None;
+            self.requested_source = Some(source.clone());
             let receiver = match load(&mut self.controller, source.url()) {
                 Ok(receiver) => receiver,
                 Err(error) => {
@@ -356,7 +385,15 @@ mod view {
             }));
             cx.notify();
         }
-        fn stop(&mut self, cx: &mut Context<Self>) {
+        fn stop(&mut self, cx: &mut Context<Self>) -> bool {
+            if !self.protect(cx) {
+                return false;
+            }
+            if let Some(cancel) = self.write_cancel.take() {
+                cancel.store(true, Ordering::Release);
+            }
+            self.save_task = None;
+            self.edit_task = None;
             self.controller.cancel();
             self.reply_task = None;
             self.landing_serial = self.landing_serial.wrapping_add(1);
@@ -364,6 +401,7 @@ mod view {
             self.landing = None;
             self.notice = None;
             cx.notify();
+            true
         }
         fn markdown_view(
             &self,
@@ -476,13 +514,14 @@ mod view {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let loading = matches!(self.controller.state, State::Loading { .. });
             let mut body = v_flex().size_full().min_h_0()
-                .child(TitleBar::new().child("Remote Markdown · Read-only"))
+                .child(TitleBar::new().child("Remote Markdown"))
                 .child(h_flex().p_3().gap_2()
-                    .child(div().flex_1().child(self.controller.state.message()))
+                    .child(div().flex_1().child(if self.edit.is_some() { "Editing a protected local draft · explicit Save only".into() } else { self.controller.state.message() }))
+                    .child(self.edit_controls(cx))
                     .child(Button::new("remote-markdown-stop").small().label("Stop").disabled(!loading && self.landing.is_none())
-                        .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))))
+                        .on_click(cx.listener(|this, _, _, cx| { this.stop(cx); }))))
                 .child(div().px_3().text_sm().text_color(cx.theme().muted_foreground)
-                    .child("Read-only · 2 MiB limit · Existing SSH host alias and known host key required. Remote media and HTML are not loaded."));
+                    .child("2 MiB limit · Existing SSH alias and known host key required. Edit keeps a local draft; only Save/Retry writes. Safe saving requires Linux + Python 3. Remote media and HTML are not loaded."));
             if let Some(notice) = &self.notice {
                 body = body.child(
                     div()
@@ -493,6 +532,9 @@ mod view {
             }
             if self.landing.is_some() {
                 body = body.child(div().px_3().child("Locating heading…"));
+            }
+            if let Some(editor) = self.editor(cx) {
+                return body.child(editor);
             }
             if let (Some(content), State::Ready { source, .. }) =
                 (&self.content, &self.controller.state)
@@ -563,16 +605,7 @@ mod view {
             cx.update(crate::test_init);
             let mut panel = None;
             let (_, visual) = cx.add_window_view(|window, cx| {
-                let entity = cx.new(|_| Panel {
-                    controller: Controller::default(),
-                    content: None,
-                    prepared: None,
-                    notice: None,
-                    landing: None,
-                    reply_task: None,
-                    landing_task: None,
-                    landing_serial: 0,
-                });
+                let entity = cx.new(|_| Panel::new());
                 panel = Some(entity.clone());
                 Root::new(entity, window, cx)
             });
@@ -606,6 +639,8 @@ mod view {
                 "actual short-read worker positive control"
             );
         }
+
+        include!("reader_remote_markdown/mounted_tests.rs");
 
         #[gpui::test]
         fn remote_window_offline_worker_renders_readonly_payload_and_lands_current_heading(
