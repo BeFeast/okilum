@@ -81,6 +81,107 @@ const RECEIPT: &str =
     r#"{"issue_number":123,"issue_url":"https://git.oklabs.uk/BeFeast/okilum/issues/123"}"#;
 
 #[test]
+fn network_failures_offer_remediation_and_keep_the_underlying_cause() {
+    let draft = report();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/feedback", listener.local_addr().unwrap());
+    // Retain ownership until the request arrives: parallel mocks can otherwise
+    // reuse a released port and turn the intended failure into a real response.
+    let disconnected = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let request = read_mock_request(&mut socket);
+        socket.shutdown(std::net::Shutdown::Both).unwrap();
+        request
+    });
+    let error = send_to(&endpoint, &draft).unwrap_err();
+    assert!(String::from_utf8_lossy(&disconnected.join().unwrap()).contains(&draft.text));
+    assert!(error.to_string().contains("Check your connection and VPN"));
+    assert!(error.to_string().contains("Host: 127.0.0.1"));
+    assert!(error.to_string().contains("diagnostic.log") || !cfg!(windows));
+    assert!(error.chain().any(|cause| cause.is::<reqwest::Error>()));
+    for (status, action) in [(407, "Ask IT for a proxy route"), (403, "HTTPS access")] {
+        let (endpoint, server) = mock(status, "corporate block page");
+        let error = send_to(&endpoint, &draft).unwrap_err();
+        assert!(error.to_string().contains(action), "{error:#}");
+        assert!(error.to_string().contains(&format!("HTTP {status}")));
+        server.join().unwrap();
+    }
+    assert_eq!(draft.text, report().text);
+    let message = network_failure_message(
+        "https://private:password@feedback.okilum.test/secret?token=hidden",
+        "The system proxy could not complete the request",
+    );
+    assert!(message.contains("proxy settings") || message.contains("setup script (PAC)"));
+    for secret in ["private", "password", "secret", "hidden"] {
+        assert!(!message.contains(secret), "{message}");
+    }
+}
+
+/// Invoked in a fresh process per control by the hosted Windows fixture. All
+/// endpoints are non-forwarding loopback listeners or reserved .test hosts.
+#[cfg(windows)]
+#[test]
+#[ignore = "requires the isolated hosted Windows CA/proxy fixture"]
+fn corporate_feedback_control() {
+    let endpoint = std::env::var("OKILUM_CORP_ENDPOINT").unwrap();
+    let mode = std::env::var("OKILUM_CORP_CONTROL").unwrap();
+    let url = url::Url::parse(&endpoint).unwrap();
+    assert_eq!(url.scheme(), "https");
+    assert!(matches!(
+        url.host_str(),
+        Some("feedback.okilum.test" | "localhost")
+    ));
+    assert_eq!(url.path(), "/api/feedback/okilum");
+    let draft = report();
+    if matches!(mode.as_str(), "legacy" | "legacy-proxy") {
+        let error = reqwest::blocking::Client::builder()
+            .use_rustls_tls()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+            .post(&endpoint)
+            .multipart(reqwest::blocking::multipart::Form::new().text("text", draft.text.clone()))
+            .send()
+            .unwrap_err();
+        if mode == "legacy" {
+            assert!(okilum_http::reason(&error.into()).contains("TLS certificate"));
+        } else {
+            assert!(error.is_connect(), "{error:#}");
+        }
+    } else {
+        match mode.as_str() {
+            "success" => {
+                let receipt = send_to(&endpoint, &draft).unwrap();
+                assert_eq!(receipt.issue_number, 123);
+                assert_eq!(
+                    receipt.delivery_endpoint.as_deref(),
+                    Some(endpoint.as_str())
+                );
+            }
+            "untrusted" | "proxy-auth" | "blocked" => {
+                let error = send_to(&endpoint, &draft).unwrap_err();
+                let expected = match mode.as_str() {
+                    "untrusted" => "Windows Trusted Root Certification Authorities",
+                    "proxy-auth" => "Ask IT for a proxy route",
+                    _ => "HTTPS access",
+                };
+                assert!(error.to_string().contains(expected), "{error:#}");
+                assert!(error.to_string().contains("Your feedback is kept"));
+                assert!(error.to_string().contains("reader-diagnostic.log"));
+                println!("visible_error={}\nfull_chain={error:#}", error);
+            }
+            _ => panic!("unknown fixture mode: {mode}"),
+        }
+    }
+    assert_eq!(draft.text, report().text);
+    println!("CONTROL PASS mode={mode} endpoint={endpoint} draft=retained");
+}
+
+#[test]
 fn multipart_preserves_unicode_and_only_attaches_chosen_data() {
     for attachments in [false, true] {
         let mut report = report();

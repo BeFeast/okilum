@@ -607,7 +607,7 @@ async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
     };
     let failure = |error: anyhow::Error| {
         crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
-        let message = format!("{}. Your feedback is kept.", okilum_http::reason(&error));
+        let message = network_failure_message(endpoint, &okilum_http::reason(&error));
         error.context(message)
     };
     let client = okilum_http::async_client(endpoint, &report.meta.version, timeout)
@@ -712,9 +712,9 @@ async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
                     &format!("Feedback via {endpoint}"),
                     &error,
                 );
-                error.context(format!(
-                    "{}. Your feedback is kept.",
-                    okilum_http::http_reason(status.as_u16())
+                error.context(network_failure_message(
+                    endpoint,
+                    &okilum_http::http_reason(status.as_u16()),
                 ))
             }
         })?;
@@ -722,7 +722,10 @@ async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
         let error = anyhow::anyhow!("Feedback returned HTTP {}", status.as_u16());
         crate::reader_diagnostics::network_failure(&format!("Feedback via {endpoint}"), &error);
         if status.as_u16() == 407 {
-            bail!("{}. Your feedback is kept.", okilum_http::http_reason(407));
+            bail!(
+                "{}",
+                network_failure_message(endpoint, &okilum_http::http_reason(407))
+            );
         }
         let message = serde_json::from_slice::<serde_json::Value>(&bytes)
             .ok()
@@ -736,6 +739,12 @@ async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
                 415 => "The server doesn't accept this attachment type. Your draft is kept.".into(),
                 _ => "Feedback couldn't be sent. Your draft is kept.".into(),
             });
+        if status.as_u16() == 403 {
+            bail!(
+                "{}",
+                network_failure_message(endpoint, &okilum_http::http_reason(403))
+            );
+        }
         bail!("{message} (HTTP {})", status.as_u16());
     }
     let mut receipt: Receipt = serde_json::from_slice(&bytes)
@@ -752,6 +761,38 @@ async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
     receipt.delivery_endpoint = Some(endpoint.to_owned());
     crate::reader_diagnostics::feedback_delivery(endpoint);
     Ok(receipt)
+}
+/// Keep the actual cause visible and give the tester a next step even when
+/// corporate filtering prevents Feedback itself from delivering diagnostics.
+fn network_failure_message(endpoint: &str, reason: &str) -> String {
+    let action = if reason.contains("HTTP 407") {
+        "Ask IT for a proxy route that does not require integrated NTLM/Kerberos authentication."
+    } else if reason.contains("TLS certificate") {
+        if cfg!(windows) {
+            "Ask IT to verify the corporate root CA in the Windows Trusted Root Certification Authorities store."
+        } else {
+            "Ask your network administrator to check the certificate chain."
+        }
+    } else if reason.contains("proxy") {
+        if cfg!(windows) {
+            "Check Windows Settings > Network & internet > Proxy, including the setup script (PAC), or contact IT."
+        } else {
+            "Check your proxy settings or contact your network administrator."
+        }
+    } else {
+        "Check your connection and VPN, then retry. If it persists, ask IT to check HTTPS access to the Feedback host."
+    };
+    // Endpoints are app-owned, but never copy credentials/path/query into UI.
+    let host = url::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "Feedback".into());
+    let diagnostics = if cfg!(windows) {
+        " Details: %LOCALAPPDATA%\\okilum\\reader-diagnostic.log."
+    } else {
+        " Details are in the app diagnostic log."
+    };
+    format!("{reason}. Your feedback is kept. {action} Host: {host}.{diagnostics}")
 }
 async fn bounded_response(mut response: reqwest::Response, maximum: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();

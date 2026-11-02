@@ -64,3 +64,33 @@ system proxy policy; Linux/macOS exercise their unchanged production TLS policy.
 This proves public reachability on those runners, not corporate TLS inspection.
 After merge, real corporate acceptance belongs to the Windows tester via Oleg;
 Oleg uses ordinary Feedback on his Mac. No agent message to testers is implied.
+
+## Feedback follow-up (#1667, November 2026)
+
+The OS-trust/proxy transport and transport-only fallback above are already merged
+in #1668. The follow-up preserves them and makes failures actionable: certificate
+errors point to the Windows root store, proxy discovery errors to Windows Proxy
+settings/PAC, HTTP 407 to the integrated-authentication limitation, and connection
+or HTTP 403 failures to connection/VPN and IT's HTTPS policy. The UI names the
+attempted host and `%LOCALAPPDATA%\okilum\reader-diagnostic.log`, retaining the
+draft and the existing full-chain diagnostic sink. Attachment-limit and invalid
+receipt messages retain their own causes.
+
+The `windows-native.yml` dispatch with `package=okilum-http` now also runs
+`feedback_controls.ps1` against `feedback_proxy.py`. This imports a temporary
+root into **CurrentUser/Root** on an ephemeral hosted Windows runner and invokes
+the real async Feedback model in a fresh process for every control. The fixture
+accepts only loopback or reserved `feedback.okilum.test`, never forwards, checks
+multipart and User-Agent, and returns a controlled receipt. No public POST or
+GUI install/update is involved.
+
+Controls require an actual CONNECT and untrusted-certificate error before root
+import, trusted direct delivery, rejection by the legacy bundled-root client,
+failure of the legacy direct policy on the reserved host, then delivery through
+per-protocol static system proxy and PAC. Proxy authentication and policy-block
+controls require visible, actionable errors. Every probe must report one executed
+test, and request receipts prove routing and payload observations. Without the
+follow-up, the actionable-error assertions fail. The script restores proxy/env
+settings and removes its own root in `finally`; artifacts exclude private keys.
+Receipts record the exact source SHA. These checks establish the isolated fixture
+behavior; acceptance on Ivan's corporate laptop remains separate.
