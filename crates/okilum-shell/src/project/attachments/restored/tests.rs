@@ -50,6 +50,8 @@ fn client() -> Arc<NativeClient> {
 fn restored_upload_previews_without_a_local_source_and_keeps_its_exact_reference(
     cx: &mut TestAppContext,
 ) {
+    // The durable draft writer completes on its real OS thread.
+    cx.executor().allow_parking();
     cx.update(crate::test_init);
     let temp = tempfile::tempdir().unwrap();
     let reads = Arc::new(AtomicUsize::new(0));
@@ -168,6 +170,8 @@ fn restored_upload_previews_without_a_local_source_and_keeps_its_exact_reference
 fn preview_failure_retries_only_the_download_and_needs_reselect_stays_unsendable(
     cx: &mut TestAppContext,
 ) {
+    // The durable draft writer completes on its real OS thread.
+    cx.executor().allow_parking();
     cx.update(crate::test_init);
     let temp = tempfile::tempdir().unwrap();
     let reads = Arc::new(AtomicUsize::new(0));
