@@ -7,19 +7,134 @@ use rustix::{
     fs::{AtFlags, RenameFlags},
     io::{Errno, Result},
 };
-use std::ffi::OsStr;
+use std::{collections::HashMap, ffi::OsStr};
+
+#[derive(Default)]
+struct Capabilities {
+    unsupported: u32,
+    reported: bool,
+}
+type Identity = (u64, u64);
+type Scope = (Identity, u64);
+#[derive(Default)]
+struct Cache {
+    roots: HashMap<Identity, rustix::fd::OwnedFd>,
+    standalone: HashMap<Identity, rustix::fd::OwnedFd>,
+    directories: HashMap<Identity, Scope>,
+    flags: HashMap<Scope, Capabilities>,
+}
+// Each open vault has independent capabilities, shared by its folders/editors.
+// Include the actual device so a nested mount never inherits local support.
+// Separate flags: a server may implement NOREPLACE but reject EXCHANGE.
+#[cfg(not(test))]
+static CAPABILITIES: std::sync::LazyLock<std::sync::Mutex<Cache>> =
+    std::sync::LazyLock::new(Default::default);
+#[cfg(test)]
+thread_local! {
+    static CAPABILITIES: std::cell::RefCell<Cache> = Default::default();
+    static FLAG_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+fn capabilities<T>(body: impl FnOnce(&mut Cache) -> T) -> T {
+    #[cfg(not(test))]
+    {
+        body(&mut CAPABILITIES.lock().unwrap())
+    }
+    #[cfg(test)]
+    {
+        CAPABILITIES.with(|cache| body(&mut cache.borrow_mut()))
+    }
+}
+fn identity(fd: impl AsFd) -> Result<Identity> {
+    let stat = rustix::fs::fstat(fd)?;
+    #[cfg(target_os = "macos")]
+    let device = stat.st_dev as u64;
+    #[cfg(not(target_os = "macos"))]
+    let device = stat.st_dev;
+    Ok((device, stat.st_ino))
+}
+/// Register a vault scope without probing/mutating its contents. The cache is
+/// session-only, never operational state or an on-disk capability assumption.
+pub(crate) fn register_vault(root: &std::path::Path) -> Result<()> {
+    use rustix::fs::{open, Mode, OFlags};
+    let fd = open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let root = identity(&fd)?;
+    capabilities(|cache| {
+        if let std::collections::hash_map::Entry::Vacant(entry) = cache.roots.entry(root) {
+            entry.insert(fd); // pin the inode: remount/recreate cannot reuse its identity
+            cache.directories.clear();
+        }
+    });
+    Ok(())
+}
+fn scope(fd: rustix::fd::BorrowedFd<'_>) -> Result<Scope> {
+    use rustix::fs::{openat, Mode, OFlags};
+    let directory = identity(fd)?;
+    if let Some(scope) = capabilities(|cache| cache.directories.get(&directory).copied()) {
+        return Ok(scope);
+    }
+    let mut current = directory;
+    let mut parent = None;
+    let root = loop {
+        if capabilities(|cache| cache.roots.contains_key(&current)) {
+            break current;
+        }
+        let next = match openat(
+            parent.as_ref().map_or(fd, AsFd::as_fd),
+            "..",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(next) => next,
+            Err(_) => break directory, // ancestor permissions do not gate publication
+        };
+        let next_identity = identity(&next)?;
+        if next_identity == current {
+            break directory;
+        } // single-file viewer
+        current = next_identity;
+        parent = Some(next);
+    };
+    let scope = (root, directory.0);
+    // A stand-alone file's containing folder is its scope. Pin it too, so an
+    // old negative capability cannot attach to a recycled directory inode.
+    let pin = if root == directory {
+        Some(openat(
+            fd,
+            ".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?)
+    } else {
+        None
+    };
+    capabilities(|cache| {
+        if let Some(pin) = pin {
+            cache.standalone.entry(root).or_insert(pin);
+        }
+        cache.directories.insert(directory, scope);
+    });
+    Ok(scope)
+}
 
 #[cfg(test)]
 thread_local! { static FLAG_ERROR: std::cell::Cell<Option<Errno>> = const { std::cell::Cell::new(None) }; }
 #[cfg(test)]
 pub(crate) fn inject<T>(error: Errno, body: impl FnOnce() -> T) -> T {
-    struct Reset(Option<Errno>);
+    struct Reset(Option<Errno>, Cache);
     impl Drop for Reset {
         fn drop(&mut self) {
             FLAG_ERROR.with(|v| v.set(self.0));
+            capabilities(|cache| *cache = std::mem::take(&mut self.1));
         }
     }
-    let reset = Reset(FLAG_ERROR.with(|v| v.replace(Some(error))));
+    let reset = Reset(
+        FLAG_ERROR.with(|v| v.replace(Some(error))),
+        capabilities(std::mem::take),
+    );
     let result = body();
     drop(reset);
     result
@@ -31,11 +146,36 @@ pub(crate) fn flagged_rename(
     d: &OsStr,
     flags: RenameFlags,
 ) -> Result<()> {
-    #[cfg(test)]
-    if let Some(error) = FLAG_ERROR.with(|v| v.get()) {
-        return Err(error);
+    let a = a.as_fd();
+    let c = c.as_fd();
+    let scope = scope(a)?;
+    if capabilities(|cache| {
+        cache
+            .flags
+            .get(&scope)
+            .is_some_and(|v| v.unsupported & flags.bits() != 0)
+    }) {
+        return Err(Errno::NOTSUP);
     }
-    rustix::fs::renameat_with(a, b, c, d, flags)
+    #[cfg(test)]
+    FLAG_CALLS.with(|calls| calls.set(calls.get() + 1));
+    #[cfg(test)]
+    let result = FLAG_ERROR
+        .with(|v| v.get())
+        .map_or_else(|| rustix::fs::renameat_with(a, b, c, d, flags), Err);
+    #[cfg(not(test))]
+    let result = rustix::fs::renameat_with(a, b, c, d, flags);
+    if result.is_err_and(unsupported) {
+        capabilities(|cache| {
+            let entry = cache.flags.entry(scope).or_default();
+            entry.unsupported |= flags.bits();
+            if !entry.reported {
+                eprintln!("Okilum: this vault's drive does not support exclusive rename/exchange; using compatible link-based publication (vault {:?}, device {}).", scope.0, scope.1);
+                entry.reported = true;
+            }
+        });
+    }
+    result
 }
 
 /// std exposes dev_t as u64 on every Unix; Darwin's native dev_t is signed
@@ -50,7 +190,10 @@ pub(crate) fn same_identity(stat: &rustix::fs::Stat, metadata: &std::fs::Metadat
 }
 
 pub fn unsupported(error: Errno) -> bool {
-    error == Errno::NOTSUP || error == Errno::INVAL || error == Errno::NOSYS
+    error == Errno::NOTSUP
+        || error == Errno::OPNOTSUPP
+        || error == Errno::INVAL
+        || error == Errno::NOSYS
 }
 
 pub fn no_replace(
@@ -117,8 +260,78 @@ mod tests {
     use super::*;
     use std::{fs, fs::File};
     #[test]
+    fn ordinary_errors_do_not_downgrade_the_vault() {
+        for error in [Errno::ACCESS, Errno::IO, Errno::TIMEDOUT] {
+            inject(error, || {
+                let root = tempfile::tempdir().unwrap();
+                register_vault(root.path()).unwrap();
+                let fd = File::open(root.path()).unwrap();
+                FLAG_CALLS.with(|v| v.set(0));
+                for _ in 0..3 {
+                    assert_eq!(
+                        flagged_rename(
+                            &fd,
+                            OsStr::new("a"),
+                            &fd,
+                            OsStr::new("b"),
+                            RenameFlags::NOREPLACE
+                        ),
+                        Err(error)
+                    );
+                }
+                assert_eq!(FLAG_CALLS.with(|v| v.get()), 3);
+                capabilities(|cache| assert!(cache.flags.is_empty()));
+            });
+        }
+    }
+    #[test]
+    fn unsupported_capability_is_shared_across_folders_and_flags_are_independent() {
+        inject(Errno::INVAL, || {
+            let root = tempfile::tempdir().unwrap();
+            fs::create_dir(root.path().join("nested")).unwrap();
+            register_vault(root.path()).unwrap();
+            let parent = File::open(root.path()).unwrap();
+            let child = File::open(root.path().join("nested")).unwrap();
+            FLAG_CALLS.with(|v| v.set(0));
+            for fd in [&parent, &child, &parent] {
+                assert!(flagged_rename(
+                    fd,
+                    OsStr::new("a"),
+                    fd,
+                    OsStr::new("b"),
+                    RenameFlags::NOREPLACE
+                )
+                .is_err());
+            }
+            assert_eq!(FLAG_CALLS.with(|v| v.get()), 1);
+            assert!(flagged_rename(
+                &child,
+                OsStr::new("a"),
+                &child,
+                OsStr::new("b"),
+                RenameFlags::EXCHANGE
+            )
+            .is_err());
+            assert_eq!(FLAG_CALLS.with(|v| v.get()), 2);
+            capabilities(|cache| assert!(cache.flags.values().all(|v| v.reported)));
+            let other = tempfile::tempdir().unwrap();
+            register_vault(other.path()).unwrap();
+            let fd = File::open(other.path()).unwrap();
+            assert!(flagged_rename(
+                &fd,
+                OsStr::new("a"),
+                &fd,
+                OsStr::new("b"),
+                RenameFlags::NOREPLACE
+            )
+            .is_err());
+            assert_eq!(FLAG_CALLS.with(|v| v.get()), 3);
+            capabilities(|cache| assert_eq!(cache.flags.len(), 2));
+        });
+    }
+    #[test]
     fn unsupported_flags_publish_files_and_directories_without_clobber() {
-        for error in [Errno::NOTSUP, Errno::INVAL] {
+        for error in [Errno::NOTSUP, Errno::INVAL, Errno::NOSYS, Errno::OPNOTSUPP] {
             for directory in [false, true] {
                 let root = tempfile::tempdir().unwrap();
                 let fd = File::open(root.path()).unwrap();
@@ -165,7 +378,7 @@ mod operation_tests {
     use std::fs;
     #[test]
     fn create_save_move_rename_and_external_conflict_on_unsupported_flags() {
-        for error in [Errno::NOTSUP, Errno::INVAL] {
+        for error in [Errno::NOTSUP, Errno::INVAL, Errno::NOSYS, Errno::OPNOTSUPP] {
             inject(error, || {
                 let root = tempfile::tempdir().unwrap();
                 let vault = root.path().join("vault");
@@ -222,7 +435,7 @@ mod folder_tests {
     use std::{fs, path::Path};
     #[test]
     fn directory_move_and_rename_accept_both_unsupported_errors() {
-        for error in [Errno::NOTSUP, Errno::INVAL] {
+        for error in [Errno::NOTSUP, Errno::INVAL, Errno::NOSYS, Errno::OPNOTSUPP] {
             inject(error, || {
                 let root = tempfile::tempdir().unwrap();
                 fs::create_dir(root.path().join("old")).unwrap();

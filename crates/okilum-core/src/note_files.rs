@@ -71,6 +71,7 @@ fn publish_created(
     }
     #[cfg(unix)]
     {
+        crate::unix_publish::register_vault(root)?;
         let mut folder = open(
             root,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
