@@ -613,7 +613,7 @@ mod tests {
     fn failed_checkpoint_preserves_authored_draft_and_original_attempt() {
         let (_temp, _binding, snapshot) = fixture();
         let prepared = snapshot.prepare().unwrap();
-        let mut draft = crate::capture::ComposerDraft {
+        let mut draft = okilum_core::capture::ComposerDraft {
             text: "retained authored text".into(),
             folder: Some("Inbox".into()),
             ..Default::default()
@@ -630,7 +630,7 @@ mod tests {
         std::fs::rename(&held, &prepared.records).unwrap();
         prepared.validate().unwrap();
         let recovered =
-            crate::capture::recover_composers(&snapshot.root, &prepared.records).unwrap();
+            okilum_core::capture::recover_composers(&snapshot.root, &prepared.records).unwrap();
         assert!(recovered.contains(&frozen));
         draft.persist(&snapshot.root, &prepared.records).unwrap(); // retry positive control
     }
