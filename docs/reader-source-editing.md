@@ -670,3 +670,11 @@ width from indentation they just inserted: a two-space line returns to its
 original two spaces after Tab then Shift+Tab. Another fence/document or changed
 fence structure detects its own policy. Adjacent differently-indented snippets
 therefore keep independent units; this session state is not persisted.
+
+Python Enter checks colon context with the embedded component's grammar:
+colons inside comments, strings and f-string format specifiers keep the current
+line indentation, while code colons (including ordinary if/def headers) still
+open a level. Parsing is limited to 64 KiB snippets and a 20 ms budget, only
+when Enter follows a Python colon. Unavailable/uncertain syntax keeps the
+current indentation. Source and Live Preview use the same source transaction
+and preserve authored LF/CRLF and one-step Undo/Redo.

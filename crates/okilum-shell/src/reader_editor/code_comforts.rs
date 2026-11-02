@@ -370,6 +370,52 @@ pub(super) fn typed(
     })
 }
 
+/// Whether a Python colon belongs to code, rather than a string/comment.
+/// Reuse the pinned component's grammar only for this explicit Enter action,
+/// bounded to short snippets and a parse budget. An unavailable/uncertain tree
+/// means keep the existing indentation, never guess an additional level.
+fn python_code_colon(text: &str, block: &Block, at: usize) -> Option<bool> {
+    const MAX_SNIPPET_BYTES: usize = 64 * 1024;
+    let body = &text[block.body.clone()];
+    if body.len() > MAX_SNIPPET_BYTES || !block.body.contains(&at) {
+        return None;
+    }
+    crate::source_presentation::code_languages::install();
+    let config = gpui_component::highlighter::LanguageRegistry::singleton().language("python")?;
+    config.language.as_ref()?;
+    let mut syntax = gpui_component::highlighter::SyntaxHighlighter::new("python");
+    if !syntax.update(
+        None,
+        &gpui_component::Rope::from_str(body),
+        Some(std::time::Duration::from_millis(20)),
+    ) {
+        return None;
+    }
+    let local = at - block.body.start;
+    let mut node = syntax
+        .tree()?
+        .root_node()
+        .descendant_for_byte_range(local, local + 1)?;
+    loop {
+        let kind = node.kind();
+        // An f-string expression is code even though its outer node is a
+        // string. Format specifiers, in contrast, are part of the literal.
+        if kind == "interpolation" {
+            return Some(true);
+        }
+        if kind.contains("string") || kind == "comment" || kind == "format_specifier" {
+            return Some(false);
+        }
+        if node.is_error() || node.is_missing() {
+            return None;
+        }
+        let Some(parent) = node.parent() else {
+            return Some(true);
+        };
+        node = parent;
+    }
+}
+
 /// Enter in a code block: the new line keeps the indentation; after an
 /// opening bracket (or `:` in Python) it goes one level deeper, and a closer
 /// right at the caret moves to its own line at the old indentation.
@@ -385,9 +431,12 @@ pub(super) fn enter(
     let indent = leading_whitespace(before);
     let after = &text[selection.end..line_end_offset];
     let nl = newline(text);
-    let opened = before.trim_end().chars().next_back();
-    let deeper = matches!(opened, Some('{' | '(' | '['))
-        || (opened == Some(':') && block.language.as_deref() == Some("python"));
+    let trimmed = before.trim_end();
+    let opened = trimmed.chars().next_back();
+    let python_opens = opened == Some(':')
+        && block.language.as_deref() == Some("python")
+        && python_code_colon(text, block, start + trimmed.len() - 1).unwrap_or(false);
+    let deeper = matches!(opened, Some('{' | '(' | '[')) || python_opens;
     if !deeper {
         let insert = format!("{nl}{indent}");
         let caret = selection.start + insert.len();
@@ -1159,6 +1208,83 @@ mod tests {
     fn enter_keeps_and_opens_indentation_in_a_code_block(cx: &mut TestAppContext) {
         let (note, visual) = open(cx);
         enter_in(&note, visual);
+    }
+
+    #[test]
+    fn python_literal_enter_uses_grammar_with_code_and_unknown_controls() {
+        for (body, expected) in [
+            ("# note:|", Some(false)),
+            ("value = \"label:|tail\"", Some(false)),
+            ("value = \"\"\"first\nlabel:|tail\n\"\"\"", Some(false)),
+            ("value = f\"{item:|>10}\"", Some(false)),
+            ("if ready:|", Some(true)),
+            ("def run():|", Some(true)),
+            ("value = f\"{call({'key':|1})}\"", Some(true)),
+        ] {
+            let (text, selection) = marked(&format!("```py\n{body}\n```"));
+            let at = selection.start - 1;
+            let block = block_at(&text, at).unwrap();
+            assert_eq!(python_code_colon(&text, &block, at), expected, "{body}");
+        }
+        let body = format!("{}# note:", " ".repeat(64 * 1024));
+        let text = format!("```py\n{body}\n```");
+        let at = text.rfind(':').unwrap();
+        let block = block_at(&text, at).unwrap();
+        assert_eq!(
+            python_code_colon(&text, &block, at),
+            None,
+            "oversized snippets do not parse on Enter"
+        );
+    }
+
+    fn python_literal_enter_in(note: &Note, visual: &mut VisualTestContext) {
+        for nl in ["\n", "\r\n"] {
+            for (before, after) in [
+                ("  # note:|", "  # note:\n  |"),
+                ("  value = \"label:|tail\"", "  value = \"label:\n  |tail\""),
+                (
+                    "  value = \"\"\"first\n  label:|tail\n  \"\"\"",
+                    "  value = \"\"\"first\n  label:\n  |tail\n  \"\"\"",
+                ),
+                ("if ready:|", "if ready:\n    |"),
+                ("def run():|", "def run():\n    |"),
+            ] {
+                let original = format!("intro\n```python\n{before}\n```\nafter").replace('\n', nl);
+                let expected = format!("intro\n```python\n{after}\n```\nafter").replace('\n', nl);
+                set(note, visual, &original);
+                keys(visual, "enter");
+                assert_eq!(shown(note, visual), expected, "{before}, {nl:?}");
+                undo(visual);
+                assert_eq!(
+                    shown(note, visual),
+                    original,
+                    "one Undo keeps all authored source"
+                );
+                redo(visual);
+                assert_eq!(shown(note, visual), expected);
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn python_literal_enter_preserves_indent_and_undo_in_source(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        python_literal_enter_in(&note, visual);
+    }
+
+    #[gpui::test]
+    fn python_literal_enter_preserves_indent_and_undo_in_live_preview(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        note.reader
+            .update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
+        visual.run_until_parked();
+        python_literal_enter_in(&note, visual);
+        assert!(note.reader.read_with(visual, |r, _| r
+            .editing
+            .as_ref()
+            .unwrap()
+            .live_preview
+            .enabled));
     }
 
     fn indent_in(note: &Note, visual: &mut VisualTestContext) {
