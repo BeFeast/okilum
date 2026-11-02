@@ -193,3 +193,8 @@ run_tests okilum-shell --bins reader_loading::quick_view_tests::quick_folder_
 
 # #1986: retained deleted/returned notes and navigation choices on native macOS.
 run_tests okilum-shell --bins reader_deleted_note::tests::
+
+# #2385: exact update window replay and the single-file final editor guard.
+run_tests okilum-shell --bins reader_update_restart::tests::
+run_tests okilum-shell --bins reader_editor::tests::update_install_post_verification_protects_latest_edits_and_refuses_failure --exact
+run_tests okilum-shell --bins reader_editor::tests::update_restart_refuses_unprotected_single_file_then_preserves_latest_draft --exact

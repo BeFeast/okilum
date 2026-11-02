@@ -60,9 +60,26 @@ visible on explicit interaction; failed background checks do not spam notices.
 Estimate: 1–2 executor days plus installed Windows QA. The critical gate is a
 normal safe quit after arming the updater, not merely showing a clickable toast.
 
-Implementation finding: there is no general multi-window session relaunch protocol.
-The first implementation must refuse Restart while more than one document window
-is open, with an explicit instruction to close the others; normal manual quit
-remains available. It must reopen the current absolute vault/note or single file,
-not replay startup CLI arguments (their relative base can change on Windows).
-A future multi-window restart needs its own durable, consumable session contract.
+## Exact window restoration (#2385)
+
+Restart now carries each live Reader window's current target explicitly, including
+single-file viewers. Windows and Linux AppImage share `update_restart_args`:
+`--restore-vault-window ROOT NOTE` repeats once per vault window (including duplicate
+windows of one vault), and `--restore-file-window ABSOLUTE_PATH` once per quick viewer.
+These internal options supersede inherited launch targets. Startup reuses the normal
+vault session restoration and creates separate quick-viewer windows, even if a file
+is inside an already restored vault. It does not ask users to close other windows.
+Missing single files produce an open error; restoration never creates a replacement.
+
+Sparkle relaunches without application arguments. After the final editor guard and
+UI-state flush, macOS atomically writes the same target list to a one-use
+`update-restart-windows.json` in Reader state, outside disposable indexes. Normal
+startup consumes it before ordinary vault restoration. A failed installation
+continuation clears the handoff and keeps the application open. Ordinary startup
+continues to record vault windows only.
+
+Every platform keeps the existing `protect_all_for_quit` boundary: save current
+editor contents or retain the latest durable recovery draft, including canonical
+conflicts. Failure to protect a draft stops restart before updater arming. Recovery
+copies remain available through the existing Recover notes flow; restart does not
+silently discard an unsaved single-file editor.

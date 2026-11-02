@@ -146,18 +146,30 @@ pub(crate) fn protect_verified_install(
     commit: impl FnOnce() -> anyhow::Result<()>,
     refuse: impl FnOnce(),
 ) -> anyhow::Result<()> {
+    #[cfg(test)]
+    let directory = cx
+        .try_global::<crate::reader_history::TestSessionDirectory>()
+        .map(|directory| Ok(directory.0.clone()))
+        .unwrap_or_else(crate::reader_history::state_directory);
+    #[cfg(not(test))]
+    let directory = crate::reader_history::state_directory();
     install_guard::finish(
         cx,
+        crate::reader_update_restart::protect_editors,
         |cx| {
-            anyhow::ensure!(
-                crate::reader_editor::protect_all_for_quit(cx),
-                "Your latest edits could not be protected. Okilum will stay open."
-            );
-            Ok(())
+            crate::reader_ui_state::prepare_for_restart(cx)?;
+            let directory = directory
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+            crate::reader_update_restart::persist(directory, cx)
         },
-        crate::reader_ui_state::prepare_for_restart,
         |_| commit(),
-        |_| refuse(),
+        |_| {
+            if let Ok(directory) = &directory {
+                crate::reader_update_restart::clear(directory);
+            }
+            refuse();
+        },
     )
 }
 

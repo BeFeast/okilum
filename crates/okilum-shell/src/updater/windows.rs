@@ -81,10 +81,7 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
                 RestartStep::Arguments => {
                     restart_args = crate::reader_open::update_restart_args(cx)?
                 }
-                RestartStep::ProtectEditors => anyhow::ensure!(
-                    crate::reader_editor::protect_all_for_quit(cx),
-                    "Your latest edits could not be protected. Okilum will stay open."
-                ),
+                RestartStep::ProtectEditors => crate::reader_update_restart::protect_editors(cx)?,
                 RestartStep::PersistState => crate::reader_ui_state::prepare_for_restart(cx)?,
                 RestartStep::ArmUpdater => manager.wait_exit_then_apply_updates(
                     asset,

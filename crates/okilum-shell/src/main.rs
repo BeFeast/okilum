@@ -194,6 +194,7 @@ mod reader_tree_follow;
 mod reader_tree_preview;
 mod reader_typed_view;
 mod reader_ui_state;
+mod reader_update_restart;
 mod search_label;
 #[cfg(any(unix, windows))]
 mod source_presentation;
@@ -904,6 +905,8 @@ struct Opts {
     /// be a good way to index the wrong directory.
     vault: Option<PathBuf>,
     open_path: Option<PathBuf>,
+    /// Exact window set supplied by the updater, independent of launch defaults.
+    restart_windows: Vec<reader_update_restart::Window>,
     /// An explicit CLI/OS open created this empty Markdown file (#1835).
     created_note: bool,
     /// More log files opened with `open_path`, in one view (#1160).
@@ -8499,6 +8502,12 @@ fn main() {
             diagnostics: opts.diagnostics.clone(),
             ..Opts::default()
         }));
+        #[cfg(target_os = "macos")]
+        let opts = reader_update_restart::with_pending(opts);
+        if !opts.restart_windows.is_empty() {
+            reader_update_restart::restore(opts, cx).detach();
+            return;
+        }
         if let Some(link) = &opts.link {
             reader_open::open_deep_link(link, cx);
             return;

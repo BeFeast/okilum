@@ -390,6 +390,25 @@ pub(crate) fn parse_args(
         };
         if !literal {
             match arg.to_str() {
+                Some("--restore-vault-window") => {
+                    let root = PathBuf::from(value()?);
+                    let note = value()?
+                        .into_string()
+                        .map_err(|_| anyhow::anyhow!("Note path must be UTF-8"))?;
+                    opts.restart_windows
+                        .push(super::reader_update_restart::Window::Vault {
+                            root,
+                            note: Some(note).filter(|note| !note.is_empty()),
+                        });
+                    continue;
+                }
+                Some("--restore-file-window") => {
+                    opts.restart_windows
+                        .push(super::reader_update_restart::Window::File {
+                            path: PathBuf::from(value()?),
+                        });
+                    continue;
+                }
                 Some("--vault") => {
                     explicit_reader = true;
                     opts.vault = Some(value()?.into());
@@ -474,6 +493,17 @@ pub(crate) fn parse_args(
                 bail!("Open one file or folder per CLI invocation; several log files open together")
             }
         }
+    }
+    if !opts.restart_windows.is_empty() {
+        if positional.is_some()
+            || explicit_reader
+            || opts.link.is_some()
+            || opts.brain_endpoint.is_some()
+            || opts.managed_workspace
+        {
+            bail!("Update window restoration cannot be combined with another launch target");
+        }
+        opts.vault = None;
     }
     #[cfg(not(all(unix, feature = "brain")))]
     if opts.brain_endpoint.is_some() || opts.managed_workspace {
@@ -1293,7 +1323,7 @@ fn focus_existing(opts: &super::Opts, cx: &mut App) -> bool {
     true
 }
 
-fn create_window(
+pub(crate) fn create_window(
     opts: super::Opts,
     shared: Option<super::reader_session::Shared>,
     duplicate_options: Option<WindowOptions>,
@@ -1781,7 +1811,7 @@ fn open_error_text(error: &anyhow::Error) -> String {
     }
 }
 
-fn show_error(error: anyhow::Error, cx: &mut App) {
+pub(crate) fn show_error(error: anyhow::Error, cx: &mut App) {
     eprintln!("Cannot open document: {error:#}");
     let message = open_error_text(&error);
     let (options, frame_key) = super::window_state::prepare(window_options(cx), "open-error", cx);
@@ -3401,9 +3431,10 @@ mod entry_tests {
         recorded.sort();
         assert_eq!(recorded, expected, "the recorded set lists Amber twice");
         cx.update(|cx| {
-            assert!(
-                update_restart_args(cx).unwrap().is_empty(),
-                "update restart restores the recorded set"
+            assert_eq!(
+                super::super::reader_update_restart::capture(cx).len(),
+                3,
+                "update restart includes both windows of the same vault"
             );
             super::super::reader_ui_state::set_vault_open("ask", cx);
             super::super::reader_ui_state::flush(cx);
@@ -4540,113 +4571,8 @@ pub(crate) fn reader_locations(cx: &App) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// Reopen the actual current document, not the process's original CLI target.
+/// Reopen every live window, including quick viewers, from its current target.
 #[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn update_restart_args(cx: &App) -> anyhow::Result<Vec<std::ffi::OsString>> {
-    let readers: Vec<_> = cx
-        .try_global::<Readers>()
-        .into_iter()
-        .flat_map(|readers| readers.0.iter())
-        .filter_map(|(reader, _)| reader.upgrade())
-        .collect();
-    if readers.len() > 1 {
-        // Several vault windows reopen from the recorded set (#1325); a quick
-        // viewer of one file is not part of it.
-        anyhow::ensure!(
-            readers.iter().all(|reader| !reader.read(cx).single_file),
-            "Close other Okilum document windows before restarting to update."
-        );
-        return Ok(vec![]);
-    }
-    let Some(reader) = readers.first() else {
-        return Ok(vec![]);
-    };
-    let reader = reader.read(cx);
-    if reader.single_file {
-        Ok(vec![
-            "--".into(),
-            reader
-                .vault_root
-                .join(reader.selected_file())
-                .into_os_string(),
-        ])
-    } else {
-        Ok(vec![
-            "--vault".into(),
-            reader.vault_root.clone().into_os_string(),
-            "--note".into(),
-            reader.current_rel.clone().into(),
-        ])
-    }
-}
-
-#[cfg(test)]
-mod update_restart_tests {
-    use super::*;
-    use ::core::prelude::v1::test;
-    #[cfg(test)]
-    #[gpui::test]
-    fn update_restart_without_document_does_not_reuse_old_cli(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| assert!(update_restart_args(cx).unwrap().is_empty()));
-    }
-
-    #[cfg(test)]
-    #[gpui::test]
-    fn update_restart_tracks_current_note_and_leaves_several_vaults_to_the_recorded_set(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("vault");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("A.md"), "# A").unwrap();
-        std::fs::write(root.join("Б.md"), "# B").unwrap();
-        cx.update(|cx| {
-            crate::test_init(cx);
-            install(cx);
-            cx.set_global(crate::reader_history::TestSessionDirectory(
-                temp.path().join("state"),
-            ));
-            open_window(
-                crate::Opts {
-                    vault: Some(root.clone()),
-                    note: Some("Б.md".into()),
-                    ..Default::default()
-                },
-                cx,
-            )
-            .unwrap();
-        });
-        cx.run_until_parked();
-        cx.update(|cx| {
-            let args = update_restart_args(cx).unwrap();
-            assert_eq!(
-                args,
-                vec![
-                    std::ffi::OsString::from("--vault"),
-                    root.clone().into_os_string(),
-                    "--note".into(),
-                    "Б.md".into()
-                ]
-            );
-            let second = temp.path().join("other-vault");
-            std::fs::create_dir(&second).unwrap();
-            std::fs::write(second.join("Other.md"), "# Other").unwrap();
-            open_window(
-                crate::Opts {
-                    vault: Some(second),
-                    ..Default::default()
-                },
-                cx,
-            )
-            .unwrap();
-        });
-        cx.run_until_parked();
-        // Two vault windows: no arguments, so startup reopens both (#1325).
-        cx.update(|cx| {
-            assert_eq!(
-                update_restart_args(cx).unwrap(),
-                Vec::<std::ffi::OsString>::new()
-            );
-        });
-    }
+    Ok(super::reader_update_restart::arguments(cx))
 }

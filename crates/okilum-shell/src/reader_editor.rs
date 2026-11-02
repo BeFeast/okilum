@@ -3306,9 +3306,8 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
     #[gpui::test]
-    fn appimage_restart_refuses_unprotected_editor_then_preserves_latest_draft(
+    fn update_restart_refuses_unprotected_single_file_then_preserves_latest_draft(
         cx: &mut TestAppContext,
     ) {
         let temp = tempfile::tempdir().unwrap();
@@ -3319,6 +3318,7 @@ mod tests {
         cx.update(|cx| {
             crate::test_init(cx);
             bind_keys(cx);
+            reader_open::install(cx);
         });
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
@@ -3326,6 +3326,7 @@ mod tests {
                 Reader::new(
                     Opts {
                         vault: Some(root.clone()),
+                        single_file: true,
                         note: Some("note.md".into()),
                         index_dir: Some(temp.path().join("index")),
                         session_directory: Some(state.clone()),
@@ -3371,7 +3372,7 @@ mod tests {
                 DRAFT_WRITE_NOTICE
             );
         });
-        visual.update(|_, cx| assert!(crate::updater::appimage::prepare_restart(cx).is_err()));
+        visual.update(|_, cx| assert!(crate::reader_update_restart::prepare(cx).is_err()));
         reader.read_with(visual, |r, cx| {
             assert_eq!(
                 r.link_notice.as_ref().unwrap().to_string(),
@@ -3387,7 +3388,20 @@ mod tests {
             "original"
         );
         std::fs::remove_dir(&journal).unwrap();
-        visual.update(|_, cx| assert!(crate::updater::appimage::prepare_restart(cx).is_ok()));
+        visual.update(|_, cx| {
+            let args = crate::reader_update_restart::prepare(cx).unwrap();
+            let reader_open::Command::Launch(opts) =
+                reader_open::parse_args(args, Opts::default()).unwrap()
+            else {
+                panic!("restart must launch the reader");
+            };
+            assert_eq!(
+                opts.restart_windows,
+                vec![crate::reader_update_restart::Window::File {
+                    path: root.join("note.md")
+                }]
+            );
+        });
         assert_eq!(
             std::fs::read_to_string(root.join("note.md")).unwrap(),
             "latest draft"
@@ -3486,6 +3500,8 @@ mod tests {
         cx.update(|cx| {
             crate::test_init(cx);
             bind_keys(cx);
+            reader_open::install(cx);
+            cx.set_global(reader_history::TestSessionDirectory(state.clone()));
             reader_recovery::install(&state, None, cx);
         });
         let mut reader = None;
@@ -3494,6 +3510,7 @@ mod tests {
                 Reader::new(
                     Opts {
                         vault: Some(root.clone()),
+                        single_file: true,
                         open_path: Some(root.join("note.md")),
                         index_dir: Some(temp.path().join("index")),
                         session_directory: Some(state.clone()),
@@ -3534,6 +3551,12 @@ mod tests {
             )
             .unwrap();
         });
+        assert_eq!(
+            crate::reader_update_restart::take(&state).unwrap(),
+            vec![crate::reader_update_restart::Window::File {
+                path: root.join("note.md")
+            }]
+        );
         assert!(committed.get());
         assert!(!refused.get());
         let drafts = state.join("editor-drafts");
