@@ -246,12 +246,17 @@ impl BrainView {
             input,
             request,
         } = job;
+        let previous = self
+            .source_projection
+            .accepted
+            .as_ref()
+            .map(|(_, p)| p.clone());
         self.source_projection.foreground = Some(cx.spawn_in(window, {
             let module_access =
                 crate::reader_features::access(crate::reader_features::Feature::SecondBrain, cx);
             async move |this, cx| {
                 okilum_t3::scope_network(module_access, async move {
-                    // Only immutable owned input/request cross to the worker. The Rc
+                    // Only owned snapshots/providers cross to the worker. The Rc
                     // marker, guard, native entity and UI context stay foreground.
                     let produced = cx
                         .background_executor()
@@ -259,12 +264,20 @@ impl BrainView {
                             #[cfg(test)]
                             {
                                 okilum_core::open_diagnostics::capture(|| {
-                                    CachedProvider::classify_navigation(request, input)
+                                    CachedProvider::classify_navigation_reusing(
+                                        request,
+                                        input,
+                                        previous.as_deref(),
+                                    )
                                 })
                             }
                             #[cfg(not(test))]
                             {
-                                CachedProvider::classify_navigation(request, input)
+                                CachedProvider::classify_navigation_reusing(
+                                    request,
+                                    input,
+                                    previous.as_deref(),
+                                )
                             }
                         }))
                         .await;
