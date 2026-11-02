@@ -466,7 +466,8 @@ impl CachedProvider {
         if let Some(theme) = syntax_theme {
             // Native StyleCursor accepts unsorted ranges and retains provider
             // order: later semantic colors override broad Markdown captures.
-            self.syntax.project(source, &projection, theme, &mut styles);
+            self.syntax
+                .project_retained(source, &projection, theme, &mut styles, Some(&retained));
         }
         let line_scales = heading_line_scales(&projection, retained.styles());
         let math = self.math_overlay(&projection, retained.styles(), &retained, &reveal_snapshot);

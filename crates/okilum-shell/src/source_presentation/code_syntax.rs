@@ -5,10 +5,14 @@ use gpui_base::input::HighlightStyleResolver;
 use gpui_component::highlighter::{HighlightTheme, SyntaxHighlighter};
 use gpui_component::Rope;
 
+type Captures = Vec<(Range<usize>, SharedString)>;
+
 #[derive(Default)]
 pub(super) struct CodeSyntax {
     source: Option<SourceSnapshot>,
-    spans: Vec<(Range<usize>, SharedString)>,
+    spans: Captures,
+    // Local coordinates, reusable only inside a current retained CodeBlock.
+    blocks: HashMap<Arc<str>, Option<Captures>>,
 }
 
 impl CodeSyntax {
@@ -98,12 +102,33 @@ impl CodeSyntax {
                 spans.push((clipped, name.clone()));
             }
         }
+        let mut local_blocks: HashMap<Arc<str>, Option<Captures>> = HashMap::new();
+        for block in blocks {
+            let captures: Captures = spans
+                .iter()
+                .filter(|(r, _)| block.start <= r.start && r.end <= block.end)
+                .map(|(r, name)| (r.start - block.start..r.end - block.start, name.clone()))
+                .collect();
+            let bytes: Arc<str> = source.text[block].into();
+            match local_blocks.entry(bytes) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Some(captures));
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    if entry.get().as_ref() != Some(&captures) {
+                        entry.insert(None);
+                    }
+                }
+            }
+        }
         Self {
             source: Some(source.clone()),
             spans,
+            blocks: local_blocks,
         }
     }
 
+    #[cfg(test)]
     pub(super) fn project(
         &self,
         source: &SourceSnapshot,
@@ -111,26 +136,43 @@ impl CodeSyntax {
         theme: &HighlightTheme,
         styles: &mut Vec<ProjectionStyle>,
     ) {
-        if !self
-            .source
-            .as_ref()
-            .is_some_and(|old| old.stamp == source.stamp && old.text == source.text)
-        {
-            // A pending edit must never receive token offsets from an old tree.
+        self.project_retained(source, map, theme, styles, None);
+    }
+
+    pub(super) fn project_retained(
+        &self,
+        source: &SourceSnapshot,
+        map: &impl PresentationMap,
+        theme: &HighlightTheme,
+        styles: &mut Vec<ProjectionStyle>,
+        retained: Option<&RetainedPresentation>,
+    ) {
+        let Some(old) = &self.source else {
             return;
-        }
-        for (range, name) in &self.spans {
-            if styles.len() >= source_classifier::MAX_STYLES_AND_REASONS {
-                break;
-            }
-            let Some(start) = map.map_source(range.start) else {
-                continue;
+        };
+        let exact = old.stamp == source.stamp && old.text == source.text;
+        let current = if exact {
+            None
+        } else {
+            let Some(current) = retained.filter(|r| {
+                old.stamp.document == source.stamp.document
+                    && old.stamp.generation < source.stamp.generation
+                    && r.snapshot() == &core_snapshot(source)
+            }) else {
+                return;
             };
-            let Some(end) = map.map_source(range.end) else {
-                continue;
+            Some(current)
+        };
+        let mut append = |range: Range<usize>, name: &SharedString| {
+            if styles.len() >= source_classifier::MAX_STYLES_AND_REASONS {
+                return;
+            }
+            let (Some(start), Some(end)) = (map.map_source(range.start), map.map_source(range.end))
+            else {
+                return;
             };
             let Some(style) = theme.style(name) else {
-                continue;
+                return;
             };
             if start < end {
                 styles.push(ProjectionStyle {
@@ -139,10 +181,37 @@ impl CodeSyntax {
                     color: style.color,
                     bold: style
                         .font_weight
-                        .is_some_and(|weight| weight >= gpui::FontWeight::BOLD),
+                        .is_some_and(|w| w >= gpui::FontWeight::BOLD),
                     italic: style.font_style == Some(gpui::FontStyle::Italic),
                     strikethrough: style.strikethrough.is_some(),
                 });
+            }
+        };
+        if let Some(current) = current {
+            // An old parser tree is never applied to a new source snapshot.
+            // The current retained classification proves each literal code block;
+            // only identical bytes may carry its independent local captures.
+            for block in current
+                .styles()
+                .iter()
+                .filter(|s| s.style == Style::CodeBlock)
+            {
+                let Some(bytes) = source.text.get(block.range.clone()) else {
+                    continue;
+                };
+                let Some(Some(captures)) = self.blocks.get(bytes) else {
+                    continue;
+                };
+                for (range, name) in captures {
+                    append(
+                        block.range.start + range.start..block.range.start + range.end,
+                        name,
+                    );
+                }
+            }
+        } else {
+            for (range, name) in &self.spans {
+                append(range.clone(), name);
             }
         }
     }
@@ -298,6 +367,86 @@ mod tests {
                 assert_eq!(&*projection.source().text, &*note.text);
             }
         }
+    }
+
+    #[test]
+    fn unchanged_code_captures_survive_prose_edits_but_changed_blocks_do_not() {
+        let note = source(
+            "prefix prose\n\n```rust\nfn run() {}\n```\n\nmiddle prose\n\n```rust\nfn run() {}\n```\n\nend"
+                .into(),
+        );
+        let provider = CachedProvider::classify(note.clone());
+        let theme = HighlightTheme::default_light();
+        let keyword_color = |snapshot: &SourceSnapshot, needle: &str| {
+            let at = snapshot.text.find(needle).unwrap();
+            let active = ActiveSource {
+                anchor: SourceByte(snapshot.text.len()),
+                head: SourceByte(snapshot.text.len()),
+                ..Default::default()
+            };
+            let projection = provider
+                .compose_with_syntax(snapshot, &active, None, CODE_FONT, Some(&theme))
+                .expect("retained classification supports this local edit");
+            let projected = projection
+                .to_projected(SourceByte(at), ConcealBias::Left)
+                .unwrap()
+                .0;
+            projection
+                .styles()
+                .iter()
+                .rev()
+                .filter(|s| s.range.start.0 <= projected && projected < s.range.end.0)
+                .find_map(|s| s.color)
+        };
+        let expected = keyword_color(&note, "fn");
+        assert!(
+            expected.is_some(),
+            "positive control: original Rust keyword is colored"
+        );
+        let shifted = SourceSnapshot {
+            stamp: SourceStamp {
+                generation: 2,
+                ..note.stamp
+            },
+            text: note.text.replacen("prefix", "longer prefix", 1).into(),
+        };
+        assert_eq!(
+            keyword_color(&shifted, "fn"),
+            expected,
+            "unchanged code keeps its local captures after its source offsets move"
+        );
+        let changed = SourceSnapshot {
+            stamp: SourceStamp {
+                generation: 3,
+                ..note.stamp
+            },
+            text: shifted.text.replacen("fn", "fx", 1).into(),
+        };
+        assert_eq!(
+            keyword_color(&changed, "fx"),
+            None,
+            "edited code cannot inherit stale keyword captures"
+        );
+        assert_eq!(
+            keyword_color(&changed, "fn"),
+            expected,
+            "the second identical block keeps independent local captures"
+        );
+        let language_changed = SourceSnapshot {
+            stamp: SourceStamp {
+                generation: 4,
+                ..note.stamp
+            },
+            text: changed
+                .text
+                .replacen("```rust\nfn", "```text\nfn", 1)
+                .into(),
+        };
+        assert_eq!(
+            keyword_color(&language_changed, "fn"),
+            None,
+            "identical code under a different language cannot inherit captures"
+        );
     }
 
     #[test]
