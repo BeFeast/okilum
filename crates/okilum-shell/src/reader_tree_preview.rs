@@ -1,9 +1,15 @@
 //! Tree-owned file preview. Ordinary activation retains its separate navigation behavior.
 use super::*;
 
+#[cfg(any(not(target_os = "macos"), test))]
+#[path = "reader_quick_look.rs"]
+mod readonly;
+
 #[derive(Default)]
 pub(super) struct Session {
     active: bool,
+    #[cfg(any(not(target_os = "macos"), test))]
+    preview: Option<(String, Entity<readonly::Preview>)>,
     #[cfg(all(target_os = "macos", not(test)))]
     panel: Option<native::Panel>,
 }
@@ -29,6 +35,10 @@ impl Session {
     }
     pub(super) fn close(&mut self) {
         self.active = false;
+        #[cfg(any(not(target_os = "macos"), test))]
+        {
+            self.preview = None;
+        }
         #[cfg(all(target_os = "macos", not(test)))]
         {
             self.panel = None;
@@ -36,6 +46,25 @@ impl Session {
     }
 }
 impl Reader {
+    /// Read-only center surface; the document, editor and navigation stay owned
+    /// by their existing controllers. macOS retains its native Quick Look panel.
+    pub(super) fn render_tree_quick_look(&self) -> Option<AnyElement> {
+        #[cfg(any(not(target_os = "macos"), test))]
+        {
+            self.tree_preview.preview.as_ref().map(|(_, preview)| {
+                div()
+                    .size_full()
+                    .min_h_0()
+                    .child(preview.clone())
+                    .into_any_element()
+            })
+        }
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            None
+        }
+    }
+
     pub(super) fn toggle_tree_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let attachment = self
             .tree
@@ -67,20 +96,25 @@ impl Reader {
             self.tree_preview.close();
             return;
         }
-        let result = reader_files::checked_path(&self.vault_root, &row.path)
-            .and_then(|path| self.tree_preview.show(&path));
+        let result = reader_files::checked_path(&self.vault_root, &row.path).and_then(|path| {
+            anyhow::ensure!(path.is_file(), "Choose a file to preview");
+            #[cfg(all(target_os = "macos", not(test)))]
+            self.tree_preview.show(&path)?;
+            #[cfg(any(not(target_os = "macos"), test))]
+            {
+                let root = self.vault_root.clone();
+                let rel = row.path.clone();
+                let preview = cx.new(|cx| readonly::Preview::new(root, rel, path, window, cx));
+                self.tree_preview.preview = Some((row.path.clone(), preview));
+                self.tree_preview.active = true;
+            }
+            Ok(())
+        });
         if let Err(error) = result {
             self.tree_preview.close();
             eprintln!("Cannot preview file {}: {error:#}", row.path);
             reader_toast::error(reader_files::preview_error_text(&error), window, cx);
             return;
-        }
-        #[cfg(any(not(target_os = "macos"), test))]
-        {
-            self.preview_file(&row.path, window, cx);
-            if self.file_preview.as_ref().is_none_or(|p| p.rel != row.path) {
-                self.tree_preview.close();
-            }
         }
         // In compact windows this is a browsing session, not a document activation.
         self.tree_focus.focus(window, cx);
@@ -172,11 +206,15 @@ mod tests {
             r.tree_focus.focus(window, cx);
         });
         visual.run_until_parked();
+        let history = reader.read_with(visual, |r, _| r.navigation.history.clone());
         visual.simulate_keystrokes("space");
         visual.run_until_parked();
         reader.update_in(visual, |r, window, _| {
+            assert_eq!(r.navigation.history, history);
+            assert_eq!(r.current_rel, "Start.md");
+            assert!(r.file_preview.is_none());
             assert!(r.tree_preview.is_open());
-            assert_eq!(r.file_preview.as_ref().unwrap().rel, "Alpha.bin");
+            assert_eq!(r.tree_preview.preview.as_ref().unwrap().0, "Alpha.bin");
             assert!(r.tree_focus.is_focused(window));
             assert!(r.panels.visible(
                 reader_layout::Panel::Notes,
@@ -187,24 +225,21 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, window, _| {
             assert_eq!(r.tree.cursor.as_deref(), Some("Beta.bin"));
-            assert_eq!(r.file_preview.as_ref().unwrap().rel, "Beta.bin");
+            assert_eq!(r.tree_preview.preview.as_ref().unwrap().0, "Beta.bin");
             assert!(r.tree_focus.is_focused(window));
         });
         visual.simulate_keystrokes("up");
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
-            assert_eq!(r.file_preview.as_ref().unwrap().rel, "Alpha.bin")
+            assert_eq!(r.tree_preview.preview.as_ref().unwrap().0, "Alpha.bin")
         });
         visual.simulate_keystrokes("space down");
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(!r.tree_preview.is_open());
             assert_eq!(r.tree.cursor.as_deref(), Some("Beta.bin"));
-            assert_eq!(
-                r.file_preview.as_ref().unwrap().rel,
-                "Alpha.bin",
-                "closed preview must not follow"
-            );
+            assert!(r.tree_preview.preview.is_none());
+            assert!(r.file_preview.is_none(), "preview must not navigate");
         });
         visual.simulate_keystrokes("space escape");
         visual.run_until_parked();
