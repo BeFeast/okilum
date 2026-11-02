@@ -22,8 +22,8 @@ impl Pair {
                 .context("set pinned Syncthing 2.1.6 binary")?,
         )
         .canonicalize()?;
-        let (source, prepared) = Peer::managed(root.path(), "managed-source", binary.clone())?;
-        let (target, _) = Peer::managed(root.path(), "managed-target", binary)?;
+        let (source, prepared) = Peer::managed_lan(root.path(), "managed-source", binary.clone())?;
+        let (target, _) = Peer::managed_lan(root.path(), "managed-target", binary)?;
         assert_eq!(source.api.version()?["version"], "v2.1.6");
         assert_eq!(target.api.version()?["version"], "v2.1.6");
         let source_state = root.path().join("source-controller");
@@ -43,13 +43,6 @@ impl Pair {
         let approved = second.refresh()?;
         assert!(approved.catalog.is_empty());
         let peer = approved.peers[0].id;
-        // Fixture-only loopback routing replaces LAN discovery, never folder enrollment.
-        source.api.add_device(
-            &json!({"deviceID":target.id,"name":"Target fixture","addresses":[format!("tcp://{}",target.listen)]}),
-        )?;
-        target.api.add_device(
-            &json!({"deviceID":source.id,"name":"Source fixture","addresses":[format!("tcp://{}",source.listen)]}),
-        )?;
         Ok(Self {
             _root: root,
             source,
@@ -315,5 +308,165 @@ fn managed_source_nonempty_destination_refused_without_writes() -> Result<()> {
     assert_eq!(hashes(&pair.target.vault, &["local.md"])?, target_bytes);
     assert_eq!(fs::read_dir(&pair.target.vault)?.count(), 1);
     assert!(!pair.second.snapshot()?.preparing);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_peer_addresses_without_discovery_negative_then_hashes_and_restart() -> Result<()> {
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+    let root = tempfile::tempdir()?;
+    let binary = PathBuf::from(
+        std::env::var_os("OKILUM_SYNC_DIRECT_CLIENT")
+            .context("set pinned Syncthing 2.1.6 binary")?,
+    )
+    .canonicalize()?;
+    let (mut source, source_prepared) =
+        Peer::managed_lan(root.path(), "address-source", binary.clone())?;
+    let (target, target_prepared) = Peer::managed_lan(root.path(), "address-target", binary)?;
+    let first = Controller::open(
+        root.path().join("source-controller"),
+        vec![source.home.join("config.xml")],
+    )?;
+    let second = Controller::open(
+        root.path().join("target-controller"),
+        vec![target.home.join("config.xml")],
+    )?;
+    let content = b"explicit authenticated addresses carry these original bytes";
+    fs::write(source.vault.join("address-proof.md"), content)?;
+    first.share_vault(&source_prepared, &source.vault)?;
+    for runtime in [&source, &target] {
+        let options = runtime.api.config()?["options"].clone();
+        for key in [
+            "localAnnounceEnabled",
+            "globalAnnounceEnabled",
+            "relaysEnabled",
+            "natEnabled",
+        ] {
+            assert_eq!(options[key], false, "fixture permits fallback: {key}");
+        }
+    }
+    // Simulate the legacy channel: temporarily hide only the fixture's managed
+    // receipts so no transport hints are advertised/applied. Daemons, identities,
+    // trust, folders and the authenticated pairing path are otherwise identical.
+    for prepared in [&source_prepared, &target_prepared] {
+        fs::rename(
+            prepared.join("prepared.json"),
+            prepared.join("held-prepared.json"),
+        )?;
+    }
+    let url = first
+        .begin_pairing_at("Desktop", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
+        .offer_url
+        .unwrap();
+    second.redeem(&url, "Laptop")?;
+    first.approve(first.snapshot()?.pending.unwrap().request_id)?;
+    let peer = second.refresh()?.peers[0].id;
+    let id = second.catalog(peer)?[0].id.clone();
+    second.attach(peer, &id, &target.vault)?;
+    let connected = || -> Result<bool> {
+        Ok(
+            source.api.connections()?["connections"][&target.id]["connected"] == true
+                || target.api.connections()?["connections"][&source.id]["connected"] == true,
+        )
+    };
+    let negative = Instant::now();
+    while negative.elapsed() < Duration::from_secs(5) {
+        assert!(
+            !connected()?,
+            "negative control connected without discovery or hints"
+        );
+        assert!(
+            !target.vault.join("address-proof.md").exists(),
+            "negative observer accepted file arrival"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+    for (runtime, remote) in [(&source, &target), (&target, &source)] {
+        assert_eq!(
+            runtime.api.device(&remote.id)?["addresses"],
+            json!(["dynamic"])
+        );
+    }
+    for prepared in [&source_prepared, &target_prepared] {
+        fs::rename(
+            prepared.join("held-prepared.json"),
+            prepared.join("prepared.json"),
+        )?;
+    }
+    // Positive control: the very same catalog call exchanges both directions.
+    // No fixture REST device-address override is allowed on this success path.
+    let before_source_folder = source.api.folder(&id)?;
+    let before_target_folder = target.api.folder(&id)?;
+    let mut before_source_device = source.api.device(&target.id)?;
+    let mut before_target_device = target.api.device(&source.id)?;
+    second.catalog(peer)?;
+    let mut after_source_device = source.api.device(&target.id)?;
+    let mut after_target_device = target.api.device(&source.id)?;
+    for value in [
+        &mut before_source_device,
+        &mut before_target_device,
+        &mut after_source_device,
+        &mut after_target_device,
+    ] {
+        value.as_object_mut().unwrap().remove("addresses");
+    }
+    assert_eq!(
+        before_source_device, after_source_device,
+        "address exchange changed device trust/settings"
+    );
+    assert_eq!(
+        before_target_device, after_target_device,
+        "address exchange changed device trust/settings"
+    );
+    assert_eq!(source.api.folder(&id)?, before_source_folder);
+    assert_eq!(target.api.folder(&id)?, before_target_folder);
+    for (runtime, remote) in [(&source, &target), (&target, &source)] {
+        let addresses = runtime.api.device(&remote.id)?["addresses"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(addresses.contains(&json!("dynamic")));
+        assert!(
+            addresses
+                .iter()
+                .any(|a| a.as_str().is_some_and(|s| s.starts_with("tcp://")
+                    && s.ends_with(&format!(":{}", remote.listen.port())))),
+            "no explicit dial address: {addresses:?}"
+        );
+    }
+    wait(
+        "exchanged explicit addresses connect and deliver hash",
+        || {
+            source.api.scan(&id)?;
+            target.api.scan(&id)?;
+            second.refresh()?;
+            Ok(connected()? && same_hash(&target.vault, "address-proof.md", content))
+        },
+    )?;
+    let before = source.api.identity()?["connectionServiceStatus"].clone();
+    source.stop()?;
+    source.start()?;
+    wait("managed listener comes back on the same port", || {
+        Ok(source.api.identity()?["connectionServiceStatus"] == before)
+    })?;
+    second.catalog(peer)?;
+    fs::write(
+        source.vault.join("after-restart.md"),
+        b"stable port after restart",
+    )?;
+    wait("stable managed port reconnects after restart", || {
+        source.api.scan(&id)?;
+        target.api.scan(&id)?;
+        second.refresh()?;
+        Ok(same_hash(
+            &target.vault,
+            "after-restart.md",
+            b"stable port after restart",
+        ))
+    })?;
     Ok(())
 }

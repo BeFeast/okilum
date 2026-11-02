@@ -1,5 +1,6 @@
 //! LAN-first computer pairing, independent of service enrollment and Syncthing
 //! lifecycle. Opening this controller does not listen or start a daemon.
+mod addresses;
 mod existing;
 #[cfg(target_os = "linux")]
 mod source;
@@ -117,6 +118,8 @@ struct Paired {
     allowed: Vec<String>,
     #[serde(default)]
     syncthing_device: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    addresses: Vec<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -149,6 +152,7 @@ struct Shared {
     access: okilum_sync::NetworkAccess,
     observation_generation: Uuid,
     transfer_lock: Mutex<()>,
+    connection_watch: Mutex<addresses::ConnectionWatch>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
     _lock: std::fs::File,
 }
@@ -185,12 +189,16 @@ struct Message {
     nonce: Uuid,
     target: Vec<u8>,
     operation: Operation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport: Option<addresses::Transport>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Response {
     nonce: Uuid,
     result: Reply,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transport: Option<addresses::Transport>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
@@ -240,6 +248,7 @@ impl Controller {
                 access: okilum_sync::NetworkAccess::current(),
                 observation_generation: Uuid::new_v4(),
                 transfer_lock: Mutex::new(()),
+                connection_watch: Mutex::new(Default::default()),
                 _lock,
             }),
         })
@@ -259,7 +268,11 @@ impl Controller {
     }
     pub fn set_configurations(&self, configs: Vec<PathBuf>) -> Result<()> {
         self.check()?;
-        *self.shared.configs.lock().unwrap() = configs;
+        let mut current = self.shared.configs.lock().unwrap();
+        if *current != configs {
+            *current = configs;
+            *self.shared.connection_watch.lock().unwrap() = Default::default();
+        }
         Ok(())
     }
     /// Nonblocking capability revocation. It closes the application listener and
@@ -272,7 +285,16 @@ impl Controller {
     }
     pub fn snapshot(&self) -> Result<Snapshot> {
         self.check()?;
-        snapshot(&self.shared.db.lock().unwrap())
+        let db = self.shared.db.lock().unwrap();
+        let mut snapshot = snapshot(&db)?;
+        let held = db.transfers.iter().any(transfer::Transfer::legacy_hold);
+        drop(db);
+        if !held && snapshot.pending.is_none() && snapshot.offer_url.is_none() {
+            if let Some(status) = &self.shared.connection_watch.lock().unwrap().status {
+                snapshot.status = status.clone();
+            }
+        }
+        Ok(snapshot)
     }
     pub fn attach_existing(
         &self,
@@ -515,7 +537,9 @@ impl Controller {
                 _ => anyhow::bail!("unexpected pairing response"),
             }
         }
+        self.reconcile_peer_addresses()?;
         self.reconcile_transfers()?;
+        self.refresh_connection_status()?;
         self.refresh_attached()?;
         self.snapshot()
     }
@@ -547,6 +571,7 @@ impl Controller {
             },
             public: request.public,
             syncthing_device: request.syncthing_device,
+            addresses: vec![],
             key: wire::random()?,
             endpoint: invitation.offer.endpoint,
             allowed: db.attached.iter().map(|v| v.folder_id.clone()).collect(),
@@ -626,16 +651,35 @@ impl Controller {
             nonce: Uuid::new_v4(),
             target: public.to_vec(),
             operation,
+            transport: self.local_transport()?,
         };
         let frame = wire::seal(scope, credential, &seed, &message)?;
-        let mut stream = wire::connect(endpoint)?;
+        let mut stream = wire::connect(endpoint).with_context(|| format!(
+            "Not connected to the other computer at {endpoint}. Its firewall may block incoming connections. Open TCP port {} on that computer, or keep both computers on the same network.", endpoint.port()
+        ))?;
         self.check()?;
         wire::write(&mut stream, &frame)?;
         let response = wire::read(&mut stream)?;
         let (response, _): (Response, _) = wire::open(response, credential, Some(public))?;
         ensure!(response.nonce == message.nonce, "stale pairing response");
         self.check()?;
-        Ok(response.result)
+        let mut reply = response.result;
+        if let Some(transport) = response.transport {
+            match &mut reply {
+                Reply::Approved { paired, .. } => addresses::remember(paired, &transport)?,
+                Reply::Error { .. } | Reply::Pending | Reply::Rejected => {}
+                _ => {
+                    let mut db = self.shared.db.lock().unwrap();
+                    let peer = db
+                        .peers
+                        .get_mut(&scope)
+                        .context("unknown paired computer")?;
+                    self.accept_transport(peer, &transport)?;
+                    self.save(&db)?;
+                }
+            }
+        }
+        Ok(reply)
     }
     fn serve(&self, stream: &mut std::net::TcpStream) -> Result<()> {
         self.check()?;
@@ -657,6 +701,24 @@ impl Controller {
             "wrong intended computer"
         );
         self.check()?;
+        // Only an approved, authenticated capability may update a pinned peer.
+        let peer_id = if db.peers.contains_key(&scope) {
+            Some(scope)
+        } else {
+            db.invitation
+                .as_ref()
+                .filter(|i| i.offer.id == scope)
+                .and_then(|i| i.approved)
+        };
+        if let (Some(id), Some(transport)) = (peer_id, &message.transport) {
+            let peer = db.peers.get_mut(&id).context("approved peer missing")?;
+            ensure!(
+                peer.syncthing_device.is_some(),
+                "Syncthing identity was not approved"
+            );
+            self.accept_transport(peer, transport)?;
+            self.save(&db)?;
+        }
         let reply = self
             .dispatch(&mut db, scope, message.operation, signer)
             .unwrap_or_else(|_| Reply::Error {
@@ -671,6 +733,11 @@ impl Controller {
             &Response {
                 nonce: message.nonce,
                 result: reply,
+                transport: if message.transport.is_some() {
+                    self.local_transport()?
+                } else {
+                    None
+                },
             },
         )?;
         wire::write(stream, &response)
@@ -719,6 +786,7 @@ impl Controller {
                         endpoint: local.endpoint,
                         allowed: vec![],
                         syncthing_device: None,
+                        addresses: vec![],
                     };
                     Ok(Reply::Approved {
                         paired: remote,
@@ -741,6 +809,7 @@ impl Controller {
                     peer.syncthing_device.as_deref() == Some(device.as_str()),
                     "Syncthing identity was not approved for this paired computer"
                 );
+                let addresses = peer.addresses.clone();
                 let source = db
                     .attached
                     .iter()
@@ -770,7 +839,7 @@ impl Controller {
                     self.save(db)?;
                 }
                 Ok(Reply::Shared {
-                    connection: transfer::share(&fresh, &device)?,
+                    connection: transfer::share(&fresh, &device, &addresses)?,
                 })
             }
             Operation::Observe { vault, device } => {
@@ -1275,6 +1344,7 @@ mod tests {
                     endpoint: offer.endpoint,
                     allowed: vec![],
                     syncthing_device: None,
+                    addresses: vec![],
                 },
                 catalog: vec![Vault {
                     id: "private".into(),
@@ -1288,6 +1358,7 @@ mod tests {
                 &Response {
                     nonce: message.nonce,
                     result: reply,
+                    transport: None,
                 },
             )?;
             wire::write(&mut stream, &response)
@@ -1458,6 +1529,7 @@ mod tests {
             nonce: Uuid::new_v4(),
             target: wire::public(&seed)?,
             operation: Operation::Catalog {},
+            transport: None,
         };
         let frame = wire::seal(id, &credential, &seed, &message)?;
         let (decoded, _): (Message, _) =

@@ -107,6 +107,16 @@ impl Syncthing {
         verify_fields(&actual, changes)?;
         Ok(actual)
     }
+    /// Update only dial addresses; trust, roles and folder membership stay intact.
+    pub fn set_device_addresses(&self, id: &str, addresses: &[String]) -> Result<()> {
+        let changes = serde_json::json!({"addresses": addresses});
+        self.request(
+            Method::PATCH,
+            &format!("/rest/config/devices/{}", segment(id)?),
+            Some(&changes),
+        )?;
+        verify_fields(&self.device(id)?, &changes)
+    }
     pub fn add_device(&self, device: &Value) -> Result<()> {
         let id = segment(device["deviceID"].as_str().context("missing device ID")?)?;
         let config = self.config()?;

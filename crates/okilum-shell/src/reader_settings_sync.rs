@@ -620,7 +620,9 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
 }
 fn user_error(error: &anyhow::Error) -> String {
     let text = error.to_string().to_lowercase();
-    if cfg!(target_os = "linux") && text.contains("ignore policy") {
+    if text.starts_with("not connected to ") {
+        error.to_string()
+    } else if cfg!(target_os = "linux") && text.contains("ignore policy") {
         "This vault’s .stignore needs review before sharing. Required exclusions: .okilum-index, .okilum-save-*, /.claude/worktrees and /worktrees. Includes and negated rules need a separately reviewed policy.".into()
     } else if cfg!(target_os = "linux") && text.contains("existing synced vault") {
         "This vault already belongs to Syncthing. Use Choose existing synced vault below.".into()
