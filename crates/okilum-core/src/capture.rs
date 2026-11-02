@@ -770,6 +770,8 @@ struct PresentationState {
     marker_revision: String,
     revision: String,
     dismissed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_revision: Option<String>,
 }
 fn presentation_hash(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -800,6 +802,7 @@ fn presentation(root: &Path, records: &Path, marker: &str) -> Result<Presentatio
         marker_revision: marker_revision.clone(),
         revision: marker_revision,
         dismissed: true,
+        previous_revision: None,
     })
 }
 fn presentation_token(root: &Path, records: &Path, marker: &str) -> Result<PresentationRevision> {
@@ -841,6 +844,7 @@ fn set_presentation(
     let state = PresentationState {
         revision: uuid::Uuid::new_v4().to_string(),
         dismissed,
+        previous_revision: Some(current.revision.clone()),
         ..current
     };
     // Append immutable decision history before atomically replacing its head.
@@ -919,6 +923,337 @@ pub fn reopen_dismissed(
         "Dismissal decision changed since inspection; refresh before reopening"
     );
     set_presentation(root, records, &revision.marker, false, Some(revision))
+}
+
+const HISTORY_MAX_ENTRIES: usize = 1024;
+const HISTORY_RECORD_BYTES: usize = 8 * 1024 * 1024;
+const HISTORY_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresentationHistoryStatus {
+    Dismissed,
+    Reopened,
+    Held,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresentationHistoryRelation {
+    Current,
+    Previous,
+    UnlinkedHeld,
+}
+#[derive(Clone, Debug)]
+pub struct PresentationHistoryEvent {
+    pub revision: String,
+    pub status: PresentationHistoryStatus,
+    pub relation: PresentationHistoryRelation,
+    pub previous_revision: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PresentationHistoryRevision {
+    root: PathBuf,
+    marker: String,
+    digest: String,
+}
+#[derive(Clone, Debug)]
+pub struct PresentationTimeline {
+    pub marker: String,
+    pub marker_revision: String,
+    pub current_revision: Option<String>,
+    pub current: PresentationHistoryStatus,
+    /// Verified head -> predecessor order only. Unlinked records follow with
+    /// UnlinkedHeld; their lexical display order is NEVER a chronology claim.
+    pub events: Vec<PresentationHistoryEvent>,
+    pub held: Vec<String>,
+    pub revision: PresentationHistoryRevision,
+}
+#[derive(Clone, Debug)]
+pub struct PresentationHistory {
+    pub sources: Vec<PresentationTimeline>,
+    pub held: Vec<String>,
+    pub complete: bool,
+}
+
+/// Bounded read-only projection over immutable marker/events and exact head.
+/// No timestamps, UUID sort order, or orphan events are used to infer commits.
+/// Legacy unlinked histories remain held; this function never repairs them.
+pub fn inspect_presentation_history(root: &Path, records: &Path) -> Result<PresentationHistory> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let root = root.canonicalize()?;
+    let mut result = PresentationHistory {
+        sources: Vec::new(),
+        held: Vec::new(),
+        complete: true,
+    };
+    let entries = match std::fs::read_dir(records) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(result),
+        Err(error) => return Err(error.into()),
+    };
+    let mut files = BTreeMap::new();
+    let mut encountered = BTreeSet::new();
+    let mut budget = HISTORY_TOTAL_BYTES;
+    for (index, entry) in entries.enumerate() {
+        if index >= HISTORY_MAX_ENTRIES {
+            result.held.push(
+                "History entry bound reached; refresh or inspect retained records externally"
+                    .into(),
+            );
+            break;
+        }
+        let name = entry?.file_name();
+        let Some(name) = name.to_str() else {
+            result.held.push("Unidentifiable history entry".into());
+            continue;
+        };
+        if !name.ends_with(".superseded.json")
+            && !name.ends_with(".superseded.json.presentation.json")
+            && !name.ends_with(".presentation-event.json")
+        {
+            continue;
+        }
+        encountered.insert(name.to_owned());
+        if budget <= 1 {
+            result
+                .held
+                .push("History byte bound reached; projection is incomplete".into());
+            break;
+        }
+        let limit = HISTORY_RECORD_BYTES.min(budget - 1);
+        match attachments::read_bytes(&records.join(name), limit) {
+            Ok(Some(bytes)) => {
+                budget -= bytes.len();
+                files.insert(name.to_owned(), bytes);
+            }
+            Ok(None) => result
+                .held
+                .push(format!("History entry disappeared: {name}")),
+            Err(error) => {
+                budget = budget.saturating_sub(limit + 1);
+                result.held.push(format!("Held {name}: {error:#}"));
+            }
+        }
+    }
+    let mut events = BTreeMap::<String, Vec<(String, PresentationState)>>::new();
+    for (name, bytes) in &files {
+        if !name.ends_with(".presentation-event.json") {
+            continue;
+        }
+        let state = match serde_json::from_slice::<PresentationState>(bytes) {
+            Ok(state) => state,
+            Err(error) => {
+                result
+                    .held
+                    .push(format!("Corrupt history event {name}: {error}"));
+                continue;
+            }
+        };
+        if state.root != root
+            || !uuid::Uuid::parse_str(&state.revision)
+                .is_ok_and(|u| u.to_string() == state.revision)
+            || state.previous_revision.as_ref().is_some_and(|previous| {
+                previous == &state.revision
+                    || (previous != &state.marker_revision
+                        && !uuid::Uuid::parse_str(previous)
+                            .is_ok_and(|u| u.to_string() == *previous))
+            })
+            || name != &format!("{}.presentation-event.json", state.revision)
+        {
+            result
+                .held
+                .push(format!("History event scope/identity mismatch: {name}"));
+            continue;
+        }
+        events
+            .entry(state.marker_revision.clone())
+            .or_default()
+            .push((name.clone(), state));
+    }
+    let mut known_markers = BTreeSet::new();
+    for (name, bytes) in &files {
+        if !name.ends_with(".superseded.json") {
+            continue;
+        }
+        let marker_hash = presentation_hash(bytes);
+        let value: serde_json::Value = match serde_json::from_slice(bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                result.held.push(format!("Corrupt marker {name}: {error}"));
+                continue;
+            }
+        };
+        let (bound, identity) = if name.ends_with(".attachments.superseded.json") {
+            (
+                value.get("root"),
+                value.get("source_composer_id").and_then(|v| v.as_str()),
+            )
+        } else {
+            (
+                value.pointer("/origin/root"),
+                value
+                    .pointer("/origin/source/capture/receipt/operation_id")
+                    .and_then(|v| v.as_str()),
+            )
+        };
+        let valid = bound
+            .and_then(|v| serde_json::from_value::<PathBuf>(v.clone()).ok())
+            .is_some_and(|p| p == root)
+            && identity.is_some_and(|id| {
+                uuid::Uuid::parse_str(id).is_ok_and(|u| u.to_string() == id)
+                    && (name == &format!("{id}.superseded.json")
+                        || name == &format!("{id}.attachments.superseded.json"))
+            });
+        if !valid {
+            result
+                .held
+                .push(format!("Marker scope/identity held: {name}"));
+            continue;
+        }
+        let structurally_valid = if name.ends_with(".attachments.superseded.json") {
+            attachments::validate_history_marker(&root, bytes, name)
+        } else {
+            (|| -> Result<()> {
+                let decision: SupersededSource = serde_json::from_slice(bytes)?;
+                decision.saved.validate()?;
+                decision.origin.source.capture.validate()?;
+                anyhow::ensure!(
+                    decision.saved.text() == decision.origin.source.text()
+                        && decision.saved.path().parent() == Some(decision.origin.folder())
+                        && decision.saved.receipt.operation_id
+                            != decision.origin.source.capture.receipt.operation_id,
+                    "Inconsistent saved-source marker"
+                );
+                Ok(())
+            })()
+        };
+        if let Err(error) = structurally_valid {
+            result
+                .held
+                .push(format!("Marker structure held {name}: {error:#}"));
+            continue;
+        }
+        known_markers.insert(marker_hash.clone());
+        let source_events = events.get(&marker_hash).cloned().unwrap_or_default();
+        let by_revision: BTreeMap<_, _> = source_events
+            .iter()
+            .map(|(_, state)| (state.revision.clone(), state.clone()))
+            .collect();
+        let head_name = format!("{name}.presentation.json");
+        let mut held = Vec::new();
+        let mut current = PresentationHistoryStatus::Held;
+        let mut current_revision = None;
+        let mut rows = Vec::new();
+        let mut seen = BTreeSet::new();
+        if let Some(head_bytes) = files.get(&head_name) {
+            match serde_json::from_slice::<PresentationState>(head_bytes) {
+                Ok(head) if head.root == root && head.marker_revision == marker_hash && by_revision.get(&head.revision) == Some(&head) => {
+                    current = if head.dismissed { PresentationHistoryStatus::Dismissed } else { PresentationHistoryStatus::Reopened };
+                    current_revision = Some(head.revision.clone());
+                    let mut next = Some(head.revision.clone());
+                    while let Some(revision) = next {
+                        if revision == marker_hash { break; }
+                        if !seen.insert(revision.clone()) { held.push("History predecessor cycle; chronology held".into()); break; }
+                        let Some(state) = by_revision.get(&revision) else { held.push(format!("Missing predecessor {revision}; chronology held")); break };
+                        rows.push(PresentationHistoryEvent { revision: revision.clone(), status: if state.dismissed { PresentationHistoryStatus::Dismissed } else { PresentationHistoryStatus::Reopened }, relation: if revision == head.revision { PresentationHistoryRelation::Current } else { PresentationHistoryRelation::Previous }, previous_revision: state.previous_revision.clone() });
+                        if state.previous_revision.is_none() { held.push(format!("Legacy event {revision} has no predecessor; earlier chronology is unproven")); }
+                        next = state.previous_revision.clone();
+                    }
+                }
+                _ => held.push("Head is corrupt, mismatched, or lacks its exact immutable event; current decision held".into()),
+            }
+        } else if source_events.is_empty()
+            && !encountered.contains(&head_name)
+            && result.held.is_empty()
+        {
+            current = PresentationHistoryStatus::Dismissed;
+            current_revision = Some(marker_hash.clone());
+        } else {
+            held.push(
+                "Head is absent/unreadable or history is incomplete; current decision held".into(),
+            );
+        }
+        for (_, state) in &source_events {
+            if !seen.contains(&state.revision) {
+                rows.push(PresentationHistoryEvent {
+                    revision: state.revision.clone(),
+                    status: if state.dismissed {
+                        PresentationHistoryStatus::Dismissed
+                    } else {
+                        PresentationHistoryStatus::Reopened
+                    },
+                    relation: PresentationHistoryRelation::UnlinkedHeld,
+                    previous_revision: state.previous_revision.clone(),
+                });
+                held.push(format!(
+                    "Unlinked event {}; historical vs unpublished status is unproven",
+                    state.revision
+                ));
+            }
+        }
+        let mut revision_material = vec![(name.clone(), marker_hash.clone())];
+        if let Some(head) = files.get(&head_name) {
+            revision_material.push((head_name.clone(), presentation_hash(head)));
+        }
+        for (event_name, _) in &source_events {
+            revision_material.push((event_name.clone(), presentation_hash(&files[event_name])));
+        }
+        let projection_digest = presentation_hash(&serde_json::to_vec(&revision_material)?);
+        result.sources.push(PresentationTimeline {
+            marker: name.clone(),
+            marker_revision: marker_hash,
+            current_revision,
+            current,
+            events: rows,
+            held,
+            revision: PresentationHistoryRevision {
+                root: root.clone(),
+                marker: name.clone(),
+                digest: projection_digest,
+            },
+        });
+    }
+    for (marker, unbound) in events {
+        if !known_markers.contains(&marker) {
+            for (name, _) in unbound {
+                result.held.push(format!(
+                    "Event {name} has no validated marker; scope/chronology held"
+                ));
+            }
+        }
+    }
+    for name in files
+        .keys()
+        .filter(|name| name.ends_with(".superseded.json.presentation.json"))
+    {
+        if !files.contains_key(name.trim_end_matches(".presentation.json")) {
+            result
+                .held
+                .push(format!("Head {name} has no retained marker; held"));
+        }
+    }
+    result.complete =
+        result.held.is_empty() && result.sources.iter().all(|source| source.held.is_empty());
+    Ok(result)
+}
+/// Compare a read-only history projection against current immutable bytes/head.
+/// No undo/publication authority is conveyed by this token or this comparison.
+pub fn presentation_history_is_current(
+    root: &Path,
+    records: &Path,
+    revision: &PresentationHistoryRevision,
+) -> Result<bool> {
+    anyhow::ensure!(
+        root.canonicalize()? == revision.root,
+        "History projection belongs to another vault"
+    );
+    let history = inspect_presentation_history(root, records)?;
+    anyhow::ensure!(
+        history.complete,
+        "History is incomplete/held; refresh inspection"
+    );
+    Ok(history
+        .sources
+        .iter()
+        .any(|source| source.revision == *revision))
 }
 
 fn prepare_records(records: &Path) -> Result<()> {
@@ -1737,5 +2072,226 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(raw.draft, original);
+    }
+    fn history_fixture() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        PathBuf,
+        ComposerDraft,
+        String,
+    ) {
+        let vault = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let records = state.path().join("records");
+        prepare_records(&records).unwrap();
+        let original = Capture::new(Path::new(""), "history source\r\n".into()).unwrap();
+        persist_new(
+            &records,
+            &format!("{}.intent.json", original.receipt.operation_id),
+            &original,
+        )
+        .unwrap();
+        let source = load_recovery(vault.path(), &records)
+            .unwrap()
+            .unbound
+            .remove(0);
+        let copy = source
+            .preview(vault.path(), Path::new(""), &records)
+            .unwrap()
+            .start_copy()
+            .unwrap();
+        copy.publish(vault.path(), &state.path().join("drafts"), &records)
+            .unwrap();
+        dismiss_saved_copy(vault.path(), &records, &copy).unwrap();
+        let marker = superseded_name(&original.receipt.operation_id);
+        (vault, state, records, copy, marker)
+    }
+
+    #[test]
+    fn presentation_history_projects_only_linked_decisions_and_invalidates_snapshots() {
+        let (vault, _state, records, copy, marker) = history_fixture();
+        let before = std::fs::read(records.join(&marker)).unwrap();
+        let first = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert!(first.complete);
+        assert_eq!(
+            first.sources[0].current,
+            PresentationHistoryStatus::Dismissed
+        );
+        assert_eq!(first.sources[0].events.len(), 1);
+        assert_eq!(
+            first.sources[0].events[0].relation,
+            PresentationHistoryRelation::Current
+        );
+        assert!(presentation_history_is_current(
+            vault.path(),
+            &records,
+            &first.sources[0].revision
+        )
+        .unwrap());
+        let undo = inspect_dismissed(vault.path(), &records).unwrap().remove(0);
+        reopen_dismissed(vault.path(), &records, &undo.revision).unwrap();
+        assert!(!presentation_history_is_current(
+            vault.path(),
+            &records,
+            &first.sources[0].revision
+        )
+        .unwrap());
+        let second = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert!(second.complete);
+        assert_eq!(
+            second.sources[0].current,
+            PresentationHistoryStatus::Reopened
+        );
+        assert_eq!(second.sources[0].events.len(), 2);
+        dismiss_saved_copy(vault.path(), &records, &copy).unwrap();
+        let third = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert!(third.complete);
+        let rows = &third.sources[0].events;
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.status.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                PresentationHistoryStatus::Dismissed,
+                PresentationHistoryStatus::Reopened,
+                PresentationHistoryStatus::Dismissed
+            ]
+        );
+        assert_eq!(
+            rows[0].previous_revision.as_deref(),
+            Some(rows[1].revision.as_str())
+        );
+        assert_eq!(
+            rows[1].previous_revision.as_deref(),
+            Some(rows[2].revision.as_str())
+        );
+        assert_eq!(
+            rows[2].previous_revision.as_deref(),
+            Some(third.sources[0].marker_revision.as_str())
+        );
+        let head = std::fs::read(records.join(format!("{marker}.presentation.json"))).unwrap();
+        let count = std::fs::read_dir(&records).unwrap().count();
+        inspect_presentation_history(vault.path(), &records).unwrap();
+        assert_eq!(std::fs::read(records.join(&marker)).unwrap(), before);
+        assert_eq!(
+            std::fs::read(records.join(format!("{marker}.presentation.json"))).unwrap(),
+            head
+        );
+        assert_eq!(std::fs::read_dir(&records).unwrap().count(), count);
+    }
+
+    #[test]
+    fn presentation_history_holds_legacy_orphan_corrupt_and_partial_records_without_repair() {
+        let (vault, _state, records, _copy, marker) = history_fixture();
+        let head_path = records.join(format!("{marker}.presentation.json"));
+        let mut head: PresentationState = read_optional(&head_path).unwrap().unwrap();
+        let event_path = records.join(format!("{}.presentation-event.json", head.revision));
+        // Model exact delivered older events without invented predecessor data.
+        head.previous_revision = None;
+        let legacy_bytes = serde_json::to_vec(&head).unwrap();
+        std::fs::write(&head_path, &legacy_bytes).unwrap();
+        std::fs::write(&event_path, &legacy_bytes).unwrap();
+        let legacy = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert!(!legacy.complete);
+        assert_eq!(
+            legacy.sources[0].current,
+            PresentationHistoryStatus::Dismissed
+        );
+        assert!(legacy.sources[0]
+            .held
+            .iter()
+            .any(|issue| issue.contains("no predecessor")));
+        assert!(presentation_history_is_current(
+            vault.path(),
+            &records,
+            &legacy.sources[0].revision
+        )
+        .is_err());
+        let orphan = PresentationState {
+            revision: uuid::Uuid::new_v4().to_string(),
+            previous_revision: Some(head.marker_revision.clone()),
+            dismissed: false,
+            ..head.clone()
+        };
+        let orphan_name = format!("{}.presentation-event.json", orphan.revision);
+        persist_new(&records, &orphan_name, &orphan).unwrap();
+        let partial = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert_eq!(
+            partial.sources[0].current_revision.as_deref(),
+            Some(head.revision.as_str())
+        );
+        assert!(partial.sources[0]
+            .events
+            .iter()
+            .any(|row| row.revision == orphan.revision
+                && row.relation == PresentationHistoryRelation::UnlinkedHeld));
+        assert_eq!(std::fs::read(&head_path).unwrap(), legacy_bytes);
+        std::fs::write(&head_path, b"broken head").unwrap();
+        let corrupt = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert_eq!(corrupt.sources[0].current, PresentationHistoryStatus::Held);
+        assert_eq!(std::fs::read(&head_path).unwrap(), b"broken head");
+        std::fs::remove_file(&head_path).unwrap();
+        let missing = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert_eq!(missing.sources[0].current, PresentationHistoryStatus::Held);
+        assert!(!head_path.exists());
+        std::fs::remove_file(&event_path).unwrap();
+        std::fs::remove_file(records.join(&orphan_name)).unwrap();
+        let baseline = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert!(baseline.complete);
+        assert_eq!(
+            baseline.sources[0].current,
+            PresentationHistoryStatus::Dismissed
+        );
+        assert!(baseline.sources[0].events.is_empty());
+        let broken_event = format!("{}.presentation-event.json", uuid::Uuid::new_v4());
+        std::fs::write(records.join(&broken_event), b"broken event").unwrap();
+        let corrupt_event = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert!(!corrupt_event.complete);
+        assert_eq!(
+            corrupt_event.sources[0].current,
+            PresentationHistoryStatus::Held
+        );
+        assert!(corrupt_event
+            .held
+            .iter()
+            .any(|issue| issue.contains("Corrupt history event")));
+        std::fs::remove_file(records.join(broken_event)).unwrap();
+        std::fs::write(&head_path, &legacy_bytes).unwrap();
+        let missing_event = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert_eq!(
+            missing_event.sources[0].current,
+            PresentationHistoryStatus::Held
+        );
+    }
+
+    #[test]
+    fn presentation_history_bounds_are_explicit_held_results() {
+        let vault = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let records = state.path().join("records");
+        prepare_records(&records).unwrap();
+        for index in 0..=HISTORY_MAX_ENTRIES {
+            std::fs::write(records.join(format!("ignored-{index}")), b"").unwrap();
+        }
+        let history = inspect_presentation_history(vault.path(), &records).unwrap();
+        assert!(!history.complete);
+        assert!(history
+            .held
+            .iter()
+            .any(|issue| issue.contains("entry bound")));
+        let bounded = state.path().join("bounded");
+        prepare_records(&bounded).unwrap();
+        let name = format!("{}.presentation-event.json", uuid::Uuid::new_v4());
+        std::fs::write(bounded.join(&name), vec![b' '; HISTORY_RECORD_BYTES + 1]).unwrap();
+        let history = inspect_presentation_history(vault.path(), &bounded).unwrap();
+        assert!(!history.complete);
+        assert!(history
+            .held
+            .iter()
+            .any(|issue| issue.contains("exceeds bounds")));
+        assert_eq!(
+            std::fs::metadata(bounded.join(name)).unwrap().len(),
+            (HISTORY_RECORD_BYTES + 1) as u64
+        );
     }
 }

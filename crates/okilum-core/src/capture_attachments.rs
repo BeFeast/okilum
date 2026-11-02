@@ -166,7 +166,7 @@ fn validate_assets(assets: &[Asset]) -> Result<()> {
     }
     Ok(())
 }
-fn read_bytes(path: &Path, max: usize) -> Result<Option<Vec<u8>>> {
+pub(super) fn read_bytes(path: &Path, max: usize) -> Result<Option<Vec<u8>>> {
     #[cfg(unix)]
     let opened = rustix::fs::open(
         path,
@@ -1272,6 +1272,28 @@ fn source_superseded(root: &Path, records: &Path, source: &Plan) -> Result<bool>
         &format!("{}.attachments.superseded.json", source.composer_id),
     )?
     .dismissed)
+}
+
+pub(super) fn validate_history_marker(root: &Path, bytes: &[u8], name: &str) -> Result<()> {
+    let decision: SupersededAttachments = serde_json::from_slice(bytes)?;
+    ensure!(
+        decision.root == root
+            && name
+                == format!(
+                    "{}.attachments.superseded.json",
+                    decision.source_composer_id
+                ),
+        "History marker vault/identity differs"
+    );
+    decision.copy.validate(root)?;
+    ensure!(
+        decision.copy.source_composer_id() == decision.source_composer_id
+            && decision.copy.source_operation_id() == decision.source_operation_id
+            && decision.source_revision == decision.copy.review.origin.source_revision
+            && decision.receipt == decision.copy.plan.receipt(),
+        "History marker provenance differs"
+    );
+    Ok(())
 }
 
 pub(super) fn inspect_dismissed_source(
@@ -2388,6 +2410,12 @@ mod tests {
             std::fs::read(root.join(&receipt.note.path)).unwrap(),
             b"later copy edit"
         );
+        let timeline = super::super::inspect_presentation_history(&root, &records).unwrap();
+        assert!(timeline.complete);
+        assert_eq!(
+            timeline.sources[0].current,
+            super::super::PresentationHistoryStatus::Dismissed
+        );
         let inspected = super::super::inspect_dismissed(&root, &records)
             .unwrap()
             .remove(0);
@@ -2408,6 +2436,12 @@ mod tests {
             vec![original.clone()]
         );
         assert!(super::super::reopen_dismissed(&root, &records, &current.revision).is_err());
+        let timeline = super::super::inspect_presentation_history(&root, &records).unwrap();
+        assert!(timeline.complete);
+        assert_eq!(
+            timeline.sources[0].current,
+            super::super::PresentationHistoryStatus::Reopened
+        );
         assert_eq!(
             std::fs::read(records.join(plan_name(&original.id))).unwrap(),
             source_plan_bytes

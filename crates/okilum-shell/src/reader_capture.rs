@@ -16,6 +16,7 @@ pub(crate) struct CaptureComposer {
     recovered: Vec<ComposerDraft>,
     dismissed_sources: Vec<capture::DismissedRecovery>,
     dismissed_inspection: Option<usize>,
+    presentation_history: Option<capture::PresentationHistory>,
     unbound: Vec<CopySource>,
     legacy_selected: bool,
     copy_source: Option<CopySource>,
@@ -43,6 +44,7 @@ enum PreviewSource {
 enum Work {
     Recover,
     InspectDismissed,
+    InspectHistory,
     Reopen(capture::PresentationRevision),
     Dismiss(ComposerDraft),
     Preview(PreviewSource, PathBuf),
@@ -54,6 +56,7 @@ enum Work {
 enum Completed {
     Recovery(anyhow::Result<RecoveryInbox>),
     Inspected(anyhow::Result<Vec<capture::DismissedRecovery>>),
+    History(anyhow::Result<capture::PresentationHistory>),
     Reopened(anyhow::Result<RecoveryInbox>),
     Dismissed(anyhow::Result<RecoveryInbox>),
     Preview(anyhow::Result<CopyPreview>),
@@ -122,6 +125,7 @@ impl CaptureComposer {
                 let records = records.clone();
                 let completed = cx.background_executor().spawn(async move {
                     match work {
+                        Work::InspectHistory => Completed::History(capture::inspect_presentation_history(&root, &records)),
                         Work::InspectDismissed => Completed::Inspected(capture::inspect_dismissed(&root, &records)),
                         Work::Reopen(revision) => Completed::Reopened(capture::reopen_dismissed(&root, &records, &revision).and_then(|_| capture::load_recovery(&root, &records))),
                         Work::Recover => Completed::Recovery(capture::load_recovery(&root, &records)),
@@ -151,6 +155,7 @@ impl CaptureComposer {
                             }
                         }
                         Completed::Dismissed(result) => {
+                            this.presentation_history = None;
                             this.busy = false;
                             match result {
                                 Ok(inbox) => {
@@ -162,6 +167,13 @@ impl CaptureComposer {
                                 Err(error) => this.error = Some(format!("Recovery source was not dismissed: {error:#}")),
                             }
                         }
+                        Completed::History(result) => {
+                            this.busy = false;
+                            match result {
+                                Ok(history) => { this.presentation_history = Some(history); this.error = None; }
+                                Err(error) => this.error = Some(format!("Presentation history held: {error:#}")),
+                            }
+                        }
                         Completed::Inspected(result) => {
                             this.busy = false;
                             match result {
@@ -170,6 +182,7 @@ impl CaptureComposer {
                             }
                         }
                         Completed::Reopened(result) => {
+                            this.presentation_history = None;
                             this.busy = false;
                             match result {
                                 Ok(inbox) => { this.recovered = inbox.drafts; this.unbound = inbox.unbound; this.dismissed_sources.clear(); this.dismissed_inspection = None; this.error = None; }
@@ -260,6 +273,7 @@ impl CaptureComposer {
             recovered: Vec::new(),
             dismissed_sources: Vec::new(),
             dismissed_inspection: None,
+            presentation_history: None,
             unbound: Vec::new(),
             legacy_selected: false,
             copy_source: None,
@@ -514,6 +528,55 @@ impl Render for CaptureComposer {
                     this.enqueue(Work::InspectDismissed, cx);
                 })),
         );
+        view = view.child(
+            Button::new("capture-inspect-history")
+                .label("Inspect presentation history")
+                .disabled(self.busy || self.loading)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.busy = true;
+                    this.enqueue(Work::InspectHistory, cx);
+                })),
+        );
+        if let Some(history) = &self.presentation_history {
+            let mut panel = v_flex().id("capture-presentation-history").gap_2().max_h(px(320.)).overflow_y_scroll().child("Read-only snapshot at inspection · refresh to see later decisions · verified head → predecessors; unlinked rows have no proven chronology");
+            if !history.complete {
+                panel = panel.child("History held/incomplete — retained records were not repaired. Refresh inspection to recover.");
+            }
+            for issue in &history.held {
+                panel = panel.child(div().text_color(cx.theme().danger).child(issue.clone()));
+            }
+            for source in &history.sources {
+                panel = panel.child(format!(
+                    "{} · current {:?} · revision {} · marker {}",
+                    source.marker,
+                    source.current,
+                    source.current_revision.as_deref().unwrap_or("held"),
+                    source.marker_revision
+                ));
+                for event in &source.events {
+                    panel = panel.child(format!(
+                        "{:?} · {:?} · {} · predecessor {}",
+                        event.relation,
+                        event.status,
+                        event.revision,
+                        event.previous_revision.as_deref().unwrap_or("unproven")
+                    ));
+                }
+                for issue in &source.held {
+                    panel = panel.child(div().text_color(cx.theme().danger).child(issue.clone()));
+                }
+            }
+            view = view.child(panel);
+            view = view.child(
+                Button::new("capture-close-history")
+                    .label("Close history")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.presentation_history = None;
+                        cx.notify();
+                    })),
+            );
+        }
         for (index, source) in self.dismissed_sources.iter().enumerate() {
             view = view.child(
                 Button::new(("capture-dismissed-source", index))
