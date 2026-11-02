@@ -526,6 +526,7 @@ impl MathOverlay {
         {
             let mut start = edit.old.start;
             let mut end = edit.old.end;
+            let mut dirty = !edit.old.is_empty() || edit.inserted != 0;
             let moved = |r: &Range<usize>| {
                 if r.end <= edit.old.start {
                     Some(r.clone())
@@ -539,16 +540,29 @@ impl MathOverlay {
                 if !segments.iter().any(|next| {
                     moved(&item.core).as_ref() == Some(&next.core) && item.rendered == next.rendered
                 }) {
-                    start = start.min(item.core.start);
-                    end = end.max(item.core.end);
+                    if dirty {
+                        start = start.min(item.core.start);
+                        end = end.max(item.core.end);
+                    } else {
+                        start = item.core.start;
+                        end = item.core.end;
+                        dirty = true;
+                    }
                 }
             }
             for item in &segments {
                 if !old.segments.iter().any(|old| {
                     moved(&old.core).as_ref() == Some(&item.core) && old.rendered == item.rendered
                 }) {
-                    start = start.min(edit.backward(item.core.start));
-                    end = end.max(edit.backward(item.core.end));
+                    let range = edit.backward(item.core.start)..edit.backward(item.core.end);
+                    if dirty {
+                        start = start.min(range.start);
+                        end = end.max(range.end);
+                    } else {
+                        start = range.start;
+                        end = range.end;
+                        dirty = true;
+                    }
                 }
             }
             for item in &old.segments {
@@ -559,7 +573,7 @@ impl MathOverlay {
                     end = item.core.end;
                 }
             }
-            let new_end = end - edit.old.end + edit.new_end();
+            let new_end = edit.forward(end);
             let mut fragment = String::new();
             let mut at = start;
             for item in segments
@@ -3029,6 +3043,23 @@ mod rope_revision_tests {
                         .is_some(),
                     "native cache must receive a display receipt"
                 );
+                if row.starts_with('#') {
+                    // A key can change reveal policy before mutating source.
+                    // An unchanged-source receipt at EOF is a sentinel, not a
+                    // dirty interval stretching from this heading to note end.
+                    let caret = at + 10;
+                    let reveal = ActiveSource { anchor: SourceByte(caret), head: SourceByte(caret), ..Default::default() };
+                    reset_work();
+                    let revealed = provider.compose(&edited, &reveal).unwrap();
+                    let reveal_work = take_work();
+                    println!("REVEAL_KEY_WORK note_bytes={bytes} work={reveal_work:?}");
+                    assert_eq!(reveal_work.flattened_bytes, 0);
+                    assert_eq!(reveal_work.display_builds, 0);
+                    assert!(reveal_work.scanned_bytes < line_bytes * 16 + 4096, "{reveal_work:?}");
+                    assert_ne!(frame.text(), revealed.text(), "positive control: reveal changed the actual display");
+                    assert_eq!(revealed.source().stamp, edited.stamp);
+                    assert!(revealed.display_edit(frame.display_revision().unwrap()).is_some());
+                }
                 // Compare the real incremental output to an independent cold parse.
                 let oracle = CachedProvider::classify(edited.clone())
                     .compose(&edited, &active)

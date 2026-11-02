@@ -587,6 +587,7 @@ pub(crate) fn project_reusing(
                     // The unchanged visible prefix/suffix retain their Rope nodes.
                     let mut start = edit.old.start;
                     let mut end = edit.old.end;
+                    let mut dirty = !edit.old.is_empty() || edit.inserted != 0;
                     let maps = |r: &Range<usize>| -> Option<Range<usize>> {
                         if r.end <= edit.old.start {
                             Some(r.clone())
@@ -600,8 +601,14 @@ pub(crate) fn project_reusing(
                         if !maps(&anchor.source)
                             .is_some_and(|mapped| anchors.iter().any(|a| a.source == mapped))
                         {
-                            start = start.min(anchor.source.start);
-                            end = end.max(anchor.source.end);
+                            if dirty {
+                                start = start.min(anchor.source.start);
+                                end = end.max(anchor.source.end);
+                            } else {
+                                start = anchor.source.start;
+                                end = anchor.source.end;
+                                dirty = true;
+                            }
                         }
                     }
                     for anchor in &anchors {
@@ -610,8 +617,16 @@ pub(crate) fn project_reusing(
                             .iter()
                             .any(|a| maps(&a.source).as_ref() == Some(&anchor.source))
                         {
-                            start = start.min(edit.backward(anchor.source.start));
-                            end = end.max(edit.backward(anchor.source.end));
+                            let range = edit.backward(anchor.source.start)
+                                ..edit.backward(anchor.source.end);
+                            if dirty {
+                                start = start.min(range.start);
+                                end = end.max(range.end);
+                            } else {
+                                start = range.start;
+                                end = range.end;
+                                dirty = true;
+                            }
                         }
                     }
                     // Include anchors crossing either seam, so a replacement never
@@ -625,7 +640,7 @@ pub(crate) fn project_reusing(
                         }
                     }
                     let new_start = start;
-                    let new_end = end - edit.old.end + edit.new_end();
+                    let new_end = edit.forward(end);
                     let map = |at: usize, inventory: &[Anchor]| {
                         let ix = inventory.partition_point(|a| a.source.end <= at);
                         if let Some(a) = inventory.get(ix).filter(|a| a.source.start <= at) {
