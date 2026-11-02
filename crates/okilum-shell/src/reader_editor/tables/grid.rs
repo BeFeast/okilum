@@ -9,6 +9,7 @@ use gpui_component::input::projection::{
     ConcealBias, LineIndent, LineScale, ProjectedByte, ProjectionBlock, ProjectionMarker,
     ProjectionStyle, SourceByte, SourceStamp,
 };
+use gpui_component::input::RopeExt as _;
 use gpui_component::input::{InputEvent, Redo, Textarea, TextareaState, Undo};
 use gpui_component::Sizable as _;
 
@@ -974,9 +975,21 @@ impl ProjectionProvider for GridProvider {
         let to = projection
             .to_projected(SourceByte(self.table.end), ConcealBias::Right)?
             .0;
-        let text = projection.text();
-        let first = text.get(..from)?.bytes().filter(|&b| b == b'\n').count();
-        let last = text.get(..to)?.bytes().filter(|&b| b == b'\n').count() + 1;
+        let (first, last) = if let Some(text) = projection.display_rope() {
+            if from > text.len() || to > text.len() {
+                return None;
+            }
+            (
+                text.offset_to_point(from).row,
+                text.offset_to_point(to).row + 1,
+            )
+        } else {
+            let text = projection.text();
+            (
+                text.get(..from)?.bytes().filter(|&b| b == b'\n').count(),
+                text.get(..to)?.bytes().filter(|&b| b == b'\n').count() + 1,
+            )
+        };
         let mut blocks: Vec<_> = projection
             .blocks()
             .iter()
@@ -987,7 +1000,18 @@ impl ProjectionProvider for GridProvider {
             .collect();
         use std::hash::{Hash, Hasher};
         let mut hash = std::collections::hash_map::DefaultHasher::new();
-        self.source.text.get(self.table.clone())?.hash(&mut hash);
+        if self.table.start > self.table.end
+            || !self.source.text.is_char_boundary(self.table.start)
+            || !self.source.text.is_char_boundary(self.table.end)
+        {
+            return None;
+        }
+        self.source
+            .text
+            .rope()
+            .slice(self.table.clone())
+            .to_string()
+            .hash(&mut hash);
         blocks.push(ProjectionBlock {
             source: SourceByte(self.table.start)..SourceByte(self.table.end),
             lines: first..last,
@@ -1012,6 +1036,15 @@ impl SourceProjection for GridProjection {
     }
     fn text(&self) -> &str {
         self.base.text()
+    }
+    fn display_rope(&self) -> Option<&gpui_component::Rope> {
+        self.base.display_rope()
+    }
+    fn display_revision(&self) -> Option<u64> {
+        self.base.display_revision()
+    }
+    fn display_edit(&self, previous: u64) -> Option<gpui_component::input::projection::EditDelta> {
+        self.base.display_edit(previous)
     }
     fn styles(&self) -> &[ProjectionStyle] {
         self.base.styles()
@@ -1135,6 +1168,64 @@ mod source_history_tests {
 mod projection_tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn grid_wrapper_keeps_native_display_receipts_without_flattening_notes() {
+        use gpui_component::{
+            input::projection::{take_flattened_bytes, SourceText},
+            Rope,
+        };
+        use okilum_core::source_projection::revision::{reset_work, take_work};
+        let text = "Before **bold**\n\n| A |\n|---|\n| row |\n\nAfter\n";
+        let source = SourceSnapshot {
+            stamp: SourceStamp {
+                document: 2403,
+                generation: 1,
+            },
+            text: SourceText::from_rope(Rope::from_str(text)),
+        };
+        let table = text.find('|').unwrap()..text.find("\n\nAfter").unwrap();
+        let base: Arc<dyn ProjectionProvider> = Arc::new(CachedProvider::classify(source.clone()));
+        let active = ActiveSource::default();
+        let before = GridProvider {
+            base: base.clone(),
+            source: source.clone(),
+            table: table.clone(),
+        }
+        .compose(&source, &active)
+        .unwrap();
+        assert!(before.display_rope().is_some());
+        let revision = before.display_revision().unwrap();
+        let mut rope = source.text.rope().clone();
+        rope.remove(1..2);
+        rope.insert(1, "q");
+        let edited = SourceSnapshot {
+            stamp: SourceStamp {
+                generation: 2,
+                ..source.stamp
+            },
+            text: source.text.edited(rope, 1..2, 1),
+        };
+        let provider = GridProvider {
+            base,
+            source: edited.clone(),
+            table,
+        };
+        reset_work();
+        take_flattened_bytes();
+        let after = provider.compose(&edited, &active).unwrap();
+        let work = take_work();
+        assert_eq!(take_flattened_bytes(), 0);
+        assert_eq!(work.flattened_bytes, 0);
+        assert_eq!(work.display_builds, 0);
+        assert!(after.display_edit(revision).is_some());
+        assert_eq!(before.blocks()[0].lines, after.blocks()[0].lines);
+        assert_eq!(before.blocks()[0].key, after.blocks()[0].key);
+        // Fresh uncached native text proves this probe detects a full snapshot.
+        let control = SourceText::from_rope(edited.text.rope().clone());
+        let _ = control.as_ref();
+        assert!(take_flattened_bytes() >= text.len());
+    }
 
     struct Linear(SourceSnapshot);
     impl ProjectionProvider for Linear {
