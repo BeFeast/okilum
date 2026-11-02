@@ -197,6 +197,70 @@ fn indent_unit(text: &str, block: &Block) -> String {
     " ".repeat(width)
 }
 
+/// One active fenced-code indentation policy per editor session. Source
+/// generations deliberately are not the identity: body edits and Undo/Redo
+/// must not reinterpret an indentation level we just inserted ourselves.
+#[derive(Default)]
+pub(super) struct Indentation {
+    active: Option<(IndentationKey, String)>,
+}
+
+#[derive(PartialEq, Eq)]
+struct IndentationKey {
+    document: u64,
+    prefix: [u8; 32],
+    suffix: [u8; 32],
+    preference: Option<(usize, bool)>,
+}
+
+impl Indentation {
+    fn clear(&mut self) {
+        self.active = None;
+    }
+
+    /// Current Reader has no explicit indentation setting and supplies None.
+    /// A future explicit Input TabSize must be supplied here too; changing or
+    /// unsetting it invalidates the inferred policy, without persisting a new
+    /// preference. Soft-tab widths have the Input contract: positive columns.
+    fn resolve(
+        &mut self,
+        document: u64,
+        text: &str,
+        block: &Block,
+        preference: Option<gpui_component::input::TabSize>,
+    ) -> String {
+        use sha2::{Digest, Sha256};
+        let preference = preference.map(|tab| {
+            assert!(
+                tab.hard_tabs || tab.tab_size > 0,
+                "soft tab width must be positive"
+            );
+            (tab.tab_size, tab.hard_tabs)
+        });
+        // Keep no source text and no global cache. Both sides of the editable
+        // body identify this fence: an inserted/deleted closer, changed opener
+        // or outside structural edit cannot inherit an earlier fence's unit.
+        let key = IndentationKey {
+            document,
+            prefix: Sha256::digest(&text.as_bytes()[..block.body.start]).into(),
+            suffix: Sha256::digest(&text.as_bytes()[block.body.end..]).into(),
+            preference,
+        };
+        if let Some((current, unit)) = &self.active {
+            if current == &key {
+                return unit.clone();
+            }
+        }
+        let unit = match preference {
+            Some((_, true)) => "\t".into(),
+            Some((columns, false)) => " ".repeat(columns),
+            None => indent_unit(text, block),
+        };
+        self.active = Some((key, unit.clone()));
+        unit
+    }
+}
+
 /// The document's newline: the first one decides, as the editor does.
 fn newline(text: &str) -> &'static str {
     match text.find('\n') {
@@ -309,7 +373,7 @@ pub(super) fn typed(
 /// Enter in a code block: the new line keeps the indentation; after an
 /// opening bracket (or `:` in Python) it goes one level deeper, and a closer
 /// right at the caret moves to its own line at the old indentation.
-pub(super) fn enter(text: &str, block: &Block, selection: Range<usize>) -> Option<ListEdit> {
+pub(super) fn enter(text: &str, selection: Range<usize>, unit: &str) -> Option<ListEdit> {
     let start = lists::line_start(text, selection.start);
     let line_end_offset = lists::line_end(text, lists::line_start(text, selection.end));
     let before = &text[start..selection.start];
@@ -328,7 +392,7 @@ pub(super) fn enter(text: &str, block: &Block, selection: Range<usize>) -> Optio
             revert: None,
         });
     }
-    let inner = format!("{indent}{}", indent_unit(text, block));
+    let inner = format!("{indent}{unit}");
     let gap = after.len() - after.trim_start_matches([' ', '\t']).len();
     let closes = opened
         .and_then(closer)
@@ -395,12 +459,12 @@ pub(super) fn indent(
     block: &Block,
     selection: Range<usize>,
     outdent: bool,
+    unit: &str,
 ) -> Option<ListEdit> {
-    let unit = indent_unit(text, block);
     if selection.is_empty() && !outdent {
         let caret = selection.start + unit.len();
         return Some(ListEdit {
-            edits: vec![(selection, unit)],
+            edits: vec![(selection, unit.to_owned())],
             selection: caret..caret,
             revert: None,
         });
@@ -421,7 +485,7 @@ pub(super) fn indent(
         } else {
             // Input's selected-line indent includes blank lines too. Keeping
             // their indentation lets the next typed line stay at this level.
-            edits.push((start..start, unit.clone()));
+            edits.push((start..start, unit.to_owned()));
         }
     }
     if edits.is_empty() {
@@ -524,17 +588,43 @@ impl Reader {
         Some((input, text, selection, block))
     }
 
+    fn code_indent_unit(
+        &mut self,
+        input: &Entity<EditorState>,
+        text: &str,
+        block: &Block,
+        cx: &App,
+    ) -> Option<String> {
+        let document = input.read(cx).source_stamp().document;
+        Some(
+            self.editing
+                .as_mut()?
+                .code_indentation
+                .resolve(document, text, block, None),
+        )
+    }
+
+    fn clear_code_indentation(&mut self) {
+        if let Some(editing) = &mut self.editing {
+            editing.code_indentation.clear();
+        }
+    }
+
     fn code_enter(&mut self, action: &Enter, window: &mut Window, cx: &mut Context<Self>) {
         if action.secondary || action.shift || !self.ime_allows(Trigger::Enter, cx) {
             return;
         }
         let Some((input, text, selection, block)) = self.code_block_input(window, cx) else {
+            self.clear_code_indentation();
             return;
         };
         if !block.contains(selection.end) {
             return;
         }
-        if let Some(edit) = enter(&text, &block, selection) {
+        let Some(unit) = self.code_indent_unit(&input, &text, &block, cx) else {
+            return;
+        };
+        if let Some(edit) = enter(&text, selection, &unit) {
             if self.apply_list_edit(&input, edit, window, cx) {
                 cx.stop_propagation();
             }
@@ -546,9 +636,13 @@ impl Reader {
             return;
         }
         let Some((input, text, selection, block)) = self.code_block_input(window, cx) else {
+            self.clear_code_indentation();
             return;
         };
-        let Some(edit) = indent(&text, &block, selection, outdent) else {
+        let Some(unit) = self.code_indent_unit(&input, &text, &block, cx) else {
+            return;
+        };
+        let Some(edit) = indent(&text, &block, selection, outdent, &unit) else {
             return;
         };
         if edit.edits.is_empty() || self.apply_list_edit(&input, edit, window, cx) {
@@ -1101,6 +1195,214 @@ mod tests {
     fn tab_and_shift_tab_indent_the_selected_code_lines(cx: &mut TestAppContext) {
         let (note, visual) = open(cx);
         indent_in(&note, visual);
+    }
+
+    fn stable_unit(
+        state: &mut Indentation,
+        document: u64,
+        text: &str,
+        preference: Option<gpui_component::input::TabSize>,
+    ) -> String {
+        let block = block_at(text, text.find("act()").unwrap()).unwrap();
+        state.resolve(document, text, &block, preference)
+    }
+
+    #[test]
+    fn stable_code_indent_identity_covers_document_and_fence_structure() {
+        let original = "# Identity\n```py\nif ok:\n  act()\n```\n";
+        let indented = original.replace("  act()", "    act()");
+        let mut state = Indentation::default();
+        assert_eq!(stable_unit(&mut state, 1, original, None), "  ");
+        assert_eq!(
+            stable_unit(&mut state, 1, &indented, None),
+            "  ",
+            "own indentation is not a new policy"
+        );
+        assert_eq!(
+            stable_unit(&mut state, 2, &indented, None),
+            "    ",
+            "document session changed"
+        );
+        state.clear();
+        assert_eq!(stable_unit(&mut state, 1, original, None), "  ");
+        let changed_opener = indented.replacen("```py", "```python", 1);
+        assert_eq!(
+            stable_unit(&mut state, 1, &changed_opener, None),
+            "    ",
+            "opener changed"
+        );
+        state.clear();
+        assert_eq!(stable_unit(&mut state, 1, original, None), "  ");
+        let changed_closer = indented.replace("\n```\n", "\n````\n");
+        assert_eq!(
+            stable_unit(&mut state, 1, &changed_closer, None),
+            "    ",
+            "closer changed"
+        );
+        state.clear();
+        assert_eq!(stable_unit(&mut state, 1, original, None), "  ");
+        let inserted_closer = indented.replace("    act()", "    act()\n```\nprose");
+        assert_eq!(
+            stable_unit(&mut state, 1, &inserted_closer, None),
+            "    ",
+            "an inserted closer cannot borrow the old boundary"
+        );
+    }
+
+    #[test]
+    fn stable_code_indent_explicit_preference_changes_invalidate_inference() {
+        use gpui_component::input::TabSize;
+        let original = "```py\nif ok:\n  act()\n```\n";
+        let indented = original.replace("  act()", "    act()");
+        let mut state = Indentation::default();
+        assert_eq!(stable_unit(&mut state, 1, original, None), "  ");
+        assert_eq!(
+            stable_unit(
+                &mut state,
+                1,
+                &indented,
+                Some(TabSize {
+                    tab_size: 3,
+                    hard_tabs: false
+                })
+            ),
+            "   "
+        );
+        assert_eq!(
+            stable_unit(
+                &mut state,
+                1,
+                &indented,
+                Some(TabSize {
+                    tab_size: 8,
+                    hard_tabs: true
+                })
+            ),
+            "\t"
+        );
+        assert_eq!(
+            stable_unit(&mut state, 1, &indented, None),
+            "    ",
+            "clearing the override re-detects current source"
+        );
+    }
+
+    fn select_code_text(note: &Note, visual: &mut VisualTestContext, needle: &str) {
+        let text = value(note, visual);
+        let start = text.find(needle).unwrap();
+        note.input.update(visual, |input, cx| {
+            input.set_selected_range(start..start + needle.len(), cx)
+        });
+        visual.run_until_parked();
+    }
+
+    fn stable_code_indent_in(note: &Note, visual: &mut VisualTestContext) {
+        for nl in ["\n", "\r\n"] {
+            let original = "# Two spaces\n```python\nif ok:\n  [act()]\n```".replace('\n', nl);
+            let four = "# Two spaces\n```python\nif ok:\n    [act()]\n```".replace('\n', nl);
+            let six = "# Two spaces\n```python\nif ok:\n      [act()]\n```".replace('\n', nl);
+            set(note, visual, &original);
+            keys(visual, "tab");
+            assert_eq!(shown(note, visual), four);
+            keys(visual, "tab");
+            assert_eq!(
+                shown(note, visual),
+                six,
+                "repeated Tab keeps a two-space unit"
+            );
+            keys(visual, "shift-tab");
+            assert_eq!(shown(note, visual), four);
+            keys(visual, "shift-tab");
+            assert_eq!(shown(note, visual), original, "authored two spaces survive");
+            undo(visual);
+            assert_eq!(shown(note, visual), four);
+            undo(visual);
+            assert_eq!(shown(note, visual), six);
+            redo(visual);
+            assert_eq!(shown(note, visual), four);
+            keys(visual, "shift-tab");
+            assert_eq!(
+                shown(note, visual),
+                original,
+                "unit survives history generations too"
+            );
+        }
+        set(note, visual, "# Body edit\n```py\nif ok:\n  [act()]\n```");
+        keys(visual, "tab");
+        typed(visual, "changed()");
+        keys(visual, "shift-tab");
+        assert_eq!(
+            shown(note, visual),
+            "# Body edit\n```py\nif ok:\n  changed()|\n```",
+            "body typing retains this fence's unit"
+        );
+
+        set(
+            note,
+            visual,
+            "# Enter policy\n```py\nif ok:\n[  if nested:]\n```",
+        );
+        keys(visual, "tab");
+        note.input.update(visual, |input, cx| {
+            let end = input.selected_range().end;
+            input.set_selected_range(end..end, cx);
+        });
+        visual.run_until_parked();
+        keys(visual, "enter");
+        assert_eq!(
+            shown(note, visual),
+            "# Enter policy\n```py\nif ok:\n    if nested:\n      |\n```",
+            "Enter shares the stable two-space unit"
+        );
+        undo(visual);
+        undo(visual);
+        assert_eq!(
+            shown(note, visual),
+            "# Enter policy\n```py\nif ok:\n[  if nested:]\n```"
+        );
+
+        let adjacent = "# Adjacent\n```py\nif ok:\n  [first()]\n```\n\n```py\nif other:\n        second()\n```";
+        set(note, visual, adjacent);
+        keys(visual, "tab");
+        keys(visual, "shift-tab");
+        assert_eq!(shown(note, visual), adjacent);
+        select_code_text(note, visual, "second()");
+        keys(visual, "tab");
+        assert!(
+            value(note, visual).contains("\n                second()\n"),
+            "second fence uses its own eight-space unit"
+        );
+        keys(visual, "shift-tab");
+        assert!(value(note, visual).contains("\n        second()\n"));
+        select_code_text(note, visual, "first()");
+        keys(visual, "tab");
+        assert!(
+            value(note, visual).contains("\n    first()\n"),
+            "returning fence does not inherit eight spaces"
+        );
+        keys(visual, "shift-tab");
+        assert_eq!(shown(note, visual), adjacent);
+    }
+
+    #[gpui::test]
+    fn stable_code_indent_roundtrip_and_fence_isolation_in_source(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        stable_code_indent_in(&note, visual);
+    }
+
+    #[gpui::test]
+    fn stable_code_indent_roundtrip_and_fence_isolation_in_live_preview(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        note.reader
+            .update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
+        visual.run_until_parked();
+        stable_code_indent_in(&note, visual);
+        assert!(note.reader.read_with(visual, |r, _| r
+            .editing
+            .as_ref()
+            .unwrap()
+            .live_preview
+            .enabled));
     }
 
     fn blank_line_indent_in(note: &Note, visual: &mut VisualTestContext) {

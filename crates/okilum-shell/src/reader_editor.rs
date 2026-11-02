@@ -109,6 +109,8 @@ pub(super) struct Editing {
     markdown: bool,
     /// Backspace right after the last list continuation (#1635).
     list_revert: Option<lists::PendingRevert>,
+    /// Inferred indentation belongs to the active code fence/editor session.
+    code_indentation: code_comforts::Indentation,
     /// Code blocks open in an external editor (#1993); dropped with the
     /// editor, which removes their temporary files.
     external: external_edit::Sessions,
@@ -971,6 +973,7 @@ impl Reader {
             paste_outbox: test_paste_outbox,
             markdown: !plain_file,
             list_revert: None,
+            code_indentation: Default::default(),
             external: Default::default(),
             link_complete: Default::default(),
             _subscriptions: vec![
