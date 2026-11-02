@@ -16,14 +16,25 @@ struct Pair {
 }
 impl Pair {
     fn new() -> Result<Self> {
+        Self::with_lan(true)
+    }
+    fn loopback() -> Result<Self> {
+        Self::with_lan(false)
+    }
+    fn with_lan(lan: bool) -> Result<Self> {
         let root = tempfile::tempdir()?;
         let binary = PathBuf::from(
             std::env::var_os("OKILUM_SYNC_DIRECT_CLIENT")
                 .context("set pinned Syncthing 2.1.6 binary")?,
         )
         .canonicalize()?;
-        let (source, prepared) = Peer::managed_lan(root.path(), "managed-source", binary.clone())?;
-        let (target, _) = Peer::managed_lan(root.path(), "managed-target", binary)?;
+        let prepare = if lan {
+            Peer::managed_lan
+        } else {
+            Peer::managed
+        };
+        let (source, prepared) = prepare(root.path(), "managed-source", binary.clone())?;
+        let (target, _) = prepare(root.path(), "managed-target", binary)?;
         assert_eq!(source.api.version()?["version"], "v2.1.6");
         assert_eq!(target.api.version()?["version"], "v2.1.6");
         let source_state = root.path().join("source-controller");
@@ -43,6 +54,18 @@ impl Pair {
         let approved = second.refresh()?;
         assert!(approved.catalog.is_empty());
         let peer = approved.peers[0].id;
+        if !lan {
+            // Naming/migration uses real pinned daemons with deterministic routing.
+            // The separate LAN test exercises production hint exchange.
+            source
+                .api
+                .add_device(&json!({"deviceID":target.id,"name":"Target fixture",
+                "addresses":[format!("tcp://{}",target.listen)]}))?;
+            target
+                .api
+                .add_device(&json!({"deviceID":source.id,"name":"Source fixture",
+                "addresses":[format!("tcp://{}",source.listen)]}))?;
+        }
         Ok(Self {
             _root: root,
             source,
@@ -69,32 +92,6 @@ impl Pair {
         Ok(())
     }
 }
-fn reopen_controller(state: &Path, config: &Path) -> Result<Controller> {
-    let mut opened = None;
-    // shutdown revokes immediately; a bounded in-flight server response can
-    // still own the journal lock until its final Controller clone drops.
-    wait(
-        "stopped receiver releases its journal lock",
-        || match Controller::open(state.into(), vec![config.into()]) {
-            Ok(controller) => {
-                opened = Some(controller);
-                Ok(true)
-            }
-            Err(error)
-                if error.chain().any(|cause| {
-                    cause
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
-                }) =>
-            {
-                Ok(false)
-            }
-            Err(error) => Err(error.context("reopen receiver controller")),
-        },
-    )?;
-    opened.context("receiver did not reopen")
-}
-
 fn hashes(root: &Path, names: &[&str]) -> Result<BTreeMap<String, String>> {
     names
         .iter()
@@ -156,7 +153,10 @@ fn managed_source_share_empty_receive_and_bidirectional_hashes() -> Result<()> {
         peer["allowed"] = json!([]);
     }
     fs::write(&journal_file, serde_json::to_vec(&interrupted)?)?;
-    pair.first = reopen_controller(&pair.source_state, &pair.source.home.join("config.xml"))?;
+    pair.first = Controller::open(
+        pair.source_state.clone(),
+        vec![pair.source.home.join("config.xml")],
+    )?;
     pair.first.refresh()?;
     pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
     assert_eq!(
@@ -517,7 +517,7 @@ fn managed_peer_addresses_without_discovery_negative_then_hashes_and_restart() -
 #[test]
 #[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
 fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
-    let mut pair = Pair::new()?;
+    let mut pair = Pair::loopback()?;
     pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
     let catalog = pair.second.catalog(pair.peer)?;
     let id = &catalog[0].id;
@@ -555,7 +555,10 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
         pair.target.vault.join("local-sentinel.md"),
         "preserved local bytes",
     )?;
-    pair.second = reopen_controller(&target_state, &pair.target.home.join("config.xml"))?;
+    pair.second = Controller::open(
+        target_state.clone(),
+        vec![pair.target.home.join("config.xml")],
+    )?;
     let migrated = pair
         .second
         .refresh()
@@ -579,7 +582,10 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
     let mut db: Value = serde_json::from_slice(&fs::read(&file)?)?;
     db["transfers"][0]["witness"] = before;
     fs::write(&file, serde_json::to_vec(&db)?)?;
-    pair.second = reopen_controller(&target_state, &pair.target.home.join("config.xml"))?;
+    pair.second = Controller::open(
+        target_state.clone(),
+        vec![pair.target.home.join("config.xml")],
+    )?;
     assert_eq!(
         pair.second.snapshot()?.attached[0].label,
         *label,
