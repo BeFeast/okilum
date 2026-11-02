@@ -166,7 +166,8 @@ pub(crate) fn with_pending(mut opts: Opts) -> Opts {
         .unwrap_or_else(crate::reader_history::state_directory)
         .and_then(|directory| take(&directory));
     match windows {
-        Ok(windows) => opts.restart_windows = windows,
+        Ok(windows) if !windows.is_empty() => opts.restart_windows = windows,
+        Ok(_) => {}
         Err(error) => eprintln!("Cannot restore update windows: {error:#}"),
     }
     opts
@@ -280,6 +281,7 @@ mod tests {
             .unwrap() else {
                 panic!("restart must launch the reader")
             };
+            let opts = with_pending(*opts);
             assert_eq!(opts.restart_windows, saved);
             for window in cx.windows() {
                 window
@@ -290,7 +292,7 @@ mod tests {
         });
         cx.run_until_parked();
         cx.update(|cx| {
-            restore(*opts, cx).detach();
+            restore(opts, cx).detach();
         });
         cx.run_until_parked();
         cx.update(|cx| {
