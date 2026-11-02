@@ -441,7 +441,7 @@ impl Controller {
                 // A timeout may follow remote receipt. Retry the durable identity,
                 // including its approved Syncthing binding, rather than replacing it.
                 drop(db);
-                return self.refresh();
+                return self.refresh_pairing();
             }
         }
         let configs = self.configuration_paths()?;
@@ -470,7 +470,7 @@ impl Controller {
         db.outbound = Some((offer, request));
         self.save(&db)?;
         drop(db);
-        self.refresh()
+        self.refresh_pairing()
     }
     pub fn refresh(&self) -> Result<Snapshot> {
         self.check()?;

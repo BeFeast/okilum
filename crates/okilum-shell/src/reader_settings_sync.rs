@@ -157,22 +157,27 @@ impl SyncSettings {
         let controller = self.controller.clone();
         // Pairing observes the authenticated channel/journal, not a repeated
         // system inventory or executable hash. Vault operations retain full checks.
-        let pairing_poll =
-            if refresh && self.snapshot.as_ref().is_some_and(sync_pairing_in_progress) {
-                self.controller.as_ref().map(|controller| Output {
-                    connection_error: None,
-                    controller: controller.clone(),
-                    snapshot: self.snapshot.clone().unwrap(),
-                    inspected: None,
-                    selected_destination: None,
-                    #[cfg(target_os = "linux")]
-                    runtimes: self.runtimes.clone(),
-                    #[cfg(target_os = "linux")]
-                    vaults: self.vaults.clone(),
-                })
-            } else {
-                None
-            };
+        let pairing_poll = if (refresh
+            || matches!(
+                &operation,
+                Operation::Approve(_) | Operation::Reject(_) | Operation::Cancel
+            ))
+            && self.snapshot.as_ref().is_some_and(sync_pairing_in_progress)
+        {
+            self.controller.as_ref().map(|controller| Output {
+                connection_error: None,
+                controller: controller.clone(),
+                snapshot: self.snapshot.clone().unwrap(),
+                inspected: None,
+                selected_destination: None,
+                #[cfg(target_os = "linux")]
+                runtimes: self.runtimes.clone(),
+                #[cfg(target_os = "linux")]
+                vaults: self.vaults.clone(),
+            })
+        } else {
+            None
+        };
 
         #[cfg(test)]
         let worker = cx.try_global::<TestWorker>().cloned();
@@ -194,7 +199,15 @@ impl SyncSettings {
                                 controller: output.controller.clone(),
                             };
                             guard.check()?;
-                            output.snapshot = output.controller.refresh_pairing()?;
+                            output.snapshot = match operation {
+                                Operation::Approve(id) => output.controller.approve(id)?,
+                                Operation::Reject(id) => output.controller.reject(id)?,
+                                Operation::Cancel => output.controller.cancel()?,
+                                Operation::Read => output.controller.refresh_pairing()?,
+                                _ => unreachable!(
+                                    "only pairing journal actions use cached runtime metadata"
+                                ),
+                            };
                             guard.check()?;
                             return Ok(output);
                         }
