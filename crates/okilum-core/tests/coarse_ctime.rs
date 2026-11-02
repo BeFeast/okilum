@@ -72,7 +72,41 @@ fn real_preserved_mtime_edits_refresh_warm_graph_editor_and_link_preview() {
                 eprintln!("REAL_CTIME failure preserve_mtime={preserve_mtime} warm_updated={warm_ok} stale_preview_rejected={rejected} fresh_link_notes={new_links} editor_refreshed={editor_ok}");
             }
             assert!(warm_ok && rejected && new_links == 1 && editor_ok);
-            assert_eq!(stats.reuse.changed_revision, 1);
+            // The unchanged target can cross the local two-second hashing
+            // window between cold and warm reads. An optional fingerprint
+            // aging out is conservative revalidation, not another edited note.
+            // Keep exact accounting while still rejecting any stat/content
+            // change or a differing pair of fingerprints for that target.
+            assert_eq!(cold.source("from.md").as_deref(), Some("target"));
+            assert_eq!(changed.source("from.md").as_deref(), Some("target"));
+            let before_target = cold.source_revision("from.md").unwrap();
+            let after_target = changed.source_revision("from.md").unwrap();
+            let policy_transition = before_target != after_target;
+            if policy_transition {
+                let mut before = serde_json::to_value(before_target).unwrap();
+                let mut after = serde_json::to_value(after_target).unwrap();
+                let before_hash = before
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("content_hash")
+                    .unwrap();
+                let after_hash = after
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("content_hash")
+                    .unwrap();
+                assert_eq!(before, after, "Unedited target metadata changed");
+                assert_ne!(
+                    before_hash.is_null(),
+                    after_hash.is_null(),
+                    "Unedited target fingerprints differ"
+                );
+                eprintln!("REAL_CTIME unchanged target crossed fingerprint policy window");
+            }
+            assert_eq!(
+                stats.reuse.changed_revision,
+                1 + usize::from(policy_transition)
+            );
         }
     }
     eprintln!(
