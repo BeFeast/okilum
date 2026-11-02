@@ -444,18 +444,6 @@ fn canonical_save_button_keeps_original_identity_snapshot_draft_and_explicit_sta
     visual.run_until_parked();
     let save = visual.debug_bounds("virtual-save").unwrap();
     visual.simulate_click(save.center(), Modifiers::default());
-    // The in-flight guards must prevent duplicate Save, Load and Start.
-    panel.update(visual, |panel, cx| {
-        assert!(panel.saving);
-        panel.save(cx);
-        panel.load_definition(other.clone(), cx);
-        panel.start(cx);
-        assert_eq!(
-            panel.loaded.as_ref().unwrap(),
-            &path.canonicalize().unwrap()
-        );
-        assert_eq!(panel.generation, generation);
-    });
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         visual.run_until_parked();
@@ -481,6 +469,29 @@ fn canonical_save_button_keeps_original_identity_snapshot_draft_and_explicit_sta
         std::fs::read_to_string(vault.join("logs/a.log")).unwrap(),
         "first\n"
     );
+    // Assert in-flight guards in the dispatching UI turn. A fast completed
+    // button click above is allowed to finish before the next test update.
+    panel.update(visual, |panel, cx| {
+        panel.save(cx);
+        assert!(panel.saving);
+        panel.save(cx);
+        panel.load_definition(other.clone(), cx);
+        panel.start(cx);
+        assert_eq!(
+            panel.loaded.as_ref().unwrap(),
+            &path.canonicalize().unwrap()
+        );
+        assert_eq!(panel.generation, generation);
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        visual.run_until_parked();
+        if panel.read_with(visual, |panel, _| !panel.saving) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no-op Save must finish");
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let saved = std::fs::read(&path).unwrap();
     panel.update_in(visual, |panel, window, cx| {
         panel.time = model::TimeMode::Last;
