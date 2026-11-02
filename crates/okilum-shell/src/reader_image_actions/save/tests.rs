@@ -246,6 +246,8 @@ fn stale_picker_document_or_image_cannot_publish_copy(cx: &mut TestAppContext) {
     assert_eq!(std::fs::read(image).unwrap(), b"different image generation");
 }
 
+// The positive staging probe names the Unix descriptor-relative temporary.
+#[cfg(unix)]
 #[gpui::test]
 fn stale_prepared_completion_is_discarded_before_publication(cx: &mut TestAppContext) {
     let mut f = open(cx);

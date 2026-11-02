@@ -2,9 +2,10 @@
 //! Preparation is background work; the owner validates its source lease before
 //! publish. Existing destinations, including symlinks, are never replaced.
 use anyhow::{Context, Result};
+#[cfg(unix)]
+use std::fs::File;
 use std::{
     ffi::OsString,
-    fs::File,
     io::Write,
     path::{Path, PathBuf},
 };
