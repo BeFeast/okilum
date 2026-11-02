@@ -111,6 +111,11 @@ fn choose(calendar: &Entity<CalendarState>, date: time::Date, visual: &mut Visua
     calendar.update(visual, |calendar, cx| {
         assert!(calendar.activate_date(date, cx))
     });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("task-snooze-calendar").is_none(),
+        "selecting a day dismisses the complete date dropdown before further actions"
+    );
 }
 fn result_task(reader: &Reader) -> Option<Task> {
     reader
@@ -125,12 +130,41 @@ fn click_undo(visual: &mut VisualTestContext) {
     // executor clock. Match the existing dashboard Undo fixture's final bounds.
     std::thread::sleep(Duration::from_millis(450));
     visual.update(|window, _| window.refresh());
+    visual.executor().advance_clock(Duration::from_millis(400));
     visual.run_until_parked();
     let undo = visual
         .debug_bounds("task-undo")
         .expect("successful save exposes actual receipt Undo");
+    visual.update(|window, _| {
+        assert!(
+            Bounds::new(point(px(0.), px(0.)), window.viewport_size()).contains(&undo.center()),
+            "Undo must be inside the viewport: {undo:?}"
+        )
+    });
+    let attempts = visual.update(|_, cx| {
+        cx.global::<Harness>()
+            .undo_requests
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+    });
     visual.simulate_mouse_move(undo.center(), None, Modifiers::default());
     visual.simulate_click(undo.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        let requests = &cx.global::<Harness>().undo_requests;
+        assert_eq!(
+            requests.values().map(Vec::len).sum::<usize>(),
+            attempts + 1,
+            "actual Undo click must reach the owned action, rather than an overlay"
+        );
+        assert!(
+            requests
+                .values()
+                .all(|attempts| attempts.iter().all(|current| *current)),
+            "same-dashboard Undo must retain its current owner after publication/filter refresh"
+        );
+    });
 }
 
 #[gpui::test]
@@ -313,11 +347,15 @@ async fn snooze_calendar_storage_failure_keeps_canonical_source_and_fresh_retry(
     reader.update_in(visual, |reader, _, _| {
         reader.watcher.take();
     });
-    let poison = temp.path().join("unusable-state");
+    // Fail ONLY FileEditor's recovery directory. Keeping the Reader's state
+    // directory intact avoids unrelated sidebar persistence errors.
+    let poison = temp.path().join("state/editor-drafts");
+    std::fs::create_dir_all(poison.parent().unwrap()).unwrap();
+    assert!(
+        !poison.exists(),
+        "fixture has not yet opened a source editor"
+    );
     std::fs::write(&poison, b"blocked recovery storage").unwrap();
-    reader.update_in(visual, |reader, _, _| {
-        reader.session_directory = Some(poison.clone())
-    });
     let calendar = open_snooze(&reader, visual);
     choose(&calendar, snoozed(), visual);
     visual
@@ -330,10 +368,7 @@ async fn snooze_calendar_storage_failure_keeps_canonical_source_and_fresh_retry(
         std::fs::read_to_string(root.join("Work.md")).unwrap(),
         source()
     );
-    reader.update_in(visual, |reader, _, cx| {
-        reader.session_directory = Some(temp.path().join("state"));
-        cx.notify();
-    });
+    std::fs::remove_file(&poison).unwrap();
     let fresh = open_snooze(&reader, visual);
     choose(&fresh, snoozed(), visual);
     visual
@@ -482,78 +517,71 @@ async fn snooze_calendar_held_worker_and_completion_reject_rebound_reader(cx: &m
 async fn snooze_calendar_undo_refuses_intervening_source_and_preserves_recovery(
     cx: &mut TestAppContext,
 ) {
-    let temp = tempfile::tempdir().unwrap();
-    let (reader, visual) = mount(cx, &temp);
-    let root = temp.path().join("vault");
-    visual
-        .condition(&reader, |reader, _| {
-            reader
-                .tasks_index
-                .as_ref()
-                .is_some_and(|index| index.note_tasks("Work.md").len() == 2)
-                && reader.current_rel == "Dashboard.md"
-        })
-        .await;
-    reader.update_in(visual, |reader, _, _| {
-        reader.watcher.take();
-    });
-    let calendar = open_snooze(&reader, visual);
-    choose(&calendar, snoozed(), visual);
-    visual
-        .condition(&reader, |reader, cx| {
-            completed(cx, &root, 1) && result_task(reader).is_some()
-        })
-        .await;
-    let mut editor = okilum_core::file_editor::FileEditor::open(
-        &root.join("Work.md"),
-        &temp.path().join("state/editor-drafts"),
-    )
-    .unwrap();
-    let unsaved = format!("{}Retained unsaved draft\r\n", changed());
-    editor.set_text(unsaved.clone()).unwrap();
-    drop(editor);
-    click_undo(visual);
-    visual.run_until_parked();
-    visual
-        .condition(&reader, |_, cx| {
-            cx.global::<Harness>()
-                .undo_results
-                .get(&root)
-                .is_some_and(|results| results == &[false])
-        })
-        .await;
-    assert!(
-        visual.debug_bounds("reader-error-toast").is_some(),
-        "actual revision/dirty-draft refusal is visible"
-    );
-    assert_eq!(
-        std::fs::read_to_string(root.join("Work.md")).unwrap(),
-        changed()
-    );
-    let mut recovered = okilum_core::file_editor::FileEditor::open(
-        &root.join("Work.md"),
-        &temp.path().join("state/editor-drafts"),
-    )
-    .unwrap();
-    assert_eq!(recovered.text(), unsaved);
-    assert!(recovered.dirty());
-    // Only the fixture's explicit Reload discards its own recovery edit, then
-    // an independent canonical change exercises the receipt's revision guard.
-    recovered.reload().unwrap();
-    drop(recovered);
-    let external = format!("{}Independent canonical prose\r\n", changed());
-    std::fs::write(root.join("Work.md"), &external).unwrap();
-    click_undo(visual);
-    visual
-        .condition(&reader, |_, cx| {
-            cx.global::<Harness>()
-                .undo_results
-                .get(&root)
-                .is_some_and(|results| results == &[false, false])
-        })
-        .await;
-    assert_eq!(
-        std::fs::read_to_string(root.join("Work.md")).unwrap(),
-        external
-    );
+    // Independent real saves expose a current visible Undo for each refusal.
+    // A second error toast must not be used to click a covered older receipt.
+    for interference in ["dirty recovery", "external revision"] {
+        let temp = tempfile::tempdir().unwrap();
+        let (reader, visual) = mount(cx, &temp);
+        let root = temp.path().join("vault");
+        visual
+            .condition(&reader, |reader, _| {
+                reader
+                    .tasks_index
+                    .as_ref()
+                    .is_some_and(|index| index.note_tasks("Work.md").len() == 2)
+                    && reader.current_rel == "Dashboard.md"
+            })
+            .await;
+        reader.update_in(visual, |reader, _, _| {
+            reader.watcher.take();
+        });
+        let calendar = open_snooze(&reader, visual);
+        choose(&calendar, snoozed(), visual);
+        visual
+            .condition(&reader, |reader, cx| {
+                completed(cx, &root, 1) && result_task(reader).is_some()
+            })
+            .await;
+        let drafts = temp.path().join("state/editor-drafts");
+        let unsaved = format!("{}Retained unsaved draft\r\n", changed());
+        let external = format!("{}Independent canonical prose\r\n", changed());
+        if interference == "dirty recovery" {
+            let mut editor =
+                okilum_core::file_editor::FileEditor::open(&root.join("Work.md"), &drafts).unwrap();
+            editor.set_text(unsaved.clone()).unwrap();
+            drop(editor);
+        } else {
+            std::fs::write(root.join("Work.md"), &external).unwrap();
+        }
+        click_undo(visual);
+        visual
+            .condition(&reader, |_, cx| {
+                cx.global::<Harness>()
+                    .undo_results
+                    .get(&root)
+                    .is_some_and(|results| results == &[false])
+            })
+            .await;
+        assert!(
+            visual.debug_bounds("reader-error-toast").is_some(),
+            "actual {interference} refusal is visible"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("Work.md")).unwrap(),
+            if interference == "dirty recovery" {
+                changed()
+            } else {
+                external
+            }
+        );
+        if interference == "dirty recovery" {
+            let recovered =
+                okilum_core::file_editor::FileEditor::open(&root.join("Work.md"), &drafts).unwrap();
+            assert_eq!(recovered.text(), unsaved);
+            assert!(
+                recovered.dirty(),
+                "failed Undo preserves recovery without Reload"
+            );
+        }
+    }
 }

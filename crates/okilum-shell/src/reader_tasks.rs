@@ -965,6 +965,7 @@ impl RenderOnce for TasksList {
                                     let snooze_reader = date_reader.clone();
                                     let snooze_index = date_index.clone();
                                     let snooze_task = date_task.clone();
+                                    let date_menu = cx.entity().downgrade();
                                     menu = menu.submenu(
                                         "Snooze until…",
                                         window,
@@ -982,6 +983,7 @@ impl RenderOnce for TasksList {
                                                 menu,
                                                 action,
                                                 snooze_reader.clone(),
+                                                date_menu.clone(),
                                                 writable,
                                                 window,
                                                 cx,
@@ -1180,6 +1182,7 @@ fn snooze_calendar(
     menu: gpui_component::menu::PopupMenu,
     action: Option<reader_task_actions::TaskAction>,
     reader: WeakEntity<Reader>,
+    date_menu: WeakEntity<gpui_component::menu::PopupMenu>,
     writable: bool,
     window: &mut Window,
     cx: &mut Context<gpui_component::menu::PopupMenu>,
@@ -1235,7 +1238,9 @@ fn snooze_calendar(
                 );
             }
         }
-        cx.emit(gpui::DismissEvent);
+        // The dropdown listens to its ROOT menu, not this submenu. Emitting
+        // only here leaves the parent popover open over subsequent actions.
+        let _ = date_menu.update(cx, |_, cx| cx.emit(gpui::DismissEvent));
     })
     .detach();
     menu.label("Choose snooze date")

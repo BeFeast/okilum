@@ -238,7 +238,19 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !owner.current(self) {
+        let current = owner.current(self);
+        #[cfg(test)]
+        {
+            if cx.try_global::<test_hooks::Harness>().is_none() {
+                cx.set_global(test_hooks::Harness::default());
+            }
+            cx.global_mut::<test_hooks::Harness>()
+                .undo_requests
+                .entry(owner.root.clone())
+                .or_default()
+                .push(current);
+        }
+        if !current {
             reader_toast::error(
                 "Task Undo belongs to the previous Reader view. Its saved source was kept.",
                 window,
@@ -318,6 +330,7 @@ pub(crate) mod test_hooks {
         pub queued: std::collections::HashMap<PathBuf, Hooks>,
         pub results: std::collections::HashMap<PathBuf, Vec<(bool, bool)>>,
         pub undo_results: std::collections::HashMap<PathBuf, Vec<bool>>,
+        pub undo_requests: std::collections::HashMap<PathBuf, Vec<bool>>,
     }
     impl Global for Harness {}
     pub(crate) fn take(cx: &mut App, root: &Path) -> Hooks {
