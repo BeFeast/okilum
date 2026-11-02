@@ -201,3 +201,55 @@ Managed preparation already saves a concrete nonzero listen port in its durable
 request/configuration; restarting retains that port. A disconnected managed peer
 shows its name and firewall/TCP-port guidance after 30 seconds of observation,
 without treating a local idle folder as proof of connectivity.
+
+### Computer network settings (#2047)
+
+The managed Linux connection uses public Syncthing discovery, relays and NAT
+traversal by default. The stable TCP listen port and authenticated explicit peer
+addresses stay intact; the dynamic relay listener lets two computers connect when
+both firewalls block incoming connections. Public discovery receives device IDs
+and advertised addresses; the relay directory sees relay lookup traffic, relays
+see encrypted connection traffic and network metadata, and router traversal may
+request a port mapping. File contents travel end-to-end encrypted between the
+approved Syncthing devices. This does not publish vaults or grant device trust.
+The Okilum pairing handshake still requires the same LAN;
+this issue does not move the handshake or vault catalog onto relays.
+
+Settings → Sync offers **Only local network and VPN** for the selected managed
+connection. It affects every vault using that runtime on this computer, not one
+vault or every computer. Turning it on disables global discovery, relays, NAT
+traversal and STUN (`stunKeepaliveStartS = 0` and `stunKeepaliveMinS = 0`), removes the dynamic relay listener,
+and keeps local discovery and the stable direct listener. Turning it off restores
+the public defaults. The UI publishes the authenticated REST read-back, not an
+optimistic preference; a failed operation stays an error until refreshed/retried.
+Custom relay routes/listeners require review rather than a false local-only claim.
+Explicit TCP/QUIC peer addresses from the authenticated paired channel are kept;
+this setting controls discovery/traversal services, not the OS routing table or
+firewall. A configured direct address must be reachable over the LAN or VPN for a
+private connection.
+
+For an external Syncthing connection, Settings displays its current network
+options and directs the user to Syncthing to change them. It offers no mutating
+switch and never applies the managed default to that runtime. Existing reuse
+consent is not consent to change its network options. macOS/Windows transport
+bootstrap remains outside this Linux delivery.
+
+Existing managed Linux installations, including 7504/7510, migrate on their next
+selected-runtime reconciliation after Sync is enabled. Authority comes from the
+private, checksum-pinned preparation receipt and exact selected device identity.
+`sync/managed/prepared/network-policy-v1.json` records the one-time migration and
+subsequent explicit choices outside the vault and disposable index. A pending
+intent is flushed before scoped options PATCH, completed only after read-back,
+and retried after interruption. An applied receipt is never treated as permission
+to reset the options on every refresh. A saved local-only choice survives restart
+and future reconciliation. No other daemon or user service is changed.
+
+The real-runtime acceptance script is `scripts/ci/sync-network-policy.sh`: five
+named tests run against unmodified checksum-pinned Syncthing 2.1.6 with loopback as
+the only interface in a disposable network namespace. It checks default options,
+local/public round trips, daemon restart, one-time legacy migration, interrupted
+intent, external negative control and explicit-route handling. It requires Linux
+`sudo -n unshare --net`, `ip` and `runuser`; it changes no host interface or firewall.
+No test depends on public discovery or a public relay being available. Dependency
+archive acquisition occurs before network isolation. A public relay round trip
+is not an acceptance claim of this options/read-back test.

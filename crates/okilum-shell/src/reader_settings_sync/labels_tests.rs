@@ -69,6 +69,13 @@ impl Managed {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert_eq!(fixture.identity.connect()?.version()?["version"], "v2.1.6");
+        // This label fixture explicitly chooses isolated transport before entering
+        // the shell, which now migrates unconfigured managed runtime defaults.
+        okilum_sync_controller::network_policy::reconcile(
+            &prepared,
+            &fixture.identity,
+            Some(okilum_sync_controller::network_policy::Policy::LocalNetworkAndVpn),
+        )?;
         Ok(fixture)
     }
     fn perform(&self, controller: Option<Controller>, operation: Operation) -> Result<Output> {
@@ -174,6 +181,7 @@ fn sync_labels_managed_external_and_paused_wording(cx: &mut TestAppContext) {
                 folders: 1,
                 managed: true,
                 selected: true,
+                network: None,
             }];
             assert_eq!(view.vault_connection_label(&vault), "Synced by Okilum");
             view.runtimes[0].managed = false;
@@ -210,4 +218,50 @@ fn sync_labels_catalog_fallback_keeps_explicit_name_and_reset(cx: &mut TestAppCo
         crate::vault_name::set(&vault, "", cx);
         assert_eq!(crate::vault_name::shown(&vault, cx), "local-replica");
     });
+}
+
+#[test]
+#[ignore = "requires pinned runtime in an offline namespace; issue-2047 acceptance"]
+fn sync_network_selected_managed_operations_publish_read_back() -> Result<()> {
+    anyhow::ensure!(
+        std::env::var_os("OKILUM_SYNC_OFFLINE_NAMESPACE").is_some(),
+        "offline namespace required"
+    );
+    anyhow::ensure!(
+        std::fs::read_to_string("/proc/net/dev")?
+            .lines()
+            .skip(2)
+            .all(|line| line.split(':').next().unwrap().trim() == "lo"),
+        "only loopback is permitted"
+    );
+    let fixture = Managed::new()?;
+    let output = fixture.perform(None, Operation::Read)?;
+    assert!(output.runtimes[0].managed && output.runtimes[0].selected);
+    assert!(output.runtimes[0].network.as_ref().unwrap().local_only());
+    let output = fixture.perform(
+        Some(output.controller),
+        Operation::Network(
+            fixture.identity.clone(),
+            okilum_sync_controller::network_policy::Policy::PublicDiscoveryAndRelays,
+        ),
+    )?;
+    let public = output.runtimes[0].network.as_ref().unwrap();
+    assert!(public.global_discovery && public.relays && public.nat && public.stun);
+    let output = fixture.perform(
+        Some(output.controller),
+        Operation::Network(
+            fixture.identity.clone(),
+            okilum_sync_controller::network_policy::Policy::LocalNetworkAndVpn,
+        ),
+    )?;
+    assert!(output.runtimes[0].network.as_ref().unwrap().local_only());
+    let output = fixture.perform(Some(output.controller), Operation::Read)?;
+    assert!(output.runtimes[0].network.as_ref().unwrap().local_only());
+    let options = fixture.identity.connect()?.config()?["options"].clone();
+    for key in ["globalAnnounceEnabled", "relaysEnabled", "natEnabled"] {
+        assert_eq!(options[key], false, "shell operation read-back {key}");
+    }
+    assert_eq!(options["stunKeepaliveStartS"], 0);
+    assert_eq!(options["stunKeepaliveMinS"], 0);
+    Ok(())
 }

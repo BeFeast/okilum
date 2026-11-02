@@ -88,16 +88,20 @@ print(g.find('apikey').text)
     /// Real managed preparation, with no systemd registration. Only this fixture
     /// owns/reaps the child; production source sharing cannot start a daemon.
     pub fn managed(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
-        Self::managed_with_listener(root, name, binary, false)
+        Self::managed_with_listener(root, name, binary, false, true)
     }
     pub fn managed_lan(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
-        Self::managed_with_listener(root, name, binary, true)
+        Self::managed_with_listener(root, name, binary, true, true)
+    }
+    pub fn managed_network(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
+        Self::managed_with_listener(root, name, binary, true, false)
     }
     fn managed_with_listener(
         root: &Path,
         name: &str,
         binary: PathBuf,
         lan: bool,
+        isolated: bool,
     ) -> Result<(Self, PathBuf)> {
         use okilum_sync_controller::daemon::{prepare, prepare_lan, Preparation};
         let state = root.join(name);
@@ -120,15 +124,30 @@ print(g.find('apikey').text)
             },
         )?;
         let mut xml = xmltree::Element::parse(fs::read(&identity.config_file)?.as_slice())?;
-        {
+        if isolated {
             // Explicit-address acceptance must never fall back to UDP discovery.
             let options = xml
                 .get_mut_child("options")
                 .context("fixture options missing")?;
-            options
-                .get_mut_child("localAnnounceEnabled")
-                .context("fixture discovery flag missing")?
-                .children = vec![xmltree::XMLNode::Text("false".into())];
+            for key in [
+                "localAnnounceEnabled",
+                "globalAnnounceEnabled",
+                "relaysEnabled",
+                "natEnabled",
+            ] {
+                options
+                    .get_mut_child(key)
+                    .context("fixture flag missing")?
+                    .children = vec![xmltree::XMLNode::Text("false".into())];
+            }
+            for key in ["stunKeepaliveStartS", "stunKeepaliveMinS"] {
+                options
+                    .get_mut_child(key)
+                    .context("fixture STUN missing")?
+                    .children = vec![xmltree::XMLNode::Text("0".into())];
+            }
+            options.children.retain(|node| !matches!(node, xmltree::XMLNode::Element(e)
+                if e.name == "listenAddress" && e.get_text().is_some_and(|s| s.starts_with("dynamic+"))));
             let mut bytes = Vec::new();
             xml.write(&mut bytes)?;
             fs::write(&identity.config_file, bytes)?;

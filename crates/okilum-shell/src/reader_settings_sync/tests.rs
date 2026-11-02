@@ -442,6 +442,7 @@ fn guided_worker(
                     folders: 0,
                     managed: true,
                     selected: true,
+                    network: None,
                 }],
                 #[cfg(target_os = "linux")]
                 vaults: (0..12)
@@ -870,3 +871,117 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
 #[cfg(target_os = "linux")]
 #[path = "labels_tests.rs"]
 mod labels_tests;
+
+#[cfg(target_os = "linux")]
+fn network_choice(managed: bool, local: bool) -> linux_runtime::Choice {
+    linux_runtime::Choice {
+        identity: okilum_sync_controller::daemon::DaemonIdentity {
+            config_file: PathBuf::from("/fixture/config.xml"),
+            device_id: "fixture-device".into(),
+            certificate_hash: "fixture-certificate".into(),
+        },
+        folders: 2,
+        managed,
+        selected: true,
+        network: Some(okilum_sync_controller::network_policy::State {
+            global_discovery: !local,
+            relays: !local,
+            nat: !local,
+            stun: !local,
+        }),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let recorded = calls.clone();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_features::install(directory.path(), cx);
+        reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+        cx.set_global(TestWorker(std::sync::Arc::new(move |operation| {
+            let Operation::Network(identity, policy) = operation else {
+                panic!("unexpected operation")
+            };
+            assert_eq!(identity, network_choice(true, false).identity);
+            recorded.lock().unwrap().push(policy);
+            let local =
+                policy == okilum_sync_controller::network_policy::Policy::LocalNetworkAndVpn;
+            Ok(Output {
+                controller: controller.clone(),
+                snapshot: snapshot(None),
+                inspected: None,
+                selected_destination: None,
+                runtimes: vec![network_choice(true, local)],
+                vaults: vec![],
+            })
+        })));
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.runtimes = vec![network_choice(true, false)];
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    for local in [true, false] {
+        visual.run_until_parked();
+        let switch = visual
+            .debug_bounds("sync-network-local-only")
+            .expect("managed switch");
+        visual.simulate_click(switch.center(), Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(!view.busy);
+            assert_eq!(
+                view.runtimes[0].network.as_ref().unwrap().local_only(),
+                local
+            );
+        });
+    }
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![
+            okilum_sync_controller::network_policy::Policy::LocalNetworkAndVpn,
+            okilum_sync_controller::network_policy::Policy::PublicDiscoveryAndRelays,
+        ]
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn sync_network_external_connection_has_no_mutating_switch(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.runtimes = vec![network_choice(false, false)];
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sync-network-local-only").is_none());
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    view.update(visual, |view, cx| {
+        view.runtimes[0].managed = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("sync-network-local-only").is_some(),
+        "positive control: same rendered connection offers switch only when managed"
+    );
+}

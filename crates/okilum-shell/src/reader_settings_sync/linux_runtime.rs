@@ -9,6 +9,7 @@ pub(super) struct Choice {
     pub folders: usize,
     pub managed: bool,
     pub selected: bool,
+    pub network: Option<okilum_sync_controller::network_policy::State>,
 }
 pub(super) struct Runtime {
     pub inventory: Discovery,
@@ -68,6 +69,7 @@ pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runti
             folders: c.folders.len(),
             managed: managed_identity.as_ref() == Some(&c.identity),
             selected: false,
+            network: None,
         })
         .collect::<Vec<_>>();
     let chosen = if let Some(selected) = selected {
@@ -89,6 +91,11 @@ pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runti
     } else {
         None
     };
+    if let Some(choice) = choices.iter_mut().find(|c| c.selected) {
+        choice.network = Some(okilum_sync_controller::network_policy::read(
+            &choice.identity,
+        )?);
+    }
     Ok(Runtime {
         configs: chosen.map(|p| vec![p]).unwrap_or_else(|| configs.clone()),
         inventory,

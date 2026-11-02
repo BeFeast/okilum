@@ -1,4 +1,4 @@
-//! Explicit LAN bootstrap from a package-pinned runtime. Inventory/Settings reads
+//! Explicit managed bootstrap from a package-pinned runtime. Inventory/Settings reads
 //! never call this module's Connect entry. No fallback to PATH or another daemon.
 use crate::{
     daemon::{self, DaemonIdentity, Preparation},
@@ -161,6 +161,8 @@ pub fn connect(
     check()?;
     Lifecycle::new(state.join("service"), units.to_owned(), Systemd).enable(instance)?;
     identity.connect()?;
+    check()?;
+    crate::network_policy::reconcile(&state.join("prepared"), &identity, None)?;
     check()?;
     Ok(identity)
 }

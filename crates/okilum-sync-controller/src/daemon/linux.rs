@@ -183,13 +183,16 @@ fn managed_preparation(state: &Path) -> Result<Prepared> {
 pub(crate) fn managed_transport_identity(state: &Path) -> Result<DaemonIdentity> {
     Ok(managed_preparation(state)?.identity)
 }
+pub(crate) fn managed_listen_address(state: &Path) -> Result<SocketAddr> {
+    Ok(managed_preparation(state)?.request.listen_address)
+}
 /// Only call after explicit Enable. The random state directory must be new or
 /// contain this preparation's durable intent; never point it at an external home.
 pub fn prepare(state: &Path, request: &Preparation) -> Result<(ManagedInstance, DaemonIdentity)> {
     prepare_with_policy(state, request, false)
 }
 
-/// Explicit LAN bootstrap only; never selected from empty discovery alone.
+/// Managed transport with public discovery and relays; pairing itself stays in LAN.
 pub fn prepare_lan(
     state: &Path,
     request: &Preparation,
@@ -302,10 +305,12 @@ fn prepare_with_policy(
     set(gui, "address", &request.rest_address.to_string());
     let options = xml.get_mut_child("options").context("options missing")?;
     for (name, value) in [
-        ("globalAnnounceEnabled", "false"),
+        ("globalAnnounceEnabled", if lan { "true" } else { "false" }),
         ("localAnnounceEnabled", if lan { "true" } else { "false" }),
-        ("natEnabled", "false"),
-        ("relaysEnabled", "false"),
+        ("natEnabled", if lan { "true" } else { "false" }),
+        ("relaysEnabled", if lan { "true" } else { "false" }),
+        ("stunKeepaliveStartS", if lan { "180" } else { "0" }),
+        ("stunKeepaliveMinS", if lan { "20" } else { "0" }),
         ("startBrowser", "false"),
         ("autoUpgradeIntervalH", "0"),
         ("urAccepted", "-1"),
@@ -321,6 +326,13 @@ fn prepare_with_policy(
         "listenAddress",
         &format!("tcp://{}", request.listen_address),
     );
+    if lan {
+        let mut relay = Element::new("listenAddress");
+        relay
+            .children
+            .push(XMLNode::Text(crate::network_policy::RELAY_LISTENER.into()));
+        options.children.push(XMLNode::Element(relay));
+    }
     let mut bytes = Vec::new();
     xml.write(&mut bytes)?;
     private::write(&config, &bytes)?;

@@ -37,3 +37,6 @@ pub mod sidecar;
 
 #[cfg(target_os = "linux")]
 pub mod linux_bootstrap;
+
+#[cfg(target_os = "linux")]
+pub mod network_policy;

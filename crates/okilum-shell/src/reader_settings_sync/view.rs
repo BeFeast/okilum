@@ -334,6 +334,44 @@ impl Render for SyncSettings {
             }
         }
         #[cfg(target_os = "linux")]
+        if let Some(runtime) = self.runtimes.iter().find(|r| r.selected) {
+            if let Some(network) = &runtime.network {
+                content = content
+                    .child(div().text_base().child("Connections on this computer"))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(p.text_muted)
+                            .child(network.description()),
+                    );
+                if runtime.managed {
+                    let identity = runtime.identity.clone();
+                    content = content.child(
+                        v_flex().gap_2()
+                            .child(h_flex().gap_2()
+                                .child("Only local network and VPN")
+                                .child(div().debug_selector(|| "sync-network-local-only".into()).child(
+                                    gpui_component::switch::Switch::new("sync-network-local-only")
+                                        .accessibility_label("Only local network and VPN")
+                                        .checked(network.local_only())
+                                        .disabled(self.busy)
+                                        .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                            use okilum_sync_controller::network_policy::Policy;
+                                            this.run(Operation::Network(identity.clone(), if *checked {
+                                                Policy::LocalNetworkAndVpn
+                                            } else { Policy::PublicDiscoveryAndRelays }), cx);
+                                        })))))
+                            .child(div().text_sm().text_color(p.text_muted).child(
+                                "Applies to every vault using this connection on this computer. When off, public services help your computers find and reach each other. Files stay encrypted between your computers. Turn on to stop public discovery, relays and router address lookup."))
+                            .child(div().text_sm().text_color(p.text_muted).child(
+                                "Pair new computers on the same local network first.")));
+                } else {
+                    content = content.child(div().text_sm().text_color(p.text_muted).child(
+                        "Your existing Syncthing controls these settings. Change them in Syncthing; Okilum leaves its network options unchanged."));
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
         {
             let mut vaults = self.vaults.clone();
             for reader in reader_open::readers(cx) {

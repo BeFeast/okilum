@@ -85,3 +85,4 @@ jobs:
           scripts/vendor-setup.sh 9>&-
           scripts/vendor-setup.sh --verify 9>&-
           bash scripts/ci/sync-source-sharing.sh 9>&-
+          bash scripts/ci/sync-network-policy.sh 9>&-
