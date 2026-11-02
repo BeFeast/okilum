@@ -4,7 +4,7 @@ use ::core::prelude::v1::test;
 use okilum_t3::rotation::TzifResolver;
 
 #[gpui::test]
-fn rotation_policy_1473_actual_coordinator_ack_and_replaced_authority_guard(
+async fn rotation_policy_1473_actual_coordinator_ack_and_replaced_authority_guard(
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
@@ -79,7 +79,23 @@ fn rotation_policy_1473_actual_coordinator_ack_and_replaced_authority_guard(
                 cx,
             );
         });
+        // A parked GPUI executor does not mean that the external serialized
+        // draft-writer thread has completed its barrier. Observe the actual
+        // coordinator completion; do not flush or acknowledge on its behalf.
+        visual
+            .condition(&coordinator, |coordinator, _| {
+                coordinator.resolved || !coordinator.valid.load(Ordering::Acquire)
+            })
+            .await;
         visual.run_until_parked();
+        if !replace {
+            coordinator.update_in(visual, |coordinator, _, _| {
+                assert!(
+                    coordinator.resolved,
+                    "current-owner Resume was refused before durable acknowledgement"
+                );
+            });
+        }
         project.update_in(visual, |view, _, cx| {
             let current = authority.load().unwrap().unwrap();
             assert!(current.checkpoint.pending.is_none());
