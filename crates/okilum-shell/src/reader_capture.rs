@@ -150,7 +150,7 @@ pub(crate) fn menu_item(
         let task = cx.spawn(async move |cx| {
             let result: anyhow::Result<Arc<PreparedNamespace>> = work.await;
             #[cfg(test)]
-            let test_done = mounted_tests::pause_prepared(&snapshot.root).await;
+            let test_done = mounted_tests::pause_prepared(&snapshot.root, result.as_ref().err().map(|error| format!("{error:#}"))).await;
             let delivered = asking_window.update(cx, |_, window, cx| {
                 let task = ENTRIES.with(|entries| {
                     let mut entries = entries.borrow_mut();

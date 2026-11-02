@@ -13,7 +13,13 @@ struct Hold {
 }
 thread_local! { static HOLD: RefCell<Option<Hold>> = const { RefCell::new(None) }; }
 
-pub(super) async fn pause_prepared(root: &Path) -> Option<oneshot::Sender<()>> {
+thread_local! { static PREPARATION: RefCell<Option<(PathBuf, Option<String>)>> = const { RefCell::new(None) }; }
+
+pub(super) async fn pause_prepared(
+    root: &Path,
+    error: Option<String>,
+) -> Option<oneshot::Sender<()>> {
+    PREPARATION.with(|slot| *slot.borrow_mut() = Some((root.to_owned(), error)));
     let hold = HOLD.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.as_ref().is_some_and(|hold| hold.root == root) {
@@ -70,6 +76,11 @@ fn fixture(cx: &mut TestAppContext) -> (Fixture, &mut VisualTestContext) {
     let session = directory.path().join("state");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(&session).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     let original = b"# Untouched\r\nUnicode: \xce\xbb\r\n".to_vec();
     std::fs::write(root.join("start.md"), &original).unwrap();
     cx.update(|cx| {
@@ -190,7 +201,10 @@ async fn open(f: &Fixture, visual: &mut VisualTestContext) -> Entity<CaptureComp
     );
     release.send(()).unwrap();
     finished.await.unwrap();
-    let view = composer(&f.root).expect("current owner publishes real composer");
+    let view = composer(&f.root).unwrap_or_else(|| {
+        let preparation = PREPARATION.with(|slot| slot.borrow().clone());
+        panic!("current owner did not publish composer; actual preparation={preparation:?}");
+    });
     visual.condition(&view, |view, _| !view.loading).await;
     visual.run_until_parked();
     assert!(visual.debug_bounds("capture-composer-dialog").is_some());
