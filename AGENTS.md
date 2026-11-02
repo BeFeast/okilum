@@ -36,6 +36,10 @@ Keep design decisions in `docs/` or the project brain, not only in commit messag
 
 ## Tests and measurements
 
+- Agent builds/tests default to `H=github scripts/agent/gh-check.sh` from a
+  committed worktree; see `docs/agent-checks.md`. Use local build slots only for
+  GitHub outages or checks requiring local hardware. Never run Cargo on maestro
+  except `cargo fmt`.
 - A regression test must fail without the fix. Probes need controls that exercise
   the measured path, so an unfired test cannot look like success.
 - Compare timings on the same hardware in the same session.

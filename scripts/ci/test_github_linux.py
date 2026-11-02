@@ -256,6 +256,8 @@ class LinuxBridgeTests(unittest.TestCase):
 
     def test_full_gate_retains_all_existing_command_families(self):
         script = (ROOT / 'scripts/ci/check-linux.sh').read_text()
+        self.assertIn('bash scripts/ci/linux-rust-tests.sh', script)
+        script += (ROOT / 'scripts/ci/linux-rust-tests.sh').read_text()
         for command in ['cargo fmt --check', 'cargo clippy --workspace --all-targets -- -D warnings',
                         'cargo test -p okilum-core -p okilum-shell -p okilum-sync',
                         'cargo check -p okilum-shell --no-default-features',
