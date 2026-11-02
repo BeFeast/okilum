@@ -19,6 +19,24 @@ pub fn create(root: &Path, relative: &Path) -> Result<()> {
 
 /// Publish a complete recovered source with NOREPLACE; no partial destination.
 pub fn create_with_source(root: &Path, relative: &Path, source: &[u8]) -> Result<()> {
+    let parts = creation_parts(relative)?;
+    if !relative
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+    {
+        bail!("Use a Markdown (.md) filename");
+    }
+    publish_created(root, relative, source, &parts)
+}
+
+/// Publish exact attachment bytes through the same guarded NOREPLACE writer.
+/// No directory creation, overwrite, note-template expansion or protocol entry.
+pub fn create_attachment_with_source(root: &Path, relative: &Path, source: &[u8]) -> Result<()> {
+    let parts = creation_parts(relative)?;
+    publish_created(root, relative, source, &parts)
+}
+
+fn creation_parts(relative: &Path) -> Result<Vec<Component<'_>>> {
     if crate::vault::service_path(relative) {
         bail!("Service files are not note creation targets");
     }
@@ -26,12 +44,17 @@ pub fn create_with_source(root: &Path, relative: &Path, source: &[u8]) -> Result
     if parts.is_empty() || parts.iter().any(|p| !matches!(p, Component::Normal(_))) {
         bail!("Choose a filename inside the open folder");
     }
-    if !relative
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
-    {
-        bail!("Use a Markdown (.md) filename");
-    }
+    Ok(parts)
+}
+
+// Each platform uses its validated path representation.
+#[allow(unused_variables)]
+fn publish_created(
+    root: &Path,
+    relative: &Path,
+    source: &[u8],
+    parts: &[Component<'_>],
+) -> Result<()> {
     #[cfg(windows)]
     {
         // Validate the original root before canonicalization can follow links.
@@ -92,6 +115,79 @@ pub fn create_with_source(root: &Path, relative: &Path, source: &[u8]) -> Result
             .sync_all()
             .context("The new file exists, but its folder could not be synced")?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod attachment_writer_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn exact_binary_publication_and_note_wrapper_guard() {
+        let vault = tempfile::tempdir().unwrap();
+        std::fs::create_dir(vault.path().join("assets")).unwrap();
+        let relative = Path::new("assets/payload.bin");
+        let bytes = b"\0binary\xff\r\n";
+        assert!(create_with_source(vault.path(), relative, bytes).is_err());
+        assert!(!vault.path().join(relative).exists());
+        create_attachment_with_source(vault.path(), relative, bytes).unwrap();
+        assert_eq!(std::fs::read(vault.path().join(relative)).unwrap(), bytes);
+        assert!(create_attachment_with_source(vault.path(), relative, b"replacement").is_err());
+        assert_eq!(std::fs::read(vault.path().join(relative)).unwrap(), bytes);
+        create_with_source(vault.path(), Path::new("note.md"), b"note").unwrap();
+        assert_eq!(
+            std::fs::read(vault.path().join("note.md")).unwrap(),
+            b"note"
+        );
+    }
+
+    #[test]
+    fn attachment_guards_reject_paths_service_files_and_symlink_redirection() {
+        let vault = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        for path in ["../outside.bin", "/absolute.bin", ".obsidian/file.bin"] {
+            assert!(
+                create_attachment_with_source(vault.path(), Path::new(path), b"bytes").is_err()
+            );
+        }
+        symlink(outside.path(), vault.path().join("link")).unwrap();
+        assert!(
+            create_attachment_with_source(vault.path(), Path::new("link/file.bin"), b"bytes")
+                .is_err()
+        );
+        symlink(
+            outside.path().join("missing.bin"),
+            vault.path().join("dangling.bin"),
+        )
+        .unwrap();
+        assert!(
+            create_attachment_with_source(vault.path(), Path::new("dangling.bin"), b"bytes")
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+        std::fs::create_dir(vault.path().join("real")).unwrap();
+        create_attachment_with_source(vault.path(), Path::new("real/file.bin"), b"bytes").unwrap();
+        assert_eq!(
+            std::fs::read(vault.path().join("real/file.bin")).unwrap(),
+            b"bytes"
+        );
+    }
+
+    #[test]
+    fn failed_shared_publish_has_no_partial_destination() {
+        let vault = tempfile::tempdir().unwrap();
+        let target = Path::new("file.bin");
+        assert!(crate::unix_publish::inject(rustix::io::Errno::ACCESS, || {
+            create_attachment_with_source(vault.path(), target, b"exact binary")
+        })
+        .is_err());
+        assert!(!vault.path().join(target).exists());
+        create_attachment_with_source(vault.path(), target, b"exact binary").unwrap();
+        assert_eq!(
+            std::fs::read(vault.path().join(target)).unwrap(),
+            b"exact binary"
+        );
     }
 }
 

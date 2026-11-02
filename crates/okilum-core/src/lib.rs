@@ -13,6 +13,7 @@ pub mod agent_skills;
 pub mod analyzer;
 pub mod archive;
 pub mod callout;
+pub mod capture;
 pub mod code_language;
 #[cfg(all(unix, feature = "brain"))]
 pub mod decision_reuse;
