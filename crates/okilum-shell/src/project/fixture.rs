@@ -318,6 +318,70 @@ fn picker_reference_preferences(state: &std::path::Path) {
     .expect("isolated model preferences");
 }
 
+/// Repeatable native screenshots of the production Reader-mounted Manager.
+/// Only the explicit harness feature/mode enables this synthetic local vault.
+#[cfg(feature = "project-ui-harness")]
+fn open_mounted_header(state: PathBuf, gateway: Arc<Fake>, cx: &mut App) {
+    let vault = state.join("mounted-header-vault");
+    std::fs::create_dir_all(vault.join("ops")).expect("fixture vault");
+    std::fs::write(vault.join("ops/project.toml"), "kind = 'knowledge'\n")
+        .expect("fixture project");
+    std::fs::write(
+        vault.join("home.md"),
+        "# Project notes\n\nThe Manager stays beside your notes.\n",
+    )
+    .expect("fixture note");
+    let width = match std::env::var("OKILUM_HEADER_QA_WIDTH").as_deref() {
+        Ok("320") => 320.,
+        _ => 560.,
+    };
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(1200.), px(800.)),
+                cx,
+            ))),
+            ..Default::default()
+        },
+        move |window, cx| {
+            window.set_window_title("Okilum — Mounted Manager fixture");
+            let reader = cx.new(|cx| {
+                let mut reader = Reader::new(
+                    Opts {
+                        vault: Some(vault.clone()),
+                        note: Some("home.md".into()),
+                        index_dir: Some(state.join("index")),
+                        session_directory: Some(state.clone()),
+                        panel_settings_override: Some(state.join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                let project = cx.new(|cx| {
+                    let mut project = view(state, gateway, window, cx);
+                    project.identity = Some(ServerIdentity {
+                        environment_id: "environment:fixture".into(),
+                        label: "Fixture".into(),
+                    });
+                    project
+                });
+                reader.project_navigation.active =
+                    Some(okilum_t3::projects::Project::read(&vault).expect("fixture project"));
+                reader.project = Some(project);
+                reader.project_open = true;
+                reader.panels.close(reader_layout::Panel::Notes);
+                reader.panels.open(reader_layout::Panel::Backlinks);
+                reader.panel_widths.backlinks = width;
+                reader
+            });
+            cx.new(|cx| Root::new(reader, window, cx))
+        },
+    )
+    .expect("mounted Manager fixture window");
+}
+
 #[cfg(feature = "project-ui-harness")]
 pub(super) fn open(cx: &mut App) -> bool {
     #[cfg(target_os = "linux")]
@@ -337,7 +401,11 @@ pub(super) fn open(cx: &mut App) -> bool {
         mode.as_str(),
         "picker-reference-light" | "picker-reference-dark"
     );
-    if picker_reference {
+    let mounted_header = matches!(
+        mode.as_str(),
+        "mounted-header-light" | "mounted-header-dark"
+    );
+    if picker_reference || mounted_header {
         reader_features::set_enabled(reader_features::Feature::Agents, true, cx);
     }
     let state = reader_history::state_directory().expect("isolated fixture state");
@@ -355,6 +423,10 @@ pub(super) fn open(cx: &mut App) -> bool {
         grown: Mutex::new(true),
         ..Default::default()
     });
+    if mounted_header {
+        open_mounted_header(state, gateway, cx);
+        return true;
+    }
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
