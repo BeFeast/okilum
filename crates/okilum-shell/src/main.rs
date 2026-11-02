@@ -121,6 +121,8 @@ mod reader_settings_sync;
 #[cfg(target_os = "macos")]
 #[path = "reader_settings_sync_macos.rs"]
 mod reader_settings_sync;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod reader_sync_merge;
 mod reader_settings_vaults;
 mod reader_shortcuts;
 mod reader_side_panel;
