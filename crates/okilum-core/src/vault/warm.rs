@@ -55,7 +55,10 @@ impl SourceRevision {
         if crate::change_detection::needs_content_check(path, changed) {
             let hash = crate::change_detection::hash_file(path, revision.size)?;
             if Self::metadata(path)? != revision {
-                return Err(std::io::Error::other("File changed during revision check"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "File changed during revision check",
+                ));
             }
             revision.content_hash = Some(hash);
         }
@@ -65,6 +68,21 @@ impl SourceRevision {
     fn matches_bytes(&self, bytes: &[u8]) -> bool {
         self.content_hash
             .is_none_or(|hash| hash == crate::change_detection::digest(bytes))
+    }
+
+    /// Compare a current observation with a saved revision. Once native ctime
+    /// is outside the vulnerable tick, a saved fingerprint is extra evidence,
+    /// not a change to the source. A current fingerprint still requires an
+    /// identical saved fingerprint, including on coarse/unknown filesystems.
+    fn matches_saved(&self, saved: &Self) -> bool {
+        self.size == saved.size
+            && self.modified == saved.modified
+            && self.device == saved.device
+            && self.inode == saved.inode
+            && self.changed == saved.changed
+            && self
+                .content_hash
+                .is_none_or(|hash| saved.content_hash == Some(hash))
     }
 
     fn metadata(path: &Path) -> std::io::Result<Self> {
@@ -637,7 +655,7 @@ impl ReuseDiagnostics {
         } else if let (Some(before), Some(saved)) =
             (before, old.and_then(|source| source.stamp.as_ref()))
         {
-            if before != saved {
+            if !before.matches_saved(saved) {
                 self.mismatch.size += usize::from(before.size != saved.size);
                 self.mismatch.modified += usize::from(before.modified != saved.modified);
                 self.mismatch.device += usize::from(before.device != saved.device);
@@ -796,7 +814,8 @@ impl Snapshot {
             persisted.snapshot_id == self.id
                 && persisted.search_generation == self.search_generation
                 && persisted.path == base.join("reader-snapshot.json")
-                && SourceRevision::read(&persisted.path).is_ok_and(|now| now == persisted.file)
+                && SourceRevision::read(&persisted.path)
+                    .is_ok_and(|now| now.matches_saved(&persisted.file))
         })
     }
 
@@ -2504,6 +2523,45 @@ mod tests {
             cfg!(any(unix, windows)),
             "only a native change time can strengthen reuse"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aged_native_revision_reuses_fingerprinted_source_but_new_checks_require_proof() {
+        let saved = SourceRevision {
+            size: 4,
+            modified: 1_700_000_000_000_000_000,
+            device: 1,
+            inode: 2,
+            changed: 1_700_000_000_000_000_123,
+            content_hash: Some(crate::change_detection::digest(b"old!")),
+        };
+        let source = Source {
+            stamp: Some(saved.clone()),
+            bytes: STANDARD.encode("old!"),
+        };
+        // Deterministically model the same file aging out of the content-check
+        // window: metadata is identical; the current native observation omits
+        // its now-unnecessary fingerprint.
+        let mut current = saved.clone();
+        current.content_hash = None;
+        let mut stats = ReuseDiagnostics::default();
+        assert!(!stats.needs_read(Some(&current), Some(&source), false));
+        assert_eq!(stats.changed_revision, 0);
+        // A metadata-only old cache cannot supply proof when a current check
+        // requires bytes, even if the stat keys still agree.
+        let unverified = Source {
+            stamp: Some(current.clone()),
+            ..source.clone()
+        };
+        assert!(stats.needs_read(Some(&saved), Some(&unverified), false));
+        current.content_hash = Some(crate::change_detection::digest(b"new!"));
+        assert!(stats.needs_read(Some(&current), Some(&source), false));
+        current = saved;
+        current.changed += 1;
+        current.content_hash = None;
+        assert!(stats.needs_read(Some(&current), Some(&source), false));
+        assert_eq!(stats.changed_revision, 3);
     }
 
     #[cfg(unix)]
