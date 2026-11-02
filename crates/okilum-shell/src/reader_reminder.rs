@@ -9,7 +9,19 @@ use gpui_component::{notification::Notification, WindowExt};
 use okilum_core::reminder_append::write::{self, Receipt};
 use okilum_core::{reminder_context, reminder_dates, reminder_task};
 
-gpui::actions!(reader_reminder, [RemindOnSelection, CopyLinkToLine]);
+gpui::actions!(reader_reminder, [CopyLinkToLine]);
+
+#[cfg(all(test, unix))]
+mod selected_tests;
+#[cfg(any(unix, windows))]
+mod selection;
+
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(namespace = reader_reminder, no_json, no_register)]
+pub(super) struct RemindOnSelection {
+    #[cfg(any(unix, windows))]
+    request: Option<selection::Request>,
+}
 
 /// The default reminders note; Settings can choose another per vault.
 #[cfg(test)]
@@ -45,9 +57,10 @@ pub(super) fn menu(menu: PopupMenu, reader: &WeakEntity<Reader>, cx: &App) -> Po
     let Some(view) = reader.upgrade() else {
         return menu;
     };
-    let Some((selection, date)) = view.read(cx).reminder_for_selection(cx) else {
+    let Some(request) = selection::Request::read(view.read(cx), cx) else {
         return menu;
     };
+    let date = request.date();
     let reader = reader.clone();
     let label = format!("Remind me on {}", date_label(date));
     menu.item(
@@ -57,10 +70,7 @@ pub(super) fn menu(menu: PopupMenu, reader: &WeakEntity<Reader>, cx: &App) -> Po
                 .child(label.clone())
         })
         .on_click(move |_, window, cx| {
-            let selection = selection.clone();
-            let _ = reader.update(cx, |this, cx| {
-                this.add_reminder(selection, date, None, window, cx)
-            });
+            let _ = reader.update(cx, |this, cx| request.apply(this, window, cx));
         }),
     )
 }
@@ -211,6 +221,7 @@ pub(super) struct MenuFacts(
             String,
         )>,
     >,
+    #[cfg(any(unix, windows))] std::rc::Rc<std::cell::RefCell<Option<selection::Request>>>,
 );
 
 impl MenuFacts {
@@ -270,6 +281,12 @@ impl MenuFacts {
                     .flatten()
             })
             .flatten();
+        #[cfg(any(unix, windows))]
+        {
+            *self.3.borrow_mut() = (markdown && date.is_some())
+                .then(|| selection::Request::editor(reader, input, state))
+                .flatten();
+        }
         self.0.set(Facts {
             capabilities: state.context_menu_capabilities(),
             date,
@@ -282,6 +299,8 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
     use gpui_base::input::{Copy, Cut, GoToDefinition, Paste, SelectAll, ToggleCodeActions};
     #[cfg(test)]
     MENU_BUILDS.with(|builds| builds.set(builds.get() + 1));
+    #[cfg(all(test, unix))]
+    selected_tests::record_editor_request(facts.3.borrow().clone());
     let Facts {
         capabilities,
         date,
@@ -313,7 +332,10 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
                     Command::PasteTitledLink => Box::new(crate::note_paste::PasteAsTitledLink),
                     Command::SelectAll => Box::new(SelectAll),
                     Command::CopyLinkToLine => Box::new(CopyLinkToLine),
-                    Command::Remind => Box::new(RemindOnSelection),
+                    Command::Remind => Box::new(RemindOnSelection {
+                        #[cfg(any(unix, windows))]
+                        request: facts.3.borrow().clone(),
+                    }),
                     Command::OpenBlockExternally => {
                         Box::new(crate::reader_editor::OpenBlockExternally)
                     }
@@ -328,7 +350,7 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
 }
 
 /// The editor's selection and its date, when the whole selection is one.
-#[cfg(any(unix, windows))]
+#[cfg(all(test, any(unix, windows)))]
 fn selected_date(state: &Entity<EditorState>, cx: &App) -> Option<(String, time::Date)> {
     let selection = state.read(cx).selected_text().to_string();
     let date = reminder_dates::parse(&selection, today())?;
@@ -376,27 +398,21 @@ impl Reader {
         Some((selection, date))
     }
 
-    /// The `RemindOnSelection` action from the source editor's menu.
+    /// The menu action carries the original owner, source stamp and date.
     pub(super) fn remind_on_editor_selection(
         &mut self,
+        action: &RemindOnSelection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.single_file || self.current_rel.is_empty() {
-            return;
+        if let Some(request) = &action.request {
+            request.apply(self, window, cx);
         }
-        let Some(editing) = self.editing.as_ref() else {
-            return;
-        };
-        let Some((selection, date)) = selected_date(editing.input(), cx) else {
-            return;
-        };
-        let text = editing.input().read(cx).value().to_string();
-        self.add_reminder(selection, date, Some(text), window, cx);
     }
 
-    /// `source` is the text the selection was made in when it differs from the
-    /// saved note (the source editor holds unsaved edits).
+    /// Existing explicit caller compatibility; menu routes retain their own
+    /// request at menu construction instead of recapturing the current note.
+    #[cfg(test)]
     pub(super) fn add_reminder(
         &mut self,
         selection: String,
@@ -405,62 +421,13 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(drafts) = self
-            .session_directory
-            .as_ref()
-            .map(|state| state.join("editor-drafts"))
-        else {
-            reader_toast::transient("Reminders need Okilum's app storage", window, cx);
-            return;
-        };
-        let source = source.as_deref().unwrap_or_else(|| {
-            self.note_canonical_source
-                .as_deref()
-                .unwrap_or(&self.note_source)
-        });
-        let found = reminder_context::locate(source, &selection);
-        // Without a verified sentence the reminder names the note, not a guess.
-        let sentence = found.sentence.unwrap_or_else(|| {
-            if self.current_title.is_empty() {
-                reader_move::display_name(&self.current_rel)
-            } else {
-                self.current_title.clone()
-            }
-        });
-        let line = match reminder_task::format(
-            &sentence,
-            &self.current_rel,
-            found.heading.as_deref(),
-            date,
-        ) {
-            Ok(line) => line,
-            Err(message) => {
-                reader_toast::transient(message, window, cx);
-                return;
-            }
-        };
-        let root = self.vault_root.clone();
-        let note = self.reminder_prefs.note.clone();
-        let task = cx.background_executor().spawn({
-            let (root, drafts) = (root.clone(), drafts.clone());
-            async move { write::add(&root, &drafts, &note, &line) }
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            let _ = this.update_in_own_window(cx, |this, window, cx| match result {
-                Ok(receipt) => this.announce_reminder(receipt, root, drafts, date, window, cx),
-                Err(error) => {
-                    reader_toast::transient(format!("Reminder not added: {error:#}"), window, cx)
-                }
-            });
-        })
-        .detach();
+        selection::Request::direct(self, selection, date, source).apply(self, window, cx);
     }
 
     fn announce_reminder(
         &mut self,
         receipt: Receipt,
-        root: PathBuf,
+        owner: selection::Owner,
         drafts: PathBuf,
         date: time::Date,
         window: &mut Window,
@@ -479,12 +446,20 @@ impl Reader {
                 .autohide(false)
                 .action(move |_, _, cx| {
                     let (reader, announced) = (reader.clone(), announced.clone());
-                    let (root, drafts) = (root.clone(), drafts.clone());
+                    let (owner, drafts) = (owner.clone(), drafts.clone());
                     reader_icon_button("undo-reminder", IconName::Undo2, "Undo", cx)
                         .debug_selector(|| "undo-reminder".into())
                         .on_click(move |_, window, cx| {
                             let _ = reader.update(cx, |this, cx| {
-                                this.undo_reminder(&announced, &root, &drafts, window, cx)
+                                if !owner.current(this) {
+                                    reader_toast::error(
+                                        "Reminder Undo belongs to the previous note view.",
+                                        window,
+                                        cx,
+                                    );
+                                    return;
+                                }
+                                this.undo_reminder(&announced, &owner.root, &drafts, window, cx)
                             });
                         })
                 }),
@@ -513,6 +488,21 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.vault_root != root
+            || self
+                .session_directory
+                .as_ref()
+                .map(|state| state.join("editor-drafts"))
+                .as_deref()
+                != Some(drafts)
+        {
+            reader_toast::error(
+                "Reminder Undo belongs to the previous vault or app storage.",
+                window,
+                cx,
+            );
+            return;
+        }
         // Only the most recent toast may undo; an older one is already stale.
         if !self
             .reminder_undo
@@ -523,19 +513,60 @@ impl Reader {
         }
         self.reminder_undo = None;
         window.remove_notification::<ReminderToast>(cx);
+        let owner = selection::Owner::capture(self);
         let (receipt, root, drafts) = (announced.clone(), root.to_owned(), drafts.to_owned());
-        let task = cx
-            .background_executor()
-            .spawn(async move { receipt.undo(&root, &drafts) });
-        cx.spawn_in(window, async move |_, cx| {
-            let result = task.await;
-            let _ = cx.update(|window, cx| match result {
-                Ok(()) => reader_toast::transient("Reminder removed", window, cx),
-                Err(error) => reader_toast::transient(
-                    format!("Cannot undo: {error:#}. The reminders note was kept."),
-                    window,
-                    cx,
-                ),
+        let path = receipt.path().to_owned();
+        let valid = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let expected = owner.clone();
+        let revoke = valid.clone();
+        let subscription = cx.observe_self(move |reader, _| {
+            if !expected.current(reader) {
+                revoke.store(false, std::sync::atomic::Ordering::Release);
+            }
+        });
+        let released = valid.clone();
+        let release =
+            cx.on_release(move |_, _| released.store(false, std::sync::atomic::Ordering::Release));
+        cx.spawn_in(window, async move |this, cx| {
+            let allowed = valid.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    anyhow::ensure!(
+                        allowed.load(std::sync::atomic::Ordering::Acquire),
+                        "Reminder Undo view changed; source was kept"
+                    );
+                    receipt.undo(&root, &drafts)
+                })
+                .await;
+            drop(subscription);
+            drop(release);
+            let _ = this.update_in_own_window(cx, |reader, window, cx| {
+                #[cfg(test)]
+                {
+                    if cx.try_global::<selection::test_hooks::Harness>().is_none() {
+                        cx.set_global(selection::test_hooks::Harness::default());
+                    }
+                    cx.global_mut::<selection::test_hooks::Harness>()
+                        .undone
+                        .push(result.is_ok());
+                    cx.notify();
+                }
+                if !valid.load(std::sync::atomic::Ordering::Acquire) || !owner.current(reader) {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        reader.refresh_reminder_source(&path, cx);
+                        reader_toast::transient("Reminder removed", window, cx);
+                    }
+                    Err(error) => reader_toast::error(
+                        format!("Cannot undo: {error:#}. The reminders note was kept."),
+                        window,
+                        cx,
+                    ),
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -872,7 +903,10 @@ mod visual_tests {
 
         // Dispatching the menu's action writes one task and touches nothing else.
         input.update_in(visual, |i, window, cx| i.focus(window, cx));
-        visual.dispatch_action(RemindOnSelection);
+        let request = reader.read_with(visual, |v, _| {
+            v.editing.as_ref().unwrap().menu_facts().3.borrow().clone()
+        });
+        visual.dispatch_action(RemindOnSelection { request });
         visual.run_until_parked();
         assert_eq!(
             std::fs::read_to_string(root.join(NOTE)).unwrap(),
@@ -887,7 +921,10 @@ mod visual_tests {
         // Without a date selection the same action does nothing.
         std::fs::remove_file(root.join(NOTE)).unwrap();
         input.update(visual, |i, cx| i.set_selected_range(0..6, cx));
-        visual.dispatch_action(RemindOnSelection);
+        let request = reader.read_with(visual, |v, _| {
+            v.editing.as_ref().unwrap().menu_facts().3.borrow().clone()
+        });
+        visual.dispatch_action(RemindOnSelection { request });
         visual.run_until_parked();
         assert!(!root.join(NOTE).exists());
         std::fs::remove_dir_all(temp).unwrap();
