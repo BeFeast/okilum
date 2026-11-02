@@ -962,6 +962,34 @@ impl RenderOnce for TasksList {
                                             },
                                         ));
                                     }
+                                    let snooze_reader = date_reader.clone();
+                                    let snooze_index = date_index.clone();
+                                    let snooze_task = date_task.clone();
+                                    let date_menu = cx.entity().downgrade();
+                                    menu = menu.submenu(
+                                        "Snooze until…",
+                                        window,
+                                        cx,
+                                        move |menu, window, cx| {
+                                            let action =
+                                                snooze_reader.upgrade().and_then(|reader| {
+                                                    reader_task_actions::TaskAction::capture(
+                                                        reader.read(cx),
+                                                        snooze_index.clone(),
+                                                        snooze_task.clone(),
+                                                    )
+                                                });
+                                            snooze_calendar(
+                                                menu,
+                                                action,
+                                                snooze_reader.clone(),
+                                                date_menu.clone(),
+                                                writable,
+                                                window,
+                                                cx,
+                                            )
+                                        },
+                                    );
                                     use gpui_component::calendar::{
                                         Calendar, CalendarEvent, CalendarState, Date,
                                     };
@@ -1082,6 +1110,27 @@ impl RenderOnce for TasksList {
                                 }),
                         )
                     })
+                    .when_some(task.scheduled, |row, scheduled| {
+                        row.child(
+                            div()
+                                .flex_shrink_0()
+                                .px_2()
+                                .py_0p5()
+                                .rounded_md()
+                                .text_xs()
+                                .text_color(muted)
+                                .bg(muted.opacity(0.08))
+                                .debug_selector(move || format!("task-scheduled-{offset}-{ix}"))
+                                .child(format!(
+                                    "Snoozed until {}",
+                                    scheduled
+                                        .format(&time::macros::format_description!(
+                                            "[day padding:none] [month repr:short] [year]"
+                                        ))
+                                        .unwrap_or_default()
+                                )),
+                        )
+                    })
                     .when_some(task.due, |row, due| {
                         row.child(
                             div()
@@ -1126,6 +1175,87 @@ impl RenderOnce for TasksList {
         list.into_any_element()
     }
 }
+
+/// Existing CalendarState selection semantics, bound to one immutable task
+/// occurrence. Snooze edits scheduled metadata only; due remains independent.
+fn snooze_calendar(
+    menu: gpui_component::menu::PopupMenu,
+    action: Option<reader_task_actions::TaskAction>,
+    reader: WeakEntity<Reader>,
+    date_menu: WeakEntity<gpui_component::menu::PopupMenu>,
+    writable: bool,
+    window: &mut Window,
+    cx: &mut Context<gpui_component::menu::PopupMenu>,
+) -> gpui_component::menu::PopupMenu {
+    use gpui_component::calendar::{Calendar, CalendarEvent, CalendarState, Date};
+    let initial = action
+        .as_ref()
+        .map(|action| action.scheduled_date())
+        .unwrap_or_else(today);
+    let calendar = cx.new(|cx| {
+        let mut state = CalendarState::new(window, cx);
+        state.set_date(
+            chrono::NaiveDate::from_ymd_opt(
+                initial.year(),
+                initial.month() as u32,
+                initial.day() as u32,
+            )
+            .expect("valid task date"),
+            window,
+            cx,
+        );
+        state
+    });
+    #[cfg(all(test, unix))]
+    snooze_tests::record_calendar(cx, &calendar);
+    cx.subscribe_in(&calendar, window, move |_, _, event, window, cx| {
+        let CalendarEvent::Selected(Date::Single(Some(selected))) = event else {
+            return;
+        };
+        use chrono::Datelike;
+        let Ok(date) = time::Date::from_calendar_date(
+            selected.year(),
+            (selected.month() as u8).try_into().expect("calendar month"),
+            selected.day() as u8,
+        ) else {
+            return;
+        };
+        if writable {
+            if let Some(action) = &action {
+                let _ = reader.update(cx, |reader, cx| {
+                    action.apply(
+                        reader,
+                        okilum_core::task_edit::Change::Scheduled(date),
+                        window,
+                        cx,
+                    )
+                });
+            } else {
+                reader_toast::error(
+                    "Task view changed. Reopen its date menu before editing.",
+                    window,
+                    cx,
+                );
+            }
+        }
+        // The dropdown listens to its ROOT menu, not this submenu. Emitting
+        // only here leaves the parent popover open over subsequent actions.
+        let _ = date_menu.update(cx, |_, cx| cx.emit(gpui::DismissEvent));
+    })
+    .detach();
+    menu.label("Choose snooze date")
+        .item(PopupMenuItem::element(move |_, _| {
+            div()
+                .id("task-snooze-calendar")
+                .debug_selector(|| "task-snooze-calendar".into())
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(Calendar::new(&calendar).border_0())
+        }))
+}
+
+#[cfg(all(test, unix))]
+#[path = "reader_tasks_snooze_tests.rs"]
+mod snooze_tests;
 
 impl Reader {
     /// Let block landing finish, then reveal the exact matching text geometry.
