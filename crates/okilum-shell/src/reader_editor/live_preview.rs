@@ -1331,6 +1331,46 @@ mod tests {
             );
             assert!(i.layout_diagnostics().unwrap().projection_composes > 0);
         });
+        // A distant visible edit exercises the 1 MiB anchor admission too.
+        use crate::input_anchor_tests::{assert_held, draw};
+        let at = input.read_with(visual, |i, _| i.cursor() - 1);
+        input.update(visual, |i, cx| i.set_selected_range(at..at, cx));
+        visual.run_until_parked();
+        let reference = at.saturating_sub(16);
+        draw(&input, reference, visual);
+        let before = draw(&input, reference, visual);
+        let scroll = input.read_with(visual, |i, _| {
+            assert!(i.scroll_offset().y < px(-200.), "scrolled positive control");
+            i.scroll_offset()
+        });
+        reader.update_in(visual, |_, window, cx| {
+            input.update(cx, |i, cx| {
+                let utf16 = i.text().byte_to_utf16_idx(at);
+                i.take_layout_frames();
+                i.replace_text_in_range(Some(utf16..utf16 + 1), "q", window, cx);
+            });
+        });
+        let immediate = draw(&input, reference, visual);
+        assert_held(&before, &immediate, "distant immediate edit");
+        input.read_with(visual, |i, _| {
+            assert_eq!(i.selected_range(), at + 1..at + 1);
+            assert!(
+                (f32::from(i.scroll_offset().y - scroll.y)).abs() < 0.5,
+                "first visible row stays at the same pixel"
+            );
+            let frames = i.take_layout_frames();
+            let edit = frames
+                .iter()
+                .find(|f| f.edit)
+                .expect("distant edit observed");
+            assert!(
+                !edit.raw && edit.reshaped_lines <= 4,
+                "bounded distant projected edit"
+            );
+        });
+        visual.run_until_parked();
+        let adopted = draw(&input, reference, visual);
+        assert_held(&immediate, &adopted, "distant classification adoption");
         reader.update_in(visual, |_, window, cx| {
             input.update(cx, |i, cx| {
                 i.set_value("x".repeat(1024 * 1024 + 1), window, cx);
@@ -2493,7 +2533,10 @@ mod tests {
             );
             assert_eq!(e.input.read(cx).value().as_ref(), "# Other\n\n**target**\n");
         });
-        let large = format!("# {}\r\n", "🧠".repeat(17_000));
+        let large = format!(
+            "# {}\r\n",
+            "🧠".repeat(okilum_core::source_classifier::MAX_BYTES / 4 + 1)
+        );
         reader.update_in(visual, |r, window, cx| {
             r.editing
                 .as_ref()
@@ -3179,7 +3222,10 @@ mod tests {
                 0,
                 "ordinary Source mode has zero snapshot construction calls"
             );
-            let large = format!("# {}\n", "🧠".repeat(17_000));
+            let large = format!(
+                "# {}\n",
+                "🧠".repeat(okilum_core::source_classifier::MAX_BYTES / 4 + 1)
+            );
             assert!(large.len() > okilum_core::source_classifier::MAX_BYTES);
             let (_, refused_work) = okilum_core::open_diagnostics::capture(|| {
                 input.update(cx, |i, cx| i.set_value(large, window, cx));
