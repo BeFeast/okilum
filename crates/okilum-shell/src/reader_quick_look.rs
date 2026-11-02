@@ -23,6 +23,9 @@ mod authority {
     #[derive(Default)]
     pub(super) struct Authority(Arc<AtomicBool>);
     impl Authority {
+        pub(super) fn retire(&self) {
+            self.0.store(true, Ordering::Release);
+        }
         pub(super) fn ticket(&self) -> Arc<AtomicBool> {
             self.0.clone()
         }
@@ -32,7 +35,7 @@ mod authority {
     }
     impl Drop for Authority {
         fn drop(&mut self) {
-            self.0.store(true, Ordering::Release);
+            self.retire();
         }
     }
 }
@@ -44,11 +47,30 @@ enum MediaState {
     Message(String),
 }
 
+type DecodeResult = anyhow::Result<(Arc<RenderImage>, String)>;
+type Decoder = Rc<
+    dyn Fn(
+        PathBuf,
+        media::Kind,
+        Arc<std::sync::atomic::AtomicBool>,
+        &mut App,
+    ) -> Task<DecodeResult>,
+>;
+
+fn decoder() -> Decoder {
+    Rc::new(|path, kind, ticket, cx| {
+        cx.background_executor()
+            .spawn(async move { load_media(&path, kind, &ticket) })
+    })
+}
+
 pub(super) struct Preview {
     rel: String,
     selected: authority::Selection,
     authority: authority::Authority,
     pending: Option<Task<()>>,
+    decoder: Decoder,
+    released: Vec<Arc<RenderImage>>,
     media: MediaState,
     text: Option<Entity<reader_plain_text::PlainTextPreview>>,
 }
@@ -61,7 +83,23 @@ impl Preview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::with_decoder(root, rel, path, decoder(), window, cx)
+    }
+
+    fn with_decoder(
+        root: PathBuf,
+        rel: String,
+        path: PathBuf,
+        decoder: Decoder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.on_release_in(window, |this, window, _| {
+            this.authority.retire();
+            this.pending = None;
+            for image in this.released.drain(..) {
+                let _ = window.drop_image(image);
+            }
             if let MediaState::Image(image, _) = &this.media {
                 let _ = window.drop_image(image.clone());
             }
@@ -85,6 +123,8 @@ impl Preview {
             selected: authority::Selection::new(path),
             authority: Default::default(),
             pending: None,
+            decoder,
+            released: Vec::new(),
             text,
             media: if kind.is_some() {
                 MediaState::Loading
@@ -96,6 +136,12 @@ impl Preview {
         this
     }
 
+    fn retry_media(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.media, MediaState::Message(_)) {
+            self.start_media(cx);
+        }
+    }
+
     fn start_media(&mut self, cx: &mut Context<Self>) {
         let Some(kind) = media::kind(&self.rel) else {
             return;
@@ -103,13 +149,14 @@ impl Preview {
         // Replacing this authority retires any previous attempt before spawning.
         self.authority = Default::default();
         self.pending = None;
-        self.media = MediaState::Loading;
+        if let MediaState::Image(image, _) = std::mem::replace(&mut self.media, MediaState::Loading)
+        {
+            self.released.push(image);
+        }
         let ticket = self.authority.ticket();
         let worker_ticket = ticket.clone();
         let selected = self.selected.clone();
-        let task = cx
-            .background_executor()
-            .spawn(async move { load_media(selected.path(), kind, &worker_ticket) });
+        let task = (self.decoder)(selected.path().to_owned(), kind, worker_ticket, cx);
         self.pending = Some(cx.spawn(async move |this, cx| {
             let result = task.await;
             if !authority::Authority::permits(&ticket) {
@@ -131,7 +178,10 @@ impl Preview {
 }
 
 impl Render for Preview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        for image in self.released.drain(..) {
+            let _ = window.drop_image(image);
+        }
         let media = match &self.media {
             MediaState::Image(image, notice) => Some(
                 v_flex()
@@ -160,9 +210,7 @@ impl Render for Preview {
                         gpui_component::button::Button::new("quick-look-retry")
                             .label("Retry preview")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                if matches!(this.media, MediaState::Message(_)) {
-                                    this.start_media(cx);
-                                }
+                                this.retry_media(cx);
                             })),
                     )
                     .into_any_element(),
