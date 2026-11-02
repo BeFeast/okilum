@@ -1468,6 +1468,7 @@ impl okilum_t3::draft_handoff::ComposerPort for NativeComposerPort<'_, '_> {
 #[cfg(test)]
 mod typed_1478_tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[gpui::test]
     fn typed_1478_hide_quit_flush_retains_full_token_and_revokes_old_visible_scope(
