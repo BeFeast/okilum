@@ -34,6 +34,8 @@ pub(super) fn suspend(cx: &mut App) {
             view.busy = false;
             view.error = None;
             view.awaiting_open = None;
+            view.pending_destination = None;
+            view.destination_error = None;
             cx.notify();
         });
     }
@@ -94,6 +96,8 @@ pub(super) struct SyncSettings {
     lifetime: Epoch,
     error: Option<String>,
     awaiting_open: Option<PathBuf>,
+    pending_destination: Option<Operation>,
+    destination_error: Option<(String, String)>,
     receiving: bool,
     scroll: ScrollHandle,
 }
@@ -120,6 +124,8 @@ impl SyncSettings {
             lifetime: Epoch::default(),
             error: None,
             awaiting_open: None,
+            pending_destination: None,
+            destination_error: None,
             receiving: false,
             scroll: ScrollHandle::new(),
         };
@@ -130,6 +136,13 @@ impl SyncSettings {
         if self.busy || !reader_features::enabled(reader_features::Feature::Sync, cx) {
             return;
         }
+        let destination_vault = match &operation {
+            Operation::Attach(_, vault, _) | Operation::AttachNew(_, vault, _) => {
+                self.destination_error = None;
+                Some(vault.clone())
+            }
+            _ => None,
+        };
         let refresh = matches!(operation, Operation::Read);
         if !refresh {
             self.scroll.set_offset(point(px(0.), px(0.)));
@@ -188,11 +201,19 @@ impl SyncSettings {
                                     snapshot.status = "Pairing did not complete".into();
                                 }
                             }
-                            this.error = Some(user_error(&error));
+                            let message = user_error(&error);
+                            if let Some(vault) = destination_vault {
+                                this.destination_error = Some((vault, message.clone()));
+                            }
+                            this.error = Some(message);
                         }
                     }
                     cx.notify();
-                    this.schedule_refresh(cx);
+                    if let Some(operation) = this.pending_destination.take() {
+                        this.run(operation, cx);
+                    } else {
+                        this.schedule_refresh(cx);
+                    }
                 });
             })
             .await
@@ -316,15 +337,37 @@ impl SyncSettings {
         let picker = cx.prompt_for_new_path(&home, Some(&destination_name(label)));
         let epoch = self.lifetime.ticket();
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(path))) = picker.await {
-                let _ = this.update(cx, |this, cx| {
-                    if epoch.is_current() {
-                        this.run(Operation::AttachNew(peer, vault, path), cx);
+            let result = picker.await;
+            let _ = this.update(cx, |this, cx| {
+                if !epoch.is_current()
+                    || !reader_features::enabled(reader_features::Feature::Sync, cx)
+                {
+                    return;
+                }
+                match result {
+                    Ok(Ok(Some(path))) => {
+                        this.accept_destination(Operation::AttachNew(peer, vault, path), cx);
                     }
-                });
-            }
+                    Ok(Ok(None)) => {} // Explicit dialog cancellation.
+                    _ => {
+                        let message = "The folder dialog could not return a local folder. Choose the folder again, or use an existing empty folder.".to_string();
+                        this.destination_error = Some((vault, message.clone()));
+                        this.error = Some(message);
+                        cx.notify();
+                    }
+                }
+            });
         })
         .detach();
+    }
+    fn accept_destination(&mut self, operation: Operation, cx: &mut Context<Self>) {
+        // A periodic refresh may still own the worker when the native picker
+        // answers. Keep explicit user intent until that worker publishes.
+        if self.busy {
+            self.pending_destination = Some(operation);
+        } else {
+            self.run(operation, cx);
+        }
     }
     fn choose_folder(&mut self, remote: Option<(uuid::Uuid, String)>, cx: &mut Context<Self>) {
         let picker = cx.prompt_for_paths(PathPromptOptions {
@@ -348,7 +391,7 @@ impl SyncSettings {
                         if !epoch.is_current() {
                             return;
                         }
-                        this.run(
+                        this.accept_destination(
                             match remote {
                                 Some((peer, vault)) => Operation::Attach(peer, vault, path),
                                 None => Operation::Inspect(path),
@@ -540,12 +583,13 @@ fn perform_with_locations(
             if let Operation::Share(path) = &operation {
                 linux_runtime::check_destination(&runtime, path)?;
             }
+            if let Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) = &operation {
+                // Check other runtimes before creating even an empty directory.
+                linux_runtime::check_destination(&runtime, path)?;
+            }
             if let Operation::AttachNew(_, _, path) = &operation {
                 guard.check()?;
-                reader_open::create_vault_folder(path)?;
-            }
-            if let Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) = &operation {
-                linux_runtime::check_destination(&runtime, path)?;
+                destination::prepare(path)?;
             }
             if let Some(selected) = runtime.choices.iter().find(|c| c.selected) {
                 let requested = if let Operation::Network(expected, policy) = &operation {
@@ -581,7 +625,7 @@ fn perform_with_locations(
         #[cfg(target_os = "macos")]
         if let Operation::AttachNew(_, _, path) = &operation {
             guard.check()?;
-            reader_open::create_vault_folder(path)?;
+            destination::prepare(path)?;
         }
         let selected_destination = match &operation {
             Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) => {
@@ -680,7 +724,9 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
 }
 fn user_error(error: &anyhow::Error) -> String {
     let text = error.to_string().to_lowercase();
-    if text.contains("network policy") {
+    if text.contains("local sync folder") {
+        "The local folder could not be created or checked. Choose a location you can write to with an existing parent folder, or use an existing empty folder.".into()
+    } else if text.contains("network policy") {
         "The network setting could not be verified. Refresh and try again. Custom connection addresses may need review in Syncthing.".into()
     } else if text.starts_with("not connected to ") {
         error.to_string()
@@ -726,3 +772,6 @@ mod view;
 #[cfg(target_os = "linux")]
 #[path = "reader_settings_sync/linux_runtime.rs"]
 mod linux_runtime;
+
+#[path = "reader_settings_sync/destination.rs"]
+mod destination;

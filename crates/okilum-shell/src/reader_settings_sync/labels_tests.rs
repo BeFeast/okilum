@@ -265,3 +265,82 @@ fn sync_network_selected_managed_operations_publish_read_back() -> Result<()> {
     assert_eq!(options["stunKeepaliveMinS"], 0);
     Ok(())
 }
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6 in OKILUM_SYNC_DIRECT_CLIENT"]
+fn sync_new_destination_receive_and_existing_empty_control() -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let source = Managed::new()?;
+    std::fs::write(source.vault.join("note.md"), b"source note\n")?;
+    let shared = source.perform(None, Operation::Share(source.vault.clone()))?;
+    for case in ["new", "empty", "nonempty", "missing-parent"] {
+        let target = Managed::new()?;
+        let url = shared
+            .controller
+            .begin_pairing_at("Source", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
+            .offer_url
+            .unwrap();
+        let output = target.perform(None, Operation::Read)?;
+        output.controller.redeem(&url, "Target")?;
+        shared
+            .controller
+            .approve(shared.controller.snapshot()?.pending.unwrap().request_id)?;
+        let peer = output.controller.refresh()?.peers[0].id;
+        let catalog = output.controller.catalog(peer)?;
+        let path = match case {
+            "new" => target._root.path().join("Proposed notes"),
+            "missing-parent" => target._root.path().join("absent/Notes"),
+            _ => target.vault.clone(),
+        };
+        if case == "nonempty" {
+            std::fs::write(path.join("keep.md"), b"keep these bytes\n")?;
+        }
+        let target_before = target.identity.connect()?.config()?;
+        let source_before = source.identity.connect()?.config()?;
+        let result = target.perform(
+            Some(output.controller.clone()),
+            Operation::AttachNew(peer, catalog[0].id.clone(), path.clone()),
+        );
+        if matches!(case, "nonempty" | "missing-parent") {
+            let error = result.err().context("unsafe destination must fail")?;
+            let message = user_error(&error);
+            if case == "nonempty" {
+                assert!(message.contains("Lossless merge preview"), "{message}");
+                assert_eq!(std::fs::read(path.join("keep.md"))?, b"keep these bytes\n");
+                assert_eq!(path.read_dir()?.count(), 1);
+            } else {
+                assert!(message.contains("local folder"), "{message}");
+                assert!(!path.parent().unwrap().exists());
+            }
+            assert_eq!(target.identity.connect()?.config()?, target_before);
+            assert_eq!(source.identity.connect()?.config()?, source_before);
+        } else {
+            let attached = result?;
+            assert_eq!(attached.selected_destination.as_ref(), Some(&path));
+            assert_eq!(
+                attached.runtimes[0].folders, 1,
+                "receive was actually configured"
+            );
+            let folder = target.identity.connect()?.folder(&catalog[0].id)?;
+            assert_eq!(folder["path"], path.to_str().unwrap());
+            assert!(folder["type"] == "receiveonly" || folder["type"] == "sendreceive");
+            assert_eq!(folder["paused"], false);
+            if case == "new" {
+                assert_eq!(std::fs::metadata(&path)?.mode() & 0o777, 0o700);
+            }
+            let start = std::time::Instant::now();
+            while !path.join("note.md").try_exists()? {
+                anyhow::ensure!(
+                    start.elapsed() < Duration::from_secs(30),
+                    "{case}: receive never started"
+                );
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            assert_eq!(std::fs::read(path.join("note.md"))?, b"source note\n");
+            attached.controller.shutdown();
+        }
+        output.controller.shutdown();
+    }
+    shared.controller.shutdown();
+    Ok(())
+}
