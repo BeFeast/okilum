@@ -1250,7 +1250,9 @@ impl Reader {
 
     fn save_source_outcome(&mut self, cx: &mut Context<Self>) -> (bool, bool) {
         if self.editing.as_ref().is_some_and(|editing| {
-            editing.table_grid.update(cx, |grid, cx| grid.retain_pending_cells(cx))
+            editing
+                .table_grid
+                .update(cx, |grid, cx| grid.retain_pending_cells(cx))
         }) {
             return (false, false);
         }

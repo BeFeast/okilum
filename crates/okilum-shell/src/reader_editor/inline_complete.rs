@@ -126,7 +126,11 @@ pub(super) fn replacement(
         };
         let after = start
             + if matches!(kind, Kind::Block) && target == "```\n\n```" {
-                if crlf { 5 } else { 4 }
+                if crlf {
+                    5
+                } else {
+                    4
+                }
             } else {
                 inserted.len()
             };
