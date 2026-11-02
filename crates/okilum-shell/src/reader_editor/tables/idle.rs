@@ -67,6 +67,12 @@ impl TableGrid {
         if self.input.read(cx).source_stamp() != event.stamp {
             return;
         }
+        // Compare an IME commit with the last committed source, not its
+        // preedit. A candidate can commit with identical bytes to preedit.
+        if event.reason == SourceMutationReason::Preedit {
+            cx.notify();
+            return;
+        }
         // Persistent Rope clones keep whole-note copying/scanning off the
         // typing path shared with Live Preview layout (#1679).
         let text = self.input.read(cx).text().clone();
@@ -710,6 +716,40 @@ mod tests {
         assert_eq!(
             grid.read_with(visual, |grid, cx| grid.active_range(cx).unwrap().start),
             typed.find("| keep").unwrap()
+        );
+    }
+
+    #[gpui::test]
+    fn raw_ime_commit_identical_to_preedit_still_arms_the_formatter(cx: &mut TestAppContext) {
+        let (_reader, input, _grid, visual, _directory) = open(cx, false);
+        input.update_in(visual, |state, window, cx| {
+            state.replace_and_mark_text_in_range(None, "日", None, window, cx);
+        });
+        visual.run_until_parked();
+        let preedit = value(&input, visual);
+        assert_eq!(
+            preedit,
+            SOURCE.replace("old", "日"),
+            "positive control: real source preedit"
+        );
+        wait(visual, 900);
+        assert_eq!(value(&input, visual), preedit, "preedit is never formatted");
+        input.update_in(visual, |state, window, cx| {
+            let marked = state.marked_text_range(window, cx);
+            assert!(marked.is_some());
+            state.replace_text_in_range(marked, "日", window, cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            value(&input, visual),
+            preedit,
+            "commit keeps identical candidate bytes"
+        );
+        wait(visual, 800);
+        assert_ne!(
+            value(&input, visual),
+            preedit,
+            "positive control: the committed candidate formats"
         );
     }
 }
