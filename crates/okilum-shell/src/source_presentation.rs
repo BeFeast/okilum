@@ -19,6 +19,13 @@ use okilum_core::{
 #[path = "source_presentation/code_syntax.rs"]
 mod code_syntax;
 
+#[path = "source_presentation/punctuation.rs"]
+mod punctuation;
+
+#[cfg(test)]
+#[path = "source_presentation/punctuation_editor_tests.rs"]
+mod punctuation_editor_tests;
+
 #[path = "source_presentation/code_languages.rs"]
 pub(crate) mod code_languages;
 
@@ -255,6 +262,8 @@ impl CachedProvider {
         &self,
         projection: &Projection,
         styles: &[source_classifier::StyleSpan],
+        retained: &RetainedPresentation,
+        reveal: &source_classifier::RevealSnapshot,
     ) -> Option<MathOverlay> {
         let snapshot = projection.snapshot();
         let source = snapshot.source();
@@ -287,6 +296,41 @@ impl CachedProvider {
             });
             segments.push((start..end, rendered));
         }
+        for (block, markers) in retained.prose_blocks() {
+            if reveal.is_raw(snapshot, block) {
+                continue;
+            }
+            let candidates = punctuation::replacements(&source[block.clone()], |local| {
+                let range = block.start + local.start..block.start + local.end;
+                !markers
+                    .iter()
+                    .any(|m| m.start < range.end && range.start < m.end)
+                    && !styles.iter().any(|s| {
+                        matches!(
+                            s.style,
+                            Style::Code | Style::CodeBlock | Style::Math | Style::Definition
+                        ) && s.range.start < range.end
+                            && range.start < s.range.end
+                    })
+            });
+            for (range, glyph) in candidates {
+                let (Some(start), Some(end)) =
+                    (map(block.start + range.start), map(block.start + range.end))
+                else {
+                    continue;
+                };
+                if start < end {
+                    segments.push((
+                        start..end,
+                        Arc::new(tex::Linear {
+                            text: glyph.into(),
+                            runs: Vec::new(),
+                        }),
+                    ));
+                }
+            }
+        }
+        segments.sort_by_key(|(range, _)| range.start);
         (!segments.is_empty()).then(|| MathOverlay::new(projection.display(), segments))
     }
     /// Off-thread preparation keeps standalone list continuations from turning
@@ -405,7 +449,7 @@ impl CachedProvider {
             self.syntax.project(source, &projection, theme, &mut styles);
         }
         let line_scales = heading_line_scales(&projection, retained.styles());
-        let math = self.math_overlay(&projection, retained.styles());
+        let math = self.math_overlay(&projection, retained.styles(), &retained, &reveal_snapshot);
         if let Some(math) = &math {
             styles = math.restyle(styles);
         }
@@ -437,10 +481,10 @@ impl CachedProvider {
     }
 }
 
-/// Core display text with inline formulas replaced by their one-line
-/// rendering (#1645). Formulas never contain a line break, so projected line
-/// numbers, blocks and heading scales stay those of the core display. A
-/// position inside a drawn formula snaps to its edges, like concealed syntax.
+/// Core display text with inline formulas (#1645) and smart punctuation
+/// (#1644) replaced by their one-line rendering. Replacements never contain a
+/// line break, so line numbers, blocks and heading scales stay those of the
+/// core display. Positions inside replacements snap to their edges with bias.
 struct MathOverlay {
     text: String,
     /// Sorted, disjoint: the formula's core display range, the range drawn in
@@ -1119,6 +1163,244 @@ mod tests {
             head: SourceByte(source.text.len()),
             ..ActiveSource::default()
         }
+    }
+
+    #[test]
+    fn smart_punctuation_maps_rendered_glyphs_and_reveals_exact_source() {
+        let source = source("\"Привет\" -- ... `\"code\" -- ...`\n\nend");
+        let provider = Arc::new(CachedProvider::classify(source.clone()));
+        let frame = provider.compose(&source, &inactive(&source)).unwrap();
+        assert_eq!(frame.text(), "«Привет» — … \"code\" -- ...\n\nend");
+        assert_eq!(
+            frame.source().text,
+            source.text,
+            "clipboard/save authority stays ASCII"
+        );
+        for (raw, glyph, width) in [("--", "—", 2), ("...", "…", 3), ("\"", "«", 1)] {
+            let start = source.text.find(raw).unwrap();
+            let shown = frame.text().find(glyph).unwrap();
+            for bias in [ConcealBias::Left, ConcealBias::Right] {
+                assert_eq!(
+                    frame.to_projected(SourceByte(start), bias),
+                    Some(ProjectedByte(shown))
+                );
+                assert_eq!(
+                    frame.to_projected(SourceByte(start + width), bias),
+                    Some(ProjectedByte(shown + glyph.len()))
+                );
+                assert_eq!(
+                    frame.to_source(ProjectedByte(shown), bias),
+                    Some(SourceByte(start))
+                );
+                assert_eq!(
+                    frame.to_source(ProjectedByte(shown + glyph.len()), bias),
+                    Some(SourceByte(start + width))
+                );
+            }
+            if width > 1 {
+                assert_eq!(
+                    frame.to_projected(SourceByte(start + 1), ConcealBias::Left),
+                    Some(ProjectedByte(shown))
+                );
+                assert_eq!(
+                    frame.to_projected(SourceByte(start + 1), ConcealBias::Right),
+                    Some(ProjectedByte(shown + glyph.len()))
+                );
+            }
+        }
+        let cursor = SourceByte(source.text.find("--").unwrap() + 1);
+        let active = ActiveSource {
+            anchor: cursor,
+            head: cursor,
+            ..ActiveSource::default()
+        };
+        let revealed = provider.compose(&source, &active).unwrap();
+        assert_eq!(revealed.text(), "\"Привет\" -- ... \"code\" -- ...\n\nend");
+        assert_eq!(
+            revealed.source().text,
+            source.text,
+            "source bytes remain canonical"
+        );
+        assert_eq!(
+            frame.text(),
+            "«Привет» — … \"code\" -- ...\n\nend",
+            "old frame retains its own mapping"
+        );
+    }
+
+    #[test]
+    fn punctuation_overlay_copy_ranges_follow_logical_bytes() {
+        for (raw, expected, count) in [
+            (
+                "עברית \"\u{2066}Hello\u{2069}\" -- ... שלום\r\n",
+                "עברית “\u{2066}Hello\u{2069}” — … שלום\r\n",
+                4,
+            ),
+            (
+                "cafe\u{301}'s isn't שָׁלוֹם's...",
+                "cafe\u{301}’s isn’t שָׁלוֹם’s…",
+                4,
+            ),
+            ("'a'\u{301} ... 'ok'", "'a'\u{301} … ‘ok’", 3),
+        ] {
+            let replacements = punctuation::replacements(raw, |_| true);
+            assert_eq!(replacements.len(), count);
+            let overlay = MathOverlay::new(
+                raw,
+                replacements
+                    .iter()
+                    .map(|(range, glyph)| {
+                        (
+                            range.clone(),
+                            Arc::new(tex::Linear {
+                                text: (*glyph).into(),
+                                runs: Vec::new(),
+                            }),
+                        )
+                    })
+                    .collect(),
+            );
+            assert_eq!(overlay.text, expected);
+            for (range, glyph) in &replacements {
+                let shown = overlay.forward(range.start, ConcealBias::Left);
+                let end = shown + glyph.len();
+                for bias in [ConcealBias::Left, ConcealBias::Right] {
+                    assert_eq!(overlay.forward(range.start, bias), shown);
+                    assert_eq!(overlay.forward(range.end, bias), end);
+                    assert_eq!(overlay.back(shown, bias), range.start);
+                    assert_eq!(overlay.back(end, bias), range.end);
+                }
+                for at in range.start + 1..range.end {
+                    assert_eq!(overlay.forward(at, ConcealBias::Left), shown);
+                    assert_eq!(overlay.forward(at, ConcealBias::Right), end);
+                }
+                // Native hit testing may report a byte inside the drawn UTF-8 glyph.
+                for at in shown + 1..end {
+                    assert_eq!(overlay.back(at, ConcealBias::Left), range.start);
+                    assert_eq!(overlay.back(at, ConcealBias::Right), range.end);
+                }
+            }
+            // Every glyph-aligned selection copies its exact contiguous authored range.
+            for (i, (start, _)) in replacements.iter().enumerate() {
+                for (end, _) in &replacements[i..] {
+                    let left = overlay.forward(start.start, ConcealBias::Left);
+                    let right = overlay.forward(end.end, ConcealBias::Right);
+                    let from = overlay.back(left, ConcealBias::Left);
+                    let to = overlay.back(right, ConcealBias::Right);
+                    assert_eq!(&raw[from..to], &raw[start.start..end.end]);
+                }
+            }
+            assert_eq!(
+                overlay.back(overlay.text.len(), ConcealBias::Right),
+                raw.len()
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_direction_punctuation_copy_and_reveal_use_current_block_ranges() {
+        let raw = "עברית \"\u{2066}Hello\u{2069}\" -- ... שלום\r\n\r\n\"Привет\" -- ...\r\n\r\nend";
+        let note = source(raw);
+        let provider = CachedProvider::classify(note.clone());
+        let idle = provider.compose(&note, &inactive(&note)).unwrap();
+        assert_eq!(
+            idle.text(),
+            "עברית “\u{2066}Hello\u{2069}” — … שלום\r\n\r\n«Привет» — …\r\n\r\nend"
+        );
+        let first_start = raw.find('"').unwrap();
+        let first_end = raw.find("...").unwrap() + 3;
+        let shown_start = idle.text().find('“').unwrap();
+        let shown_end = idle.text().find('…').unwrap() + '…'.len_utf8();
+        for bias in [ConcealBias::Left, ConcealBias::Right] {
+            let start = idle.to_source(ProjectedByte(shown_start), bias).unwrap();
+            let end = idle.to_source(ProjectedByte(shown_end), bias).unwrap();
+            assert_eq!(start, SourceByte(first_start));
+            assert_eq!(end, SourceByte(first_end));
+            assert_eq!(
+                &idle.source().text[start.0..end.0],
+                &raw[first_start..first_end]
+            );
+        }
+        let start = SourceByte(raw.find("Привет").unwrap());
+        let end = SourceByte(start.0 + "Привет".len());
+        for active in [
+            ActiveSource {
+                anchor: start,
+                head: start,
+                ..inactive(&note)
+            },
+            ActiveSource {
+                anchor: start,
+                head: end,
+                ..inactive(&note)
+            },
+            ActiveSource {
+                anchor: end,
+                head: start,
+                ..inactive(&note)
+            },
+            ActiveSource {
+                composition: Some(start..end),
+                ..inactive(&note)
+            },
+            ActiveSource {
+                replacement: Some(start..end),
+                ..inactive(&note)
+            },
+        ] {
+            let current = provider.compose(&note, &active).unwrap();
+            assert_eq!(
+                current.text(),
+                "עברית “\u{2066}Hello\u{2069}” — … שלום\r\n\r\n\"Привет\" -- ...\r\n\r\nend"
+            );
+            assert_eq!(current.source().text.as_ref(), raw);
+            // An earlier painted frame retains its offsets after current-block reveal.
+            assert_eq!(
+                idle.to_source(ProjectedByte(shown_end), ConcealBias::Right),
+                Some(SourceByte(first_end))
+            );
+        }
+        assert_eq!(
+            provider.compose(&note, &inactive(&note)).unwrap().text(),
+            idle.text()
+        );
+    }
+
+    #[test]
+    fn smart_punctuation_keeps_styles_math_and_native_active_ranges() {
+        let original = source("**\"Hello\" -- ...** $x^2$\n\nend");
+        let provider = CachedProvider::classify(original.clone());
+        let frame = provider.compose(&original, &inactive(&original)).unwrap();
+        assert!(frame.text().starts_with("“Hello” — … "));
+        let dash = frame.text().find('—').unwrap();
+        assert!(frame
+            .styles()
+            .iter()
+            .any(|s| s.bold && s.range.start.0 <= dash && dash < s.range.end.0));
+        let start = SourceByte(original.text.find("--").unwrap());
+        let end = SourceByte(start.0 + 2);
+        for active in [
+            ActiveSource {
+                anchor: start,
+                head: end,
+                ..inactive(&original)
+            },
+            ActiveSource {
+                composition: Some(start..end),
+                ..inactive(&original)
+            },
+            ActiveSource {
+                replacement: Some(start..end),
+                ..inactive(&original)
+            },
+        ] {
+            assert_eq!(
+                provider.compose(&original, &active).unwrap().text(),
+                "**\"Hello\" -- ...** x²\n\nend",
+                "punctuation reveals while the untouched formula retains its policy"
+            );
+        }
+        assert_eq!(original.text.as_ref(), "**\"Hello\" -- ...** $x^2$\n\nend");
     }
 
     #[test]

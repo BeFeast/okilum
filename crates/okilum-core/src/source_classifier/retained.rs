@@ -113,6 +113,20 @@ impl RetainedPresentation {
     pub fn styles(&self) -> &[StyleSpan] {
         &self.styles
     }
+    /// Accepted prose geometry in canonical source coordinates. Consumers must
+    /// bind it to this retained snapshot before deriving presentation geometry.
+    pub fn prose_blocks(
+        &self,
+    ) -> impl Iterator<Item = (&std::ops::Range<usize>, &[std::ops::Range<usize>])> {
+        self.plan
+            .regions()
+            .iter()
+            .filter_map(|region| match region {
+                Region::Conceal { block, markers } => Some((block, markers.as_slice())),
+                Region::Source(_) => None,
+            })
+    }
+
     /// Paint markers of this exact retained revision.
     pub fn decorations(&self) -> &[Marker] {
         &self.decorations
