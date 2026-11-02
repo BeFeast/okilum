@@ -96,6 +96,24 @@ struct Work {
     jobs: Vec<(String, Option<Cached>)>,
 }
 
+/// GPUI dispatches a bound Input action before low-level key capture. Capture
+/// those actions on the overlay so the search caret cannot consume card arrows.
+pub(super) fn capture_arrow<A: gpui::Action>(
+    gallery: Entity<Gallery>,
+    key: &'static str,
+) -> impl Fn(&A, &mut Window, &mut App) + 'static {
+    move |_, window, cx| {
+        let columns = super::lifecycle::columns(f32::from(window.viewport_size().width));
+        let delta = super::lifecycle::step(key, columns).expect("registered gallery arrow");
+        gallery.update(cx, |view, cx| {
+            if !view.suspended {
+                view.step(delta, cx);
+            }
+        });
+        cx.stop_propagation();
+    }
+}
+
 pub(crate) struct Gallery {
     root: PathBuf,
     entries: Vec<reader_title_nav::Entry>,
@@ -111,6 +129,8 @@ pub(crate) struct Gallery {
     suspended: bool,
     requests: async_channel::Sender<Work>,
     pending: async_channel::Receiver<Work>,
+    #[cfg(test)]
+    arrow_steps: usize,
     _task: Task<()>,
 }
 impl Gallery {
@@ -138,6 +158,8 @@ impl Gallery {
             suspended: false,
             requests,
             pending,
+            #[cfg(test)]
+            arrow_steps: 0,
             _task: task,
         };
         this.refresh(entries, &[], cx);
@@ -313,6 +335,10 @@ impl Gallery {
     }
     /// Caller maps arrows using the current viewport's number of card columns.
     pub(crate) fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        {
+            self.arrow_steps += 1;
+        }
         let visible = self.visible();
         if visible.is_empty() {
             return;
@@ -792,9 +818,46 @@ mod mounted_tests {
         }
         visual.simulate_input("a.md");
         draw(visual);
+        let before = gallery.read_with(visual, |g, _| {
+            assert_eq!(g.query, "a.md", "typed search was published");
+            let visible = g
+                .visible()
+                .into_iter()
+                .map(|i| g.entries[i].path.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                visible,
+                ["a.md", "nested/a.md"],
+                "actual accepted order, not label order"
+            );
+            assert_eq!(
+                g.selected_path(),
+                Some("a.md"),
+                "known initial exact selection"
+            );
+            g.arrow_steps
+        });
+        f.reader.update_in(visual, |r, window, cx| {
+            assert!(
+                r.recent_switcher
+                    .gallery
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "search owns keyboard focus before Right"
+            );
+        });
         visual.simulate_keystrokes("right");
         draw(visual);
         gallery.read_with(visual, |g, _| {
+            assert_eq!(
+                g.arrow_steps,
+                before + 1,
+                "one real Right performs exactly one gallery step"
+            );
             assert_eq!(g.selected_path(), Some("nested/a.md"))
         });
         visual.simulate_event(ModifiersChangedEvent::default());
