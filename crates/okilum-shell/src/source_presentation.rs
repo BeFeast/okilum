@@ -450,7 +450,7 @@ impl CachedProvider {
                 }
             }),
         );
-        let math = metadata.overlay(&projection, &reveal_snapshot, &retained);
+        let math = metadata.overlay(&projection, &reveal_snapshot);
         if let Some(math) = &math {
             styles = math.restyle(styles);
         }

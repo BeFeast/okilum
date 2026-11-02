@@ -13,6 +13,7 @@ pub(super) struct Inline {
 struct Prose {
     range: Range<usize>,
     inventory: punctuation::Inventory,
+    rendered: Vec<Inline>,
 }
 pub(super) struct Metadata {
     snapshot: Snapshot,
@@ -81,13 +82,18 @@ impl Metadata {
             inline: candidates(provider, retained, None),
             prose: retained
                 .prose_blocks()
-                .map(|(block, _)| Prose {
-                    range: block.clone(),
-                    inventory: punctuation::Inventory::new(
+                .map(|(block, markers)| {
+                    let inventory = punctuation::Inventory::new(
                         &text.slice(block.clone()),
                         block.start,
                         |range| boundary(retained, range),
-                    ),
+                    );
+                    let rendered = punctuated(&inventory, retained, markers, block);
+                    Prose {
+                        range: block.clone(),
+                        inventory,
+                        rendered,
+                    }
                 })
                 .collect(),
             snapshot,
@@ -135,7 +141,7 @@ impl Metadata {
         let new_lines = old_lines.start..old_lines.end - edit.old.end + edit.new_end();
         self.prose = retained
             .prose_blocks()
-            .filter_map(|(block, _)| {
+            .filter_map(|(block, markers)| {
                 let old = self.prose.iter().find(|p| {
                     let mapped = moved(&p.range, &edit).or_else(|| {
                         (p.range.start <= edit.old.start && edit.old.end <= p.range.end)
@@ -144,7 +150,9 @@ impl Metadata {
                     mapped.as_ref() == Some(block)
                 });
                 let inventory = if let Some(old) = old {
-                    if old.range.end <= old_lines.start || old.range.start >= old_lines.end {
+                    if old.range.end <= old_lines.start {
+                        old.inventory.clone()
+                    } else if old.range.start >= old_lines.end {
                         old.inventory.shifted(|at| edit.forward(at))
                     } else {
                         let dirty =
@@ -170,9 +178,26 @@ impl Metadata {
                         |range| boundary(retained, range),
                     )
                 };
+                let rendered = if let Some(old) = old.filter(|old| {
+                    old.range.end <= old_lines.start || old.range.start >= old_lines.end
+                }) {
+                    old.rendered
+                        .iter()
+                        .filter_map(|item| {
+                            Some(Inline {
+                                range: moved(&item.range, &edit)?,
+                                scope: block.clone(),
+                                rendered: item.rendered.clone(),
+                            })
+                        })
+                        .collect()
+                } else {
+                    punctuated(&inventory, retained, markers, block)
+                };
                 Some(Prose {
                     range: block.clone(),
                     inventory,
+                    rendered,
                 })
             })
             .collect();
@@ -251,47 +276,19 @@ impl Metadata {
         &mut self,
         projection: &Projection,
         reveal: &source_classifier::RevealSnapshot,
-        retained: &RetainedPresentation,
     ) -> Option<MathOverlay> {
         let map = |at| projection.source_to_display(projection.snapshot(), at).ok();
-        let mut formulas: Vec<_> = self
+        let formulas: Vec<_> = self
             .inline
             .iter()
+            .chain(self.prose.iter().flat_map(|p| &p.rendered))
             .filter(|item| !reveal.is_raw(projection.snapshot(), &item.scope))
             .filter_map(|item| {
                 let (start, end) = (map(item.range.start)?, map(item.range.end)?);
                 (start < end).then_some((start..end, item.rendered.clone()))
             })
             .collect();
-        for prose in &self.prose {
-            if reveal.is_raw(projection.snapshot(), &prose.range) {
-                continue;
-            }
-            let Some((_, markers)) = retained
-                .prose_blocks()
-                .find(|(block, _)| **block == prose.range)
-            else {
-                continue;
-            };
-            formulas.extend(
-                prose
-                    .inventory
-                    .replacements(|range| eligible(retained, markers, range))
-                    .into_iter()
-                    .filter_map(|(range, glyph)| {
-                        let (start, end) = (map(range.start)?, map(range.end)?);
-                        (start < end).then(|| {
-                            (
-                                start..end,
-                                Arc::new(tex::Linear {
-                                    text: glyph.into(),
-                                    runs: Vec::new(),
-                                }),
-                            )
-                        })
-                    }),
-            );
-        }
+        let mut formulas = formulas;
         formulas.sort_by_key(|(range, _)| range.start);
         // An empty overlay still records its persistent display receipt, so
         // entering/leaving the last formula cannot force cold native layout.
@@ -379,4 +376,24 @@ fn eligible(
             ) && s.range.start < range.end
                 && range.start < s.range.end
         })
+}
+
+fn punctuated(
+    inventory: &punctuation::Inventory,
+    retained: &RetainedPresentation,
+    markers: &[Range<usize>],
+    scope: &Range<usize>,
+) -> Vec<Inline> {
+    inventory
+        .replacements(|range| eligible(retained, markers, range))
+        .into_iter()
+        .map(|(range, glyph)| Inline {
+            range,
+            scope: scope.clone(),
+            rendered: Arc::new(tex::Linear {
+                text: glyph.into(),
+                runs: Vec::new(),
+            }),
+        })
+        .collect()
 }
