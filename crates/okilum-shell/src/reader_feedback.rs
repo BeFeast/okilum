@@ -3,7 +3,7 @@
 use super::*;
 use gpui_component::{
     checkbox::Checkbox,
-    input::{Paste, Textarea, TextareaState},
+    input::{Input, InputState, Paste, Textarea, TextareaState},
 };
 mod model;
 pub(crate) mod sprint;
@@ -334,9 +334,12 @@ impl Render for FeedbackWindow {
 }
 /// The video slot's hint; the size is the client cap (pomoi's limit).
 fn video_hint() -> String {
+    video_hint_for(model::Limits::default())
+}
+fn video_hint_for(limits: model::Limits) -> String {
     format!(
         "Video: MP4, MOV or WebM up to {}. Drop it here or use Attach video…",
-        model::human_size(model::MAX_VIDEO)
+        model::human_size(limits.video_bytes)
     )
 }
 fn screenshot_hint() -> &'static str {
@@ -357,6 +360,22 @@ fn feedback_draft_root() -> Option<PathBuf> {
     #[cfg(not(test))]
     {
         reader_layout::config_base().map(|base| base.join("okilum/feedback-drafts"))
+    }
+}
+
+fn feedback_limits_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        TEST_DRAFT_ROOT.with(|root| {
+            root.borrow()
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("feedback-limits.json"))
+        })
+    }
+    #[cfg(not(test))]
+    {
+        reader_layout::config_base().map(|base| base.join("okilum/feedback-limits.json"))
     }
 }
 
@@ -420,6 +439,12 @@ struct FeedbackView {
     recovery_error: Option<String>,
     unavailable_screenshot: Option<String>,
     video_needs_reselect: bool,
+    limits: model::Limits,
+    limits_path: Option<PathBuf>,
+    limits_error: Option<String>,
+    limit_inputs: Option<[Entity<InputState>; 6]>,
+    preflight_error: Option<String>,
+    sender_limits: Arc<std::sync::Mutex<model::Limits>>,
     _text: Subscription,
     _draft_checkpoint: Option<Task<()>>,
 }
@@ -434,6 +459,7 @@ impl FeedbackView {
             &text,
             |this, _, event: &gpui_component::input::InputEvent, cx| {
                 if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.preflight_error = None;
                     this.schedule_checkpoint(cx);
                     cx.notify();
                 }
@@ -443,6 +469,13 @@ impl FeedbackView {
         let sprint_log = log_path.clone();
         let send_cancel = Arc::new(std::sync::Mutex::new(None::<model::CancelSignal>));
         let cancellation = send_cancel.clone();
+        let limits_path = feedback_limits_path();
+        let (limits, limits_error) = match limits_path.as_ref().map(|p| model::Limits::load(p)).transpose() {
+            Ok(limits) => (limits.unwrap_or_default(), None),
+            Err(error) => (model::Limits::default(), Some(format!("Couldn't read attachment limits: {error}. Review Attachment limits before sending."))),
+        };
+        let sender_limits = Arc::new(std::sync::Mutex::new(limits));
+        let sending_limits = sender_limits.clone();
         let (saved_drafts, recovery_error) = match feedback_draft_root()
             .map(|root| model::draft::discover(&root))
             .transpose()
@@ -490,6 +523,10 @@ impl FeedbackView {
             state: SendState::Compose,
             sender: Arc::new(move |report| {
                 let report = sprint::enrich(report, sprint_log.as_deref())?;
+                sending_limits
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .check_report(&report)?;
                 let cancel = cancellation
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -509,6 +546,12 @@ impl FeedbackView {
             recovery_error,
             unavailable_screenshot: None,
             video_needs_reselect: false,
+            limits,
+            limits_path,
+            limits_error,
+            limit_inputs: None,
+            preflight_error: None,
+            sender_limits,
             _text: subscription,
             _draft_checkpoint: None,
         }
@@ -670,6 +713,12 @@ impl FeedbackView {
             model::video_file(&video.path).map_or(true, |current| current != *video)
         });
         self.video_error = self.video_needs_reselect.then(|| "The selected video changed, was replaced or is unavailable. Select it again or remove it before retrying.".into());
+        self.preflight_error = self
+            .video
+            .as_ref()
+            .filter(|_| !self.video_needs_reselect)
+            .and_then(|video| self.limits.check_video(video).err())
+            .map(|error| format!("{error:#}"));
         self.kind = if saved.feature {
             Kind::Feature
         } else {
@@ -688,6 +737,7 @@ impl FeedbackView {
         cx.notify();
     }
     fn remount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.limit_inputs = None;
         let value = self.text.read(cx).value();
         let selection = self.text.read(cx).selected_range();
         let scroll = self.text.read(cx).scroll_offset();
@@ -704,6 +754,7 @@ impl FeedbackView {
             &self.text,
             |this, _, event: &gpui_component::input::InputEvent, cx| {
                 if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.preflight_error = None;
                     this.schedule_checkpoint(cx);
                     cx.notify();
                 }
@@ -712,6 +763,79 @@ impl FeedbackView {
     }
     fn busy(&self) -> bool {
         matches!(self.state, SendState::Sending | SendState::Sent(_))
+    }
+    fn toggle_limits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy() || self.attaching {
+            return;
+        }
+        if self.limit_inputs.is_some() {
+            self.limit_inputs = None;
+        } else {
+            let values = self.limits.fields();
+            self.limit_inputs = Some(std::array::from_fn(|index| {
+                cx.new(|cx| {
+                    let mut input = InputState::new(window, cx).placeholder(if index == 1 {
+                        "No duration limit"
+                    } else {
+                        "Limit"
+                    });
+                    input.set_value(values[index].clone(), window, cx);
+                    input
+                })
+            }));
+        }
+        cx.notify();
+    }
+    fn apply_limits(&mut self, cx: &mut Context<Self>) {
+        if self.busy() || self.attaching {
+            return;
+        }
+        let Some(inputs) = &self.limit_inputs else {
+            return;
+        };
+        let result = model::Limits::from_fields(std::array::from_fn(|i| {
+            inputs[i].read(cx).value().to_string()
+        }))
+        .and_then(|limits| {
+            let path = self.limits_path.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Attachment limits storage is unavailable. Limits were not changed."
+                )
+            })?;
+            limits.save(path)?;
+            Ok(limits)
+        });
+        match result {
+            Ok(limits) => {
+                self.limits = limits;
+                *self.sender_limits.lock().unwrap_or_else(|e| e.into_inner()) = limits;
+                self.limits_error = None;
+                self.preflight_error = self
+                    .video
+                    .as_ref()
+                    .and_then(|video| limits.check_video(video).err())
+                    .map(|error| format!("{error:#}"));
+                self.limit_inputs = None;
+            }
+            Err(error) => self.limits_error = Some(format!("{error:#}")),
+        }
+        cx.notify();
+    }
+    fn selection_limits_error(&self, cx: &App) -> Option<String> {
+        let text = self.text.read(cx).value();
+        if text.chars().count() > 10_000 || text.contains('\0') {
+            return Some(
+                "Feedback must contain at most 10,000 characters and no NUL characters.".into(),
+            );
+        }
+        self.limits
+            .check_sizes(
+                self.image.as_ref().map(|image| image.png.len() as u64),
+                self.video.as_ref().map(|video| video.size),
+                self.include_log.then_some(0),
+            )
+            .err()
+            .map(|error| error.to_string())
     }
     fn report_without_log(&self, cx: &App) -> Report {
         Report {
@@ -733,7 +857,10 @@ impl FeedbackView {
                     "Diagnostic log unavailable. Uncheck the log attachment to send without it."
                 )
             })?;
-            report.log = Some(model::log_tail(path)?);
+            report.log = Some(model::log_tail_with_limit(
+                path,
+                self.limits.log_bytes as usize,
+            )?);
         }
         Ok(report)
     }
@@ -742,6 +869,10 @@ impl FeedbackView {
             && !self.attaching
             && self.unavailable_screenshot.is_none()
             && !self.video_needs_reselect
+            && self.limits_error.is_none()
+            && self.limit_inputs.is_none()
+            && self.preflight_error.is_none()
+            && self.selection_limits_error(cx).is_none()
             && report_text(&self.text.read(cx).value(), sprint::enabled()).is_some()
     }
     fn send(&mut self, cx: &mut Context<Self>) {
@@ -758,6 +889,12 @@ impl FeedbackView {
                 return;
             }
         };
+        if let Err(error) = self.limits.check_report(&report) {
+            self.preflight_error = Some(format!("{error:#}"));
+            self.checkpoint(cx);
+            cx.notify();
+            return;
+        }
         use futures_util::FutureExt;
         let (abort, registration) = futures_util::future::AbortHandle::new_pair();
         let cancel =
@@ -857,11 +994,13 @@ impl FeedbackView {
         let generation = self.image_generation;
         self.attaching = true;
         self.image_error = None;
+        self.preflight_error = None;
+        let limits = self.limits;
         self._image = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    match input {
+                    let image = match input {
                         ImageInput::File(path) => model::image_file(&path),
                         ImageInput::Clipboard(bytes) => model::image_bytes(&bytes, true),
                         ImageInput::Pasted(image) => {
@@ -870,7 +1009,9 @@ impl FeedbackView {
                                 Err(_) => Err(anyhow::anyhow!("Choose a PNG or JPEG screenshot.")),
                             }
                         }
-                    }
+                    }?;
+                    limits.check_sizes(Some(image.0.len() as u64), None, None)?;
+                    Ok::<_, anyhow::Error>(image)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -902,6 +1043,7 @@ impl FeedbackView {
         self.unavailable_screenshot = None;
         self.image_error = None;
         self.image_note = None;
+        self.preflight_error = None;
         self.checkpoint(cx);
         cx.notify();
     }
@@ -920,11 +1062,12 @@ impl FeedbackView {
         if self.busy() {
             return;
         }
-        match model::video_file(path) {
+        match model::video_file_with_limits(path, self.limits) {
             Ok(video) => {
                 self.video = Some(video);
                 self.video_needs_reselect = false;
                 self.video_error = None;
+                self.preflight_error = None;
                 self.checkpoint(cx);
             }
             Err(error) => self.video_error = Some(error.to_string()),
@@ -938,6 +1081,7 @@ impl FeedbackView {
         self.video = None;
         self.video_needs_reselect = false;
         self.video_error = None;
+        self.preflight_error = None;
         self.checkpoint(cx);
         cx.notify();
     }
@@ -1169,6 +1313,60 @@ impl Render for FeedbackView {
             );
         }
         body = body
+            .child(div().text_sm().child(self.limits.summary()))
+            .child(
+                Button::new("feedback-limits")
+                    .small()
+                    .ghost()
+                    .debug_selector(|| "feedback-limits".into())
+                    .disabled(busy || self.attaching)
+                    .label("Attachment limits…")
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_limits(window, cx))),
+            );
+        if let Some(inputs) = &self.limit_inputs {
+            let labels = [
+                "Video (MB, up to 90)",
+                "Video duration (seconds; blank = no limit)",
+                "Screenshot (MB)",
+                "Diagnostic log (KB)",
+                "All attachments combined (MB)",
+                "Attachment count (1–3)",
+            ];
+            body = body.child(
+                v_flex()
+                    .gap_2()
+                    .children(inputs.iter().enumerate().map(|(index, input)| {
+                        h_flex()
+                            .gap_2()
+                            .child(div().flex_1().text_sm().child(labels[index]))
+                            .child(Input::new(input).w(px(160.)))
+                    }))
+                    .child(
+                        Button::new("feedback-apply-limits")
+                            .small()
+                            .label("Save limits")
+                            .debug_selector(|| "feedback-apply-limits".into())
+                            .on_click(cx.listener(|this, _, _, cx| this.apply_limits(cx))),
+                    ),
+            );
+        }
+        let selection_error = self.selection_limits_error(cx);
+        for error in [
+            self.limits_error.as_ref(),
+            self.preflight_error.as_ref(),
+            selection_error.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            body = body.child(
+                div()
+                    .debug_selector(|| "feedback-limit-error".into())
+                    .text_sm()
+                    .child(error.clone()),
+            );
+        }
+        body = body
             .child(
                 div()
                     .debug_selector(|| "feedback-public-notice".into())
@@ -1242,7 +1440,7 @@ impl Render for FeedbackView {
                     .debug_selector(|| "feedback-video-hint".into())
                     .text_sm()
                     .text_color(p.text_muted)
-                    .child(video_hint()),
+                    .child(video_hint_for(self.limits)),
             );
         if let Some(image) = &self.image {
             body = body.child(
@@ -1347,6 +1545,7 @@ impl Render for FeedbackView {
                     .disabled(busy)
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.include_log = *checked;
+                        this.preflight_error = None;
                         this.checkpoint(cx);
                         cx.notify();
                     })),
@@ -1584,6 +1783,199 @@ mod recovery_mounted_tests {
             issue_url: "https://git.oklabs.uk/BeFeast/okilum/issues/2801".into(),
             delivery_endpoint: None,
         }
+    }
+
+    fn configure_limits(
+        view: &Entity<FeedbackView>,
+        visual: &mut VisualTestContext,
+        limits: model::Limits,
+    ) {
+        if view.read_with(visual, |view, _| view.limit_inputs.is_none()) {
+            click(visual, "feedback-limits");
+        }
+        let inputs = view.read_with(visual, |view, _| view.limit_inputs.clone().unwrap());
+        for (input, value) in inputs.iter().zip(limits.fields()) {
+            input.update_in(visual, |input, window, cx| {
+                input.set_value(value, window, cx)
+            });
+        }
+        draw(visual);
+        click(visual, "feedback-apply-limits");
+    }
+
+    #[gpui::test]
+    fn feedback1575_limits_controls_persist_caps_and_block_sender_before_upload(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, reader) = mount(cx);
+        let path = f.directory.path().join("clip.webm");
+        std::fs::write(&path, [0; 64]).unwrap();
+        let screenshot = f.directory.path().join("screenshot.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]))
+            .save(&screenshot)
+            .unwrap();
+        let (view, mut feedback) = open(reader);
+        feedback.simulate_input("Keep this report while adjusting limits");
+        choose(&mut feedback, &path, true);
+        choose(&mut feedback, &screenshot, false);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let capture = calls.clone();
+        view.update(&mut feedback, |view, _| {
+            view.sender = Arc::new(move |report| {
+                capture.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(report.text, "Keep this report while adjusting limits");
+                assert!(report.video.is_some() && report.screenshot.is_some());
+                Ok(receipt())
+            });
+        });
+        let default = model::Limits::default();
+        for (limits, reason) in [
+            (
+                model::Limits {
+                    video_bytes: 32,
+                    ..default
+                },
+                "Video",
+            ),
+            (
+                model::Limits {
+                    screenshot_bytes: 1,
+                    ..default
+                },
+                "Screenshot",
+            ),
+            (
+                model::Limits {
+                    max_attachments: 1,
+                    ..default
+                },
+                "attachments",
+            ),
+            (
+                model::Limits {
+                    total_bytes: 65,
+                    ..default
+                },
+                "combined limit",
+            ),
+        ] {
+            configure_limits(&view, &mut feedback, limits);
+            assert!(feedback.debug_bounds("feedback-limit-error").is_some());
+            view.read_with(&feedback, |view, cx| {
+                assert!(!view.can_send(cx));
+                assert!(view.selection_limits_error(cx).unwrap().contains(reason));
+                assert!(view.image.is_some() && view.video.is_some());
+            });
+            click(&mut feedback, "feedback-send");
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+        configure_limits(
+            &view,
+            &mut feedback,
+            model::Limits {
+                video_bytes: 90_000_001,
+                ..default
+            },
+        );
+        assert!(view.read_with(&feedback, |view, _| view.limits_error.is_some()));
+        let valid = model::Limits {
+            video_bytes: 80,
+            screenshot_bytes: 512,
+            log_bytes: 64,
+            total_bytes: 1000,
+            max_attachments: 2,
+            ..default
+        };
+        configure_limits(&view, &mut feedback, valid);
+        assert!(view.read_with(&feedback, |view, cx| view.can_send(cx)));
+        let stored = view.read_with(&feedback, |view, _| view.limits_path.clone().unwrap());
+        assert_eq!(model::Limits::load(&stored).unwrap(), valid);
+        click(&mut feedback, "feedback-send");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(feedback.debug_bounds("feedback-issue").is_some());
+        feedback.simulate_keystrokes("escape");
+        draw(reader);
+        forget_closed_view(reader, view);
+        let (fresh, feedback) = open(reader);
+        fresh.read_with(&feedback, |view, cx| {
+            assert_eq!(
+                view.limits, valid,
+                "new Feedback entity loads the saved limits"
+            );
+            assert!(view.text.read(cx).value().is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn feedback1575_limits_duration_is_rechecked_before_sender_and_reselection_recovers(
+        cx: &mut TestAppContext,
+    ) {
+        fn movie(seconds: u32) -> Vec<u8> {
+            let mut bytes = vec![
+                0, 0, 0, 36, b'm', b'o', b'o', b'v', 0, 0, 0, 28, b'm', b'v', b'h', b'd',
+            ];
+            let mut timing = vec![0; 20];
+            timing[12..16].copy_from_slice(&1000u32.to_be_bytes());
+            timing[16..20].copy_from_slice(&(seconds * 1000).to_be_bytes());
+            bytes.extend(timing);
+            bytes
+        }
+        let (f, reader) = mount(cx);
+        let path = f.directory.path().join("clip.mp4");
+        std::fs::write(&path, movie(12)).unwrap();
+        let (view, mut feedback) = open(reader);
+        feedback.simulate_input("Duration validation retains my report");
+        choose(&mut feedback, &path, true);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let capture = calls.clone();
+        view.update(&mut feedback, |view, _| {
+            view.sender = Arc::new(move |_| {
+                capture.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(receipt())
+            })
+        });
+        configure_limits(
+            &view,
+            &mut feedback,
+            model::Limits {
+                video_seconds: Some(5),
+                ..Default::default()
+            },
+        );
+        assert!(feedback.debug_bounds("feedback-limit-error").is_some());
+        click(&mut feedback, "feedback-send");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        configure_limits(
+            &view,
+            &mut feedback,
+            model::Limits {
+                video_seconds: Some(20),
+                ..Default::default()
+            },
+        );
+        assert!(view.read_with(&feedback, |view, cx| view.can_send(cx)));
+        // Same byte length: preflight must inspect timing, not infer duration
+        // from file size or wait for a rejected upload.
+        std::fs::write(&path, movie(30)).unwrap();
+        click(&mut feedback, "feedback-send");
+        view.read_with(&feedback, |view, cx| {
+            assert!(matches!(view.state, SendState::Compose));
+            assert!(view
+                .preflight_error
+                .as_ref()
+                .unwrap()
+                .contains("configured limit is 20 seconds"));
+            assert_eq!(
+                view.text.read(cx).value(),
+                "Duration validation retains my report"
+            );
+        });
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        std::fs::write(&path, movie(12)).unwrap();
+        choose(&mut feedback, &path, true);
+        click(&mut feedback, "feedback-send");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(feedback.debug_bounds("feedback-issue").is_some());
     }
 
     fn saved(

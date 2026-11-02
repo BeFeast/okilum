@@ -14,11 +14,223 @@ pub(super) mod draft;
 pub(super) const ENDPOINT: &str = "https://pomoi.co/api/feedback/okilum";
 const FALLBACK_ENDPOINT: &str = "https://feedback.befeast.com/api/feedback/okilum";
 pub(super) const MAX_IMAGE: usize = 8 * 1024 * 1024;
-const MAX_LOG: usize = 256 * 1024;
+pub(super) const MAX_LOG: usize = 256 * 1024;
 /// Client-side cap for the optional "video" part. Matches pomoi's
 /// FEEDBACK_VIDEO_MAX_BYTES (90,000,000 bytes, below Cloudflare Free's 100 MB
 /// request limit). The server's 413 text wins when stricter.
 pub(super) const MAX_VIDEO: u64 = 90_000_000;
+
+/// User preferences may tighten the endpoint's ceilings, never raise them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct Limits {
+    pub video_bytes: u64,
+    pub video_seconds: Option<u64>,
+    pub screenshot_bytes: u64,
+    pub log_bytes: u64,
+    pub total_bytes: u64,
+    pub max_attachments: usize,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            video_bytes: MAX_VIDEO,
+            // The endpoint defines a byte cap, not a duration cap. A duration
+            // restriction is explicit and requires readable container timing.
+            video_seconds: None,
+            screenshot_bytes: MAX_IMAGE as u64,
+            log_bytes: MAX_LOG as u64,
+            total_bytes: MAX_VIDEO + MAX_IMAGE as u64 + MAX_LOG as u64,
+            max_attachments: 3,
+        }
+    }
+}
+impl Limits {
+    pub fn validate(self) -> Result<Self> {
+        for (label, value, ceiling) in [
+            ("Video", self.video_bytes, MAX_VIDEO),
+            ("Screenshot", self.screenshot_bytes, MAX_IMAGE as u64),
+            ("Diagnostic log", self.log_bytes, MAX_LOG as u64),
+            (
+                "Total attachments",
+                self.total_bytes,
+                Self::default().total_bytes,
+            ),
+        ] {
+            ensure!(
+                value > 0 && value <= ceiling,
+                "{label} limit must be greater than zero and at most {} ({ceiling} bytes).",
+                human_size(ceiling)
+            );
+        }
+        ensure!(
+            self.video_seconds != Some(0),
+            "Video duration must be positive, or blank for no duration limit."
+        );
+        ensure!(
+            (1..=3).contains(&self.max_attachments),
+            "Attachment count must be between 1 and 3 (one screenshot, one video and one log)."
+        );
+        Ok(self)
+    }
+    pub fn load(path: &Path) -> Result<Self> {
+        match std::fs::File::open(path) {
+            Ok(file) => serde_json::from_slice::<Self>(&bounded(file, 16 * 1024)?)
+                .context("Read Feedback attachment limits")?
+                .validate(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error.into()),
+        }
+    }
+    pub fn save(self, path: &Path) -> Result<()> {
+        use std::io::Write;
+        self.validate()?;
+        let parent = path
+            .parent()
+            .context("Feedback limits directory unavailable")?;
+        std::fs::create_dir_all(parent)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        temporary.write_all(&serde_json::to_vec_pretty(&self)?)?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(path).map_err(|error| error.error)?;
+        Ok(())
+    }
+    pub fn fields(self) -> [String; 6] {
+        [
+            decimal_units(self.video_bytes, 1_000_000),
+            self.video_seconds
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            decimal_units(self.screenshot_bytes, 1_000_000),
+            decimal_units(self.log_bytes, 1_000),
+            decimal_units(self.total_bytes, 1_000_000),
+            self.max_attachments.to_string(),
+        ]
+    }
+    pub fn from_fields(fields: [String; 6]) -> Result<Self> {
+        Self {
+            video_bytes: parse_units(&fields[0], 1_000_000)?,
+            video_seconds: if fields[1].trim().is_empty() {
+                None
+            } else {
+                Some(fields[1].trim().parse().context(
+                    "Video duration must be whole seconds, or blank for no duration limit.",
+                )?)
+            },
+            screenshot_bytes: parse_units(&fields[2], 1_000_000)?,
+            log_bytes: parse_units(&fields[3], 1_000)?,
+            total_bytes: parse_units(&fields[4], 1_000_000)?,
+            max_attachments: fields[5]
+                .trim()
+                .parse()
+                .context("Attachment count must be a whole number from 1 to 3.")?,
+        }
+        .validate()
+    }
+    pub fn summary(self) -> String {
+        let duration = self
+            .video_seconds
+            .map(|n| format!("{n} s maximum"))
+            .unwrap_or_else(|| "no duration limit".into());
+        format!("Video up to {} ({duration}); screenshot up to {}; log up to {}; at most {} attachments, {} combined.",
+            human_size(self.video_bytes), human_size(self.screenshot_bytes), human_size(self.log_bytes), self.max_attachments, human_size(self.total_bytes))
+    }
+    pub fn check_sizes(
+        self,
+        screenshot: Option<u64>,
+        video: Option<u64>,
+        log: Option<u64>,
+    ) -> Result<()> {
+        self.validate()?;
+        let mut count = 0;
+        let mut total = 0u64;
+        for (name, size, cap) in [
+            ("Screenshot", screenshot, self.screenshot_bytes),
+            ("Video", video, self.video_bytes),
+            ("Diagnostic log", log, self.log_bytes),
+        ] {
+            if let Some(size) = size {
+                ensure!(size <= cap, "{name} is {size} bytes; the configured limit is {cap} bytes ({}). Remove it or choose a smaller attachment before sending.", human_size(cap));
+                count += 1;
+                total = total
+                    .checked_add(size)
+                    .context("Attachment sizes overflowed")?;
+            }
+        }
+        ensure!(count <= self.max_attachments, "This report has {count} attachments; the configured limit is {}. Remove an attachment before sending.", self.max_attachments);
+        ensure!(total <= self.total_bytes, "Attachments total {total} bytes; the configured combined limit is {} bytes ({}). Remove an attachment or choose smaller files before sending.", self.total_bytes, human_size(self.total_bytes));
+        Ok(())
+    }
+    pub fn check_video(self, video: &Video) -> Result<()> {
+        self.check_sizes(None, Some(video.size), None)?;
+        let current = std::fs::metadata(&video.path).context(
+            "The selected video is unavailable. Select it again or remove it before sending.",
+        )?;
+        ensure!(
+            current.is_file(),
+            "Choose a regular video file before sending."
+        );
+        self.check_sizes(None, Some(current.len()), None)?;
+        ensure!(
+            current.len() == video.size,
+            "The selected video changed. Select it again or remove it before sending."
+        );
+        if let Some(maximum) = self.video_seconds {
+            let duration = super::video::duration_seconds(&video.path)
+                .context("Couldn't determine this video's duration. Choose an MP4/MOV/WebM with readable timing, or clear the duration limit before sending.")?;
+            ensure!(duration <= maximum as f64,
+                "Video is {duration:.2} seconds; the configured limit is {maximum} seconds. Trim it or choose another video before sending.");
+        }
+        Ok(())
+    }
+    pub fn check_report(self, report: &Report) -> Result<()> {
+        ensure!(
+            report.text.chars().count() <= 10_000 && !report.text.contains('\0'),
+            "Feedback must contain at most 10,000 characters and no NUL characters."
+        );
+        self.check_sizes(
+            report.screenshot.as_ref().map(|p| p.len() as u64),
+            report.video.as_ref().map(|v| v.size),
+            report.log.as_ref().map(|p| p.len() as u64),
+        )?;
+        if let Some(video) = &report.video {
+            self.check_video(video)?;
+        }
+        Ok(())
+    }
+}
+fn decimal_units(bytes: u64, unit: u64) -> String {
+    let width = unit.ilog10() as usize;
+    let whole = bytes / unit;
+    let fraction = bytes % unit;
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{:0width$}", fraction)
+            .trim_end_matches('0')
+            .to_owned()
+    }
+}
+fn parse_units(input: &str, unit: u64) -> Result<u64> {
+    let (whole, fraction) = input.trim().split_once('.').unwrap_or((input.trim(), ""));
+    ensure!(
+        !whole.is_empty()
+            && whole.bytes().all(|b| b.is_ascii_digit())
+            && fraction.bytes().all(|b| b.is_ascii_digit())
+            && fraction.len() <= unit.ilog10() as usize,
+        "Enter a positive size in the displayed units, without an exponent or fractions of a byte."
+    );
+    let whole: u64 = whole.parse().context("Attachment limit is too large")?;
+    let fraction: u64 = if fraction.is_empty() {
+        0
+    } else {
+        fraction.parse::<u64>()? * (unit / 10u64.pow(fraction.len() as u32))
+    };
+    whole
+        .checked_mul(unit)
+        .and_then(|n| n.checked_add(fraction))
+        .context("Attachment limit is too large")
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct Metadata {
@@ -259,6 +471,12 @@ pub(super) fn video_file(path: &Path) -> Result<Video> {
         mime,
         identity: video_identity(&mut file)?,
     })
+}
+pub(super) fn video_file_with_limits(path: &Path, limits: Limits) -> Result<Video> {
+    limits.check_sizes(None, Some(std::fs::metadata(path)?.len()), None)?;
+    let video = video_file(path)?;
+    limits.check_video(&video)?;
+    Ok(video)
 }
 impl Report {
     fn validate(&self) -> Result<()> {
@@ -557,13 +775,20 @@ fn bounded(reader: impl Read, maximum: usize) -> Result<Vec<u8>> {
 }
 
 pub(super) fn log_tail(path: &Path) -> Result<String> {
+    log_tail_with_limit(path, MAX_LOG)
+}
+pub(super) fn log_tail_with_limit(path: &Path, maximum: usize) -> Result<String> {
+    ensure!(
+        maximum > 0 && maximum <= MAX_LOG,
+        "Invalid diagnostic log limit"
+    );
     let mut file = std::fs::File::open(path).context(
         "Couldn't read the diagnostic log. Uncheck the log attachment to send without it.",
     )?;
     let length = file.metadata()?.len();
-    let start = length.saturating_sub(MAX_LOG as u64);
+    let start = length.saturating_sub(maximum as u64);
     file.seek(SeekFrom::Start(start))?;
-    let bytes = bounded(file.take(length - start), MAX_LOG)?;
+    let bytes = bounded(file.take(length - start), maximum)?;
     // A byte cap may split a UTF-8 character or a line. Discard that first
     // partial line, then keep at most 250 complete trailing lines.
     let bytes = if start > 0 {
@@ -639,6 +864,145 @@ pub(super) fn image_file(path: &Path) -> Result<(Arc<Vec<u8>>, image::RgbaImage)
 #[cfg(test)]
 #[path = "model_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+
+    #[test]
+    fn feedback1575_limits_config_roundtrip_refuses_server_ceiling_and_invalid_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("preferences/feedback-limits.json");
+        let defaults = Limits::default();
+        assert_eq!(defaults.video_bytes, 90_000_000);
+        assert_eq!(defaults.video_seconds, None);
+        assert_eq!(Limits::from_fields(defaults.fields()).unwrap(), defaults);
+        assert_eq!(Limits::load(&path).unwrap(), defaults);
+        let custom = Limits {
+            video_bytes: 12_000_000,
+            video_seconds: Some(45),
+            screenshot_bytes: 2_000_000,
+            log_bytes: 4_000,
+            total_bytes: 13_000_000,
+            max_attachments: 2,
+        };
+        custom.save(&path).unwrap();
+        assert_eq!(Limits::load(&path).unwrap(), custom);
+        for invalid in [
+            Limits {
+                video_bytes: MAX_VIDEO + 1,
+                ..custom
+            },
+            Limits {
+                screenshot_bytes: MAX_IMAGE as u64 + 1,
+                ..custom
+            },
+            Limits {
+                log_bytes: MAX_LOG as u64 + 1,
+                ..custom
+            },
+            Limits {
+                total_bytes: defaults.total_bytes + 1,
+                ..custom
+            },
+            Limits {
+                video_seconds: Some(0),
+                ..custom
+            },
+            Limits {
+                max_attachments: 0,
+                ..custom
+            },
+        ] {
+            assert!(invalid.save(&path).is_err());
+            assert_eq!(
+                Limits::load(&path).unwrap(),
+                custom,
+                "invalid input cannot replace the saved policy"
+            );
+        }
+        let mut fields = custom.fields();
+        fields[0] = "1e9".into();
+        assert!(Limits::from_fields(fields).is_err());
+        std::fs::write(&path, br#"{"video_bytes":90000001}"#).unwrap();
+        assert!(
+            Limits::load(&path).is_err(),
+            "invalid configuration must be visible, not silently accepted"
+        );
+    }
+
+    #[test]
+    fn feedback1575_limits_exact_bytes_count_and_combined_boundaries() {
+        let limits = Limits {
+            video_bytes: 32,
+            screenshot_bytes: 8,
+            log_bytes: 4,
+            total_bytes: 40,
+            max_attachments: 2,
+            ..Limits::default()
+        };
+        assert!(limits.check_sizes(Some(8), Some(32), None).is_ok());
+        assert!(limits
+            .check_sizes(None, Some(33), None)
+            .unwrap_err()
+            .to_string()
+            .contains("configured limit is 32 bytes"));
+        assert!(limits.check_sizes(Some(9), None, None).is_err());
+        assert!(limits.check_sizes(None, None, Some(5)).is_err());
+        assert!(limits
+            .check_sizes(Some(8), Some(32), Some(1))
+            .unwrap_err()
+            .to_string()
+            .contains("3 attachments"));
+        let combined = Limits {
+            max_attachments: 3,
+            ..limits
+        };
+        assert!(combined
+            .check_sizes(Some(8), Some(32), Some(1))
+            .unwrap_err()
+            .to_string()
+            .contains("combined limit"));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("clip.webm");
+        std::fs::write(&path, [0; 32]).unwrap();
+        assert!(
+            video_file_with_limits(&path, limits).is_ok(),
+            "no duration cap does not invent a duration requirement"
+        );
+        std::fs::write(&path, [0; 33]).unwrap();
+        assert!(video_file_with_limits(&path, limits).is_err());
+    }
+
+    #[test]
+    fn feedback1575_limits_log_tail_and_report_preflight_use_configured_caps() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("diagnostics.log");
+        std::fs::write(&path, b"old diagnostic line\nrecent\n").unwrap();
+        assert_eq!(log_tail_with_limit(&path, 8).unwrap(), "recent");
+        let mut report = Report {
+            text: "Keep authored feedback".into(),
+            kind: Kind::Bug,
+            meta: tests::meta(),
+            screenshot: Some(Arc::new(vec![1; 8])),
+            log: Some("log".into()),
+            video: None,
+        };
+        let limits = Limits {
+            screenshot_bytes: 8,
+            log_bytes: 3,
+            total_bytes: 11,
+            max_attachments: 2,
+            ..Limits::default()
+        };
+        assert!(limits.check_report(&report).is_ok());
+        report.log = Some("four".into());
+        assert!(limits.check_report(&report).is_err());
+        report.log = None;
+        report.text = "x".repeat(10_001);
+        assert!(limits.check_report(&report).is_err());
+    }
+}
 
 #[cfg(test)]
 mod cancellation_tests {
