@@ -186,12 +186,16 @@ impl Reader {
             Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
                 return self.deleted_current().is_some();
             }
-            Ok(_) => match sources.get(&self.current_rel) {
-                Some(raw) => Some(raw.clone()),
-                None if self.deleted_note.is_none() => return false,
-                None => match std::fs::read_to_string(&path) {
+            Ok(_) => match self.deleted_current() {
+                // A worker snapshot can predate the deletion/return. It cannot
+                // prove that the retained contents are back on disk now.
+                Some(_) => match std::fs::read_to_string(&path) {
                     Ok(text) => Some(text),
                     Err(_) => return true,
+                },
+                None => match sources.get(&self.current_rel) {
+                    Some(raw) => Some(raw.clone()),
+                    None => return false,
                 },
             },
         };
@@ -1201,6 +1205,11 @@ mod tests {
         // Exercise the shared-publication path as well as the direct refresh,
         // after the watcher has positively detected both filesystem changes.
         reader.update_in(visual, |r, window, cx| {
+            // Stale inventory still containing the old bytes is not a proof
+            // that the returned file matches the retained buffer.
+            let stale = std::collections::HashMap::from([("Start.md".into(), retained.into())]);
+            assert!(r.track_deleted_note(&stale, cx));
+            assert_eq!(disk(r), Some(Disk::Different));
             r.refresh_source_from_disk(window, cx);
             r.reconcile_published_document(window, cx);
             assert_eq!(r.source_text(cx).as_deref(), Some(retained));

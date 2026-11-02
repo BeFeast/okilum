@@ -10,7 +10,7 @@ impl Reader {
         target: Option<&str>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.deleted_note_asking {
+        if self.deleted_note_leaving {
             return false;
         }
         // Navigation can beat the debounced watcher notification.
@@ -78,8 +78,8 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.deleted_note_asking = true;
+        self.deleted_note_leaving = true;
         retry(self, window, cx);
-        self.deleted_note_asking = false;
+        self.deleted_note_leaving = false;
     }
 }

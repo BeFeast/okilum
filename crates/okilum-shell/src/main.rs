@@ -1730,6 +1730,7 @@ struct Reader {
     deleted_notice_generation: u64,
     /// «Save the deleted note?» is open; a second navigation does not stack another.
     deleted_note_asking: bool,
+    deleted_note_leaving: bool,
     displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
     displayed_recovery: Option<(String, u64)>,
@@ -2067,6 +2068,7 @@ impl Reader {
             displayed_deleted_notice: None,
             deleted_notice_generation: 0,
             deleted_note_asking: false,
+            deleted_note_leaving: false,
             displayed_notice: None,
             displayed_choices: Vec::new(),
             displayed_recovery: None,
