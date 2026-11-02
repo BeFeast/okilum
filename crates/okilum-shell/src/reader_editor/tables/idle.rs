@@ -26,6 +26,16 @@ fn touched(before: &str, after: &str) -> Option<Range<usize>> {
     Some(start..after.len() - suffix)
 }
 
+// Source Undo may restore a format in a table before the currently open one.
+// Preserve the active table's location only when the changed span is strictly
+// before it; overlapping edits keep the existing classifier admission path.
+pub(super) fn restored_start(before: &str, after: &str, start: usize) -> usize {
+    match (touched(after, before), touched(before, after)) {
+        (Some(old), Some(new)) if old.end < start => start - old.len() + new.len(),
+        _ => start,
+    }
+}
+
 fn table_range(text: &str, touched: Range<usize>) -> Option<Range<usize>> {
     if text.len() > source_classifier::MAX_BYTES {
         return None;
@@ -152,8 +162,10 @@ impl TableGrid {
             }
             return;
         }
-        // A different open grid owns native input. Do not invalidate its lease.
-        if self.binding.is_some() {
+        // A click into another table is not a buffer mutation. Format the
+        // touched table and relocate the other grid's lease without rebuilding
+        // its native inputs or discarding pending composition/text.
+        if self.binding.is_some() && (!self.current(cx) || self.retain_pending_cells(cx)) {
             return;
         }
         let selection = self.input.read(cx).selected_range();
@@ -188,6 +200,8 @@ impl TableGrid {
             map(selection.start)..map(selection.end)
         };
         let input = self.input.clone();
+        let replacement_len = change.source.len();
+        let edited_range = range.clone();
         if reader.update(cx, |reader, cx| {
             reader.apply_list_edit(
                 &input,
@@ -200,7 +214,20 @@ impl TableGrid {
                 cx,
             )
         }) {
-            self.formatted_stamp = Some(self.input.read(cx).source_stamp());
+            let state = self.input.read(cx);
+            let after = state.source_stamp();
+            if let Some(binding) = &mut self.binding {
+                self.source_history.record(stamp, after, None);
+                if edited_range.end <= binding.table.start {
+                    binding.table = binding.table.start - edited_range.len() + replacement_len
+                        ..binding.table.end - edited_range.len() + replacement_len;
+                }
+                binding.stamp = after;
+                binding.document = state.value().to_string();
+                self.installed_epoch = None;
+            }
+            self.formatted_stamp = Some(after);
+            cx.notify();
         }
     }
 }
@@ -260,15 +287,25 @@ mod tests {
             (editing.input.clone(), editing.table_grid.clone())
         });
         if grid_mode {
-            let bounds = visual
-                .debug_bounds("table-cell-1-0")
-                .expect("positive control: rendered cell");
-            visual.simulate_click(bounds.center(), Modifiers::default());
+            // Both fixture tables have the same row/column debug selectors.
+            // Bind the first table's exact current revision explicitly; the
+            // existing grid click regression covers the native entry route.
+            let range = SOURCE.find("| Имя").unwrap()..SOURCE.find("\n\nUntouched").unwrap();
+            let stamp = input.read_with(visual, |state, _| state.source_stamp());
+            grid.update_in(visual, |grid, window, cx| {
+                assert!(grid.open_cell(range.clone(), stamp, &SOURCE[range], 1, 0, window, cx));
+            });
         } else {
             let at = SOURCE.find("old").unwrap();
             input.update(visual, |state, cx| state.set_selected_range(at..at + 3, cx));
         }
         visual.run_until_parked();
+        if grid_mode {
+            assert!(
+                visual.debug_bounds("editable-table-grid").is_some(),
+                "positive control: persistent grid mounted"
+            );
+        }
         (reader, input, grid, visual, directory)
     }
 
@@ -632,5 +669,47 @@ mod tests {
                 "Table action {index} uses source Undo"
             );
         }
+    }
+
+    #[gpui::test]
+    fn changing_grid_focus_keeps_the_old_table_format_and_the_new_cell_caret(
+        cx: &mut TestAppContext,
+    ) {
+        let (_reader, input, grid, visual, _directory) = open(cx, true);
+        visual.simulate_input("Привет😀");
+        visual.run_until_parked();
+        let typed = value(&input, visual);
+        let at = typed.find("| keep").unwrap();
+        let range = table_range(&typed, at..at).unwrap();
+        let stamp = input.read_with(visual, |state, _| state.source_stamp());
+        grid.update_in(visual, |grid, window, cx| {
+            assert!(grid.open_cell(range.clone(), stamp, &typed[range], 1, 1, window, cx));
+        });
+        visual.run_until_parked();
+        let cell = grid.read_with(visual, |grid, _| grid.cells[1][1].clone());
+        let caret = cell.read_with(visual, |cell, _| cell.selected_range());
+        wait(visual, 800);
+        let formatted = value(&input, visual);
+        assert_ne!(
+            formatted, typed,
+            "positive control: previous edited table formats after focus moved"
+        );
+        assert!(formatted.ends_with(&SOURCE[SOURCE.find("\n\nUntouched").unwrap()..]));
+        assert_eq!(
+            grid.read_with(visual, |grid, _| grid.cells[1][1].clone()),
+            cell
+        );
+        assert_eq!(
+            cell.read_with(visual, |cell, _| cell.selected_range()),
+            caret
+        );
+        visual.update(|window, cx| assert!(cell.read(cx).focus_handle(cx).is_focused(window)));
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        assert_eq!(value(&input, visual), typed);
+        assert_eq!(
+            grid.read_with(visual, |grid, cx| grid.active_range(cx).unwrap().start),
+            typed.find("| keep").unwrap()
+        );
     }
 }

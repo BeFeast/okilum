@@ -668,6 +668,7 @@ impl TableGrid {
             return;
         }
         let range = self.binding.as_ref().unwrap().table.clone();
+        let previous_document = self.binding.as_ref().unwrap().document.clone();
         let selected = self.selected;
         let before = self.input.read(cx).source_stamp();
         let steps = self.source_history.steps(direction, before);
@@ -698,6 +699,7 @@ impl TableGrid {
             // edit, so release them before admitting the restored revision.
             self.close(cx);
             let document = self.input.read(cx).value().to_string();
+            let restored_start = idle::restored_start(&previous_document, &document, range.start);
             let snapshot = Snapshot::new("table-grid-history", 0, document.as_str());
             let classified = source_classifier::classify(&snapshot);
             let restored = classified
@@ -707,7 +709,7 @@ impl TableGrid {
                     markers
                         .iter()
                         .find(|marker| {
-                            marker.kind == Kind::Table && marker.range.start == range.start
+                            marker.kind == Kind::Table && marker.range.start == restored_start
                         })
                         .map(|marker| marker.range.clone())
                 });
