@@ -26,6 +26,12 @@ def receipt():
 class VerdictTests(unittest.TestCase):
     def test_positive_control_all_required_checks_pass(self):
         self.assertEqual(helper.verdict(receipt(), SHA), 0)
+        self.assertEqual(helper.verdict(receipt(), SHA, benchmark=True), 75)
+        info = receipt()
+        info['jobs'][0]['steps'] += [dict(name=n, conclusion='success') for n in (
+            'Warm build Linux desktop offline', 'Warm complete okilum-core suite offline',
+            'Warm Linux Rust suites offline')]
+        self.assertEqual(helper.verdict(info, SHA, benchmark=True), 0)
 
     def test_other_head_or_missing_tests_cannot_pass(self):
         self.assertEqual(helper.verdict(receipt(), "b" * 40), 75)

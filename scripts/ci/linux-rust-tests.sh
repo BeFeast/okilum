@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Linux Rust suites shared by full acceptance and hosted worker checks.
 set -euo pipefail
+# shellcheck source=scripts/ci/test-nofile.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-nofile.sh"
 cargo test -p okilum-appimage --all-features
 cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3

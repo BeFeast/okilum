@@ -30,7 +30,7 @@ def gh_json(*args):
     return json.loads(output("gh", *args))
 
 
-def verdict(info, sha):
+def verdict(info, sha, benchmark=False):
     """Missing/mismatched/partial/cancelled work never counts as a verdict."""
     if info.get("headSha") != sha or info.get("status") != "completed":
         return 75
@@ -40,6 +40,9 @@ def verdict(info, sha):
     steps = jobs[0].get("steps", [])
     required = {"Prepare and verify pinned vendor and comrak",
                 "Build Linux desktop offline", "Run complete okilum-core suite offline", "Run Linux Rust suites offline"}
+    if benchmark:
+        required |= {"Warm build Linux desktop offline", "Warm complete okilum-core suite offline",
+                     "Warm Linux Rust suites offline"}
     if info.get("conclusion") == "success":
         passed = {s["name"] for s in steps if s.get("conclusion") == "success"}
         return 0 if required <= passed and jobs[0].get("conclusion") == "success" else 75
@@ -79,6 +82,7 @@ def main():
     parser.add_argument("--dispatch", action="store_true", help="dispatch after pushing instead of using the push run")
     parser.add_argument("--timeout", type=int, default=7200, help="total wait ceiling in seconds")
     parser.add_argument("--receipt", type=Path, help="also write the final GitHub JSON receipt to this path")
+    parser.add_argument("--benchmark", action="store_true", help="repeat checks with warm target on the same runner VM")
     args = parser.parse_args()
     if args.rerun and args.dispatch:
         parser.error("choose --rerun or --dispatch")
@@ -91,6 +95,8 @@ def main():
     sha = output("git", "rev-parse", "HEAD")
     branch = output("git", "symbolic-ref", "--quiet", "--short", "HEAD")
     branch = "agent-checks/" + branch
+    if args.benchmark:
+        branch += "/benchmark"
     ref = "refs/heads/" + branch
     remote = "https://github.com/" + REPO + ".git"
     # Use the existing gh credential store without changing global git config or
@@ -145,7 +151,7 @@ def main():
     summarize(info)
     if attempt is not None and info["attempt"] <= attempt:
         return 75
-    result = verdict(info, sha)
+    result = verdict(info, sha, args.benchmark)
     if result:
         logs = subprocess.run(["gh", "run", "view", run_id, "-R", REPO, "--log-failed"],
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
