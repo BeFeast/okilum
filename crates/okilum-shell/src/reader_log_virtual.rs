@@ -186,15 +186,15 @@ impl Panel {
         .detach();
     }
     fn load_definition(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if self.active || self.saving {
+        if self.active || self.saving || self.loading {
             return;
         }
-        self.session = None;
-        self.save_error = None;
+        // Keep the original editor lease until the replacement parses. Return
+        // it on failure so a bad path/definition cannot strand the current draft.
+        let previous_session = self.session.take();
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
         self.loading = true;
-        self.loaded = None;
         self.pending_load = None;
         self.pending_path = Some(path.to_string_lossy().into_owned());
         self.error = false;
@@ -202,10 +202,16 @@ impl Panel {
         let vault = self.vault.clone();
         let state = self.state.clone();
         self.load = Some(cx.spawn(async move |this, cx| {
-            let result = cx
+            let (result, previous_session) = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut loaded = model::load(&vault, &path)?;
+                    let mut loaded = match model::load(&vault, &path) {
+                        Ok(loaded) => loaded,
+                        Err(error) => return (Err(error), previous_session),
+                    };
+                    // Reloading the same file needs its old lease released
+                    // before opening the fresh revision-aware Save session.
+                    drop(previous_session);
                     match state
                         .as_deref()
                         .ok_or_else(|| anyhow::anyhow!("Reader recovery storage is unavailable"))
@@ -214,19 +220,29 @@ impl Panel {
                         Ok(session) => loaded.session = Some(session),
                         Err(error) => loaded.save_error = Some(format!("{error:#}")),
                     }
-                    Ok::<_, anyhow::Error>(loaded)
+                    (Ok(loaded), None)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.load_generation != generation {
                     return;
                 }
-                this.loading = false;
                 match result {
                     Ok(loaded) => this.pending_load = Some(loaded),
                     Err(error) => {
+                        this.loading = false;
+                        this.session = previous_session;
                         this.error = true;
-                        this.message = error.to_string();
+                        this.message = format!(
+                            "Cannot load definition: {error:#}{}",
+                            this.loaded
+                                .as_ref()
+                                .map(|path| format!(
+                                    " · Still using {}. Criteria and results retained.",
+                                    path.display()
+                                ))
+                                .unwrap_or_default()
+                        );
                     }
                 }
                 cx.notify();
@@ -240,6 +256,7 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.loading = false;
         let fields = model::Fields::from_definition(&loaded.definition);
         for (input, value) in [
             (&self.name, fields.name),
@@ -660,7 +677,7 @@ impl Render for Panel {
             });
         let mut controls = v_flex().p_3().gap_2().flex_none()
             .child(h_flex().gap_2().child(div().flex_1().min_w_0().child(Input::new(&self.path).small().disabled(disabled)))
-                .child(Button::new("virtual-load").small().label("Load definition").disabled(disabled).on_click(cx.listener(|this, _, _, cx| { let path = PathBuf::from(this.path.read(cx).value().as_str()); this.load_definition(path, cx); })))
+                .child(Button::new("virtual-load").debug_selector(|| "virtual-load".into()).small().label("Load definition").disabled(disabled).on_click(cx.listener(|this, _, _, cx| { let path = PathBuf::from(this.path.read(cx).value().as_str()); this.load_definition(path, cx); })))
                 .child(Button::new("virtual-browse").small().label("Browse…").disabled(disabled).on_click(cx.listener(|this, _, _, cx| this.choose(cx)))))
             .child(h_flex().gap_2()
                 .child(div().w(px(220.)).child(field("Name", &self.name, disabled || self.loaded.is_none())))
@@ -776,3 +793,7 @@ impl Render for Panel {
 #[cfg(test)]
 #[path = "reader_log_virtual/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reader_log_virtual/load_tests.rs"]
+mod load_tests;
