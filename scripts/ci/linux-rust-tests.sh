@@ -42,4 +42,6 @@ suite cargo test --locked -p okilum-shell --bins reader_trash_fs::vault_trash_in
 
 # #588: one-use fresh preparation never regenerates partial state.
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::preparation:: --no-fail-fast
+# Temporary validation-branch-only removal controls for #2427.
+suite python3 scripts/ci/issue-2427-controls.py
 exit "$failed"
