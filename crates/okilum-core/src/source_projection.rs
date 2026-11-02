@@ -193,6 +193,16 @@ impl Projection {
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
+    /// Newline coordinates from the retained index; no whole-display rescan.
+    pub fn display_line_at(&self, byte: usize) -> usize {
+        self.display_boundaries.line_at(byte)
+    }
+    pub fn display_line_start(&self, line: usize) -> Option<usize> {
+        self.display_boundaries.line_start(line)
+    }
+    pub fn source_line_at(&self, byte: usize) -> usize {
+        self.source_boundaries.line_at(byte)
+    }
     fn check(&self, current: &Snapshot) -> Result<(), MapError> {
         if !self.snapshot.matches(current) {
             return Err(MapError::StaleSnapshot);

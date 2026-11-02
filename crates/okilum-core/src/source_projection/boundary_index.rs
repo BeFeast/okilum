@@ -10,11 +10,15 @@ pub(super) struct Index(Option<Arc<Node>>);
 struct Node {
     bytes: usize,
     height: u32,
+    newlines: usize,
     kind: Kind,
 }
 #[derive(Debug)]
 enum Kind {
-    Leaf(Vec<usize>),
+    Leaf {
+        boundaries: Vec<usize>,
+        newlines: Vec<usize>,
+    },
     Branch(Arc<Node>, Arc<Node>),
 }
 
@@ -81,12 +85,60 @@ impl Index {
         let mut at = *byte;
         loop {
             match &node.kind {
-                Kind::Leaf(bounds) => return bounds.binary_search(&at).map(|_| ()).map_err(|_| ()),
+                Kind::Leaf { boundaries, .. } => {
+                    return boundaries.binary_search(&at).map(|_| ()).map_err(|_| ())
+                }
                 Kind::Branch(left, right) => {
                     if at < left.bytes {
                         node = left;
                     } else {
                         at -= left.bytes;
+                        node = right;
+                    }
+                }
+            }
+        }
+    }
+    pub(super) fn line_at(&self, byte: usize) -> usize {
+        let Some(mut node) = self.0.as_deref() else {
+            return 0;
+        };
+        let mut at = byte.min(node.bytes);
+        let mut line = 0;
+        loop {
+            match &node.kind {
+                Kind::Leaf { newlines, .. } => return line + newlines.partition_point(|&b| b < at),
+                Kind::Branch(left, right) => {
+                    if at < left.bytes {
+                        node = left;
+                    } else {
+                        line += left.newlines;
+                        at -= left.bytes;
+                        node = right;
+                    }
+                }
+            }
+        }
+    }
+    pub(super) fn line_start(&self, line: usize) -> Option<usize> {
+        if line == 0 {
+            return Some(0);
+        }
+        let mut node = self.0.as_deref()?;
+        if line > node.newlines {
+            return None;
+        }
+        let mut remaining = line - 1;
+        let mut offset = 0;
+        loop {
+            match &node.kind {
+                Kind::Leaf { newlines, .. } => return Some(offset + newlines[remaining] + 1),
+                Kind::Branch(left, right) => {
+                    if remaining < left.newlines {
+                        node = left;
+                    } else {
+                        remaining -= left.newlines;
+                        offset += left.bytes;
                         node = right;
                     }
                 }
@@ -101,20 +153,25 @@ fn leaf(text: &str) -> Option<Arc<Node>> {
     }
     #[cfg(test)]
     INDEXED_BYTES.with(|n| n.set(n.get() + text.len()));
+    let newlines: Vec<_> = text.match_indices('\n').map(|(at, _)| at).collect();
     Some(Arc::new(Node {
         bytes: text.len(),
         height: 1,
-        kind: Kind::Leaf(
-            text.grapheme_indices(true)
+        newlines: newlines.len(),
+        kind: Kind::Leaf {
+            boundaries: text
+                .grapheme_indices(true)
                 .map(|(at, _)| at)
                 .chain(std::iter::once(text.len()))
                 .collect(),
-        ),
+            newlines,
+        },
     }))
 }
 fn branch(left: Arc<Node>, right: Arc<Node>) -> Arc<Node> {
     Arc::new(Node {
         bytes: left.bytes + right.bytes,
+        newlines: left.newlines + right.newlines,
         height: 1 + left.height.max(right.height),
         kind: Kind::Branch(left, right),
     })
@@ -185,19 +242,31 @@ fn split(root: Option<Arc<Node>>, byte: usize) -> (Option<Arc<Node>>, Option<Arc
     }
     assert!(byte < node.bytes);
     match &node.kind {
-        Kind::Leaf(bounds) => {
+        Kind::Leaf {
+            boundaries: bounds,
+            newlines,
+        } => {
             // Every caller splits after LF. Both new leaves have the same
             // grapheme boundaries as the original; no segmentation is needed.
             let at = bounds.binary_search(&byte).expect("LF seam");
+            let nl = newlines.partition_point(|&at| at < byte);
             let left = Arc::new(Node {
                 bytes: byte,
+                newlines: nl,
                 height: 1,
-                kind: Kind::Leaf(bounds[..=at].to_vec()),
+                kind: Kind::Leaf {
+                    boundaries: bounds[..=at].to_vec(),
+                    newlines: newlines[..nl].to_vec(),
+                },
             });
             let right = Arc::new(Node {
                 bytes: node.bytes - byte,
+                newlines: newlines.len() - nl,
                 height: 1,
-                kind: Kind::Leaf(bounds[at..].iter().map(|b| b - byte).collect()),
+                kind: Kind::Leaf {
+                    boundaries: bounds[at..].iter().map(|b| b - byte).collect(),
+                    newlines: newlines[nl..].iter().map(|b| b - byte).collect(),
+                },
             });
             (Some(left), Some(right))
         }
@@ -257,6 +326,13 @@ mod tests {
                         "byte {at}"
                     );
                 }
+                let newlines: Vec<_> = next.match_indices('\n').map(|(at, _)| at).collect();
+                for (line, &at) in newlines.iter().enumerate() {
+                    assert_eq!(updated.line_at(at), line);
+                    assert_eq!(updated.line_at(at + 1), line + 1);
+                    assert_eq!(updated.line_start(line + 1), Some(at + 1));
+                }
+                assert_eq!(updated.line_start(newlines.len() + 1), None);
                 // An earlier immutable index remains usable after adoption.
                 assert!(index.binary_search(&text.len()).is_ok());
                 text = next;

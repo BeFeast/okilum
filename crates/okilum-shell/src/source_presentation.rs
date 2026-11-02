@@ -480,7 +480,7 @@ impl CachedProvider {
                 .map_or(projection.display(), |math| math.text.as_str()),
         );
         let blocks = table_blocks(
-            &source.text,
+            &projection,
             self.current_tables(&current, &source.text),
             std::iter::once(active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0))
                 .chain(active.composition.as_ref().map(raw_range))
@@ -779,13 +779,13 @@ impl CachedProvider {
 /// Rendered blocks: every table or image not touched by the caret, selection,
 /// composition or replacement (edges included), by whole projected lines.
 fn table_blocks(
-    text: &str,
+    projection: &Projection,
     tables: Vec<Range<usize>>,
     active: impl Iterator<Item = Range<usize>> + Clone,
 ) -> Vec<ProjectionBlock> {
     use std::hash::{Hash, Hasher};
-    let newlines: Vec<usize> = text.match_indices('\n').map(|(at, _)| at).collect();
-    let line_of = |at: usize| newlines.partition_point(|&nl| nl < at);
+    let text = projection.snapshot().source();
+    let line_of = |at: usize| projection.source_line_at(at);
     tables
         .into_iter()
         .filter(|table| {
@@ -889,8 +889,29 @@ pub(crate) fn heading_scale(level: u8) -> f32 {
 trait PresentationMap {
     fn display_text(&self) -> &str;
     fn map_source(&self, offset: usize) -> Option<usize>;
+    fn display_line_at(&self, byte: usize) -> usize {
+        self.display_text().as_bytes()[..byte]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+    }
+    fn display_line_start(&self, line: usize) -> Option<usize> {
+        if line == 0 {
+            return Some(0);
+        }
+        self.display_text()
+            .match_indices('\n')
+            .nth(line - 1)
+            .map(|(at, _)| at + 1)
+    }
 }
 impl PresentationMap for Projection {
+    fn display_line_at(&self, byte: usize) -> usize {
+        self.display_line_at(byte)
+    }
+    fn display_line_start(&self, line: usize) -> Option<usize> {
+        self.display_line_start(line)
+    }
     fn display_text(&self) -> &str {
         self.display()
     }
@@ -899,6 +920,12 @@ impl PresentationMap for Projection {
     }
 }
 impl<T: PresentationMap> PresentationMap for Arc<T> {
+    fn display_line_at(&self, byte: usize) -> usize {
+        self.as_ref().display_line_at(byte)
+    }
+    fn display_line_start(&self, line: usize) -> Option<usize> {
+        self.as_ref().display_line_start(line)
+    }
     fn display_text(&self) -> &str {
         self.as_ref().display_text()
     }
@@ -923,7 +950,6 @@ fn heading_line_scales(
     styles: &[source_classifier::StyleSpan],
 ) -> Vec<LineScale> {
     let display = projection.display_text();
-    let newlines: Vec<usize> = display.match_indices('\n').map(|(at, _)| at).collect();
     let mut scales: Vec<LineScale> = styles
         .iter()
         .filter_map(|style| match style.style {

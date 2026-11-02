@@ -248,7 +248,7 @@ Sparse edits replace only the changed text interval and lay out its dirty rows;
 width, font or scale changes invalidate geometry. The cached index is installed
 only with the exact projection object that prepared it.
 
-Source and display grapheme membership use persistent relative-offset trees.
+Source/display grapheme membership and newline coordinates use persistent relative-offset trees.
 Edits segment complete changed lines, retaining the unchanged prefix and suffix.
 LF seams are unconditional grapheme breaks, so CRLF, combining marks, ZWJ and
 regional-indicator sequences keep exact boundaries. Reveal and background refresh

@@ -1238,8 +1238,16 @@ mod tests {
     }
 
     fn check_large_note(cx: &mut TestAppContext, bytes: usize) {
-        let block = format!("Paragraph **bold** {}\n\n", "a".repeat(2048));
-        let mut original = block.repeat(bytes / block.len());
+        let block = format!("Paragraph **bold** {}\r\n\r\n", "a".repeat(2048));
+        let mixed = "# Large note\r\n\r\n- [ ] task\r\n\r\n> quote\r\n\r\n```rust\r\nfn main() {}\r\n```\r\n\r\n";
+        let mut original = format!("{block}{mixed}");
+        for row in 0..bytes / block.len() {
+            let next = format!("Row {row} {block}");
+            if original.len() + next.len() > bytes {
+                break;
+            }
+            original.push_str(&next);
+        }
         original.push_str(&"z".repeat(bytes - original.len()));
         let (reader, visual, directory) = fixture(cx, &original);
         let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
@@ -1311,6 +1319,19 @@ mod tests {
         visual.simulate_keystrokes("ctrl-z");
         visual.run_until_parked();
         input.read_with(visual, |i, _| assert_eq!(i.value().as_ref(), original));
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-shift-z");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-shift-z");
+        visual.run_until_parked();
+        input.read_with(visual, |i, _| {
+            assert_eq!(i.value().as_ref(), format!("x{}", &original[1..]))
+        });
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-z");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-z");
+        visual.run_until_parked();
         reader.update_in(visual, |_, window, cx| {
             input.update(cx, |i, cx| {
                 i.replace_and_mark_text_in_range(Some(0..3), "中", Some(0..1), window, cx);
@@ -1321,6 +1342,19 @@ mod tests {
         visual.run_until_parked();
         input.read_with(visual, |i, _| {
             assert_eq!(i.value().as_ref(), format!("中{}", &original[3..]))
+        });
+        input.update(visual, |i, cx| i.set_selected_range(0..bytes, cx));
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-c");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-c");
+        visual.update(|_, cx| {
+            let expected = format!("中{}", &original[3..]);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some(expected.as_str()),
+                "large projected Copy preserves exact authored CRLF bytes"
+            );
         });
         visual.simulate_keystrokes("ctrl-end");
         visual.run_until_parked();
