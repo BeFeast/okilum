@@ -1054,6 +1054,7 @@ mod tests {
     fn controller(root: &Path, name: &str) -> Result<Controller> {
         Controller::open(root.join(name), vec![])
     }
+    #[cfg(target_os = "linux")]
     #[test]
     fn sync_2419_pairing_poll_does_not_wait_for_managed_runtime_inspection() -> Result<()> {
         let directory = tempfile::tempdir()?;

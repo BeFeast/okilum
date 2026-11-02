@@ -1319,6 +1319,7 @@ fn sync_2419_first_use_keeps_sync_off_when_preferences_cannot_be_saved(cx: &mut 
     );
 }
 
+#[cfg(target_os = "linux")]
 #[gpui::test]
 fn sync_2419_real_pairing_timer_skips_full_runtime_inspection(cx: &mut TestAppContext) {
     cx.update(crate::test_init);

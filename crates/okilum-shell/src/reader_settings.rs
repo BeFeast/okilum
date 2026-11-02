@@ -565,11 +565,11 @@ struct Settings {
     vault_color_saved: Option<Option<brand::VaultColor>>,
 }
 impl Settings {
-    fn enable_section(&mut self, section: Section, cx: &mut Context<Self>) -> bool {
+    fn enable_section(&mut self, _section: Section, _cx: &mut Context<Self>) -> bool {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if section == Section::Sync {
-            reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
-            if !reader_features::enabled(reader_features::Feature::Sync, cx) {
+        if _section == Section::Sync {
+            reader_features::set_enabled(reader_features::Feature::Sync, true, _cx);
+            if !reader_features::enabled(reader_features::Feature::Sync, _cx) {
                 return false;
             }
         }
