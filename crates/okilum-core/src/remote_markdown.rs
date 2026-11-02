@@ -1,4 +1,4 @@
-//! Session-only, read-only remote Markdown over the existing bounded SFTP transport.
+//! Remote Markdown reads and explicit guarded saves over the existing OpenSSH authority.
 use crate::log::sftp::{Target, Transport};
 use std::{
     io,
@@ -8,6 +8,10 @@ use std::{
 pub const BYTE_LIMIT: usize = 2 * 1024 * 1024;
 pub const DEADLINE: Duration = Duration::from_secs(30);
 const CHUNK: usize = 32 * 1024;
+
+#[cfg(any(unix, windows))]
+pub mod draft;
+pub mod save;
 
 #[derive(Clone, Debug)]
 pub struct Source {

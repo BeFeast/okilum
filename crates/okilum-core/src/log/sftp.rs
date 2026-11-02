@@ -65,6 +65,21 @@ impl Target {
         })
     }
     fn command(&self) -> Command {
+        let mut command = self.ssh_command();
+        command.args(["-s", "--", &self.host, "sftp"]);
+        command
+    }
+    /// Trusted, fixed program only. Remote paths and content belong on stdin,
+    /// never in shell arguments. Used only by explicit guarded Markdown Save.
+    pub(crate) fn guarded_markdown_save_command(&self, program: &'static str) -> Command {
+        let mut command = self.ssh_command();
+        command.args(["--", &self.host, program]);
+        command
+    }
+    pub(crate) fn remote_path(&self) -> &[u8] {
+        &self.path
+    }
+    fn ssh_command(&self) -> Command {
         let mut command = Command::new("ssh");
         command.args([
             "-T",
@@ -73,10 +88,6 @@ impl Target {
             "-oConnectTimeout=10",
             "-oServerAliveInterval=5",
             "-oServerAliveCountMax=2",
-            "-s",
-            "--",
-            &self.host,
-            "sftp",
         ]);
         command
     }
