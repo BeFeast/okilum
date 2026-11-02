@@ -277,13 +277,24 @@ mod view {
     }
     impl Panel {
         fn open(&mut self, source: Source, heading: Option<String>, cx: &mut Context<Self>) {
+            self.open_with(source, heading, Controller::open, cx);
+        }
+        // The same window/worker publication path also accepts an offline
+        // fixture loader; production always uses the existing SSH controller.
+        fn open_with(
+            &mut self,
+            source: Source,
+            heading: Option<String>,
+            load: impl FnOnce(&mut Controller, &str) -> io::Result<async_channel::Receiver<Reply>>,
+            cx: &mut Context<Self>,
+        ) {
             self.landing_serial = self.landing_serial.wrapping_add(1);
             self.landing_task = None;
             self.landing = None;
             self.content = None;
             self.prepared = None;
             self.notice = None;
-            let receiver = match self.controller.open(source.url()) {
+            let receiver = match load(&mut self.controller, source.url()) {
                 Ok(receiver) => receiver,
                 Err(error) => {
                     self.notice = Some(error.to_string());
@@ -501,6 +512,262 @@ mod view {
     mod tests {
         use super::*;
         use ::core::prelude::v1::test;
+        struct Offline {
+            bytes: Vec<u8>,
+            ui_thread: std::thread::ThreadId,
+            reads: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl Transport for Offline {
+            fn open(&mut self, _: &okilum_core::log::sftp::Target) -> io::Result<()> {
+                assert_ne!(
+                    std::thread::current().id(),
+                    self.ui_thread,
+                    "the existing controller must read on its background worker"
+                );
+                Ok(())
+            }
+            fn read_at(&mut self, offset: u64, limit: usize) -> io::Result<Vec<u8>> {
+                self.reads.fetch_add(1, Ordering::Relaxed);
+                let offset = offset as usize;
+                Ok(self.bytes[offset..self.bytes.len().min(offset + limit.min(7))].to_vec())
+            }
+            fn disconnect(&mut self) {}
+        }
+
+        fn offline_reply(
+            controller: &mut Controller,
+            url: &str,
+            markdown: &str,
+            reads: Arc<std::sync::atomic::AtomicUsize>,
+        ) -> io::Result<Reply> {
+            // Wait only for this owned in-memory fixture, then queue its real
+            // controller reply before the GPUI executor runs. No timing polls.
+            controller
+                .start(
+                    Source::parse(url)?,
+                    Offline {
+                        bytes: markdown.as_bytes().to_vec(),
+                        ui_thread: std::thread::current().id(),
+                        reads,
+                    },
+                )
+                .recv_blocking()
+                .map_err(|error| io::Error::other(error.to_string()))
+        }
+        fn queued(reply: Reply) -> async_channel::Receiver<Reply> {
+            let (send, receive) = async_channel::bounded(1);
+            assert!(send.try_send(reply).is_ok());
+            receive
+        }
+        fn fixture(cx: &mut TestAppContext) -> (Entity<Panel>, &mut VisualTestContext) {
+            cx.update(crate::test_init);
+            let mut panel = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let entity = cx.new(|_| Panel {
+                    controller: Controller::default(),
+                    content: None,
+                    prepared: None,
+                    notice: None,
+                    landing: None,
+                    reply_task: None,
+                    landing_task: None,
+                    landing_serial: 0,
+                });
+                panel = Some(entity.clone());
+                Root::new(entity, window, cx)
+            });
+            (panel.unwrap(), visual)
+        }
+        fn draw(visual: &mut VisualTestContext) {
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+        }
+        fn load(panel: &Entity<Panel>, visual: &mut VisualTestContext, url: &str, markdown: &str) {
+            let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            panel.update(visual, |panel, cx| {
+                panel.open_with(
+                    Source::parse(url).unwrap(),
+                    None,
+                    |controller, url| {
+                        Ok(queued(offline_reply(
+                            controller,
+                            url,
+                            markdown,
+                            reads.clone(),
+                        )?))
+                    },
+                    cx,
+                );
+            });
+            draw(visual);
+            assert!(
+                reads.load(Ordering::Relaxed) > 1,
+                "actual short-read worker positive control"
+            );
+        }
+
+        #[gpui::test]
+        fn remote_window_offline_worker_renders_readonly_payload_and_lands_current_heading(
+            cx: &mut TestAppContext,
+        ) {
+            let executor = cx.executor();
+            let (panel, visual) = fixture(cx);
+            let original = "---\ntitle: Remote\n---\n# Start\n\n## Part One\n\nbody e\u{301} שלום\n\n<img src=\"file:///private/a.png\">\n\n![remote](https://invalid.test/a.png)\n";
+            load(&panel, visual, "ssh://alias/notes/start.md", original);
+            let (source, generation, target) = panel.read_with(visual, |panel, cx| {
+                let State::Ready { source, markdown } = &panel.controller.state else {
+                    panic!("worker not accepted")
+                };
+                assert_eq!(markdown, original, "read-only canonical bytes remain exact");
+                let prepared = panel.prepared.as_ref().unwrap();
+                assert!(!prepared.rendered.contains("<img"));
+                assert!(!prepared.rendered.contains("![remote](https:"));
+                assert!(prepared
+                    .rendered
+                    .contains(okilum_core::render::UNAVAILABLE_IMAGE));
+                let target = prepared.headings.locate("Part One").unwrap().block;
+                let content = panel.content.as_ref().unwrap().read(cx);
+                assert!(
+                    content.list_state().item_count() > target,
+                    "actual Markdown view rendered its blocks"
+                );
+                assert!(panel.controller.state.message().contains("Read-only"));
+                assert_eq!(
+                    panel.controller.resolve_link("../next.md").unwrap().0.url(),
+                    "ssh://alias/next.md"
+                );
+                (source.clone(), panel.controller.generation, target)
+            });
+            panel.update(visual, |panel, cx| {
+                panel.follow(&source, generation, "#Part%20One", cx)
+            });
+            panel.read_with(visual, |panel, _| assert_eq!(panel.landing, Some(target)));
+            visual.run_until_parked();
+            executor.advance_clock(Duration::from_millis(60));
+            draw(visual);
+            panel.read_with(visual, |panel, _| {
+                assert!(
+                    panel.landing.is_none() && panel.notice.is_none(),
+                    "current heading completed actual list landing"
+                );
+                assert!(panel.controller.is_current(&source, generation));
+            });
+        }
+
+        #[gpui::test]
+        fn remote_window_replacement_and_stop_reject_old_response_and_link_authority(
+            cx: &mut TestAppContext,
+        ) {
+            let (panel, visual) = fixture(cx);
+            load(
+                &panel,
+                visual,
+                "ssh://alias/a.md",
+                "# Start\n\naccepted A\n",
+            );
+            let (old, old_generation) = panel.read_with(visual, |panel, _| {
+                let State::Ready { source, .. } = &panel.controller.state else {
+                    unreachable!()
+                };
+                (source.clone(), panel.controller.generation)
+            });
+            let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut held = None;
+            panel.update(visual, |panel, cx| {
+                panel.open_with(
+                    Source::parse("ssh://alias/b.md").unwrap(),
+                    None,
+                    |controller, url| {
+                        let reply =
+                            offline_reply(controller, url, "# B\n\nlate B\n", reads.clone())?;
+                        let (send, receive) = async_channel::bounded(1);
+                        held = Some((send, reply));
+                        Ok(receive)
+                    },
+                    cx,
+                );
+                panel.follow(&old, old_generation, "#Start", cx);
+                assert_eq!(
+                    panel.notice.as_deref(),
+                    Some("This link belongs to an inactive remote document.")
+                );
+            });
+            draw(visual);
+            panel.read_with(visual, |panel, _| {
+                assert!(matches!(&panel.controller.state, State::Loading { target } if target == "ssh://alias/b.md"));
+                assert!(panel.content.is_none());
+            });
+            load(
+                &panel,
+                visual,
+                "ssh://alias/c.md",
+                "# Current\n\naccepted C\n",
+            );
+            let (send, reply) = held.take().unwrap();
+            assert!(
+                send.try_send(reply).is_err(),
+                "replacement dropped the old UI receiver"
+            );
+            panel.update(visual, |panel, cx| {
+                panel.follow(&old, old_generation, "#Start", cx)
+            });
+            panel.read_with(visual, |panel, cx| {
+                assert!(
+                    matches!(&panel.controller.state, State::Ready { source, markdown }
+                    if source.url() == "ssh://alias/c.md" && markdown.contains("accepted C"))
+                );
+                assert!(
+                    panel
+                        .content
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .list_state()
+                        .item_count()
+                        > 0
+                );
+                assert_eq!(
+                    panel.notice.as_deref(),
+                    Some("This link belongs to an inactive remote document.")
+                );
+            });
+            let mut cancelled = None;
+            panel.update(visual, |panel, cx| {
+                panel.open_with(
+                    Source::parse("ssh://alias/d.md").unwrap(),
+                    None,
+                    |controller, url| {
+                        let reply = offline_reply(controller, url, "# D\n", reads)?;
+                        cancelled = controller.cancel.clone();
+                        let (send, receive) = async_channel::bounded(1);
+                        held = Some((send, reply));
+                        Ok(receive)
+                    },
+                    cx,
+                );
+                panel.stop(cx);
+            });
+            assert!(
+                cancelled.unwrap().load(Ordering::Acquire),
+                "Stop cancels the owned generation"
+            );
+            let (send, reply) = held.take().unwrap();
+            assert!(
+                send.try_send(reply).is_err(),
+                "Stop dropped the pending UI receiver"
+            );
+            draw(visual);
+            panel.read_with(visual, |panel, _| {
+                assert!(matches!(panel.controller.state, State::Cancelled));
+                assert!(
+                    panel.reply_task.is_none()
+                        && panel.landing_task.is_none()
+                        && panel.landing.is_none()
+                );
+            });
+        }
+
         #[test]
         fn remote_preparation_and_heading_inventory_share_the_exact_rendered_source() {
             let prepared = prepare("---\ntitle: Remote\n---\n# Start\n\nSetext\n------\n\n## Duplicate\n\n## Duplicate\n\n<img src=\"file:///private/local.png\">\n\n![remote](file:///private/local.png)\n");
