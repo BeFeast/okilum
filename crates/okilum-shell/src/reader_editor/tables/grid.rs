@@ -156,6 +156,9 @@ impl TableGrid {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.retain_pending_cells(cx) {
+            return false;
+        }
         let state = self.input.read(cx);
         let document = state.value().to_string();
         let stamp = state.source_stamp();
@@ -341,6 +344,9 @@ impl TableGrid {
     }
 
     pub(in crate::reader_editor) fn close(&mut self, cx: &mut Context<Self>) {
+        if self.retain_pending_cells(cx) {
+            return;
+        }
         self.binding = None;
         self.preparing = None;
         self.session = self.session.wrapping_add(1);
@@ -423,6 +429,36 @@ impl TableGrid {
             return false;
         };
         editing.input == self.input && editing.markdown
+    }
+
+    /// Rebuilding inputs must never discard preedit or a value refused by the
+    /// source transaction. Check every cell, including one that lost focus.
+    pub(in crate::reader_editor) fn retain_pending_cells(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(binding) = &self.binding else {
+            return false;
+        };
+        let pending = self.cells.iter().enumerate().any(|(r, row)| {
+            row.iter().enumerate().any(|(c, cell)| {
+                let cell = cell.read(cx);
+                cell.ime_composing()
+                    || cell.ime_settling(cx)
+                    || binding.cells.value(r, c).map(model::cell_text).as_deref()
+                        != Some(cell.value().as_ref())
+            })
+        });
+        if pending {
+            let message = Some(
+                "Copy or correct the cell text before leaving the grid; it has not been saved to source.",
+            );
+            if self.error != message {
+                self.error = message;
+                cx.notify();
+            }
+        }
+        pending
     }
 
     fn replace(
@@ -512,6 +548,10 @@ impl TableGrid {
     }
 
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        if self.retain_pending_cells(cx) {
+            cx.stop_propagation();
+            return;
+        }
         self.source_history.boundary = true;
         let focused = self.cells.iter().enumerate().find_map(|(r, row)| {
             row.iter()
@@ -571,28 +611,13 @@ impl TableGrid {
     }
 
     fn source_mode(&mut self, select: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self
-            .cells
-            .iter()
-            .flatten()
-            .any(|cell| cell.read(cx).ime_settling(cx))
-        {
+        if self.retain_pending_cells(cx) {
+            cx.stop_propagation();
             return;
         }
         let Some(range) = self.active_range(cx) else {
             return;
         };
-        let binding = self.binding.as_ref().unwrap();
-        if self.cells.iter().enumerate().any(|(r, row)| {
-            row.iter().enumerate().any(|(c, cell)| {
-                binding.cells.value(r, c).map(model::cell_text).as_deref()
-                    != Some(cell.read(cx).value().as_ref())
-            })
-        }) {
-            self.error = Some("Copy or correct the cell text before leaving the grid; it has not been saved to source.");
-            cx.notify();
-            return;
-        }
         let document = self.input.read(cx).value().to_string();
         let caret = super::super::block_entry::caret_outside(&document, &range);
         self.close(cx);
@@ -622,13 +647,7 @@ impl TableGrid {
         {
             self.history_dispatches += 1;
         }
-        if !self.current(cx)
-            || self
-                .cells
-                .iter()
-                .flatten()
-                .any(|cell| cell.read(cx).ime_composing())
-        {
+        if self.retain_pending_cells(cx) || !self.current(cx) {
             return;
         }
         let range = self.binding.as_ref().unwrap().table.clone();
@@ -657,6 +676,10 @@ impl TableGrid {
             self.source_history = SourceHistory::default();
         }
         if applied != 0 {
+            // Every input was committed before dispatch. The old cells now
+            // differ intentionally from the Undo result, not from a refused
+            // edit, so release them before admitting the restored revision.
+            self.close(cx);
             let document = self.input.read(cx).value().to_string();
             let snapshot = Snapshot::new("table-grid-history", 0, document.as_str());
             let classified = source_classifier::classify(&snapshot);
@@ -673,7 +696,11 @@ impl TableGrid {
                 });
             if let Some(restored) = restored {
                 if self.open(restored, window, cx) {
-                    self.focus_cell(selected.0, selected.1, window, cx);
+                    // Undo may remove the row/column created by Tab or an
+                    // insertion action. Keep focus inside the restored grid.
+                    let row = selected.0.min(self.cells.len() - 1);
+                    let column = selected.1.min(self.cells[row].len() - 1);
+                    self.focus_cell(row, column, window, cx);
                 }
             }
         }
@@ -728,6 +755,10 @@ impl Render for TableGrid {
         for (r, row) in self.cells.iter().enumerate() {
             let mut line = div().flex();
             for (c, cell) in row.iter().enumerate() {
+                let pending = self.binding.as_ref().is_some_and(|binding| {
+                    binding.cells.value(r, c).map(model::cell_text).as_deref()
+                        != Some(cell.read(cx).value().as_ref())
+                });
                 let input = Textarea::new(cell).disabled(stale);
                 let input = match alignment.get(c) {
                     Some(Alignment::Center) => input.text_center(),
@@ -741,6 +772,11 @@ impl Render for TableGrid {
                         .min_w(px(80.))
                         .border_1()
                         .border_color(palette.border)
+                        .when(pending, |cell| {
+                            cell.border_color(palette.danger).debug_selector(move || {
+                                format!("uncommitted-table-cell-{r}-{c}").into()
+                            })
+                        })
                         .capture_action(cx.listener(|this, _: &Undo, window, cx| {
                             this.history(HistoryDirection::Undo, window, cx)
                         }))
@@ -756,7 +792,13 @@ impl Render for TableGrid {
             .error
             .or(stale.then_some("The note changed. Reopen the table before editing."))
         {
-            root = root.child(div().text_sm().text_color(palette.danger).child(error));
+            root = root.child(
+                div()
+                    .debug_selector(|| "table-grid-error".into())
+                    .text_sm()
+                    .text_color(palette.danger)
+                    .child(error),
+            );
         }
         let mut controls = h_flex().gap_1().flex_wrap();
         for (id, label, command) in [
@@ -1218,6 +1260,18 @@ mod tests {
             visual.debug_bounds("editable-table-grid").is_some(),
             "cell press substituted the grid"
         );
+        visual.simulate_keystrokes("shift-tab");
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert!(
+                grid.read(cx).cells[0][1]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+        });
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
         let cell_id = grid.read_with(visual, |grid, _| grid.cells[1][0].entity_id());
         visual.simulate_input("edited|value\nשלום");
         visual.run_until_parked();
@@ -1276,6 +1330,89 @@ mod tests {
                 "a stale painted cell callback cannot bind the restored source revision"
             );
         });
+        // A refused source edit remains in its input, even after focus moves
+        // elsewhere. None of the operations that rebuild inputs may lose it.
+        let pending = "cannot encode\0yet";
+        let pending_cell = grid.read_with(visual, |grid, _| grid.cells[1][0].clone());
+        pending_cell.update_in(visual, |cell, window, cx| {
+            cell.set_value(pending, window, cx);
+        });
+        grid.update_in(visual, |grid, window, cx| {
+            grid.replace(1, 0, pending, window, cx);
+            assert!(
+                grid.error.is_some(),
+                "positive control: source refused the cell"
+            );
+            grid.focus_cell(1, 1, window, cx);
+            grid.command(Command::InsertRow, window, cx);
+            grid.history(HistoryDirection::Undo, window, cx);
+            grid.history(HistoryDirection::Redo, window, cx);
+            grid.source_mode(true, window, cx);
+            let stamp = grid.input.read(cx).source_stamp();
+            let table = source.find("| A").unwrap()..source.find("\n\nAfter").unwrap();
+            assert!(!grid.open_cell(table.clone(), stamp, &source[table], 0, 0, window, cx));
+            assert_eq!(grid.cells[1][0], pending_cell);
+            assert_eq!(grid.cells[1][0].read(cx).value().as_ref(), pending);
+            assert_eq!(grid.input.read(cx).value().as_ref(), source);
+            assert!(grid.binding.is_some());
+        });
+        reader.update_in(visual, |reader, window, cx| {
+            assert!(!reader.save_source(cx), "uncommitted text blocks Save");
+            reader.set_live_preview(false, window, cx);
+            assert!(reader.editing.as_ref().unwrap().live_preview.enabled);
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("uncommitted-table-cell-1-0").is_some());
+        assert!(visual.debug_bounds("table-grid-error").is_some());
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            source
+        );
+        // Correcting the refused input resumes source edits and source Undo;
+        // the guards must not leave the persistent editor permanently blocked.
+        pending_cell.update_in(visual, |cell, window, cx| {
+            cell.set_value("corrected|value\nnext", window, cx);
+        });
+        grid.update_in(visual, |grid, window, cx| {
+            grid.replace(1, 0, "corrected|value\nnext", window, cx);
+            assert!(grid.error.is_none());
+            assert_eq!(
+                grid.input.read(cx).value().as_ref(),
+                source.replace("one", "corrected\\|value<br>next")
+            );
+        });
+        reader.update(visual, |reader, cx| assert!(reader.save_source(cx)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            source.replace("one", "corrected\\|value<br>next")
+        );
+        grid.update_in(visual, |grid, window, cx| {
+            grid.history(HistoryDirection::Undo, window, cx);
+            assert_eq!(grid.input.read(cx).value().as_ref(), source);
+            grid.focus_cell(1, 0, window, cx);
+        });
+        // Structural actions must keep the grid mounted and remain canonical
+        // source transactions, rather than switching to a one-shot editor.
+        for action in [
+            TableInsertRow.boxed_clone(),
+            TableInsertColumn.boxed_clone(),
+            TableAlignCenter.boxed_clone(),
+            TableFormat.boxed_clone(),
+        ] {
+            visual.update(|window, cx| window.dispatch_action(action, cx));
+            visual.run_until_parked();
+            let changed = input.read_with(visual, |input, _| input.value().to_string());
+            assert_ne!(changed, source);
+            assert!(changed.starts_with("Before\n\n"));
+            assert!(changed.ends_with("\n\nAfter\n"));
+            assert!(visual.debug_bounds("editable-table-grid").is_some());
+            visual.dispatch_action(Undo);
+            visual.run_until_parked();
+            assert_eq!(
+                input.read_with(visual, |input, _| input.value().to_string()),
+                source
+            );
+        }
         visual.dispatch_action(super::super::OpenRenderedBlock);
         visual.run_until_parked();
         assert!(
