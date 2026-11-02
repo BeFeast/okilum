@@ -333,7 +333,7 @@ impl Panel {
         self.proposal = None;
     }
     fn propose_start(&mut self, cx: &mut Context<Self>) {
-        if self.following || self.busy {
+        if self.following || self.busy || self.credential_pending {
             return;
         }
         let result = self
@@ -353,6 +353,32 @@ impl Panel {
             Ok(mode) => self.begin_live(mode),
             Err(error) => self.error = Some(error.to_string()),
         }
+        cx.notify();
+    }
+    fn confirm_start(&mut self, rolling: bool, cx: &mut Context<Self>) {
+        // A queued click from a dismissed/replaced disclosure is not consent
+        // for a new session. Both choices consume the same pending proposal.
+        if self.following || self.busy || self.credential_pending {
+            return;
+        }
+        let Some(proposed) = self.proposal.take() else {
+            return;
+        };
+        let mode = if rolling {
+            proposed
+        } else if let Some(range) = self.range.clone() {
+            Mode::Fixed(range)
+        } else {
+            cx.notify();
+            return;
+        };
+        self.begin_live(mode);
+        cx.notify();
+    }
+    fn cancel_start(&mut self, cx: &mut Context<Self>) {
+        // Dismissing consent must not close the history PIT or change the
+        // draft, loaded snapshot, coverage status or worker generation.
+        self.proposal = None;
         cx.notify();
     }
     fn begin_live(&mut self, mode: Mode) {
@@ -589,12 +615,13 @@ impl Render for Panel {
                     .child(Button::new("remote-reverse").small().label("Reverse sort (Apply)").disabled(self.busy).on_click(cx.listener(|this,_,_,cx|{if let Some(draft)=this.draft.as_mut(){for sort in &mut draft.discover.sort{sort.order=if sort.order=="asc"{"desc"}else{"asc"}.into();}cx.notify();}}))))
                 .child(h_flex().gap_2().child(Button::new("remote-more").small().label(if self.applied.as_ref().is_some_and(|s|s.discover.sort[0].order=="asc"){ "Load later" }else{"Load older"}).disabled(self.busy||!self.more).on_click(cx.listener(|this,_,_,cx|{this.busy=true;this.generation=this.worker.more();cx.notify();})))
                     .child(Button::new("remote-export").small().label("Export loaded JSONL").disabled(self.data.is_none()||self.exporting).on_click(cx.listener(|this,_,_,cx|this.export(cx))))
-                    .child(Button::new("remote-start").small().label("Start applied query").disabled(self.applied.is_none()||self.following||self.busy).on_click(cx.listener(|this,_,_,cx|this.propose_start(cx))))
+                    .child(Button::new("remote-start").debug_selector(|| "remote-start".into()).small().label("Start applied query").disabled(self.applied.is_none()||self.following||self.busy||self.credential_pending||self.proposal.is_some()).on_click(cx.listener(|this,_,_,cx|this.propose_start(cx))))
                     .child(Button::new("remote-stop").small().label("Stop").disabled(!self.following&&!self.busy).on_click(cx.listener(|this,_,_,cx|{this.stop();cx.notify();}))))
                 .when(self.proposal.is_some(),|body|body.child(h_flex().gap_2()
                     .child(div().flex_1().text_sm().child("Choose a rolling window of the same duration or keep this fixed historical range. Following starts only after you choose."))
-                    .child(Button::new("remote-confirm-rolling").small().label("Follow rolling window").on_click(cx.listener(|this,_,_,cx|{if let Some(mode)=this.proposal.take(){this.begin_live(mode);cx.notify();}})))
-                    .child(Button::new("remote-confirm-fixed").small().label("Follow fixed range").on_click(cx.listener(|this,_,_,cx|{this.proposal=None;if let Some(range)=this.range.clone(){this.begin_live(Mode::Fixed(range));cx.notify();}})))))
+                    .child(Button::new("remote-confirm-rolling").debug_selector(|| "remote-confirm-rolling".into()).small().label("Follow rolling window").disabled(self.following||self.busy||self.credential_pending).on_click(cx.listener(|this,_,_,cx|this.confirm_start(true,cx))))
+                    .child(Button::new("remote-confirm-fixed").debug_selector(|| "remote-confirm-fixed".into()).small().label("Follow fixed range").disabled(self.following||self.busy||self.credential_pending).on_click(cx.listener(|this,_,_,cx|this.confirm_start(false,cx))))
+                    .child(Button::new("remote-cancel-start").debug_selector(|| "remote-cancel-start".into()).small().ghost().label("Cancel").tooltip("Keep loaded history and draft settings without starting following").on_click(cx.listener(|this,_,_,cx|this.cancel_start(cx))))))
                 .child(div().text_xs().child(remote_log::LIVE_LIMITATION))
                 .child(div().text_xs().child(remote_log::KQL_LIMITATION))
                 .child(div().text_sm().child(self.message.clone()))
@@ -793,3 +820,7 @@ mod tests {
 #[cfg(test)]
 #[path = "reader_log_remote/recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(test)]
+#[path = "reader_log_remote/start_tests.rs"]
+mod start_tests;
