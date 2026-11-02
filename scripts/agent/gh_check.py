@@ -94,9 +94,9 @@ def main():
         return 75
     sha = output("git", "rev-parse", "HEAD")
     branch = output("git", "symbolic-ref", "--quiet", "--short", "HEAD")
-    branch = "agent-checks/" + branch
-    if args.benchmark:
-        branch += "/benchmark"
+    # A suffix /benchmark would conflict with the ordinary branch as a Git ref
+    # file/directory. Keep benchmark refs in a sibling namespace instead.
+    branch = ("agent-checks-benchmark/" if args.benchmark else "agent-checks/") + branch
     ref = "refs/heads/" + branch
     remote = "https://github.com/" + REPO + ".git"
     # Use the existing gh credential store without changing global git config or
