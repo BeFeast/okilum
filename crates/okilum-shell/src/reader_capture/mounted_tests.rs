@@ -288,6 +288,30 @@ async fn capture_ready_reader_release_after_preparation_refuses(cx: &mut TestApp
 }
 
 #[gpui::test]
+async fn capture_ready_stale_open_menu_refuses_before_namespace(cx: &mut TestAppContext) {
+    let (f, visual) = fixture(cx);
+    visual
+        .condition(&f.reader, |reader, _| binding(reader).ready)
+        .await;
+    menu(visual);
+    assert!(
+        !f.session.join("capture-records-v1").exists(),
+        "menu construction performs no storage preparation"
+    );
+    f.reader.update(visual, |reader, cx| {
+        reader.session_directory = Some(f.session.with_file_name("replacement-state"));
+        cx.notify();
+    });
+    choose(visual);
+    assert!(composer(&f.root).is_none());
+    assert!(
+        !f.session.join("capture-records-v1").exists(),
+        "stale menu click has no namespace authority"
+    );
+    unchanged(&f);
+}
+
+#[gpui::test]
 async fn capture_ready_failed_checkpoint_retains_composer_and_text(cx: &mut TestAppContext) {
     let (f, visual) = fixture(cx);
     let view = open(&f, visual).await;
