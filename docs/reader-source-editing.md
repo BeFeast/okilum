@@ -49,6 +49,27 @@ editor snapshot. Remote hydration and unsupported/oversized target files are not
 performed by this provider; Windows reparse targets are refused. Platform/native
 acceptance is separate from the headless source fixtures.
 
+Live Preview smart punctuation (#1644) changes presentation only. Paired ASCII
+quotes use curly English quotes, or `«…»` in paragraphs with Russian prose;
+in-word apostrophes use `’`, `--`/`---` use `—`, and `...` uses `…`. Escaped
+punctuation, incomplete quote pairs, literal code, math, frontmatter and unsupported
+source remain authored. Language and quote pairing reset at a blank line. Only
+classifier-approved prose participates; an excluded neighbour cannot authorize an
+apostrophe conversion, and both ends of a quote pair must be approved grapheme
+boundaries.
+
+The current caret/selection, IME composition and explicit replacement reveal the
+authored punctuation in their prose block. Other inline syntax keeps its existing
+reveal policy; untouched code and formulas may stay rendered. The immutable
+painted frame retains the mapping
+for its own revision: a hit on a substituted glyph maps to its original source
+edges before reveal or reflow. This shares the existing inline math overlay and
+adds no canonical text edit or history transaction. Source mode, Copy, safe Save,
+Undo/Redo, BOM and CRLF keep their original bytes; typing still changes the file
+only by the user's authored text. Headless fixtures cover rendered mappings and
+the shared mounted editor's Copy/save/history boundary. Native appearance and
+large-vault performance remain separate acceptance.
+
 Typing a third backtick or tilde at a Markdown line start adds its closing
 fence (#1893). The caret stays at the opener for the language; Enter enters the
 empty block. An adjacent empty closer grows with a longer opening fence.
