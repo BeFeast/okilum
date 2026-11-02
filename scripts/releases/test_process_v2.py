@@ -25,11 +25,11 @@ class ProcessV2(unittest.TestCase):
         self.assertEqual(workflow('.forgejo/workflows/sprint.yml')['on'], {})
         self.assertIn('test-nofile.sh', (ROOT / 'scripts/ci/check-linux.sh').read_text())
 
-    def test_fast_lane_is_local_linux_with_six_minute_budget(self):
+    def test_fast_lane_is_local_linux_with_core_rebuild_budget(self):
         local = workflow('.forgejo/workflows/fast.yml')
         job = local['jobs']['check']
         self.assertEqual(job['runs-on'], 'fast-linux')
-        self.assertEqual(job['timeout-minutes'], '6')
+        self.assertEqual(job['timeout-minutes'], '15')
         text = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         self.assertNotIn('github-pr.py', text)
         self.assertIn('fast-local.sh', text)
@@ -39,6 +39,8 @@ class ProcessV2(unittest.TestCase):
         self.assertFalse((ROOT / '.github/workflows/forgejo-fast.yml').exists())
         script = (ROOT / 'scripts/ci/fast.sh').read_text()
         self.assertIn('cargo build --locked -p okilum-shell -p okilum-sync-supervisor', script)
+        self.assertIn('cargo check --locked --workspace --tests', script)
+        self.assertIn('cargo test --locked -p okilum-appimage --lib channel', script)
         self.assertIn('cargo test --locked -p okilum-paste --lib', script)
         self.assertNotIn('cargo test --workspace', script)
         self.assertNotIn('check-linux.sh', script)

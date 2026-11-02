@@ -8,10 +8,11 @@ concurrency:
 jobs:
   check:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Dedicated baldr runner: four warm targets, CPUWeight=1000 against release builds.
-    # Host setup: scripts/ci/fast-runner-priority.sh (live, no service restart).
+    # Dedicated baldr runner: two warm targets, CPUWeight=1000 against release builds.
+    # Runner ceiling=20m; setup and rollback: docs/fast-runner.md.
     runs-on: fast-linux
-    timeout-minutes: 6
+    # Core changes rebuild the desktop AND workspace test targets (#2378).
+    timeout-minutes: 15
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
