@@ -125,6 +125,14 @@ fn rich_read_menu_publishes_html_and_plain_without_changing_other_copy_formats(
     assert!(plain.contains("café 雪") && !plain.contains("**"));
     let at = f.background();
     f.right_click(at);
+    assert_eq!(
+        f.reader.read_with(f.visual, |r, cx| r
+            .content
+            .read(cx)
+            .selected_text_as(SelectionFormat::Plain)),
+        plain,
+        "menu snapshot leaves the selection intact"
+    );
     f.pick("read-menu-Copy with formatting");
     assert_eq!(f.clipboard(), plain);
     let seen = f.seen.borrow();
@@ -140,16 +148,13 @@ fn rich_read_menu_publishes_html_and_plain_without_changing_other_copy_formats(
     );
     assert!(seen[0].html.contains("    let a = ") && seen[0].html.contains("&lt;&amp;&gt;"));
     drop(seen);
-    assert_eq!(
-        f.reader.read_with(f.visual, |r, cx| r
-            .content
-            .read(cx)
-            .selected_text_as(SelectionFormat::Plain)),
-        plain
-    );
+    // Choosing a menu item with the mouse has the existing selection-clear
+    // behavior. Select again for each independent copy-format action.
+    f.select_all();
     f.right_click(at);
     f.pick("read-menu-Copy");
     assert_eq!(f.clipboard(), plain);
+    f.select_all();
     f.right_click(at);
     f.pick("read-menu-Copy as Markdown");
     assert_eq!(f.clipboard().as_bytes(), NOTE.as_bytes());
