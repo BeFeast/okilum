@@ -33,3 +33,6 @@ pub mod desktop;
 #[cfg(target_os = "linux")]
 pub mod conflicts;
 pub mod sidecar;
+
+#[cfg(target_os = "linux")]
+pub mod linux_bootstrap;

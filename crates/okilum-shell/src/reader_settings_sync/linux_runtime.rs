@@ -28,7 +28,15 @@ fn selection_path(state: &Path) -> anyhow::Result<PathBuf> {
         .join("runtime.json"))
 }
 pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runtime> {
-    let inventory = daemon::discover(configs);
+    let mut configs = configs.to_vec();
+    let managed = state
+        .parent()
+        .context("Sync state parent unavailable")?
+        .join("managed/prepared/syncthing/config.xml");
+    if managed.try_exists()? && !configs.contains(&managed) {
+        configs.push(managed);
+    }
+    let inventory = daemon::discover(&configs);
     let saved = selection_path(state)?;
     let selected: Option<DaemonIdentity> = if saved.try_exists()? {
         ensure!(
@@ -66,7 +74,7 @@ pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runti
         None
     };
     Ok(Runtime {
-        configs: chosen.map(|p| vec![p]).unwrap_or_else(|| configs.to_vec()),
+        configs: chosen.map(|p| vec![p]).unwrap_or_else(|| configs.clone()),
         inventory,
         choices,
     })
@@ -168,4 +176,49 @@ mod tests {
         check_destination(&runtime, &free)?;
         Ok(())
     }
+}
+
+/// Explicit button only; never called by inspect/Read or on selection failure.
+pub(super) fn prepare_managed(
+    state: &Path,
+    configs: &[PathBuf],
+    check: impl Fn() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let parent = state.parent().context("Sync state parent unavailable")?;
+    let snapshot_file = state.join("direct.json");
+    // Existing association is not permission to change runtime identity.
+    if snapshot_file.try_exists()? {
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&snapshot_file)?)?;
+        ensure!(
+            value["peers"].as_object().is_some_and(|v| v.is_empty())
+                && value["attached"].as_array().is_some_and(|v| v.is_empty())
+                && value["outbound"].is_null()
+                && value["invitation"].is_null(),
+            "Sync connection is already in use"
+        );
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").context("HOME unavailable")?);
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    ensure!(
+        config_home.is_absolute(),
+        "absolute user service location required"
+    );
+    let identity = okilum_sync_controller::linux_bootstrap::connect(
+        true,
+        &parent.join("managed"),
+        &config_home.join("systemd/user"),
+        configs,
+        &check,
+    )?;
+    check()?;
+    let file = selection_path(state)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    use std::io::Write;
+    temporary.write_all(&serde_json::to_vec(&identity)?)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&file)?;
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
 }

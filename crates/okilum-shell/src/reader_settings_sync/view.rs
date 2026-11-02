@@ -17,6 +17,19 @@ impl Render for SyncSettings {
                 .child(Button::new("sync-connect").label("Connect").disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.start_pairing(true, cx)))));
         #[cfg(target_os = "linux")]
+        if self.runtimes.is_empty() {
+            content = content.child(
+                v_flex().gap_2()
+                    .child("No existing Sync connection is selected.")
+                    .child(Button::new("sync-prepare-managed")
+                        .label("Set up Sync on this computer")
+                        .disabled(self.busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.run(Operation::PrepareManaged, cx))))
+                    .child(div().text_sm().text_color(p.text_muted)
+                        .child("Use the bundled runtime on this LAN. Existing Syncthing instances must be selected instead."))
+            );
+        }
+        #[cfg(target_os = "linux")]
         if !self.runtimes.is_empty() {
             content = content.child(div().text_base().child("Sync connection"));
             for (index, runtime) in self.runtimes.iter().enumerate() {
@@ -28,10 +41,9 @@ impl Render for SyncSettings {
                 content = content.child(
                     h_flex()
                         .gap_2()
-                        .child(
-                            div().text_sm().child(format!(
-                                "{} · {} vaults",
-                                format!(
+                        .child(div().text_sm().child(format!(
+                            "{} · {} vaults",
+                            format!(
                                     "{}…{}",
                                     runtime
                                         .identity
@@ -50,9 +62,8 @@ impl Render for SyncSettings {
                                         .rev()
                                         .collect::<String>()
                                 ),
-                                runtime.folders
-                            )),
-                        )
+                            runtime.folders
+                        )))
                         .child(
                             Button::new(("sync-select-runtime", index))
                                 .label(if runtime.selected {
