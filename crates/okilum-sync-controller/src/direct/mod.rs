@@ -1,6 +1,8 @@
 //! LAN-first computer pairing, independent of service enrollment and Syncthing
 //! lifecycle. Opening this controller does not listen or start a daemon.
 mod existing;
+#[cfg(target_os = "linux")]
+mod source;
 mod transfer;
 mod wire;
 use crate::private;
@@ -51,6 +53,8 @@ pub struct Snapshot {
     pub peers: Vec<Peer>,
     pub catalog: Vec<Vault>,
     pub attached: Vec<ExistingVault>,
+    #[cfg(target_os = "linux")]
+    pub shared: Vec<PathBuf>,
     pub status: String,
     /// An owned first receive still needs guarded bidirectional promotion.
     pub preparing: bool,
@@ -132,6 +136,9 @@ struct Database {
     transfers: Vec<transfer::Transfer>,
     #[serde(default)]
     share_grants: Vec<transfer::ShareGrant>,
+    #[cfg(target_os = "linux")]
+    #[serde(default)]
+    sources: Vec<source::Source>,
 }
 struct Shared {
     state: PathBuf,
@@ -217,6 +224,8 @@ impl Controller {
                 catalog_peer: None,
                 transfers: vec![],
                 share_grants: vec![],
+                #[cfg(target_os = "linux")]
+                sources: vec![],
             }
         };
         // Persist identity once, before creating an offer or exposing its public key.
@@ -827,6 +836,13 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
         peers: db.peers.values().map(|p| p.peer.clone()).collect(),
         catalog: db.catalog.clone(),
         attached: db.attached.clone(),
+        #[cfg(target_os = "linux")]
+        shared: db
+            .sources
+            .iter()
+            .filter(|s| s.active)
+            .map(|s| s.path.clone())
+            .collect(),
         preparing: db.transfers.iter().any(transfer::Transfer::preparing),
         status: if db
             .outbound

@@ -16,7 +16,7 @@ use xmltree::Element;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{configuration_paths, prepare, prepare_lan, Preparation};
+pub use linux::{configuration_paths, managed_identity, prepare, prepare_lan, Preparation};
 
 pub const CLIENT_VERSION: &str = "v2.1.6";
 

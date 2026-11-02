@@ -133,3 +133,40 @@ Never mutate the live brain, working configuration, peers or installed app, or
 start a second daemon. The first harness blocker stops that harness. Parent owns
 integration, packaging, native gate and beta delivery; this source does not claim
 a fresh Mac is ready.
+
+## Ordinary Linux source sharing (#2367)
+
+Settings → Sync lists known and currently open full vaults. **Share with my
+computers** enrolls an ordinary vault in the already selected bundled runtime;
+**Shared with approved computers** records completion. **Choose existing synced
+vault** retains its existing read-only association flow for external replicas.
+No share operation prepares, launches, registers, or stops a daemon.
+
+`share_vault(prepared, vault)` authenticates the existing private preparation
+receipt, pinned 2.1.6 executable digest and selected daemon/certificate before
+mutation. It records a stable random folder ID, root device/inode, ignore bytes
+and creation intent in `direct.json`, outside both vault and index. It creates
+only that new folder paused, records its expanded configuration witness, then
+unpauses and atomically saves the association and catalog grants for **all already
+approved computers**. Later approved computers receive the source through the
+existing pairing catalog. Repeated sharing keeps the ID and configuration;
+interrupted creation/unpause can resume only with the original identity/witness.
+This extends the older confirmation-time-only catalog authorization above.
+
+The new source excludes `.okilum-index` and `.okilum-save-*` (the Reader's canonical
+per-machine patterns), `/.claude/worktrees` and `/worktrees`. `.claude/skills`
+remains shared. An absent `.stignore` is created without replacing another file;
+an existing compatible policy is preserved byte for byte, including custom rules
+and line endings. Missing required exclusions, includes, negations or symlinks
+stop enrollment for explicit policy review. A changed policy never silently
+replaces the recorded bytes. No canonical notes are deleted or overwritten by
+source enrollment. The receiving controller retains the existing receive-only
+readiness/promotion gate and version history.
+
+Unknown nonempty destinations remain stopped before remote sharing or local
+folder creation. They require the distributed lossless preview tracked in #2043.
+The isolated `source_sharing::` integration tests in `direct_bidirectional` use
+two actual managed preparations and the pinned unchanged 2.1.6 binary. PR CI's
+`sync-source-sharing` job explicitly runs all three ignored tests and verifies
+each name plus `3 passed`, including skipped-share and nonempty refusal controls.
+Native idunn/muninn acceptance belongs to the Sync owner after beta delivery.

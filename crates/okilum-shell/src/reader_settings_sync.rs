@@ -1,5 +1,7 @@
 // Shared desktop Sync settings. All controller IO runs off the GPUI thread.
 use super::*;
+#[cfg(target_os = "linux")]
+use anyhow::Context as _;
 use epoch::{Epoch, Ticket};
 use gpui_component::input::{Input, InputState};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
@@ -40,6 +42,8 @@ enum Operation {
     SelectConnection(PathBuf),
     #[cfg(target_os = "linux")]
     PrepareManaged,
+    #[cfg(target_os = "linux")]
+    Share(PathBuf),
     Begin(String),
     Redeem(String, String),
     Approve(uuid::Uuid),
@@ -56,6 +60,8 @@ struct Output {
     inspected: Option<ExistingVault>,
     #[cfg(target_os = "linux")]
     runtimes: Vec<linux_runtime::Choice>,
+    #[cfg(target_os = "linux")]
+    vaults: Vec<PathBuf>,
 }
 pub(super) struct SyncSettings {
     controller: Option<Controller>,
@@ -63,6 +69,8 @@ pub(super) struct SyncSettings {
     inspected: Option<ExistingVault>,
     #[cfg(target_os = "linux")]
     runtimes: Vec<linux_runtime::Choice>,
+    #[cfg(target_os = "linux")]
+    vaults: Vec<PathBuf>,
     name: Entity<InputState>,
     invitation: Entity<InputState>,
     selected_peer: Option<uuid::Uuid>,
@@ -75,6 +83,8 @@ impl SyncSettings {
         let mut this = Self {
             #[cfg(target_os = "linux")]
             runtimes: vec![],
+            #[cfg(target_os = "linux")]
+            vaults: vec![],
             controller: None,
             snapshot: None,
             inspected: None,
@@ -125,6 +135,7 @@ impl SyncSettings {
                             #[cfg(target_os = "linux")]
                             {
                                 this.runtimes = output.runtimes;
+                                this.vaults = output.vaults;
                             }
                             this.controller = Some(output.controller);
                             if this.selected_peer.is_none()
@@ -371,13 +382,19 @@ fn perform_scoped(
             }
             if matches!(
                 &operation,
-                Operation::Begin(_) | Operation::Redeem(_, _) | Operation::Attach(_, _, _)
+                Operation::Begin(_)
+                    | Operation::Redeem(_, _)
+                    | Operation::Attach(_, _, _)
+                    | Operation::Share(_)
             ) {
                 runtime.inventory.folders()?;
                 anyhow::ensure!(
                     runtime.choices.iter().filter(|c| c.selected).count() == 1,
                     "Choose a Sync connection before pairing"
                 );
+            }
+            if let Operation::Share(path) = &operation {
+                linux_runtime::check_destination(&runtime, path)?;
             }
             if let Operation::Attach(_, _, path) = &operation {
                 linux_runtime::check_destination(&runtime, path)?;
@@ -391,6 +408,14 @@ fn perform_scoped(
             Operation::SelectConnection(_) => controller.refresh()?,
             #[cfg(target_os = "linux")]
             Operation::PrepareManaged => controller.refresh()?,
+            #[cfg(target_os = "linux")]
+            Operation::Share(path) => {
+                let prepared = state
+                    .parent()
+                    .context("Sync state parent unavailable")?
+                    .join("managed/prepared");
+                controller.share_vault(&prepared, &path)?
+            }
             Operation::Begin(name) => controller.begin_pairing(&name)?,
             Operation::Redeem(url, name) => controller.redeem(&url, &name)?,
             Operation::Approve(id) => controller.approve(id)?,
@@ -422,6 +447,10 @@ fn perform_scoped(
             inspected,
             #[cfg(target_os = "linux")]
             runtimes: runtime.choices,
+            #[cfg(target_os = "linux")]
+            vaults: reader_history::ReadingHistory::known_vault_roots(
+                &reader_history::state_directory()?,
+            )?,
         })
     })?
 }
@@ -456,7 +485,13 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
 }
 fn user_error(error: &anyhow::Error) -> String {
     let text = error.to_string().to_lowercase();
-    if text.contains("choose a sync connection") {
+    if text.contains("ignore policy") {
+        "This vault’s .stignore needs review before sharing. Keep its existing rules and add the Okilum index, save file and worktree exclusions, then try again.".into()
+    } else if text.contains("existing synced vault") {
+        "This vault already belongs to Syncthing. Use Choose existing synced vault below.".into()
+    } else if text.contains("managed") {
+        "Sharing an ordinary vault requires the bundled Sync connection. Keep existing Syncthing vaults on Choose existing synced vault.".into()
+    } else if text.contains("choose a sync connection") {
         "Choose which existing Sync connection to use below, then try again.".into()
     } else if text.contains("approval") {
         "Allow Okilum Sync in macOS System Settings → General → Login Items, then choose Connect again.".into()
