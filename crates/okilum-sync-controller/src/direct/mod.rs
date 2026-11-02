@@ -5,6 +5,7 @@ mod existing;
 #[cfg(target_os = "linux")]
 mod source;
 mod transfer;
+pub use transfer::received_vault_names;
 mod wire;
 use crate::private;
 use anyhow::{ensure, Context, Result};
@@ -904,7 +905,17 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
         pending,
         peers: db.peers.values().map(|p| p.peer.clone()).collect(),
         catalog: db.catalog.clone(),
-        attached: db.attached.clone(),
+        attached: db
+            .attached
+            .iter()
+            .map(|attached| {
+                let mut named = attached.clone();
+                if let Some(label) = transfer::receiver_label(db, attached) {
+                    named.label = label.into();
+                }
+                named
+            })
+            .collect(),
         #[cfg(target_os = "linux")]
         shared: db
             .sources

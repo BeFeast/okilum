@@ -243,13 +243,12 @@ impl Render for SyncSettings {
                                     .text_color(p.text_muted)
                                     .child(vault.path.display().to_string()),
                             )
-                            .child(div().text_sm().text_color(p.text_muted).child(
-                                if vault.paused {
-                                    "Paused in Syncthing"
-                                } else {
-                                    "Sync connected"
-                                },
-                            )),
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(p.text_muted)
+                                    .child(self.vault_connection_label(vault)),
+                            ),
                     );
                 }
             }
@@ -422,5 +421,34 @@ impl Render for SyncSettings {
             .gap_4()
             .child(result)
             .child(content)
+    }
+}
+
+impl SyncSettings {
+    #[cfg(target_os = "linux")]
+    pub(super) fn vault_connection_label(&self, vault: &ExistingVault) -> String {
+        let managed = self
+            .runtimes
+            .iter()
+            .any(|r| r.managed && r.identity == vault.daemon);
+        let label = if managed {
+            "Synced by Okilum"
+        } else {
+            "Uses your existing Syncthing"
+        };
+        if vault.paused {
+            format!("{label} · Paused")
+        } else {
+            label.into()
+        }
+    }
+    #[cfg(target_os = "macos")]
+    pub(super) fn vault_connection_label(&self, vault: &ExistingVault) -> String {
+        if vault.paused {
+            "Paused in Syncthing"
+        } else {
+            "Sync connected"
+        }
+        .into()
     }
 }

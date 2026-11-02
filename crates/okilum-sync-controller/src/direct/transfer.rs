@@ -30,6 +30,9 @@ pub(super) struct Transfer {
     phase: Phase,
     #[serde(default)]
     witness: Option<Value>,
+    /// Authorized display name; also a durable label-only PATCH intent.
+    #[serde(default)]
+    label: Option<String>,
 }
 
 pub(super) fn share(
@@ -203,6 +206,7 @@ impl Controller {
                     destination_identity: Some(DirectoryIdentity::read(&path)?),
                     phase: Phase::Preparing,
                     witness: None,
+                    label: None,
                 };
                 db.transfers.push(t.clone());
                 self.save(&db)?;
@@ -287,6 +291,7 @@ impl Controller {
             transfer.witness = Some(folder.clone());
             self.save_transfer(&transfer)?;
         }
+        self.relabel_transfer(&mut transfer)?;
         if folder["paused"] == true {
             api.set_ignores(
                 vault_id,
@@ -368,6 +373,15 @@ fn owned_label(transfer: &Transfer) -> Result<String> {
         transfer.owner.context("owned folder identity missing")?
     ))
 }
+fn expected_label(transfer: &Transfer) -> Result<String> {
+    match &transfer.witness {
+        Some(witness) => Ok(witness["label"]
+            .as_str()
+            .context("owned label missing")?
+            .into()),
+        None => owned_label(transfer),
+    }
+}
 fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     ensure!(
         !transfer.legacy_hold(),
@@ -385,7 +399,12 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
         Path::new(folder["path"].as_str().context("folder path missing")?).canonicalize()?
             == transfer.path
             && folder["id"] == transfer.vault
-            && folder["label"] == owned_label(transfer)?,
+            && (folder["label"] == expected_label(transfer)?
+                || transfer.witness.is_some()
+                    && transfer
+                        .label
+                        .as_ref()
+                        .is_some_and(|label| folder["label"] == *label)),
         "owned replica identity changed"
     );
     let connection = transfer
@@ -430,7 +449,9 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     if let Some(expected) = &transfer.witness {
         let mut expected = expected.clone();
         let mut actual = folder.clone();
-        // Only these two fields belong to the recorded preparation/promotion.
+        // Label changes require a durable authorized intent above; all other
+        // fields still match the full preparation/promotion witness.
+        expected["label"] = actual["label"].clone();
         expected["paused"] = json!(false);
         actual["paused"] = json!(false);
         expected["type"] = json!("receiveonly");
@@ -727,6 +748,63 @@ impl Controller {
             ),
         }
     }
+    fn relabel_transfer(&self, transfer: &mut Transfer) -> Result<()> {
+        let api = transfer.daemon.connect()?;
+        let before = api.folder(&transfer.vault)?;
+        validate_owned(transfer, &before)?;
+        if transfer.label.is_none() {
+            let cached = {
+                let db = self.shared.db.lock().unwrap();
+                (db.catalog_peer == Some(transfer.peer))
+                    .then(|| {
+                        db.catalog
+                            .iter()
+                            .find(|v| v.id == transfer.vault)
+                            .map(|v| v.label.clone())
+                    })
+                    .flatten()
+            };
+            let label = match cached {
+                Some(label) => label,
+                None => {
+                    self.catalog(transfer.peer)?
+                        .into_iter()
+                        .find(|v| v.id == transfer.vault)
+                        .context("authorized receiver name unavailable")?
+                        .label
+                }
+            };
+            ensure!(
+                !label.is_empty() && label.len() <= 4096 && !label.chars().any(char::is_control),
+                "invalid authorized vault name"
+            );
+            transfer.label = Some(label);
+            // Persist before PATCH so a lost acknowledgement can be read back.
+            self.save_transfer(transfer)?;
+        }
+        let label = transfer.label.as_ref().context("receiver name missing")?;
+        if before["label"] != *label {
+            self.check()?;
+            ensure!(
+                api.folder(&transfer.vault)? == before,
+                "receiver changed before relabel"
+            );
+            api.patch_folder(&transfer.vault, &json!({"label":label}))?;
+        }
+        let after = api.folder(&transfer.vault)?;
+        validate_owned(transfer, &after)?;
+        let mut expected = before;
+        expected["label"] = json!(label);
+        ensure!(
+            after == expected,
+            "receiver label readback changed configuration"
+        );
+        if transfer.witness.as_ref() != Some(&after) {
+            transfer.witness = Some(after);
+            self.save_transfer(transfer)?;
+        }
+        Ok(())
+    }
     fn reconcile_one(&self, transfer: &mut Transfer) -> Result<()> {
         transfer.daemon.verify_local()?;
         let configs = self.configuration_paths()?;
@@ -736,6 +814,7 @@ impl Controller {
                 .is_ok_and(|p| p == transfer.daemon.config_file)),
             "owned daemon is no longer selected"
         );
+        self.relabel_transfer(transfer)?;
         let api = transfer.daemon.connect()?;
         let folder = api.folder(&transfer.vault)?;
         validate_owned(transfer, &folder)?;
@@ -814,6 +893,40 @@ impl Controller {
     }
 }
 
+pub(super) fn receiver_label<'a>(db: &'a Database, attached: &ExistingVault) -> Option<&'a str> {
+    let transfer = db.transfers.iter().find(|t| {
+        t.active
+            && t.path == attached.path
+            && t.vault == attached.folder_id
+            && t.daemon == attached.daemon
+    })?;
+    transfer.label.as_deref().or_else(|| {
+        (db.catalog_peer == Some(transfer.peer))
+            .then(|| {
+                db.catalog
+                    .iter()
+                    .find(|v| v.id == attached.folder_id)
+                    .map(|v| v.label.as_str())
+            })
+            .flatten()
+    })
+}
+
+/// Offline display projection for recent vaults/window titles, including when
+/// Sync is disabled. Reads durable names without opening a controller or daemon.
+pub fn received_vault_names(state: &Path) -> Result<Vec<(PathBuf, String)>> {
+    let file = state.join("direct.json");
+    if !file.try_exists()? {
+        return Ok(vec![]);
+    }
+    let db: Database = serde_json::from_slice(&private::read(&file)?)?;
+    Ok(db
+        .attached
+        .iter()
+        .filter_map(|attached| Some((attached.path.clone(), receiver_label(&db, attached)?.into())))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,6 +951,7 @@ mod tests {
             destination_identity: Some(DirectoryIdentity::read(root.path())?),
             phase: Phase::Receiving,
             witness: None,
+            label: None,
         };
         let folder = json!({"id":"fixture","label":owned_label(&transfer)?,"path":root.path(),"type":"receiveonly","paused":false,
             "devices":[{"deviceID":"receiver"},{"deviceID":"sender"}],"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}});
@@ -934,6 +1048,47 @@ mod tests {
         let legacy: Transfer = serde_json::from_value(legacy)?;
         assert!(legacy.legacy_hold());
         assert!(legacy.preparing());
+        Ok(())
+    }
+    #[test]
+    fn receiver_label_intent_recovers_lost_ack_without_accepting_other_changes() -> Result<()> {
+        let (_root, mut transfer, folder, _, _) = fixture()?;
+        transfer.witness = Some(folder.clone());
+        let mut renamed = folder.clone();
+        renamed["label"] = json!("Notes");
+        assert!(
+            validate_owned(&transfer, &renamed).is_err(),
+            "unrecorded label change refused"
+        );
+        transfer.label = Some("Notes".into());
+        validate_owned(&transfer, &folder)?;
+        validate_owned(&transfer, &renamed)?;
+        for (field, value) in [
+            ("rescanIntervalS", json!(99)),
+            ("path", json!("/other")),
+            ("devices", json!([])),
+            ("type", json!("sendreceive")),
+        ] {
+            let mut changed = renamed.clone();
+            changed[field] = value;
+            assert!(
+                validate_owned(&transfer, &changed).is_err(),
+                "relabel accepted {field}"
+            );
+        }
+        transfer.witness = Some(renamed.clone());
+        validate_owned(&transfer, &renamed)?;
+        assert!(
+            validate_owned(&transfer, &folder).is_err(),
+            "completed relabel cannot revert to UUID"
+        );
+        transfer.witness = None;
+        transfer.phase = Phase::Preparing;
+        renamed["paused"] = json!(true);
+        assert!(
+            validate_owned(&transfer, &renamed).is_err(),
+            "name alone cannot authorize lost-create recovery"
+        );
         Ok(())
     }
     #[test]

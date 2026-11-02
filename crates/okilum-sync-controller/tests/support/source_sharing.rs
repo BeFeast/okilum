@@ -470,3 +470,75 @@ fn managed_peer_addresses_without_discovery_negative_then_hashes_and_restart() -
     })?;
     Ok(())
 }
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
+    let mut pair = Pair::new()?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let catalog = pair.second.catalog(pair.peer)?;
+    let id = &catalog[0].id;
+    let label = &catalog[0].label;
+    let attached = pair.second.attach(pair.peer, id, &pair.target.vault)?;
+    assert_eq!(attached.attached[0].label, *label);
+    assert_eq!(pair.target.api.folder(id)?["label"], *label);
+    let target_state = pair._root.path().join("target-controller");
+    assert_eq!(
+        okilum_sync_controller::direct::received_vault_names(&target_state)?,
+        vec![(pair.target.vault.clone(), label.clone())]
+    );
+    pair.second.shutdown();
+    drop(pair.second);
+    let file = target_state.join("direct.json");
+    let mut db: Value = serde_json::from_slice(&fs::read(&file)?)?;
+    let old_label = format!(
+        "Okilum Sync {}",
+        db["transfers"][0]["owner"].as_str().unwrap()
+    );
+    // A 7504 receiver with a complete ownership witness, already bidirectional.
+    pair.target
+        .api
+        .patch_folder(id, &json!({"label":old_label,"type":"sendreceive"}))?;
+    let before = pair.target.api.folder(id)?;
+    db["transfers"][0].as_object_mut().unwrap().remove("label");
+    db["transfers"][0]["phase"] = json!("bidirectional");
+    db["transfers"][0]["witness"] = before.clone();
+    db["attached"][0]["label"] = json!(old_label);
+    fs::write(&file, serde_json::to_vec(&db)?)?;
+    fs::write(
+        pair.target.vault.join("local-sentinel.md"),
+        "preserved local bytes",
+    )?;
+    pair.second = Controller::open(
+        target_state.clone(),
+        vec![pair.target.home.join("config.xml")],
+    )?;
+    let migrated = pair.second.refresh()?;
+    let mut expected = before.clone();
+    expected["label"] = json!(label);
+    assert_eq!(
+        pair.target.api.folder(id)?,
+        expected,
+        "migration changed more than label"
+    );
+    assert_eq!(migrated.attached[0].label, *label);
+    assert_eq!(
+        fs::read_to_string(pair.target.vault.join("local-sentinel.md"))?,
+        "preserved local bytes"
+    );
+    pair.second.shutdown();
+    drop(pair.second);
+    // Lost label PATCH acknowledgement: new label on daemon, old witness on disk.
+    let mut db: Value = serde_json::from_slice(&fs::read(&file)?)?;
+    db["transfers"][0]["witness"] = before;
+    fs::write(&file, serde_json::to_vec(&db)?)?;
+    pair.second = Controller::open(target_state, vec![pair.target.home.join("config.xml")])?;
+    assert_eq!(
+        pair.second.snapshot()?.attached[0].label,
+        *label,
+        "restart must preserve the catalog name before daemon refresh"
+    );
+    assert_eq!(pair.second.refresh()?.attached[0].label, *label);
+    assert_eq!(pair.target.api.folder(id)?, expected);
+    Ok(())
+}

@@ -28,6 +28,7 @@ const POLL: std::time::Duration = std::time::Duration::from_secs(2);
 #[derive(Default)]
 pub(crate) struct Names {
     names: BTreeMap<PathBuf, String>,
+    sync_names: BTreeMap<PathBuf, String>,
     watched: std::collections::BTreeSet<PathBuf>,
 }
 impl Global for Names {}
@@ -143,6 +144,37 @@ pub(crate) fn remember(known: Vec<(PathBuf, String)>, cx: &mut App) {
     }
 }
 
+/// Local Sync display names are a fallback, independent of the synced name file.
+/// No vault file is written just to display an authorized catalog name.
+pub(crate) fn remember_sync(known: Vec<(PathBuf, String)>, cx: &mut App) {
+    let mut changed = false;
+    for (root, name) in known {
+        let names = &mut cx.default_global::<Names>().sync_names;
+        if names.get(&root) != Some(&name) {
+            names.insert(root.clone(), name);
+            changed = true;
+            cx.defer(move |cx| retitle(&root, cx));
+        }
+    }
+    if changed {
+        cx.refresh_windows();
+    }
+}
+
+/// Read only the local durable display projection; never enables Sync.
+pub(crate) fn read_sync_names(profile: &Path) -> Vec<(PathBuf, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        okilum_sync_controller::direct::received_vault_names(&profile.join("sync/direct"))
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = profile;
+        vec![]
+    }
+}
+
 /// The folder's own name, which links and lookups use.
 pub(crate) fn folder_name(root: &Path) -> String {
     root.file_name()
@@ -169,14 +201,25 @@ pub(crate) fn shown(root: &Path, cx: &App) -> String {
 
 /// The display name stored for this vault, if any.
 pub(crate) fn stored(root: &Path, cx: &App) -> Option<String> {
-    cx.try_global::<Names>()
-        .and_then(|names| names.names.get(root).cloned())
+    cx.try_global::<Names>().and_then(|names| {
+        names
+            .names
+            .get(root)
+            .or_else(|| names.sync_names.get(root))
+            .cloned()
+    })
 }
 
 /// Set or clear the display name. A blank name, or the folder name itself,
 /// clears it. It is written into the vault, and every window repaints.
 pub(crate) fn set(root: &Path, name: &str, cx: &mut App) {
-    let name = clean(name).filter(|name| *name != folder_name(root));
+    let has_sync_name = cx
+        .try_global::<Names>()
+        .is_some_and(|names| names.sync_names.contains_key(root));
+    // Explicit reset still means the local folder name, even with a catalog fallback.
+    let name = clean(name)
+        .filter(|name| has_sync_name || *name != folder_name(root))
+        .or_else(|| has_sync_name.then(|| folder_name(root)));
     if stored(root, cx) == name {
         return;
     }

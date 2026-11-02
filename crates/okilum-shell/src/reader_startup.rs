@@ -110,11 +110,18 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                     .as_ref()
                     .map(|(_, roots, _)| roots.iter().filter(|root| gone(root)).cloned().collect())
                     .unwrap_or_default();
-                (windows, (history, names, missing))
+                let sync_names = history
+                    .as_ref()
+                    .map(|(profile, _, _)| super::vault_name::read_sync_names(profile))
+                    .unwrap_or_default();
+                (windows, (history, names, missing, sync_names))
             })
             .await;
-        let (history, names, missing) = history;
-        cx.update(|cx| super::vault_name::remember(names, cx));
+        let (history, names, missing, sync_names) = history;
+        cx.update(|cx| {
+            super::vault_name::remember(names, cx);
+            super::vault_name::remember_sync(sync_names, cx);
+        });
         if !restorable.is_empty() {
             let restored = cx.update(|cx| {
                 if cx.global::<Startup>().superseded {

@@ -167,8 +167,9 @@ Unknown nonempty destinations remain stopped before remote sharing or local
 folder creation. They require the distributed lossless preview tracked in #2043.
 The isolated `source_sharing::` integration tests in `direct_bidirectional` use
 two actual managed preparations and the pinned unchanged 2.1.6 binary. PR CI's
-`sync-source-sharing` job explicitly runs all three ignored tests and verifies
-each name plus `3 passed`, including skipped-share and nonempty refusal controls.
+`sync-source-sharing` job explicitly runs all five ignored tests and verifies
+each name plus `5 passed`, including peer-address, skipped-share, nonempty refusal and receiver
+label migration/recovery controls.
 Native idunn/muninn acceptance belongs to the Sync owner after beta delivery.
 
 ## Guided Linux first run (#2368)
@@ -203,3 +204,27 @@ clicks, module persistence, action completion, timer-driven incoming/confirmatio
 publication and result bounds in the Settings viewport. Separate inventory-policy
 tests retain positive controls for implicit preparation and negative controls for
 existing/unavailable instances. Native beta recording remains separate acceptance.
+
+## Receiver display names and runtime publication (#2400)
+
+A received folder takes its display label from the selected computer's authorized
+catalog. Creation still uses a private UUID label while paused, so a display name
+cannot become a lost-create ownership credential. After saving the complete
+configuration witness, the controller records the catalog name as a durable
+label-only intent, PATCHes only `label`, checks the full readback, and advances the
+witness. An interrupted label acknowledgement accepts only the old witnessed
+label or that recorded name; path, membership, version history and promotion
+checks remain in force.
+
+Reconciliation also relabels owned 7504 receivers, including already bidirectional
+ones. This migration changes no path, folder type, devices or vault files. Legacy
+receivers without an ownership witness retain their existing hold. Local recent
+vaults and window titles read the durable received-name projection without
+starting Sync or writing a vault name file; an explicit synced display-name file
+keeps its existing precedence.
+
+On Linux, a verified managed preparation says **Synced by Okilum**; an attached
+external runtime says **Uses your existing Syncthing**, with **Paused** appended
+when appropriate. The runtime inventory is read again before publishing an action
+result, so sharing/attaching publishes its current vault count along with the
+updated controller snapshot. Peer connectivity remains separate evidence (#2397).

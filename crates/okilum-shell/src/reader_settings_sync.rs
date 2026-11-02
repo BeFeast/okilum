@@ -219,6 +219,15 @@ impl SyncSettings {
             self.runtimes = output.runtimes;
             self.vaults = output.vaults;
         }
+        super::vault_name::remember_sync(
+            output
+                .snapshot
+                .attached
+                .iter()
+                .map(|v| (v.path.clone(), v.label.clone()))
+                .collect(),
+            cx,
+        );
         self.controller = Some(output.controller);
         if let Some(path) = output.selected_destination {
             self.awaiting_open = Some(path);
@@ -443,6 +452,14 @@ fn perform_scoped(
     operation: Operation,
     ticket: &Ticket,
 ) -> anyhow::Result<Output> {
+    perform_with_locations(controller, operation, ticket, locations)
+}
+fn perform_with_locations(
+    controller: Option<Controller>,
+    operation: Operation,
+    ticket: &Ticket,
+    resolve: impl FnOnce() -> anyhow::Result<(PathBuf, Vec<PathBuf>)>,
+) -> anyhow::Result<Output> {
     ticket.run(|| {
         anyhow::ensure!(
             okilum_t3::NetworkAccess::current().allowed(),
@@ -454,7 +471,7 @@ fn perform_scoped(
             Operation::Redeem(url, name) => direct::validate_pairing_input(url, name)?,
             _ => {}
         }
-        let (state, configs) = locations()?;
+        let (state, configs) = resolve()?;
         #[cfg(target_os = "linux")]
         let complete_configs = configs.clone();
         #[cfg(target_os = "linux")]
@@ -575,6 +592,9 @@ fn perform_scoped(
             }
         };
         guard.check()?;
+        // Publish folder counts from the same completed action as the snapshot.
+        #[cfg(target_os = "linux")]
+        let runtime = linux_runtime::inspect(&state, &complete_configs)?;
         Ok(Output {
             controller,
             snapshot,
@@ -584,7 +604,10 @@ fn perform_scoped(
             runtimes: runtime.choices,
             #[cfg(target_os = "linux")]
             vaults: reader_history::ReadingHistory::known_vault_roots(
-                &reader_history::state_directory()?,
+                state
+                    .parent()
+                    .and_then(Path::parent)
+                    .ok_or_else(|| anyhow::anyhow!("Sync profile unavailable"))?,
             )?,
         })
     })?
