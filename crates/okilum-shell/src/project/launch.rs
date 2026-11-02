@@ -264,7 +264,6 @@ impl ProjectView {
                 "Launch requested: message delivered to the manager conversation. Manager acceptance and T3 launch are not confirmed. Follow the manager chat and registered executor list."));
         }
         panel
-            .child(okilum_t3::models::SCHEDULED_TASK_LIMIT)
             .child(
                 Button::new("project-launch-submit")
                     .debug_selector(|| "project-launch-submit".into())
