@@ -52,6 +52,8 @@ struct Panel {
     tail: Entity<InputState>,
     previous: bool,
     follow: bool,
+    requested_target: Option<String>,
+    displayed_target: Option<String>,
     generation: u64,
     running: bool,
     stopping: bool,
@@ -79,6 +81,8 @@ impl Panel {
             tail,
             previous: false,
             follow: true,
+            requested_target: None,
+            displayed_target: None,
             generation: 0,
             running: false,
             stopping: false,
@@ -110,26 +114,13 @@ impl Panel {
         Ok(request)
     }
     fn start(&mut self, cx: &mut Context<Self>) {
-        let request = match self.request(cx) {
-            Ok(request) => request,
-            Err(error) => {
-                self.error = Some(error.to_string());
-                cx.notify();
-                return;
-            }
+        let Some(request) = self.prepare_start(cx) else {
+            return;
         };
-        self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let scope = format!("kubernetes:{}:{generation}", self.scope);
         let (worker, receiver) = worker::Worker::start(request, scope);
         self.worker = Some(worker);
-        self.running = true;
-        self.stopping = false;
-        self.message = "Reading Kubernetes logs…".into();
-        self.error = None;
-        self.diagnostic.clear();
-        self.view = None;
-        self.pending = None;
         self.events = Some(cx.spawn(async move |this, cx| {
             while let Ok(update) = receiver.recv().await {
                 if this
@@ -142,7 +133,46 @@ impl Panel {
                 }
             }
         }));
+    }
+    /// Retain the old result during request preparation and failed opening.
+    /// Only a current-generation snapshot can replace the displayed target.
+    fn prepare_start(&mut self, cx: &mut Context<Self>) -> Option<Request> {
+        if self.running || self.stopping {
+            return None;
+        }
+        let request = match self.request(cx) {
+            Ok(request) => request,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                cx.notify();
+                return None;
+            }
+        };
+        self.generation = self.generation.wrapping_add(1);
+        self.requested_target = Some(format!(
+            "{} · {}/{}/{} · {}",
+            request.context.as_deref().unwrap_or("Current context"),
+            request.namespace,
+            request.pod,
+            request.container,
+            if request.previous {
+                "Previous instance"
+            } else {
+                "Current instance"
+            },
+        ));
+        self.running = true;
+        self.stopping = false;
+        self.message = if self.view.is_some() || self.pending.is_some() {
+            "Reading Kubernetes logs… previous result retained until new data arrives."
+        } else {
+            "Reading Kubernetes logs…"
+        }
+        .into();
+        self.error = None;
+        self.diagnostic.clear();
         cx.notify();
+        Some(request)
     }
     fn receive(&mut self, generation: u64, update: worker::Update, cx: &mut Context<Self>) {
         if self.generation != generation {
@@ -150,6 +180,7 @@ impl Panel {
         }
         if let Some(snapshot) = update.snapshot {
             self.pending = Some(snapshot);
+            self.displayed_target = self.requested_target.clone();
         }
         self.diagnostic = update.diagnostic;
         let suffix = if update.pending == 0 {
@@ -290,6 +321,11 @@ impl Render for Panel {
                     ),
             )
             .child(div().text_sm().child(self.message.clone()))
+            .children(
+                self.displayed_target
+                    .as_ref()
+                    .map(|target| div().text_xs().child(format!("Displayed target: {target}"))),
+            )
             .children(self.error.as_ref().map(|error| {
                 div()
                     .text_sm()
@@ -323,3 +359,7 @@ impl Render for Panel {
 #[cfg(test)]
 #[path = "reader_log_kubernetes/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reader_log_kubernetes/replacement_tests.rs"]
+mod replacement_tests;
