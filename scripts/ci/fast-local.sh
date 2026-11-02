@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Four independent warm Cargo targets; runner capacity queues work before admission.
+# Independent warm Cargo targets; runner capacity queues work before admission.
 set -euo pipefail
 slot_root=${OKILUM_FAST_SLOT_ROOT:-"$HOME/.cache/okilum-fast/slots"}
-slots=${OKILUM_FAST_SLOTS:-4}
+slots=${OKILUM_FAST_SLOTS:-2}
 wait_seconds=${OKILUM_FAST_SLOT_WAIT_SECONDS:-20}
 [[ $slots =~ ^[1-6]$ && $wait_seconds =~ ^[0-9]+$ && $wait_seconds -le 240 ]]
 mkdir -p "$slot_root"
@@ -21,7 +21,7 @@ while true; do
             # DEP_GPUI_KIT_DEFAULT_ICONS_ICONS_DIR, component rustc-env and macros.
             # Keep the old cache intact; this namespace stays warm across runs.
             export CARGO_TARGET_DIR="$slot_root/$slot/target-stable-source-v1"
-            # Four fast jobs consume at most twelve compiler workers on baldr.
+            # Two fast jobs consume at most six compiler workers on baldr.
             export CARGO_BUILD_JOBS=3 RAYON_NUM_THREADS=3
             mkdir -p "$CARGO_TARGET_DIR"
             echo "FAST_LOCAL_SLOT=$slot target=$CARGO_TARGET_DIR compiler_workers=$CARGO_BUILD_JOBS"
