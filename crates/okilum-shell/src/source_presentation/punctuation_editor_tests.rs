@@ -4,7 +4,7 @@ use super::*;
 use ::core::prelude::v1::test;
 use gpui::*;
 use gpui_component::{
-    input::{Editor, EditorState, Redo, Undo},
+    input::{Editor, EditorState, Redo, Undo, WrappingIndent},
     Root,
 };
 use okilum_core::file_editor::{FileEditor, Save};
@@ -50,6 +50,8 @@ fn editor(cx: &mut TestAppContext) -> (Entity<EditorState>, Frame, &mut VisualTe
                 .document_newlines(true)
                 .keep_leading_bom(true)
                 .soft_wrap(true)
+                .searchable(false)
+                .wrapping_indent(WrappingIndent::None)
                 .line_number(false)
                 .folding(false);
             state.set_value(ORIGINAL, window, cx);
@@ -97,6 +99,16 @@ fn editor(cx: &mut TestAppContext) -> (Entity<EditorState>, Frame, &mut VisualTe
         );
         assert_eq!(current.source().stamp, state.source_stamp());
         assert_eq!(state.value().as_ref(), ORIGINAL);
+        // Compose counters alone also increment before a native raw fallback.
+        // The actual painted layout must collapse both authored bold markers
+        // to the same point. Default Same wrapping disables projection.
+        let marker = ORIGINAL.find("**").unwrap();
+        let before = state.range_to_bounds(&(marker..marker)).unwrap();
+        let after = state.range_to_bounds(&(marker + 2..marker + 2)).unwrap();
+        assert_eq!(
+            before.origin, after.origin,
+            "actual projected layout positive control"
+        );
     });
     (input, frame, visual)
 }
@@ -174,6 +186,7 @@ fn punctuation_editor_keyboard_copy_safe_save_and_undo_keep_authored_bytes(
 fn punctuation_editor_rendered_hit_reveals_and_edits_the_same_source_position(
     cx: &mut TestAppContext,
 ) {
+    let executor = cx.executor();
     let (input, frame, visual) = editor(cx);
     let start = ORIGINAL.find("...").unwrap();
     let end = start + 3;
@@ -189,6 +202,13 @@ fn punctuation_editor_rendered_hit_reveals_and_edits_the_same_source_position(
         })
         .expect("the projected punctuation has real layout geometry");
     assert!(glyph.size.width > px(0.) && glyph.size.height > px(0.));
+    let hit = input.read_with(visual, |state, _| {
+        state.source_offset_for_point(glyph.center())
+    });
+    assert!(
+        hit == Some(start) || hit == Some(end),
+        "the painted glyph maps to authored edges: {hit:?}"
+    );
     visual.simulate_click(glyph.center(), Modifiers::none());
     draw(visual);
     let at = input.read_with(visual, |state, _| {
@@ -204,7 +224,15 @@ fn punctuation_editor_rendered_hit_reveals_and_edits_the_same_source_position(
         at == start || at == end,
         "the glyph hit snaps to its authored edges: {at}"
     );
-    assert_eq!(frame.lock().unwrap().as_ref().unwrap().text(), ORIGINAL);
+    // The shared editor pins the painted mapping for 500 ms after a press,
+    // so double-clicks share one geometry. Reveal follows normal lease expiry.
+    executor.advance_clock(std::time::Duration::from_millis(600));
+    draw(visual);
+    assert_eq!(
+        frame.lock().unwrap().as_ref().unwrap().text(),
+        ORIGINAL.replace("`literal -- ...`", "literal -- ..."),
+        "punctuation reveals; untouched inline code retains its own policy"
+    );
     visual.simulate_input("X");
     draw(visual);
     let mut expected = ORIGINAL.to_owned();

@@ -59,7 +59,9 @@ apostrophe conversion, and both ends of a quote pair must be approved grapheme
 boundaries.
 
 The current caret/selection, IME composition and explicit replacement reveal the
-original source in their block. The immutable painted frame retains the mapping
+authored punctuation in their prose block. Other inline syntax keeps its existing
+reveal policy; untouched code and formulas may stay rendered. The immutable
+painted frame retains the mapping
 for its own revision: a hit on a substituted glyph maps to its original source
 edges before reveal or reflow. This shares the existing inline math overlay and
 adds no canonical text edit or history transaction. Source mode, Copy, safe Save,

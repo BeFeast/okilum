@@ -1215,7 +1215,12 @@ mod tests {
             ..ActiveSource::default()
         };
         let revealed = provider.compose(&source, &active).unwrap();
-        assert_eq!(revealed.text(), source.text.as_ref());
+        assert_eq!(revealed.text(), "\"Привет\" -- ... \"code\" -- ...\n\nend");
+        assert_eq!(
+            revealed.source().text,
+            source.text,
+            "source bytes remain canonical"
+        );
         assert_eq!(
             frame.text(),
             "«Привет» — … \"code\" -- ...\n\nend",
@@ -1391,7 +1396,8 @@ mod tests {
         ] {
             assert_eq!(
                 provider.compose(&original, &active).unwrap().text(),
-                original.text.as_ref()
+                "**\"Hello\" -- ...** x²\n\nend",
+                "punctuation reveals while the untouched formula retains its policy"
             );
         }
         assert_eq!(original.text.as_ref(), "**\"Hello\" -- ...** $x^2$\n\nend");
