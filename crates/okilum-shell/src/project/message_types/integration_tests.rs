@@ -149,7 +149,7 @@ fn typed_1478_annotation_cas_retains_winner_and_full_author_source_binding() {
         "metadata-only correction increments revision"
     );
     assert!(write(&store, revision, Some(&initial), initial.clone()).is_err());
-    assert!(write(&store, next, Some(&initial), initial).is_err());
+    assert!(write(&store, next, Some(&initial), initial.clone()).is_err());
     assert_eq!(read(&store).unwrap(), (next, entries));
     assert_ne!(winner.source, fingerprint("body", Author::User));
     assert_ne!(winner.source, fingerprint("body\n", Author::Manager));

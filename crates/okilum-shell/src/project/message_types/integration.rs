@@ -282,6 +282,7 @@ impl ProjectView {
             );
             self.typed.store = Some(store.clone());
             let epoch = self.typed.epoch;
+            let scope = scope.clone();
             self.typed.load = Some(cx.spawn(async move |this, cx| {
                 let result = cx
                     .background_executor()
