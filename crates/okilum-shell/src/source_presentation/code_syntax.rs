@@ -103,12 +103,22 @@ impl CodeSyntax {
             }
         }
         let mut local_blocks: HashMap<Arc<str>, Option<Captures>> = HashMap::new();
+        let mut ordered_spans = Vec::with_capacity(spans.len());
         for block in blocks {
             let captures: Captures = spans
                 .iter()
                 .filter(|(r, _)| block.start <= r.start && r.end <= block.end)
                 .map(|(r, name)| (r.start - block.start..r.end - block.start, name.clone()))
                 .collect();
+            // Host captures precede all injected-language captures in the
+            // parser's output. Normalize both exact and retained publications
+            // to block order, preserving precedence within each block, so a
+            // prose edit cannot reorder unchanged metric-style inventories.
+            ordered_spans.extend(
+                captures
+                    .iter()
+                    .map(|(r, name)| (block.start + r.start..block.start + r.end, name.clone())),
+            );
             let bytes: Arc<str> = source.text[block].into();
             match local_blocks.entry(bytes) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
@@ -123,7 +133,7 @@ impl CodeSyntax {
         }
         Self {
             source: Some(source.clone()),
-            spans,
+            spans: ordered_spans,
             blocks: local_blocks,
         }
     }
@@ -415,6 +425,33 @@ mod tests {
             expected,
             "unchanged code keeps its local captures after its source offsets move"
         );
+        let retained = provider.retained.lock().unwrap();
+        let map = retained.prepare_reveal(&Active::default()).unwrap();
+        let mut styles = Vec::new();
+        provider.syntax.project_retained(
+            &shifted,
+            map.projection().as_ref(),
+            &theme,
+            &mut styles,
+            Some(&retained),
+        );
+        let offset = shifted.text.len() - note.text.len();
+        let actual: Vec<_> = styles
+            .iter()
+            .map(|s| s.range.start.0..s.range.end.0)
+            .collect();
+        let expected_ranges: Vec<_> = provider
+            .syntax
+            .spans
+            .iter()
+            .filter(|(_, name)| theme.style(name).is_some())
+            .map(|(r, _)| r.start + offset..r.end + offset)
+            .collect();
+        assert_eq!(
+            actual, expected_ranges,
+            "multiple blocks keep exact capture order across a prose edit"
+        );
+        drop(retained);
         let changed = SourceSnapshot {
             stamp: SourceStamp {
                 generation: 3,
