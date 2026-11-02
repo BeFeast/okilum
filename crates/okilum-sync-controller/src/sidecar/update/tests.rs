@@ -58,9 +58,11 @@ struct Fake {
     running: bool,
     bad_health: bool,
     lost_select: bool,
+    bad_stop: bool,
     starts: usize,
     verifies: usize,
     ipc: bool,
+    generation: Uuid,
     tokens: Vec<StopToken>,
     on_stop: Option<Hook>,
 }
@@ -71,9 +73,11 @@ impl Default for Fake {
             running: true,
             bad_health: false,
             lost_select: false,
+            bad_stop: false,
             starts: 0,
             verifies: 0,
             ipc: false,
+            generation: Uuid::from_u128(7),
             tokens: vec![],
             on_stop: None,
         }
@@ -89,10 +93,11 @@ impl Host for Fake {
         Ok((self.ipc && self.running).then(|| Scope {
             installation: binding.installation,
             instance: binding.instance,
-            generation: Uuid::from_u128(7),
+            generation: self.generation,
         }))
     }
     fn stop(&mut self, _: &Binding) -> Result<()> {
+        ensure!(!self.bad_stop, "owned tree exit is unconfirmed");
         self.running = false;
         Ok(())
     }
@@ -365,4 +370,189 @@ fn stored_update_stop_is_retried_with_the_same_token() {
     assert_eq!(step(&mut store, &mut host).unwrap(), Phase::Select);
     assert_eq!(host.tokens.len(), 2);
     assert_eq!(host.tokens[0], host.tokens[1]);
+}
+
+#[test]
+fn update_stop_rechecks_complete_binding_after_ipc() {
+    for pending in [Phase::Stop, Phase::Rollback] {
+        // Unchanged binding is the positive control for both transitions.
+        for changed in [
+            None,
+            Some("owner"),
+            Some("supervisor"),
+            Some("state_directory"),
+            Some("device_identity"),
+        ] {
+            let mut store = store_at(Intent::Enabled, pending);
+            let selected = if pending == Phase::Stop { "old" } else { "new" };
+            let mut host = Fake {
+                ipc: true,
+                selected: selected.into(),
+                ..Fake::default()
+            };
+            let observed = Rc::new(RefCell::new(None));
+            let (probe, snapshot) = (store.clone(), observed.clone());
+            host.on_stop = Some(Box::new(move |token| {
+                let original = envelope(&probe);
+                // Inject an independently replaced, valid owned-journal fixture.
+                // A normal revision-changing transition is already rejected by
+                // token authorization; preserve the token to exercise Binding.
+                let mut json = serde_json::to_value(&original).unwrap();
+                if let Some(field) = changed {
+                    json["binding"][field] = "replacement".into();
+                }
+                let replacement =
+                    Envelope::from_slice(&serde_json::to_vec(&json).unwrap()).unwrap();
+                replacement
+                    .authorize(token, &token.operation.scope)
+                    .unwrap();
+                *snapshot.borrow_mut() = Some(replacement.clone());
+                probe.0.borrow_mut().stored = Stored::Current(replacement);
+            }));
+            let result = step(&mut store, &mut host);
+            assert_eq!(host.tokens.len(), 1, "IPC must reach the injection");
+            if changed.is_some() {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("managed binding changed"));
+                assert_eq!(envelope(&store), observed.borrow().clone().unwrap());
+                assert_eq!(phase(&store), pending);
+                assert!(envelope(&store).stop().is_some());
+                assert_eq!((host.selected.as_str(), host.starts), (selected, 0));
+                assert_eq!(host.verifies, 0, "no post-IPC runtime action");
+            } else {
+                assert_eq!(
+                    result.unwrap(),
+                    if pending == Phase::Stop {
+                        Phase::Select
+                    } else {
+                        Phase::Complete
+                    }
+                );
+                assert!(envelope(&store).stop().is_none());
+                host.on_stop = None;
+                finish(&mut store, &mut host);
+                assert_eq!(host.starts, 1);
+                assert_eq!(
+                    host.selected,
+                    if pending == Phase::Stop { "new" } else { "old" }
+                );
+            }
+        }
+    }
+}
+
+/// Reopen only the durable snapshot; no in-flight transaction or callback survives.
+fn restart(store: &Store) -> Store {
+    let saved = envelope(store).to_vec().unwrap();
+    let reopened = Store::default();
+    reopened.0.borrow_mut().stored = Stored::Current(Envelope::from_slice(&saved).unwrap());
+    reopened
+}
+
+#[test]
+fn interrupted_update_stop_recovers_with_absent_or_restarted_helper() {
+    for pending in [Phase::Stop, Phase::Rollback] {
+        for replacement_generation in [None, Some(Uuid::from_u128(8))] {
+            let mut store = store_at(Intent::Enabled, pending);
+            let mut host = Fake {
+                ipc: true,
+                selected: if pending == Phase::Stop { "old" } else { "new" }.into(),
+                ..Fake::default()
+            };
+            // The stop succeeds; publication of completion fails. This must
+            // retain the operation rather than invent a durable exit receipt.
+            let probe = store.clone();
+            host.on_stop = Some(Box::new(move |_| probe.0.borrow_mut().fail = true));
+            assert!(step(&mut store, &mut host).is_err());
+            assert_eq!(host.tokens.len(), 1);
+            let old_token = host.tokens[0].clone();
+            let saved = envelope(&store);
+            saved
+                .authorize(&old_token, &old_token.operation.scope)
+                .unwrap();
+            assert_eq!(phase(&store), pending);
+            assert!(!host.running);
+            assert_eq!(host.starts, 0);
+
+            let mut reopened = restart(&store);
+            host.on_stop = None;
+            if let Some(generation) = replacement_generation {
+                host.generation = generation;
+                host.running = true;
+            } else {
+                // Missing IPC alone is not evidence of owned-tree exit.
+                // Native confirmation failure must preserve pending authority.
+                host.bad_stop = true;
+                assert!(step(&mut reopened, &mut host).is_err());
+                assert_eq!(envelope(&reopened), saved);
+                assert_eq!(host.starts, 0);
+                host.bad_stop = false;
+            }
+            let reached = step(&mut reopened, &mut host).unwrap();
+            assert_eq!(
+                reached,
+                if pending == Phase::Stop {
+                    Phase::Select
+                } else {
+                    Phase::Complete
+                }
+            );
+            if let Some(generation) = replacement_generation {
+                assert_eq!(host.tokens.len(), 2);
+                assert_eq!(host.tokens[1].operation.scope.generation, generation);
+                assert_ne!(host.tokens[1], old_token);
+                assert_eq!(host.tokens[1].operation.reason, old_token.operation.reason);
+                assert!(host.tokens[1].operation.authorized_revision > saved.revision());
+            } else {
+                assert_eq!(
+                    host.tokens.len(),
+                    1,
+                    "absent IPC uses native stop confirmation"
+                );
+            }
+            assert!(envelope(&reopened)
+                .authorize(&old_token, &old_token.operation.scope)
+                .is_err());
+            finish(&mut reopened, &mut host);
+            assert_eq!(host.starts, 1);
+            assert!(host.running);
+            let done = envelope(&reopened);
+            assert_eq!(done.binding(), saved.binding());
+            assert_eq!(
+                done.update().unwrap().rolled_back,
+                pending == Phase::Rollback
+            );
+            assert_eq!(
+                host.selected,
+                if pending == Phase::Stop { "new" } else { "old" }
+            );
+        }
+    }
+}
+
+#[test]
+fn interrupted_selection_publication_replays_after_restart() {
+    let mut store = store_at(Intent::Enabled, Phase::Select);
+    let mut host = Fake {
+        running: false,
+        ..Fake::default()
+    };
+    let saved = envelope(&store);
+    store.0.borrow_mut().fail = true;
+    assert!(step(&mut store, &mut host).is_err());
+    assert_eq!(
+        host.selected, "new",
+        "selection happened before publication failed"
+    );
+    assert!(!host.running);
+    assert_eq!(envelope(&store), saved);
+    let mut reopened = restart(&store);
+    finish(&mut reopened, &mut host);
+    assert_eq!(host.selected, "new");
+    assert_eq!(host.starts, 1);
+    assert!(host.running);
+    assert_eq!(envelope(&reopened).binding(), saved.binding());
+    assert!(!envelope(&reopened).update().unwrap().rolled_back);
 }

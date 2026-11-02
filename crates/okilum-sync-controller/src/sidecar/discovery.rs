@@ -294,3 +294,108 @@ mod win {
         }
     }
 }
+
+/// Inventory the existing managed receiver configuration after an app restart.
+/// This is only a candidate path, never proof of a live or authenticated daemon.
+/// Callers must still inspect its identity before use. No state is created and
+/// no supervisor connection, preparation, registration or process start occurs.
+/// Only an absent state directory means no managed candidate; incomplete or
+/// unsafe existing state must remain a visible discovery error.
+#[cfg(unix)]
+pub fn managed_configuration_path(state: &std::path::Path) -> Result<Option<std::path::PathBuf>> {
+    use std::{fs, os::unix::fs::MetadataExt, path::Component};
+    ensure!(
+        state.is_absolute()
+            && state
+                .components()
+                .all(|c| !matches!(c, Component::ParentDir | Component::CurDir)),
+        "plain absolute managed state path required"
+    );
+    let metadata = match fs::symlink_metadata(state) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let config = state.join("config");
+    let file = config.join("config.xml");
+    for metadata in [metadata, fs::symlink_metadata(&config)?] {
+        ensure!(
+            metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == rustix::process::geteuid().as_raw()
+                && metadata.mode() & 0o7077 == 0,
+            "private owned managed configuration directory required"
+        );
+    }
+    let metadata = fs::symlink_metadata(&file)?;
+    ensure!(
+        metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && metadata.uid() == rustix::process::geteuid().as_raw()
+            && metadata.mode() & 0o7077 == 0,
+        "private owned managed configuration file required"
+    );
+    Ok(Some(file))
+}
+
+#[cfg(all(test, unix))]
+mod managed_configuration_tests {
+    use super::*;
+    use std::{
+        fs,
+        os::unix::fs::{symlink, PermissionsExt},
+    };
+
+    #[test]
+    fn restart_rediscovers_offline_configuration_without_preparing_state() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let state = root.path().join("managed");
+        assert_eq!(managed_configuration_path(&state)?, None);
+        assert!(!state.exists());
+        fs::create_dir(&state)?;
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700))?;
+        let config = state.join("config");
+        fs::create_dir(&config)?;
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o700))?;
+        let file = config.join("config.xml");
+        // An inventory fixture only: it cannot authenticate or start a daemon.
+        fs::write(&file, b"offline configuration fixture")?;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600))?;
+        for _ in 0..2 {
+            assert_eq!(managed_configuration_path(&state)?, Some(file.clone()));
+        }
+        assert_eq!(fs::read(&file)?, b"offline configuration fixture");
+        assert_eq!(fs::read_dir(&state)?.count(), 1);
+        assert_eq!(fs::read_dir(&config)?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_unsafe_and_linked_configuration_is_not_absence() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let state = root.path();
+        fs::set_permissions(state, fs::Permissions::from_mode(0o700))?;
+        assert!(managed_configuration_path(state).is_err());
+        let config = state.join("config");
+        fs::create_dir(&config)?;
+        fs::set_permissions(&config, fs::Permissions::from_mode(0o700))?;
+        assert!(managed_configuration_path(state).is_err());
+        let file = config.join("config.xml");
+        fs::write(&file, b"fixture")?;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600))?;
+        assert_eq!(managed_configuration_path(state)?, Some(file.clone()));
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644))?;
+        assert!(managed_configuration_path(state).is_err());
+        fs::remove_file(&file)?;
+        symlink("missing.xml", &file)?;
+        assert!(managed_configuration_path(state).is_err());
+        fs::remove_file(&file)?;
+        fs::remove_dir(&config)?;
+        let outside = root.path().join("outside");
+        fs::create_dir(&outside)?;
+        symlink(&outside, &config)?;
+        assert!(managed_configuration_path(state).is_err());
+        assert!(managed_configuration_path(std::path::Path::new("relative")).is_err());
+        Ok(())
+    }
+}

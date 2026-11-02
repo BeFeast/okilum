@@ -11,6 +11,10 @@ use std::{
     io::{self, Cursor, Read, Write},
     os::unix::fs::PermissionsExt,
     rc::Rc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use uuid::Uuid;
@@ -35,26 +39,31 @@ fn soon() -> Instant {
 }
 struct Tree {
     stops: usize,
+    status: Status,
     next: Status,
+    fail_stop: bool,
     /// Runs inside the owned-tree stop, i.e. while the lease must be held.
     during_stop: Option<Box<dyn FnMut()>>,
 }
 impl OwnedTree for Tree {
     fn status(&mut self) -> Result<Status> {
-        Ok(Status::Running)
+        Ok(self.status)
     }
     fn stop(&mut self) -> Result<Status> {
         self.stops += 1;
         if let Some(probe) = &mut self.during_stop {
             probe();
         }
+        ensure!(!self.fail_stop, "stop failed after partial effect");
         Ok(self.next)
     }
 }
 fn tree() -> Tree {
     Tree {
         stops: 0,
+        status: Status::Running,
         next: Status::Stopped,
+        fail_stop: false,
         during_stop: None,
     }
 }
@@ -335,4 +344,255 @@ fn a_timed_out_stop_reports_stopping_releases_the_lock_and_allows_a_retry() {
         Status::Stopped
     );
     assert_eq!(f.stops(), 2);
+}
+
+#[derive(Clone)]
+struct Clock(Arc<Mutex<Instant>>);
+impl Clock {
+    fn now(&self) -> Instant {
+        *self.0.lock().unwrap()
+    }
+    fn set(&self, now: Instant) {
+        *self.0.lock().unwrap() = now;
+    }
+}
+
+/// No filesystem, waits or processes. The free lock deliberately succeeds even
+/// past its deadline, just like the native store's uncontended lock fast path.
+struct MemoryDir {
+    journal: Vec<u8>,
+    held: AtomicBool,
+    clock: Clock,
+    after_read: Option<Instant>,
+}
+struct MemoryLock(Arc<MemoryDir>);
+impl Drop for MemoryLock {
+    fn drop(&mut self) {
+        self.0.held.store(false, Ordering::SeqCst);
+    }
+}
+impl StateDir for MemoryDir {
+    type Lock = MemoryLock;
+    fn lock(self: &Arc<Self>, _: Instant) -> Result<Self::Lock> {
+        ensure!(
+            !self.held.swap(true, Ordering::SeqCst),
+            "synthetic state is busy"
+        );
+        Ok(MemoryLock(self.clone()))
+    }
+    fn read(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        ensure!(self.held.load(Ordering::SeqCst), "read without lease");
+        ensure!(name == "sidecar.json", "unexpected read");
+        if let Some(now) = self.after_read {
+            self.clock.set(now);
+        }
+        Ok(Some(self.journal.clone()))
+    }
+    fn write(&self, _: &str, _: &[u8]) -> Result<()> {
+        anyhow::bail!("supervisor must not write authoritative state")
+    }
+    fn remove(&self, _: &str) -> Result<()> {
+        anyhow::bail!("supervisor must not remove authoritative state")
+    }
+}
+
+struct Synthetic {
+    runtime: StoreRuntime<MemoryDir, Tree>,
+    clock: Clock,
+    deadline: Instant,
+    scope: Scope,
+    token: StopToken,
+}
+impl Synthetic {
+    fn new(tree: Tree, expire_on_read: bool) -> Self {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(10);
+        let clock = Clock(Arc::new(Mutex::new(now)));
+        let scope = Scope {
+            installation: binding().installation,
+            instance: binding().instance,
+            generation: Uuid::from_u128(3),
+        };
+        let (envelope, token) = Envelope::first(binding()).disable(scope.clone()).unwrap();
+        let store = Store::new(MemoryDir {
+            journal: envelope.to_vec().unwrap(),
+            held: AtomicBool::new(false),
+            clock: clock.clone(),
+            after_read: expire_on_read.then_some(deadline),
+        });
+        Self {
+            runtime: StoreRuntime::new(store, tree),
+            clock,
+            deadline,
+            scope,
+            token,
+        }
+    }
+    fn authorize(&mut self) -> Result<StopLease<MemoryDir>> {
+        self.runtime.begin_exchange(self.deadline);
+        let clock = self.clock.clone();
+        self.runtime
+            .authorize_stop_with_clock(&binding(), &self.scope, &self.token, || clock.now())
+    }
+    fn stop(&mut self, lease: &StopLease<MemoryDir>) -> Result<Status> {
+        let clock = self.clock.clone();
+        self.runtime.stop_owned_with_clock(lease, || clock.now())
+    }
+}
+
+#[test]
+fn synthetic_healthy_control_and_stop_keep_the_original_deadline() {
+    let mut f = Synthetic::new(tree(), false);
+    assert_eq!(f.runtime.status().unwrap(), Status::Running);
+    let lease = f.authorize().unwrap();
+    assert_eq!(lease.deadline, f.deadline);
+    f.clock.set(f.deadline - Duration::from_nanos(1));
+    assert_eq!(f.stop(&lease).unwrap(), Status::Stopped);
+    assert_eq!(f.runtime.tree().stops, 1);
+    assert_eq!(f.runtime.status().unwrap(), Status::Stopped);
+}
+
+#[test]
+fn synthetic_expired_free_lock_and_journal_read_deny_before_stop() {
+    for expire_on_read in [false, true] {
+        let mut f = Synthetic::new(tree(), expire_on_read);
+        if !expire_on_read {
+            f.clock.set(f.deadline);
+        }
+        let error = f.authorize().err().expect("expired authorization");
+        assert!(error.to_string().contains("deadline expired"), "{error}");
+        assert_eq!(f.runtime.tree().stops, 0);
+        assert_eq!(f.runtime.status().unwrap(), Status::Running);
+        assert!(f.runtime.store.begin(f.deadline).is_ok(), "lease released");
+        let clock = f.clock.clone();
+        assert!(
+            f.runtime
+                .authorize_stop_with_clock(&binding(), &f.scope, &f.token, || clock.now())
+                .is_err(),
+            "the failed exchange consumed its deadline"
+        );
+    }
+}
+
+#[test]
+fn synthetic_expiry_between_authorization_and_effect_cannot_be_refreshed() {
+    let mut f = Synthetic::new(tree(), false);
+    let lease = f.authorize().unwrap();
+    f.clock.set(f.deadline);
+    // Preparing the next exchange cannot grant the old lease a fresh budget.
+    f.runtime
+        .begin_exchange(f.deadline + Duration::from_secs(10));
+    assert!(f.stop(&lease).is_err());
+    assert_eq!(f.runtime.tree().stops, 0);
+    assert_eq!(f.runtime.status().unwrap(), Status::Running);
+}
+
+#[test]
+fn synthetic_late_stop_result_is_not_exchange_success() {
+    let mut f = Synthetic::new(tree(), false);
+    let clock = f.clock.clone();
+    let deadline = f.deadline;
+    f.runtime.tree_mut().during_stop = Some(Box::new(move || clock.set(deadline)));
+    let lease = f.authorize().unwrap();
+    assert!(f.stop(&lease).is_err());
+    assert_eq!(f.runtime.tree().stops, 1);
+    assert_eq!(f.runtime.status().unwrap(), Status::Stopped);
+    drop(lease);
+    // A fresh exchange can confirm the completed effect under current authority.
+    f.deadline += Duration::from_secs(10);
+    let lease = f.authorize().unwrap();
+    assert_eq!(f.stop(&lease).unwrap(), Status::Stopped);
+    assert_eq!(f.runtime.tree().stops, 1);
+}
+
+#[test]
+fn synthetic_partial_or_failed_stop_never_restores_running_status() {
+    for fail_stop in [false, true] {
+        let mut f = Synthetic::new(
+            Tree {
+                next: Status::Stopping,
+                fail_stop,
+                ..tree()
+            },
+            false,
+        );
+        assert_eq!(f.runtime.status().unwrap(), Status::Running);
+        let lease = f.authorize().unwrap();
+        if fail_stop {
+            assert!(f.stop(&lease).is_err());
+        } else {
+            assert_eq!(f.stop(&lease).unwrap(), Status::Stopping);
+        }
+        // The owned tree still sees a live root after the incomplete stop.
+        assert_eq!(f.runtime.tree().status, Status::Running);
+        assert_eq!(f.runtime.status().unwrap(), Status::Stopping);
+        drop(lease);
+        f.runtime.tree_mut().fail_stop = false;
+        f.runtime.tree_mut().next = Status::Stopped;
+        let lease = f.authorize().unwrap();
+        assert_eq!(f.stop(&lease).unwrap(), Status::Stopped);
+        assert_eq!(f.runtime.status().unwrap(), Status::Stopped);
+        assert_eq!(f.runtime.tree().stops, 2);
+    }
+}
+
+#[test]
+fn synthetic_restart_rejects_old_running_status_and_old_generation_authority() {
+    let old = Synthetic::new(tree(), false);
+    let mut old_server = Server::with_generation(binding(), old.runtime, old.scope.generation);
+    let old_request = Request::new(old.scope.clone(), Command::Status);
+    let log = Log::default();
+    let mut pipe = Pipe::request(&old_request, &log);
+    old_server.serve_one(&mut pipe).unwrap();
+    let old_response: Response = read_frame(&mut Cursor::new(pipe.output)).unwrap();
+    assert_eq!(
+        old_response.validate_for(&old_request).unwrap(),
+        Status::Running
+    );
+
+    old_server.runtime_mut().begin_exchange(old.deadline);
+    let lease = old_server
+        .runtime_mut()
+        .authorize_stop_with_clock(&binding(), &old.scope, &old.token, || old.clock.now())
+        .unwrap();
+    assert_eq!(
+        old_server
+            .runtime_mut()
+            .stop_owned_with_clock(&lease, || old.clock.now())
+            .unwrap(),
+        Status::Stopped
+    );
+    drop(lease);
+
+    let stopped_request = Request::new(old.scope.clone(), Command::Status);
+    let mut pipe = Pipe::request(&stopped_request, &log);
+    old_server.serve_one(&mut pipe).unwrap();
+    let stopped_response: Response = read_frame(&mut Cursor::new(pipe.output)).unwrap();
+    assert_eq!(
+        stopped_response.validate_for(&stopped_request).unwrap(),
+        Status::Stopped
+    );
+    assert!(old_response.validate_for(&stopped_request).is_err());
+
+    let mut restarted = Synthetic::new(tree(), false);
+    restarted.scope.generation = Uuid::from_u128(4);
+    let request = Request::new(restarted.scope.clone(), Command::Status);
+    assert!(old_response.validate_for(&request).is_err());
+    // Keep the correlation id equal too: generation alone rejects the old reply.
+    let same_id = Request {
+        id: old_request.id,
+        ..request.clone()
+    };
+    assert!(old_response.validate_for(&same_id).is_err());
+    let mut server =
+        Server::with_generation(binding(), restarted.runtime, restarted.scope.generation);
+    let mut pipe = Pipe::request(&request, &log);
+    server.serve_one(&mut pipe).unwrap();
+    let response: Response = read_frame(&mut Cursor::new(pipe.output)).unwrap();
+    assert_eq!(response.validate_for(&request).unwrap(), Status::Running);
+    let stale_stop = Request::new(old.scope, Command::Stop(old.token));
+    let mut pipe = Pipe::request(&stale_stop, &log);
+    server.runtime_mut().begin_exchange(restarted.deadline);
+    assert!(server.serve_one(&mut pipe).is_err());
+    assert_eq!(server.runtime_mut().tree().stops, 0);
 }

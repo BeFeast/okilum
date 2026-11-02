@@ -162,7 +162,8 @@ impl<S: UserServices> Lifecycle<S> {
             return Ok(());
         };
         self.check_binding(&journal)?;
-        self.check_unit(&journal)?;
+        // Keep disabled intent even when a changed unit prevents safe cleanup.
+        // Otherwise a later retry could replay the superseded Enable intent.
         journal.desired_enabled = false;
         self.save(&journal)?;
         self.reconcile_locked(&journal)
@@ -574,6 +575,123 @@ mod tests {
         assert_eq!(fs::read_dir(&units)?.count(), 1);
         assert!(units.join(unit).exists());
         reopened.disable()?;
+        Ok(())
+    }
+    #[test]
+    fn repeated_enable_disable_and_retry_preserve_one_identity() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let services = Services::default();
+        let state = root.path().join("state");
+        let units = root.path().join("units");
+        let controller = Lifecycle::new(state.clone(), units.clone(), &services);
+        let instance = instance(root.path())?;
+        let certificate = fs::read(instance.home.join("cert.pem"))?;
+        let name = controller.enable(instance.clone())?;
+        let journal_id = controller.load()?.unwrap().id;
+        for _ in 0..3 {
+            assert_eq!(controller.enable(instance.clone())?, name);
+            controller.reconcile()?;
+            assert!(controller.desired_enabled()?);
+            assert!(services.active.get() && services.registered.get());
+            assert_eq!(controller.load()?.unwrap().id, journal_id);
+            assert_eq!(fs::read_dir(&units)?.count(), 1);
+        }
+        let starts = services
+            .calls
+            .borrow()
+            .iter()
+            .filter(|call| call.starts_with("start:"))
+            .count();
+        assert!(starts > 0, "Enable must exercise the service boundary");
+        let reopened = Lifecycle::new(state, units.clone(), &services);
+        for _ in 0..3 {
+            reopened.disable()?;
+            reopened.reconcile()?;
+            assert!(!reopened.desired_enabled()?);
+            assert!(!services.active.get() && !services.registered.get());
+            assert!(!units.join(&name).exists());
+            assert_eq!(reopened.load()?.unwrap().id, journal_id);
+        }
+        let calls = services.calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("stop:"))
+                .count(),
+            1,
+            "repeated Disable must not stop an already removed unit"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("start:"))
+                .count(),
+            starts,
+            "disabled retries must never start the service"
+        );
+        assert_eq!(fs::read(instance.home.join("cert.pem"))?, certificate);
+        Ok(())
+    }
+    #[test]
+    fn cancelled_partial_enable_survives_changed_unit_and_late_activation() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let services = Services::default();
+        let state = root.path().join("state");
+        let units = root.path().join("units");
+        let controller = Lifecycle::new(state.clone(), units.clone(), &services);
+        services.fail_start.set(true);
+        assert!(controller.enable(instance(root.path())?).is_err());
+        assert!(controller.desired_enabled()?);
+        assert!(services.registered.get() && !services.active.get());
+        let name = unit_name(&controller.load()?.unwrap());
+        let path = units.join(&name);
+        let owned_unit = fs::read(&path)?;
+        fs::write(&path, "external replacement")?;
+        let calls_before_cancel = services.calls.borrow().clone();
+        for _ in 0..2 {
+            assert!(controller.disable().is_err());
+            assert!(controller.reconcile().is_err());
+            assert!(
+                !controller.desired_enabled()?,
+                "failed cleanup must not retain the cancelled Enable intent"
+            );
+            assert_eq!(fs::read_to_string(&path)?, "external replacement");
+            assert_eq!(*services.calls.borrow(), calls_before_cancel);
+        }
+        // A failed start can have registered a service that activates later.
+        // Observing that completion must not authorize another Enable on retry.
+        services.fail_start.set(false);
+        services.active.set(true);
+        let reopened = Lifecycle::new(state, units.clone(), &services);
+        assert!(!reopened.desired_enabled()?);
+        assert!(reopened.reconcile().is_err());
+        assert!(services.active.get());
+        fs::write(&path, owned_unit)?;
+        reopened.reconcile()?;
+        for _ in 0..2 {
+            reopened.disable()?;
+            reopened.reconcile()?;
+        }
+        assert!(!reopened.desired_enabled()?);
+        assert!(!services.active.get() && !services.registered.get());
+        assert!(!path.exists());
+        let calls = services.calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("start:"))
+                .count(),
+            1,
+            "cancellation must not replay the original start"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.starts_with("stop:"))
+                .count(),
+            1,
+            "the late activation must be stopped once ownership is verified"
+        );
         Ok(())
     }
     #[test]

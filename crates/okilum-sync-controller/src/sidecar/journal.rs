@@ -236,6 +236,36 @@ mod tests {
         assert!(UnixJournal::open_existing(dir.path()).is_ok());
     }
     #[test]
+    fn truncated_orphan_temporary_file_preserves_committed_snapshot_after_restart() {
+        let (dir, committed) = fixture();
+        let mut store = UnixJournal::open_existing(dir.path()).unwrap();
+        store.save(&committed).unwrap();
+        drop(store);
+        let original = fs::read(dir.path().join(NAME)).unwrap();
+
+        let mut successor = committed.clone();
+        successor.intent = Intent::Disabled;
+        let next = serde_json::to_vec(&successor).unwrap();
+        let partial = &next[..next.len() / 2];
+        // A killed writer can leave a private, incomplete pre-rename file.
+        let orphan = dir.path().join(format!(".sidecar-{}.tmp", Uuid::new_v4()));
+        fs::write(&orphan, partial).unwrap();
+        fs::set_permissions(&orphan, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let mut reopened = UnixJournal::open_existing(dir.path()).unwrap();
+        assert_eq!(reopened.load().unwrap(), Some(committed));
+        assert_eq!(fs::read(dir.path().join(NAME)).unwrap(), original);
+        assert_eq!(fs::read(&orphan).unwrap(), partial);
+        // Positive control: the orphan does not prevent a complete successor
+        // from being published, and restart must then read that successor.
+        reopened.save(&successor).unwrap();
+        assert_eq!(reopened.load().unwrap(), Some(successor.clone()));
+        drop(reopened);
+        let reopened = UnixJournal::open_existing(dir.path()).unwrap();
+        assert_eq!(reopened.load().unwrap(), Some(successor));
+        assert_eq!(fs::read(&orphan).unwrap(), partial);
+    }
+    #[test]
     fn redirected_or_shared_state_is_rejected_without_overwrite() {
         let (dir, journal) = fixture();
         let outside = tempfile::NamedTempFile::new().unwrap();

@@ -13,6 +13,7 @@ struct Proof {
     refuse: Rc<Cell<bool>>,
     live: Rc<RefCell<Option<Scope>>>,
     checks: Cell<usize>,
+    observations: Cell<usize>,
     refuse_after_first: bool,
 }
 impl RegistrationProof for Proof {
@@ -28,6 +29,7 @@ impl RegistrationProof for Proof {
         Ok(())
     }
     fn observe(&self, _: &Binding, deadline: Instant) -> Result<Discovered> {
+        self.observations.set(self.observations.get() + 1);
         let _tx = self.store.begin(deadline)?;
         Ok(match self.live.borrow().clone() {
             Some(scope) => Discovered::Live(scope),
@@ -44,6 +46,7 @@ struct Service {
     status_calls: Cell<usize>,
     before_register: Option<Box<dyn FnMut()>>,
     fail_register: Rc<Cell<bool>>,
+    registered_status: Status,
     claim: Rc<Cell<bool>>,
     live: Rc<RefCell<Option<Scope>>>,
 }
@@ -62,7 +65,7 @@ impl RegistrationPort for Service {
         }
         self.calls.set(self.calls.get() + 1);
         ensure!(!self.fail_register.get(), "fixture registration failed");
-        self.status.set(Status::Enabled);
+        self.status.set(self.registered_status);
         if self.claim.get() {
             // Simulate launchd's helper claiming immediately during register.
             // This is the positive control for release-before-native-effect.
@@ -132,6 +135,7 @@ impl World {
             refuse: self.refuse.clone(),
             live: self.live.clone(),
             checks: Cell::new(0),
+            observations: Cell::new(0),
             refuse_after_first: false,
         };
         let service = Service {
@@ -143,6 +147,7 @@ impl World {
             before_register: None,
             change_on_second_status: self.change.clone(),
             fail_register: self.fail.clone(),
+            registered_status: Status::Enabled,
             claim: self.claim.clone(),
             live: self.live.clone(),
         };
@@ -345,6 +350,84 @@ fn confirmed_enable_consumes_only_the_displayed_generation() {
         ManagedStatus::Running
     );
     assert_eq!(world.calls.get(), 1);
+}
+
+#[test]
+fn pending_approval_never_waits_for_a_peer_or_repeats_registration() {
+    let world = World::new(true);
+    let confirmed = generation(&world);
+    let mut guard = world.guard();
+    guard.service.registered_status = Status::RequiresApproval;
+    assert_eq!(guard.status(), ManagedStatus::RecoveryPending);
+    assert_eq!(
+        guard.proof.observations.get(),
+        0,
+        "Ready has no peer to await"
+    );
+
+    // Native registration succeeds, but launchd cannot start the helper until
+    // the user approves. Keep the one durable dispatch, without polling a peer.
+    assert_eq!(
+        guard.enable_confirmed(confirmed).unwrap(),
+        ManagedStatus::RecoveryPending
+    );
+    assert_eq!(world.status.get(), Status::RequiresApproval);
+    let pending = world
+        .store
+        .begin(soon())
+        .unwrap()
+        .current()
+        .unwrap()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        pending.launch_registration().unwrap().phase(),
+        Phase::Dispatched
+    );
+    for _ in 0..3 {
+        assert_eq!(guard.status(), ManagedStatus::RecoveryPending);
+        assert_eq!(
+            guard.enable_confirmed(confirmed).unwrap(),
+            ManagedStatus::RecoveryPending
+        );
+    }
+    assert_eq!(guard.proof.observations.get(), 0);
+    assert_eq!(world.calls.get(), 1);
+    assert_eq!(
+        world.store.begin(soon()).unwrap().current().unwrap(),
+        Some(&pending)
+    );
+
+    // A fresh coordinator (e.g. after reopening the window) is equally inert.
+    let mut reopened = world.guard();
+    assert_eq!(
+        reopened.register_prepared().unwrap(),
+        ManagedStatus::RecoveryPending
+    );
+    assert_eq!(reopened.proof.observations.get(), 0);
+    assert_eq!(world.calls.get(), 1);
+
+    // Positive control: approval lets the existing helper claim the SAME
+    // generation. A subsequent explicit status check must observe it normally.
+    world.status.set(Status::Enabled);
+    let claimed = world.store.claim_launch(&world.binding, soon()).unwrap();
+    assert_eq!(claimed, confirmed);
+    *world.live.borrow_mut() = Some(Scope {
+        installation: world.binding.installation,
+        instance: world.binding.instance,
+        generation: claimed,
+    });
+    assert_eq!(reopened.status(), ManagedStatus::Running);
+    assert_eq!(reopened.proof.observations.get(), 1);
+    assert_eq!(
+        reopened.register_prepared().unwrap(),
+        ManagedStatus::Running
+    );
+    assert_eq!(world.calls.get(), 1);
+    // Claimed does not substitute for an authenticated, responding peer.
+    *world.live.borrow_mut() = None;
+    assert_eq!(reopened.status(), ManagedStatus::RecoveryPending);
+    assert_eq!(reopened.proof.observations.get(), 3);
 }
 
 #[test]

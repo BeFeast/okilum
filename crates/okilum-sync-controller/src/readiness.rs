@@ -151,9 +151,15 @@ pub fn interval_complete(first: &Receipt, second: &Receipt, client: &Value) -> R
     {
         return Ok(false);
     }
-    let sequence = client["remoteSequence"][&b.hub_device_id].as_u64();
-    let received = sequence.is_some_and(|s| s >= b.hub.sequence)
-        || b.hub.sequence == 0 && b.hub.global_total_items == Some(0) && sequence.is_none();
+    let sequences = &client["remoteSequence"];
+    if !sequences.is_null() && !sequences.is_object() {
+        return Ok(false);
+    }
+    let sequence = &sequences[&b.hub_device_id];
+    // An empty folder may have no remote index yet, but malformed REST counters
+    // are not evidence of an absent index.
+    let received = sequence.as_u64().is_some_and(|s| s >= b.hub.sequence)
+        || b.hub.sequence == 0 && b.hub.global_total_items == Some(0) && sequence.is_null();
     // Pinned 1.29.5 includes 128 synthetic bytes per directory/symlink;
     // 2.1.6 counts file bytes only. Underflow/unknown counters fail closed.
     let hub_file_bytes = b
@@ -291,6 +297,96 @@ mod tests {
         let mut stale = Receipt::new(next, &registration, &descriptor)?;
         stale.deadline = Instant::now() - Duration::from_secs(1);
         assert!(!interval_complete(&first, &stale, &client)?);
+        Ok(())
+    }
+    #[test]
+    fn empty_remote_sequence_rejects_malformed_rest_counters() -> Result<()> {
+        let (registration, descriptor, mut observation, mut client) = fixture();
+        let first = Receipt::new(observation.clone(), &registration, &descriptor)?;
+        observation.observation_id = Uuid::new_v4();
+        let second = Receipt::new(observation, &registration, &descriptor)?;
+        assert!(interval_complete(&first, &second, &client)?);
+        for sequences in [
+            json!(null),
+            json!({}),
+            json!({"hub":null}),
+            json!({"hub":0}),
+        ] {
+            client["remoteSequence"] = sequences;
+            assert!(interval_complete(&first, &second, &client)?);
+        }
+        for malformed in [
+            json!("unavailable"),
+            json!(-1),
+            json!(0.5),
+            json!(false),
+            json!([]),
+            json!({"error":"unavailable"}),
+        ] {
+            client["remoteSequence"] = json!({"hub":malformed});
+            assert!(
+                !interval_complete(&first, &second, &client)?,
+                "accepted malformed hub sequence: {client}"
+            );
+            // A malformed container also cannot stand in for an absent index.
+            if !malformed.is_object() {
+                client["remoteSequence"] = malformed;
+                assert!(!interval_complete(&first, &second, &client)?);
+            }
+        }
+        client["remoteSequence"] = json!({"hub":0});
+        assert!(interval_complete(&first, &second, &client)?);
+        Ok(())
+    }
+    #[test]
+    fn delayed_handshake_and_errors_require_fresh_settled_boundaries() -> Result<()> {
+        let (registration, descriptor, observation, client) = fixture();
+        for transition in ["disconnected", "unknown", "paused", "scanning", "error"] {
+            let mut pending = observation.clone();
+            match transition {
+                "disconnected" => pending.connected = false,
+                "unknown" => pending.remote_state = "unknown".into(),
+                "paused" => pending.paused = true,
+                "scanning" => pending.hub.state = "scanning".into(),
+                _ => pending.hub.error = Some("REST folder error".into()),
+            }
+            let first = Receipt::new(pending.clone(), &registration, &descriptor)?;
+            pending.observation_id = Uuid::new_v4();
+            let second = Receipt::new(pending, &registration, &descriptor)?;
+            assert!(
+                !interval_complete(&first, &second, &client)?,
+                "{transition}"
+            );
+            let mut recovered = observation.clone();
+            recovered.observation_id = Uuid::new_v4();
+            let third = Receipt::new(recovered.clone(), &registration, &descriptor)?;
+            assert!(
+                !interval_complete(&second, &third, &client)?,
+                "{transition}"
+            );
+            recovered.observation_id = Uuid::new_v4();
+            let fourth = Receipt::new(recovered, &registration, &descriptor)?;
+            assert!(interval_complete(&third, &fourth, &client)?, "{transition}");
+            // Healthy hub boundaries still require a ready local REST snapshot.
+            for (field, value) in [
+                ("state", json!("scanning")),
+                ("state", json!("error")),
+                ("errors", json!(1)),
+                ("pullErrors", json!(1)),
+                ("error", json!("REST folder error")),
+                ("invalid", json!("folder unavailable")),
+                ("watchError", json!("watch failed")),
+            ] {
+                let mut unavailable = client.clone();
+                unavailable[field] = value;
+                assert!(
+                    !interval_complete(&third, &fourth, &unavailable)?,
+                    "accepted {field}: {unavailable}"
+                );
+            }
+            assert!(!interval_complete(&third, &fourth, &json!({}))?);
+            assert!(interval_complete(&third, &fourth, &client)?);
+        }
         Ok(())
     }
     #[test]
