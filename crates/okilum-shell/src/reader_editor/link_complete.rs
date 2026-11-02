@@ -15,7 +15,9 @@
 //! front matter or an inline code span, while an input method composes, or
 //! in a code or text file.
 use super::ime_guard::Trigger;
-use super::inline_complete::{self as providers, Kind};
+#[path = "inline_complete.rs"]
+mod providers;
+use providers::Kind;
 use super::lists::{self, Edit};
 use super::*;
 use gpui_component::input::projection::SourceStamp;
