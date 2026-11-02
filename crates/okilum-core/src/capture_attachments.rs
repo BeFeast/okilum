@@ -1222,11 +1222,9 @@ impl AttachmentCopy {
             copy: self.clone(),
             receipt,
         };
-        persist_equal(
-            records,
-            &format!("{}.attachments.superseded.json", self.source_composer_id()),
-            &decision,
-        )
+        let name = format!("{}.attachments.superseded.json", self.source_composer_id());
+        persist_equal(records, &name, &decision)?;
+        super::set_presentation(root, records, &name, true, None)
     }
 }
 fn source_superseded(root: &Path, records: &Path, source: &Plan) -> Result<bool> {
@@ -1268,7 +1266,42 @@ fn source_superseded(root: &Path, records: &Path, source: &Plan) -> Result<bool>
         authorized == decision.copy && receipt == decision.receipt,
         "Superseding copy receipt/authorization changed"
     );
-    Ok(true)
+    Ok(super::presentation(
+        root,
+        records,
+        &format!("{}.attachments.superseded.json", source.composer_id),
+    )?
+    .dismissed)
+}
+
+pub(super) fn inspect_dismissed_source(
+    root: &Path,
+    records: &Path,
+    name: &str,
+) -> Result<Option<super::DismissedRecovery>> {
+    let decision: SupersededAttachments = read(
+        &records.join(name),
+        MAX_COPY_RECORD_BYTES + MAX_RECEIPT_BYTES,
+    )?
+    .context("Attachment dismissal marker disappeared")?;
+    ensure!(
+        name == format!(
+            "{}.attachments.superseded.json",
+            decision.source_composer_id
+        ),
+        "Attachment dismissal marker identity changed"
+    );
+    let (source, _) = source_plan(root, records, &decision.source_composer_id)?;
+    if !source_superseded(root, records, &source)? {
+        return Ok(None);
+    }
+    Ok(Some(super::DismissedRecovery {
+        text: source.original_text,
+        original_path: source.note.receipt.path,
+        saved_path: decision.receipt.note.path,
+        assets: source.assets,
+        revision: super::presentation_token(root, records, name)?,
+    }))
 }
 
 fn copy_directory(records: &Path, composer: &str) -> PathBuf {
@@ -2354,6 +2387,38 @@ mod tests {
         assert_eq!(
             std::fs::read(root.join(&receipt.note.path)).unwrap(),
             b"later copy edit"
+        );
+        let inspected = super::super::inspect_dismissed(&root, &records)
+            .unwrap()
+            .remove(0);
+        assert_eq!(inspected.assets, source.assets);
+        assert_eq!(inspected.text, original.text);
+        let stale = inspected.revision;
+        // Newer presentation choice invalidates stale undo without altering any
+        // original data, plan or copy receipt/cleanup distinction.
+        let marker = format!("{}.attachments.superseded.json", original.id);
+        super::super::set_presentation(&root, &records, &marker, true, None).unwrap();
+        assert!(super::super::reopen_dismissed(&root, &records, &stale).is_err());
+        let current = super::super::inspect_dismissed(&root, &records)
+            .unwrap()
+            .remove(0);
+        super::super::reopen_dismissed(&root, &records, &current.revision).unwrap();
+        assert_eq!(
+            super::super::recover_composers(&root, &records).unwrap(),
+            vec![original.clone()]
+        );
+        assert!(super::super::reopen_dismissed(&root, &records, &current.revision).is_err());
+        assert_eq!(
+            std::fs::read(records.join(plan_name(&original.id))).unwrap(),
+            source_plan_bytes
+        );
+        assert_eq!(
+            std::fs::read(records.join(format!("{}.composer.json", original.id))).unwrap(),
+            source_draft_bytes
+        );
+        assert!(
+            verify_cleanup_receipt(&root, &records, copy.composer_id(), &manifest, &receipt)
+                .is_err()
         );
     }
 }

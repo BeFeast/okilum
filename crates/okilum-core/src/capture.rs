@@ -687,11 +687,9 @@ pub fn dismiss_saved_copy(root: &Path, records: &Path, copy: &ComposerDraft) -> 
         saved: saved.clone(),
     };
     decision.validate(root, records)?;
-    persist_equal(
-        records,
-        &superseded_name(&origin.source.capture.receipt.operation_id),
-        &decision,
-    )
+    let name = superseded_name(&origin.source.capture.receipt.operation_id);
+    persist_equal(records, &name, &decision)?;
+    set_presentation(root, records, &name, true, None)
 }
 fn superseded_name(operation: &str) -> String {
     format!("{operation}.superseded.json")
@@ -740,7 +738,187 @@ fn source_dismissed(root: &Path, records: &Path, capture: &Capture) -> Result<bo
         decision.origin.source.capture == *capture,
         "Dismissed source identity changed"
     );
-    Ok(true)
+    Ok(presentation(
+        root,
+        records,
+        &superseded_name(&capture.receipt.operation_id),
+    )?
+    .dismissed)
+}
+
+/// Read-only inspected recovery content and opaque compare/revision authority.
+/// Reopen changes visibility only; it never retries a save or grants cleanup.
+#[derive(Clone, Debug)]
+pub struct DismissedRecovery {
+    pub text: String,
+    pub original_path: PathBuf,
+    pub saved_path: PathBuf,
+    pub assets: Vec<attachments::PublishedAsset>,
+    pub revision: PresentationRevision,
+}
+#[derive(Clone, Debug)]
+pub struct PresentationRevision {
+    root: PathBuf,
+    marker: String,
+    marker_revision: String,
+    revision: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PresentationState {
+    root: PathBuf,
+    marker_revision: String,
+    revision: String,
+    dismissed: bool,
+}
+fn presentation_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+fn presentation(root: &Path, records: &Path, marker: &str) -> Result<PresentationState> {
+    anyhow::ensure!(
+        Path::new(marker).components().count() == 1 && marker.ends_with(".superseded.json"),
+        "Invalid presentation marker"
+    );
+    let marker_revision = presentation_hash(&std::fs::read(records.join(marker))?);
+    let root = root.canonicalize()?;
+    if let Some(state) =
+        read_optional::<PresentationState>(&records.join(format!("{marker}.presentation.json")))?
+    {
+        anyhow::ensure!(
+            state.root == root
+                && state.marker_revision == marker_revision
+                && uuid::Uuid::parse_str(&state.revision)?.to_string() == state.revision,
+            "Recovery presentation changed or belongs to another vault; inspect again"
+        );
+        return Ok(state);
+    }
+    // Delivered b015d727 markers are dismissed without a sidecar. Their exact
+    // bytes form the legacy revision; no migration is performed by inspection.
+    Ok(PresentationState {
+        root,
+        marker_revision: marker_revision.clone(),
+        revision: marker_revision,
+        dismissed: true,
+    })
+}
+fn presentation_token(root: &Path, records: &Path, marker: &str) -> Result<PresentationRevision> {
+    let state = presentation(root, records, marker)?;
+    anyhow::ensure!(
+        state.dismissed,
+        "Recovery source has already been reopened; inspect again"
+    );
+    Ok(PresentationRevision {
+        root: state.root,
+        marker: marker.into(),
+        marker_revision: state.marker_revision,
+        revision: state.revision,
+    })
+}
+fn set_presentation(
+    root: &Path,
+    records: &Path,
+    marker: &str,
+    dismissed: bool,
+    expected: Option<&PresentationRevision>,
+) -> Result<()> {
+    let head = format!("{marker}.presentation.json");
+    let _lock = crate::file_editor::FileEditor::reserve_destination(
+        &records.join(&head),
+        &records.join("presentation-locks"),
+    )?;
+    let current = presentation(root, records, marker)?;
+    if let Some(expected) = expected {
+        anyhow::ensure!(
+            current.root == expected.root
+                && marker == expected.marker
+                && current.marker_revision == expected.marker_revision
+                && current.revision == expected.revision
+                && current.dismissed,
+            "Dismissal decision changed since inspection; refresh before reopening"
+        );
+    }
+    let state = PresentationState {
+        revision: uuid::Uuid::new_v4().to_string(),
+        dismissed,
+        ..current
+    };
+    // Append immutable decision history before atomically replacing its head.
+    persist_new(
+        records,
+        &format!("{}.presentation-event.json", state.revision),
+        &state,
+    )?;
+    use std::io::Write;
+    let mut temporary = tempfile::NamedTempFile::new_in(records)?;
+    temporary.write_all(&serde_json::to_vec(&state)?)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(records.join(head))?;
+    #[cfg(unix)]
+    std::fs::File::open(records)?.sync_all()?;
+    Ok(())
+}
+/// Inspect retained dismissed text and attachment sources without changing files.
+pub fn inspect_dismissed(root: &Path, records: &Path) -> Result<Vec<DismissedRecovery>> {
+    let entries = match std::fs::read_dir(records) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut result = Vec::new();
+    for entry in entries {
+        let name = entry?.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.ends_with(".superseded.json") {
+            continue;
+        }
+        if name.ends_with(".attachments.superseded.json") {
+            if let Some(source) = attachments::inspect_dismissed_source(root, records, name)? {
+                result.push(source);
+            }
+        } else {
+            let decision: SupersededSource =
+                read_optional(&records.join(name))?.context("Dismissal marker disappeared")?;
+            decision.validate(root, records)?;
+            anyhow::ensure!(
+                name == superseded_name(&decision.origin.source.capture.receipt.operation_id),
+                "Dismissal marker identity changed"
+            );
+            if presentation(root, records, name)?.dismissed {
+                result.push(DismissedRecovery {
+                    text: decision.origin.source.text().into(),
+                    original_path: decision.origin.source.original_path().into(),
+                    saved_path: decision.saved.path().into(),
+                    assets: Vec::new(),
+                    revision: presentation_token(root, records, name)?,
+                });
+            }
+        }
+    }
+    result.sort_by(|a, b| a.revision.marker.cmp(&b.revision.marker));
+    Ok(result)
+}
+/// Explicit revision-checked undo of PRESENTATION dismissal. Original operations,
+/// copies, frozen manifests and staging remain untouched and are never published.
+pub fn reopen_dismissed(
+    root: &Path,
+    records: &Path,
+    revision: &PresentationRevision,
+) -> Result<()> {
+    anyhow::ensure!(
+        root.canonicalize()? == revision.root,
+        "Choose the inspected vault before reopening"
+    );
+    let inspected = inspect_dismissed(root, records)?;
+    anyhow::ensure!(
+        inspected
+            .iter()
+            .any(|item| item.revision.marker == revision.marker
+                && item.revision.marker_revision == revision.marker_revision
+                && item.revision.revision == revision.revision),
+        "Dismissal decision changed since inspection; refresh before reopening"
+    );
+    set_presentation(root, records, &revision.marker, false, Some(revision))
 }
 
 fn prepare_records(records: &Path) -> Result<()> {
@@ -1461,6 +1639,54 @@ mod tests {
             .unwrap()
             .unbound
             .is_empty());
+        // Exact delivered legacy marker without a presentation head remains
+        // inspectable; read-only inspection never invents/migrates a head.
+        let head = records.join(format!(
+            "{}.presentation.json",
+            superseded_name(&legacy.receipt.operation_id)
+        ));
+        std::fs::remove_file(&head).unwrap();
+        let marker_before_inspection =
+            std::fs::read(records.join(superseded_name(&legacy.receipt.operation_id))).unwrap();
+        let count = std::fs::read_dir(&records).unwrap().count();
+        let inspected = inspect_dismissed(vault.path(), &records).unwrap();
+        assert!(!head.exists());
+        assert_eq!(std::fs::read_dir(&records).unwrap().count(), count);
+        assert_eq!(
+            std::fs::read(records.join(superseded_name(&legacy.receipt.operation_id))).unwrap(),
+            marker_before_inspection
+        );
+        assert_eq!(inspected.len(), 1);
+        assert_eq!(inspected[0].text, legacy.text());
+        let stale = inspected[0].revision.clone();
+        // A newer explicit dismissal, even for the same saved copy, changes the
+        // presentation revision; the earlier preview has no undo authority.
+        dismiss_saved_copy(vault.path(), &records, &copy).unwrap();
+        assert!(reopen_dismissed(vault.path(), &records, &stale).is_err());
+        assert!(load_recovery(vault.path(), &records)
+            .unwrap()
+            .unbound
+            .is_empty());
+        let current = inspect_dismissed(vault.path(), &records).unwrap().remove(0);
+        let foreign = tempfile::tempdir().unwrap();
+        assert!(reopen_dismissed(foreign.path(), &records, &current.revision).is_err());
+        let marker_path = records.join(superseded_name(&legacy.receipt.operation_id));
+        let saved_marker = std::fs::read(&marker_path).unwrap();
+        let mut changed_marker = saved_marker.clone();
+        changed_marker.push(b'\n');
+        std::fs::write(&marker_path, changed_marker).unwrap();
+        assert!(reopen_dismissed(vault.path(), &records, &current.revision).is_err());
+        std::fs::write(&marker_path, saved_marker).unwrap();
+        reopen_dismissed(vault.path(), &records, &current.revision).unwrap();
+        assert_eq!(
+            load_recovery(vault.path(), &records).unwrap().unbound.len(),
+            1
+        );
+        assert!(inspect_dismissed(vault.path(), &records)
+            .unwrap()
+            .is_empty());
+        assert!(reopen_dismissed(vault.path(), &records, &current.revision).is_err());
+        assert_eq!(std::fs::read(records.join(&name)).unwrap(), original);
     }
     #[test]
     fn bound_source_dismissal_hides_both_composer_and_original_intent() {

@@ -14,6 +14,8 @@ pub(crate) struct CaptureComposer {
     reader: WeakEntity<Reader>,
     root: PathBuf,
     recovered: Vec<ComposerDraft>,
+    dismissed_sources: Vec<capture::DismissedRecovery>,
+    dismissed_inspection: Option<usize>,
     unbound: Vec<CopySource>,
     legacy_selected: bool,
     copy_source: Option<CopySource>,
@@ -40,6 +42,8 @@ enum PreviewSource {
 
 enum Work {
     Recover,
+    InspectDismissed,
+    Reopen(capture::PresentationRevision),
     Dismiss(ComposerDraft),
     Preview(PreviewSource, PathBuf),
     Checkpoint(ComposerDraft, u64),
@@ -49,6 +53,8 @@ enum Work {
 
 enum Completed {
     Recovery(anyhow::Result<RecoveryInbox>),
+    Inspected(anyhow::Result<Vec<capture::DismissedRecovery>>),
+    Reopened(anyhow::Result<RecoveryInbox>),
     Dismissed(anyhow::Result<RecoveryInbox>),
     Preview(anyhow::Result<CopyPreview>),
     Checkpoint(u64, anyhow::Result<()>),
@@ -116,6 +122,8 @@ impl CaptureComposer {
                 let records = records.clone();
                 let completed = cx.background_executor().spawn(async move {
                     match work {
+                        Work::InspectDismissed => Completed::Inspected(capture::inspect_dismissed(&root, &records)),
+                        Work::Reopen(revision) => Completed::Reopened(capture::reopen_dismissed(&root, &records, &revision).and_then(|_| capture::load_recovery(&root, &records))),
                         Work::Recover => Completed::Recovery(capture::load_recovery(&root, &records)),
                         Work::Dismiss(copy) => Completed::Dismissed(capture::dismiss_saved_copy(&root, &records, &copy).and_then(|_| capture::load_recovery(&root, &records))),
                         Work::Preview(source, folder) => Completed::Preview((|| {
@@ -152,6 +160,20 @@ impl CaptureComposer {
                                     this.error = None;
                                 }
                                 Err(error) => this.error = Some(format!("Recovery source was not dismissed: {error:#}")),
+                            }
+                        }
+                        Completed::Inspected(result) => {
+                            this.busy = false;
+                            match result {
+                                Ok(sources) => { this.dismissed_sources = sources; this.dismissed_inspection = None; this.error = None; }
+                                Err(error) => this.error = Some(format!("Dismissed recovery inspection failed: {error:#}")),
+                            }
+                        }
+                        Completed::Reopened(result) => {
+                            this.busy = false;
+                            match result {
+                                Ok(inbox) => { this.recovered = inbox.drafts; this.unbound = inbox.unbound; this.dismissed_sources.clear(); this.dismissed_inspection = None; this.error = None; }
+                                Err(error) => this.error = Some(format!("Source was not reopened. Inspect again before retrying: {error:#}")),
                             }
                         }
                         Completed::Preview(result) => {
@@ -236,6 +258,8 @@ impl CaptureComposer {
             reader,
             root,
             recovered: Vec::new(),
+            dismissed_sources: Vec::new(),
+            dismissed_inspection: None,
             unbound: Vec::new(),
             legacy_selected: false,
             copy_source: None,
@@ -480,6 +504,41 @@ impl Render for CaptureComposer {
                             cx.listener(|this, _, window, cx| this.open_saved(window, cx)),
                         )),
                 );
+        }
+        view = view.child(
+            Button::new("capture-inspect-dismissed")
+                .label("Inspect dismissed recovery sources")
+                .disabled(self.busy || self.loading)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.busy = true;
+                    this.enqueue(Work::InspectDismissed, cx);
+                })),
+        );
+        for (index, source) in self.dismissed_sources.iter().enumerate() {
+            view = view.child(
+                Button::new(("capture-dismissed-source", index))
+                    .label(format!("Inspect: {}", source.original_path.display()))
+                    .disabled(self.busy)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dismissed_inspection = Some(index);
+                        cx.notify();
+                    })),
+            );
+        }
+        if let Some(source) = self
+            .dismissed_inspection
+            .and_then(|index| self.dismissed_sources.get(index))
+        {
+            let revision = source.revision.clone();
+            view = view.child(v_flex().gap_2()
+                .child(format!("Original: {} · Saved copy: {}", source.original_path.display(), source.saved_path.display()))
+                .child(source.text.clone())
+                .children(source.assets.iter().map(|asset| div().child(format!("{} · {} · {} bytes · SHA256 {}", asset.asset.id, asset.asset.display_name, asset.asset.byte_length, asset.asset.sha256))))
+                .child("Reopen restores this source to recovery choices. It does not publish a note or remove files or staged attachments.")
+                .child(Button::new("capture-reopen-dismissed").label("Reopen recovery source").disabled(self.busy)
+                    .on_click(cx.listener(move |this, _, _, cx| { this.busy = true; this.enqueue(Work::Reopen(revision.clone()), cx); })))
+                .child(Button::new("capture-close-inspection").label("Close inspection").disabled(self.busy)
+                    .on_click(cx.listener(|this, _, _, cx| { this.dismissed_inspection = None; cx.notify(); }))));
         }
         if self.saved_recovery_copy.is_some() {
             view = view.child(
