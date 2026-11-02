@@ -45,6 +45,8 @@ pub(crate) fn show(vault: PathBuf, cx: &mut App) {
 struct Panel {
     scope: String,
     url: Entity<InputState>,
+    requested_url: Option<String>,
+    displayed_url: Option<String>,
     follow: bool,
     generation: u64,
     active: bool,
@@ -64,6 +66,8 @@ impl Panel {
                 InputState::new(window, cx)
                     .placeholder("sftp://ssh-config-alias/absolute/path/app.log")
             }),
+            requested_url: None,
+            displayed_url: None,
             follow: true,
             generation: 0,
             active: false,
@@ -79,19 +83,9 @@ impl Panel {
         }
     }
     fn start(&mut self, cx: &mut Context<Self>) {
-        if self.active {
+        let Some(target) = self.prepare_start(cx) else {
             return;
-        }
-        let target = match Target::parse(self.url.read(cx).value().trim()) {
-            Ok(target) => target,
-            Err(error) => {
-                self.message = error.to_string();
-                self.error = true;
-                cx.notify();
-                return;
-            }
         };
-        self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let (worker, events) = worker::Worker::start(
             target,
@@ -99,12 +93,6 @@ impl Panel {
             format!("sftp:{}:{generation}", self.scope),
         );
         self.worker = Some(worker);
-        self.active = true;
-        self.stopping = false;
-        self.error = false;
-        self.message = "Opening SFTP log…".into();
-        self.view = None;
-        self.pending = None;
         self.events = Some(cx.spawn(async move |this, cx| {
             while let Ok(frame) = events.recv().await {
                 if this
@@ -115,7 +103,35 @@ impl Panel {
                 }
             }
         }));
+    }
+    /// Validate and establish UI ownership before starting the transport. The
+    /// previous immutable result remains readable until new data is published.
+    fn prepare_start(&mut self, cx: &mut Context<Self>) -> Option<Target> {
+        if self.active {
+            return None;
+        }
+        let target = match Target::parse(self.url.read(cx).value().trim()) {
+            Ok(target) => target,
+            Err(error) => {
+                self.message = error.to_string();
+                self.error = true;
+                cx.notify();
+                return None;
+            }
+        };
+        self.generation = self.generation.wrapping_add(1);
+        self.requested_url = Some(self.url.read(cx).value().trim().to_owned());
+        self.active = true;
+        self.stopping = false;
+        self.error = false;
+        self.message = if self.view.is_some() || self.pending.is_some() {
+            "Opening SFTP log… previous session rows retained until new data arrives."
+        } else {
+            "Opening SFTP log…"
+        }
+        .into();
         cx.notify();
+        Some(target)
     }
     fn receive(&mut self, generation: u64, frame: worker::Frame, cx: &mut Context<Self>) {
         if self.generation != generation {
@@ -123,6 +139,7 @@ impl Panel {
         }
         if let Some(data) = frame.data {
             self.pending = Some(data);
+            self.displayed_url = self.requested_url.clone();
         }
         self.active = frame.active;
         self.error = frame.error;
@@ -163,6 +180,7 @@ impl Render for Panel {
                 .child(Button::new("sftp-stop").small().label("Stop").disabled(!self.active || self.stopping)
                     .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))))
             .child(div().text_sm().text_color(if self.error { brand::palette(cx).danger } else { cx.theme().muted_foreground }).child(self.message.clone()))
+            .children(self.displayed_url.as_ref().map(|url| div().text_xs().child(format!("Displayed source: {url}"))))
             .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Loaded history is session-only, up to 8 MiB / 20,000 lines. Rotation or rewrite stops this session; existing rows remain readable."));
         let mut body = v_flex()
             .size_full()
@@ -177,6 +195,10 @@ impl Render for Panel {
         body
     }
 }
+
+#[cfg(test)]
+#[path = "reader_log_sftp/replacement_tests.rs"]
+mod replacement_tests;
 
 #[cfg(test)]
 mod tests {
