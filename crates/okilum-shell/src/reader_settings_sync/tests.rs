@@ -618,7 +618,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
         view.scroll.set_offset(point(px(0.), px(-1000.)));
         cx.notify();
     });
-    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.executor().advance_clock(Duration::from_secs(1));
     visual.run_until_parked();
     assert_visible(&mut visual, "sync-approve-computer");
     assert!(
@@ -851,7 +851,7 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
         visual.did_prompt_for_new_path(),
         "positive control: real folder dialog opened"
     );
-    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.executor().advance_clock(Duration::from_secs(30));
     visual.run_until_parked();
     visual.simulate_new_path_selection(|_| Some(directory.path().join("Work notes")));
     visual.run_until_parked();
