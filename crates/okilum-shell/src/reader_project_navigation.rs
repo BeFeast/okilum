@@ -1434,7 +1434,11 @@ impl Reader {
                             .ghost()
                             .label("Virtual logs…")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                reader_log::virtual_sources::show(this.vault_root.clone(), cx)
+                                reader_log::virtual_sources::show(
+                                    this.vault_root.clone(),
+                                    this.session_directory.clone(),
+                                    cx,
+                                )
                             })),
                     );
                 for (index, entry) in self

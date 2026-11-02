@@ -551,6 +551,20 @@ impl Reader {
         {
             return;
         }
+        // The typed definition view shares this exact editor/recovery namespace.
+        // Explicit Source takes ownership only once its Save/selection is idle.
+        if let Some(panel) = self
+            .file_preview
+            .as_ref()
+            .and_then(|preview| preview.virtual_log.clone())
+        {
+            if !panel.update(cx, |panel, cx| panel.release_for_source(cx)) {
+                self.link_notice =
+                    Some("Stop the virtual log operation before opening Source.".into());
+                cx.notify();
+                return;
+            }
+        }
         let result = (|| -> anyhow::Result<FileEditor> {
             let state = self
                 .session_directory

@@ -258,6 +258,49 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
         assert!(panel.view.is_none() && panel.pending.is_none());
     });
     assert!(visual.debug_bounds("virtual-definition-view").is_some());
+    // The ordinary Source command must acquire the same writer, not conflict
+    // with the typed view's lock or bypass the Reader editor/recovery contract.
+    reader.update_in(visual, |reader, window, cx| {
+        reader.toggle_source(window, cx);
+        assert!(
+            reader.editing.is_some(),
+            "explicit .okilog Source must open"
+        );
+        let panel = reader
+            .file_preview
+            .as_ref()
+            .unwrap()
+            .virtual_log
+            .as_ref()
+            .unwrap()
+            .read(cx);
+        assert!(panel.session.is_none());
+        reader.toggle_source(window, cx);
+        assert!(reader.editing.is_none());
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        visual.run_until_parked();
+        if reader.read_with(visual, |reader, cx| {
+            reader
+                .file_preview
+                .as_ref()
+                .unwrap()
+                .virtual_log
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .session
+                .is_some()
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "returning Read reopens canonical Save"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let inline = reader.read_with(visual, |reader, _| {
         reader
             .file_preview
@@ -287,6 +330,17 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
         assert!(panel.generation > 0);
         assert_eq!(panel.view.as_ref().unwrap().read(cx).total(), 2);
     });
+    std::fs::remove_file(&path).unwrap();
+    reader.update(visual, |reader, cx| {
+        reader.file_preview.as_mut().unwrap().unavailable = Some("Deleted original".into());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("virtual-definition-view").is_some(),
+        "deleted original must not hide the retained criteria form"
+    );
+    assert!(visual.debug_bounds("reader-file-unavailable").is_none());
     drop(inline);
     reader.update_in(visual, |reader, window, cx| {
         reader.preview_file("broken.okilog", window, cx)
@@ -335,4 +389,140 @@ fn file_open_routes_definitions_inline_without_starting_selection_and_keeps_norm
             "ordinary log route stays intact"
         );
     });
+}
+
+#[gpui::test]
+fn canonical_save_button_keeps_original_identity_snapshot_draft_and_explicit_start(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(crate::test_init);
+    let (dir, vault, path) = fixture();
+    let state = dir.path().join("state");
+    let other = vault.join("other.okilog");
+    let original = std::fs::read(&path).unwrap();
+    std::fs::write(&other, &original).unwrap();
+    let mut panel = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut panel = Panel::new(vault.clone(), window, cx);
+            panel.state = Some(state.clone());
+            let mut loaded = model::load(&vault, &path).unwrap();
+            loaded.session = Some(save::Session::open(&loaded, &state).unwrap());
+            panel.configure(loaded, window, cx);
+            panel.watch = false;
+            panel
+        });
+        panel = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1400.), px(900.)));
+    visual.run_until_parked();
+    let panel = panel.unwrap();
+    let start = visual.debug_bounds("virtual-start").unwrap();
+    visual.simulate_click(start.center(), Modifiers::default());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        visual.run_until_parked();
+        if panel.read_with(visual, |panel, _| panel.view.is_some()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "explicit Start positive control");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let (snapshot, generation) = panel.read_with(visual, |panel, _| {
+        (panel.view.as_ref().unwrap().entity_id(), panel.generation)
+    });
+    panel.update_in(visual, |panel, window, cx| {
+        panel.path.update(cx, |input, cx| {
+            input.set_value(other.to_string_lossy().to_string(), window, cx)
+        });
+        panel.name.update(cx, |input, cx| {
+            input.set_value("Saved by button", window, cx)
+        });
+    });
+    visual.run_until_parked();
+    let save = visual.debug_bounds("virtual-save").unwrap();
+    visual.simulate_click(save.center(), Modifiers::default());
+    // The in-flight guards must prevent duplicate Save, Load and Start.
+    panel.update(visual, |panel, cx| {
+        assert!(panel.saving);
+        panel.save(cx);
+        panel.load_definition(other.clone(), cx);
+        panel.start(cx);
+        assert_eq!(
+            panel.loaded.as_ref().unwrap(),
+            &path.canonicalize().unwrap()
+        );
+        assert_eq!(panel.generation, generation);
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        visual.run_until_parked();
+        if panel.read_with(visual, |panel, _| !panel.saving) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Save must finish");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panel.read_with(visual, |panel, cx| {
+        assert!(!panel.error, "{}", panel.message);
+        assert_eq!(panel.view.as_ref().unwrap().entity_id(), snapshot);
+        assert!(panel.view.as_ref().unwrap().read(cx).source_locked);
+        assert_eq!(panel.generation, generation);
+        assert!(panel.worker.is_none() && !panel.active);
+    });
+    assert_eq!(
+        model::load(&vault, &path).unwrap().definition.name,
+        "Saved by button"
+    );
+    assert_eq!(std::fs::read(&other).unwrap(), original);
+    assert_eq!(
+        std::fs::read_to_string(vault.join("logs/a.log")).unwrap(),
+        "first\n"
+    );
+    let saved = std::fs::read(&path).unwrap();
+    panel.update_in(visual, |panel, window, cx| {
+        panel.time = model::TimeMode::Last;
+        panel
+            .seconds
+            .update(cx, |input, cx| input.set_value("not seconds", window, cx));
+        panel.save(cx);
+        assert!(panel.error && !panel.saving);
+        assert_eq!(panel.seconds.read(cx).value().as_str(), "not seconds");
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+    panel.update_in(visual, |panel, window, cx| {
+        panel.time = model::TimeMode::All;
+        panel.name.update(cx, |input, cx| {
+            input.set_value("Conflict draft", window, cx)
+        });
+    });
+    std::fs::write(&path, "malformed external content").unwrap();
+    panel.update(visual, |panel, cx| panel.save(cx));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        visual.run_until_parked();
+        if panel.read_with(visual, |panel, _| !panel.saving) {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panel.read_with(visual, |panel, cx| {
+        assert!(panel.error && panel.message.contains("externally"));
+        assert_eq!(panel.name.read(cx).value().as_str(), "Conflict draft");
+        assert_eq!(panel.view.as_ref().unwrap().entity_id(), snapshot);
+    });
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "malformed external content"
+    );
+    panel.update(visual, |panel, cx| assert!(panel.release_for_source(cx)));
+    let recovered =
+        okilum_core::file_editor::FileEditor::open(&path, &state.join("editor-drafts")).unwrap();
+    assert_eq!(
+        Definition::parse(recovered.text()).unwrap().name,
+        "Conflict draft"
+    );
 }

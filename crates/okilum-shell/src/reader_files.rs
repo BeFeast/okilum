@@ -441,6 +441,7 @@ impl Reader {
                     preview.virtual_log = Some(reader_log::virtual_sources::embedded(
                         self.vault_root.clone(),
                         preview.path.clone(),
+                        self.session_directory.clone(),
                         window,
                         cx,
                     ));
@@ -531,6 +532,14 @@ impl Reader {
                 .child(self.render_source(window, cx))
                 .into_any_element();
         }
+        if let Some(virtual_log) = &preview.virtual_log {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .child(self.render_document_header(window, cx))
+                .child(div().flex_1().min_h_0().child(virtual_log.clone()))
+                .into_any_element();
+        }
         if let Some(message) = &preview.unavailable {
             return v_flex()
                 .id("reader-file-unavailable")
@@ -565,14 +574,6 @@ impl Reader {
                 .min_h_0()
                 .child(self.render_document_header(window, cx))
                 .child(table.clone())
-                .into_any_element();
-        }
-        if let Some(virtual_log) = &preview.virtual_log {
-            return v_flex()
-                .size_full()
-                .min_h_0()
-                .child(self.render_document_header(window, cx))
-                .child(div().flex_1().min_h_0().child(virtual_log.clone()))
                 .into_any_element();
         }
         if let Some(log) = &preview.log {
