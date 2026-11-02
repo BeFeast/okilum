@@ -197,7 +197,13 @@ impl RetainedPresentation {
                 .ok()?;
             let h = &headings[index];
             let text = self.snapshot.text();
-            let start = text.line_bounds(h.start).start;
+            let line = text.line_bounds(h.start);
+            // Untouched headings need no source-byte reads, including their
+            // CRLF terminators. At a caret boundary only adjacent lines qualify.
+            if !reveal.touches(&line) {
+                return Some(line);
+            }
+            let start = line.start;
             let mut end = text.line_bounds(h.end).end;
             if end > 0 && text.byte(end - 1) == Some(b'\n') {
                 end -= 1;

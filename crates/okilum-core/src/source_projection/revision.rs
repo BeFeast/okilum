@@ -128,7 +128,10 @@ impl Text {
         self.len() == 0
     }
     pub fn byte(&self, at: usize) -> Option<u8> {
-        (at < self.len()).then(|| self.0.rope.byte(at))
+        (at < self.len()).then(|| {
+            charge(|w| w.scanned_bytes += 1);
+            self.0.rope.byte(at)
+        })
     }
     pub fn is_char_boundary(&self, at: usize) -> bool {
         at <= self.len() && self.0.rope.is_char_boundary(at)

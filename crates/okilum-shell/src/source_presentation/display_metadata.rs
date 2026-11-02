@@ -196,7 +196,13 @@ impl Metadata {
             .tables
             .iter()
             .filter_map(|(range, key)| {
+                let outside = range.end < edit.old.start || edit.old.end < range.start;
                 let range = moved(range, &edit)?;
+                // Receipt provenance also preserves unchanged table boundary
+                // bytes. Only an edit at a table edge can invalidate the proof.
+                if outside {
+                    return Some((range, *key));
+                }
                 let text = next.text();
                 ((range.start == 0 || text.byte(range.start - 1) == Some(b'\n'))
                     && (range.end == text.len()

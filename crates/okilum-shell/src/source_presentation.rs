@@ -2944,8 +2944,8 @@ mod rope_revision_tests {
     fn native_receipts_bound_compose_and_old_discovery_controls_at_all_sizes() {
         for row in [
             format!(
-                "# Heading **bold**\r\n\r\nParagraph isn't changed.\r\n{}\r\n",
-                "Ordinary short prose continues on this logical line.\r\n".repeat(20)
+                "# Heading **bold**\r\n\r\nParagraph isn't changed.\r\n{}\r\n| A | B |\r\n|---|---|\r\n| one | two |\r\n\r\n",
+                "Ordinary short prose continues on this logical line.\r\n".repeat(50)
             ),
             "Ordinary prose and a contraction isn't changed.\r\n".to_owned(),
             format!("Paragraph {} end.\r\n\r\n", "ordinary prose ".repeat(200)),
@@ -2977,6 +2977,12 @@ mod rope_revision_tests {
                     ..Default::default()
                 };
                 let before = provider.compose(&source, &active).unwrap();
+                if row.starts_with('#') {
+                    assert!(
+                        !before.styles().is_empty() && !before.blocks().is_empty(),
+                        "the rich fixture must remain classified at every size"
+                    );
+                }
                 let mut rope = source.text.rope().clone();
                 rope.remove(at..at + 1);
                 rope.insert(at, "q");
