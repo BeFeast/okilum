@@ -8,7 +8,8 @@ concurrency:
 jobs:
   check:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Dedicated baldr fast-only runner: capacity 4, four independent warm targets.
+    # Dedicated baldr runner: four warm targets, CPUWeight=1000 against release builds.
+    # Host setup: scripts/ci/fast-runner-priority.sh (live, no service restart).
     runs-on: fast-linux
     timeout-minutes: 6
     env:

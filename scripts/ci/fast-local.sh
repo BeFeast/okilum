@@ -25,6 +25,16 @@ while true; do
             export CARGO_BUILD_JOBS=3 RAYON_NUM_THREADS=3
             mkdir -p "$CARGO_TARGET_DIR"
             echo "FAST_LOCAL_SLOT=$slot target=$CARGO_TARGET_DIR compiler_workers=$CARGO_BUILD_JOBS"
+            # Keep host contention distinguishable from a cold target or lock wait.
+            if [[ -r /proc/self/cgroup ]]; then
+                cgroup=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup)
+                for metric in cpu.weight cpu.pressure memory.pressure; do
+                    path="/sys/fs/cgroup$cgroup/$metric"
+                    if [[ -r $path ]]; then
+                        echo "FAST_LOCAL_RESOURCE=$metric $(tr '\n' ' ' < "$path")"
+                    fi
+                done
+            fi
             # A new hostexecutor path and fresh source mtimes invalidate path
             # crates even when the target is warm. Keep source stable per slot,
             # inside the same existing exclusion lock, before vendor verification.
