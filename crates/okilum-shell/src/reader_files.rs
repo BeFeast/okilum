@@ -378,7 +378,7 @@ impl Reader {
     }
     pub(crate) fn preview_file(&mut self, rel: &str, window: &mut Window, cx: &mut Context<Self>) {
         // A deleted note asks before its contents are left behind (#1986).
-        if self.leaving_deleted_note(Some(rel)) {
+        if self.leaving_deleted_note(Some(rel), cx) {
             let retry = rel.to_owned();
             let history = self.navigation.history_nav;
             self.ask_leaving_deleted_note(

@@ -1531,6 +1531,14 @@ impl Reader {
                 return;
             }
         }
+        if self.pending_open_document.is_some() && self.leaving_deleted_note(None, cx) {
+            self.ask_leaving_deleted_note(
+                Box::new(|this, window, cx| this.publish_pending_document(window, cx)),
+                window,
+                cx,
+            );
+            return;
+        }
         let Some(pending) = self.pending_open_document.take() else {
             return;
         };
@@ -1753,6 +1761,12 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.track_deleted_note(&Default::default(), cx) {
+            if self.editing.is_some() {
+                self.refresh_source_from_disk(window, cx);
+            }
+            return;
+        }
         self.reconcile_document_source(None, window, cx);
     }
 
@@ -1789,6 +1803,10 @@ impl Reader {
             // after metadata has identified the document as merely pending.
             self.navigation.reconciliation_generation =
                 self.navigation.reconciliation_generation.wrapping_add(1);
+            self.refresh_link_preparation(cx);
+            return;
+        }
+        if self.track_deleted_note(&Default::default(), cx) {
             self.refresh_link_preparation(cx);
             return;
         }
@@ -1830,6 +1848,9 @@ impl Reader {
                     || this.navigation.preparation_generation != generation
                     || this.navigation.reconciliation_generation != reconciliation
                 {
+                    return;
+                }
+                if this.track_deleted_note(&Default::default(), cx) {
                     return;
                 }
                 if result.as_ref().is_ok_and(|document| {
@@ -2162,7 +2183,7 @@ impl Reader {
         let other = opts.vault.as_ref() != Some(&self.vault_root)
             || opts.open_path.is_some()
             || opts.note.as_deref() != Some(self.current_rel.as_str());
-        if other && self.leaving_deleted_note(None) {
+        if other && self.leaving_deleted_note(None, cx) {
             self.ask_leaving_deleted_note(
                 Box::new(move |this, window, cx| this.start_loading(opts, window, cx)),
                 window,

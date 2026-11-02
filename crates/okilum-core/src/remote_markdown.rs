@@ -11,8 +11,8 @@ const CHUNK: usize = 32 * 1024;
 
 #[cfg(any(unix, windows))]
 pub mod draft;
-pub mod save;
 pub mod folder;
+pub mod save;
 
 #[derive(Clone, Debug)]
 pub struct Source {

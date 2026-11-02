@@ -184,18 +184,25 @@ the editor the restored file becomes the editor's base, so saving continues.
 The header strikes the title through and adds **Deleted**; clicking it shows
 the notice again after it was closed.
 
-In Read, opening another note, file or vault first asks **Save As… / Don’t
-Save / Cancel**. Save As… continues to the chosen note once the contents are
-written; Cancel stays. The editor does not ask: leaving keeps its buffer as a
-durable draft (More → Recover notes), as before, so navigation never depends
-on saving a deleted path.
+In Read, Source and Live Preview, opening another note, file or vault or closing
+this note first asks **Save As… / Don’t Save / Cancel**. Save As… continues only
+after complete, synced bytes are published to a new filename. Existing files,
+including a destination that appeared while the picker was open, are never
+overwritten. Cancelling the picker, a failed save, a stale document or edits made
+behind the picker leave the note open. Don’t Save continues without writing the
+canonical file; editor recovery drafts remain available. Failed recovery writes
+still prevent navigation. Navigation also checks for deletion before a debounced
+watcher notification arrives.
 
-If the file returns at the same place with the same contents, the notice and
-the marker go away. If it returns with different contents, Read keeps the
-earlier version on screen and offers **Reload from disk** or Save As…; it never
-silently replaces the only copy. The editor keeps its existing conflict choices
-(Reload, Keep my version, Compare) for that case. The deleted note does not
-remain in the folder tree; a list of recently deleted notes is out of scope.
+If the file returns at the same place with the same contents as the retained
+buffer, the notice and marker go away. Different contents remove the Deleted
+marker but keep a notice offering **Reload from disk** or Save As… in every mode.
+Even a clean Source/Live Preview buffer stays intact until an explicit decision;
+autosave and shared-window refreshes cannot silently replace it. The editor also
+keeps its explicit Reload / Keep my version / Compare choices. The deleted note
+does not remain in the folder tree; a list of recently deleted notes is out of
+scope. These rules apply to both vault and single-folder windows on all desktop
+platforms.
 
 ## Unicode pointer safety (#398)
 

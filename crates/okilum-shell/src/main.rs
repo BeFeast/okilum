@@ -44,10 +44,9 @@ mod reader_capture;
 mod reader_code;
 mod reader_code_file;
 mod reader_code_language;
-mod reader_context_menu;
-mod reader_read_menu;
 #[cfg(any(unix, windows))]
 mod reader_confirm;
+mod reader_context_menu;
 #[cfg(any(unix, windows))]
 mod reader_create;
 #[cfg(windows)]
@@ -56,6 +55,7 @@ mod reader_deep_link;
 mod reader_deleted_note;
 mod reader_delimited;
 mod reader_diagnostics;
+mod reader_document;
 mod reader_document_menu;
 mod reader_drawing;
 #[cfg(any(unix, windows))]
@@ -97,18 +97,18 @@ mod reader_move;
 #[cfg(any(unix, windows))]
 mod reader_move_picker;
 mod reader_navigation;
-mod reader_document;
-mod reader_panes;
 mod reader_obsidian;
 mod reader_open;
 mod reader_open_windows;
 mod reader_outline;
 mod reader_owned_windows;
+mod reader_panes;
 mod reader_pdf;
 mod reader_plain_text;
 mod reader_project_create;
 mod reader_project_navigation;
 mod reader_properties;
+mod reader_read_menu;
 mod reader_reading_controls;
 #[cfg(any(unix, windows))]
 mod reader_recovery;
@@ -121,14 +121,14 @@ mod reader_settings_sync;
 #[cfg(target_os = "macos")]
 #[path = "reader_settings_sync_macos.rs"]
 mod reader_settings_sync;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod reader_sync_merge;
 mod reader_settings_vaults;
 mod reader_shortcuts;
 mod reader_side_panel;
 mod reader_sidebar;
 mod reader_split;
 mod reader_stignore;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod reader_sync_merge;
 mod reader_t3_settings;
 mod reader_table_copy;
 mod reader_title_nav;
@@ -150,20 +150,20 @@ mod input_newline_tests;
 mod reader_agent_imports;
 mod reader_agent_language;
 mod reader_agent_search;
-mod reader_file_access_notice;
-mod reader_sync_help;
 mod reader_agents_context;
 mod reader_agents_offer;
 mod reader_features;
+mod reader_file_access_notice;
+mod reader_sync_help;
 #[cfg(test)]
 use reader_features::test_init;
 mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
 mod reader_reminder;
-mod reader_remote_markdown;
 mod reader_reminder_notify;
 mod reader_reminder_settings;
+mod reader_remote_markdown;
 #[cfg(test)]
 mod reader_scroll_geometry_tests;
 #[cfg(any(unix, windows))]
@@ -1380,239 +1380,228 @@ fn markdown_plugins_at(
         image_actions.clone(),
         live,
     )
-        .selection_format(sel_format)
-        .code_block_language(reader_code_language::resolver())
-        .code_block_actions(reader_code::actions)
-        .markdown_block_parser(reader_mermaid::parse)
-        .markdown_block_renderer("mermaid", move |node, window, cx| {
-            reader_mermaid::render(node, live, window, cx)
-        })
-        .markdown_block_parser(move |node, cx| {
-            let markdown_ast::Node::Paragraph(p) = node else {
-                return None;
-            };
-            let mut url = None;
-            let mut unavailable = false;
-            let mut caption = String::new();
-            let mut drawing_size = None;
-            for child in &p.children {
-                match child {
-                    markdown_ast::Node::Image(image) if url.is_none() => {
-                        drawing_size = image.title.as_deref().and_then(reader_drawing::parse_size);
-                        if let Some(image_source) = parse_image(&image.url) {
-                            unavailable = matches!(image_source, MarkdownImage::Unavailable);
-                            url = Some(image.url.clone());
-                        }
+    .selection_format(sel_format)
+    .code_block_language(reader_code_language::resolver())
+    .code_block_actions(reader_code::actions)
+    .markdown_block_parser(reader_mermaid::parse)
+    .markdown_block_renderer("mermaid", move |node, window, cx| {
+        reader_mermaid::render(node, live, window, cx)
+    })
+    .markdown_block_parser(move |node, cx| {
+        let markdown_ast::Node::Paragraph(p) = node else {
+            return None;
+        };
+        let mut url = None;
+        let mut unavailable = false;
+        let mut caption = String::new();
+        let mut drawing_size = None;
+        for child in &p.children {
+            match child {
+                markdown_ast::Node::Image(image) if url.is_none() => {
+                    drawing_size = image.title.as_deref().and_then(reader_drawing::parse_size);
+                    if let Some(image_source) = parse_image(&image.url) {
+                        unavailable = matches!(image_source, MarkdownImage::Unavailable);
+                        url = Some(image.url.clone());
                     }
-                    other => caption.push_str(cx.node_source(other)?),
                 }
+                other => caption.push_str(cx.node_source(other)?),
             }
-            let url = url?;
-            let node = MarkdownNode::new(
-                "local-image",
-                LocalImage {
-                    url,
-                    caption: caption.trim().to_string(),
-                    drawing_size,
-                },
-            );
-            Some(if unavailable {
-                node.plain_part("status", "Image unavailable")
-            } else {
-                node.markdown_part("caption", caption.trim().to_string())
-            })
+        }
+        let url = url?;
+        let node = MarkdownNode::new(
+            "local-image",
+            LocalImage {
+                url,
+                caption: caption.trim().to_string(),
+                drawing_size,
+            },
+        );
+        Some(if unavailable {
+            node.plain_part("status", "Image unavailable")
+        } else {
+            node.markdown_part("caption", caption.trim().to_string())
         })
-        .markdown_block_renderer("local-image", move |node, _window, cx| {
-            match node.data::<LocalImage>() {
-                Some(data) => {
-                    match render_image(&data.url) {
-                        Some(MarkdownImage::Drawing(root, path)) => {
-                            return reader_drawing::render(
-                                &root,
-                                &path,
-                                data.drawing_size,
-                                _window,
-                                cx,
-                            )
-                        }
-                        Some(MarkdownImage::DrawingUnavailable(payload)) => {
-                            return reader_drawing::unavailable(&payload, cx);
-                        }
-                        _ => {}
+    })
+    .markdown_block_renderer("local-image", move |node, _window, cx| {
+        match node.data::<LocalImage>() {
+            Some(data) => {
+                match render_image(&data.url) {
+                    Some(MarkdownImage::Drawing(root, path)) => {
+                        return reader_drawing::render(&root, &path, data.drawing_size, _window, cx)
                     }
-                    let Some(MarkdownImage::Source(image)) = render_image(&data.url) else {
-                        let element = node.render_part("status", |style| style, _window, cx);
-                        return match &image_actions {
-                            Some(reader) => reader_image_actions::decorate(
-                                reader.clone(),
-                                &data.url,
-                                element,
-                                cx,
-                            ),
-                            None => element,
-                        };
-                    };
-                    let mut el = v_flex()
-                        .py_2()
-                        .gap_1()
-                        .child(reader_image::ReaderImage::new(image));
-                    if !data.caption.is_empty() {
-                        el = el.child(node.render_part("caption", |style| style, _window, cx));
+                    Some(MarkdownImage::DrawingUnavailable(payload)) => {
+                        return reader_drawing::unavailable(&payload, cx);
                     }
-                    let element = el.into_any_element();
-                    match &image_actions {
+                    _ => {}
+                }
+                let Some(MarkdownImage::Source(image)) = render_image(&data.url) else {
+                    let element = node.render_part("status", |style| style, _window, cx);
+                    return match &image_actions {
                         Some(reader) => {
                             reader_image_actions::decorate(reader.clone(), &data.url, element, cx)
                         }
                         None => element,
-                    }
+                    };
+                };
+                let mut el = v_flex()
+                    .py_2()
+                    .gap_1()
+                    .child(reader_image::ReaderImage::new(image));
+                if !data.caption.is_empty() {
+                    el = el.child(node.render_part("caption", |style| style, _window, cx));
                 }
-                None => div().into_any_element(),
+                let element = el.into_any_element();
+                match &image_actions {
+                    Some(reader) => {
+                        reader_image_actions::decorate(reader.clone(), &data.url, element, cx)
+                    }
+                    None => element,
+                }
             }
-        })
-        .markdown_block_parser(move |node, cx| parse_callout(node, cx, fold_base))
-        .markdown_block_renderer("callout", move |node, _window, cx| {
-            let Some(data) = node.data::<Callout>() else {
-                return div().into_any_element();
-            };
-            let theme = cx.theme();
-            let (accent, icon) = callout_look(&data.header, theme);
-            // `[!type]-` starts closed and `[!type]+` open; the title row
-            // toggles either (#651). Without a sign there is nothing to fold.
-            let (key, fold, offset) = (data.key, data.header.fold, data.offset);
-            let foldable = fold != callout::Fold::None;
-            let open = !foldable || reader_obsidian::callout_open(key, fold, cx);
-            let mut el = v_flex()
+            None => div().into_any_element(),
+        }
+    })
+    .markdown_block_parser(move |node, cx| parse_callout(node, cx, fold_base))
+    .markdown_block_renderer("callout", move |node, _window, cx| {
+        let Some(data) = node.data::<Callout>() else {
+            return div().into_any_element();
+        };
+        let theme = cx.theme();
+        let (accent, icon) = callout_look(&data.header, theme);
+        // `[!type]-` starts closed and `[!type]+` open; the title row
+        // toggles either (#651). Without a sign there is nothing to fold.
+        let (key, fold, offset) = (data.key, data.header.fold, data.offset);
+        let foldable = fold != callout::Fold::None;
+        let open = !foldable || reader_obsidian::callout_open(key, fold, cx);
+        let mut el = v_flex()
+            .my_1()
+            .px_3()
+            .py_2()
+            .gap_1()
+            .rounded_md()
+            .border_1()
+            .border_color(accent.opacity(0.45))
+            .border_l(px(3.))
+            .bg(accent.opacity(0.08))
+            .child(
+                h_flex()
+                    .id(("reader-callout-title", key))
+                    .gap_2()
+                    .items_center()
+                    .text_color(accent)
+                    .font_weight(FontWeight::BOLD)
+                    .child(Icon::new(icon).small().text_color(accent))
+                    .child(node.render_part("title", |style| style, _window, cx))
+                    .when(foldable, |el| {
+                        el.cursor_pointer()
+                            .debug_selector(move || format!("reader-callout-fold-{offset}"))
+                            .child(
+                                Icon::new(if open {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .small()
+                                .text_color(accent),
+                            )
+                            // Toggle on press and keep the press here: in Live
+                            // Preview a press that reaches the editor reveals
+                            // the callout's source instead (#1192).
+                            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                                cx.stop_propagation();
+                                reader_obsidian::toggle_callout(key, fold, window, cx);
+                            })
+                    }),
+            );
+        if open && !data.body.is_empty() {
+            let font_size = reader_ui_state::font_size(cx);
+            el = el.child(
+                div()
+                    .debug_selector(move || format!("reader-callout-body-{offset}"))
+                    .child(node.render_part(
+                        "body",
+                        |style| style.with_heading_base_font_size(px(font_size)),
+                        _window,
+                        cx,
+                    )),
+            );
+        }
+        el.into_any_element()
+    })
+    .markdown_block_parser(parse_embed)
+    .markdown_block_renderer("embed", move |node, _window, cx| {
+        let Some(data) = node.data::<Embed>() else {
+            return div().into_any_element();
+        };
+        if data.block.is_some() {
+            return reader_embeds::render_block(node, &embed_link_handler, _window, cx);
+        }
+        let theme = cx.theme();
+        let border = theme.border;
+        let muted = theme.muted_foreground;
+        let fg = theme.foreground;
+        if data.missing {
+            return div()
                 .my_1()
                 .px_3()
-                .py_2()
-                .gap_1()
-                .rounded_md()
-                .border_1()
-                .border_color(accent.opacity(0.45))
-                .border_l(px(3.))
-                .bg(accent.opacity(0.08))
-                .child(
-                    h_flex()
-                        .id(("reader-callout-title", key))
-                        .gap_2()
-                        .items_center()
-                        .text_color(accent)
-                        .font_weight(FontWeight::BOLD)
-                        .child(Icon::new(icon).small().text_color(accent))
-                        .child(node.render_part("title", |style| style, _window, cx))
-                        .when(foldable, |el| {
-                            el.cursor_pointer()
-                                .debug_selector(move || format!("reader-callout-fold-{offset}"))
-                                .child(
-                                    Icon::new(if open {
-                                        IconName::ChevronDown
-                                    } else {
-                                        IconName::ChevronRight
-                                    })
-                                    .small()
-                                    .text_color(accent),
-                                )
-                                // Toggle on press and keep the press here: in Live
-                                // Preview a press that reaches the editor reveals
-                                // the callout's source instead (#1192).
-                                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    reader_obsidian::toggle_callout(key, fold, window, cx);
-                                })
-                        }),
-                );
-            if open && !data.body.is_empty() {
-                let font_size = reader_ui_state::font_size(cx);
-                el = el.child(
-                    div()
-                        .debug_selector(move || format!("reader-callout-body-{offset}"))
-                        .child(node.render_part(
-                            "body",
-                            |style| style.with_heading_base_font_size(px(font_size)),
-                            _window,
-                            cx,
-                        )),
-                );
-            }
-            el.into_any_element()
-        })
-        .markdown_block_parser(parse_embed)
-        .markdown_block_renderer("embed", move |node, _window, cx| {
-            let Some(data) = node.data::<Embed>() else {
-                return div().into_any_element();
-            };
-            if data.block.is_some() {
-                return reader_embeds::render_block(node, &embed_link_handler, _window, cx);
-            }
-            let theme = cx.theme();
-            let border = theme.border;
-            let muted = theme.muted_foreground;
-            let fg = theme.foreground;
-            if data.missing {
-                return div()
-                    .my_1()
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(border)
-                    .text_sm()
-                    .italic()
-                    .text_color(muted)
-                    .child(node.render_part("title", |style| style, _window, cx))
-                    .into_any_element();
-            }
-            let font_size = reader_ui_state::font_size(cx);
-            let embed_link = embed_link_handler.clone();
-            let open_url = match &data.heading {
-                Some(h) => format!("{WIKI_SCHEME}{}#{h}", data.path),
-                None => format!("{WIKI_SCHEME}{}", data.path),
-            };
-            v_flex()
-                .my_1()
+                .py_1()
                 .rounded_md()
                 .border_1()
                 .border_color(border)
-                .child(
-                    h_flex()
-                        .id(("embed-title", data.offset as u64))
-                        .px_3()
-                        .py_1()
-                        .gap_2()
-                        .items_center()
-                        .bg(theme.accent.opacity(0.5))
-                        .text_sm()
-                        .text_color(muted)
-                        .cursor_pointer()
-                        .hover(|s| s.text_color(fg).bg(theme.accent))
-                        .child(Icon::new(IconName::FileText).small().text_color(muted))
-                        .child(node.render_part("title", |style| style, _window, cx))
-                        .on_click(move |event, window, cx| {
-                            embed_link(&open_url, event, window, cx)
-                        }),
-                )
-                .child(div().px_3().py_2().child(node.render_part(
-                    "body",
-                    |style| style.with_heading_base_font_size(px(font_size)),
-                    _window,
-                    cx,
-                )))
-                .into_any_element()
-        })
-        .markdown_block_parser(parse_highlight)
-        .markdown_block_renderer("highlight", move |node, _window, cx| {
-            node.render_part("body", |style| style, _window, cx)
-        })
-        .markdown_block_parser(reader_obsidian::parse_footnote)
-        .markdown_block_renderer("footnote", move |node, window, cx| {
-            reader_obsidian::render_footnote(node, &footnote_link_handler, window, cx)
-        })
-        .markdown_block_parser(reader_obsidian::parse_math)
-        .markdown_block_renderer("math", reader_obsidian::render_math)
-        .markdown_block_parser(reader_obsidian::parse_block_marker)
-        .markdown_block_renderer("block-marker", |_, _, _| div())
-        .on_link_click(move |url, ev, window, cx| link_click(url, ev, window, cx))
+                .text_sm()
+                .italic()
+                .text_color(muted)
+                .child(node.render_part("title", |style| style, _window, cx))
+                .into_any_element();
+        }
+        let font_size = reader_ui_state::font_size(cx);
+        let embed_link = embed_link_handler.clone();
+        let open_url = match &data.heading {
+            Some(h) => format!("{WIKI_SCHEME}{}#{h}", data.path),
+            None => format!("{WIKI_SCHEME}{}", data.path),
+        };
+        v_flex()
+            .my_1()
+            .rounded_md()
+            .border_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .id(("embed-title", data.offset as u64))
+                    .px_3()
+                    .py_1()
+                    .gap_2()
+                    .items_center()
+                    .bg(theme.accent.opacity(0.5))
+                    .text_sm()
+                    .text_color(muted)
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(fg).bg(theme.accent))
+                    .child(Icon::new(IconName::FileText).small().text_color(muted))
+                    .child(node.render_part("title", |style| style, _window, cx))
+                    .on_click(move |event, window, cx| embed_link(&open_url, event, window, cx)),
+            )
+            .child(div().px_3().py_2().child(node.render_part(
+                "body",
+                |style| style.with_heading_base_font_size(px(font_size)),
+                _window,
+                cx,
+            )))
+            .into_any_element()
+    })
+    .markdown_block_parser(parse_highlight)
+    .markdown_block_renderer("highlight", move |node, _window, cx| {
+        node.render_part("body", |style| style, _window, cx)
+    })
+    .markdown_block_parser(reader_obsidian::parse_footnote)
+    .markdown_block_renderer("footnote", move |node, window, cx| {
+        reader_obsidian::render_footnote(node, &footnote_link_handler, window, cx)
+    })
+    .markdown_block_parser(reader_obsidian::parse_math)
+    .markdown_block_renderer("math", reader_obsidian::render_math)
+    .markdown_block_parser(reader_obsidian::parse_block_marker)
+    .markdown_block_renderer("block-marker", |_, _, _| div())
+    .on_link_click(move |url, ev, window, cx| link_click(url, ev, window, cx))
 }
 
 struct Reader {
@@ -1741,6 +1730,7 @@ struct Reader {
     deleted_notice_generation: u64,
     /// «Save the deleted note?» is open; a second navigation does not stack another.
     deleted_note_asking: bool,
+    deleted_note_leaving: Option<(PathBuf, String, u64)>,
     displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
     displayed_recovery: Option<(String, u64)>,
@@ -2078,6 +2068,7 @@ impl Reader {
             displayed_deleted_notice: None,
             deleted_notice_generation: 0,
             deleted_note_asking: false,
+            deleted_note_leaving: None,
             displayed_notice: None,
             displayed_choices: Vec::new(),
             displayed_recovery: None,
@@ -2448,6 +2439,29 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A note can disappear while the requested target is being prepared.
+        // Root publications have already checked before changing vault_root.
+        if prepared_content.is_none() {
+            if self.leaving_deleted_note(Some(&request.rel), cx) {
+                self.ask_leaving_deleted_note(
+                    Box::new(move |this, window, cx| {
+                        this.accept_prepared_document_using(
+                            request,
+                            document,
+                            prepared_content,
+                            window,
+                            cx,
+                        );
+                    }),
+                    window,
+                    cx,
+                );
+                return;
+            }
+            if self.deleted_current().is_some() && request.rel == self.current_rel {
+                return;
+            }
+        }
         if self.editing.is_some() {
             return;
         }
@@ -6482,7 +6496,12 @@ impl Reader {
         let hover = brand::reader_palette(cx).hover;
         let current = self.current_section(cx);
         let entity = cx.entity().downgrade();
-        let base = self.visible_outline().iter().map(|h| h.level).min().unwrap_or(1);
+        let base = self
+            .visible_outline()
+            .iter()
+            .map(|h| h.level)
+            .min()
+            .unwrap_or(1);
         // Only the rows in view are built, so the panel costs the same for 32 and 436
         // headings (#1004). The list needs a height of its own: every row's, up to 60 %.
         let rows_height = self.visible_outline().len() as f32 * OUTLINE_ROW_HEIGHT;
@@ -7751,14 +7770,14 @@ impl Render for Reader {
                     this.copy_link_to_line(window, cx)
                 }),
             )
-            .on_action(
-                cx.listener(|this, action: &reader_reminder::RemindOnSelection, window, cx| {
+            .on_action(cx.listener(
+                |this, action: &reader_reminder::RemindOnSelection, window, cx| {
                     #[cfg(any(unix, windows))]
                     this.remind_on_editor_selection(action, window, cx);
                     #[cfg(not(any(unix, windows)))]
                     let _ = (this, action, window, cx);
-                }),
-            )
+                },
+            ))
             .on_action(cx.listener(|this, _: &QuickOpen, window, cx| {
                 this.open_quick_open(false, window, cx)
             }))

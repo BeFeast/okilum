@@ -1263,12 +1263,10 @@ mod tests {
         visual.simulate_keystrokes("shift-tab");
         visual.run_until_parked();
         visual.update(|window, cx| {
-            assert!(
-                grid.read(cx).cells[0][1]
-                    .read(cx)
-                    .focus_handle(cx)
-                    .is_focused(window)
-            );
+            assert!(grid.read(cx).cells[0][1]
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window));
         });
         visual.simulate_keystrokes("tab");
         visual.run_until_parked();

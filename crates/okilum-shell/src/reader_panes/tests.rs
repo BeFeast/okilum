@@ -287,8 +287,8 @@ mod file_documents {
     use super::*;
     use crate::reader_document::Loaded;
     use okilum_core::{
-        Vault,
         file_editor::{FileEditor, Save},
+        Vault,
     };
 
     struct Fixture {

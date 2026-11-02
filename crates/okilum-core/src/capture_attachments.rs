@@ -806,10 +806,10 @@ pub(super) fn reconcile_recovered(
         return Ok(false);
     };
     plan.validate(root, Some(draft))?;
-    if plan.copy_origin.is_some() {
+    if let Some(origin) = &plan.copy_origin {
         // Copy authorizations are recovered through recover_copies using the
         // ORIGINAL staging composer, never a guessed new staging identity.
-        let source = &plan.copy_origin.as_ref().unwrap().source_composer_id;
+        let source = &origin.source_composer_id;
         ensure!(
             recover_copies(root, records, source)?
                 .iter()

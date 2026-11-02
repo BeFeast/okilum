@@ -5,18 +5,18 @@ use super::{
     authority::StopToken, safe_text, supervisor::ipc::Scope, xml, Binding, Platform, Registration,
 };
 use anyhow::{ensure, Result};
+#[cfg(target_os = "macos")]
+pub mod bootstrap;
 #[cfg(unix)]
 pub mod bundle;
 #[cfg(unix)]
 pub mod connection;
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+pub mod inventory;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod payload;
 #[cfg(unix)]
 pub mod preparation;
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
-pub mod inventory;
-#[cfg(target_os = "macos")]
-pub mod bootstrap;
 pub mod recovery;
 #[cfg(unix)]
 pub mod registration;
