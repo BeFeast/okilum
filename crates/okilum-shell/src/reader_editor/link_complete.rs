@@ -17,12 +17,12 @@
 use super::ime_guard::Trigger;
 #[path = "inline_complete.rs"]
 mod providers;
-use providers::Kind;
 use super::lists::{self, Edit};
 use super::*;
 use gpui_component::input::projection::SourceStamp;
 use gpui_component::input::{Enter, Escape, IndentInline, MoveDown, MoveUp, RopeExt as _};
 use okilum_core::vault::warm::SourceRevision;
+use providers::Kind;
 use std::ops::Range;
 
 /// Rows the list shows at most.
@@ -328,46 +328,181 @@ fn rank_rows(query: &str, items: Vec<Candidate>) -> Vec<Candidate> {
     ranked.into_iter().map(|(_, row)| row).collect()
 }
 
-/// Heading source reads and Markdown parsing run on the background executor.
-/// Current-note headings use the editor's unsaved source, never the disk copy.
+/// A named heading's immutable source identity. Validation runs off the UI
+/// thread and checks exact bounded bytes as well as the native file revision.
+#[derive(Clone)]
+struct HeadingSource {
+    root: PathBuf,
+    note: String,
+    path: PathBuf,
+    revision: SourceRevision,
+    digest: [u8; 32],
+}
+
+impl HeadingSource {
+    const MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+    fn read(root: &std::path::Path, note: &str) -> Option<(Self, String)> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read as _;
+        if okilum_core::vault::service_path(std::path::Path::new(note)) {
+            return None;
+        }
+        let path = reader_files::checked_path(root, note).ok()?;
+        let metadata = std::fs::symlink_metadata(&path).ok()?;
+        if !metadata.is_file() || metadata.len() > Self::MAX_BYTES {
+            return None;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::macos::fs::MetadataExt as _;
+            if metadata.st_flags() & 0x4000_0000 != 0 {
+                return None;
+            }
+        }
+        let revision = SourceRevision::read(&path).ok()?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            options.custom_flags(
+                windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+            );
+        }
+        let file = options.open(&path).ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt as _;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            if file.metadata().ok()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return None;
+            }
+        }
+        let mut bytes = Vec::new();
+        file.take(Self::MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() as u64 > Self::MAX_BYTES
+            || SourceRevision::read(&path).ok()? != revision
+            || reader_files::checked_path(root, note).ok()? != path
+        {
+            return None;
+        }
+        let digest = Sha256::digest(&bytes).into();
+        let text = String::from_utf8(bytes).ok()?;
+        Some((
+            Self {
+                root: root.into(),
+                note: note.into(),
+                path,
+                revision,
+                digest,
+            },
+            text,
+        ))
+    }
+
+    fn current(&self) -> bool {
+        Self::read(&self.root, &self.note).is_some_and(|(now, _)| {
+            now.path == self.path && now.revision == self.revision && now.digest == self.digest
+        })
+    }
+}
+
+#[derive(Default)]
+struct Enriched {
+    rows: Vec<Candidate>,
+    heading: Option<HeadingSource>,
+}
+
+/// Reads/parsing remain in the delivered provider's worker. Current-note
+/// headings use the editor's unsaved source, never the disk copy. Named rows
+/// bind the resolved note path and exact target source; one changed read is
+/// retried, never published as if it belonged to a newer revision.
+fn enrich_bound(
+    vault: &Vault,
+    from: &str,
+    source: Option<&str>,
+    query: &LinkQuery,
+    items: Vec<Candidate>,
+) -> Enriched {
+    use okilum_core::{document_links::HeadingInventory, vault::ResolutionRef};
+    let Kind::Heading(target) = &query.kind else {
+        return Enriched {
+            rows: items,
+            heading: None,
+        };
+    };
+    let path = if target.is_empty() {
+        from
+    } else {
+        match vault.resolve_from_ref(target, from) {
+            ResolutionRef::Resolved(path) => path,
+            _ => return Enriched::default(),
+        }
+    };
+    for _ in 0..2 {
+        let loaded;
+        let (text, proof) = if path == from {
+            (source.unwrap_or(""), None)
+        } else {
+            let Some((proof, text)) = HeadingSource::read(&vault.root, path) else {
+                return Enriched::default();
+            };
+            loaded = text;
+            (loaded.as_str(), Some(proof))
+        };
+        let inventory = HeadingInventory::new(text);
+        let rows = inventory
+            .entries
+            .iter()
+            .filter(|h| !h.text.contains(NAME_END) && inventory.locate(&h.text).is_ok())
+            .map(|h| {
+                let mut candidate = row(&h.text, &format!("{target}#{}", h.text), path);
+                // Painted heading rows carry the resolved note identity too.
+                candidate.path = path.into();
+                candidate
+            })
+            .collect();
+        if proof.as_ref().is_none_or(HeadingSource::current) {
+            return Enriched {
+                rows: rank_rows(&query.query, rows),
+                heading: proof,
+            };
+        }
+    }
+    Enriched::default()
+}
+
+#[cfg(test)]
 fn enrich(
     vault: &Vault,
     from: &str,
     source: Option<&str>,
     query: &LinkQuery,
-    mut items: Vec<Candidate>,
+    items: Vec<Candidate>,
 ) -> Vec<Candidate> {
-    use okilum_core::{document_links::HeadingInventory, vault::ResolutionRef};
-    if let Kind::Heading(target) = &query.kind {
-        let path = if target.is_empty() {
-            from
-        } else {
-            match vault.resolve_from_ref(target, from) {
-                ResolutionRef::Resolved(path) => path,
-                _ => return Vec::new(), // Never guess an ambiguous note.
-            }
-        };
-        let loaded;
-        let text = if path == from {
-            source.unwrap_or("")
-        } else {
-            loaded = vault.read_note(path);
-            let Ok(text) = &loaded else {
-                return Vec::new();
-            };
-            text
-        };
-        let inventory = HeadingInventory::new(text);
-        items = inventory
-            .entries
-            .iter()
-            .filter(|h| !h.text.contains(NAME_END) && inventory.locate(&h.text).is_ok())
-            .map(|h| row(&h.text, &format!("{target}#{}", h.text), path))
-            .collect();
-        return rank_rows(&query.query, items);
-    }
+    enrich_bound(vault, from, source, query, items).rows
+}
 
-    items
+#[cfg(test)]
+type HeadingHold = (
+    futures::channel::oneshot::Sender<()>,
+    futures::channel::oneshot::Receiver<()>,
+);
+#[cfg(test)]
+thread_local! {
+    static HEADING_READ_HOLD: std::cell::RefCell<Option<HeadingHold>> = const { std::cell::RefCell::new(None) };
+    static HEADING_ACCEPT_HOLD: std::cell::RefCell<Option<HeadingHold>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Filesystem stamps can repeat for a rapid same-size rewrite with restored
@@ -551,6 +686,8 @@ pub(super) struct State {
     dismissed: Option<usize>,
     index: Option<Arc<Index>>,
     task: Option<Task<()>>,
+    heading_source: Option<HeadingSource>,
+    heading_accepting: bool,
     metadata_task: Option<Task<()>>,
     metadata_page: Option<MetadataPage>,
     metadata_cache: Arc<std::sync::Mutex<providers::MetadataCache<MetadataRevision>>>,
@@ -631,6 +768,8 @@ impl Reader {
         let input_entity = editing.input.clone();
         let state = &mut editing.link_complete;
         state.task = None;
+        state.heading_source = None;
+        state.heading_accepting = false;
         let Some(query) = query else {
             state.dismissed = None;
             state.preferred = None;
@@ -663,9 +802,15 @@ impl Reader {
             let vault = expected_vault.clone();
             let from_expected = from.clone();
             let index = state.index.as_ref().unwrap().clone();
+            #[cfg(test)]
+            let hold = if matches!(query.kind, Kind::Heading(_)) {
+                HEADING_READ_HOLD.with(|hold| hold.borrow_mut().take())
+            } else {
+                None
+            };
             state.task = Some(cx.spawn(async move |this, cx| {
                 let worker_query = query.clone();
-                let rows = cx
+                let enriched = cx
                     .background_executor()
                     .spawn(async move {
                         let items = match worker_query.kind {
@@ -673,7 +818,27 @@ impl Reader {
                             Kind::Heading(_) => Vec::new(),
                             _ => catalog(&worker_query),
                         };
-                        enrich(&vault, &from, source.as_deref(), &worker_query, items)
+                        let mut enriched =
+                            enrich_bound(&vault, &from, source.as_deref(), &worker_query, items);
+                        #[cfg(test)]
+                        if let Some((ready, held)) = hold {
+                            let _ = ready.send(());
+                            let _ = held.await;
+                        }
+                        if enriched
+                            .heading
+                            .as_ref()
+                            .is_some_and(|source| !source.current())
+                        {
+                            enriched = enrich_bound(
+                                &vault,
+                                &from,
+                                source.as_deref(),
+                                &worker_query,
+                                Vec::new(),
+                            );
+                        }
+                        enriched
                     })
                     .await;
                 let _ = this.update(cx, |this, cx| {
@@ -704,7 +869,8 @@ impl Reader {
                     {
                         return;
                     }
-                    publish(&mut editing.link_complete, query, rows);
+                    editing.link_complete.heading_source = enriched.heading;
+                    publish(&mut editing.link_complete, query, enriched.rows);
                     this.refresh_link_complete_metadata(cx);
                     cx.notify();
                 });
@@ -849,6 +1015,17 @@ impl Reader {
     }
 
     fn link_complete_dismiss(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(editing) = self
+            .editing
+            .as_mut()
+            .filter(|editing| editing.link_complete.heading_accepting)
+        {
+            editing.link_complete.task = None;
+            editing.link_complete.heading_accepting = false;
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if self.link_complete_input(window, cx).is_none() {
             return;
         }
@@ -905,6 +1082,78 @@ impl Reader {
         let text = input.read(cx).value();
         // The list was computed for this text and caret; anything else is stale.
         if link_query(&text, input.read(cx).selected_range().start).as_ref() != Some(&open.query) {
+            cx.notify();
+            return;
+        }
+        if let Some(source) = editing.link_complete.heading_source.take() {
+            let expected = editing.link_complete.seen.clone().unwrap();
+            let query = open.query.clone();
+            let target = item.target.clone();
+            let vault = self.vault.clone();
+            let from = self.current_rel.clone();
+            let show_hidden = self.sidebar.show_hidden;
+            let input_entity = input.clone();
+            #[cfg(test)]
+            let hold = HEADING_ACCEPT_HOLD.with(|hold| hold.borrow_mut().take());
+            editing.link_complete.heading_accepting = true;
+            editing.link_complete.task = Some(cx.spawn_in(window, async move |this, cx| {
+                let valid = cx
+                    .background_executor()
+                    .spawn(async move {
+                        #[cfg(test)]
+                        if let Some((ready, held)) = hold {
+                            let _ = ready.send(());
+                            let _ = held.await;
+                        }
+                        source.current()
+                    })
+                    .await;
+                let _ = this.update_in_own_window(cx, |reader, window, cx| {
+                    if !Arc::ptr_eq(&reader.vault, &vault)
+                        || reader.current_rel != from
+                        || reader.sidebar.show_hidden != show_hidden
+                    {
+                        return;
+                    }
+                    let Some(editing) = reader.editing.as_mut() else {
+                        return;
+                    };
+                    if editing.input != input_entity || !editing.link_complete.heading_accepting {
+                        return;
+                    }
+                    editing.link_complete.heading_accepting = false;
+                    let state = input_entity.read(cx);
+                    let current = (
+                        state.source_stamp(),
+                        state.selected_range(),
+                        reader_ui_state::emoji_completion(cx),
+                    );
+                    if current != expected
+                        || !editing.markdown
+                        || !state.is_editable()
+                        || state.ime_composing()
+                        || !state.focus_handle(cx).is_focused(window)
+                        || link_query(&state.value(), state.selected_range().start).as_ref()
+                            != Some(&query)
+                    {
+                        return;
+                    }
+                    if !valid {
+                        // The chosen target changed while the popup was open.
+                        // Keep the draft and recompute this same query once.
+                        editing.link_complete.dismissed = None;
+                        editing.link_complete.seen = None;
+                        reader.refresh_link_complete(cx);
+                        cx.notify();
+                        return;
+                    }
+                    let (edits, caret) = completion(&state.value(), &query, &target);
+                    input_entity.update(cx, |state, cx| {
+                        state.replace_source_edits(&edits, caret..caret, window, cx);
+                    });
+                    cx.notify();
+                });
+            }));
             cx.notify();
             return;
         }
@@ -1507,6 +1756,91 @@ mod tests {
         assert!(chrono::NaiveDate::parse_from_str(&rows[0].target, "%Y-%m-%d").is_ok());
     }
 
+    #[test]
+    fn named_heading_source_rejects_changed_missing_and_unsupported_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Plan.md");
+        std::fs::write(&path, "# Goals\r\n").unwrap();
+        let (proof, text) = HeadingSource::read(directory.path(), "Plan.md").unwrap();
+        assert_eq!(
+            text, "# Goals\r\n",
+            "exact resident source positive control"
+        );
+        assert!(proof.current());
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, "# Other\r\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert!(
+            !proof.current(),
+            "same size/mtime does not reuse old headings"
+        );
+        let (replacement, _) = HeadingSource::read(directory.path(), "Plan.md").unwrap();
+        assert!(replacement.current(), "new revision remains readable");
+        std::fs::remove_file(&path).unwrap();
+        assert!(!replacement.current());
+        std::fs::write(&path, [0xff, b'\n']).unwrap();
+        assert!(HeadingSource::read(directory.path(), "Plan.md").is_none());
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(HeadingSource::MAX_BYTES + 1)
+            .unwrap();
+        assert!(HeadingSource::read(directory.path(), "Plan.md").is_none());
+        assert!(HeadingSource::read(directory.path(), ".").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn named_heading_source_cannot_follow_an_outside_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("Plan.md");
+        std::fs::write(&path, "# Owned\n").unwrap();
+        let (proof, _) = HeadingSource::read(&root, "Plan.md").unwrap();
+        assert!(proof.current(), "contained regular file positive control");
+        let outside = directory.path().join("outside.md");
+        std::fs::write(&outside, "# Foreign\n").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+        assert!(!proof.current());
+        assert!(HeadingSource::read(&root, "Plan.md").is_none());
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "# Foreign\n");
+    }
+
+    #[test]
+    fn painted_heading_row_keeps_the_resolved_note_identity() {
+        let query = link_query("[[Plan#Go", 9).unwrap();
+        let source = SourceStamp {
+            document: 7,
+            generation: 1,
+        };
+        let mut candidate = row("Goals", "Plan#Goals", "");
+        candidate.path = "a/Plan.md".into();
+        let intent = RowIntent {
+            query: query.clone(),
+            source,
+            path: candidate.path.clone(),
+            target: candidate.target.clone(),
+        };
+        let mut open = Open {
+            query,
+            items: vec![candidate],
+            selected: 0,
+        };
+        assert_eq!(intent.choice(&open, source), Some(0));
+        open.items[0].path = "b/Plan.md".into();
+        assert_eq!(
+            intent.choice(&open, source),
+            None,
+            "same display text cannot retarget a painted heading to another note"
+        );
+    }
+
     struct Note {
         reader: Entity<Reader>,
         input: Entity<EditorState>,
@@ -1602,6 +1936,193 @@ mod tests {
         visual.run_until_parked();
     }
 
+    fn hold_heading(
+        accept: bool,
+    ) -> (
+        futures::channel::oneshot::Receiver<()>,
+        futures::channel::oneshot::Sender<()>,
+    ) {
+        let (ready, reached) = futures::channel::oneshot::channel();
+        let (release, held) = futures::channel::oneshot::channel();
+        let hold = if accept {
+            &HEADING_ACCEPT_HOLD
+        } else {
+            &HEADING_READ_HOLD
+        };
+        hold.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some((ready, held));
+        });
+        (reached, release)
+    }
+
+    fn heading_targets(note: &Note, visual: &mut VisualTestContext) -> Vec<String> {
+        note.reader.read_with(visual, |reader, _| {
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .link_complete
+                .open
+                .as_ref()
+                .map(|open| open.items.iter().map(|row| row.target.clone()).collect())
+                .unwrap_or_default()
+        })
+    }
+
+    fn named_path(note: &Note) -> PathBuf {
+        note._directory.path().join("vault/Recipes.md")
+    }
+
+    #[gpui::test]
+    fn named_heading_read_recomputes_a_target_changed_before_publication(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        std::fs::write(named_path(&note), "# Before\n").unwrap();
+        let (mut reached, release) = hold_heading(false);
+        set(&note, visual, "[[Recipes#|");
+        assert_eq!(
+            reached.try_recv(),
+            Ok(Some(())),
+            "actual named-source worker reached hold"
+        );
+        assert!(
+            offered(&note, visual).is_none(),
+            "no unvalidated rows published"
+        );
+        std::fs::write(named_path(&note), "# After\n").unwrap();
+        release.send(()).unwrap();
+        visual.run_until_parked();
+        assert_eq!(heading_targets(&note, visual), ["Recipes#After"]);
+        keys(visual, "tab");
+        assert_eq!(shown(&note, visual), "[[Recipes#After]]|");
+        undo(visual);
+        assert_eq!(
+            shown(&note, visual),
+            "[[Recipes#|",
+            "one acceptance, one Undo"
+        );
+    }
+
+    #[gpui::test]
+    fn named_heading_accept_rejects_changed_or_deleted_target_and_keeps_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (note, visual) = open(cx);
+        std::fs::write(named_path(&note), "# Before\n").unwrap();
+        set(&note, visual, "[[Recipes#|");
+        assert_eq!(
+            heading_targets(&note, visual),
+            ["Recipes#Before"],
+            "positive control"
+        );
+        std::fs::write(named_path(&note), "# After\n").unwrap();
+        keys(visual, "tab");
+        assert_eq!(
+            shown(&note, visual),
+            "[[Recipes#|",
+            "stale row does not edit the draft"
+        );
+        assert_eq!(
+            heading_targets(&note, visual),
+            ["Recipes#After"],
+            "fresh target recomputed"
+        );
+        keys(visual, "tab");
+        assert_eq!(shown(&note, visual), "[[Recipes#After]]|");
+        undo(visual);
+        assert_eq!(shown(&note, visual), "[[Recipes#|");
+        // A new input session offers the current target again before deletion.
+        set(&note, visual, "next [[Recipes#|");
+        assert_eq!(heading_targets(&note, visual), ["Recipes#After"]);
+        std::fs::remove_file(named_path(&note)).unwrap();
+        keys(visual, "enter");
+        assert_eq!(shown(&note, visual), "next [[Recipes#|");
+        assert!(offered(&note, visual).is_none());
+    }
+
+    #[gpui::test]
+    fn named_heading_click_and_unsaved_heading_share_undo_in_live_preview(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        note.reader.update_in(visual, |reader, window, cx| {
+            reader.set_live_preview(true, window, cx)
+        });
+        visual.run_until_parked();
+        std::fs::write(named_path(&note), "# Goals\r\n").unwrap();
+        set(&note, visual, "See [[Recipes#Go|");
+        assert_eq!(heading_targets(&note, visual), ["Recipes#Goals"]);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let row = visual
+            .debug_bounds("link-complete-0")
+            .expect("named heading row is painted");
+        visual.simulate_click(row.center(), Modifiers::none());
+        visual.run_until_parked();
+        assert_eq!(shown(&note, visual), "See [[Recipes#Goals]]|");
+        undo(visual);
+        assert_eq!(shown(&note, visual), "See [[Recipes#Go|");
+        set(&note, visual, "# Unsaved\n\n[[#Un|");
+        assert_eq!(heading_targets(&note, visual), ["#Unsaved"]);
+        keys(visual, "tab");
+        assert_eq!(shown(&note, visual), "# Unsaved\n\n[[#Unsaved]]|");
+        undo(visual);
+        assert_eq!(shown(&note, visual), "# Unsaved\n\n[[#Un|");
+        assert!(note.reader.read_with(visual, |reader, _| reader
+            .editing
+            .as_ref()
+            .unwrap()
+            .live_preview
+            .enabled));
+    }
+
+    #[gpui::test]
+    fn named_heading_pending_acceptance_cannot_outlive_escape_source_or_caret(
+        cx: &mut TestAppContext,
+    ) {
+        let (note, visual) = open(cx);
+        std::fs::write(named_path(&note), "# Goals\n").unwrap();
+        for action in ["escape", "source", "caret"] {
+            let original = format!("{action} [[Recipes#|");
+            set(&note, visual, &original);
+            assert_eq!(
+                heading_targets(&note, visual),
+                ["Recipes#Goals"],
+                "{action} positive control"
+            );
+            let (mut reached, release) = hold_heading(true);
+            keys(visual, "tab");
+            assert_eq!(
+                reached.try_recv(),
+                Ok(Some(())),
+                "accept validation actually started: {action}"
+            );
+            assert_eq!(shown(&note, visual), original, "no premature edit");
+            match action {
+                "escape" => keys(visual, "escape"),
+                "source" => set(&note, visual, "replacement draft|"),
+                "caret" => keys(visual, "left"),
+                _ => unreachable!(),
+            }
+            let retained = shown(&note, visual);
+            // Cancellation may already have dropped the receiver; either outcome
+            // must leave this exact draft and caret unchanged after worker wake.
+            let _ = release.send(());
+            visual.run_until_parked();
+            assert_eq!(
+                shown(&note, visual),
+                retained,
+                "late {action} result must not edit"
+            );
+        }
+        set(&note, visual, "healthy [[Recipes#|");
+        keys(visual, "enter");
+        assert_eq!(
+            shown(&note, visual),
+            "healthy [[Recipes#Goals]]|",
+            "uncancelled control"
+        );
+        undo(visual);
+        assert_eq!(shown(&note, visual), "healthy [[Recipes#|");
+    }
+
     #[gpui::test]
     fn source_changes_with_the_same_query_cannot_accept_old_headings(cx: &mut TestAppContext) {
         let (note, visual) = open(cx);
@@ -1657,11 +2178,9 @@ mod tests {
                 assert_eq!(open.selected, open.items.len() - 1);
                 open.selected
             });
-            assert!(
-                visual
-                    .debug_bounds(&format!("link-complete-{last}"))
-                    .is_some()
-            );
+            assert!(visual
+                .debug_bounds(&format!("link-complete-{last}"))
+                .is_some());
             keys(visual, "tab");
             assert!(shown(&note, visual).contains(&target));
             undo(visual);

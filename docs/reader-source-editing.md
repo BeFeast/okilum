@@ -30,6 +30,25 @@ unambiguously, a notice asks to refresh Contents in Read. Navigation never edits
 or saves the source. Results from an older click, document, text revision or caret
 position cannot move the current editor.
 
+Heading completion (#1638) uses the same inline popup and keyboard/Undo path as
+note completion: type `[[#` for headings in this unsaved note, or
+`[[Note#` for headings in a uniquely resolved note. Up/Down chooses a row;
+Enter/Tab or a row click inserts the target once. Escape leaves the authored
+text unchanged. The shared `HeadingInventory` excludes ambiguous or unsupported
+heading destinations; completion does not guess between duplicate note names.
+
+Named headings are read and parsed off the UI thread from a contained, regular,
+resident UTF-8 file, bounded to 8 MiB. Their rows retain the resolved note path,
+native file revision and exact-byte digest. A changed target is recomputed before
+publication; choosing a row validates its target again before the source edit.
+If it changed or disappeared, the draft stays intact and the popup refreshes.
+The editor source, caret, input session, vault, focus and composition guards also
+apply to this asynchronous acceptance. This is an observed revision check, not a
+lock against subsequent external writes. Current-note completion uses the unsaved
+editor snapshot. Remote hydration and unsupported/oversized target files are not
+performed by this provider; Windows reparse targets are refused. Platform/native
+acceptance is separate from the headless source fixtures.
+
 Typing a third backtick or tilde at a Markdown line start adds its closing
 fence (#1893). The caret stays at the opener for the language; Enter enters the
 empty block. An adjacent empty closer grows with a longer opening fence.
