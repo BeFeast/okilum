@@ -1189,7 +1189,7 @@ fn sync_2419_preparing_shows_setup_and_existing_incompatible_connection_shows_er
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<SyncSettings>().unwrap()
     });
-    cx.update(|cx| {
+    visual.update(|_, cx| {
         cx.set_global(TestWorker(std::sync::Arc::new(|_| {
             anyhow::bail!("unsupported Syncthing version")
         })))
@@ -1236,4 +1236,51 @@ fn sync_2419_pairing_cadence_is_fast_and_idle_returns_to_normal() {
     assert_eq!(sync_refresh_interval(&value), Some(Duration::from_secs(30)));
     value.preparing = true;
     assert_eq!(sync_refresh_interval(&value), Some(Duration::from_secs(2)));
+}
+
+#[gpui::test]
+fn sync_2419_share_menu_opens_sync_with_module_off(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_features::install(directory.path(), cx);
+    });
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+        Root::new(reader, window, cx)
+    });
+    let reader = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<Reader>().unwrap()
+    });
+    visual.update(|window, cx| {
+        assert!(!reader_features::enabled(
+            reader_features::Feature::Sync,
+            cx
+        ));
+        let gpui_component::menu::PopupMenuItem::Item {
+            label,
+            handler: Some(handler),
+            disabled,
+            ..
+        } = reader_settings::share_sync_menu_item(reader.downgrade())
+        else {
+            panic!("ordinary actionable menu entry required")
+        };
+        assert_eq!(label.as_ref(), "Share with another computer…");
+        assert!(!disabled);
+        handler(&ClickEvent::default(), window, cx);
+    });
+    visual.run_until_parked();
+    let settings = visual.update(|window, cx| {
+        assert!(reader_features::enabled(reader_features::Feature::Sync, cx));
+        cx.windows()
+            .into_iter()
+            .find(|w| *w != window.window_handle())
+            .unwrap()
+    });
+    let mut settings = VisualTestContext::from_window(settings, &*visual);
+    settings.run_until_parked();
+    assert_visible(&mut settings, "sync-add-computer");
+    assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
 }

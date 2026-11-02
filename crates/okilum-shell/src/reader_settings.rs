@@ -1764,6 +1764,12 @@ impl Render for Settings {
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self.section == Section::Sync
+            && !reader_features::enabled(reader_features::Feature::Sync, cx)
+        {
+            self.section = Section::Features;
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.section == Section::Sync
             && reader_features::enabled(reader_features::Feature::Sync, cx)
             && self.sync.is_none()
         {
