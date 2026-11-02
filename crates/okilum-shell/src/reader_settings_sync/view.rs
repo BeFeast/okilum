@@ -4,6 +4,7 @@ impl Render for SyncSettings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = brand::palette(cx);
         let mut content = v_flex().w_full().gap_4()
+            .child(crate::reader_sync_help::entry())
             .child(div().text_base().child("Connect your computers"))
             .child(div().text_sm().text_color(p.text_muted).child("Pair computers once, then choose which vaults to sync. Confirm each new computer on the computer that shared the URL."))
             .child(v_flex().gap_2().child("This computer").child(Input::new(&self.name).disabled(self.busy)))
