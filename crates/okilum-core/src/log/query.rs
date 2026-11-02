@@ -1,5 +1,5 @@
 //! The log viewer's query language (#602, slice 4): a hand-written parser for
-//! a subset of hl's query syntax, so a query can move between hl and Okilum.
+//! a subset of hl's query syntax plus typed equality for point-and-click filters.
 //! hl (github.com/pamburus/hl, MIT) is the design reference for the syntax
 //! only; no hl code is used. See docs/research/602-hl-log-viewer.md §3.3.
 //!
@@ -12,6 +12,7 @@
 //! unary   = ("not" | "!") unary | primary
 //! primary = "(" or ")"
 //!         | "exists" "(" field ")"
+//!         | "typed" "(" field "," kind "," string ")"
 //!         | field ["?"] op value
 //!         | field ["?"] ["not"] "in" "(" value { "," value } ")"
 //! op      = "=" | "!=" | "~=" | "!~=" | "~~=" | "!~~=" | "<" | "<=" | ">" | ">="
@@ -47,6 +48,13 @@
 //! Arrays and objects compare as their raw JSON text, `null`/`true`/`false`
 //! as those words.
 //!
+//! **Typed equality.** Point-and-click filters emit `typed(field, kind, "text")`
+//! using the same lexer, AST and evaluator. Kinds are string, number, bool, null,
+//! missing, array and object. Missing uses empty text; null uses "null". These
+//! conditions never coerce a string into another kind. Inside typed conditions,
+//! unquoted @time and @source select the time role and view source; quotes force
+//! literal keys with those names. Excluding a chip negates its whole expression.
+//!
 //! **Absent fields.** A test on a field the record does not have is false,
 //! and so is every test on a line that is not a record. That includes the
 //! negated operators (`!=`, `!~=`, `!~~=`, `not in`): they mean "present and
@@ -68,6 +76,7 @@ use std::str::FromStr;
 
 use regex::{Regex, RegexBuilder};
 
+use super::chips::FilterValue;
 use super::{Field, Format, Level, LogEntry, Record, Role};
 
 /// Parentheses and `not`s deeper than this are an error, not a stack overflow.
@@ -75,8 +84,8 @@ const MAX_DEPTH: usize = 64;
 /// Compiled-size cap per regular expression (the regex crate's default is 10x).
 const REGEX_SIZE_LIMIT: usize = 1 << 20;
 /// Names that cannot be written bare as a raw key.
-const RESERVED: [&str; 9] = [
-    "level", "msg", "message", "logger", "and", "or", "not", "in", "exists",
+const RESERVED: [&str; 11] = [
+    "level", "msg", "message", "logger", "and", "or", "not", "in", "exists", "@time", "@source",
 ];
 
 /// A parse error: a byte span into the query and a message for an inline
@@ -121,6 +130,33 @@ pub struct Query {
 }
 
 impl Query {
+    /// Bind the view's source column before evaluating this query over one source.
+    pub fn for_source(&self, source: &str) -> Self {
+        fn bind(expr: &Expr, source: &str) -> Expr {
+            match expr {
+                Expr::Typed {
+                    field: FieldRef::Source,
+                    value,
+                } => {
+                    if *value == FilterValue::string(source) {
+                        Expr::And(vec![])
+                    } else {
+                        Expr::Or(vec![])
+                    }
+                }
+                Expr::And(xs) => Expr::And(xs.iter().map(|x| bind(x, source)).collect()),
+                Expr::Or(xs) => Expr::Or(xs.iter().map(|x| bind(x, source)).collect()),
+                Expr::Not(x) => Expr::Not(Box::new(bind(x, source))),
+                x => x.clone(),
+            }
+        }
+        let expr = bind(&self.expr, source);
+        Self {
+            needs_record: expr.needs_record(),
+            expr,
+        }
+    }
+
     pub fn parse(source: &str) -> Result<Query, QueryError> {
         let tokens = lex(source)?;
         let mut parser = Parser {
@@ -172,7 +208,7 @@ impl Query {
         index: &super::LogIndex,
     ) -> bool {
         let record = self.needs_record.then(|| index.record(line)).flatten();
-        self.matches(entry, record.as_ref())
+        self.expr.matches_row(entry, record.as_ref(), line)
     }
 
     /// Decodes `line` only when the query looks at fields.
@@ -182,7 +218,7 @@ impl Query {
         } else {
             None
         };
-        self.matches(entry, record.as_ref())
+        self.expr.matches_row(entry, record.as_ref(), line)
     }
 }
 
@@ -201,6 +237,11 @@ impl fmt::Display for Query {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
+    /// Type-preserving exact equality used by point-and-click filters.
+    Typed {
+        field: FieldRef,
+        value: FilterValue,
+    },
     /// All of the items; empty only for the blank query.
     And(Vec<Expr>),
     Or(Vec<Expr>),
@@ -218,8 +259,12 @@ pub enum Expr {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum FieldRef {
+    Time,
+    Source,
     Level,
     Message,
     Logger,
@@ -280,8 +325,38 @@ impl PartialEq for Pattern {
 }
 
 impl Expr {
+    fn matches_row(&self, entry: &LogEntry, record: Option<&Record>, raw: &[u8]) -> bool {
+        match self {
+            Expr::And(xs) => xs.iter().all(|x| x.matches_row(entry, record, raw)),
+            Expr::Or(xs) => xs.iter().any(|x| x.matches_row(entry, record, raw)),
+            Expr::Not(x) => !x.matches_row(entry, record, raw),
+            Expr::Typed {
+                field: FieldRef::Message,
+                value,
+            } if record.is_none() => {
+                *value
+                    == FilterValue::string(&super::ansi::strip_text(String::from_utf8_lossy(raw)))
+            }
+            _ => self.matches(entry, record),
+        }
+    }
+
     pub fn matches(&self, entry: &LogEntry, record: Option<&Record>) -> bool {
         match self {
+            Expr::Typed { field, value } => {
+                let Some(record) = record else {
+                    return *value == FilterValue::Missing;
+                };
+                let mut found = values(record, field).peekable();
+                if found.peek().is_none() {
+                    *value == FilterValue::Missing
+                } else {
+                    found.any(|f| match value {
+                        FilterValue::Missing => false,
+                        FilterValue::Value { kind, text } => f.kind == *kind && f.value == *text,
+                    })
+                }
+            }
             Expr::And(items) => items.iter().all(|e| e.matches(entry, record)),
             Expr::Or(items) => items.iter().any(|e| e.matches(entry, record)),
             Expr::Not(inner) => !inner.matches(entry, record),
@@ -321,7 +396,7 @@ impl Expr {
             Expr::And(items) | Expr::Or(items) => items.iter().any(Expr::needs_record),
             Expr::Not(inner) => inner.needs_record(),
             Expr::Exists(FieldRef::Level) | Expr::Level { .. } => false,
-            Expr::Exists(_) | Expr::Field { .. } => true,
+            Expr::Exists(_) | Expr::Field { .. } | Expr::Typed { .. } => true,
         }
     }
 }
@@ -333,6 +408,8 @@ fn level_present(level: Level) -> bool {
 /// Every occurrence of `field` in the record.
 fn values<'r>(record: &'r Record, field: &'r FieldRef) -> impl Iterator<Item = &'r Field> {
     let (role, key) = match field {
+        FieldRef::Time => (Some(Role::Time), None),
+        FieldRef::Source => (None, None),
         FieldRef::Level => (Some(Role::Level), None),
         FieldRef::Message => (Some(Role::Message), None),
         FieldRef::Logger => (Some(Role::Logger), None),
@@ -797,6 +874,42 @@ impl Parser<'_> {
                 }
             }
             Tok::Word(word)
+                if word.eq_ignore_ascii_case("typed")
+                    && matches!(
+                        self.peek(),
+                        Some(Token {
+                            tok: Tok::LParen,
+                            ..
+                        })
+                    ) =>
+            {
+                self.bump();
+                let name = self
+                    .bump()
+                    .ok_or_else(|| QueryError::new(self.end(), "Expected a field"))?;
+                let field = match &name.tok {
+                    Tok::Word(s) if s == "@time" => FieldRef::Time,
+                    Tok::Word(s) if s == "@source" => FieldRef::Source,
+                    Tok::Str(s) if s.is_empty() => FieldRef::Key(String::new()),
+                    _ => self.field(name)?,
+                };
+                self.expect_comma()?;
+                let (kind, _) = self.value(&token.span)?;
+                self.expect_comma()?;
+                let (text, span) = self.value(&token.span)?;
+                let value = FilterValue::parse(&kind.text, text.text)
+                    .ok_or_else(|| QueryError::new(span, "Invalid typed value"))?;
+                match self.bump() {
+                    Some(Token {
+                        tok: Tok::RParen, ..
+                    }) => Ok(Expr::Typed { field, value }),
+                    _ => Err(QueryError::new(
+                        self.end(),
+                        "Expected closing parenthesis after typed value",
+                    )),
+                }
+            }
+            Tok::Word(word)
                 if word.eq_ignore_ascii_case("exists")
                     && matches!(
                         self.peek(),
@@ -828,6 +941,15 @@ impl Parser<'_> {
                 let message = format!("Expected a condition, found `{}`", self.text(&token.span));
                 Err(QueryError::new(token.span, message))
             }
+        }
+    }
+
+    fn expect_comma(&mut self) -> Result<(), QueryError> {
+        match self.bump() {
+            Some(Token {
+                tok: Tok::Comma, ..
+            }) => Ok(()),
+            _ => Err(QueryError::new(self.end(), "Expected comma")),
         }
     }
 
@@ -1084,6 +1206,8 @@ fn level_name(level: Level) -> &'static str {
 impl fmt::Display for FieldRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            FieldRef::Time => f.write_str("@time"),
+            FieldRef::Source => f.write_str("@source"),
             FieldRef::Level => f.write_str("level"),
             FieldRef::Message => f.write_str("msg"),
             FieldRef::Logger => f.write_str("logger"),
@@ -1132,6 +1256,11 @@ impl fmt::Display for Expr {
         };
         let absent = |include: bool| if include { "?" } else { "" };
         match self {
+            Expr::Typed { field, value } => {
+                write!(f, "typed({field}, {}, ", value.type_name())?;
+                write_quoted(f, value.text())?;
+                f.write_char(')')
+            }
             Expr::And(items) | Expr::Or(items) => {
                 let joiner = if matches!(self, Expr::And(_)) {
                     " and "

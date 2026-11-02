@@ -5,7 +5,9 @@ use std::borrow::Cow;
 
 use super::{ansi, block, json, logfmt, text, timestamp, Format, Level};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum ValueKind {
     String,
     Number,

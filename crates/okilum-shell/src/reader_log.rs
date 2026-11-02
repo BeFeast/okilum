@@ -8,14 +8,16 @@
 //! `okilum_core::log::merge`, each with its colour and name, and any file can
 //! be hidden without indexing anything again.
 use super::*;
-use gpui_component::menu::ContextMenuExt as _;
+mod filters;
+use filters::FilterUi;
 use gpui_component::scroll::ScrollableElement as _;
+use okilum_core::log::chips::{self, FilterChip, FilterMode, FilterValue};
 use okilum_core::log::correlation;
 use okilum_core::log::elapsed::{self, Stamp};
 use okilum_core::log::export::{self, CsvColumns, ExportFormat};
 use okilum_core::log::histogram::Histogram;
 use okilum_core::log::merge::MergedLog;
-use okilum_core::log::query::{Expr, FieldRef, Literal, Test};
+use okilum_core::log::query::{Expr, FieldRef};
 use okilum_core::log::saved_query::SavedQuery;
 use okilum_core::log::source_link::{self, Open, SourceLocation};
 use okilum_core::log::tail::{ResetReason, TailEvent};
@@ -542,6 +544,7 @@ pub(crate) struct LogView {
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     filter: LogFilter,
+    filter_ui: FilterUi,
     generations: FilterGenerations,
     /// Entry indices shown, ascending; `None` while every entry is shown.
     rows: Option<Arc<Vec<u32>>>,
@@ -764,6 +767,7 @@ impl LogView {
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             filter: LogFilter::default(),
+            filter_ui: FilterUi::default(),
             generations: FilterGenerations::default(),
             rows: None,
             filtering: false,
@@ -857,6 +861,7 @@ impl LogView {
                 if let State::Ready(document) = &this.state {
                     record_ready(document, cx);
                 }
+                this.refilter(cx);
                 this.reveal_tail();
                 cx.notify();
             });
@@ -1918,6 +1923,26 @@ impl LogView {
         match Query::parse(&text) {
             Ok(query) => {
                 self.query_error = None;
+                let (mut chips, advanced) = chips::split_query(&query);
+                for chip in &mut chips {
+                    if let Some(old) = self
+                        .filter_ui
+                        .chips
+                        .iter()
+                        .find(|old| old.enabled && old.expr() == chip.expr())
+                    {
+                        chip.execution = old.execution;
+                    }
+                }
+                chips.extend(
+                    self.filter_ui
+                        .chips
+                        .iter()
+                        .filter(|chip| !chip.enabled)
+                        .cloned(),
+                );
+                self.filter_ui.chips = chips;
+                self.filter_ui.advanced = advanced;
                 self.update_filter(
                     |filter| filter.query = (!query.is_empty()).then_some(query),
                     cx,
@@ -1937,27 +1962,19 @@ impl LogView {
         self.set_query(text, cx);
     }
 
-    /// A field from the detail pane narrows the query: the same model as
-    /// typing `key = "value"` (#1158).
+    /// A detail value becomes a typed chip in the shared query model.
     fn add_field_term(
         &mut self,
         key: &str,
-        value: &str,
+        value: FilterValue,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let term = field_term(key, value);
-        if self.has_term(&term) {
-            return;
-        }
-        let text = match (&self.query_error, &self.filter.query) {
-            (None, Some(query)) => Expr::And(vec![query.expr().clone(), term]).to_string(),
-            (None, None) => term.to_string(),
-            // Keep what is being typed; the user fixes the typo.
-            (Some(_), _) => format!("{} and {term}", self.query_text.trim_end()),
-        };
-        self.replace_query(text, window, cx);
-        self.remember_query(cx);
+        self.add_chip(
+            FilterChip::new(FieldRef::Key(key.into()), vec![value], FilterMode::Include),
+            window,
+            cx,
+        );
     }
 
     /// True when the applied query already requires `term`.
@@ -1989,9 +2006,12 @@ impl LogView {
         self.query_input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.query_text.clear();
+        self.filter_ui.chips.clear();
+        self.filter_ui.advanced.clear();
         self.query_error = None;
         self.request_back = None;
         self.update_filter(|filter| *filter = LogFilter::default(), cx);
+        cx.notify();
     }
 
     /// Starts a run for the current filter. Every earlier run is cancelled by
@@ -2030,7 +2050,7 @@ impl LogView {
         }
         self.filtering = true;
         self.filter_running = Some(ticket.generation());
-        let filter = self.filter.clone();
+        let filter = self.filter_for_source(self.enabled_sources().first().copied().unwrap_or(0));
         self._filtering = Some(cx.spawn(async move |this, cx| {
             let generation = ticket.generation();
             let outcome = cx
@@ -2087,6 +2107,11 @@ impl LogView {
         let Some(merge) = &self.merge else {
             return;
         };
+        let source_names: Vec<_> = merge
+            .sources
+            .iter()
+            .map(|&source| self.source_name(source))
+            .collect();
         let snapshots: Vec<Snapshot> = merge
             .sources
             .iter()
@@ -2120,6 +2145,11 @@ impl LogView {
                     let mut rows = Vec::new();
                     for (file, snapshot) in snapshots.iter().enumerate() {
                         let (index, bytes) = snapshot.parts();
+                        let mut filter = filter.clone();
+                        filter.query = filter
+                            .query
+                            .as_ref()
+                            .map(|q| q.for_source(&source_names[file]));
                         let outcome = filter::evaluate(&filter, index, bytes, &ticket)?;
                         rows.extend(
                             outcome
@@ -2627,7 +2657,7 @@ impl LogView {
                                 .follows_newest()
                                 .then(|| self.newest())
                                 .flatten(),
-                            ..self.filter.clone()
+                            ..self.filter_for_source(source)
                         };
                         filter::evaluate_range(&filter, data.index(), data.bytes(), entries)
                     }
@@ -2662,7 +2692,12 @@ impl LogView {
             return range.len();
         }
         let added = match self.data() {
-            Some(data) => filter::evaluate_range(&self.filter, data.index(), data.bytes(), range),
+            Some(data) => filter::evaluate_range(
+                &self.filter_for_source(0),
+                data.index(),
+                data.bytes(),
+                range,
+            ),
             None => return 0,
         };
         let count = added.len();
@@ -2875,9 +2910,7 @@ impl LogView {
         let muted = cx.theme().muted_foreground;
         let mono = cx.theme().mono_font_family.clone();
         let chosen = this.selection();
-        let any_marks = !this.marks.is_empty();
         let mark_color = cx.theme().primary;
-        let view = cx.entity().downgrade();
         range
             .map(|position| {
                 let Some((index, source, file, local, entry)) =
@@ -2890,11 +2923,47 @@ impl LogView {
                     return div().into_any_element();
                 };
                 let level = entry.level();
+                let record = file.record(local);
+                let source_name = this.source_name(source);
+                let cell_value = |field: &FieldRef| {
+                    if let FieldRef::Key(key) = field {
+                        return record
+                            .as_ref()
+                            .and_then(|record| record.fields.iter().find(|field| field.key == *key))
+                            .map(FilterValue::from_field)
+                            .unwrap_or(FilterValue::Missing);
+                    }
+                    chips::row_values(
+                        field,
+                        record.as_ref(),
+                        file.raw(local).unwrap_or_default(),
+                        &source_name,
+                    )
+                    .into_iter()
+                    .next()
+                    .unwrap_or(FilterValue::Missing)
+                };
+                let cell_field = |field: FieldRef| {
+                    let column = match &field {
+                        FieldRef::Key(key) => Some(key.clone()),
+                        FieldRef::Source => None,
+                        field => record.as_ref().and_then(|record| {
+                            let role = match field {
+                                FieldRef::Time => Role::Time,
+                                FieldRef::Level => Role::Level,
+                                FieldRef::Message => Role::Message,
+                                FieldRef::Logger => Role::Logger,
+                                _ => unreachable!(),
+                            };
+                            record.role(role).map(|field| field.key.clone())
+                        }),
+                    };
+                    (field, column)
+                };
                 let cells: Vec<Option<String>> =
                     if columns.is_empty() {
                         Vec::new()
                     } else {
-                        let record = file.record(local);
                         columns
                             .iter()
                             .map(|key| {
@@ -2906,7 +2975,7 @@ impl LogView {
                             })
                             .collect()
                     };
-                let row = row_text(file, local);
+                let row = row_text_record(file, local, record.as_ref());
                 let lines = row.lines;
                 let selected = chosen.as_ref().is_some_and(|rows| rows.contains(&position));
                 let marked = this.marks.contains(&(source, local));
@@ -2928,7 +2997,6 @@ impl LogView {
                         )
                     })
                     .collect::<Vec<_>>();
-                let menu_view = view.clone();
                 h_flex()
                     .id(("log-row", index))
                     .relative()
@@ -2969,36 +3037,6 @@ impl LogView {
                             this.select(index, false, window, cx)
                         }
                     }))
-                    .context_menu(move |menu, _, _| {
-                        use gpui_component::menu::PopupMenuItem;
-                        let item = |label: &str,
-                                    run: fn(
-                            &mut LogView,
-                            usize,
-                            &mut Window,
-                            &mut Context<LogView>,
-                        )| {
-                            let view = menu_view.clone();
-                            PopupMenuItem::new(label.to_owned()).on_click(move |_, window, cx| {
-                                let _ = view.update(cx, |this, cx| run(this, index, window, cx));
-                            })
-                        };
-                        menu.item(item(
-                            if marked { "Remove mark" } else { "Mark row" },
-                            |this, index, _, cx| this.toggle_mark_at(index, cx),
-                        ))
-                        .separator()
-                        .item(item("Next mark", |this, index, window, cx| {
-                            this.step_mark_from(index, true, window, cx)
-                        }))
-                        .item(item("Previous mark", |this, index, window, cx| {
-                            this.step_mark_from(index, false, window, cx)
-                        }))
-                        .item(
-                            item("Clear all marks", |this, _, _, cx| this.clear_marks(cx))
-                                .disabled(!any_marks),
-                        )
-                    })
                     // Several files: a colour stripe and the file's name (#1160).
                     .when(merged, |row| {
                         row.child(
@@ -3017,7 +3055,14 @@ impl LogView {
                             .font_family(mono.clone())
                             .text_size(px(12.))
                             .text_color(muted)
-                            .child(row.time),
+                            .child(this.filterable_cell(
+                                div().child(row.time).into_any_element(),
+                                format!("log-time-cell-{index}"),
+                                cell_field(FieldRef::Time),
+                                cell_value(&FieldRef::Time),
+                                index,
+                                cx,
+                            )),
                     )
                     .when(merged, |row| {
                         row.child(
@@ -3027,7 +3072,14 @@ impl LogView {
                                 .truncate()
                                 .text_size(px(12.))
                                 .text_color(muted)
-                                .child(this.source_name(source)),
+                                .child(this.filterable_cell(
+                                    div().child(this.source_name(source)).into_any_element(),
+                                    format!("log-source-cell-{index}"),
+                                    cell_field(FieldRef::Source),
+                                    FilterValue::string(&this.source_name(source)),
+                                    index,
+                                    cx,
+                                )),
                         )
                     })
                     .child(
@@ -3040,7 +3092,14 @@ impl LogView {
                             .when(level == Level::Fatal, |badge| {
                                 badge.font_weight(FontWeight::BOLD)
                             })
-                            .child(level.badge()),
+                            .child(this.filterable_cell(
+                                div().child(level.badge()).into_any_element(),
+                                format!("log-level-cell-{index}"),
+                                cell_field(FieldRef::Level),
+                                cell_value(&FieldRef::Level),
+                                index,
+                                cx,
+                            )),
                     )
                     // Field columns (#1167), before the message.
                     .children(
@@ -3065,7 +3124,14 @@ impl LogView {
                                         Some(Tone::Warning) => palette.warning,
                                         None => palette.text,
                                     })
-                                    .child(value)
+                                    .child(this.filterable_cell(
+                                        div().child(value).into_any_element(),
+                                        format!("log-field-cell-{index}-{at}"),
+                                        cell_field(FieldRef::Key(key.clone())),
+                                        cell_value(&FieldRef::Key(key.clone())),
+                                        index,
+                                        cx,
+                                    ))
                             }),
                     )
                     .child(
@@ -3077,7 +3143,20 @@ impl LogView {
                             .when(level == Level::Unparsed, |text| {
                                 text.font_family(mono.clone())
                             })
-                            .child(StyledText::new(row.text).with_highlights(highlights)),
+                            .child(
+                                this.filterable_cell(
+                                    div()
+                                        .child(
+                                            StyledText::new(row.text).with_highlights(highlights),
+                                        )
+                                        .into_any_element(),
+                                    format!("log-message-cell-{index}"),
+                                    cell_field(FieldRef::Message),
+                                    cell_value(&FieldRef::Message),
+                                    index,
+                                    cx,
+                                ),
+                            ),
                     )
                     // A multi-line entry (a stack trace, a crash report) is
                     // one folded row; the detail pane shows every line.
@@ -3287,7 +3366,10 @@ impl LogView {
                     .enumerate()
                     .map(|(position, ((key, value, kind), field))| {
                         let group = SharedString::from(format!("log-field-{position}"));
-                        let term = field_term(&field.key, &field.value);
+                        let term = Expr::Typed {
+                            field: FieldRef::Key(field.key.clone()),
+                            value: FilterValue::from_field(field),
+                        };
                         let present = self.has_term(&term);
                         let field_links: Vec<SourceLocation> = links
                             .iter()
@@ -3355,7 +3437,10 @@ impl LogView {
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.add_field_term(
                                                     &field_key,
-                                                    &field_value,
+                                                    FilterValue::Value {
+                                                        kind,
+                                                        text: field_value.clone(),
+                                                    },
                                                     window,
                                                     cx,
                                                 )
@@ -3920,10 +4005,12 @@ impl LogView {
             }
             cx.notify();
         };
-        let query = match SavedQuery::capture(&name, &self.filter) {
+        let mut query = match SavedQuery::capture(&name, &self.filter) {
             Ok(query) => query,
             Err(error) => return fail(self, error.to_string(), cx),
         };
+        query.filter_chips = self.filter_ui.chips.clone();
+        query.columns = Some(self.columns(cx));
         if !reader_ui_state::installed(cx) {
             return fail(
                 self,
@@ -3983,6 +4070,20 @@ impl LogView {
             }
         };
         self.request_back = None;
+        let (parsed_chips, advanced) = filter
+            .query
+            .as_ref()
+            .map(chips::split_query)
+            .unwrap_or_default();
+        self.filter_ui.chips = if saved.filter_chips.is_empty() {
+            parsed_chips
+        } else {
+            saved.filter_chips.clone()
+        };
+        self.filter_ui.advanced = advanced;
+        if let (Some(key), Some(columns)) = (self.history_key(), saved.columns.clone()) {
+            reader_ui_state::set_log_columns(&key, columns, cx);
+        }
         let query_text = filter
             .query
             .as_ref()
@@ -4077,7 +4178,7 @@ impl LogView {
             .iter()
             .map(|query| query.name.clone())
             .collect();
-        let can_save = self.filter.is_active();
+        let can_save = self.filter.is_active() || !self.filter_ui.chips.is_empty();
         bar_button("log-saved", false)
             .icon(IconName::Star)
             .tooltip("Saved filters")
@@ -4652,7 +4753,7 @@ impl Render for LogView {
                 )
         };
         // Column titles above the rows, on the rows' grid (#1167).
-        let list = if columns.is_empty() || count == 0 {
+        let list = if !has_entries {
             list.into_any_element()
         } else {
             let merged = self.merge.is_some();
@@ -4677,11 +4778,31 @@ impl Render for LogView {
                         .text_size(px(12.))
                         .text_color(muted)
                         .when(merged, |row| row.child(div().flex_none().w(px(3.))))
-                        .child(div().flex_none().w(px(92.)).child("Time"))
+                        .child(div().flex_none().w(px(92.)).child(self.filter_popover(
+                            "log-time-filter".into(),
+                            "Time".into(),
+                            FieldRef::Time,
+                            None,
+                            cx,
+                        )))
                         .when(merged, |row| {
-                            row.child(div().flex_none().w(px(SOURCE_NAME_WIDTH)).child("File"))
+                            row.child(div().flex_none().w(px(SOURCE_NAME_WIDTH)).child(
+                                self.filter_popover(
+                                    "log-source-filter".into(),
+                                    "File".into(),
+                                    FieldRef::Source,
+                                    None,
+                                    cx,
+                                ),
+                            ))
                         })
-                        .child(div().flex_none().w(px(28.)))
+                        .child(div().flex_none().w(px(28.)).child(self.filter_popover(
+                            "log-level-filter".into(),
+                            "Lv".into(),
+                            FieldRef::Level,
+                            None,
+                            cx,
+                        )))
                         .children(columns.iter().enumerate().map(|(at, key)| {
                             let column = key.clone();
                             h_flex()
@@ -4690,7 +4811,13 @@ impl Render for LogView {
                                 .flex_none()
                                 .w(px(self.width_of(key, cx)))
                                 .gap_1()
-                                .child(div().min_w_0().truncate().child(key.clone()))
+                                .child(div().min_w_0().truncate().child(self.filter_popover(
+                                    format!("log-header-filter-{at}").into(),
+                                    key.clone(),
+                                    FieldRef::Key(key.clone()),
+                                    None,
+                                    cx,
+                                )))
                                 .child(
                                     Button::new(("log-remove-column", at))
                                         .ghost()
@@ -4718,7 +4845,13 @@ impl Render for LogView {
                                         }),
                                 )
                         }))
-                        .child(div().flex_1().child("Message"))
+                        .child(div().flex_1().child(self.filter_popover(
+                            "log-message-filter".into(),
+                            "Message".into(),
+                            FieldRef::Message,
+                            None,
+                            cx,
+                        )))
                         .on_drag_move(cx.listener(
                             |this, event: &DragMoveEvent<ColumnDrag>, _, cx| {
                                 let at = event.drag(cx).0;
@@ -4788,6 +4921,7 @@ impl Render for LogView {
                     .text_color(brand::palette(cx).danger)
                     .child(error)
             }))
+            .children(self.render_chip_bar(cx))
             .children(self.render_saving(cx))
             .children(self.render_histogram(cx))
             .children(self.render_reset(cx))
@@ -4799,6 +4933,7 @@ impl Render for LogView {
                 cx,
             ))
             .child(self.render_status(cx))
+            .children(self.render_cell_menu())
     }
 }
 
@@ -4954,19 +5089,6 @@ fn column_tone(key: &str, value: &str) -> Option<Tone> {
     None
 }
 
-/// The query term a detail-pane field adds: the raw key equals the value as
-/// text, which is what the field shows (#1158).
-fn field_term(key: &str, value: &str) -> Expr {
-    Expr::Field {
-        field: FieldRef::Key(key.to_owned()),
-        test: Test::Eq(Literal {
-            text: value.to_owned(),
-            number: None,
-        }),
-        include_absent: false,
-    }
-}
-
 /// "N of M" once a filter has produced rows. Nothing while no filter runs,
 /// and nothing for an empty result: the list says that itself.
 fn match_counter(matched: Option<usize>, total: usize, filtering: bool) -> Option<String> {
@@ -4993,7 +5115,12 @@ pub(crate) struct RowText {
     pub lines: usize,
 }
 
+#[cfg(test)]
 pub(crate) fn row_text(file: &dyn LogData, index: usize) -> RowText {
+    row_text_record(file, index, file.record(index).as_ref())
+}
+
+fn row_text_record(file: &dyn LogData, index: usize, record: Option<&Record>) -> RowText {
     let raw = file.raw(index).unwrap_or_default();
     let time = file
         .index()
@@ -5002,7 +5129,7 @@ pub(crate) fn row_text(file: &dyn LogData, index: usize) -> RowText {
         .map(timestamp::clock_utc)
         .unwrap_or_default();
     let mut row = RowBuilder::default();
-    match file.record(index) {
+    match record {
         Some(record) => {
             if let Some(logger) = record.role(Role::Logger) {
                 row.push(&logger.value, true);
@@ -5202,7 +5329,19 @@ impl Reader {
                 return;
             }
         };
-        let view = cx.new(|cx| LogView::ready(document, window, cx));
+        let filters = self
+            .file_preview
+            .as_ref()
+            .filter(|previous| previous.path == document.file.path())
+            .and_then(|previous| previous.log.as_ref())
+            .map(|previous| previous.read(cx).filter_view_state());
+        let view = cx.new(|cx| {
+            let mut view = LogView::ready(document, window, cx);
+            if let Some(filters) = filters {
+                view.restore_filter_view(filters, window, cx);
+            }
+            view
+        });
         view.read(cx).focus_handle().clone().focus(window, cx);
         preview.log = Some(view);
         self.file_preview = Some(preview);
@@ -5240,6 +5379,7 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("reader_log/filter_tests.rs");
     use ::core::prelude::v1::test;
 
     // GPUI's TestPlatform::quit is a no-op. Explicit shutdown also runs the
@@ -5793,20 +5933,21 @@ mod tests {
     /// back to the same term, quoting what a bare word cannot carry.
     #[test]
     fn field_terms_are_query_text() {
-        for (key, value, text) in [
-            (
-                "kubernetes.pod_name",
-                "checkout-api-85b4",
-                "kubernetes.pod_name = checkout-api-85b4",
-            ),
-            ("status", "500", r#"status = "500""#),
-            ("level", "NOTICE", r#""level" = NOTICE"#),
-            ("msg", "a \"b\"\nc", r#""msg" = "a \"b\"\nc""#),
-            ("symbol", "FDAX Z6", r#"symbol = "FDAX Z6""#),
+        for (key, value) in [
+            ("sample.path", "synthetic-85b4"),
+            ("sample", "500"),
+            ("level", "NOTICE"),
+            ("msg", "a \"b\"\nc"),
+            ("@time", "space : \\ λ"),
         ] {
-            let term = field_term(key, value);
-            assert_eq!(term.to_string(), text);
-            assert_eq!(Query::parse(text).unwrap().expr(), &term, "{text}");
+            let term = FilterChip::new(
+                FieldRef::Key(key.into()),
+                vec![FilterValue::string(value)],
+                FilterMode::Include,
+            )
+            .expr();
+            let text = term.to_string();
+            assert_eq!(Query::parse(&text).unwrap().expr(), &term, "{text}");
         }
     }
 
@@ -5965,7 +6106,15 @@ mod tests {
         visual.run_until_parked();
         view.update_in(visual, |view, window, cx| view.select(3, true, window, cx));
         view.update_in(visual, |view, window, cx| {
-            view.add_field_term("status", "500", window, cx)
+            view.add_field_term(
+                "status",
+                FilterValue::Value {
+                    kind: ValueKind::Number,
+                    text: "500".into(),
+                },
+                window,
+                cx,
+            )
         });
         visual.run_until_parked();
         assert_eq!(shown(&view, visual), [1, 3]);
@@ -6056,25 +6205,25 @@ mod tests {
         type_query(visual, "level>=error");
         assert_eq!(shown(&view, visual), [2, 3]);
         view.update_in(visual, |view, window, cx| {
-            view.add_field_term("pod", "payments-1", window, cx)
+            view.add_field_term("pod", FilterValue::string("payments-1"), window, cx)
         });
         visual.run_until_parked();
         assert_eq!(shown(&view, visual), [3]);
         view.read_with(visual, |view, cx| {
             assert_eq!(
                 view.query_input.read(cx).value().as_ref(),
-                "level >= error and pod = payments-1"
+                r#"level >= error and typed(pod, string, "payments-1")"#
             );
             assert!(view.query_error.is_none());
         });
         // The same field again changes nothing.
         view.update_in(visual, |view, window, cx| {
-            view.add_field_term("pod", "payments-1", window, cx)
+            view.add_field_term("pod", FilterValue::string("payments-1"), window, cx)
         });
         view.read_with(visual, |view, cx| {
             assert_eq!(
                 view.query_input.read(cx).value().as_ref(),
-                "level >= error and pod = payments-1"
+                r#"level >= error and typed(pod, string, "payments-1")"#
             );
         });
 
@@ -6086,7 +6235,10 @@ mod tests {
         let history = visual.update(|_, cx| reader_ui_state::log_queries(&key, cx));
         assert_eq!(
             history,
-            ["status = 200", "level >= error and pod = payments-1"]
+            [
+                "status = 200",
+                r#"level >= error and typed(pod, string, "payments-1")"#
+            ]
         );
         view.update_in(visual, |view, window, cx| {
             view.replace_query(history[1].clone(), window, cx)
@@ -7035,10 +7187,17 @@ mod tests {
         visual.run_until_parked();
         let view = log_view(&reader, visual);
         visual.update(|window, cx| window.draw(cx).clear(cx));
+        // Built-in headers remain available for point-and-click filtering even
+        // before the user chooses any additional field columns (#2389).
         assert!(
-            visual.debug_bounds("log-columns").is_none(),
-            "positive control: no columns yet"
+            visual.debug_bounds("log-columns").is_some(),
+            "built-in filter headers"
         );
+        assert!(
+            visual.debug_bounds("log-column-0").is_none(),
+            "positive control: no field columns yet"
+        );
+        view.read_with(visual, |view, cx| assert!(view.columns(cx).is_empty()));
         // One column from the detail pane with a real click, the rest by key.
         view.update_in(visual, |view, window, cx| view.select(0, true, window, cx));
         visual.run_until_parked();

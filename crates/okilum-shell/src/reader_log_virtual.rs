@@ -517,6 +517,10 @@ impl Panel {
     }
     fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pending) = self.pending.take() {
+            let filters = self
+                .view
+                .as_ref()
+                .map(|view| view.read(cx).filter_view_state());
             let mut files = pending.files.into_iter();
             self.view = files.next().map(|first| {
                 let name = self.applied_name.clone();
@@ -541,7 +545,11 @@ impl Panel {
                         });
                     }
                     view.rebuild_merge();
-                    view.refilter(cx);
+                    if let Some(filters) = filters {
+                        view.restore_filter_view(filters, window, cx);
+                    } else {
+                        view.refilter(cx);
+                    }
                     view
                 })
             });

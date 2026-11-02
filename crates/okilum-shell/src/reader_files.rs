@@ -449,7 +449,19 @@ impl Reader {
                     ));
                 } else if okilum_core::log::is_log_path(&preview.path) {
                     let (rel, path) = (rel.to_owned(), preview.path.clone());
-                    let view = cx.new(|cx| reader_log::LogView::indexing(rel, path, window, cx));
+                    let filters = self
+                        .file_preview
+                        .as_ref()
+                        .filter(|old| old.path == path)
+                        .and_then(|old| old.log.as_ref())
+                        .map(|old| old.read(cx).filter_view_state());
+                    let view = cx.new(|cx| {
+                        let mut view = reader_log::LogView::indexing(rel, path, window, cx);
+                        if let Some(filters) = filters {
+                            view.restore_filter_view(filters, window, cx);
+                        }
+                        view
+                    });
                     view.read(cx).focus_handle().clone().focus(window, cx);
                     preview.log = Some(view);
                 } else if reader_archive::eligible(rel) {

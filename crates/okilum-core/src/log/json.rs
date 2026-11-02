@@ -30,6 +30,17 @@ pub(crate) fn scan<'a>(
     Ok(())
 }
 
+/// Validate a whole container using the same lossless value scanner as records.
+/// This preserves numeric text outside floating-point deserialization ranges.
+pub(crate) fn container_kind(bytes: &[u8]) -> Option<ValueKind> {
+    let mut cursor = Cursor { b: bytes, i: 0 };
+    cursor.ws();
+    let value = cursor.value().ok()?;
+    cursor.ws();
+    (cursor.i == bytes.len() && matches!(value.kind, ValueKind::Array | ValueKind::Object))
+        .then_some(value.kind)
+}
+
 struct Cursor<'a> {
     b: &'a [u8],
     i: usize,

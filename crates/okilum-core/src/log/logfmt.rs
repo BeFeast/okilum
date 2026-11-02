@@ -85,7 +85,7 @@ pub(crate) fn scan<'a>(
     Ok(())
 }
 
-fn bare_kind(raw: &[u8]) -> ValueKind {
+pub(super) fn bare_kind(raw: &[u8]) -> ValueKind {
     match raw {
         b"true" | b"false" => ValueKind::Bool,
         b"null" => ValueKind::Null,

@@ -43,6 +43,10 @@ const PRESETS: [(&str, TimeWindow); 4] = [
 #[serde(default)]
 pub struct SavedQuery {
     pub name: String,
+    /// Point-and-click state, including disabled chips and execution location.
+    pub filter_chips: Vec<super::chips::FilterChip>,
+    /// None for older saved queries that did not capture a column layout.
+    pub columns: Option<Vec<String>>,
     /// The query language text (`level>=warn and status>=500`), as it parses.
     pub query: String,
     /// The free-text filter.
@@ -60,6 +64,8 @@ impl Default for SavedQuery {
     fn default() -> Self {
         Self {
             name: String::new(),
+            filter_chips: Vec::new(),
+            columns: None,
             query: String::new(),
             text: String::new(),
             min_level: String::new(),
@@ -104,6 +110,8 @@ impl SavedQuery {
     pub fn capture(name: &str, filter: &LogFilter) -> Result<Self, NameError> {
         Ok(Self {
             name: clean_name(name)?,
+            filter_chips: Vec::new(),
+            columns: None,
             query: filter
                 .query
                 .as_ref()
