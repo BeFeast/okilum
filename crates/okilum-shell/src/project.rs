@@ -30,6 +30,8 @@ mod feed;
 mod launch;
 #[cfg(target_os = "linux")]
 mod links;
+#[cfg(target_os = "linux")]
+mod message_types;
 mod models;
 #[cfg(target_os = "linux")]
 mod native;
@@ -137,6 +139,8 @@ pub(crate) struct ProjectView {
     feed: Entity<feed::Feed>,
     #[cfg(target_os = "linux")]
     composer: Entity<composer::Composer>,
+    #[cfg(target_os = "linux")]
+    typed: message_types::State,
     #[cfg(target_os = "linux")]
     native: native::Native,
     #[cfg(target_os = "linux")]
@@ -323,6 +327,38 @@ impl ProjectView {
             },
         );
         #[cfg(target_os = "linux")]
+        {
+            cx.subscribe(&composer, |_, _, _: &composer::TypedPanelChanged, cx| {
+                cx.notify()
+            })
+            .detach();
+            cx.subscribe(
+                &composer,
+                |this, _, request: &composer::RetypeRequested, cx| this.typed_retype(request, cx),
+            )
+            .detach();
+            cx.subscribe(
+                &composer,
+                |this, _, opened: &composer::TypedMessageOpened, cx| {
+                    this.typed_open_message(&opened.0, &opened.1, cx)
+                },
+            )
+            .detach();
+            cx.subscribe(
+                &composer,
+                |this, _, request: &composer::TypedReloadRequested, cx| {
+                    if this.typed_scope().as_ref() == Some(&request.0)
+                        && !this.typed_annotation_writing()
+                    {
+                        this.typed_reload_annotations(cx);
+                    }
+                },
+            )
+            .detach();
+            cx.observe(&feed, |this, _, cx| this.typed_sync(cx))
+                .detach();
+        }
+        #[cfg(target_os = "linux")]
         cx.subscribe_in(
             &composer,
             window,
@@ -420,6 +456,8 @@ impl ProjectView {
             feed,
             #[cfg(target_os = "linux")]
             composer,
+            #[cfg(target_os = "linux")]
+            typed: Default::default(),
             #[cfg(target_os = "linux")]
             native,
             #[cfg(target_os = "linux")]
@@ -652,7 +690,8 @@ impl ProjectView {
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(target_os = "linux")]
         if !active {
-            self.draft_flush(cx);
+            self.draft_suspend_typed(cx);
+            self.typed_invalidate(false, cx);
         }
         self.active = active;
         self.sync_resource_lifecycle(cx);
@@ -663,6 +702,7 @@ impl ProjectView {
         self.set_threads_active(active, window, cx);
         #[cfg(target_os = "linux")]
         if active {
+            self.draft_restore(window, cx);
             self.native_start(window, cx);
             if self.threads.enabled && !self.native.active() && self.environment.is_some() {
                 self.native_restore(false, window, cx);
@@ -698,6 +738,12 @@ impl ProjectView {
                 self.attachments.clear();
                 #[cfg(target_os = "linux")]
                 self.draft_flush(cx);
+                #[cfg(target_os = "linux")]
+                {
+                    self.draft_suspend_typed(cx);
+                    self.typed_invalidate(true, cx);
+                    self.typed_clear_pending(window, cx);
+                }
                 #[cfg(target_os = "linux")]
                 {
                     self.set_threads_active(false, window, cx);
@@ -742,6 +788,11 @@ impl ProjectView {
         self.attachments.clear();
         #[cfg(target_os = "linux")]
         self.draft_flush(cx);
+        #[cfg(target_os = "linux")]
+        {
+            self.draft_suspend_typed(cx);
+            self.typed_invalidate(true, cx);
+        }
         self.generation = self.generation.wrapping_add(1);
         self.polling = false;
         self.busy = false;
@@ -1319,15 +1370,39 @@ impl ProjectView {
         let Some(journal) = self.journal() else {
             return;
         };
+        let Some(thread_id) = self.chat.as_ref().map(|chat| chat.thread_id.clone()) else {
+            return;
+        };
+        #[cfg(target_os = "linux")]
+        let draft = self.composer.read(cx).typed_source_text(cx);
+        #[cfg(not(target_os = "linux"))]
         let draft = self.compose.read(cx).value().to_string();
         if retry.is_none() && draft.trim().is_empty() {
             return;
         }
         let is_new = retry.is_none();
+        #[cfg(target_os = "linux")]
+        self.typed_sync(cx);
+        #[cfg(target_os = "linux")]
+        let sent_snapshot = is_new.then(|| self.draft_sent(cx));
+        #[cfg(target_os = "linux")]
+        let typed_capture = if is_new {
+            match self.typed_send_type(&draft, cx) {
+                Ok(capture) => capture,
+                Err(error) => {
+                    self.error = Some(error);
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         self.busy = true;
         self.error = None;
         let generation = self.generation;
         cx.spawn_in(window, async move |this, cx| {
+            #[cfg(not(target_os = "linux"))]
             let sent_text = draft.clone();
             let (result, records, retained_id) = cx
                 .background_executor()
@@ -1336,7 +1411,17 @@ impl ProjectView {
                     let result = (|| {
                         let record = match retry {
                             Some(record) => record,
-                            None => journal.prepare(&draft)?,
+                            None => {
+                                let message = okilum_t3::OutgoingMessage::queue(thread_id, draft);
+                                #[cfg(target_os = "linux")]
+                                let record = match &typed_capture {
+                                    Some(capture) => capture.prepare_mcp(&journal, message)?,
+                                    None => journal.prepare_message(message)?,
+                                };
+                                #[cfg(not(target_os = "linux"))]
+                                let record = journal.prepare_message(message)?;
+                                record
+                            }
                         };
                         retained_id = Some(record.message.client_request_id.clone());
                         journal.send(gateway.as_ref(), &record)
@@ -1355,6 +1440,14 @@ impl ProjectView {
                         Some(&record.message.client_request_id) == retained_id.as_ref()
                     })
                 });
+                #[cfg(target_os = "linux")]
+                if is_new && retained {
+                    if let Some(sent) = &sent_snapshot {
+                        this.draft_clear_after_send(sent, window, cx);
+                    }
+                    this.typed_reload_annotations(cx);
+                }
+                #[cfg(not(target_os = "linux"))]
                 if is_new && retained && this.compose.read(cx).value() == sent_text {
                     this.compose
                         .update(cx, |input, cx| input.set_value("", window, cx));
@@ -1473,6 +1566,7 @@ impl ProjectView {
             .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
         #[cfg(target_os = "linux")]
         let history = {
+            self.typed_sync(cx);
             self.feed
                 .update(cx, |feed, cx| feed.set_controls(enabled, self.busy, cx));
             let native_ready = !self.native.active()
@@ -1487,15 +1581,18 @@ impl ProjectView {
                 composer.set_history_blocked(_pending > 0);
                 composer.set_controls(enabled && native_ready, self.busy, cx)
             });
-            div()
+            h_flex()
                 .debug_selector(|| "project-chat-history".into())
                 .flex_1()
                 .min_h_0()
                 .child(
-                    self.feed
-                        .clone()
-                        .cached(StyleRefinement::default().size_full()),
+                    div().flex_1().min_w_0().h_full().child(
+                        self.feed
+                            .clone()
+                            .cached(StyleRefinement::default().size_full()),
+                    ),
                 )
+                .child(composer::TypedPanelSlot(self.composer.clone()))
         };
         #[cfg(not(target_os = "linux"))]
         let history = {
@@ -1792,7 +1889,17 @@ impl Render for ProjectView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = reader_features::enabled(reader_features::Feature::Agents, cx);
         if !enabled {
+            #[cfg(target_os = "linux")]
+            if self.composer.read(cx).typed_scope().is_some() {
+                self.draft_suspend_typed(cx);
+                self.typed_invalidate(false, cx);
+            }
             return div().into_any_element();
+        }
+        #[cfg(target_os = "linux")]
+        if self.active {
+            self.draft_restore(window, cx);
+            self.typed_sync(cx);
         }
         let mut tabs = h_flex().id("project-sections").gap_2().p_2();
         for (id, label, section) in [

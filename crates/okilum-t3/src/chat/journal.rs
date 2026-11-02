@@ -59,18 +59,29 @@ impl MessageJournal {
     /// Retain a unique identity before any network operation. A failed save
     /// never dispatches a request. Retrying reads this record, never mints an id.
     pub fn prepare(&self, text: &str) -> Result<MessageRecord> {
-        ensure!(!text.trim().is_empty(), "the message is empty");
-        // Refuse to mask damaged retained operations with a new message.
-        self.records()?;
-        std::fs::create_dir_all(&self.directory)?;
+        self.prepare_message(OutgoingMessage::queue(&self.thread_id, text))
+    }
+
+    /// Retain the same preallocated identity whose local typed annotation has
+    /// already been committed. Never mint another ID or replace a collision.
+    pub fn prepare_message(&self, message: OutgoingMessage) -> Result<MessageRecord> {
+        ensure!(!message.text.trim().is_empty(), "the message is empty");
+        ensure!(
+            !message.thread_id.trim().is_empty(),
+            "the manager thread is empty"
+        );
         let record = MessageRecord {
             created_at_millis: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_millis()
                 .try_into()?,
-            message: OutgoingMessage::queue(&self.thread_id, text),
+            message,
             receipt: None,
         };
+        self.validate(&record)?;
+        // Refuse to mask damaged retained operations with a new message.
+        self.records()?;
+        std::fs::create_dir_all(&self.directory)?;
         let path = self.path(&record)?;
         let payload = serde_json::to_vec(&record)?;
         publish(&path, |file| file.write_all(&payload))?;
@@ -177,6 +188,63 @@ fn sync_directory(directory: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn journal() -> (PathBuf, MessageJournal) {
+        let state = std::env::temp_dir().join(format!("okilum-journal-{}", uuid::Uuid::new_v4()));
+        let environment = Environment::new("fixture", "https://journal.invalid").unwrap();
+        let journal = MessageJournal::new(&state, &environment, "mcp:fixture-manager");
+        (state, journal)
+    }
+
+    #[test]
+    fn typed_1478_preallocated_message_retains_exact_identity_and_never_replaces_a_collision() {
+        let (state, journal) = journal();
+        let message = OutgoingMessage::queue("mcp:fixture-manager", "FR:  original\r\n🧠 ");
+        let record = journal.prepare_message(message.clone()).unwrap();
+        assert_eq!(record.message, message);
+        let path = journal.path(&record).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        // Even an identical prepare is create-only: retry uses the retained
+        // record rather than publishing a second intent with a new timestamp.
+        assert!(journal.prepare_message(message.clone()).is_err());
+        let mut changed = message.clone();
+        changed.text.push_str("different");
+        assert!(journal.prepare_message(changed).is_err());
+        let mut foreign = message;
+        foreign.thread_id = "mcp:another-manager".into();
+        assert!(journal.prepare_message(foreign).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        assert_eq!(journal.records().unwrap(), vec![record]);
+        assert_eq!(std::fs::read_dir(&journal.directory).unwrap().count(), 1);
+        std::fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn typed_1478_invalid_preallocated_identity_or_text_never_creates_a_directory() {
+        let (state, journal) = journal();
+        for id in ["", "okilum-not-a-uuid", "../escape", "okilum-../../escape"] {
+            let mut message = OutgoingMessage::queue("mcp:fixture-manager", "body");
+            message.client_request_id = id.into();
+            assert!(journal.prepare_message(message).is_err(), "{id:?}");
+            assert!(!state.exists());
+        }
+        for (thread, text) in [
+            ("another-manager", "body"),
+            ("", "body"),
+            ("mcp:fixture-manager", " \n\t"),
+        ] {
+            assert!(journal
+                .prepare_message(OutgoingMessage::queue(thread, text))
+                .is_err());
+            assert!(!state.exists());
+        }
+        // Positive control: the legacy entry point still mints one identity
+        // and publishes the same lossless text through the shared path.
+        let record = journal.prepare("  legacy\r\nbody  ").unwrap();
+        assert_eq!(record.message.text, "  legacy\r\nbody  ");
+        assert_eq!(journal.records().unwrap(), vec![record]);
+        std::fs::remove_dir_all(state).unwrap();
+    }
 
     #[test]
     fn a_partial_write_never_publishes_a_broken_intent() {

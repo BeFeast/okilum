@@ -3,6 +3,65 @@ use super::*;
 use crate::project::design;
 use gpui_component::{button::ButtonCustomVariant, ThemeStyled as _};
 pub(super) mod history;
+use super::message_types::{
+    corrected_message_with_author, filtered_messages, DraftMetadata, TypedDraft,
+};
+use okilum_t3::message_types::{
+    DecisionMeaning, Message as TypedMessage, MessageKey, MessageType, Metadata as TypeMetadata,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TypedScope {
+    pub environment: String,
+    pub project: String,
+    pub thread: String,
+    /// Visible composer lease; never persisted or transported.
+    pub generation: u64,
+}
+/// Parent saves this local payload with text/attachments under the same durable
+/// conversation identity and revision. It must never enter a T3 wire request.
+pub(super) struct TypedDraftChanged {
+    pub scope: TypedScope,
+    pub text: String,
+    pub metadata: DraftMetadata,
+}
+impl EventEmitter<TypedDraftChanged> for Composer {}
+/// Full expected source for revision-aware correction. Parent persists first,
+/// then supplies the acknowledged projection through set_typed_messages.
+pub(super) struct RetypeRequested {
+    pub scope: TypedScope,
+    pub expected: TypedMessage,
+    pub replacement: TypedMessage,
+}
+impl EventEmitter<RetypeRequested> for Composer {}
+pub(super) struct TypedMessageOpened(pub TypedScope, pub TypedMessage);
+impl EventEmitter<TypedMessageOpened> for Composer {}
+pub(super) struct TypedReloadRequested(pub TypedScope);
+impl EventEmitter<TypedReloadRequested> for Composer {}
+pub(super) struct TypedPanelChanged;
+impl EventEmitter<TypedPanelChanged> for Composer {}
+
+#[cfg(test)]
+mod typed_1478_tests;
+
+fn type_icon(kind: MessageType) -> IconName {
+    match kind {
+        MessageType::Chat => IconName::Bot,
+        MessageType::FeatureRequest => IconName::Star,
+        MessageType::Bug => IconName::TriangleAlert,
+        MessageType::Decision => IconName::Replace,
+        MessageType::Status => IconName::Info,
+    }
+}
+/// Parent places this slot next to the chat feed, observing TypedPanelChanged.
+#[derive(IntoElement)]
+pub(super) struct TypedPanelSlot(pub Entity<Composer>);
+impl RenderOnce for TypedPanelSlot {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.0
+            .update(cx, |composer, cx| composer.render_typed_panel(cx))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Mode {
@@ -102,6 +161,15 @@ pub(super) struct Composer {
     history_position: Option<history::Position>,
     history_blocked: bool,
     _input: Subscription,
+    _typed_input: Option<Subscription>,
+    typed_scope: Option<TypedScope>,
+    typed_draft: TypedDraft,
+    typed_messages: Vec<TypedMessage>,
+    typed_authors: std::collections::HashMap<MessageKey, okilum_t3::message_types::Author>,
+    typed_filter: Option<MessageType>,
+    typed_panel_open: bool,
+    typed_error: Option<String>,
+    typed_edit_ready: bool,
 }
 impl Composer {
     pub(super) fn new(input: Entity<TextareaState>, cx: &mut Context<Self>) -> Self {
@@ -140,7 +208,587 @@ impl Composer {
             history_position: None,
             history_blocked: false,
             _input: subscription,
+            _typed_input: None,
+            typed_scope: None,
+            typed_draft: TypedDraft::default(),
+            typed_messages: Vec::new(),
+            typed_authors: Default::default(),
+            typed_filter: None,
+            typed_panel_open: false,
+            typed_error: None,
+            typed_edit_ready: false,
         }
+    }
+    /// Invoke atomically on conversation activation/restoration, before editing
+    /// or sending. Legacy drafts use None. A malformed draft leaves current
+    /// state intact so the parent can surface recovery rather than overwrite it.
+    pub(super) fn restore_typed_context(
+        &mut self,
+        scope: TypedScope,
+        text: String,
+        retained: Option<DraftMetadata>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let draft = match retained {
+            Some(retained) => TypedDraft::restore_metadata(text, retained)?,
+            None => TypedDraft::from_text(text),
+        };
+        self.typed_scope = Some(scope);
+        self.typed_draft = draft;
+        self.typed_messages.clear();
+        self.typed_authors.clear();
+        self.typed_filter = None;
+        self.typed_panel_open = false;
+        self.typed_error = None;
+        self.typed_edit_ready = false;
+        self.input.update(cx, |input, cx| {
+            input.set_value(self.typed_draft.visible_text().to_owned(), window, cx)
+        });
+        if self._typed_input.is_none() {
+            self._typed_input = Some(cx.subscribe_in(
+                &self.input,
+                window,
+                |this, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::Change) && this.typed_scope.is_some() {
+                        this.sync_typed_input(window, cx);
+                        this.publish_typed_draft(cx);
+                    }
+                },
+            ));
+        }
+        cx.emit(TypedPanelChanged);
+        cx.notify();
+        Ok(())
+    }
+    /// Called before switching away, clearing a connection, or disabling Agents.
+    pub(super) fn clear_typed_context(&mut self, cx: &mut Context<Self>) {
+        self.typed_scope = None;
+        self.typed_draft = TypedDraft::default();
+        self.typed_messages.clear();
+        self.typed_authors.clear();
+        self.typed_panel_open = false;
+        self.typed_error = None;
+        self.typed_edit_ready = false;
+        cx.emit(TypedPanelChanged);
+        cx.notify();
+    }
+    /// Original token bytes plus the current visible body. Parent uses this for
+    /// send and durable capture instead of reading the pill-stripped textarea.
+    pub(super) fn typed_source_text(&self, cx: &App) -> String {
+        if self.typed_scope.is_none() {
+            return self.input.read(cx).value().to_string();
+        }
+        let mut draft = self.typed_draft.clone();
+        draft.edit_body(self.input.read(cx).value().as_str());
+        draft.text
+    }
+    pub(super) fn typed_has_authored_metadata(&self) -> bool {
+        self.typed_scope.is_some()
+            && (self.typed_draft.selection.is_some() || self.typed_draft.conversion_suppressed)
+    }
+    /// Replace the source under the current exact owner without resetting
+    /// panel state or reparsing an existing pill as an ordinary body edit.
+    pub(super) fn replace_typed_draft(
+        &mut self,
+        text: String,
+        metadata: Option<DraftMetadata>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let draft = match metadata {
+            Some(metadata) => TypedDraft::restore_metadata(text, metadata)?,
+            None => TypedDraft::from_text(text),
+        };
+        self.typed_draft = draft;
+        self.input.update(cx, |input, cx| {
+            input.set_value(self.typed_draft.visible_text().to_owned(), window, cx)
+        });
+        cx.notify();
+        Ok(())
+    }
+    pub(super) fn typed_metadata(&self) -> Option<TypeMetadata> {
+        self.typed_scope.as_ref()?;
+        self.typed_draft.selection
+    }
+    pub(super) fn typed_draft_metadata(&self) -> DraftMetadata {
+        self.typed_draft.retained_metadata()
+    }
+    pub(super) fn set_typed_messages(
+        &mut self,
+        scope: &TypedScope,
+        messages: Vec<TypedMessage>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.typed_scope.as_ref() != Some(scope) {
+            return;
+        }
+        self.typed_messages = messages
+            .into_iter()
+            .filter(|message| {
+                message.key.environment == scope.environment
+                    && message.key.project == scope.project
+                    && message.key.thread == scope.thread
+            })
+            .collect();
+        cx.emit(TypedPanelChanged);
+        cx.notify();
+    }
+    pub(super) fn set_typed_sources(
+        &mut self,
+        scope: &TypedScope,
+        messages: Vec<TypedMessage>,
+        authors: std::collections::HashMap<MessageKey, okilum_t3::message_types::Author>,
+        ready: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.typed_scope.as_ref() != Some(scope) {
+            return;
+        }
+        self.typed_authors = authors;
+        self.typed_edit_ready = ready;
+        self.set_typed_messages(scope, messages, cx);
+    }
+    pub(super) fn typed_scope(&self) -> Option<&TypedScope> {
+        self.typed_scope.as_ref()
+    }
+    pub(super) fn typed_write_succeeded(&mut self, scope: &TypedScope, cx: &mut Context<Self>) {
+        if self.typed_scope.as_ref() == Some(scope) {
+            self.typed_error = None;
+            cx.emit(TypedPanelChanged);
+            cx.notify();
+        }
+    }
+    pub(super) fn typed_write_failed(
+        &mut self,
+        scope: &TypedScope,
+        error: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.typed_scope.as_ref() == Some(scope) {
+            self.typed_error = Some(error);
+            cx.emit(TypedPanelChanged);
+            cx.notify();
+        }
+    }
+    fn publish_typed_draft(&self, cx: &mut Context<Self>) {
+        if let Some(scope) = self.typed_scope.clone() {
+            cx.emit(TypedDraftChanged {
+                scope,
+                text: self.typed_draft.text.clone(),
+                metadata: self.typed_draft.retained_metadata(),
+            });
+        }
+        cx.notify();
+    }
+    fn sync_typed_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.typed_draft
+            .edit_body(self.input.read(cx).value().as_str());
+        if !self.input.read(cx).ime_settling(cx) && self.typed_draft.detect_token() {
+            let body = self.typed_draft.visible_text().to_owned();
+            self.input.update(cx, |input, cx| {
+                input.set_value(body.clone(), window, cx);
+                input.set_selected_range(body.len()..body.len(), cx);
+            });
+        }
+    }
+    fn undo_type_token(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.typed_draft
+            .edit_body(self.input.read(cx).value().as_str());
+        if !self.typed_draft.undo_token() {
+            return false;
+        }
+        self.input.update(cx, |input, cx| {
+            input.set_value(self.typed_draft.source_text().to_owned(), window, cx);
+            input.set_selected_range(0..0, cx);
+        });
+        self.publish_typed_draft(cx);
+        true
+    }
+    fn render_type_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.typed_scope.is_none() {
+            return div().into_any_element();
+        }
+        let mut row = h_flex()
+            .flex_wrap()
+            .gap(px(4.))
+            .debug_selector(|| "project-type-controls".into());
+        for kind in MessageType::ALL {
+            let painted_scope = self.typed_scope.clone();
+            let selected = self
+                .typed_draft
+                .selection
+                .map_or(kind == MessageType::Chat, |selection| {
+                    selection.kind == kind
+                });
+            row = row.child(
+                Button::new(SharedString::from(format!("project-type-{}", kind.label())))
+                    .debug_selector(move || format!("project-type-{}", kind.label()))
+                    .ghost()
+                    .small()
+                    .label(kind.label())
+                    .child(Icon::new(type_icon(kind)).small())
+                    .selected(selected)
+                    .toggled(selected)
+                    .accessibility_label(format!("Message type: {}", kind.label()))
+                    .disabled(!self.enabled || self.busy)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.typed_scope != painted_scope {
+                            return;
+                        }
+                        this.sync_typed_input(window, cx);
+                        this.typed_draft.select(kind);
+                        this.publish_typed_draft(cx);
+                        this.input.read(cx).focus_handle(cx).focus(window, cx);
+                    })),
+            );
+        }
+        if self.typed_draft.has_token_pill() {
+            let painted_scope = self.typed_scope.clone();
+            row = row.child(
+                Button::new("project-type-undo")
+                    .debug_selector(|| "project-type-undo".into())
+                    .ghost()
+                    .small()
+                    .label("Undo token")
+                    .child(Icon::new(IconName::Undo2).small())
+                    .disabled(self.busy)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.typed_scope != painted_scope {
+                            return;
+                        }
+                        this.undo_type_token(window, cx);
+                    })),
+            );
+        }
+        let painted_scope = self.typed_scope.clone();
+        row.child(
+            Button::new("project-type-panel")
+                .debug_selector(|| "project-type-panel".into())
+                .ghost()
+                .small()
+                .label("Project items")
+                .child(Icon::new(IconName::PanelRight).small())
+                .selected(self.typed_panel_open)
+                .toggled(self.typed_panel_open)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.typed_scope != painted_scope {
+                        return;
+                    }
+                    this.typed_panel_open = !this.typed_panel_open;
+                    cx.emit(TypedPanelChanged);
+                    cx.notify();
+                })),
+        )
+        .into_any_element()
+    }
+    /// The main chat keeps this one-line source link instead of losing typed
+    /// items when the structured panel is filtered or closed.
+    pub(super) fn render_typed_chat_chip(
+        &self,
+        key: &MessageKey,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(message) = self
+            .typed_messages
+            .iter()
+            .find(|message| &message.key == key)
+        else {
+            return div().into_any_element();
+        };
+        let Some(metadata) = message
+            .metadata
+            .filter(|metadata| metadata.kind != MessageType::Chat)
+        else {
+            return div().into_any_element();
+        };
+        let kind = metadata.kind;
+        let key = key.clone();
+        let opened = message.clone();
+        let painted_scope = self.typed_scope.clone();
+        Button::new(SharedString::from(format!(
+            "typed-chip-{}:{}:{}",
+            key.thread.len(),
+            key.thread,
+            key.message
+        )))
+        .ghost()
+        .small()
+        .label(format!("{} → project item", kind.label()))
+        .child(Icon::new(type_icon(kind)).small())
+        .on_click(cx.listener(move |this, _, _, cx| {
+            if this.typed_scope != painted_scope {
+                return;
+            }
+            this.typed_panel_open = true;
+            this.typed_filter = Some(kind);
+            if let Some(scope) = painted_scope.clone() {
+                cx.emit(TypedMessageOpened(scope, opened.clone()));
+            }
+            cx.emit(TypedPanelChanged);
+            cx.notify();
+        }))
+        .into_any_element()
+    }
+    fn render_typed_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.typed_panel_open || self.typed_scope.is_none() {
+            return div().into_any_element();
+        }
+        let mut tabs = h_flex().gap(px(4.)).flex_wrap();
+        for filter in [
+            None,
+            Some(MessageType::FeatureRequest),
+            Some(MessageType::Bug),
+            Some(MessageType::Decision),
+            Some(MessageType::Status),
+            Some(MessageType::Chat),
+        ] {
+            let label = filter.map_or("All", MessageType::label);
+            let painted_scope = self.typed_scope.clone();
+            tabs = tabs.child(
+                Button::new(SharedString::from(format!("project-type-filter-{label}")))
+                    .debug_selector(move || {
+                        format!("typed-filter-{}", filter.map_or("All", MessageType::label))
+                    })
+                    .ghost()
+                    .small()
+                    .label(label)
+                    .selected(self.typed_filter == filter)
+                    .toggled(self.typed_filter == filter)
+                    .when_some(filter, |button, kind| {
+                        button.child(Icon::new(type_icon(kind)).small())
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.typed_scope != painted_scope {
+                            return;
+                        }
+                        this.typed_filter = filter;
+                        cx.emit(TypedPanelChanged);
+                        cx.notify();
+                    })),
+            );
+        }
+        let mut cards = v_flex()
+            .id("project-typed-cards")
+            .gap(px(8.))
+            .overflow_y_scroll()
+            .min_h_0()
+            .flex_1();
+        let mut count = 0;
+        let scope = self.typed_scope.as_ref().expect("checked above");
+        for message in filtered_messages(
+            &self.typed_messages,
+            &scope.environment,
+            &scope.project,
+            self.typed_filter,
+        ) {
+            let kind = message
+                .metadata
+                .map_or(MessageType::Chat, |metadata| metadata.kind);
+            count += 1;
+            let opened = message.clone();
+            let source_scope = scope.clone();
+            let expected = message.clone();
+            let mut correction = h_flex().flex_wrap().gap(px(4.));
+            for new_kind in MessageType::ALL {
+                let expected = expected.clone();
+                let painted_scope = scope.clone();
+                correction = correction.child(
+                    Button::new(SharedString::from(format!(
+                        "retype-{}-{count}",
+                        new_kind.label()
+                    )))
+                    .debug_selector(move || format!("typed-retype-{count}-{}", new_kind.label()))
+                    .ghost()
+                    .small()
+                    .label(new_kind.label())
+                    .child(Icon::new(type_icon(new_kind)).small())
+                    .selected(kind == new_kind)
+                    .toggled(kind == new_kind)
+                    .disabled(
+                        !self.typed_edit_ready
+                            || (message.metadata.is_none()
+                                && !self.typed_authors.contains_key(&message.key))
+                            || kind == new_kind
+                            || self.busy,
+                    )
+                    .tooltip(
+                        if message.metadata.is_none()
+                            && !self.typed_authors.contains_key(&message.key)
+                        {
+                            "Type correction unavailable: source author is unknown".to_owned()
+                        } else {
+                            format!("Change type to {}", new_kind.label())
+                        },
+                    )
+                    .accessibility_label(format!("Retype message as {}", new_kind.label()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.typed_scope.as_ref() != Some(&painted_scope) {
+                            return;
+                        }
+                        match corrected_message_with_author(
+                            &this.typed_messages,
+                            &expected,
+                            new_kind,
+                            this.typed_authors.get(&expected.key).copied(),
+                        ) {
+                            Ok(replacement) => {
+                                if let Some(scope) = this.typed_scope.clone() {
+                                    cx.emit(RetypeRequested {
+                                        scope,
+                                        expected: expected.clone(),
+                                        replacement,
+                                    });
+                                }
+                            }
+                            Err(error) => {
+                                this.typed_error = Some(error.into());
+                                cx.emit(TypedPanelChanged);
+                                cx.notify();
+                            }
+                        }
+                    })),
+                );
+            }
+            let meaning = message
+                .metadata
+                .and_then(|metadata| metadata.decision_meaning())
+                .map(|meaning| match meaning {
+                    DecisionMeaning::RecordedDecision => "Recorded decision",
+                    DecisionMeaning::AwaitingAnswer => "Awaiting your answer",
+                });
+            cards = cards.child(
+                v_flex()
+                    .gap(px(8.))
+                    .p(px(12.))
+                    .border_1()
+                    .border_color(brand::palette(cx).border_subtle)
+                    .rounded(px(8.))
+                    .child(
+                        Button::new(SharedString::from(format!("typed-source-{count}")))
+                            .debug_selector(move || format!("typed-source-{count}"))
+                            .ghost()
+                            .small()
+                            .label(format!("{} · View message", kind.label()))
+                            .child(Icon::new(type_icon(kind)).small())
+                            .tooltip("Open original chat message")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.typed_scope.as_ref() == Some(&source_scope) {
+                                    cx.emit(TypedMessageOpened(
+                                        source_scope.clone(),
+                                        opened.clone(),
+                                    ));
+                                }
+                            })),
+                    )
+                    .when_some(message.metadata, |card, metadata| {
+                        use okilum_t3::message_types::{Author, Provenance};
+                        let origin = match metadata.author {
+                            Author::User => "From you",
+                            Author::Manager => "From manager",
+                        };
+                        let source = match metadata.provenance {
+                            Provenance::ExplicitToken => "typed token",
+                            Provenance::ExplicitSelection => "selected type",
+                            Provenance::ManagerClassification => "manager classification",
+                            Provenance::UserCorrection => "corrected by you",
+                        };
+                        card.child(
+                            div()
+                                .text_size(px(12.))
+                                .child(format!("{origin} · {source}")),
+                        )
+                    })
+                    .when_some(meaning, |card, meaning| card.child(div().child(meaning)))
+                    .child(div().text_size(px(14.)).child(message.text.clone()))
+                    .child(correction),
+            );
+        }
+        if count == 0 {
+            cards = cards.child(div().p(px(12.)).child(
+                "No messages of this type. Use FR, Bug or Decision in the composer to add one.",
+            ));
+        }
+        let painted_scope = self.typed_scope.clone();
+        v_flex()
+            .id("project-typed-panel")
+            .debug_selector(|| "project-typed-panel".into())
+            .w(px(320.))
+            .max_w(relative(0.6))
+            .min_h_0()
+            .h_full()
+            .gap(px(8.))
+            .p(px(12.))
+            .child(
+                h_flex().child(div().flex_1().child("Project items")).child(
+                    Button::new("typed-panel-close")
+                        .ghost()
+                        .small()
+                        .label("Close")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.typed_scope != painted_scope {
+                                return;
+                            }
+                            this.typed_panel_open = false;
+                            cx.emit(TypedPanelChanged);
+                            cx.notify();
+                        })),
+                ),
+            )
+            .child(tabs)
+            .child(
+                h_flex().gap(px(4.)).children(
+                    [
+                        MessageType::FeatureRequest,
+                        MessageType::Bug,
+                        MessageType::Decision,
+                    ]
+                    .into_iter()
+                    .map(|kind| {
+                        let painted_scope = self.typed_scope.clone();
+                        Button::new(SharedString::from(format!(
+                            "typed-panel-add-{}",
+                            kind.label()
+                        )))
+                        .ghost()
+                        .small()
+                        .label(format!("+ {}", kind.label()))
+                        .child(Icon::new(type_icon(kind)).small())
+                        .disabled(!self.enabled || self.busy)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                if this.typed_scope != painted_scope {
+                                    return;
+                                }
+                                this.sync_typed_input(window, cx);
+                                this.typed_draft.select(kind);
+                                this.publish_typed_draft(cx);
+                                this.input.read(cx).focus_handle(cx).focus(window, cx);
+                            },
+                        ))
+                    }),
+                ),
+            )
+            .when_some(self.typed_error.clone(), |panel, error| {
+                let scope = self.typed_scope.clone();
+                panel
+                    .child(div().text_color(cx.theme().danger).child(error))
+                    .child(
+                        Button::new("typed-reload")
+                            .ghost()
+                            .small()
+                            .label("Reload message types")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.typed_scope == scope {
+                                    if let Some(scope) = &scope {
+                                        cx.emit(TypedReloadRequested(scope.clone()));
+                                    }
+                                }
+                            })),
+                    )
+            })
+            .child(cards)
+            .into_any_element()
     }
     pub(super) fn bind_parent(&mut self, parent: WeakEntity<ProjectView>, cx: &mut Context<Self>) {
         // Model state lives on ProjectView, while keystrokes stay local to this
@@ -208,6 +856,12 @@ impl Composer {
             return false;
         };
         self.history_position = step.position;
+        // History recall is a replacement draft, never a body edit underneath
+        // a token from the previous prompt.
+        if self.typed_scope.is_some() {
+            self.typed_draft = TypedDraft::from_text(step.prompt.clone());
+            self.publish_typed_draft(cx);
+        }
         self.input.update(cx, |input, cx| {
             let end = step.prompt.len();
             input.set_value(step.prompt, window, cx);
@@ -223,9 +877,7 @@ impl Composer {
     }
     fn prompt_validation(&self, cx: &App) -> Option<String> {
         self.native
-            .then(|| {
-                okilum_t3::actions::prompt_length_validation(self.input.read(cx).value().as_str())
-            })
+            .then(|| okilum_t3::actions::prompt_length_validation(&self.typed_source_text(cx)))
             .flatten()
     }
     pub(super) fn set_native(&mut self, native: bool, steer: bool, cx: &mut Context<Self>) {
@@ -408,6 +1060,27 @@ impl Render for Composer {
             .text_size(px(design::CHROME))
             .line_height(px(design::LINE))
             .gap(px(design::GAP))
+            .child(self.render_type_controls(cx))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                let input = this.input.read(cx);
+                if this.typed_scope.is_none()
+                    || this.mode_open
+                    || this.busy
+                    || !this.enabled
+                    || !input.focus_handle(cx).is_focused(window)
+                    || input.ime_settling(cx)
+                    || input.completion_active(cx)
+                {
+                    return;
+                }
+                let backspace_at_start =
+                    event.keystroke.key == "backspace" && input.selected_range() == (0..0);
+                if (event.keystroke.key == "escape" || backspace_at_start)
+                    && this.undo_type_token(window, cx)
+                {
+                    cx.stop_propagation();
+                }
+            }))
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::MoveUp, window, cx| {
                     if !this.navigate_history(history::Direction::Backward, window, cx) {
