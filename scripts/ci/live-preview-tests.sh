@@ -20,11 +20,12 @@ run_suite cargo test --locked -p okilum-core --lib file_editor::
 run_suite cargo test --locked -p okilum-shell --bin okilum source_presentation::
 run_suite cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture
 run_suite cargo test --locked -p okilum-shell --bin okilum input_anchor_tests::
+run_suite cargo test --locked -p okilum-shell --bin okilum reader_editor::tables::grid::
 # Vendor workspace lock resolution follows vendor-tests.sh: patches add deps.
 # Root Cargo.lock and gpui core remain unchanged.
-if cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::editor::display_map::projected_cache:: -- --list > "$RUNNER_TEMP/projected-cache-tests.txt"; then
+if cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::display_map::projected_cache:: -- --list > "$RUNNER_TEMP/projected-cache-tests.txt"; then
     grep -q '::dirty_install_uses_real_wrapping_and_matches_cold_after_edit_resize_and_undo: test$' "$RUNNER_TEMP/projected-cache-tests.txt"
-    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::editor::display_map::projected_cache::
+    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::display_map::projected_cache::
 else
     failures=$((failures + 1))
 fi

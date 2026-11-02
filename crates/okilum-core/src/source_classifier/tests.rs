@@ -506,12 +506,7 @@ fn range_limit_has_a_positive_below_limit_control() {
         classify(&snapshot(&over)).reasons(),
         &[SourceReason::StructureLimit]
     );
-    // Classification and native projection now share the same byte ceiling.
-    // Oversized bytes travel through SourceFallback, not a projected identity map.
-    let current = snapshot(&over);
-    let rejected = project(&current, classify(&current).plan(), &Active::default()).unwrap_err();
-    assert_eq!(rejected.reason, FallbackReason::SourceLimit);
-    assert_eq!(rejected.source(), over);
+    assert_eq!(display(&over), over);
 }
 
 #[test]

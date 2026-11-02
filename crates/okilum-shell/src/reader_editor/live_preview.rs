@@ -1154,29 +1154,30 @@ mod tests {
         });
         visual.run_until_parked();
         let panel = visual.debug_bounds("reader-notes-panel").unwrap();
-        // #1512: at 200 px the name gives way and only
-        // Show hidden moves into ⋯; nothing clips past the panel.
-        let menu = visual.debug_bounds("sidebar-actions").unwrap();
-        assert!(
-            menu.right() < panel.right(),
-            "menu={menu:?}, panel={panel:?}"
-        );
-        if cfg!(any(unix, windows)) {
-            let new_note = visual.debug_bounds("sidebar-new-note").unwrap();
-            let title = visual.debug_bounds("sidebar-vault-title").unwrap();
+        // The current Tree header keeps its creation and folder actions
+        // permanent, including in the narrow Notes panel.
+        for selector in [
+            "tree-vault-index",
+            "sidebar-new-note",
+            "sidebar-new-folder",
+            "sidebar-collapse-all",
+            "sidebar-show-hidden",
+        ] {
+            let bounds = visual.debug_bounds(selector).unwrap();
             assert!(
-                title.right() <= new_note.left(),
-                "the name never covers an action"
+                bounds.left() >= panel.left() && bounds.right() <= panel.right(),
+                "{selector} stays inside the narrow Notes panel: {bounds:?}"
             );
         }
-        assert!(visual.debug_bounds("sidebar-collapse-all").is_some());
+        let title = visual.debug_bounds("tree-vault-index").unwrap();
+        let new_note = visual.debug_bounds("sidebar-new-note").unwrap();
         assert!(
-            visual.debug_bounds("sidebar-show-hidden").is_none(),
-            "Show hidden is in ⋯"
+            title.right() <= new_note.left(),
+            "the title cannot cover an action"
         );
         assert!(
             visual.debug_bounds("sidebar-reveal-current").is_none(),
-            "Reveal moved beside the breadcrumb"
+            "Reveal belongs to the file context menu"
         );
     }
 
@@ -1402,7 +1403,7 @@ mod tests {
                 .expect("distant edit observed");
             assert!(
                 !edit.raw && edit.reshaped_lines <= 4,
-                "bounded distant projected edit"
+                "bounded distant projected edit: {frames:?}"
             );
         });
         visual.run_until_parked();
@@ -1919,18 +1920,27 @@ mod tests {
     }
 
     fn press(visual: &mut VisualTestContext, at: Point<Pixels>, count: usize) {
+        press_with_modifiers(visual, at, count, Modifiers::default());
+    }
+
+    fn press_with_modifiers(
+        visual: &mut VisualTestContext,
+        at: Point<Pixels>,
+        count: usize,
+        modifiers: Modifiers,
+    ) {
         visual.simulate_event(gpui::MouseDownEvent {
             position: at,
             button: MouseButton::Left,
             click_count: count,
             first_mouse: false,
-            modifiers: Modifiers::default(),
+            modifiers,
         });
         visual.simulate_event(gpui::MouseUpEvent {
             position: at,
             button: MouseButton::Left,
             click_count: count,
-            modifiers: Modifiers::default(),
+            modifiers,
         });
     }
 
@@ -1943,7 +1953,9 @@ mod tests {
     /// inserts nothing; Esc returns the caret where Enter found it. Once the
     /// caret moves, Enter is a new line again.
     #[gpui::test]
-    fn table_cell_click_esc_and_enter_open_and_close_the_rendered_table(cx: &mut TestAppContext) {
+    fn modified_table_cell_click_esc_and_enter_open_and_close_the_rendered_table(
+        cx: &mut TestAppContext,
+    ) {
         let note = TABLE_NOTE;
         let table = note.find("| Name").unwrap()..note.find("| 12 |").unwrap() + "| 12 |".len();
         let (reader, input, visual, _directory) = live_fixture(cx, note);
@@ -1952,7 +1964,17 @@ mod tests {
             .debug_bounds("table-cell-2-1")
             .expect("a rendered table cell");
         assert!(visual.debug_bounds("live-block-focus").is_none());
-        press(visual, cell.center(), 1);
+        // A plain click now opens the persistent grid. A modified click keeps
+        // the source-entry hook whose Esc/Enter round trip is exercised here.
+        press_with_modifiers(
+            visual,
+            cell.center(),
+            1,
+            Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        );
         block_draw(visual);
         input.read_with(visual, |input, _| {
             assert_eq!(input.selected_range(), {
@@ -2094,8 +2116,6 @@ mod tests {
         let cell = visual
             .debug_bounds("table-cell-1-0")
             .expect("a rendered table cell");
-        press(visual, cell.center(), 1);
-        block_draw(visual);
         press(visual, cell.center(), 2);
         block_draw(visual);
         input.read_with(visual, |input, _| {
