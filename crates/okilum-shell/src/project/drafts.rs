@@ -12,9 +12,9 @@ type Saved = Snapshot<Attachment>;
 type DiskBarrier = oneshot::Receiver<Result<(), String>>;
 pub(super) type Barrier = Task<Result<Result<(), String>, oneshot::Canceled>>;
 
-/// Only a Send background task may wait on the process-wide OS worker. In
-/// particular, its reply must never own the waker of a window-local task: the
-/// worker can complete after that window (or its test scheduler) has gone away.
+/// Wait inside Send background work, using futures' thread-safe parker rather
+/// than a GPUI task waker. The process-wide OS worker can reply after a window
+/// (or its test scheduler) has gone away; it must never own a local UI future.
 fn wait_for_disk(barrier: DiskBarrier, executor: &gpui::BackgroundExecutor) -> Barrier {
     executor.spawn(async move { futures::executor::block_on(barrier) })
 }
