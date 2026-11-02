@@ -4,7 +4,7 @@ import argparse
 import hashlib
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import struct
 import tarfile
 import urllib.request
@@ -20,7 +20,16 @@ def payload(data, expected_archive=ARCHIVE_SHA, expected_binary=BINARY_SHA):
                    'Linux archive pin mismatch')
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
         members = archive.getmembers()
-        bundle.require(len(members) <= 32 and len({m.name for m in members}) == len(members), 'ambiguous archive')
+        # The pinned release has 45 entries, including service examples. Bound
+        # the complete inventory even though only four files are staged.
+        bundle.require(len(members) <= 64 and len({m.name for m in members}) == len(members), 'ambiguous archive')
+        bundle.require(sum(m.size for m in members) <= 128 * 1024 * 1024,
+                       'expanded Linux archive limit')
+        for member in members:
+            path = PurePosixPath(member.name)
+            bundle.require(not path.is_absolute() and '..' not in path.parts
+                           and (member.name == PREFIX.rstrip('/') or member.name.startswith(PREFIX))
+                           and (member.isfile() or member.isdir()), 'unsafe Linux archive entry')
         result = {}
         for name in ['syncthing', 'LICENSE.txt', 'AUTHORS.txt', 'README.txt']:
             member = archive.getmember(PREFIX + name)

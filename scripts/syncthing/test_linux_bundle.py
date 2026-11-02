@@ -12,7 +12,7 @@ tempfile.tempdir = str(Path(__file__).resolve().parents[2] / 'fixture-scratch')
 Path(tempfile.tempdir).mkdir(exist_ok=True)
 
 class LinuxPayloadTests(unittest.TestCase):
-    def archive(self, *, linked=False, duplicate=False, architecture=62):
+    def archive(self, *, linked=False, duplicate=False, architecture=62, extras=0, unsafe=None):
         binary = bytearray(64)
         binary[:6] = b'\x7fELF\x02\x01'
         struct.pack_into('<H', binary, 18, architecture)
@@ -30,6 +30,11 @@ class LinuxPayloadTests(unittest.TestCase):
                     member.linkname = '/outside'
                     member.size = 0
                 archive.addfile(member, io.BytesIO(data))
+            for index in range(extras):
+                member = tarfile.TarInfo(subject.PREFIX + f'etc/example-{index}')
+                archive.addfile(member, io.BytesIO())
+            if unsafe:
+                archive.addfile(tarfile.TarInfo(unsafe), io.BytesIO())
         return stream.getvalue(), bytes(binary)
 
     def read(self, data, binary):
@@ -53,6 +58,17 @@ class LinuxPayloadTests(unittest.TestCase):
         data, binary = self.archive()
         with self.assertRaises((ValueError, tarfile.TarError, EOFError)):
             self.read(data[:25], binary)
+
+    def test_release_sized_inventory_is_bounded_and_paths_are_safe(self):
+        data, binary = self.archive(extras=41)
+        self.assertEqual(self.read(data, binary)['syncthing'], binary)
+        data, binary = self.archive(extras=61)
+        with self.assertRaisesRegex(ValueError, 'ambiguous archive'):
+            self.read(data, binary)
+        for name in ('/outside', subject.PREFIX + '../outside', 'other/file'):
+            data, binary = self.archive(unsafe=name)
+            with self.assertRaisesRegex(ValueError, 'unsafe Linux archive entry'):
+                self.read(data, binary)
 
     def test_repo_linux_pin_is_signed_by_the_existing_release_key(self):
         proof = subject.bundle.verify_upstream()
