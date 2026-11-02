@@ -286,6 +286,45 @@ fn split(root: Option<Arc<Node>>, byte: usize) -> (Option<Arc<Node>>, Option<Arc
 mod tests {
     use super::*;
     #[test]
+    fn newline_merges_and_undo_preserve_complete_grapheme_context() {
+        let prefix = "unchanged\r\n".repeat(1000);
+        let suffix = "tail\n".repeat(1000);
+        for (old, new) in [
+            ("a\n\u{301}b\n", "a\u{301}b\n"),
+            ("🇺\n🇸\n", "🇺🇸\n"),
+            ("👩\n\u{200d}💻\n", "👩\u{200d}💻\n"),
+            ("a\r\nb\n", "a\nb\n"),
+            ("a\nb\n", "a\r\nb\n"),
+            ("a\n", "a\u{301}\n"),
+            ("a\n", ""),
+        ] {
+            let before = format!("{prefix}{old}{suffix}");
+            let after = format!("{prefix}{new}{suffix}");
+            let original = Index::new(&before);
+            let edited = original.update(&before, &after);
+            let restored = edited.update(&after, &before);
+            for (index, text) in [(&edited, after.as_str()), (&restored, before.as_str())] {
+                let expected: Vec<_> = text
+                    .grapheme_indices(true)
+                    .map(|(at, _)| at)
+                    .chain(std::iter::once(text.len()))
+                    .collect();
+                for at in 0..=text.len() {
+                    assert_eq!(
+                        index.binary_search(&at).is_ok(),
+                        expected.binary_search(&at).is_ok(),
+                        "{old:?} -> {new:?}, byte {at}"
+                    );
+                }
+            }
+        }
+        let empty = Index::new("");
+        assert!(empty.binary_search(&0).is_ok());
+        assert!(empty.binary_search(&1).is_err());
+        assert!(empty.update("", "e\u{301}").binary_search(&1).is_err());
+    }
+
+    #[test]
     fn sparse_edits_reuse_indexes_and_match_full_unicode_segmentation() {
         for rows in [700, 12000] {
             let mut text = "e\u{301} אבג 👩\u{200d}💻 🇺🇸\r\n".repeat(rows);
