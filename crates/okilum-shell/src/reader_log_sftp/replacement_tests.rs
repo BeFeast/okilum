@@ -6,7 +6,20 @@ use okilum_core::log::stream::Assembler;
 fn failed_replacement_retains_sftp_rows_marks_and_source_until_new_snapshot(
     cx: &mut TestAppContext,
 ) {
-    cx.update(crate::test_init);
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_log::bind_keys(cx);
+    });
+    let copy_key = if cfg!(target_os = "macos") {
+        "cmd-c"
+    } else {
+        "ctrl-c"
+    };
+    let mark_key = if cfg!(target_os = "macos") {
+        "cmd-f2"
+    } else {
+        "ctrl-f2"
+    };
     let mut panel = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let entity = cx.new(|cx| Panel::new("fixture".into(), window, cx));
@@ -41,15 +54,25 @@ fn failed_replacement_retains_sftp_rows_marks_and_source_until_new_snapshot(
         generation
     });
     visual.run_until_parked();
-    let view_id = panel.update(visual, |panel, cx| {
+    let view_id = panel.update_in(visual, |panel, window, cx| {
         let view = panel.view.as_ref().unwrap();
-        view.update(cx, |view, _| {
-            assert_eq!(view.total(), 1, "positive control: old result is installed");
-            view.selected = Some(0);
-            view.anchor = Some(0);
-            view.marks.insert((0, 0));
-        });
+        let focus = view.read(cx).focus_handle().clone();
+        focus.focus(window, cx);
         view.entity_id()
+    });
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes(mark_key);
+    visual.simulate_keystrokes(copy_key);
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("log-mark-0").is_some(),
+        "positive control: UI created a mark"
+    );
+    visual.read(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("old row")
+        )
     });
     panel.update_in(visual, |panel, window, cx| {
         panel
@@ -90,17 +113,21 @@ fn failed_replacement_retains_sftp_rows_marks_and_source_until_new_snapshot(
         );
     });
     visual.run_until_parked();
-    panel.read_with(visual, |panel, cx| {
+    panel.read_with(visual, |panel, _| {
         assert!(panel.error && !panel.active);
         assert_eq!(panel.message, "Disconnected: synthetic refusal");
         assert_eq!(panel.requested_url.as_deref(), Some(new_url));
         assert_eq!(panel.displayed_url.as_deref(), Some(old_url));
         let view = panel.view.as_ref().unwrap();
         assert_eq!(view.entity_id(), view_id);
-        let view = view.read(cx);
-        assert_eq!(view.source(0).unwrap().raw(0).unwrap(), b"old row");
-        assert_eq!(view.selected, Some(0));
-        assert!(view.marks.contains(&(0, 0)));
+    });
+    assert!(visual.debug_bounds("log-mark-0").is_some());
+    visual.simulate_keystrokes(copy_key);
+    visual.read(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("old row")
+        )
     });
 
     let mut new = Assembler::new("new.log".into(), "new-session".into()).unwrap();
@@ -119,20 +146,34 @@ fn failed_replacement_retains_sftp_rows_marks_and_source_until_new_snapshot(
         );
     });
     visual.run_until_parked();
-    panel.update(visual, |panel, cx| {
+    panel.read_with(visual, |panel, _| {
         assert_eq!(panel.displayed_url.as_deref(), Some(new_url));
         assert!(!panel.error && !panel.active);
         let view = panel.view.as_ref().unwrap();
         assert_eq!(view.entity_id(), view_id, "reuse the existing LogView");
-        view.update(cx, |view, _| {
-            assert_eq!(view.source(0).unwrap().raw(0).unwrap(), b"new row");
-            assert!(
-                view.selected.is_none() && view.marks.is_empty(),
-                "new session identity must not inherit old row marks"
-            );
-            view.selected = Some(0);
-            view.marks.insert((0, 0));
-        });
+    });
+    assert!(
+        visual.debug_bounds("log-mark-0").is_none(),
+        "new session must not inherit old marks"
+    );
+    visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("no selection")));
+    visual.simulate_keystrokes(copy_key);
+    visual.read(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("no selection")
+        )
+    });
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes(mark_key);
+    visual.simulate_keystrokes(copy_key);
+    visual.read(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("new row")
+        )
+    });
+    panel.update(visual, |panel, cx| {
         // Preserve a successful snapshot queued for paint too, if the next
         // explicit request fails before any of its own rows arrive.
         let appended = new.append(b"another row\n").unwrap().unwrap();
@@ -160,12 +201,23 @@ fn failed_replacement_retains_sftp_rows_marks_and_source_until_new_snapshot(
         );
     });
     visual.run_until_parked();
-    panel.read_with(visual, |panel, cx| {
-        let view = panel.view.as_ref().unwrap().read(cx);
-        assert_eq!(view.total(), 2);
-        assert_eq!(view.source(0).unwrap().raw(1).unwrap(), b"another row");
-        assert_eq!(view.selected, Some(0));
-        assert!(view.marks.contains(&(0, 0)));
+    assert!(visual.debug_bounds("log-mark-0").is_some());
+    visual.simulate_keystrokes(copy_key);
+    visual.read(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("new row")
+        )
+    });
+    visual.simulate_keystrokes("down");
+    visual.simulate_keystrokes(copy_key);
+    visual.read(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("another row")
+        )
+    });
+    panel.read_with(visual, |panel, _| {
         assert!(
             panel.worker.is_none(),
             "no transport was launched by this UI fixture"
