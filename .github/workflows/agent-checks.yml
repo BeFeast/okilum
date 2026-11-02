@@ -87,6 +87,25 @@ jobs:
         env:
           CARGO_NET_OFFLINE: 'true'
         run: tini -s -- bash scripts/ci/linux-rust-tests.sh
+      # Explicit benchmark refs repeat on this SAME VM: cross-host timings are
+      # not a controlled comparison. Ordinary worker checks pay for one pass.
+      - name: Warm build Linux desktop offline
+        if: endsWith(github.ref, '/benchmark')
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
+      - name: Warm complete okilum-core suite offline
+        if: endsWith(github.ref, '/benchmark')
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: |
+          source scripts/ci/test-nofile.sh
+          cargo test --offline --locked -p okilum-core
+      - name: Warm Linux Rust suites offline
+        if: endsWith(github.ref, '/benchmark')
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: tini -s -- bash scripts/ci/linux-rust-tests.sh
       - name: Save Rust downloads and target cache
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4

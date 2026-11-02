@@ -49,6 +49,8 @@ do not add thread polling or launch Cargo on the orchestration host.
 ```bash
 # Repeat the identical source to measure warm cache (new attempt, same run).
 scripts/agent/gh-check.sh --rerun
+# Controlled cold/warm comparison on one runner VM (separate /benchmark ref).
+scripts/agent/gh-check.sh --benchmark --receipt /path/to/evidence.json
 # Explicit dispatch on the pushed branch; workflow must already exist on main.
 scripts/agent/gh-check.sh --dispatch
 ```
@@ -56,3 +58,8 @@ scripts/agent/gh-check.sh --dispatch
 The total helper wait ceiling is two hours (`--timeout SECONDS`); the job ceiling
 is 100 minutes. For GitHub outages or checks needing local hardware, use the
 build-slot fallback recipe in the project operations notes.
+
+`--benchmark` repeats the build, core suite and Linux suites using the already warm
+Cargo downloads/target on the same 4-vCPU VM. Each pass has separately timed steps;
+use a new benchmark branch for a cold baseline. `--rerun` instead measures a new
+hosted job including archive restoration; its VM hardware may differ.
