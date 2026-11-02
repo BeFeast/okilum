@@ -81,7 +81,17 @@ try {
     $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new("$Fixture/root.cer")
     if (Test-Path "Cert:\CurrentUser\Root\$($cert.Thumbprint)") { throw 'Fixture root unexpectedly already present' }
     $importAttempted = $true
-    Import-Certificate -FilePath "$Fixture/root.cer" -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+    # certutil -f avoids an interactive root-trust confirmation. Bound this
+    # process as well as probes so a trust-store problem cannot hang the job.
+    $import = Start-Process certutil.exe -ArgumentList @('-f', '-user', '-addstore', 'Root', "`"$Fixture/root.cer`"") -PassThru `
+        -RedirectStandardOutput "$receipt/root-import.txt" -RedirectStandardError "$receipt/root-import-stderr.txt"
+    try {
+        if (!$import.WaitForExit(30000)) { throw 'Fixture root import exceeded 30 seconds' }
+        $import.WaitForExit()
+        if ($import.ExitCode -ne 0) { throw 'Fixture root import failed' }
+    } finally {
+        if (!$import.HasExited) { Stop-Process -Id $import.Id -Force }
+    }
     Set-ItemProperty $reg ProxyEnable 0
     Invoke-Control trusted-direct success $direct 1 $false
     Invoke-Control legacy-root legacy $direct 0 $false
