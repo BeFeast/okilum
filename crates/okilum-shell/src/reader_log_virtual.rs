@@ -3,6 +3,8 @@ use super::*;
 use gpui::size;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use okilum_core::log::virtual_log::{Candidate, Definition, Reason};
+#[path = "reader_log_virtual/follow.rs"]
+mod follow;
 #[path = "reader_log_virtual/model.rs"]
 mod model;
 #[path = "reader_log_virtual/save.rs"]
@@ -99,6 +101,7 @@ pub(crate) struct Panel {
     time: model::TimeMode,
     vault_root: bool,
     watch: bool,
+    following: bool,
     details: bool,
     loading: bool,
     active: bool,
@@ -111,6 +114,7 @@ pub(crate) struct Panel {
     error: bool,
     candidates: Vec<Candidate>,
     pending: Option<Pending>,
+    pending_follow: Option<Vec<follow::Source>>,
     pending_path: Option<String>,
     pending_load: Option<model::Loaded>,
     view: Option<Entity<LogView>>,
@@ -143,6 +147,7 @@ impl Panel {
             time: model::TimeMode::All,
             vault_root: false,
             watch: true,
+            following: false,
             details: false,
             loading: false,
             active: false,
@@ -155,6 +160,7 @@ impl Panel {
             error: false,
             candidates: Vec::new(),
             pending: None,
+            pending_follow: None,
             pending_path: None,
             pending_load: None,
             view: None,
@@ -338,11 +344,20 @@ impl Panel {
                 return;
             }
         };
+        // A prior successful batch may be queued for paint when a new run
+        // starts. It cannot be applied over the new generation's initial result.
+        self.pending = None;
+        self.pending_follow = None;
         self.run_name = definition.name.clone();
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
-        let (worker, events) =
-            worker::Worker::start(self.vault.clone(), path, definition, self.watch);
+        let (worker, events) = worker::Worker::start_mode(
+            self.vault.clone(),
+            path,
+            definition,
+            self.watch,
+            self.following,
+        );
         self.worker = Some(worker);
         self.active = true;
         self.stopping = false;
@@ -364,12 +379,23 @@ impl Panel {
         if generation != self.generation {
             return;
         }
-        if self.stopping && !matches!(&frame, worker::Frame::Progress { .. }) {
-            self.message = "Stopped; loaded snapshot retained.".into();
-            self.active = false;
-            self.stopping = false;
-            self.worker = None;
-            cx.notify();
+        if self.stopping {
+            // Ready/update frames may already be queued when Stop is clicked.
+            // Discard all of them until the worker acknowledges a terminal turn;
+            // the first queued batch is not proof of worker exit.
+            if matches!(
+                &frame,
+                worker::Frame::Stopped
+                    | worker::Frame::Failed(_)
+                    | worker::Frame::Invalidated(_, _)
+            ) {
+                self.message = "Stopped; loaded snapshot retained.".into();
+                self.active = false;
+                self.stopping = false;
+                self.worker = None;
+                self.generation = self.generation.wrapping_add(1);
+                cx.notify();
+            }
             return;
         }
         match frame {
@@ -406,7 +432,9 @@ impl Panel {
                     selection.files.len(),
                     selection.checked,
                     grouped(selection.bytes_checked),
-                    if watching {
+                    if watching && self.following {
+                        " · Following additions/appends; rotations require Rescan"
+                    } else if watching {
                         " · Watching for source changes"
                     } else {
                         " · Snapshot"
@@ -422,6 +450,20 @@ impl Panel {
                 if !watching {
                     self.worker = None;
                 }
+            }
+            worker::Frame::Updated(update) => {
+                let pending = self.pending_follow.get_or_insert_with(Vec::new);
+                for source in update.sources {
+                    if let Some(old) = pending.iter_mut().find(|old| old.slot == source.slot) {
+                        *old = source;
+                    } else {
+                        pending.push(source);
+                    }
+                }
+                if let Some(candidates) = update.candidates {
+                    self.candidates = candidates;
+                }
+                self.message = "Following additions/appends · Frozen run criteria · Rotation/removal/window gaps pause with history retained".into();
             }
             worker::Frame::Invalidated(message, error) => {
                 self.message = message;
@@ -450,45 +492,105 @@ impl Panel {
         if let Some(worker) = &self.worker {
             worker.cancel();
             self.pending = None;
+            self.pending_follow = None;
             self.stopping = true;
             self.message = "Stopping after the current bounded selection pass…".into();
             cx.notify();
         }
     }
     fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pending) = self.pending.take() else {
+        if let Some(pending) = self.pending.take() {
+            let mut files = pending.files.into_iter();
+            self.view = files.next().map(|first| {
+                let name = self.applied_name.clone();
+                cx.new(|cx| {
+                    let mut view = LogView::new(
+                        State::Ready(LogDocument {
+                            rel: name,
+                            file: Arc::new(first),
+                            elapsed: pending.elapsed,
+                        }),
+                        window,
+                        cx,
+                    );
+                    view.source_locked = true;
+                    for file in files {
+                        let slot = view.source_count();
+                        view.extra.push(ExtraSource {
+                            data: SourceData::File(Arc::new(file)),
+                            enabled: true,
+                            owner: slot,
+                            seq: 0,
+                        });
+                    }
+                    view.rebuild_merge();
+                    view.refilter(cx);
+                    view
+                })
+            });
+        }
+        let Some(mut sources) = self
+            .pending_follow
+            .take()
+            .filter(|sources| !sources.is_empty())
+        else {
             return;
         };
-        let mut files = pending.files.into_iter();
-        let Some(first) = files.next() else {
-            self.view = None;
-            return;
-        };
-        let name = self.applied_name.clone();
-        self.view = Some(cx.new(|cx| {
-            let mut view = LogView::new(
-                State::Ready(LogDocument {
-                    rel: name,
-                    file: Arc::new(first),
-                    elapsed: pending.elapsed,
-                }),
-                window,
-                cx,
-            );
-            view.source_locked = true;
-            for file in files {
-                let owner = view.source_count();
-                view.extra.push(ExtraSource {
-                    data: SourceData::File(Arc::new(file)),
-                    enabled: true,
-                    owner,
-                    seq: 0,
+        sources.sort_by_key(|source| source.slot);
+        if self.view.is_none() {
+            let first = sources.remove(0);
+            self.view = Some(cx.new(|cx| {
+                let mut view = LogView::new(
+                    State::Held(Arc::new(HeldSource {
+                        path: first.path,
+                        snapshot: first.snapshot,
+                    })),
+                    window,
+                    cx,
+                );
+                view.source_locked = true;
+                view
+            }));
+        }
+        self.view.as_ref().unwrap().update(cx, |view, cx| {
+            let anchor = view.anchor.and_then(|id| view.locate(id));
+            let filtered = view.rows.as_ref().map(|rows| {
+                rows.iter()
+                    .filter_map(|id| view.locate(*id as usize))
+                    .collect::<Vec<_>>()
+            });
+            for source in sources {
+                let held = Arc::new(HeldSource {
+                    path: source.path,
+                    snapshot: source.snapshot,
                 });
+                if source.slot == 0 {
+                    view.state = State::Held(held);
+                } else if let Some(extra) = view.extra.get_mut(source.slot - 1) {
+                    extra.data = SourceData::Held(held);
+                } else {
+                    view.extra.push(ExtraSource {
+                        data: SourceData::Held(held),
+                        enabled: true,
+                        owner: source.slot,
+                        seq: 0,
+                    });
+                }
             }
+            view.window_revision = view.window_revision.wrapping_add(1);
+            view.histogram_for = None;
             view.rebuild_merge();
+            view.anchor = anchor.and_then(|(source, row)| view.id_of(source, row));
+            view.rows = filtered.map(|rows| {
+                Arc::new(
+                    rows.into_iter()
+                        .filter_map(|(source, row)| view.id_of(source, row).map(|id| id as u32))
+                        .collect(),
+                )
+            });
             view.refilter(cx);
-            view
-        }));
+            cx.notify();
+        });
     }
 }
 
@@ -498,7 +600,7 @@ fn reason(reason: &Reason) -> String {
         Reason::NameMismatch => "Glob does not match",
         Reason::RotationMismatch => "Different rotation family",
         Reason::OutsideRoot => "Outside source root",
-        Reason::DuplicateSource => "Already selected by canonical path",
+        Reason::DuplicateSource => "Already selected source identity",
         Reason::NoTimestamps => "No timestamps for this time criterion",
         Reason::OutsideTimeRange => "Outside time window",
         Reason::NoMatchingRecord => "Query did not match this file",
@@ -568,7 +670,8 @@ impl Render for Panel {
                 .when(self.time == model::TimeMode::Last, |row| row.child(div().w(px(140.)).child(Input::new(&self.seconds).small().disabled(disabled))))
                 .when(self.time == model::TimeMode::Absolute, |row| row.child(div().flex_1().child(Input::new(&self.from).small().disabled(disabled))).child(div().flex_1().child(Input::new(&self.to).small().disabled(disabled)))))
             .child(h_flex().gap_2().items_center()
-                .child(Button::new("virtual-watch").small().ghost().label("Watch changes").selected(self.watch).disabled(disabled).tooltip("Keep the snapshot and request an explicit Rescan when files change").on_click(cx.listener(|this, _, _, cx| { this.watch = !this.watch; cx.notify(); })))
+                .child(Button::new("virtual-watch").small().ghost().label("Watch changes").selected(self.watch).disabled(disabled).tooltip("Keep the snapshot and request an explicit Rescan when files change").on_click(cx.listener(|this, _, _, cx| { this.watch = !this.watch; if this.watch { this.following = false; } cx.notify(); })))
+                .child(Button::new("virtual-follow").debug_selector(|| "virtual-follow".into()).small().ghost().label("Follow additions + appends").selected(self.following).disabled(disabled).tooltip("Opt in, then Start. Existing uncompressed identities keep their tail sessions; rotation, removal, uncertain coverage or record-window changes pause with history retained. Gap-free rotation is not established.").on_click(cx.listener(|this, _, _, cx| { this.following = !this.following; if this.following { this.watch = false; } cx.notify(); })))
                 .child(Button::new("virtual-copy").small().ghost().label("Copy definition").disabled(self.loaded.is_none() || disabled).on_click(cx.listener(|this, _, _, cx| {
                     match this.definition(cx).and_then(|definition| Ok(serde_json::to_string_pretty(&definition)?)) {
                         Ok(source) => cx.write_to_clipboard(ClipboardItem::new_string(source)), Err(error) => { this.error = true; this.message = error.to_string(); cx.notify(); }
@@ -580,7 +683,7 @@ impl Render for Panel {
                 .child(Button::new("virtual-stop").debug_selector(|| "virtual-stop".into()).small().label("Stop").disabled(!self.active || self.stopping).on_click(cx.listener(|this, _, _, cx| this.stop(cx))))
                 .child(Button::new("virtual-details").small().ghost().label(format!("Sources ({})", self.candidates.len())).selected(self.details).on_click(cx.listener(|this, _, _, cx| { this.details = !this.details; cx.notify(); }))))
             .child(div().id("virtual-status").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(if self.error { brand::palette(cx).danger } else { cx.theme().muted_foreground }).child(self.message.clone()))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Criteria select whole files; all records of selected files are merged. Save explicitly updates the original definition with revision checks and History. Changes require an explicit Rescan; automatic rotation/membership Follow is not enabled."));
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Criteria select whole files; all records of selected files are merged. Save explicitly updates the original definition with revision checks and History. Changes require an explicit Rescan; Follow additions/appends is explicit opt-in. Rotation/removal or uncertain coverage pauses with retained history; Rescan is explicit."));
         if let Some(error) = &self.save_error {
             controls = controls.child(div().text_sm().text_color(brand::palette(cx).danger).child(
                 format!("Save unavailable: {error}. Session Start remains available. To review Source, use the original document in Reader (close a standalone Virtual logs window first)."),

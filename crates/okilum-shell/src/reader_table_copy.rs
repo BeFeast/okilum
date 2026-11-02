@@ -95,6 +95,8 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let selection = reader_read_menu::snapshot(self, cx);
+        let reader = cx.entity().downgrade();
         let popup = PopupMenu::build(window, cx, move |mut menu, _, _| {
             for format in TableCopy::ALL {
                 let press = press.clone();
@@ -109,7 +111,7 @@ impl Reader {
                         }),
                 );
             }
-            menu
+            reader_read_menu::selection(menu.separator(), &reader, selection)
         });
         cx.subscribe(&popup, |reader, _, _: &DismissEvent, cx| {
             reader.file_menu = None;
@@ -375,6 +377,60 @@ mod tests {
             before,
             "selection kept while copying a table"
         );
+    }
+
+    #[gpui::test]
+    fn table_popup_combines_accepted_selection_formats_without_replacing_table_copy(
+        cx: &mut TestAppContext,
+    ) {
+        let source = note(FIRST, SECOND, "\r\n");
+        let mut f = open(cx, &[("note.md", &source)]);
+        let first = f.bounds("table-cell-3-2").center();
+        f.reader.update(f.visual, |reader, cx| {
+            reader
+                .content
+                .update(cx, |content, cx| content.select_all(cx))
+        });
+        f.visual.run_until_parked();
+        let before = f.untouched();
+        assert!(!before.1.is_empty(), "positive selection control");
+        // Existing actions retain their first two slots and exact table bytes.
+        assert_eq!(
+            f.copy(first, TableCopy::Markdown),
+            FIRST.replace('\n', "\r\n")
+        );
+        assert_eq!(f.copy(first, TableCopy::Tsv), FIRST_TSV);
+        assert_eq!(f.untouched(), before);
+        f.right_click(first);
+        assert!(f.menu_open(), "one table popup owns this press");
+        let selected = f.bounds("read-menu-Copy as Markdown");
+        assert!(f.visual.debug_bounds("read-menu-Copy").is_some());
+        assert!(f
+            .visual
+            .debug_bounds("read-menu-Copy with formatting")
+            .is_some());
+        // An accepted replacement cannot substitute another revision for the
+        // selection that was already captured by this object popup.
+        f.reader.update(f.visual, |reader, cx| {
+            reader.content.update(cx, |content, cx| {
+                content.set_text_with_source(
+                    "Later accepted render",
+                    Some("Later accepted render".into()),
+                    cx,
+                )
+            })
+        });
+        f.visual.run_until_parked();
+        f.visual
+            .simulate_click(selected.center(), Modifiers::default());
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual
+                .update(|_, cx| cx.read_from_clipboard().unwrap().text().unwrap()),
+            source
+        );
+        assert!(!f.menu_open());
+        assert_eq!(std::fs::read(f.root.join("note.md")).unwrap(), before.0);
     }
 
     #[gpui::test]

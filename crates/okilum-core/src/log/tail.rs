@@ -80,8 +80,8 @@ pub enum TailEvent {
         entries: Range<usize>,
     },
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileId {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FileIdentity {
     device: u64,
     index: u64,
 }
@@ -89,7 +89,7 @@ pub struct PollRequest {
     generation: u64,
     path: PathBuf,
     file: Arc<File>,
-    id: FileId,
+    id: FileIdentity,
     offset: u64,
     guard: Vec<u8>,
     regex: Option<Arc<super::regex_text::RegexParser>>,
@@ -122,7 +122,7 @@ enum Change {
         snapshot: Arc<LogSnapshot>,
         guard: Vec<u8>,
         file: Arc<File>,
-        id: FileId,
+        id: FileIdentity,
         old_snapshot: Option<Arc<LogSnapshot>>,
         old_tail: Vec<u8>,
         old_end: u64,
@@ -132,7 +132,7 @@ enum Change {
 pub struct LogTail {
     path: PathBuf,
     file: Arc<File>,
-    id: FileId,
+    id: FileIdentity,
     snapshot: Arc<LogSnapshot>,
     guard: Vec<u8>,
     missing: bool,
@@ -168,6 +168,33 @@ impl LogTail {
             last_poll: Some(Instant::now()),
             skip_partial,
         })
+    }
+    /// Continue the exact loaded handle/snapshot, never reopen a pathname to
+    /// enable Follow. The suffix guard rejects a mutation during handoff.
+    pub fn from_loaded(file: &super::LogFile) -> Result<Self> {
+        ensure!(
+            !file.is_compressed(),
+            "Compressed logs remain immutable snapshots"
+        );
+        let handle = file.handle.clone();
+        let snapshot = file.snapshot();
+        let guard = snapshot_guard(&handle, &snapshot)?;
+        Ok(Self {
+            path: file.path().to_owned(),
+            file: handle,
+            id: file.identity(),
+            snapshot,
+            guard,
+            missing: false,
+            epoch: 0,
+            generation: next_generation(),
+            interval: LOCAL_POLL_INTERVAL,
+            last_poll: Some(Instant::now()),
+            skip_partial: false,
+        })
+    }
+    pub fn identity(&self) -> FileIdentity {
+        self.id
     }
     pub fn with_regex(mut self, regex: Arc<super::regex_text::RegexParser>) -> Result<Self> {
         LogSnapshot::mutable(&mut self.snapshot)?.set_regex(regex);
@@ -347,7 +374,18 @@ impl LogTail {
 }
 impl PollRequest {
     pub fn read(self) -> Result<PollRead> {
+        self.read_policy(true)
+    }
+    /// Read only the already-open identity; never open a rotation replacement.
+    pub fn read_pinned(self) -> Result<PollRead> {
+        self.read_policy(false)
+    }
+    fn read_policy(self, allow_replacement: bool) -> Result<PollRead> {
         let at_path = path_identity(&self.path).context("The log file cannot be inspected")?;
+        ensure!(
+            allow_replacement || at_path == Some(self.id),
+            "Source removed or replaced; pinned Follow requires explicit reopen"
+        );
         let missing = at_path.is_none();
         let (change, lease) = if at_path.is_some_and(|id| id != self.id) {
             let file =
@@ -517,12 +555,12 @@ pub(super) fn open_shared(path: &Path) -> io::Result<File> {
 }
 
 /// The identity of the file `path` names now; `None` when it names none.
-fn path_identity(path: &Path) -> io::Result<Option<FileId>> {
+pub(super) fn path_identity(path: &Path) -> io::Result<Option<FileIdentity>> {
     #[cfg(unix)]
     let found = {
         use std::os::unix::fs::MetadataExt;
         // Follows a symlink: a link re-pointed at a new file is a rotation.
-        std::fs::metadata(path).map(|meta| FileId {
+        std::fs::metadata(path).map(|meta| FileIdentity {
             device: meta.dev(),
             index: meta.ino(),
         })
@@ -554,17 +592,17 @@ fn path_identity(path: &Path) -> io::Result<Option<FileId>> {
 }
 
 #[cfg(unix)]
-fn identity(file: &File) -> io::Result<FileId> {
+pub(super) fn identity(file: &File) -> io::Result<FileIdentity> {
     use std::os::unix::fs::MetadataExt;
     let meta = file.metadata()?;
-    Ok(FileId {
+    Ok(FileIdentity {
         device: meta.dev(),
         index: meta.ino(),
     })
 }
 
 #[cfg(windows)]
-fn identity(file: &File) -> io::Result<FileId> {
+pub(super) fn identity(file: &File) -> io::Result<FileIdentity> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
@@ -574,7 +612,7 @@ fn identity(file: &File) -> io::Result<FileId> {
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(FileId {
+    Ok(FileIdentity {
         device: u64::from(info.dwVolumeSerialNumber),
         index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
     })
@@ -583,13 +621,13 @@ fn identity(file: &File) -> io::Result<FileId> {
 /// Without a platform file identity, rotation looks like the same file:
 /// truncation is still detected, a rename and recreate is not.
 #[cfg(not(any(unix, windows)))]
-fn identity(_file: &File) -> io::Result<FileId> {
+pub(super) fn identity(_file: &File) -> io::Result<FileIdentity> {
     identity_unknown()
 }
 
 #[cfg(not(any(unix, windows)))]
-fn identity_unknown() -> io::Result<FileId> {
-    Ok(FileId {
+fn identity_unknown() -> io::Result<FileIdentity> {
+    Ok(FileIdentity {
         device: 0,
         index: 0,
     })
@@ -597,3 +635,35 @@ fn identity_unknown() -> io::Result<FileId> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod loaded_tests {
+    use super::*;
+    #[test]
+    fn loaded_handoff_retains_original_handle_when_path_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app.log");
+        std::fs::write(&path, "original\n").unwrap();
+        let loaded = super::super::LogFile::open(&path).unwrap();
+        std::fs::rename(&path, dir.path().join("app.log.1")).unwrap();
+        std::fs::write(&path, "replacement\n").unwrap();
+        let mut tail = LogTail::from_loaded(&loaded).unwrap();
+        assert_eq!(tail.identity(), loaded.identity());
+        assert_eq!(tail.raw(0).unwrap(), b"original");
+        assert!(
+            tail.begin_poll().read_pinned().is_err(),
+            "pinned mode must reject the new pathname identity before reading it"
+        );
+        let TailEvent::Reset {
+            reason: ResetReason::Rotated,
+            previous,
+            ..
+        } = tail.poll().unwrap()
+        else {
+            panic!("replacement positive control must detect rotation")
+        };
+        assert_eq!(previous.raw(0).unwrap(), b"original");
+        assert_eq!(tail.raw(0).unwrap(), b"replacement");
+        assert_ne!(tail.identity(), loaded.identity());
+    }
+}

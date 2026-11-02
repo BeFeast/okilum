@@ -22,6 +22,7 @@ pub(super) enum Frame {
         elapsed: Duration,
         watching: bool,
     },
+    Updated(super::follow::Update),
     Invalidated(String, bool),
     Failed(String),
     Stopped,
@@ -31,11 +32,12 @@ pub(super) struct Worker {
     wake: mpsc::SyncSender<()>,
 }
 impl Worker {
-    pub fn start(
+    pub fn start_mode(
         vault: PathBuf,
         path: PathBuf,
         definition: Definition,
         watch: bool,
+        follow: bool,
     ) -> (Self, async_channel::Receiver<Frame>) {
         let cancel = Arc::new(AtomicBool::new(false));
         let stopped = cancel.clone();
@@ -52,7 +54,8 @@ impl Worker {
                     anyhow::anyhow!("Current timestamp is outside the supported range")
                 })?;
                 let plan = definition.plan(&vault, &path, now)?;
-                let watcher = if watch {
+                let watch = watch || follow;
+                let mut watcher = if watch {
                     Some(VirtualLogWatcher::start(plan.root(), move || {
                         let _ = on_change.try_send(());
                     })?)
@@ -69,6 +72,11 @@ impl Worker {
                     let _ = sender.send_blocking(Frame::Stopped);
                     return Ok(());
                 }
+                let mut session = if follow {
+                    Some(super::follow::Session::new(&selection)?)
+                } else {
+                    None
+                };
                 if sender
                     .send_blocking(Frame::Ready {
                         selection,
@@ -79,14 +87,33 @@ impl Worker {
                 {
                     return Ok(());
                 }
-                if let Some(watcher) = watcher {
+                if let Some(watcher) = &mut watcher {
+                    let mut pending = false;
                     loop {
                         if stopped.load(Ordering::Acquire) {
                             let _ = sender.send_blocking(Frame::Stopped);
                             break;
                         }
                         let changes = watcher.drain(); // Includes events during enumeration/selection.
-                        if let Some((message, error)) = invalidation(&changes) {
+                        if let Some(session) = &mut session {
+                            if !changes.is_empty() || pending {
+                                if !changes.is_empty() {
+                                    watcher.refresh_directories()?;
+                                }
+                                let update = session.refresh(&plan, &changes, &stopped)?;
+                                if stopped.load(Ordering::Acquire) {
+                                    let _ = sender.send_blocking(Frame::Stopped);
+                                    break;
+                                }
+                                pending = update.more;
+                                if sender.send_blocking(Frame::Updated(update)).is_err() {
+                                    break;
+                                }
+                                // Drain again before sleeping: refresh installed new
+                                // directory watches and selection may have queued events.
+                                continue;
+                            }
+                        } else if let Some((message, error)) = invalidation(&changes) {
                             let _ = sender.send_blocking(Frame::Invalidated(message, error));
                             break;
                         }
@@ -98,7 +125,12 @@ impl Worker {
                 Ok(())
             })();
             if let Err(error) = result {
-                let _ = sender.send_blocking(Frame::Failed(error.to_string()));
+                let message = if follow {
+                    format!("Follow paused: {error:#}. Last successful snapshot retained; Rescan explicitly.")
+                } else {
+                    error.to_string()
+                };
+                let _ = sender.send_blocking(Frame::Failed(message));
             }
         });
         (Self { cancel, wake }, receiver)
@@ -155,5 +187,25 @@ mod tests {
         ])
         .unwrap();
         assert!(error && message.contains("overflow fixture"));
+    }
+    #[test]
+    fn stop_wakes_idle_wait_and_dropped_worker_keeps_cancellation_terminal() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (wake, notifications) = mpsc::sync_channel(1);
+        let worker = Worker {
+            cancel: cancel.clone(),
+            wake,
+        };
+        worker.cancel();
+        assert!(cancel.load(Ordering::Acquire));
+        notifications
+            .try_recv()
+            .expect("positive control: Stop wakes idle notification wait");
+        worker.cancel();
+        drop(worker);
+        assert!(cancel.load(Ordering::Acquire));
+        notifications
+            .try_recv()
+            .expect("terminal repeated cancellation remains wakeable");
     }
 }
