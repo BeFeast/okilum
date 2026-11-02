@@ -21,6 +21,7 @@ pub(crate) struct CaptureComposer {
     copy_folder: Entity<InputState>,
     copy_folder_chosen: bool,
     saved: Option<Receipt>,
+    saved_recovery_copy: Option<ComposerDraft>,
     error: Option<String>,
     checkpoint_error: bool,
     busy: bool,
@@ -39,6 +40,7 @@ enum PreviewSource {
 
 enum Work {
     Recover,
+    Dismiss(ComposerDraft),
     Preview(PreviewSource, PathBuf),
     Checkpoint(ComposerDraft, u64),
     Save(ComposerDraft),
@@ -47,6 +49,7 @@ enum Work {
 
 enum Completed {
     Recovery(anyhow::Result<RecoveryInbox>),
+    Dismissed(anyhow::Result<RecoveryInbox>),
     Preview(anyhow::Result<CopyPreview>),
     Checkpoint(u64, anyhow::Result<()>),
     Save(anyhow::Result<Receipt>),
@@ -114,6 +117,7 @@ impl CaptureComposer {
                 let completed = cx.background_executor().spawn(async move {
                     match work {
                         Work::Recover => Completed::Recovery(capture::load_recovery(&root, &records)),
+                        Work::Dismiss(copy) => Completed::Dismissed(capture::dismiss_saved_copy(&root, &records, &copy).and_then(|_| capture::load_recovery(&root, &records))),
                         Work::Preview(source, folder) => Completed::Preview((|| {
                             let source = match source {
                                 PreviewSource::Composer(draft) => CopySource::from_composer(&root, &records, &draft)?,
@@ -136,6 +140,18 @@ impl CaptureComposer {
                                     this.unbound = inbox.unbound;
                                 },
                                 Err(error) => this.error = Some(format!("Could not recover capture drafts: {error:#}")),
+                            }
+                        }
+                        Completed::Dismissed(result) => {
+                            this.busy = false;
+                            match result {
+                                Ok(inbox) => {
+                                    this.recovered = inbox.drafts;
+                                    this.unbound = inbox.unbound;
+                                    this.saved_recovery_copy = None;
+                                    this.error = None;
+                                }
+                                Err(error) => this.error = Some(format!("Recovery source was not dismissed: {error:#}")),
                             }
                         }
                         Completed::Preview(result) => {
@@ -180,6 +196,7 @@ impl CaptureComposer {
                                             cx.notify();
                                         }
                                     });
+                                    this.saved_recovery_copy = this.draft.copy_origin.as_ref().map(|_| this.draft.clone());
                                     this.saved = Some(receipt);
                                     this.copy_source = None;
                                     this.copy_preview = None;
@@ -226,6 +243,7 @@ impl CaptureComposer {
             copy_folder,
             copy_folder_chosen: false,
             saved: None,
+            saved_recovery_copy: None,
             error: None,
             checkpoint_error: false,
             busy: false,
@@ -462,6 +480,19 @@ impl Render for CaptureComposer {
                             cx.listener(|this, _, window, cx| this.open_saved(window, cx)),
                         )),
                 );
+        }
+        if self.saved_recovery_copy.is_some() {
+            view = view.child(
+                Button::new("capture-dismiss-saved-source")
+                    .label("Dismiss original recovery source — keep all files")
+                    .disabled(self.busy || self.loading)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(copy) = this.saved_recovery_copy.clone() {
+                            this.busy = true;
+                            this.enqueue(Work::Dismiss(copy), cx);
+                        }
+                    })),
+            );
         }
         for (index, draft) in self.recovered.iter().enumerate() {
             let preview: String = draft.text.chars().take(60).collect();

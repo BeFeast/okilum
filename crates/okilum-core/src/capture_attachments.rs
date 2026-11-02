@@ -818,6 +818,9 @@ pub(super) fn reconcile_recovered(
         );
         return Ok(true);
     }
+    if source_superseded(root, records, &plan)? {
+        return Ok(true);
+    }
     draft.attachment_attempt = Some(plan.note.receipt.operation_id.clone());
     if let Some(receipt) =
         read::<AttachmentReceipt>(&records.join(receipt_name(&draft.id)), MAX_RECEIPT_BYTES)?
@@ -1186,6 +1189,86 @@ impl AttachmentCopy {
         Publisher::new(root, drafts, records, self.attachment_folder(), &mut draft)
             .publish_capture(self.composer_id(), assets)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SupersededAttachments {
+    root: PathBuf,
+    source_composer_id: String,
+    source_operation_id: String,
+    source_revision: String,
+    copy: AttachmentCopy,
+    receipt: AttachmentReceipt,
+}
+impl AttachmentCopy {
+    /// Explicitly dismiss the ORIGINAL recovery source after this copy finished.
+    /// Leaves its full frozen manifest, draft, staged blobs and current assets
+    /// untouched. A copy receipt still never grants source staging GC authority.
+    pub fn dismiss_source(&self, root: &Path, records: &Path) -> Result<()> {
+        self.validate(root)?;
+        verify_copy_origin(root, records, &self.plan)?;
+        let receipt = recover_receipt(root, records, self.composer_id())?
+            .context("Copy is not durably complete; source cannot be dismissed")?;
+        let authorized: AttachmentCopy =
+            read(&self.authorization_path(records)?, MAX_COPY_RECORD_BYTES)?
+                .context("Copy authorization is missing")?;
+        ensure!(authorized == *self, "Copy authorization changed");
+        let decision = SupersededAttachments {
+            root: root.canonicalize()?,
+            source_composer_id: self.source_composer_id().into(),
+            source_operation_id: self.source_operation_id().into(),
+            source_revision: self.review.origin.source_revision.clone(),
+            copy: self.clone(),
+            receipt,
+        };
+        persist_equal(
+            records,
+            &format!("{}.attachments.superseded.json", self.source_composer_id()),
+            &decision,
+        )
+    }
+}
+fn source_superseded(root: &Path, records: &Path, source: &Plan) -> Result<bool> {
+    let Some(decision) = read::<SupersededAttachments>(
+        &records.join(format!(
+            "{}.attachments.superseded.json",
+            source.composer_id
+        )),
+        MAX_COPY_RECORD_BYTES + MAX_RECEIPT_BYTES,
+    )?
+    else {
+        return Ok(false);
+    };
+    ensure!(
+        decision.root == root.canonicalize()?
+            && decision.source_composer_id == source.composer_id
+            && decision.source_operation_id == source.note.receipt.operation_id,
+        "Superseded attachment source identity changed"
+    );
+    decision.copy.validate(root)?;
+    verify_copy_origin(root, records, &decision.copy.plan)?;
+    ensure!(
+        decision.source_revision == decision.copy.review.origin.source_revision
+            && decision.copy.source_composer_id() == source.composer_id
+            && decision.receipt == decision.copy.plan.receipt(),
+        "Superseded attachment copy manifest changed"
+    );
+    let authorized: AttachmentCopy = read(
+        &decision.copy.authorization_path(records)?,
+        MAX_COPY_RECORD_BYTES,
+    )?
+    .context("Superseding copy authorization is missing")?;
+    let receipt: AttachmentReceipt = read(
+        &records.join(receipt_name(decision.copy.composer_id())),
+        MAX_RECEIPT_BYTES,
+    )?
+    .context("Superseding copy receipt is missing")?;
+    ensure!(
+        authorized == decision.copy && receipt == decision.receipt,
+        "Superseding copy receipt/authorization changed"
+    );
+    Ok(true)
 }
 
 fn copy_directory(records: &Path, composer: &str) -> PathBuf {
@@ -2196,6 +2279,81 @@ mod tests {
         assert_eq!(
             recover_receipt(&root, &records, &draft.id).unwrap(),
             Some(receipt)
+        );
+    }
+    #[test]
+    fn explicit_copy_dismissal_preserves_frozen_source_and_never_authorizes_cleanup() {
+        let (_temp, root, records, drafts, original, assets) = copy_fixture();
+        let source_plan_bytes = std::fs::read(records.join(plan_name(&original.id))).unwrap();
+        let source_draft_bytes =
+            std::fs::read(records.join(format!("{}.composer.json", original.id))).unwrap();
+        let source = plan(&records, &original);
+        crate::note_files::create_attachment_with_source(
+            &root,
+            &source.assets[0].path,
+            b"current external asset",
+        )
+        .unwrap();
+        let copy = preview_copy(
+            &root,
+            &records,
+            &original.id,
+            Path::new("Copies"),
+            Path::new("CopyAssets"),
+        )
+        .unwrap()
+        .start_copy(&root, &records)
+        .unwrap();
+        assert!(copy.dismiss_source(&root, &records).is_err());
+        assert_eq!(
+            super::super::recover_composers(&root, &records).unwrap(),
+            vec![original.clone()]
+        );
+        let receipt = copy
+            .publish_capture(&root, &drafts, &records, &original.id, &assets)
+            .unwrap();
+        assert_eq!(
+            super::super::recover_composers(&root, &records).unwrap(),
+            vec![original.clone()]
+        );
+        copy.dismiss_source(&root, &records).unwrap();
+        copy.dismiss_source(&root, &records).unwrap();
+        assert!(super::super::recover_composers(&root, &records)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            std::fs::read(records.join(plan_name(&original.id))).unwrap(),
+            source_plan_bytes
+        );
+        assert_eq!(
+            std::fs::read(records.join(format!("{}.composer.json", original.id))).unwrap(),
+            source_draft_bytes
+        );
+        assert_eq!(
+            std::fs::read(root.join(&source.assets[0].path)).unwrap(),
+            b"current external asset"
+        );
+        assert_eq!(
+            recover_copies(&root, &records, &original.id).unwrap(),
+            vec![copy.clone()]
+        );
+        let manifest: Vec<_> = assets.iter().map(|a| a.asset.clone()).collect();
+        assert!(
+            verify_cleanup_receipt(&root, &records, copy.composer_id(), &manifest, &receipt)
+                .is_err()
+        );
+        assert!(
+            verify_cleanup_receipt(&root, &records, &original.id, &manifest, &receipt).is_err()
+        );
+        // Presentation marker remains valid after subsequent user edits to the
+        // saved copy; those edits cannot resurrect or rewrite the old capture.
+        std::fs::write(root.join(&receipt.note.path), b"later copy edit").unwrap();
+        assert!(super::super::recover_composers(&root, &records)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            std::fs::read(root.join(&receipt.note.path)).unwrap(),
+            b"later copy edit"
         );
     }
 }

@@ -199,6 +199,9 @@ pub fn recover(root: &Path, records: &Path) -> Result<Vec<Capture>> {
             name == format!("{id}.intent.json") || name == format!("{id}.draft.json"),
             "Capture record identity mismatch"
         );
+        if source_dismissed(&root, records, &capture)? {
+            continue;
+        }
         if attachments::owns_operation(&root, records, id)? {
             continue;
         }
@@ -404,6 +407,9 @@ pub fn recover_composers(root: &Path, records: &Path) -> Result<Vec<ComposerDraf
                 "Recovered composer and capture disagree"
             );
             captures.retain(|capture| capture.receipt.operation_id != attempt.receipt.operation_id);
+            if source_dismissed(root, records, attempt)? {
+                continue;
+            }
             if let Some(receipt) = read_optional::<Receipt>(
                 &records.join(format!("{}.receipt.json", attempt.receipt.operation_id)),
             )? {
@@ -615,6 +621,9 @@ pub fn load_recovery(root: &Path, records: &Path) -> Result<RecoveryInbox> {
             name == format!("{}.intent.json", capture.receipt.operation_id),
             "Legacy capture record identity mismatch"
         );
+        if source_dismissed(root, records, &capture)? {
+            continue;
+        }
         // An old receipt has no vault binding either. It cannot choose a vault
         // or prove that a note in the current vault belongs to this intent.
         unbound.push(CopySource {
@@ -651,6 +660,87 @@ fn validate_copy_folder(root: &Path, folder: &Path) -> Result<()> {
         let _folder = crate::windows_files::Directory::open(&root.join(folder))?;
     }
     Ok(())
+}
+
+/// An explicit presentation decision after Save copy. This is not deletion,
+/// completion of the original operation, or authority to discard any source.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct SupersededSource {
+    origin: CopyPreview,
+    saved: Capture,
+}
+
+/// Hide a recovery source only after this exact copy has a durable receipt.
+/// Keep the successful ComposerDraft until the user chooses this action.
+pub fn dismiss_saved_copy(root: &Path, records: &Path, copy: &ComposerDraft) -> Result<()> {
+    let origin = copy
+        .copy_origin
+        .as_ref()
+        .context("Choose a successfully saved recovery copy")?;
+    let saved = copy
+        .attempt
+        .as_ref()
+        .context("Copy has no saved operation")?;
+    origin.validate_copy(root, records, copy)?;
+    let decision = SupersededSource {
+        origin: origin.clone(),
+        saved: saved.clone(),
+    };
+    decision.validate(root, records)?;
+    persist_equal(
+        records,
+        &superseded_name(&origin.source.capture.receipt.operation_id),
+        &decision,
+    )
+}
+fn superseded_name(operation: &str) -> String {
+    format!("{operation}.superseded.json")
+}
+impl SupersededSource {
+    fn validate(&self, root: &Path, records: &Path) -> Result<()> {
+        anyhow::ensure!(
+            root.canonicalize()? == self.origin.root,
+            "Superseded source belongs to another vault"
+        );
+        self.origin.source.verify(records)?;
+        self.saved.validate()?;
+        anyhow::ensure!(
+            self.saved.text == self.origin.source.text()
+                && self.saved.path().parent() == Some(self.origin.folder())
+                && self.saved.receipt.operation_id
+                    != self.origin.source.capture.receipt.operation_id,
+            "Superseding copy differs from reviewed source"
+        );
+        let intent: Record = read_optional(
+            &records.join(format!("{}.intent.json", self.saved.receipt.operation_id)),
+        )?
+        .context("Saved copy intent is missing; keep source visible")?;
+        let receipt: Receipt = read_optional(
+            &records.join(format!("{}.receipt.json", self.saved.receipt.operation_id)),
+        )?
+        .context("Saved copy receipt is missing; keep source visible")?;
+        anyhow::ensure!(
+            intent.root == self.origin.root
+                && intent.capture == self.saved
+                && receipt == self.saved.receipt,
+            "Superseding copy receipt/intent differs"
+        );
+        Ok(())
+    }
+}
+fn source_dismissed(root: &Path, records: &Path, capture: &Capture) -> Result<bool> {
+    let Some(decision) = read_optional::<SupersededSource>(
+        &records.join(superseded_name(&capture.receipt.operation_id)),
+    )?
+    else {
+        return Ok(false);
+    };
+    decision.validate(root, records)?;
+    anyhow::ensure!(
+        decision.origin.source.capture == *capture,
+        "Dismissed source identity changed"
+    );
+    Ok(true)
 }
 
 fn prepare_records(records: &Path) -> Result<()> {
@@ -1313,5 +1403,113 @@ mod tests {
             std::fs::read_to_string(vault.path().join(receipt.path)).unwrap(),
             legacy.text()
         );
+    }
+    #[test]
+    fn explicit_saved_copy_dismissal_is_durable_and_keeps_original_source() {
+        let vault = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let records = state.path().join("records");
+        prepare_records(&records).unwrap();
+        let legacy = Capture::new(Path::new(""), "retained legacy\r\n".into()).unwrap();
+        let name = format!("{}.intent.json", legacy.receipt.operation_id);
+        persist_new(&records, &name, &legacy).unwrap();
+        let original = std::fs::read(records.join(&name)).unwrap();
+        let source = load_recovery(vault.path(), &records)
+            .unwrap()
+            .unbound
+            .remove(0);
+        let copy = source
+            .preview(vault.path(), Path::new(""), &records)
+            .unwrap()
+            .start_copy()
+            .unwrap();
+        assert!(dismiss_saved_copy(vault.path(), &records, &copy).is_err());
+        assert_eq!(
+            load_recovery(vault.path(), &records).unwrap().unbound.len(),
+            1
+        );
+        let receipt = copy
+            .publish(vault.path(), &state.path().join("drafts"), &records)
+            .unwrap();
+        assert_eq!(
+            load_recovery(vault.path(), &records).unwrap().unbound.len(),
+            1,
+            "Save copy alone never dismisses its source"
+        );
+        dismiss_saved_copy(vault.path(), &records, &copy).unwrap();
+        dismiss_saved_copy(vault.path(), &records, &copy).unwrap();
+        assert!(load_recovery(vault.path(), &records)
+            .unwrap()
+            .unbound
+            .is_empty());
+        assert_eq!(std::fs::read(records.join(&name)).unwrap(), original);
+        std::fs::write(vault.path().join(&receipt.path), "later user edit").unwrap();
+        assert!(load_recovery(vault.path(), &records)
+            .unwrap()
+            .unbound
+            .is_empty());
+        assert_eq!(
+            std::fs::read_to_string(vault.path().join(receipt.path)).unwrap(),
+            "later user edit"
+        );
+        let marker = records.join(superseded_name(&legacy.receipt.operation_id));
+        let saved_marker = std::fs::read(&marker).unwrap();
+        std::fs::write(&marker, b"corrupt marker").unwrap();
+        assert!(load_recovery(vault.path(), &records).is_err());
+        std::fs::write(marker, saved_marker).unwrap();
+        assert!(load_recovery(vault.path(), &records)
+            .unwrap()
+            .unbound
+            .is_empty());
+    }
+    #[test]
+    fn bound_source_dismissal_hides_both_composer_and_original_intent() {
+        let vault = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let records = state.path().join("records");
+        let locks = state.path().join("drafts");
+        let mut original = ComposerDraft {
+            text: "original bound thought".into(),
+            folder: Some(PathBuf::new()),
+            ..Default::default()
+        };
+        original.prepare_save().unwrap();
+        original.persist(vault.path(), &records).unwrap();
+        let attempt = original.attempt.as_ref().unwrap();
+        persist_new(
+            &records,
+            &format!("{}.intent.json", attempt.receipt.operation_id),
+            &Record {
+                root: vault.path().canonicalize().unwrap(),
+                capture: attempt.clone(),
+            },
+        )
+        .unwrap();
+        std::fs::write(vault.path().join(attempt.path()), "external original").unwrap();
+        let copy = CopySource::from_composer(vault.path(), &records, &original)
+            .unwrap()
+            .preview(vault.path(), Path::new(""), &records)
+            .unwrap()
+            .start_copy()
+            .unwrap();
+        copy.publish(vault.path(), &locks, &records).unwrap();
+        assert_eq!(
+            recover_composers(vault.path(), &records).unwrap(),
+            vec![original.clone()]
+        );
+        dismiss_saved_copy(vault.path(), &records, &copy).unwrap();
+        assert!(recover(vault.path(), &records).unwrap().is_empty());
+        assert!(recover_composers(vault.path(), &records)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            std::fs::read_to_string(vault.path().join(attempt.path())).unwrap(),
+            "external original"
+        );
+        let raw: ComposerRecord =
+            read_optional(&records.join(format!("{}.composer.json", original.id)))
+                .unwrap()
+                .unwrap();
+        assert_eq!(raw.draft, original);
     }
 }
