@@ -1531,6 +1531,14 @@ impl Reader {
                 return;
             }
         }
+        if self.pending_open_document.is_some() && self.leaving_deleted_note(None, cx) {
+            self.ask_leaving_deleted_note(
+                Box::new(|this, window, cx| this.publish_pending_document(window, cx)),
+                window,
+                cx,
+            );
+            return;
+        }
         let Some(pending) = self.pending_open_document.take() else {
             return;
         };

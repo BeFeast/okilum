@@ -10,7 +10,15 @@ impl Reader {
         target: Option<&str>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.deleted_note_leaving {
+        if self
+            .deleted_note_leaving
+            .as_ref()
+            .is_some_and(|(root, rel, generation)| {
+                root == &self.vault_root
+                    && rel == &self.current_rel
+                    && *generation == self.navigation.generation
+            })
+        {
             return false;
         }
         // Navigation can beat the debounced watcher notification.
@@ -78,8 +86,11 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.deleted_note_leaving = true;
+        self.deleted_note_leaving = Some((
+            self.vault_root.clone(),
+            self.current_rel.clone(),
+            self.navigation.generation,
+        ));
         retry(self, window, cx);
-        self.deleted_note_leaving = false;
     }
 }

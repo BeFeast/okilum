@@ -1730,7 +1730,7 @@ struct Reader {
     deleted_notice_generation: u64,
     /// «Save the deleted note?» is open; a second navigation does not stack another.
     deleted_note_asking: bool,
-    deleted_note_leaving: bool,
+    deleted_note_leaving: Option<(PathBuf, String, u64)>,
     displayed_notice: Option<reader_toast::Notice>,
     displayed_choices: Vec<(String, Option<String>)>,
     displayed_recovery: Option<(String, u64)>,
@@ -2068,7 +2068,7 @@ impl Reader {
             displayed_deleted_notice: None,
             deleted_notice_generation: 0,
             deleted_note_asking: false,
-            deleted_note_leaving: false,
+            deleted_note_leaving: None,
             displayed_notice: None,
             displayed_choices: Vec::new(),
             displayed_recovery: None,
@@ -2439,6 +2439,29 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A note can disappear while the requested target is being prepared.
+        // Root publications have already checked before changing vault_root.
+        if prepared_content.is_none() {
+            if self.leaving_deleted_note(Some(&request.rel), cx) {
+                self.ask_leaving_deleted_note(
+                    Box::new(move |this, window, cx| {
+                        this.accept_prepared_document_using(
+                            request,
+                            document,
+                            prepared_content,
+                            window,
+                            cx,
+                        );
+                    }),
+                    window,
+                    cx,
+                );
+                return;
+            }
+            if self.deleted_current().is_some() && request.rel == self.current_rel {
+                return;
+            }
+        }
         if self.editing.is_some() {
             return;
         }

@@ -1384,4 +1384,52 @@ mod tests {
         });
         assert!(!root.join("Start.md").exists());
     }
+
+    #[gpui::test]
+    fn deletion_during_preparation_and_same_note_reopen_keep_the_retained_copy(
+        cx: &mut TestAppContext,
+    ) {
+        let (temp, root) = vault();
+        let (reader, visual) = open(cx, &root, temp.path());
+        let prepared = reader.read_with(visual, |r, _| {
+            okilum_core::render::reader_document(&r.vault, "Other.md").unwrap()
+        });
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.accept_prepared_document(
+                prepared_links::DocumentRequest {
+                    rel: "Other.md".into(),
+                    jump: None,
+                    heading: None,
+                    history_index: None,
+                    restore_position: None,
+                },
+                Ok(prepared.into()),
+                window,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-cancel");
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "Start.md");
+            assert!(r.note_source.contains("only copy"));
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Start.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(disk(r), Some(Disk::Missing));
+            assert!(r.note_source.contains("only copy"));
+        });
+        // Choosing another target while the dialog is open cannot bypass it.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.show_empty_vault(window, cx));
+        click(visual, "deleted-note-cancel");
+        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "Start.md"));
+    }
 }

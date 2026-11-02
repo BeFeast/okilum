@@ -330,6 +330,10 @@ impl Reader {
             );
             return;
         }
+        if self.deleted_current().is_some() && rel == self.current_rel {
+            self.reshow_deleted_notice(cx);
+            return;
+        }
         if !self.leave_source(cx) {
             return;
         }
