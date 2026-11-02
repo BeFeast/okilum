@@ -9,7 +9,9 @@ use std::path::PathBuf;
 
 /// Render the session inventory. The owner runs RefreshRequest::discover off the
 /// UI thread and calls finish_refresh on completion, then notifies the view.
-/// Refresh reloads configuration first; configuration_failed blocks old-policy scans.
+/// Reload must publish the current scope and inventory revision through
+/// Inventory::begin_reload(scope, inventory_revision), then complete with the same
+/// request. Reload configuration first; configuration_failed blocks old-policy scans.
 /// Open errors must call Inventory::invalidate and use the owner's visible notice.
 pub(super) fn render(
     inventory: &Inventory,
@@ -19,10 +21,7 @@ pub(super) fn render(
     let root = inventory.scope().map(|scope| scope.root.clone());
     let empty = Snapshot::default();
     let snapshot = inventory.snapshot().unwrap_or(&empty);
-    let historical = !matches!(
-        inventory.freshness(),
-        Freshness::Fresh | Freshness::Incomplete
-    );
+    let historical = !matches!(inventory.freshness(), Freshness::Fresh);
     let message = match inventory.freshness() {
         Freshness::NotLoaded => "Project skills have not been loaded".to_owned(),
         Freshness::Refreshing if inventory.snapshot().is_some() => {
@@ -32,12 +31,13 @@ pub(super) fn render(
         Freshness::Fresh if snapshot.skills.is_empty() => "No project skills found".to_owned(),
         Freshness::Fresh => "Project skills are up to date".to_owned(),
         Freshness::Incomplete => {
-            "Skill discovery is incomplete; availability is unconfirmed".to_owned()
+            "Skill reload is incomplete; last available listing shown; current availability is unconfirmed"
+                .to_owned()
         }
         Freshness::Stale(reason) => {
-            format!("Skills are stale: {reason}. Refresh to update availability")
+            format!("Skills are stale: {reason}. Reload to update availability")
         }
-        Freshness::Failed(error) => format!("Skill refresh failed: {error}. Refresh to retry"),
+        Freshness::Failed(error) => format!("Skill refresh failed: {error}. Reload to retry"),
     };
     let mut section = div()
         .flex()
@@ -48,11 +48,16 @@ pub(super) fn render(
         .child(
             Button::new("refresh-project-skills")
                 .ghost()
-                .label("Refresh skills")
+                .label("Reload skills")
                 .disabled(root.is_none())
                 .on_click(move |_, window, cx| on_refresh(window, cx)),
         );
-    for diagnostic in &snapshot.diagnostics {
+    for diagnostic in inventory.reload_diagnostics().iter().chain(
+        snapshot
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| !inventory.reload_diagnostics().contains(diagnostic)),
+    ) {
         section = section.child(div().child(diagnostic.clone()));
     }
     for (index, skill) in snapshot.skills.iter().enumerate() {
@@ -64,8 +69,6 @@ pub(super) fn render(
         };
         let status = if historical {
             format!("Previous result: {status}; current availability is unconfirmed")
-        } else if matches!(inventory.freshness(), Freshness::Incomplete) {
-            format!("{status}; discovery is incomplete")
         } else {
             status
         };
