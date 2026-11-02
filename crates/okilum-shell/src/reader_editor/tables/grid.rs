@@ -248,7 +248,9 @@ impl TableGrid {
         let session = self.session;
         let source = SourceSnapshot {
             stamp,
-            text: Arc::from(self.binding.as_ref().unwrap().document.as_str()),
+            text: gpui_component::input::projection::SourceText::from(
+                self.binding.as_ref().unwrap().document.as_str(),
+            ),
         };
         // Existing LivePreview publication remains untouched. The grid's lease
         // has its own immutable fallback, classified off the foreground thread.
@@ -360,7 +362,9 @@ impl TableGrid {
             base,
             source: SourceSnapshot {
                 stamp: binding.stamp,
-                text: Arc::from(binding.document.as_str()),
+                text: gpui_component::input::projection::SourceText::from(
+                    binding.document.as_str(),
+                ),
             },
             table: binding.table.clone(),
         });
@@ -1191,7 +1195,9 @@ mod projection_tests {
                 document: 4,
                 generation: 2,
             },
-            text: Arc::from("Before\n\n| A | B |\n|---|---|\n| one | two |\n\nAfter"),
+            text: gpui_component::input::projection::SourceText::from(
+                "Before\n\n| A | B |\n|---|---|\n| one | two |\n\nAfter",
+            ),
         };
         let table = source.text.find('|').unwrap()..source.text.find("\n\nAfter").unwrap();
         let active = ActiveSource {

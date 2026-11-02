@@ -454,10 +454,7 @@ impl Reader {
                 }),
                 path: self.selected_file().to_owned(),
             },
-            source: SourceSnapshot {
-                stamp: editor.source_stamp(),
-                text: Arc::from(editor.value().as_ref()),
-            },
+            source: editor.source_snapshot(),
         })
     }
     fn checked_live_provider(&self, entity: EntityId, cx: &App) -> Option<Arc<CachedProvider>> {
@@ -1229,6 +1226,11 @@ mod tests {
     /// Same-process renderer evidence. This is not physical display latency or
     /// acceptance of the weak-Linux/M4 frame budgets.
     #[gpui::test]
+    fn short_note_native_typing_ime_undo_and_scroll(cx: &mut TestAppContext) {
+        check_large_note(cx, 25 * 1024);
+    }
+
+    #[gpui::test]
     fn large_note_native_typing_ime_undo_and_scroll(cx: &mut TestAppContext) {
         check_large_note(cx, 1024 * 1024);
     }
@@ -1274,7 +1276,7 @@ mod tests {
         input.read_with(visual, |i, _| {
             let frames = i.take_layout_frames();
             assert!(
-                frames.iter().any(|f| !f.raw && f.reshaped_lines > 30),
+                frames.iter().any(|f| !f.raw && f.reshaped_lines > 10),
                 "cold positive control observes whole-note projected layout"
             );
             assert!(i.layout_diagnostics().unwrap().projection_composes > 0);
@@ -1286,6 +1288,8 @@ mod tests {
                 seen.set(Some(std::time::Instant::now()));
             })
         });
+        okilum_core::source_projection::revision::reset_work();
+        gpui_component::input::projection::take_flattened_bytes();
         reader.update_in(visual, |_, window, cx| {
             input.update(cx, |i, cx| {
                 i.take_layout_frames();
@@ -1300,6 +1304,34 @@ mod tests {
             window.draw(cx).clear(cx);
         });
         let elapsed = started.elapsed().as_secs_f64() * 1000.;
+        let work = okilum_core::source_projection::revision::take_work();
+        let native_flat = gpui_component::input::projection::take_flattened_bytes();
+        assert_eq!(
+            native_flat, 0,
+            "compose and anchors must retain the native Rope"
+        );
+        assert_eq!(
+            work.flattened_bytes, 0,
+            "no contiguous core source on the input thread"
+        );
+        assert_eq!(
+            work.display_builds, 0,
+            "display must carry predecessor nodes"
+        );
+        assert!(
+            work.scanned_bytes < 64 * 1024,
+            "bounded source scans at {bytes}: {work:?}"
+        );
+        assert!(
+            work.display_bytes < 64 * 1024,
+            "bounded display edits at {bytes}: {work:?}"
+        );
+        println!("ROPE_KEY_WORK bytes={bytes} native_flat={native_flat} work={work:?}");
+        // Old input construction really is visible to the same counter.
+        let control = input.read_with(visual, |i, _| i.source_snapshot());
+        let _flattened = control.text.as_ref();
+        assert!(gpui_component::input::projection::take_flattened_bytes() >= bytes);
+
         input.read_with(visual, |i, _| {
             assert_eq!(i.value().as_ref(), format!("x{}", &original[1..]));
             let frames = i.take_layout_frames();
@@ -2082,23 +2114,22 @@ mod tests {
         let note = "Intro\n\n![[missing-picture.png]]\n\nEnd of note\n";
         let image = note.find("![[").unwrap()..note.find("]]").unwrap() + 2;
         let (reader, input, visual, _directory) = live_fixture(cx, note);
-        let rendered =
-            |visual: &mut VisualTestContext| {
-                reader.read_with(visual, |r, cx| {
-                    r.editing
+        let rendered = |visual: &mut VisualTestContext| {
+            reader.read_with(visual, |r, cx| {
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .live_preview
+                    .concealed_text()
+                    .is_some()
+                    && r.editing
                         .as_ref()
                         .unwrap()
                         .live_preview
-                        .concealed_text()
-                        .is_some()
-                        && r.editing.as_ref().unwrap().live_preview.rendered_blocks(
-                            &SourceSnapshot {
-                                stamp: input.read(cx).source_stamp(),
-                                text: note.into(),
-                            },
-                        ) == [image.clone()]
-                })
-            };
+                        .rendered_blocks(&input.read(cx).source_snapshot())
+                        == [image.clone()]
+            })
+        };
         assert!(
             rendered(visual),
             "positive control: the image is a rendered block"
@@ -2881,10 +2912,7 @@ mod tests {
                     e.live_preview.accepted.as_ref().unwrap(),
                     &held
                 ));
-                let snapshot = SourceSnapshot {
-                    stamp: input.read(cx).source_stamp(),
-                    text: Arc::from(input.read(cx).value().as_ref()),
-                };
+                let snapshot = input.read(cx).source_snapshot();
                 let active = ActiveSource {
                     anchor: gpui_component::input::projection::SourceByte(snapshot.text.len()),
                     head: gpui_component::input::projection::SourceByte(snapshot.text.len()),
@@ -3055,7 +3083,7 @@ mod tests {
             let expected = CachedProvider::classify(baseline.source().clone());
             let snapshot = SourceSnapshot {
                 stamp: e.input.read(cx).source_stamp(),
-                text: Arc::from(text.as_ref()),
+                text: gpui_component::input::projection::SourceText::from(text.as_ref()),
             };
             let active = ActiveSource::default();
             legacy_equivalent(

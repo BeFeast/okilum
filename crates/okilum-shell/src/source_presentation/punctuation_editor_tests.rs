@@ -61,7 +61,7 @@ fn editor(cx: &mut TestAppContext) -> (Entity<EditorState>, Frame, &mut VisualTe
                 Some(Arc::new(Recording {
                     provider: CachedProvider::classify(SourceSnapshot {
                         stamp: state.source_stamp(),
-                        text: Arc::from(ORIGINAL),
+                        text: gpui_component::input::projection::SourceText::from(ORIGINAL),
                     }),
                     frame: frame.clone(),
                 })),

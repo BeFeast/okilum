@@ -149,13 +149,7 @@ impl BrainView {
             path: self.source_snapshot.as_ref()?["path"].as_str()?.to_owned(),
             stamp: editor.source_stamp(),
         };
-        Some((
-            binding,
-            SourceSnapshot {
-                stamp: editor.source_stamp(),
-                text: Arc::from(editor.value().as_ref()),
-            },
-        ))
+        Some((binding, editor.source_snapshot()))
     }
     fn navigation_snapshot(&self, cx: &App) -> Option<(Binding, nav::Input)> {
         let (binding, source) = self.projection_snapshot(cx)?;
@@ -524,7 +518,7 @@ mod tests {
             );
             let expected = CachedProvider::classify(SourceSnapshot {
                 stamp: v.source.stamp(cx).unwrap(),
-                text: Arc::from(latest),
+                text: gpui_component::input::projection::SourceText::from(latest),
             });
             assert_eq!(v.current_source_links(cx).unwrap(), expected.note_links());
             let reports = &v.source_projection.worker_reports;
@@ -741,7 +735,7 @@ mod tests {
                 );
                 let source = SourceSnapshot {
                     stamp: v.source.stamp(cx).unwrap(),
-                    text: Arc::from(value.clone()),
+                    text: gpui_component::input::projection::SourceText::from(value.clone()),
                 };
                 let active = ActiveSource {
                     anchor: SourceByte(value.len()),

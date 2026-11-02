@@ -15,7 +15,7 @@ fn input(text: &str) -> Input {
                 document: 42,
                 generation: 1,
             },
-            text: Arc::from(text),
+            text: gpui_component::input::projection::SourceText::from(text),
         },
     }
 }
@@ -109,7 +109,7 @@ fn adoption_queries_and_held_views_check_the_complete_live_binding_and_source() 
     let input = input("[a](target.md)\n");
     let mut equal_value = input.clone();
     equal_value.source.text = Arc::from(input.source.text.to_string());
-    assert!(!Arc::ptr_eq(&equal_value.source.text, &input.source.text));
+    assert!(!equal_value.source.text.same(&input.source.text));
     let mut session = session(&input);
     let request = session.begin(Some(input.clone())).unwrap();
     let held = session

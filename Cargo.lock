@@ -6447,6 +6447,7 @@ dependencies = [
  "regex",
  "reqwest",
  "roughr",
+ "ropey",
  "rust-stemmers",
  "rustix",
  "serde",

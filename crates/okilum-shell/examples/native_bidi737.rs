@@ -59,7 +59,9 @@ impl Render for Fixture {
                     let editor = this.editor.read(cx);
                     Some(Arc::new(adapter::CachedProvider::classify(SourceSnapshot {
                         stamp: editor.source_stamp(),
-                        text: Arc::from(editor.value().as_ref()),
+                        text: gpui_component::input::projection::SourceText::from(
+                            editor.value().as_ref(),
+                        ),
                     })) as Arc<dyn ProjectionProvider>)
                 } else {
                     None
@@ -148,7 +150,9 @@ fn main() {
                             let provider =
                                 Arc::new(adapter::CachedProvider::classify(SourceSnapshot {
                                     stamp: state.source_stamp(),
-                                    text: Arc::from(state.value().as_ref()),
+                                    text: gpui_component::input::projection::SourceText::from(
+                                        state.value().as_ref(),
+                                    ),
                                 }));
                             editor.update(cx, |state, cx| {
                                 state.set_projection_provider(Some(provider), cx);
@@ -161,7 +165,9 @@ fn main() {
                                 let provider =
                                     Arc::new(adapter::CachedProvider::classify(SourceSnapshot {
                                         stamp,
-                                        text: Arc::from(state.value().as_ref()),
+                                        text: gpui_component::input::projection::SourceText::from(
+                                            state.value().as_ref(),
+                                        ),
                                     }));
                                 this.classified = Some(stamp);
                                 this.editor.update(cx, |state, cx| {

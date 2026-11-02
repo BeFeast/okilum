@@ -11,6 +11,7 @@ type Captures = Vec<(Range<usize>, SharedString)>;
 pub(super) struct CodeSyntax {
     source: Option<SourceSnapshot>,
     spans: Captures,
+    ranges: Vec<Range<usize>>,
     // Local coordinates, reusable only inside a current retained CodeBlock.
     blocks: HashMap<Arc<str>, Option<Captures>>,
 }
@@ -104,7 +105,7 @@ impl CodeSyntax {
         }
         let mut local_blocks: HashMap<Arc<str>, Option<Captures>> = HashMap::new();
         let mut ordered_spans = Vec::with_capacity(spans.len());
-        for block in blocks {
+        for block in &blocks {
             let captures: Captures = spans
                 .iter()
                 .filter(|(r, _)| block.start <= r.start && r.end <= block.end)
@@ -119,7 +120,7 @@ impl CodeSyntax {
                     .iter()
                     .map(|(r, name)| (block.start + r.start..block.start + r.end, name.clone())),
             );
-            let bytes: Arc<str> = source.text[block].into();
+            let bytes: Arc<str> = source.text[block.clone()].into();
             match local_blocks.entry(bytes) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(Some(captures));
@@ -134,6 +135,7 @@ impl CodeSyntax {
         Self {
             source: Some(source.clone()),
             spans: ordered_spans,
+            ranges: blocks,
             blocks: local_blocks,
         }
     }
@@ -198,6 +200,40 @@ impl CodeSyntax {
             }
         };
         if let Some(current) = current {
+            if source.text.is_native() {
+                let Some(edit) = source.text.edit_since(old.text.id()) else {
+                    return;
+                };
+                for block in &self.ranges {
+                    let mapped = if block.end <= edit.old.start {
+                        Some(block.clone())
+                    } else if block.start >= edit.old.end {
+                        Some(edit.forward(block.start)..edit.forward(block.end))
+                    } else {
+                        None
+                    };
+                    let Some(mapped) = mapped.filter(|range| {
+                        current
+                            .styles()
+                            .iter()
+                            .any(|s| s.style == Style::CodeBlock && &s.range == range)
+                    }) else {
+                        continue;
+                    };
+                    for (range, name) in self
+                        .spans
+                        .iter()
+                        .filter(|(r, _)| block.start <= r.start && r.end <= block.end)
+                    {
+                        append(
+                            mapped.start + range.start - block.start
+                                ..mapped.start + range.end - block.start,
+                            name,
+                        );
+                    }
+                }
+                return;
+            }
             // An old parser tree is never applied to a new source snapshot.
             // The current retained classification proves each literal code block;
             // only identical bytes may carry its independent local captures.

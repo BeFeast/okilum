@@ -22,6 +22,9 @@ mod code_syntax;
 #[path = "source_presentation/punctuation.rs"]
 mod punctuation;
 
+#[path = "source_presentation/display_metadata.rs"]
+mod display_metadata;
+
 #[cfg(test)]
 #[path = "source_presentation/punctuation_editor_tests.rs"]
 mod punctuation_editor_tests;
@@ -87,6 +90,7 @@ pub struct CachedProvider {
     /// One-line renderings of inline formulas by their TeX, None when the TeX
     /// cannot be drawn (#1645). Filled on first use; bounded.
     formulas: Mutex<HashMap<Box<str>, Option<Arc<tex::Linear>>>>,
+    display_metadata: Mutex<Option<display_metadata::Metadata>>,
 }
 
 /// Distinct formulas remembered per classification; typing a new formula
@@ -182,9 +186,18 @@ impl CachedProvider {
         links: Vec<source_classifier::NoteLink>,
         previous: Option<&Self>,
     ) -> Self {
-        let snapshot = core_snapshot(&source);
         // Release the old provider's lock before the background canonical parse.
         let predecessor = previous.and_then(|p| p.retained.lock().ok().map(|r| r.clone()));
+        let snapshot = core_snapshot(&source).with_edit(
+            predecessor
+                .as_ref()
+                .and_then(|p| source.text.edit_since(p.snapshot().text().id()))
+                .map(|e| okilum_core::source_projection::revision::Edit {
+                    previous: e.previous,
+                    old: e.old,
+                    inserted: e.inserted,
+                }),
+        );
         let classified = source_classifier::classify_reusing(&snapshot, predecessor.as_ref());
         let tables = classified
             .decorations_for(&snapshot)
@@ -214,7 +227,7 @@ impl CachedProvider {
             })
             .collect();
         let syntax = code_syntax::CodeSyntax::new(&source, &classified);
-        Self {
+        let provider = Self {
             source,
             syntax,
             fenced_blocks,
@@ -226,7 +239,17 @@ impl CachedProvider {
             links,
             tables,
             formulas: Default::default(),
+            display_metadata: Default::default(),
+        };
+        {
+            let retained = provider.retained.lock().expect("new presentation");
+            *provider
+                .display_metadata
+                .lock()
+                .expect("new display metadata") =
+                Some(display_metadata::Metadata::new(&provider, &retained).reusing(previous));
         }
+        provider
     }
 
     /// The formula a caret at `cursor` reveals (edges included), when the
@@ -245,9 +268,9 @@ impl CachedProvider {
         {
             return None;
         }
-        let text = snapshot.source();
+        let text = snapshot.text();
         let cursor = cursor.min(text.len());
-        let line_start = text[..cursor].rfind('\n').map_or(0, |at| at + 1);
+        let line_start = text.line_bounds(cursor).start;
         let styles = retained.styles();
         let first = styles.partition_point(|s| s.range.start < line_start);
         styles[first..]
@@ -258,7 +281,7 @@ impl CachedProvider {
             .find(|outer| outer.start <= cursor && cursor <= outer.end)
             .and_then(|outer| {
                 Some(FormulaAt {
-                    tex: text.get(outer.start + 1..outer.end - 1)?.to_owned(),
+                    tex: text.get(outer.start + 1..outer.end - 1)?.into_owned(),
                     range: outer,
                 })
             })
@@ -277,95 +300,6 @@ impl CachedProvider {
         rendered
     }
 
-    /// Inline formulas whose delimiters this reveal conceals, drawn in place
-    /// of their TeX. A formula the caret touches keeps its source; one that
-    /// cannot be drawn shows its exact source, delimiters included.
-    fn math_overlay(
-        &self,
-        projection: &Projection,
-        styles: &[source_classifier::StyleSpan],
-        retained: &RetainedPresentation,
-        reveal: &source_classifier::RevealSnapshot,
-    ) -> Option<MathOverlay> {
-        let snapshot = projection.snapshot();
-        let source = snapshot.source();
-        let map = |offset| projection.source_to_display(snapshot, offset).ok();
-        let mut segments = Vec::new();
-        for style in styles.iter().filter(|s| s.style == Style::Math) {
-            let content = style.range.clone();
-            let (Some(open), Some(start), Some(end), Some(close)) = (
-                map(content.start - 1),
-                map(content.start),
-                map(content.end),
-                map(content.end + 1),
-            ) else {
-                continue;
-            };
-            if open != start || end != close || start >= end {
-                continue; // Revealed: the caret is on it.
-            }
-            let (Some(tex), Some(authored)) = (
-                source.get(content.clone()),
-                source.get(content.start - 1..content.end + 1),
-            ) else {
-                continue;
-            };
-            let rendered = self.formula(tex).unwrap_or_else(|| {
-                Arc::new(tex::Linear {
-                    text: authored.to_owned(),
-                    runs: Vec::new(),
-                })
-            });
-            segments.push((start..end, rendered));
-        }
-        for (block, markers) in retained.prose_blocks() {
-            if reveal.is_raw(snapshot, block) {
-                continue;
-            }
-            let candidates = punctuation::replacements_indexed(
-                &source[block.clone()],
-                |local| {
-                    let range = block.start + local.start..block.start + local.end;
-                    !markers
-                        .iter()
-                        .any(|m| m.start < range.end && range.start < m.end)
-                        && !styles.iter().any(|s| {
-                            matches!(
-                                s.style,
-                                Style::Code | Style::CodeBlock | Style::Math | Style::Definition
-                            ) && s.range.start < range.end
-                                && range.start < s.range.end
-                        })
-                },
-                |local| {
-                    retained
-                        .validate_active(&Active {
-                            selection: Some(block.start + local.start..block.start + local.end),
-                            composition: None,
-                        })
-                        .is_ok()
-                },
-            );
-            for (range, glyph) in candidates {
-                let (Some(start), Some(end)) =
-                    (map(block.start + range.start), map(block.start + range.end))
-                else {
-                    continue;
-                };
-                if start < end {
-                    segments.push((
-                        start..end,
-                        Arc::new(tex::Linear {
-                            text: glyph.into(),
-                            runs: Vec::new(),
-                        }),
-                    ));
-                }
-            }
-        }
-        segments.sort_by_key(|(range, _)| range.start);
-        (!segments.is_empty()).then(|| MathOverlay::new(projection.display(), segments))
-    }
     /// Off-thread preparation keeps standalone list continuations from turning
     /// a fence indented by four spaces into literal indented code.
     #[allow(dead_code)] // Standalone projection examples do not render blocks.
@@ -400,10 +334,21 @@ impl CachedProvider {
 }
 
 fn core_snapshot(source: &SourceSnapshot) -> Snapshot {
-    Snapshot::new(
+    if !source.text.is_native() {
+        return Snapshot::new(
+            source.stamp.document.to_string(),
+            source.stamp.generation,
+            source.text.as_ref(),
+        );
+    }
+    Snapshot::from_rope(
         source.stamp.document.to_string(),
         source.stamp.generation,
-        source.text.clone(),
+        okilum_core::source_projection::revision::Text::from_identified_rope(
+            source.text.rope().clone(),
+            source.text.id(),
+        ),
+        None,
     )
 }
 fn raw_range(range: &Range<SourceByte>) -> Range<usize> {
@@ -441,8 +386,17 @@ impl CachedProvider {
         if source.text.len() > source_classifier::MAX_BYTES {
             return None;
         }
-        let current = core_snapshot(source);
         let mut retained = self.retained.lock().ok()?;
+        let current = core_snapshot(source).with_edit(
+            source
+                .text
+                .edit_since(retained.snapshot().text().id())
+                .map(|e| okilum_core::source_projection::revision::Edit {
+                    previous: e.previous,
+                    old: e.old,
+                    inserted: e.inserted,
+                }),
+        );
         if retained.snapshot() != &current {
             // An edit no reparse can prove keeps the blocks above it and
             // draws only the edited block and the rest below as source,
@@ -483,24 +437,25 @@ impl CachedProvider {
                 .project_retained(source, &projection, theme, &mut styles, Some(&retained));
         }
         let line_scales = heading_line_scales(&projection, retained.styles());
-        let math = self.math_overlay(&projection, retained.styles(), &retained, &reveal_snapshot);
+        let mut metadata = self.display_metadata.lock().ok()?;
+        let metadata = metadata.as_mut()?;
+        metadata.advance(
+            self,
+            &retained,
+            source.text.edit_since(metadata.snapshot_id()).map(|e| {
+                okilum_core::source_projection::revision::Edit {
+                    previous: e.previous,
+                    old: e.old,
+                    inserted: e.inserted,
+                }
+            }),
+        );
+        let math = metadata.overlay(&projection, &reveal_snapshot);
         if let Some(math) = &math {
             styles = math.restyle(styles);
         }
-        // Prefixes of the text actually drawn: formulas never hold a line
-        // break, so these are the core display's lines.
-        let line_indents = container_line_indents(
-            math.as_ref()
-                .map_or(projection.display(), |math| math.text.as_str()),
-        );
-        let blocks = table_blocks_indexed(
-            &source.text,
-            self.current_tables(&current, &source.text),
-            std::iter::once(active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0))
-                .chain(active.composition.as_ref().map(raw_range))
-                .chain(active.replacement.as_ref().map(raw_range)),
-            |at| projection.source_line_at(at),
-        );
+        let line_indents = metadata.indents(&projection);
+        let blocks = metadata.blocks(&projection, active);
         Some(Arc::new(MappedProjection {
             source: source.clone(),
             // Retained with the styles, so a revision not yet classified keeps
@@ -520,37 +475,120 @@ impl CachedProvider {
 /// (#1644) replaced by their one-line rendering. Replacements never contain a
 /// line break, so line numbers, blocks and heading scales stay those of the
 /// core display. Positions inside replacements snap to their edges with bias.
+#[derive(Clone)]
 struct MathOverlay {
-    text: String,
+    core: okilum_core::source_projection::revision::Text,
+    text: okilum_core::source_projection::revision::Text,
     /// Sorted, disjoint: the formula's core display range, the range drawn in
     /// its place, and its glyph runs relative to that range.
     segments: Vec<MathSegment>,
 }
 
+#[derive(Clone)]
 struct MathSegment {
+    rendered: String,
     core: Range<usize>,
     shown: Range<usize>,
     runs: Vec<tex::Run>,
 }
 
 impl MathOverlay {
+    #[cfg(test)]
     fn new(display: &str, formulas: Vec<(Range<usize>, Arc<tex::Linear>)>) -> Self {
-        let mut text = String::with_capacity(display.len());
+        Self::new_persistent(
+            &okilum_core::source_projection::revision::Text::from(Arc::<str>::from(display)),
+            formulas,
+            None,
+        )
+    }
+    fn new_persistent(
+        display: &okilum_core::source_projection::revision::Text,
+        formulas: Vec<(Range<usize>, Arc<tex::Linear>)>,
+        previous: Option<&Self>,
+    ) -> Self {
         let mut segments = Vec::with_capacity(formulas.len());
-        let mut at = 0;
+        let mut core_at = 0;
+        let mut shown_at = 0;
         for (core, rendered) in formulas {
-            text.push_str(&display[at..core.start]);
-            let start = text.len();
-            text.push_str(&rendered.text);
+            shown_at += core.start - core_at;
+            let shown = shown_at..shown_at + rendered.text.len();
+            core_at = core.end;
+            shown_at = shown.end;
             segments.push(MathSegment {
-                shown: start..text.len(),
-                core: core.clone(),
+                core,
+                shown,
+                rendered: rendered.text.clone(),
                 runs: rendered.runs.clone(),
             });
-            at = core.end;
         }
-        text.push_str(&display[at..]);
-        Self { text, segments }
+        let text = if let Some((old, edit)) =
+            previous.and_then(|old| display.edit_since(old.core.id()).map(|edit| (old, edit)))
+        {
+            let mut start = edit.old.start;
+            let mut end = edit.old.end;
+            let moved = |r: &Range<usize>| {
+                if r.end <= edit.old.start {
+                    Some(r.clone())
+                } else if r.start >= edit.old.end {
+                    Some(edit.forward(r.start)..edit.forward(r.end))
+                } else {
+                    None
+                }
+            };
+            for item in &old.segments {
+                if !segments.iter().any(|next| {
+                    moved(&item.core).as_ref() == Some(&next.core) && item.rendered == next.rendered
+                }) {
+                    start = start.min(item.core.start);
+                    end = end.max(item.core.end);
+                }
+            }
+            for item in &segments {
+                if !old.segments.iter().any(|old| {
+                    moved(&old.core).as_ref() == Some(&item.core) && old.rendered == item.rendered
+                }) {
+                    start = start.min(edit.backward(item.core.start));
+                    end = end.max(edit.backward(item.core.end));
+                }
+            }
+            for item in &old.segments {
+                if item.core.start < start && start < item.core.end {
+                    start = item.core.start;
+                }
+                if item.core.start < end && end < item.core.end {
+                    end = item.core.end;
+                }
+            }
+            let new_end = end - edit.old.end + edit.new_end();
+            let mut fragment = String::new();
+            let mut at = start;
+            for item in segments
+                .iter()
+                .filter(|s| start <= s.core.start && s.core.end <= new_end)
+            {
+                fragment.push_str(&display.slice(at..item.core.start));
+                fragment.push_str(&item.rendered);
+                at = item.core.end;
+            }
+            fragment.push_str(&display.slice(at..new_end));
+            let range = old.forward(start, ConcealBias::Left)..old.forward(end, ConcealBias::Right);
+            if range.is_empty() && fragment.is_empty() {
+                old.text.clone()
+            } else {
+                old.text.replace(range, &fragment)
+            }
+        } else {
+            let mut text = display.clone();
+            for item in segments.iter().rev() {
+                text = text.replace(item.core.clone(), &item.rendered);
+            }
+            text
+        };
+        Self {
+            core: display.clone(),
+            text,
+            segments,
+        }
     }
 
     fn forward(&self, core: usize, bias: ConcealBias) -> usize {
@@ -758,6 +796,14 @@ impl CachedProvider {
         if source.text.len() > source_classifier::MAX_BYTES {
             return Vec::new();
         }
+        if source.text.is_native() {
+            return self
+                .display_metadata
+                .lock()
+                .ok()
+                .and_then(|metadata| metadata.as_ref().map(|m| m.ranges_for(source)))
+                .unwrap_or_default();
+        }
         self.current_tables(&core_snapshot(source), &source.text)
     }
 
@@ -914,6 +960,9 @@ pub(crate) fn heading_scale(level: u8) -> f32 {
 // Shared conversion consumes a checked read view, not mutable parser authority.
 trait PresentationMap {
     fn display_text(&self) -> &str;
+    fn display_slice(&self, range: Range<usize>) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.display_text()[range])
+    }
     fn map_source(&self, offset: usize) -> Option<usize>;
     fn display_line_at(&self, byte: usize) -> usize {
         self.display_text().as_bytes()[..byte]
@@ -932,6 +981,9 @@ trait PresentationMap {
     }
 }
 impl PresentationMap for Projection {
+    fn display_slice(&self, range: Range<usize>) -> std::borrow::Cow<'_, str> {
+        self.display_text().slice(range)
+    }
     fn display_line_at(&self, byte: usize) -> usize {
         self.display_line_at(byte)
     }
@@ -946,6 +998,9 @@ impl PresentationMap for Projection {
     }
 }
 impl<T: PresentationMap> PresentationMap for Arc<T> {
+    fn display_slice(&self, range: Range<usize>) -> std::borrow::Cow<'_, str> {
+        self.as_ref().display_slice(range)
+    }
     fn display_line_at(&self, byte: usize) -> usize {
         self.as_ref().display_line_at(byte)
     }
@@ -975,7 +1030,6 @@ fn heading_line_scales(
     projection: &impl PresentationMap,
     styles: &[source_classifier::StyleSpan],
 ) -> Vec<LineScale> {
-    let display = projection.display_text();
     let mut scales: Vec<LineScale> = styles
         .iter()
         .filter_map(|style| match style.style {
@@ -986,7 +1040,7 @@ fn heading_line_scales(
                 let scale = heading_scale(level);
                 // Only a bare revealed marker hangs: a quote or list prefix
                 // before it stays in the text so per-row markers keep aligning.
-                let prefix = &display[line_start..start];
+                let prefix = projection.display_slice(line_start..start);
                 let marker = prefix.trim_end_matches([' ', '\t']);
                 let bare = (1..=6).contains(&marker.len())
                     && marker.bytes().all(|b| b == b'#')
@@ -1077,7 +1131,7 @@ struct MappedProjection {
 impl SourceProjection for MappedProjection {
     fn source_boundary(&self, current: &SourceSnapshot, offset: SourceByte) -> Option<bool> {
         if self.source.stamp != current.stamp
-            || (!Arc::ptr_eq(&self.source.text, &current.text) && self.source.text != current.text)
+            || (!self.source.text.same(&current.text) && self.source.text != current.text)
         {
             return None;
         }
@@ -1117,6 +1171,34 @@ impl SourceProjection for MappedProjection {
             Some(math) => &math.text,
             None => self.reveal.projection().display(),
         }
+    }
+    fn display_rope(&self) -> Option<&gpui_component::Rope> {
+        Some(
+            self.math
+                .as_ref()
+                .map_or(self.reveal.projection().display_text(), |m| &m.text)
+                .rope(),
+        )
+    }
+    fn display_revision(&self) -> Option<u64> {
+        Some(
+            self.math
+                .as_ref()
+                .map_or(self.reveal.projection().display_text(), |m| &m.text)
+                .id(),
+        )
+    }
+    fn display_edit(&self, previous: u64) -> Option<gpui_component::input::projection::EditDelta> {
+        let edit = self
+            .math
+            .as_ref()
+            .map_or(self.reveal.projection().display_text(), |m| &m.text)
+            .edit_since(previous)?;
+        Some(gpui_component::input::projection::EditDelta {
+            previous: edit.previous,
+            old: edit.old,
+            inserted: edit.inserted,
+        })
     }
     fn styles(&self) -> &[ProjectionStyle] {
         &self.styles
@@ -1226,7 +1308,7 @@ mod tests {
                 document: 5,
                 generation: 9,
             },
-            text: Arc::from(text),
+            text: gpui_component::input::projection::SourceText::from(text),
         }
     }
     fn inactive(source: &SourceSnapshot) -> ActiveSource {
@@ -1597,7 +1679,9 @@ mod tests {
                         ..current.clone()
                     },
                     SourceSnapshot {
-                        text: Arc::from("different bytes"),
+                        text: gpui_component::input::projection::SourceText::from(
+                            "different bytes",
+                        ),
                         ..current.clone()
                     },
                 ] {
@@ -1723,7 +1807,7 @@ mod tests {
                     generation: original.stamp.generation + step as u64,
                     ..original.stamp
                 },
-                text: Arc::from(text.as_str()),
+                text: gpui_component::input::projection::SourceText::from(text.as_str()),
             };
             let frame = provider.compose(&current, &inactive(&current)).unwrap();
             let fresh = CachedProvider::classify(current.clone());
@@ -1793,7 +1877,7 @@ mod tests {
                         generation: original.stamp.generation + step as u64,
                         ..original.stamp
                     },
-                    text: Arc::from(text.as_str()),
+                    text: gpui_component::input::projection::SourceText::from(text.as_str()),
                 };
                 let frame = provider
                     .compose(&current, &inactive(&current))
@@ -1832,7 +1916,7 @@ mod tests {
                         generation: original.stamp.generation + step as u64,
                         ..original.stamp
                     },
-                    text: Arc::from(text.as_str()),
+                    text: gpui_component::input::projection::SourceText::from(text.as_str()),
                 };
                 let frame = provider
                     .compose(&current, &inactive(&current))
@@ -1882,7 +1966,7 @@ mod tests {
                             generation: original.stamp.generation + step as u64,
                             ..original.stamp
                         },
-                        text: Arc::from(text.as_str()),
+                        text: gpui_component::input::projection::SourceText::from(text.as_str()),
                     };
                     let frame = provider
                         .compose(&current, &inactive(&current))
@@ -1939,7 +2023,7 @@ mod tests {
                     generation: original.stamp.generation + step as u64,
                     ..original.stamp
                 },
-                text: Arc::from(text.as_str()),
+                text: gpui_component::input::projection::SourceText::from(text.as_str()),
             };
             let frame = provider
                 .compose(&current, &inactive(&current))
@@ -2278,7 +2362,7 @@ This paragraph remains ordinary Markdown.
                 ..source.clone()
             },
             SourceSnapshot {
-                text: Arc::from("**other**\n\nend"),
+                text: gpui_component::input::projection::SourceText::from("**other**\n\nend"),
                 ..source.clone()
             },
         ] {
@@ -2295,7 +2379,7 @@ This paragraph remains ordinary Markdown.
                     generation: original.stamp.generation + step,
                     ..original.stamp
                 },
-                text: Arc::from(
+                text: gpui_component::input::projection::SourceText::from(
                     original
                         .text
                         .replace("TOP text", &format!("TOP текст{step}")),
@@ -2343,7 +2427,7 @@ This paragraph remains ordinary Markdown.
                     generation: original.stamp.generation + 1 + step as u64,
                     ..original.stamp
                 },
-                text: Arc::from(text.as_str()),
+                text: gpui_component::input::projection::SourceText::from(text.as_str()),
             };
             let caret = ActiveSource {
                 anchor: SourceByte(at + 1),
@@ -2840,5 +2924,97 @@ This paragraph remains ordinary Markdown.
         }
         // Positive control: the caret really revealed markers on these lines.
         assert!(revealed_markers > 0);
+    }
+}
+
+#[cfg(test)]
+mod rope_revision_tests {
+    use super::*;
+    use gpui_component::{
+        input::projection::{SourceStamp, SourceText},
+        Rope,
+    };
+    use okilum_core::source_projection::revision::{reset_work, take_work};
+
+    #[test]
+    fn native_receipts_bound_compose_and_old_discovery_controls_at_all_sizes() {
+        for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
+            let row = "Paragraph **bold** and a contraction isn't changed.\r\n\r\n";
+            let mut authored = row.repeat(bytes / row.len());
+            authored.push_str(&"z".repeat(bytes - authored.len()));
+            let source = SourceSnapshot {
+                stamp: SourceStamp {
+                    document: 2403,
+                    generation: 1,
+                },
+                text: SourceText::from_rope(Rope::from_str(&authored)),
+            };
+            reset_work();
+            let provider = CachedProvider::classify(source.clone());
+            let cold = take_work();
+            assert!(
+                cold.display_builds > 0 && cold.flattened_bytes >= bytes,
+                "cold controls: {cold:?}"
+            );
+            let at = source.text.len() - 8;
+            let active = ActiveSource {
+                anchor: SourceByte(at),
+                head: SourceByte(at),
+                ..Default::default()
+            };
+            let before = provider.compose(&source, &active).unwrap();
+            let mut rope = source.text.rope().clone();
+            rope.remove(at..at + 1);
+            rope.insert(at, "q");
+            let edited = SourceSnapshot {
+                stamp: SourceStamp {
+                    generation: 2,
+                    ..source.stamp
+                },
+                text: source.text.edited(rope, at..at + 1, 1),
+            };
+            reset_work();
+            gpui_component::input::projection::take_flattened_bytes();
+            let frame = provider
+                .compose(&edited, &active)
+                .expect("retained receipt");
+            let work = take_work();
+            assert_eq!(work.flattened_bytes, 0, "{bytes}: {work:?}");
+            assert_eq!(work.display_builds, 0, "{bytes}: {work:?}");
+            assert!(
+                work.scanned_bytes < 16 * 1024 && work.display_bytes < 16 * 1024,
+                "{bytes}: {work:?}"
+            );
+            assert_eq!(gpui_component::input::projection::take_flattened_bytes(), 0);
+            assert!(
+                frame
+                    .display_edit(before.display_revision().unwrap())
+                    .is_some(),
+                "native cache must receive a display receipt"
+            );
+            // Compare the real incremental output to an independent cold parse.
+            let oracle = CachedProvider::classify(edited.clone())
+                .compose(&edited, &active)
+                .unwrap();
+            assert_eq!(frame.text(), oracle.text());
+            assert_eq!(frame.line_indents(), oracle.line_indents());
+            assert_eq!(frame.styles(), oracle.styles());
+            // Independent old-style text has no native edit receipt. Running
+            // that compatibility path must exceed the SAME byte-scan budget.
+            let legacy = SourceSnapshot {
+                stamp: SourceStamp {
+                    generation: 3,
+                    ..source.stamp
+                },
+                text: SourceText::from(format!("{}r", &authored[..bytes - 1])),
+            };
+            reset_work();
+            let _old = provider.compose(&legacy, &active).unwrap();
+            let old = take_work();
+            assert!(
+                old.scanned_bytes >= bytes,
+                "old-path scan positive control: {old:?}"
+            );
+        }
     }
 }

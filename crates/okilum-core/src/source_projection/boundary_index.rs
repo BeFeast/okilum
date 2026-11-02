@@ -75,6 +75,26 @@ impl Index {
         ))
     }
 
+    pub(crate) fn update_edit(
+        &self,
+        old: &super::revision::Text,
+        new: &super::revision::Text,
+        edit: &super::revision::Edit,
+    ) -> Self {
+        if old.same(new) {
+            return self.clone();
+        }
+        let start = old.line_bounds(edit.old.start).start;
+        let end = old.line_bounds(edit.old.end).end;
+        let new_end = end - edit.old.end + edit.new_end();
+        let (left, rest) = split(self.0.clone(), start);
+        let (_, right) = split(rest, end - start);
+        Self(join(
+            join(left, Self::new(&new.slice(start..new_end)).0),
+            right,
+        ))
+    }
+
     pub(crate) fn binary_search(&self, byte: &usize) -> Result<(), ()> {
         let Some(mut node) = self.0.as_deref() else {
             return (*byte == 0).then_some(()).ok_or(());

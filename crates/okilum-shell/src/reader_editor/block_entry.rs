@@ -109,7 +109,7 @@ impl Reader {
         };
         let blocks = editing.live_preview.rendered_blocks(&SourceSnapshot {
             stamp,
-            text: Arc::from(text.as_str()),
+            text: gpui_component::input::projection::SourceText::from(text.as_str()),
         });
         Some((input, text, blocks))
     }

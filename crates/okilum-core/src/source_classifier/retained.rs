@@ -74,6 +74,7 @@ pub struct RetainedPresentation {
     // Shared only by remaps of this canonical classification. A fresh root gets
     // a fresh cache, so its immutable reference context cannot leak across roots.
     local_cache: Arc<Mutex<retained_cache::Cache<Classification>>>,
+    last_reveal: Arc<Mutex<Option<Arc<crate::source_projection::Projection>>>>,
 }
 
 #[cfg(test)]
@@ -113,6 +114,9 @@ impl RetainedPresentation {
             contexts: classified.contexts.clone(),
             references: classified.references.clone().into(),
             local_cache: Default::default(),
+            last_reveal: Arc::new(Mutex::new(
+                previous.and_then(|p| p.last_reveal.lock().ok().and_then(|value| value.clone())),
+            )),
         }
     }
     pub fn snapshot(&self) -> &Snapshot {
@@ -178,7 +182,7 @@ impl RetainedPresentation {
             active: active.clone(),
             projection: self.base.clone()?,
         };
-        let mut revealed = false;
+
         // A heading reveals its `#` markers from a caret anywhere on its line
         // (#915). Opening markers end where heading content starts; closing ones
         // start where it ends. Heading spans never overlap, so both orders agree.
@@ -196,11 +200,10 @@ impl RetainedPresentation {
             // An ATX heading is one line: every marker's scope is that whole line,
             // so a caret in the closing hashes also reveals the opening ones.
             let h = &headings[heading];
-            let source = self.snapshot.source();
-            let start = source[..h.start].rfind('\n').map_or(0, |i| i + 1);
-            let end = source[h.end..]
-                .find(['\r', '\n'])
-                .map_or(source.len(), |i| h.end + i);
+            let source = self.snapshot.text();
+            let start = source.line_bounds(h.start).start;
+            let rest = source.slice(h.end..source.line_bounds(h.end).end);
+            let end = rest.find(['\r', '\n']).map_or(source.len(), |i| h.end + i);
             Some(start.min(marker.start)..end.max(marker.end))
         };
         let regions = self
@@ -224,7 +227,6 @@ impl RetainedPresentation {
                                     )
                             });
                             let touched = reveal.touches(&scope);
-                            revealed |= touched;
                             !touched
                         })
                         .cloned()
@@ -232,16 +234,17 @@ impl RetainedPresentation {
                 },
             })
             .collect();
-        if !revealed {
-            return Ok(reveal);
-        }
+        let preceding = self.last_reveal.lock().ok().and_then(|value| value.clone());
         reveal.projection = Arc::new(crate::source_projection::project_reusing(
             &self.snapshot,
             &Plan::new(&self.snapshot, regions),
             &Active::default(),
             crate::source_projection::MAX_WORK,
-            self.base.as_deref().ok(),
+            preceding.as_deref().or(self.base.as_deref().ok()),
         )?);
+        if let Ok(mut value) = self.last_reveal.lock() {
+            *value = Some(reveal.projection.clone());
+        }
         Ok(reveal)
     }
 
@@ -270,22 +273,16 @@ impl RetainedPresentation {
     pub fn remap_raw_tail(&self, current: &Snapshot) -> Option<Self> {
         if self.snapshot.document() != current.document()
             || current.generation() <= self.snapshot.generation()
-            || current.source().len() > MAX_BYTES
+            || current.text().len() > MAX_BYTES
             || self.base.is_err()
         {
             return None;
         }
-        let old = self.snapshot.source();
-        let new = current.source();
-        let mut start = old
-            .bytes()
-            .zip(new.bytes())
-            .take_while(|(a, b)| a == b)
-            .count();
-        while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
-            start -= 1;
-        }
-        let line_start = |at: usize| old[..at].rfind('\n').map_or(0, |i| i + 1);
+        let old = self.snapshot.text();
+        let new = current.text();
+        let edit = current.change_from(&self.snapshot)?;
+        let start = edit.old.start;
+        let line_start = |at: usize| old.line_bounds(at).start;
         let bounds: Vec<Range<usize>> = self
             .plan
             .regions()
@@ -308,16 +305,14 @@ impl RetainedPresentation {
                 {
                     return false;
                 }
-                let opener = old[m.range.start..]
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim_start();
+                let opener_line = old.slice(old.line_bounds(m.range.start));
+                let opener = opener_line.trim_start();
                 let Some(fence) = opener.chars().next().filter(|c| matches!(c, '`' | '~')) else {
                     return false;
                 };
                 let width = opener.chars().take_while(|&c| c == fence).count();
-                let closer = old[line.clone()].trim();
+                let closer_line = old.slice(line.clone());
+                let closer = closer_line.trim();
                 width >= 3 && closer.len() >= width && closer.chars().all(|c| c == fence)
             })
         };
@@ -332,7 +327,7 @@ impl RetainedPresentation {
                     self.contexts
                         .iter()
                         .filter(|c| {
-                            c.start < cut && c.end <= cut && old[c.end..cut].trim().is_empty()
+                            c.start < cut && c.end <= cut && old.slice(c.end..cut).trim().is_empty()
                         })
                         .map(|c| c.start)
                         .min()
@@ -342,7 +337,8 @@ impl RetainedPresentation {
                 continue;
             }
             let above = line_start(cut - 1);
-            let line = old[above..cut].trim_end_matches(['\n', '\r']);
+            let above_text = old.slice(above..cut);
+            let line = above_text.trim_end_matches(['\n', '\r']);
             if line.trim().is_empty() || closed_fence(above..above + line.len()) {
                 break;
             }
@@ -360,7 +356,14 @@ impl RetainedPresentation {
             rows.sort_unstable();
             rows
         }
-        if definitions(&old[cut..]) != definitions(&new[cut..]) {
+        // Only edited complete lines can change their definition inventory;
+        // receipt provenance proves every other tail byte unchanged.
+        let changed_start = old.line_bounds(edit.old.start).start;
+        let changed_end = old.line_bounds(edit.old.end).end;
+        let new_end = changed_end - edit.old.end + edit.new_end();
+        if definitions(&old.slice(changed_start..changed_end))
+            != definitions(&new.slice(changed_start..new_end))
+        {
             return None;
         }
         let above = |r: &Range<usize>| r.end <= cut;
@@ -405,6 +408,7 @@ impl RetainedPresentation {
             contexts: self.contexts.iter().filter(|c| above(c)).cloned().collect(),
             references: self.references.clone(),
             local_cache: self.local_cache.clone(),
+            last_reveal: self.last_reveal.clone(),
         })
     }
 
@@ -433,49 +437,14 @@ impl RetainedPresentation {
         const LOCAL_BYTES: usize = 4096;
         if self.snapshot.document() != current.document()
             || current.generation() <= self.snapshot.generation()
-            || current.source().len() > MAX_BYTES
+            || current.text().len() > MAX_BYTES
         {
             return None;
         }
-        let old = self.snapshot.source();
-        let new = current.source();
-        let mut start = old
-            .bytes()
-            .zip(new.bytes())
-            .take_while(|(a, b)| a == b)
-            .count();
-        while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
-            start -= 1;
-        }
-        let mut tail = old[start..]
-            .bytes()
-            .rev()
-            .zip(new[start..].bytes().rev())
-            .take_while(|(a, b)| a == b)
-            .count();
-        while !old.is_char_boundary(old.len() - tail) || !new.is_char_boundary(new.len() - tail) {
-            tail -= 1;
-        }
-        let mut end = old.len() - tail;
-        let mut new_end = new.len() - tail;
-        // A newline or space inserted into (or removed from) a run of the same
-        // byte matches anywhere in that run; the longest prefix puts it at the
-        // run's end, inside the next block. Enter after a list item followed
-        // by `[[link]]` then reparsed that block and refused it (#1332).
-        // Take the leftmost place: the end of the block where it was typed.
-        while start > 0 && (start == end) != (start == new_end) {
-            let changed = if start == end {
-                new.as_bytes()[new_end - 1]
-            } else {
-                old.as_bytes()[end - 1]
-            };
-            if !matches!(changed, b'\n' | b' ') || old.as_bytes()[start - 1] != changed {
-                break;
-            }
-            start -= 1;
-            end -= 1;
-            new_end -= 1;
-        }
+        let old = self.snapshot.text();
+        let new = current.text();
+        let edit = current.change_from(&self.snapshot)?;
+        let (start, end, new_end) = (edit.old.start, edit.old.end, edit.new_end());
         // Include both neighbors when an edit joins/splits their whitespace gap.
         // Never bridge unsupported containers hidden between accepted regions.
         let source_regions = self.plan.regions();
@@ -498,7 +467,7 @@ impl RetainedPresentation {
                     .split('\n')
                     .skip(1)
                     .any(|line| line.trim().is_empty());
-                if !old[end..].trim().is_empty() || new_block {
+                if !old.slice(end..old.len()).trim().is_empty() || new_block {
                     return None;
                 }
                 (source_regions.len() - 1, true)
@@ -525,11 +494,12 @@ impl RetainedPresentation {
                     // by the edit's length.
                     gap_start <= start
                         && end <= below
-                        && blank(old.get(gap_start..below))
+                        && blank(old.get(gap_start..below).as_deref())
                         && blank(
                             (below + new_end)
                                 .checked_sub(end)
-                                .and_then(|moved| new.get(gap_start..moved)),
+                                .and_then(|moved| new.get(gap_start..moved))
+                                .as_deref(),
                         )
                 } =>
             {
@@ -598,14 +568,14 @@ impl RetainedPresentation {
         if affected
             .iter()
             .any(|r| !matches!(r, Region::Conceal { .. }) && !in_container(r.block()))
-            || !container_gap(old.get(dirty.start..affected[0].block().start))
+            || !container_gap(old.get(dirty.start..affected[0].block().start).as_deref())
             // The tail was checked above: the last block's own lines at the
             // document end, or a blank-line gap edit.
             || !(document_end
-                || container_gap(old.get(affected[affected.len() - 1].block().end..dirty.end)))
+                || container_gap(old.get(affected[affected.len() - 1].block().end..dirty.end).as_deref()))
             || affected
                 .windows(2)
-                .any(|pair| !container_gap(old.get(pair[0].block().end..pair[1].block().start)))
+                .any(|pair| !container_gap(old.get(pair[0].block().end..pair[1].block().start).as_deref()))
         {
             return None;
         }
@@ -662,14 +632,18 @@ impl RetainedPresentation {
         }
         // Containers extend past the dirty run: an indented first line can join
         // a preceding list, and a new list item can absorb an indented neighbor.
-        let indented = |text: &str, at: usize| {
-            let line = text[..at].rfind('\n').map_or(0, |i| i + 1);
-            text[line..].starts_with([' ', '\t'])
+        let indented = |text: &crate::source_projection::revision::Text, at: usize| {
+            matches!(text.byte(text.line_bounds(at).start), Some(b' ' | b'\t'))
         };
         let next_indented = source_regions
             .get(last + 1)
             .is_some_and(|next| indented(old, next.block().start));
-        if (indented(new, updated.start) && !new[..updated.start].trim().is_empty())
+        if (indented(new, updated.start)
+            && self
+                .plan
+                .regions()
+                .iter()
+                .any(|r| r.block().start < dirty.start))
             || (next_indented && fragment.lines().any(opens_list_item))
         {
             return None;
@@ -686,10 +660,13 @@ impl RetainedPresentation {
         // unindented `>` cannot continue a list item (indented first lines
         // were refused above). A quote right under a list item was drawn raw
         // until the full parse came back, and the note jumped (#1241).
-        let above = new[..updated.start]
-            .strip_suffix('\n')
-            .map(|before| before.strip_suffix('\r').unwrap_or(before))
-            .map(|before| &before[before.rfind('\n').map_or(0, |i| i + 1)..]);
+        let above_line = updated
+            .start
+            .checked_sub(1)
+            .map(|at| new.slice(new.line_bounds(at)));
+        let above = above_line
+            .as_deref()
+            .map(|line| line.trim_end_matches(['\r', '\n']));
         // A list item of another type cannot continue the list item above it:
         // it starts a new list and interrupts its paragraph. Enter at the end
         // of a task list right under an ordered one drew the note raw (#1266).
@@ -707,7 +684,7 @@ impl RetainedPresentation {
         {
             return None;
         }
-        let local = Snapshot::new(current.document(), current.generation(), fragment);
+        let local = Snapshot::new(current.document(), current.generation(), fragment.as_ref());
         // Oversized but context-local edits keep only their dirty run raw until
         // async adoption. Do not discard the already validated outer blocks.
         let classified = (dirty.len() <= LOCAL_BYTES && fragment.len() <= LOCAL_BYTES)
@@ -735,7 +712,9 @@ impl RetainedPresentation {
                 || plain.starts_with(['>', '`', '~', '<']))
                 && !in_local(at)
         });
-        let after = &new[updated.end..];
+        let after_line = new.line_bounds((updated.end + 1).min(new.len())).end;
+        let after_text = new.slice(updated.end..after_line);
+        let after = after_text.as_ref();
         let after = after
             .strip_prefix("\r\n")
             .or_else(|| after.strip_prefix('\n'))
@@ -886,19 +865,21 @@ impl RetainedPresentation {
             contexts,
             references: self.references.clone(),
             local_cache: self.local_cache.clone(),
+            last_reveal: self.last_reveal.clone(),
         })
     }
 
     fn remap_inline(&self, current: &Snapshot) -> Option<Self> {
         if self.snapshot.document() != current.document()
             || current.generation() < self.snapshot.generation()
-            || current.source().len() > MAX_BYTES
+            || current.text().len() > MAX_BYTES
         {
             return None;
         }
-        let old = self.snapshot.source();
-        let new = current.source();
-        if old == new {
+        let old = self.snapshot.text();
+        let new = current.text();
+        let edit = current.change_from(&self.snapshot)?;
+        if edit.old.is_empty() && edit.inserted == 0 {
             return Some(Self {
                 snapshot: current.clone(),
                 base: crate::source_projection::project_reusing(
@@ -916,42 +897,26 @@ impl RetainedPresentation {
                 contexts: self.contexts.clone(),
                 references: self.references.clone(),
                 local_cache: self.local_cache.clone(),
+                last_reveal: self.last_reveal.clone(),
             });
         }
         if current.generation() == self.snapshot.generation() {
             return None;
         }
-        let mut start = old
-            .bytes()
-            .zip(new.bytes())
-            .take_while(|(a, b)| a == b)
-            .count();
-        while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
-            start -= 1;
-        }
-        let mut tail = old[start..]
-            .bytes()
-            .rev()
-            .zip(new[start..].bytes().rev())
-            .take_while(|(a, b)| a == b)
-            .count();
-        while !old.is_char_boundary(old.len() - tail) || !new.is_char_boundary(new.len() - tail) {
-            tail -= 1;
-        }
-        let end = old.len() - tail;
-        let new_end = new.len() - tail;
-        if old[start..end].contains(['\r', '\n', '\0'])
-            || new[start..new_end].contains(['\r', '\n', '\0'])
+        let (start, end, new_end) = (edit.old.start, edit.old.end, edit.new_end());
+        if old.slice(start..end).contains(['\r', '\n', '\0'])
+            || new.slice(start..new_end).contains(['\r', '\n', '\0'])
         {
             return None;
         }
         // Require an unchanged ordinary-text prefix on this source line. This
         // excludes edits that can turn the line into a fence, list, HTML block,
         // reference definition, frontmatter or setext underline.
-        let line_start = old[..start].rfind('\n').map_or(0, |i| i + 1);
-        let prefix = old[line_start..start].trim_start();
-        let ordinary_start = |text: &str| {
-            text[line_start..]
+        let line_start = old.line_bounds(start).start;
+        let prefix_text = old.slice(line_start..start);
+        let prefix = prefix_text.trim_start();
+        let ordinary_start = |text: &crate::source_projection::revision::Text| {
+            text.slice(text.line_bounds(line_start))
                 .split('\n')
                 .next()
                 .unwrap_or("")
@@ -962,18 +927,25 @@ impl RetainedPresentation {
         };
         let fixed_prefix = prefix.chars().any(char::is_alphabetic)
             && !prefix.starts_with(['[', '<', '`', '~', '>']);
-        let plain_edit = old[start..end]
+        let old_edit = old.slice(start..end);
+        let new_edit = new.slice(start..new_end);
+        let plain_edit = old_edit
             .chars()
-            .chain(new[start..new_end].chars())
+            .chain(new_edit.chars())
             .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '\t'));
-        let line_end = old[start..].find('\n').map_or(old.len(), |i| start + i);
-        let empty_line = old[line_start..line_end].trim().is_empty();
+        let line_end = old.line_bounds(start).end;
+        let line_end = if old.byte(line_end.saturating_sub(1)) == Some(b'\n') {
+            line_end - 1
+        } else {
+            line_end
+        };
+        let empty_line = old.slice(line_start..line_end).trim().is_empty();
         if !fixed_prefix && !((ordinary_start(old) || empty_line) && ordinary_start(new)) {
             return None;
         }
         // Indentation decides container membership (list continuation, code).
-        let indent = |text: &str| {
-            let line = &text[line_start..];
+        let indent = |text: &crate::source_projection::revision::Text| {
+            let line = text.slice(text.line_bounds(line_start));
             line.len() - line.trim_start_matches([' ', '\t']).len()
         };
         if indent(old) != indent(new) {
@@ -1101,6 +1073,7 @@ impl RetainedPresentation {
             contexts,
             references: self.references.clone(),
             local_cache: self.local_cache.clone(),
+            last_reveal: self.last_reveal.clone(),
             snapshot: current.clone(),
             base: Ok(Arc::new(base)),
             plan,

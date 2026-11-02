@@ -4,7 +4,9 @@
 //! returns the current exact Source, never an approximate or stale projection.
 use std::{ops::Range, sync::Arc};
 pub(crate) mod boundary_index;
+pub mod revision;
 use boundary_index::Index;
+use revision::{Edit, Text};
 
 pub const MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_RANGES: usize = 4096;
@@ -12,11 +14,13 @@ pub const MAX_WORK: usize = 8 * 1024 * 1024;
 const MAX_DOCUMENT_ID_BYTES: usize = 4096;
 
 /// Immutable identity and authored bytes. A generation alone is never a lease.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     document: Arc<str>,
     generation: u64,
-    source: Arc<str>,
+    source: Text,
+    edit: Option<Edit>,
+    native: bool,
 }
 impl Snapshot {
     pub fn new(
@@ -27,11 +31,81 @@ impl Snapshot {
         Self {
             document: document.into(),
             generation,
-            source: source.into(),
+            source: Text::from(source.into()),
+            edit: None,
+            native: false,
         }
     }
+    /// Contiguous source for parsers/workers. Input paths use text().
     pub fn source(&self) -> &str {
         &self.source
+    }
+    pub fn with_edit(mut self, edit: Option<Edit>) -> Self {
+        self.edit = edit;
+        self
+    }
+    pub fn text(&self) -> &Text {
+        &self.source
+    }
+    pub fn from_rope(
+        document: impl Into<Arc<str>>,
+        generation: u64,
+        text: Text,
+        edit: Option<Edit>,
+    ) -> Self {
+        Self {
+            document: document.into(),
+            generation,
+            source: text,
+            edit,
+            native: true,
+        }
+    }
+    pub fn edit_from(&self, previous: &Self) -> Option<Edit> {
+        if self.document != previous.document {
+            return None;
+        }
+        if self.source.same(&previous.source) {
+            return Some(Edit::unchanged(previous.source.id(), previous.source.len()));
+        }
+        self.edit
+            .clone()
+            .filter(|e| e.previous == previous.source.id())
+    }
+    pub(crate) fn change_from(&self, previous: &Self) -> Option<Edit> {
+        if let Some(edit) = self.edit_from(previous) {
+            return Some(edit);
+        }
+        if self.native || self.document != previous.document {
+            return None;
+        }
+        // Compatibility for independent parser/test snapshots. Native input must
+        // supply a revision receipt and never enters this discovery path.
+        let old = previous.source();
+        let new = self.source();
+        let mut start = old
+            .bytes()
+            .zip(new.bytes())
+            .inspect(|_| revision::charge(|w| w.scanned_bytes += 1))
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut tail = old[start..]
+            .bytes()
+            .rev()
+            .zip(new[start..].bytes().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        while !old.is_char_boundary(old.len() - tail) || !new.is_char_boundary(new.len() - tail) {
+            tail -= 1;
+        }
+        Some(Edit {
+            previous: previous.text().id(),
+            old: start..old.len() - tail,
+            inserted: new.len() - tail - start,
+        })
     }
     pub fn document(&self) -> &str {
         &self.document
@@ -48,7 +122,7 @@ impl Snapshot {
     fn matches(&self, other: &Self) -> bool {
         self.generation == other.generation
             && self.document == other.document
-            && (Arc::ptr_eq(&self.source, &other.source) || self.source == other.source)
+            && self.source == other.source
     }
     /// Copy authored bytes; rendered text is never a clipboard/edit authority.
     pub fn copy_source(&self, range: Range<usize>) -> Result<String, MapError> {
@@ -94,6 +168,13 @@ impl Snapshot {
         Ok(Self::new(self.document.clone(), generation, text))
     }
 }
+
+impl PartialEq for Snapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.matches(other)
+    }
+}
+impl Eq for Snapshot {}
 
 /// Regions must be sorted and disjoint; the semantic classifier is out of scope.
 #[derive(Clone, Debug)]
@@ -181,7 +262,7 @@ struct Anchor {
 #[derive(Debug)]
 pub struct Projection {
     snapshot: Snapshot,
-    display: String,
+    display: Text,
     anchors: Vec<Anchor>,
     source_boundaries: Index,
     display_boundaries: Index,
@@ -189,11 +270,19 @@ pub struct Projection {
 impl Projection {
     pub(crate) fn source_index_for(&self, snapshot: &Snapshot) -> Option<Index> {
         (self.snapshot.document == snapshot.document).then(|| {
-            self.source_boundaries
-                .update(self.snapshot.source(), snapshot.source())
+            snapshot.change_from(&self.snapshot).map_or_else(
+                || Index::new(snapshot.source()),
+                |edit| {
+                    self.source_boundaries
+                        .update_edit(self.snapshot.text(), snapshot.text(), &edit)
+                },
+            )
         })
     }
     pub fn display(&self) -> &str {
+        &self.display
+    }
+    pub fn display_text(&self) -> &Text {
         &self.display
     }
     pub fn snapshot(&self) -> &Snapshot {
@@ -394,8 +483,13 @@ pub(crate) fn project_reusing(
         let source_boundaries = previous.map_or_else(
             || Index::new(&snapshot.source),
             |p| {
-                p.source_boundaries
-                    .update(p.snapshot.source(), snapshot.source())
+                snapshot.change_from(&p.snapshot).map_or_else(
+                    || Index::new(snapshot.source()),
+                    |edit| {
+                        p.source_boundaries
+                            .update_edit(p.snapshot.text(), snapshot.text(), &edit)
+                    },
+                )
             },
         );
         for range in [active.selection.as_ref(), active.composition.as_ref()]
@@ -436,7 +530,11 @@ pub(crate) fn project_reusing(
                     }
                     marker_end = marker.end;
                     work.charge(marker.len())?;
-                    if snapshot.source[marker.clone()].contains(['\r', '\n', '\u{feff}']) {
+                    if snapshot
+                        .source
+                        .slice(marker.clone())
+                        .contains(['\r', '\n', '\u{feff}'])
+                    {
                         return Err(FallbackReason::ProtectedSource);
                     }
                     if !reveal {
@@ -445,27 +543,111 @@ pub(crate) fn project_reusing(
                 }
             }
         }
-        work.charge(snapshot.source.len() * 2)?;
-        let mut display = String::with_capacity(snapshot.source.len());
         let mut anchors: Vec<Anchor> = Vec::with_capacity(concealed.len());
-        let mut cursor = 0;
-        for range in concealed {
-            display.push_str(&snapshot.source[cursor..range.start]);
+        let mut removed = 0;
+        for range in &concealed {
             if let Some(anchor) = anchors.last_mut().filter(|a| a.source.end == range.start) {
                 anchor.source.end = range.end;
             } else {
                 anchors.push(Anchor {
                     source: range.clone(),
-                    display: display.len(),
+                    display: range.start - removed,
                 });
             }
-            cursor = range.end;
+            removed += range.len();
         }
-        display.push_str(&snapshot.source[cursor..]);
-        let display_boundaries = previous.map_or_else(
-            || Index::new(&display),
-            |p| p.display_boundaries.update(p.display(), &display),
-        );
+        let (display, display_boundaries) =
+            match previous.and_then(|p| snapshot.change_from(&p.snapshot).map(|edit| (p, edit))) {
+                Some((p, edit)) => {
+                    // Widen only around the canonical edit and changed concealment.
+                    // The unchanged visible prefix/suffix retain their Rope nodes.
+                    let mut start = edit.old.start;
+                    let mut end = edit.old.end;
+                    let maps = |r: &Range<usize>| -> Option<Range<usize>> {
+                        if r.end <= edit.old.start {
+                            Some(r.clone())
+                        } else if r.start >= edit.old.end {
+                            Some(edit.forward(r.start)..edit.forward(r.end))
+                        } else {
+                            None
+                        }
+                    };
+                    for anchor in &p.anchors {
+                        if !maps(&anchor.source)
+                            .is_some_and(|mapped| anchors.iter().any(|a| a.source == mapped))
+                        {
+                            start = start.min(anchor.source.start);
+                            end = end.max(anchor.source.end);
+                        }
+                    }
+                    for anchor in &anchors {
+                        if !p
+                            .anchors
+                            .iter()
+                            .any(|a| maps(&a.source).as_ref() == Some(&anchor.source))
+                        {
+                            start = start.min(edit.backward(anchor.source.start));
+                            end = end.max(edit.backward(anchor.source.end));
+                        }
+                    }
+                    // Include anchors crossing either seam, so a replacement never
+                    // cuts through a concealed range or joins a partial marker.
+                    for a in &p.anchors {
+                        if a.source.start <= start && start < a.source.end {
+                            start = a.source.start;
+                        }
+                        if a.source.start < end && end <= a.source.end {
+                            end = a.source.end;
+                        }
+                    }
+                    let new_start = start;
+                    let new_end = end - edit.old.end + edit.new_end();
+                    let map = |at: usize, inventory: &[Anchor]| {
+                        let ix = inventory.partition_point(|a| a.source.end <= at);
+                        if let Some(a) = inventory.get(ix).filter(|a| a.source.start <= at) {
+                            a.display
+                        } else {
+                            at - ix
+                                .checked_sub(1)
+                                .map_or(0, |i| inventory[i].source.end - inventory[i].display)
+                        }
+                    };
+                    let old_display = map(start, &p.anchors)..map(end, &p.anchors);
+                    let mut fragment = String::new();
+                    let mut cursor = new_start;
+                    for a in anchors
+                        .iter()
+                        .filter(|a| new_start <= a.source.start && a.source.end <= new_end)
+                    {
+                        fragment.push_str(&snapshot.source.slice(cursor..a.source.start));
+                        cursor = a.source.end;
+                    }
+                    fragment.push_str(&snapshot.source.slice(cursor..new_end));
+                    let display = if old_display.is_empty() && fragment.is_empty() {
+                        p.display.clone()
+                    } else {
+                        p.display.replace(old_display.clone(), &fragment)
+                    };
+                    let display_edit = Edit {
+                        previous: p.display.id(),
+                        old: old_display,
+                        inserted: fragment.len(),
+                    };
+                    let index =
+                        p.display_boundaries
+                            .update_edit(&p.display, &display, &display_edit);
+                    (display, index)
+                }
+                None => {
+                    let mut rope = snapshot.source.rope().clone();
+                    for range in concealed.iter().rev() {
+                        rope.remove(range.clone());
+                    }
+                    let display = Text::from_rope(rope);
+                    let index = Index::new(&display);
+                    (display, index)
+                }
+            };
         // Concealment must not join visible graphemes across the removed bytes
         // (for example two regional indicators becoming a single flag).
         if anchors

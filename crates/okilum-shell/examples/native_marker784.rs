@@ -206,7 +206,7 @@ impl Fixture {
         }
         Some(SourceSnapshot {
             stamp: editor.source_stamp(),
-            text: Arc::from(editor.value().as_ref()),
+            text: gpui_component::input::projection::SourceText::from(editor.value().as_ref()),
         })
     }
 
