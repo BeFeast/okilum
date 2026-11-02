@@ -62,6 +62,12 @@ not open a browser. T3's single-instance handler reveals its existing window or
 handles the same URI on startup. Machines using a separate T3 profile must
 register that profile's launcher as their `t3code` handler.
 
+On sway, Electron can navigate without transferring compositor focus. Okilum
+supplements the handoff with bounded, off-thread IPC when exactly one T3 app
+window is present. Multiple windows/profiles are left to T3's registered handler;
+no title-based choice is made. See the [Linux handoff and parity audit](research/2122-linux-manager-handoff.md)
+for warm/cold evidence, the upstream limitation and remaining #2122 scope.
+
 The 22 October [project navigation contract](project-navigation.md) supersedes
 the current-note Project button and adds manager-only bindings for minimal
 projects. The native transport and chat behavior below remain the fallback.

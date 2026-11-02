@@ -11,6 +11,8 @@ use okilum_t3::{
 };
 use std::{collections::HashMap, io::Read};
 
+mod restored;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Scope {
     origin: String,
@@ -59,6 +61,7 @@ pub(super) struct Runtime {
     notice: Option<String>,
     previews: HashMap<String, Arc<gpui::Image>>,
     expanded_previews: HashMap<String, Arc<gpui::Image>>,
+    restored: restored::Previews,
 }
 
 impl Runtime {
@@ -73,6 +76,7 @@ impl Runtime {
         self.identity = None;
         self.identity_pending = false;
         self.identity_failed = false;
+        self.restored = restored::Previews::default();
     }
 }
 
@@ -303,6 +307,18 @@ pub(in crate::project) fn uploaded_references(
 }
 
 impl ProjectView {
+    fn set_attachment_draft(
+        &mut self,
+        rows: Vec<Attachment>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.draft_set_attachments(rows, window, cx);
+        // Attachment changes repaint even when the writer has no error update
+        // (or no durable writer is available yet).
+        cx.notify();
+    }
+
     pub(super) fn attachment_can_add(&self) -> bool {
         self.native.active()
             && self.draft_ready()
@@ -504,7 +520,7 @@ impl ProjectView {
         }
         self.attachments.notice =
             rejected.then(|| "You can attach up to 8 files per message.".into());
-        self.draft_set_attachments(rows, window, cx);
+        self.set_attachment_draft(rows, window, cx);
         self.attachment_start_next(window, cx);
     }
 
@@ -540,7 +556,7 @@ impl ProjectView {
             },
         );
         self.attachments.notice = None;
-        self.draft_set_attachments(rows, window, cx);
+        self.set_attachment_draft(rows, window, cx);
         self.attachment_start_next(window, cx);
     }
 
@@ -564,7 +580,7 @@ impl ProjectView {
             row.state = AttachmentState::Pending;
         }
         self.attachments.notice = None;
-        self.draft_set_attachments(rows, window, cx);
+        self.set_attachment_draft(rows, window, cx);
         self.attachment_start_next(window, cx);
     }
 
@@ -576,13 +592,14 @@ impl ProjectView {
         self.attachments.previews.remove(id);
         self.attachments.expanded_previews.remove(id);
         self.attachments.prepared.remove(id);
+        self.attachments.restored.remove(id);
         let rows = self
             .draft_attachments()
             .iter()
             .filter(|row| row.id != id)
             .cloned()
             .collect();
-        self.draft_set_attachments(rows, window, cx);
+        self.set_attachment_draft(rows, window, cx);
     }
 
     pub(super) fn attachment_restore_connection(
@@ -612,9 +629,10 @@ impl ProjectView {
             }
         }
         if changed {
-            self.draft_set_attachments(rows, window, cx);
+            self.set_attachment_draft(rows, window, cx);
         }
         self.attachment_start_next(window, cx);
+        self.restore_attachment_previews(window, cx);
         if self.attachments.identity_pending
             || self.attachments.identity_failed
             || self.attachment_identity().is_some()
@@ -649,7 +667,8 @@ impl ProjectView {
                             if matches!(&row.state,AttachmentState::Uploaded{environment_id,..} if environment_id!=&identity.environment_id){row.state=AttachmentState::NeedsReselect;}
                         }
                         this.identity=Some(identity.clone());this.attachments.identity=Some((Arc::downgrade(&client),identity));
-                        this.draft_set_attachments(rows,window,cx);
+                        this.set_attachment_draft(rows,window,cx);
+                        this.restore_attachment_previews(window,cx);
                     }
                     Err(_)=>{this.attachments.identity_failed=true;this.attachments.notice=Some("Could not confirm attachment access. Reconnect or retry.".into());}
                 }
@@ -667,12 +686,7 @@ impl ProjectView {
             .gap_1()
             .debug_selector(|| "project-attachment-tray".into());
         for row in self.draft_attachments() {
-            if let Some(preview) = self
-                .attachments
-                .previews
-                .get(&row.id)
-                .filter(|_| self.has_attachment_source(&row.id))
-            {
+            if let Some((preview, _)) = self.attachment_preview(row) {
                 let preview_id = row.id.clone();
                 let selector = format!("attachment-preview-{}", row.id);
                 let label = format!("Preview {}", row.name);
@@ -686,7 +700,7 @@ impl ProjectView {
                         .h(px(96.))
                         .p_0()
                         .child(
-                            gpui::img(preview.clone())
+                            gpui::img(preview)
                                 .size_full()
                                 .object_fit(ObjectFit::Contain),
                         )
@@ -712,7 +726,7 @@ impl ProjectView {
                     }
                 }
                 AttachmentState::Error { .. } => "Upload failed",
-                AttachmentState::NeedsReselect => "Select again",
+                AttachmentState::NeedsReselect => "Needs reselect",
                 AttachmentState::Uploaded { .. } => "Attached",
             };
             let needs_action = matches!(
@@ -727,18 +741,26 @@ impl ProjectView {
                     .child(div().flex_1().min_w_0().truncate().child(row.name.clone()))
                     .child(
                         div()
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("attachment-status-{id}")
+                            })
                             .text_color(brand::palette(cx).text_muted)
                             .child(status),
                     )
                     .when(needs_action, |line| {
                         line.child(
                             Button::new(SharedString::from(format!("attachment-retry-{id}")))
+                                .debug_selector({
+                                    let id = id.clone();
+                                    move || format!("attachment-retry-{id}")
+                                })
                                 .small()
                                 .ghost()
                                 .label(if self.has_attachment_source(&id) {
                                     "Retry"
                                 } else {
-                                    "Select"
+                                    "Select again"
                                 })
                                 .disabled(self.busy)
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -748,6 +770,10 @@ impl ProjectView {
                     })
                     .child(
                         Button::new(SharedString::from(format!("attachment-remove-{id}")))
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("attachment-remove-{id}")
+                            })
                             .small()
                             .ghost()
                             .label("Remove")
@@ -757,6 +783,10 @@ impl ProjectView {
                             })),
                     ),
             );
+            if matches!(row.state, AttachmentState::NeedsReselect) {
+                tray = tray.child(div().text_sm().whitespace_normal().child("The local file is no longer available. Select it again or remove it before sending."));
+            }
+            tray = tray.child(self.render_restored_attachment_status(row, cx));
             if let AttachmentState::Error { message } = &row.state {
                 tray = tray.child(
                     div()
@@ -794,13 +824,10 @@ impl ProjectView {
         let Some(scope) = self.attachment_scope() else {
             return;
         };
-        if !self.has_attachment_source(id) {
-            return;
-        }
         let Some(row) = self.draft_attachments().iter().find(|row| row.id == id) else {
             return;
         };
-        let Some(image) = self.attachments.expanded_previews.get(id).cloned() else {
+        let Some((_, image)) = self.attachment_preview(row) else {
             return;
         };
         let name = row.name.clone();
@@ -982,7 +1009,7 @@ impl ProjectView {
                     .state = AttachmentState::Error { message }
             }
         }
-        self.draft_set_attachments(rows, window, cx);
+        self.set_attachment_draft(rows, window, cx);
         self.attachment_start_next(window, cx);
         true
     }
@@ -1124,12 +1151,12 @@ impl ProjectView {
                                 message: message.clone(),
                             };
                             this.attachment_release_upload(&lease);
-                            this.draft_set_attachments(rows, window, cx);
+                            this.set_attachment_draft(rows, window, cx);
                             this.attachment_start_next(window, cx);
                             return false;
                         }
                     }
-                    this.draft_set_attachments(rows, window, cx);
+                    this.set_attachment_draft(rows, window, cx);
                     true
                 })
                 .unwrap_or(false);
@@ -1187,7 +1214,7 @@ impl ProjectView {
                         }
                         Err(message) => row.state = AttachmentState::Error { message },
                     }
-                    this.draft_set_attachments(rows, window, cx);
+                    this.set_attachment_draft(rows, window, cx);
                     this.attachment_start_next(window, cx);
                     true
                 })

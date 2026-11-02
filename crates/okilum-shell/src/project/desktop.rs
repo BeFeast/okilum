@@ -1,6 +1,17 @@
 //! Native T3 desktop links use its registered single-instance URI handler.
 use super::*;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
+fn open_desktop_url(url: &str, cx: &mut App) {
+    cx.open_url(url);
+    #[cfg(all(target_os = "linux", not(test)))]
+    cx.background_executor()
+        .spawn(async { linux::focus_existing_window() })
+        .detach();
+}
+
 /// Missing per-user Windows registration is a supported web fallback, never
 /// an implicit registry install. Other platforms keep their desktop handler.
 #[cfg(windows)]
@@ -67,7 +78,7 @@ impl ProjectView {
             #[cfg(not(windows))]
             let missing = false;
             match target_url(identity, &thread, self.environment.as_ref(), missing) {
-                Ok(url) => cx.open_url(&url),
+                Ok(url) => open_desktop_url(&url, cx),
                 Err(e) => {
                     self.error = Some(e.to_string());
                     cx.notify();
@@ -105,7 +116,7 @@ impl ProjectView {
                     }
                     match identity {
                         Ok(identity) => {
-                            cx.open_url(&identity.thread_url(&thread));
+                            open_desktop_url(&identity.thread_url(&thread), cx);
                             this.identity = Some(identity);
                         }
                         Err(error) => {
