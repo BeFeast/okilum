@@ -172,9 +172,26 @@ fn discuss_1784_visibility_repaint_reconnect_and_revocation_fence_actual_port(
             .draft_handoff_port(window, cx)
             .append(&pending)
             .is_err());
-        let current = Request {
+        view.select_section(ProjectSection::Rules, cx);
+        assert!(view.draft_handoff_target(cx).is_none());
+        view.select_section(ProjectSection::Manager, cx);
+        let returned = view.draft_handoff_target(cx).unwrap();
+        assert_ne!(
+            returned.generation, reconnected.generation,
+            "same physical panel after Rules → Manager needs a fresh target"
+        );
+        let stale_section = Request {
             id: 3,
             target: reconnected,
+            text: "hidden section".into(),
+        };
+        assert!(view
+            .draft_handoff_port(window, cx)
+            .append(&stale_section)
+            .is_err());
+        let current = Request {
+            id: 3,
+            target: returned,
             text: "current context".into(),
         };
         view.draft_handoff_port(window, cx)
@@ -218,4 +235,133 @@ fn discuss_1784_visibility_repaint_reconnect_and_revocation_fence_actual_port(
         );
     });
     assert!(!state.path().join("t3-messages").exists());
+}
+
+#[gpui::test]
+fn discuss_1784_restore_completes_after_visibility_but_hidden_late_restore_stays_revoked(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(crate::test_init);
+    let state = tempfile::tempdir().unwrap();
+    let environment = Environment::new("fixture", "https://discuss.invalid").unwrap();
+    for name in ["visible", "hidden"] {
+        okilum_t3::chat_drafts::Store::<okilum_t3::chat_drafts::Attachment>::new(
+            &state.path().join(name),
+            &environment,
+            "project",
+            "thread",
+        )
+        .save(
+            0,
+            okilum_t3::chat_drafts::Draft {
+                text: format!("retained {name}\r\n🧠"),
+                attachments: Vec::new(),
+            },
+        )
+        .unwrap();
+    }
+    let mut visible_owner = None;
+    let (_, visible_context) = cx.add_window_view(|window, cx| {
+        let project = cx.new(|cx| {
+            let mut project = view(&state.path().join("visible"), window, cx);
+            project.draft_handoff_surface_visible(true, cx);
+            assert!(
+                project.draft_handoff_target(cx).is_none(),
+                "loading cannot own a port even after physical visibility arrives"
+            );
+            project
+        });
+        let composer = project.read(cx).composer.clone();
+        visible_owner = Some(project);
+        Root::new(composer, window, cx)
+    });
+    let project = visible_owner.unwrap();
+    visible_context.run_until_parked();
+    project.update_in(visible_context, |view, window, cx| {
+        assert!(
+            view.draft_handoff_target(cx).is_some(),
+            "current restore callback enables the already visible composer without hide/show"
+        );
+        assert_eq!(
+            view.composer.read(cx).typed_source_text(cx),
+            "retained visible\r\n🧠"
+        );
+        view.append_board_context(
+            &state.path().join("visible"),
+            "after restore".into(),
+            window,
+            cx,
+        )
+        .unwrap();
+    });
+    let mut hidden_owner = None;
+    let (_, hidden_context) = cx.add_window_view(|window, cx| {
+        let project = cx.new(|cx| {
+            let mut project = view(&state.path().join("hidden"), window, cx);
+            project.draft_handoff_surface_visible(true, cx);
+            project.set_active(false, window, cx);
+            project
+        });
+        let composer = project.read(cx).composer.clone();
+        hidden_owner = Some(project);
+        Root::new(composer, window, cx)
+    });
+    let hidden = hidden_owner.unwrap();
+    hidden_context.run_until_parked();
+    hidden.update_in(hidden_context, |view, window, cx| {
+        assert!(
+            view.draft_handoff_target(cx).is_none(),
+            "late restore cannot re-enable a hidden or revoked visible lease"
+        );
+        view.active = true;
+        view.draft_restore(window, cx);
+        assert!(
+            view.draft_handoff_target(cx).is_some(),
+            "explicit reopen restores the suspended exact owner"
+        );
+        assert_eq!(
+            view.composer.read(cx).typed_source_text(cx),
+            "retained hidden\r\n🧠"
+        );
+    });
+    let failed_state = state.path().join("failed");
+    std::fs::write(&failed_state, b"unavailable draft storage").unwrap();
+    let mut failed_owner = None;
+    let (_, failed_context) = cx.add_window_view(|window, cx| {
+        let project = cx.new(|cx| {
+            let mut project = view_with_draft(&failed_state, "keep unsaved original", window, cx);
+            project.draft_handoff_surface_visible(true, cx);
+            project
+        });
+        let composer = project.read(cx).composer.clone();
+        failed_owner = Some(project);
+        Root::new(composer, window, cx)
+    });
+    let failed = failed_owner.unwrap();
+    failed_context.run_until_parked();
+    failed.update_in(failed_context, |view, window, cx| {
+        assert!(
+            view.draft_notice().is_some(),
+            "positive control: the actual restore failed visibly"
+        );
+        assert!(view.draft_handoff_target(cx).is_none());
+        view.select_section(ProjectSection::Rules, cx);
+        view.select_section(ProjectSection::Manager, cx);
+        assert!(
+            view.draft_handoff_target(cx).is_none(),
+            "section return cannot mask a failed restore"
+        );
+        assert!(view
+            .append_board_context(&failed_state, "must not append".into(), window, cx)
+            .is_err());
+        assert_eq!(
+            view.composer.read(cx).typed_source_text(cx),
+            "keep unsaved original"
+        );
+    });
+    assert_eq!(
+        std::fs::read(&failed_state).unwrap(),
+        b"unavailable draft storage"
+    );
 }

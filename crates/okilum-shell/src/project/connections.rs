@@ -301,7 +301,8 @@ impl super::ProjectView {
             self.active
                 && !self.executors_open
                 && self.section == super::ProjectSection::Manager
-                && self.draft_handoff_surface_is_visible(),
+                && self.draft_handoff_surface_is_visible()
+                && self.draft_handoff_owner_ready(cx),
             crate::reader_features::enabled(crate::reader_features::Feature::Agents, cx),
             self.native.model_client().is_some_and(|client| {
                 client.access_allowed()

@@ -507,7 +507,11 @@ impl ProjectView {
         if self.section == section {
             return;
         }
+        #[cfg(target_os = "linux")]
+        self.draft_handoff_connection_changing();
         self.section = section;
+        #[cfg(target_os = "linux")]
+        self.draft_handoff_connection_ready(cx);
         self.sync_resource_lifecycle(cx);
         cx.notify();
     }

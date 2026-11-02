@@ -366,7 +366,7 @@ impl ProjectView {
                         generation: self.threads.draft.typed_generation,
                     };
                     self.threads.draft.attachments = local.draft.attachments;
-                    let _ = self.composer.update(cx, |composer, cx| {
+                    let restored = self.composer.update(cx, |composer, cx| {
                         composer.restore_typed_context(
                             scope,
                             local.draft.text,
@@ -375,6 +375,9 @@ impl ProjectView {
                             cx,
                         )
                     });
+                    if restored.is_ok() {
+                        self.draft_handoff_connection_ready(cx);
+                    }
                 }
             }
             return;
@@ -497,6 +500,7 @@ impl ProjectView {
                     return;
                 }
                 this.threads.draft.loading = false;
+                let mut handoff_restored = false;
                 match result {
                     Ok((writer, restored)) => {
                         let writer = Arc::new(writer);
@@ -526,6 +530,8 @@ impl ProjectView {
                             )
                         }) {
                             this.threads.draft.error = Some(error.to_owned());
+                        } else {
+                            handoff_restored = true;
                         }
                     }
                     Err(error) => {
@@ -562,6 +568,12 @@ impl ProjectView {
                 }
                 this.compose
                     .update(cx, |input, cx| input.set_disabled(false, cx));
+                if handoff_restored {
+                    // The restore/draft epochs and visible lease were checked
+                    // above. Re-read the current connection/access and physical
+                    // surface now; the eventual port mints its current epoch.
+                    this.draft_handoff_connection_ready(cx);
+                }
                 // Observe the restoration write as well: failed attachment or
                 // metadata retention must be visible without another keystroke.
                 if this.threads.draft.writer.is_some() {
@@ -1420,6 +1432,16 @@ impl ProjectView {
         self.threads.draft.handoff_surface_visible
     }
 
+    pub(super) fn draft_handoff_owner_ready(&self, cx: &App) -> bool {
+        self.threads.draft.error.is_none()
+            && self.draft_key() == self.threads.draft.key
+            && self
+                .composer
+                .read(cx)
+                .typed_scope()
+                .is_some_and(|scope| self.draft_typed_owner_valid(scope))
+    }
+
     /// Required owner hook before showing/hiding/replacing the native surface,
     /// and before revoking/replacing access (even for the same thread). Repeated
     /// calls deliberately invalidate old requests. Webview visibility uses false.
@@ -1437,7 +1459,7 @@ impl ProjectView {
             && self.section == ProjectSection::Manager
             && !self.executors_open
             && self.threads.draft.handoff_surface_visible
-            && !self.threads.draft.loading
+            && self.draft_handoff_owner_ready(cx)
             && !self.native.deleted()
             && reader_features::enabled(reader_features::Feature::Agents, cx)
             && self.native.model_client().is_some_and(|client| {
