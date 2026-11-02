@@ -1,0 +1,23 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -2026,6 +2026,10 @@
+         // Read the old shaped geometry before installing a new projection. The
+         // anchor is canonical source, not a display-row index that rewrap moves.
+         let source_anchor = initial.zoom_anchor.or_else(|| {
++            // Typewriter chooses its anchor from this frame's row metrics below.
++            // Do not scan/copy the old and current source for an anchor that it
++            // immediately replaces; leave zoom and held-selection handling intact.
++            if initial.typewriter && !initial.selecting { return None; }
+             if !initial.projection.enabled || initial.selecting || initial.deferred_scroll_offset.is_some_and(|offset| offset != initial.scroll_handle.offset())
+                 || initial.text.len() > 256 * 1024 { return None; }
+             let last = initial.last_layout.as_ref().or(initial.projection_anchor_layout.as_ref())?;
+@@ -2280,7 +2284,7 @@
+             // offset found later in caret-follow showed the old lines for a
+             // frame. Its cost is the caret's row lookup, whatever the length.
+             let caret_moved = state.last_selected_range != Some(state.selected_range);
+-            if state.typewriter && count > 0 && !state.selecting && (frame_edit || caret_moved) {
++            if state.typewriter && count > 0 && !state.selecting && (frame_edit || caret_moved || new_frame || changed) {
+                 let row = state.display_map
+                     .offset_to_wrap_display_point_with_affinity(caret, state.cursor_line_end_affinity)
+                     .row;

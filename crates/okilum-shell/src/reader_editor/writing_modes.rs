@@ -35,7 +35,16 @@ enum Kind {
 }
 
 fn kind(text: &Rope, row: usize) -> Kind {
-    let head: String = text.slice_line(row).chars().take(HEAD).collect();
+    // Classification runs for up to SCAN lines on each caret move. Keep the
+    // bounded UTF-8 prefix on the stack rather than allocating once per line.
+    let mut bytes = [0; HEAD * 4];
+    let mut len = 0;
+    let mut chars = 0;
+    for ch in text.slice_line(row).chars().take(HEAD) {
+        len += ch.encode_utf8(&mut bytes[len..]).len();
+        chars += 1;
+    }
+    let head = std::str::from_utf8(&bytes[..len]).expect("encoded UTF-8 prefix");
     let body = head.trim_start_matches([' ', '\t']);
     let indent = head[..head.len() - body.len()].chars().fold(0, |col, ch| {
         if ch == '\t' {
@@ -47,7 +56,7 @@ fn kind(text: &Rope, row: usize) -> Kind {
     let body = body.trim_end_matches(['\r', '\n']);
     if body.trim().is_empty() {
         // A line longer than the prefix with only spaces in it is still text.
-        return if head.chars().count() < HEAD {
+        return if chars < HEAD {
             Kind::Blank
         } else {
             Kind::Text(indent)
@@ -363,16 +372,27 @@ mod tests {
         );
     }
 
-    /// #1643 acceptance: in a 1 MiB note the caret line stays at the middle
-    /// of the view on every frame while typing, on Enter and on Undo, in
-    /// Source and in Live Preview. A wheel scroll moves it away until the
-    /// next key, which also proves the measure can see an off-centre caret.
+    // The 1 MiB fixture currently exceeds the shared classifier budget. It
+    // proves geometry in Source/raw fallback, not full Live acceptance (#1643).
     #[gpui::test]
     fn typewriter_keeps_the_caret_line_centred_in_a_1_mib_note(cx: &mut TestAppContext) {
-        let note = large_note();
+        writing_geometry(cx, large_note(), false);
+    }
+
+    #[gpui::test]
+    fn typewriter_keeps_actual_projected_frames_centred(cx: &mut TestAppContext) {
+        let large = large_note();
+        let end = large[..48 * 1024].rfind("## Section").unwrap();
+        writing_geometry(cx, large[..end].to_owned(), true);
+    }
+
+    fn writing_geometry(cx: &mut TestAppContext, note: String, require_projection: bool) {
         for live in [false, true] {
             let (reader, visual, _directory) = fixture(cx, &note);
             reader.update_in(visual, |r, window, cx| {
+                r.editing.as_ref().unwrap().input.update(cx, |input, _| {
+                    input.enable_layout_diagnostics();
+                });
                 if r.editing.as_ref().unwrap().live_preview.enabled != live {
                     r.toggle_live_preview(window, cx);
                 }
@@ -396,6 +416,31 @@ mod tests {
             assert!(visual.update(|_, cx| reader_ui_state::typewriter_mode(cx)));
             visual.run_until_parked();
             assert!(input.read_with(visual, |input, _| input.is_typewriter()));
+            if live && require_projection {
+                reader.read_with(visual, |r, _| {
+                    let concealed = r.editing.as_ref().unwrap().live_preview.concealed_text();
+                    assert!(
+                        concealed.is_some_and(|display| display.len() < note.len()),
+                        "the fixture must conceal Markdown, not merely enable Live"
+                    );
+                });
+                assert!(input.read_with(visual, |input, _| input
+                    .layout_diagnostics()
+                    .unwrap()
+                    .projection_composes
+                    > 0));
+            }
+            input.read_with(visual, |input, _| {
+                input.take_layout_frames();
+            });
+            visual.update(|_, cx| reader_ui_state::set_focus_mode(true, cx));
+            visual.run_until_parked();
+            assert!(!input.read_with(visual, |input, _| input.focus_lines().is_empty()));
+            // Enabling either mode is presentation-only.
+            assert_eq!(
+                input.read_with(visual, |input, _| input.value().to_string()),
+                note
+            );
             assert_centred(&input, visual, &format!("live={live}: turned on"));
 
             for (step, key) in ["x", "y", "z", "enter", "enter", "w"].iter().enumerate() {
@@ -417,10 +462,50 @@ mod tests {
                 assert_centred(&input, visual, &format!("live={live}: Undo {step} settled"));
             }
             assert_eq!(
-                input.read_with(visual, |input, _| input.value().len()),
-                note.len(),
-                "live={live}: every edit undone"
+                input.read_with(visual, |input, _| input.value().to_string()),
+                note,
+                "live={live}: every edit undone without source mutation"
             );
+
+            // Rewrapping changes the caret's visual row without a selection
+            // change. Typewriter must use the newly published row metrics.
+            visual.simulate_resize(size(px(720.), px(640.)));
+            visual.run_until_parked();
+            assert_centred(&input, visual, "rewrapped without moving the caret");
+
+            // End-of-note typing and Undo must retain geometry too.
+            input.update(visual, |input, cx| {
+                input.set_selected_range(note.len()..note.len(), cx)
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.dispatch_keystroke(gpui::Keystroke::parse("x").unwrap(), cx);
+            });
+            assert_centred(&input, visual, "end of note typed");
+            visual.run_until_parked();
+            visual.dispatch_action(gpui_component::input::Undo);
+            assert_centred(&input, visual, "end of note Undo");
+            visual.run_until_parked();
+            assert_eq!(
+                input.read_with(visual, |input, _| input.value().to_string()),
+                note
+            );
+
+            if live && require_projection {
+                let frames = input.read_with(visual, |input, _| input.take_layout_frames());
+                assert!(
+                    !frames.is_empty(),
+                    "positive control: observed painted frames"
+                );
+                assert!(
+                    frames.iter().all(|frame| !frame.raw),
+                    "raw fallback is not projected Live"
+                );
+                eprintln!("WRITING_PROJECTED bytes={} frames={} projection_composes={} max_prepaint_ms={:.3}",
+                    note.len(), frames.len(),
+                    input.read_with(visual, |input, _| input.layout_diagnostics().unwrap().projection_composes),
+                    frames.iter().map(|f| f.prepaint_ms).fold(0.0_f32, f32::max));
+            }
 
             // Scrolling by hand is free until the caret moves again.
             let bounds = input.read_with(visual, |input, _| input.input_bounds());
@@ -443,7 +528,10 @@ mod tests {
                 visual,
                 &format!("live={live}: typed after a scroll"),
             );
-            visual.update(|_, cx| reader_ui_state::set_typewriter_mode(false, cx));
+            visual.update(|_, cx| {
+                reader_ui_state::set_typewriter_mode(false, cx);
+                reader_ui_state::set_focus_mode(false, cx);
+            });
             visual.run_until_parked();
         }
     }
