@@ -483,11 +483,11 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
 }
 fn user_error(error: &anyhow::Error) -> String {
     let text = error.to_string().to_lowercase();
-    if text.contains("ignore policy") {
+    if cfg!(target_os = "linux") && text.contains("ignore policy") {
         "This vault’s .stignore needs review before sharing. Required exclusions: .okilum-index, .okilum-save-*, /.claude/worktrees and /worktrees. Includes and negated rules need a separately reviewed policy.".into()
-    } else if text.contains("existing synced vault") {
+    } else if cfg!(target_os = "linux") && text.contains("existing synced vault") {
         "This vault already belongs to Syncthing. Use Choose existing synced vault below.".into()
-    } else if text.contains("managed") {
+    } else if cfg!(target_os = "linux") && text.contains("managed") {
         "Sharing an ordinary vault requires the bundled Sync connection. Keep existing Syncthing vaults on Choose existing synced vault.".into()
     } else if text.contains("choose a sync connection") {
         "Choose which existing Sync connection to use below, then try again.".into()
