@@ -116,7 +116,7 @@ pub(in crate::reader_editor) struct TableGrid {
     idle: Option<Task<()>>,
     seen_document: gpui_component::Rope,
     formatted_stamp: Option<SourceStamp>,
-    committed_grid_stamp: Option<SourceStamp>,
+    committed_table_edit: Option<(SourceStamp, Range<usize>)>,
     pending_silent: Option<(SourceStamp, gpui_component::Rope)>,
     error: Option<&'static str>,
     provider: Option<Arc<CachedProvider>>,
@@ -150,7 +150,7 @@ impl TableGrid {
             idle: None,
             seen_document: input.read(cx).text().clone(),
             formatted_stamp: None,
-            committed_grid_stamp: None,
+            committed_table_edit: None,
             pending_silent: None,
             input,
             binding: None,
@@ -171,8 +171,8 @@ impl TableGrid {
 
     /// Exact source APIs intentionally emit Silent mutations, just like Undo.
     /// Attribute an accepted table edit before its deferred source event runs.
-    pub(super) fn mark_source_edit(&mut self, stamp: SourceStamp) {
-        self.committed_grid_stamp = Some(stamp);
+    pub(super) fn mark_source_edit(&mut self, stamp: SourceStamp, range: Range<usize>) {
+        self.committed_table_edit = Some((stamp, range));
     }
 
     /// Open only an exact currently classified top-level table. The caller may
@@ -559,7 +559,8 @@ impl TableGrid {
             let state = self.input.read(cx);
             self.source_history
                 .record(before, state.source_stamp(), typing_cell);
-            self.committed_grid_stamp = Some(state.source_stamp());
+            self.committed_table_edit =
+                Some((state.source_stamp(), start..start + replacement_len));
             self.binding = Some(Binding {
                 stamp: state.source_stamp(),
                 document: state.value().to_string(),

@@ -111,7 +111,12 @@ impl TableGrid {
         let text = self.input.read(cx).text().clone();
         let before = std::mem::replace(&mut self.seen_document, text.clone());
         cx.notify();
-        let owned_edit = self.committed_grid_stamp.take() == Some(event.stamp);
+        let owned_range = self
+            .committed_table_edit
+            .take()
+            .filter(|(stamp, _)| *stamp == event.stamp)
+            .map(|(_, range)| range);
+        let owned_edit = owned_range.is_some();
         if self.formatted_stamp.take() == Some(event.stamp) {
             return;
         }
@@ -139,7 +144,11 @@ impl TableGrid {
                 .spawn(async move {
                     let before = before.to_string();
                     let text = text.to_string();
-                    let touched = touched(&before, &text)?;
+                    // A structural deletion can leave its minimal diff just
+                    // beyond the final table newline. Use the accepted table
+                    // command's exact postimage intent, never an adjacent table
+                    // inferred from an unrelated buffer edit.
+                    let touched = owned_range.or_else(|| touched(&before, &text))?;
                     let range = table_range(&text, touched)?;
                     Some((text, range))
                 })
@@ -895,12 +904,16 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    fn deleting_the_final_row_keeps_the_idle_grid_lease_and_atomic_undo(cx: &mut TestAppContext) {
-        let (_reader, input, grid, visual, _directory) = open(cx, true);
-        grid.update_in(visual, |grid, window, cx| {
-            grid.focus_cell(2, 0, window, cx);
-        });
+    fn exercise_final_row_deletion(cx: &mut TestAppContext, grid_mode: bool) {
+        let (_reader, input, grid, visual, _directory) = open(cx, grid_mode);
+        if grid_mode {
+            grid.update_in(visual, |grid, window, cx| {
+                grid.focus_cell(2, 0, window, cx);
+            });
+        } else {
+            let at = SOURCE.find("next").unwrap();
+            input.update(visual, |state, cx| state.set_selected_range(at..at + 4, cx));
+        }
         visual.dispatch_action(TableDeleteRow);
         visual.run_until_parked();
         let deleted = value(&input, visual);
@@ -918,7 +931,9 @@ mod tests {
             deleted,
             "the deleted table still formats"
         );
-        assert!(visual.debug_bounds("editable-table-grid").is_some());
+        if grid_mode {
+            assert!(visual.debug_bounds("editable-table-grid").is_some());
+        }
         visual.dispatch_action(Undo);
         visual.run_until_parked();
         assert_eq!(value(&input, visual), deleted, "format is one Undo step");
@@ -929,6 +944,16 @@ mod tests {
             SOURCE,
             "row deletion is one earlier Undo step"
         );
+    }
+
+    #[gpui::test]
+    fn deleting_the_final_row_keeps_the_idle_grid_lease_and_atomic_undo(cx: &mut TestAppContext) {
+        exercise_final_row_deletion(cx, true);
+    }
+
+    #[gpui::test]
+    fn deleting_the_final_source_row_still_formats_the_touched_table(cx: &mut TestAppContext) {
+        exercise_final_row_deletion(cx, false);
     }
 
     #[gpui::test]
