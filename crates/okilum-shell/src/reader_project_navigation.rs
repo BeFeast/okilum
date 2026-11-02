@@ -690,6 +690,9 @@ impl Reader {
         use gpui_component::menu::{PopupMenu, PopupMenuItem};
         self.close_project_switcher(window, cx);
         let reader = cx.entity().downgrade();
+        let local_reader = reader.clone();
+        let local_project = project.clone();
+        let local_request = self.project_request;
         let popup = PopupMenu::build(window, cx, move |menu, _, _| {
             let reader = reader.clone();
             let project = project.clone();
@@ -700,6 +703,21 @@ impl Reader {
                         this.open_project_icon_dialog(project, window, cx)
                     });
                 }),
+            ).item(
+                PopupMenuItem::new("Connect / reconnect existing local T3 project…")
+                    .on_click({
+                        let reader = local_reader.clone();
+                        let project = local_project.clone();
+                        move |_, window, cx| {
+                            let _ = reader.update(cx, |this, cx| {
+                                if this.project_request != local_request
+                                    || !this.local_binding_target_current(&project) {
+                                    return;
+                                }
+                                this.open_local_project_binding(project.clone(), window, cx);
+                            });
+                        }
+                    }),
             )
         });
         cx.subscribe(&popup, |this, dismissed, _: &DismissEvent, cx| {

@@ -116,6 +116,38 @@ existing AGENTS/manager-state/entry notes are named. Existing bindings keep thei
 original behavior. Retained launch intents and created receipts are never deleted
 or retried after an uncertain thread launch; their recovery boundary is unchanged.
 
-The three slices retain their regression evidence. Under the 31 October process
-v2, required CI gates the PR; review follows merge asynchronously. Each merge
-reaches beta on all three operating systems. Sprint publication is retired.
+The three slices retain their regression evidence. Source integration, beta
+publication and native acceptance are recorded separately; a source merge alone
+does not establish availability on every platform. Sprint publication is retired.
+
+## Explicit existing checkout owner (#1801)
+
+The project menu offers **Connect / reconnect existing local T3 project…**.
+New project also offers a separate **Create locally and connect an existing T3
+project…** action. Ordinary Create retains its existing local default and never
+loads owner choices or connects to T3 implicitly. The existing explicit T3
+creation option and legacy local Manager setup remain separate paths.
+
+The owner picker lists existing projects from explicitly configured loopback
+connections. It verifies the server environment identity before and after the
+complete project listing; only one project may own the canonical local checkout.
+The user chooses the displayed environment, project ID and checkout explicitly.
+The selection is revalidated before the revision-aware manifest save. This path
+never creates a T3 project, starts a Manager or selects a Manager thread.
+
+A saved binding pins the exact origin, environment identity, project ID and
+checkout. Reconnect uses that origin even if the app's connection alias now names
+another endpoint. A replaced environment, missing or ambiguous owner, changed
+checkout, modified manifest or changed Manager registry is refused visibly.
+Successful reconnect preserves the existing Manager/executor and exact manifest
+bytes, and refreshes the cached authenticated gateway only after verification.
+Failed or stale selection keeps the previous cache, local project and durable
+drafts; reload the explicit picker after resolving the source.
+
+The form's asynchronous results are scoped to its vault, project request and
+captured project owner. Replaced menu targets are refused and a stale completion
+does not replace another project's navigation or close its form. Typed Manager
+draft metadata, annotations and visible-port epochs remain independent.
+
+Source and offline mock fixtures do not establish live T3, credentials, native
+or installed-build acceptance. Those remain separate evidence.
