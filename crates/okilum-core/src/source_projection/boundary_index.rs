@@ -5,7 +5,7 @@ use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Debug)]
-pub(super) struct Index(Option<Arc<Node>>);
+pub(crate) struct Index(Option<Arc<Node>>);
 #[derive(Debug)]
 struct Node {
     bytes: usize,
@@ -28,7 +28,7 @@ thread_local! {
 }
 
 impl Index {
-    pub(super) fn new(text: &str) -> Self {
+    pub(crate) fn new(text: &str) -> Self {
         let mut root = None;
         let mut start = 0;
         let mut end = 0;
@@ -42,7 +42,7 @@ impl Index {
         Self(join(root, leaf(&text[start..])))
     }
 
-    pub(super) fn update(&self, old: &str, new: &str) -> Self {
+    pub(crate) fn update(&self, old: &str, new: &str) -> Self {
         if old == new {
             return self.clone();
         }
@@ -75,7 +75,7 @@ impl Index {
         ))
     }
 
-    pub(super) fn binary_search(&self, byte: &usize) -> Result<(), ()> {
+    pub(crate) fn binary_search(&self, byte: &usize) -> Result<(), ()> {
         let Some(mut node) = self.0.as_deref() else {
             return (*byte == 0).then_some(()).ok_or(());
         };
@@ -99,7 +99,7 @@ impl Index {
             }
         }
     }
-    pub(super) fn line_at(&self, byte: usize) -> usize {
+    pub(crate) fn line_at(&self, byte: usize) -> usize {
         let Some(mut node) = self.0.as_deref() else {
             return 0;
         };
@@ -120,7 +120,7 @@ impl Index {
             }
         }
     }
-    pub(super) fn line_start(&self, line: usize) -> Option<usize> {
+    pub(crate) fn line_start(&self, line: usize) -> Option<usize> {
         if line == 0 {
             return Some(0);
         }

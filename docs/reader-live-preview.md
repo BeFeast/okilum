@@ -252,9 +252,16 @@ only with the exact projection object that prepared it.
 Source/display grapheme membership and newline coordinates use persistent relative-offset trees.
 Edits segment complete changed lines, retaining the unchanged prefix and suffix.
 LF seams are unconditional grapheme breaks, so CRLF, combining marks, ZWJ and
-regional-indicator sequences keep exact boundaries. Reveal and background refresh
-also reuse the preceding indexes. Full classification remains off the UI thread;
+regional-indicator sequences keep exact boundaries. Reveal, canonical classifier
+coordinate checks, projection validation and background refresh all reuse the
+preceding indexes. Full classification remains off the UI thread;
 byte comparison and bounded metadata reconciliation still inspect the document.
+
+Semantic code captures use local block coordinates. A current retained CodeBlock
+with identical literal bytes may reuse its captures after unrelated prose edits;
+changed code or fence language drops those captures until fresh parsing. Both
+exact and retained publications keep the same per-block capture order, avoiding
+metric-style invalidation across unchanged fences.
 
 Draft #2341 supplies the dirty-boundary layout implementation. Draft #2352's
 local-index approach and painted-renderer regression are incorporated into this

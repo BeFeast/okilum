@@ -183,7 +183,9 @@ impl CachedProvider {
         previous: Option<&Self>,
     ) -> Self {
         let snapshot = core_snapshot(&source);
-        let classified = source_classifier::classify(&snapshot);
+        // Release the old provider's lock before the background canonical parse.
+        let predecessor = previous.and_then(|p| p.retained.lock().ok().map(|r| r.clone()));
+        let classified = source_classifier::classify_reusing(&snapshot, predecessor.as_ref());
         let tables = classified
             .decorations_for(&snapshot)
             .unwrap_or_default()
@@ -218,7 +220,7 @@ impl CachedProvider {
             fenced_blocks,
             retained: Mutex::new(RetainedPresentation::new_reusing(
                 &classified,
-                previous.and_then(|p| p.retained.lock().ok()).as_deref(),
+                predecessor.as_ref(),
             )),
             classified,
             links,

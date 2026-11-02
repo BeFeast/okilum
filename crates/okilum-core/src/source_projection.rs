@@ -3,7 +3,7 @@
 //! Callers classify blocks and supply approved conceal spans. A rejected plan
 //! returns the current exact Source, never an approximate or stale projection.
 use std::{ops::Range, sync::Arc};
-mod boundary_index;
+pub(crate) mod boundary_index;
 use boundary_index::Index;
 
 pub const MAX_BYTES: usize = 1024 * 1024;
@@ -187,6 +187,12 @@ pub struct Projection {
     display_boundaries: Index,
 }
 impl Projection {
+    pub(crate) fn source_index_for(&self, snapshot: &Snapshot) -> Option<Index> {
+        (self.snapshot.document == snapshot.document).then(|| {
+            self.source_boundaries
+                .update(self.snapshot.source(), snapshot.source())
+        })
+    }
     pub fn display(&self) -> &str {
         &self.display
     }

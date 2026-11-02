@@ -83,6 +83,10 @@ thread_local! {
 }
 
 impl RetainedPresentation {
+    pub(super) fn base_projection(&self) -> Option<&crate::source_projection::Projection> {
+        self.base.as_deref().ok()
+    }
+
     pub fn new(classified: &Classification) -> Self {
         Self::new_reusing(classified, None)
     }
