@@ -150,6 +150,20 @@ struct Prepared {
     binary_hash: String,
     identity: DaemonIdentity,
 }
+/// Authenticate a completed, pinned managed preparation without launching a process.
+/// An existing external home has no preparation receipt and cannot be adopted.
+pub fn managed_identity(state: &Path) -> Result<DaemonIdentity> {
+    let saved: Prepared = serde_json::from_slice(&private::read(&state.join("prepared.json"))?)?;
+    ensure!(
+        saved.identity.config_file == state.join("syncthing/config.xml").canonicalize()?
+            && saved.binary_version == CLIENT_VERSION
+            && saved.binary_hash == crate::linux_bootstrap::BINARY_SHA
+            && executable_hash(&saved.request.executable)? == saved.binary_hash,
+        "selected managed runtime preparation changed"
+    );
+    saved.identity.connect()?;
+    Ok(saved.identity)
+}
 /// Only call after explicit Enable. The random state directory must be new or
 /// contain this preparation's durable intent; never point it at an external home.
 pub fn prepare(state: &Path, request: &Preparation) -> Result<(ManagedInstance, DaemonIdentity)> {

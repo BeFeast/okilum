@@ -15,7 +15,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const BINARY_SHA: &str = "d72663e4f9efe0b8de5e1dacb13c1c8decc82e76623cf2fa47fd306f3e1d3a3e";
+pub(crate) const BINARY_SHA: &str =
+    "d72663e4f9efe0b8de5e1dacb13c1c8decc82e76623cf2fa47fd306f3e1d3a3e";
 fn verify_runtime(path: &Path) -> Result<()> {
     let mut file = fs::OpenOptions::new()
         .read(true)

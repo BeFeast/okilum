@@ -85,6 +85,52 @@ print(g.find('apikey').text)
             .into();
         Ok(peer)
     }
+    /// Real managed preparation, with no systemd registration. Only this fixture
+    /// owns/reaps the child; production source sharing cannot start a daemon.
+    pub fn managed(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
+        use okilum_sync_controller::daemon::{prepare, Preparation};
+        let state = root.join(name);
+        fs::create_dir(&state)?;
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700))?;
+        let prepared = state.join("prepared");
+        let vault = state.join("ordinary-vault");
+        fs::create_dir(&vault)?;
+        let rest_guard = TcpListener::bind("127.0.0.1:0")?;
+        let listen_guard = TcpListener::bind("127.0.0.1:0")?;
+        let rest = rest_guard.local_addr()?;
+        let listen = listen_guard.local_addr()?;
+        let (instance, identity) = prepare(
+            &prepared,
+            &Preparation {
+                executable: binary.clone(),
+                rest_address: rest,
+                listen_address: listen,
+            },
+        )?;
+        let xml = xmltree::Element::parse(fs::read(&identity.config_file)?.as_slice())?;
+        let key = xml
+            .get_child("gui")
+            .and_then(|g| g.get_child("apikey"))
+            .and_then(xmltree::Element::get_text)
+            .context("fixture key missing")?
+            .into_owned();
+        let api = Syncthing::connect(rest, &key)?;
+        drop(rest_guard);
+        drop(listen_guard);
+        let mut peer = Self {
+            child: None,
+            binary,
+            home: instance.home,
+            vault,
+            api,
+            api_key: key,
+            rest,
+            listen,
+            id: identity.device_id,
+        };
+        peer.start()?;
+        Ok((peer, prepared))
+    }
     // Fixture-only connection control; production enrollment deliberately refuses
     // to mutate existing devices through add_device.
     pub fn pause_remote(&self, id: &str, paused: bool) -> Result<()> {

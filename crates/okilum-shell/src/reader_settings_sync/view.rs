@@ -80,6 +80,61 @@ impl Render for SyncSettings {
                 );
             }
         }
+        #[cfg(target_os = "linux")]
+        {
+            let mut vaults = self.vaults.clone();
+            for reader in reader_open::readers(cx) {
+                let reader = reader.read(cx);
+                if !reader.single_file && !vaults.contains(&reader.vault_root) {
+                    vaults.push(reader.vault_root.clone());
+                }
+            }
+            content = content.child(div().text_base().child("Vaults on this computer"))
+                .child(div().text_sm().text_color(p.text_muted)
+                    .child("Share a vault so your approved computers can choose it. Files stay here. Later edits and deletions sync both ways."));
+            if vaults.is_empty() {
+                content = content.child(
+                    div()
+                        .text_sm()
+                        .child("Open a vault to share it with your other computers."),
+                );
+            }
+            for (index, path) in vaults.into_iter().enumerate() {
+                let attached = self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.attached.iter().find(|v| v.path == path));
+                let shared = self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.shared.contains(&path));
+                let label = if shared {
+                    "Shared with approved computers"
+                } else if attached.is_some() {
+                    "Sync connected"
+                } else {
+                    "Share with my computers"
+                };
+                content = content.child(
+                    v_flex()
+                        .gap_2()
+                        .child(div().text_sm().child(path.display().to_string()))
+                        .child(
+                            Button::new(("sync-share-vault", index))
+                                .debug_selector(move || format!("sync-share-vault-{index}").into())
+                                .label(label)
+                                .disabled(
+                                    self.busy
+                                        || attached.is_some()
+                                        || !self.runtimes.iter().any(|r| r.selected),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.run(Operation::Share(path.clone()), cx)
+                                })),
+                        ),
+                );
+            }
+        }
         if let Some(snapshot) = &self.snapshot {
             content = content.child(
                 div()

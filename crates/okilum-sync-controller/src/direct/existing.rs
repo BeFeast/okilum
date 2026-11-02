@@ -10,15 +10,22 @@ use std::path::{Path, PathBuf};
 /// Hold the original directory open so replacement cannot recycle its inode while
 /// authenticated daemon inspection is in flight. Canonical paths alone are not
 /// filesystem identities.
-struct VaultRoot(std::fs::File);
+pub(super) struct VaultRoot(std::fs::File);
 impl VaultRoot {
-    fn open(path: &Path) -> Result<Self> {
+    pub(super) fn open(path: &Path) -> Result<Self> {
         let root = Self(std::fs::File::open(path)?);
         root.verify(path)?;
         Ok(root)
     }
 
-    fn verify(&self, path: &Path) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    pub(super) fn identity(&self) -> Result<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = self.0.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
+    pub(super) fn verify(&self, path: &Path) -> Result<()> {
         use std::os::unix::fs::MetadataExt;
         let current = std::fs::symlink_metadata(path)?;
         let original = self.0.metadata()?;

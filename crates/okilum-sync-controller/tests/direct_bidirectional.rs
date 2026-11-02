@@ -248,3 +248,6 @@ fn actual_paired_daemons_promote_safely_and_replicate_in_both_directions() -> Re
     second.shutdown();
     Ok(())
 }
+
+#[path = "support/source_sharing.rs"]
+mod source_sharing;

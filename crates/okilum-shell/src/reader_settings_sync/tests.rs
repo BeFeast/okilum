@@ -5,6 +5,8 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
     SyncSettings {
         #[cfg(target_os = "linux")]
         runtimes: vec![],
+        #[cfg(target_os = "linux")]
+        vaults: vec![],
         controller: None,
         snapshot: None,
         inspected: None,
@@ -64,6 +66,8 @@ fn snapshot(pending: Option<direct::Pending>) -> Snapshot {
         peers: vec![],
         catalog: vec![],
         attached: vec![],
+        #[cfg(target_os = "linux")]
+        shared: vec![],
         status: "Waiting for confirmation".into(),
     }
 }
@@ -341,4 +345,45 @@ fn controller_opened_after_sync_suspend_is_revoked_before_publication() -> anyho
     );
     controller.shutdown();
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn reader_settings_sync_lists_an_ordinary_vault_and_shared_state(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let path = PathBuf::from("/ordinary-vault");
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.vaults = vec![path.clone()];
+            view.snapshot = Some(snapshot(None));
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("sync-share-vault-0").is_some(),
+        "ordinary vault action missing"
+    );
+    assert!(
+        visual.debug_bounds("sync-inspect-existing").is_some(),
+        "existing replica action missing"
+    );
+    view.update(visual, |view, cx| {
+        view.snapshot.as_mut().unwrap().shared.push(path.clone());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("sync-share-vault-0").is_some(),
+        "shared state disappeared"
+    );
+    view.read_with(visual, |view, _| {
+        assert!(view.snapshot.as_ref().unwrap().shared.contains(&path));
+        assert!(!view.busy);
+    });
 }

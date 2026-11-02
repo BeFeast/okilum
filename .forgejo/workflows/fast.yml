@@ -56,3 +56,31 @@ jobs:
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           bash scripts/ci/fast-local.sh
+
+  sync-source-sharing:
+    # Keep this additional compiler/daemon load outside the bounded desktop gate.
+    needs: [check]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: fast-linux
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_BUILD_JOBS: "3"
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify ordinary source sharing with two pinned managed runtimes
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export CARGO_TARGET_DIR="$HOME/.cache/okilum-sync-source-sharing/target"
+          mkdir -p "$CARGO_TARGET_DIR"
+          exec 9>"$HOME/.cache/okilum-sync-source-sharing/gate.lock"
+          flock -w 600 9
+          scripts/vendor-setup.sh 9>&-
+          scripts/vendor-setup.sh --verify 9>&-
+          bash scripts/ci/sync-source-sharing.sh 9>&-
