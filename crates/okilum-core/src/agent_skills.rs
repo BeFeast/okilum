@@ -57,12 +57,13 @@ pub enum Freshness {
 /// Immutable worker input. Its private generation prevents a result for an old
 /// project/configuration or an invalidated scan from replacing current state.
 #[derive(Clone, Debug)]
-pub struct RefreshRequest {
+pub struct RefreshRequest<R = u64> {
     generation: u64,
     scope: DiscoveryScope,
+    inventory_revision: Option<R>,
 }
 
-impl RefreshRequest {
+impl<R> RefreshRequest<R> {
     /// Run on the owner's background executor, never the UI thread.
     pub fn discover(&self) -> Snapshot {
         discover(&self.scope.root, &self.scope.project, &self.scope.disabled)
@@ -72,29 +73,38 @@ impl RefreshRequest {
 /// Session-only projection; no timers, watchers, writes or provider calls.
 /// Keep this instance across refreshes. Feed source/config events to `invalidate`
 /// or `configure`, and submit a new request through the owner's executor.
-pub struct Inventory {
+pub struct Inventory<R = u64> {
     scope: Option<DiscoveryScope>,
     generation: u64,
     pending: bool,
     config_error: Option<String>,
+    inventory_revision: Option<R>,
+    reload_diagnostics: Vec<String>,
     snapshot: Option<Snapshot>,
     freshness: Freshness,
 }
 
-impl Default for Inventory {
+impl<R> Default for Inventory<R> {
     fn default() -> Self {
         Self {
             scope: None,
             generation: 0,
             pending: false,
             config_error: None,
+            inventory_revision: None,
+            reload_diagnostics: Vec::new(),
             snapshot: None,
             freshness: Freshness::NotLoaded,
         }
     }
 }
 
-impl Inventory {
+impl<R: Clone + Eq> Inventory<R> {
+    /// Opaque revision supplied by the current published inventory owner. It may
+    /// be a sequence or an exact retained publication token; never infer one.
+    pub fn inventory_revision(&self) -> Option<&R> {
+        self.inventory_revision.as_ref()
+    }
     pub fn scope(&self) -> Option<&DiscoveryScope> {
         self.scope.as_ref()
     }
@@ -103,6 +113,37 @@ impl Inventory {
     }
     pub fn freshness(&self) -> &Freshness {
         &self.freshness
+    }
+
+    /// Diagnostics from the latest incomplete reload, separate from the retained
+    /// last-good listing. These must remain visible until a successful reload.
+    pub fn reload_diagnostics(&self) -> &[String] {
+        &self.reload_diagnostics
+    }
+
+    /// Bind the accepted inventory revision and exact discovery policy before
+    /// Reload. Call for every inventory publication, including an empty inventory.
+    /// Paths are compared exactly; canonicalization must not hide a scope switch.
+    pub fn configure_revision(&mut self, scope: DiscoveryScope, inventory_revision: R) -> bool {
+        let revision_changed = self.inventory_revision.as_ref() != Some(&inventory_revision);
+        self.inventory_revision = Some(inventory_revision);
+        let changed = self.configure(scope);
+        if revision_changed && !changed {
+            self.invalidate("Project skill inventory changed");
+        }
+        changed || revision_changed
+    }
+
+    /// Explicit Reload entry point for owners with revision-aware inventory.
+    /// The request captures root/project, inventory revision and disabled/config
+    /// policy together; a later configure_revision invalidates its completion.
+    pub fn begin_reload(
+        &mut self,
+        scope: DiscoveryScope,
+        inventory_revision: R,
+    ) -> Option<RefreshRequest<R>> {
+        self.configure_revision(scope, inventory_revision);
+        self.begin_refresh()
     }
 
     /// Returns true when a scan is needed. Project/vault switches clear old rows;
@@ -119,6 +160,7 @@ impl Inventory {
             .is_some_and(|old| old.root == scope.root && old.project == scope.project);
         if !same_project {
             self.snapshot = None;
+            self.reload_diagnostics.clear();
         }
         self.scope = Some(scope);
         self.config_error = None;
@@ -142,6 +184,8 @@ impl Inventory {
         self.invalidate("No project selected");
         self.scope = None;
         self.snapshot = None;
+        self.inventory_revision = None;
+        self.reload_diagnostics.clear();
         self.config_error = None;
         self.freshness = Freshness::NotLoaded;
     }
@@ -162,7 +206,7 @@ impl Inventory {
 
     /// Explicit Refresh supersedes an earlier request, allowing recovery without
     /// waiting for an obsolete or failed worker to finish.
-    pub fn begin_refresh(&mut self) -> Option<RefreshRequest> {
+    pub fn begin_refresh(&mut self) -> Option<RefreshRequest<R>> {
         if self.config_error.is_some() {
             return None;
         }
@@ -173,31 +217,42 @@ impl Inventory {
         Some(RefreshRequest {
             generation: self.generation,
             scope,
+            inventory_revision: self.inventory_revision.clone(),
         })
+    }
+
+    pub fn matches_request(&self, request: &RefreshRequest<R>) -> bool {
+        self.pending
+            && self.generation == request.generation
+            && self.scope.as_ref() == Some(&request.scope)
+            && self.inventory_revision == request.inventory_revision
     }
 
     /// Returns false for obsolete or repeated completions. Failed refreshes retain
     /// previous rows with a visible error; partial discovery is never called fresh.
     pub fn finish_refresh(
         &mut self,
-        request: &RefreshRequest,
+        request: &RefreshRequest<R>,
         result: Result<Snapshot, String>,
     ) -> bool {
-        if !self.pending
-            || self.generation != request.generation
-            || self.scope.as_ref() != Some(&request.scope)
-        {
+        if !self.matches_request(request) {
             return false;
         }
         self.pending = false;
         match result {
             Ok(snapshot) => {
-                self.freshness = if snapshot.diagnostics.is_empty() {
-                    Freshness::Fresh
+                self.reload_diagnostics = snapshot.diagnostics.clone();
+                if snapshot.diagnostics.is_empty() {
+                    self.freshness = Freshness::Fresh;
+                    self.snapshot = Some(snapshot);
                 } else {
-                    Freshness::Incomplete
-                };
-                self.snapshot = Some(snapshot);
+                    self.freshness = Freshness::Incomplete;
+                    // Partial/failed directory traversal cannot erase healthy
+                    // last-good rows or publish a misleading empty inventory.
+                    if self.snapshot.is_none() {
+                        self.snapshot = Some(snapshot);
+                    }
+                }
             }
             Err(error) => self.freshness = Freshness::Failed(error),
         }
@@ -439,10 +494,82 @@ mod tests {
     }
 
     #[test]
+    fn reload_retains_last_good_and_accepts_only_current_revision_and_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), ".agents/skills/review", "review");
+        let mut inventory: Inventory = Inventory::default();
+        let scope = scope(temp.path());
+        let first = inventory.begin_reload(scope.clone(), 10).unwrap();
+        assert!(inventory.finish_refresh(&first, Ok(first.discover())));
+        let obsolete = inventory.begin_reload(scope.clone(), 10).unwrap();
+        let next = inventory.begin_reload(scope.clone(), 11).unwrap();
+        assert!(!inventory.finish_refresh(&obsolete, Ok(Snapshot::default())));
+        let partial = Snapshot {
+            skills: vec![],
+            diagnostics: vec!["Skill directory unavailable".into()],
+        };
+        assert!(inventory.finish_refresh(&next, Ok(partial)));
+        assert_eq!(inventory.snapshot().unwrap().skills[0].name, "review");
+        assert_eq!(inventory.freshness(), &Freshness::Incomplete);
+        assert_eq!(
+            inventory.reload_diagnostics(),
+            &["Skill directory unavailable"]
+        );
+        let old_policy = inventory.begin_reload(scope.clone(), 11).unwrap();
+        let mut disabled = scope.clone();
+        disabled
+            .disabled
+            .push(".agents/skills/review/SKILL.md".into());
+        disabled.config_revision += 1;
+        let current = inventory.begin_reload(disabled, 11).unwrap();
+        assert!(!inventory.finish_refresh(&old_policy, Ok(old_policy.discover())));
+        assert!(inventory.finish_refresh(&current, Ok(current.discover())));
+        assert_eq!(
+            inventory.snapshot().unwrap().skills[0].availability,
+            Availability::Disabled
+        );
+        assert!(inventory.reload_diagnostics().is_empty());
+        let stale = inventory.begin_refresh().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let switched = inventory
+            .begin_reload(super::tests::scope(other.path()), 11)
+            .unwrap();
+        assert!(inventory.snapshot().is_none());
+        assert!(!inventory.finish_refresh(&stale, Ok(stale.discover())));
+        assert!(inventory.finish_refresh(&switched, Ok(switched.discover())));
+        assert!(inventory.snapshot().unwrap().skills.is_empty());
+    }
+
+    #[test]
+    fn manifest_failure_and_retry_never_erase_last_good_listing() {
+        let temp = tempfile::tempdir().unwrap();
+        write(temp.path(), ".agents/skills/review", "review");
+        let mut inventory: Inventory = Inventory::default();
+        let configured = scope(temp.path());
+        let initial = inventory.begin_reload(configured.clone(), 1).unwrap();
+        assert!(inventory.finish_refresh(&initial, Ok(initial.discover())));
+        inventory.configuration_failed("Manifest is unreadable");
+        assert!(inventory.begin_refresh().is_none());
+        assert_eq!(inventory.snapshot().unwrap().skills.len(), 1);
+        assert!(matches!(inventory.freshness(), Freshness::Failed(_)));
+        let retry = inventory.begin_reload(configured, 2).unwrap();
+        assert!(inventory.finish_refresh(&retry, Err("Source path is unavailable".into())));
+        assert_eq!(inventory.snapshot().unwrap().skills.len(), 1);
+        assert!(
+            matches!(inventory.freshness(), Freshness::Failed(message) if message.contains("Source path"))
+        );
+        let retry = inventory.begin_refresh().unwrap();
+        fs::remove_file(temp.path().join(".agents/skills/review/SKILL.md")).unwrap();
+        assert!(inventory.finish_refresh(&retry, Ok(retry.discover())));
+        assert_eq!(inventory.freshness(), &Freshness::Fresh);
+        assert!(inventory.snapshot().unwrap().skills.is_empty());
+    }
+
+    #[test]
     fn config_refresh_changes_availability_and_rejects_old_completion() {
         let temp = tempfile::tempdir().unwrap();
         write(temp.path(), ".agents/skills/review", "review");
-        let mut inventory = Inventory::default();
+        let mut inventory: Inventory = Inventory::default();
         let initial = scope(temp.path());
         assert!(inventory.configure(initial.clone()));
         complete(&mut inventory);
@@ -480,7 +607,7 @@ mod tests {
     fn failed_config_cannot_publish_an_old_policy_as_fresh() {
         let temp = tempfile::tempdir().unwrap();
         write(temp.path(), ".agents/skills/review", "review");
-        let mut inventory = Inventory::default();
+        let mut inventory: Inventory = Inventory::default();
         let scope = scope(temp.path());
         inventory.configure(scope.clone());
         complete(&mut inventory);
@@ -505,7 +632,7 @@ mod tests {
     fn source_events_failure_retry_and_partial_coverage_remain_visible() {
         let temp = tempfile::tempdir().unwrap();
         write(temp.path(), ".agents/skills/review", "review");
-        let mut inventory = Inventory::default();
+        let mut inventory: Inventory = Inventory::default();
         inventory.configure(scope(temp.path()));
         complete(&mut inventory);
         let old = inventory.begin_refresh().unwrap();
@@ -535,7 +662,7 @@ mod tests {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         write(first.path(), ".agents/skills/review", "review");
-        let mut inventory = Inventory::default();
+        let mut inventory: Inventory = Inventory::default();
         inventory.configure(scope(first.path()));
         complete(&mut inventory);
         let old = inventory.begin_refresh().unwrap();
