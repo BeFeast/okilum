@@ -69,6 +69,32 @@ impl Pair {
         Ok(())
     }
 }
+fn reopen_controller(state: &Path, config: &Path) -> Result<Controller> {
+    let mut opened = None;
+    // shutdown revokes immediately; a bounded in-flight server response can
+    // still own the journal lock until its final Controller clone drops.
+    wait(
+        "stopped receiver releases its journal lock",
+        || match Controller::open(state.into(), vec![config.into()]) {
+            Ok(controller) => {
+                opened = Some(controller);
+                Ok(true)
+            }
+            Err(error)
+                if error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock)
+                }) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.context("reopen receiver controller")),
+        },
+    )?;
+    opened.context("receiver did not reopen")
+}
+
 fn hashes(root: &Path, names: &[&str]) -> Result<BTreeMap<String, String>> {
     names
         .iter()
@@ -130,10 +156,7 @@ fn managed_source_share_empty_receive_and_bidirectional_hashes() -> Result<()> {
         peer["allowed"] = json!([]);
     }
     fs::write(&journal_file, serde_json::to_vec(&interrupted)?)?;
-    pair.first = Controller::open(
-        pair.source_state.clone(),
-        vec![pair.source.home.join("config.xml")],
-    )?;
+    pair.first = reopen_controller(&pair.source_state, &pair.source.home.join("config.xml"))?;
     pair.first.refresh()?;
     pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
     assert_eq!(
@@ -367,6 +390,26 @@ fn managed_peer_addresses_without_discovery_negative_then_hashes_and_restart() -
     let peer = second.refresh()?.peers[0].id;
     let id = second.catalog(peer)?[0].id.clone();
     second.attach(peer, &id, &target.vault)?;
+    // Syncthing fills an empty device name from the first remote handshake.
+    // Pin fixture names before comparing the complete device configuration so
+    // that asynchronous daemon metadata cannot look like a controller mutation.
+    for (runtime, remote, name) in [
+        (&source, &target, "Target fixture"),
+        (&target, &source, "Source fixture"),
+    ] {
+        reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()?
+            .patch(format!(
+                "http://{}/rest/config/devices/{}",
+                runtime.rest, remote.id
+            ))
+            .header("X-API-Key", &runtime.api_key)
+            .json(&json!({"name":name}))
+            .send()?
+            .error_for_status()?;
+        assert_eq!(runtime.api.device(&remote.id)?["name"], name);
+    }
     let connected = || -> Result<bool> {
         Ok(
             source.api.connections()?["connections"][&target.id]["connected"] == true
@@ -512,11 +555,11 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
         pair.target.vault.join("local-sentinel.md"),
         "preserved local bytes",
     )?;
-    pair.second = Controller::open(
-        target_state.clone(),
-        vec![pair.target.home.join("config.xml")],
-    )?;
-    let migrated = pair.second.refresh()?;
+    pair.second = reopen_controller(&target_state, &pair.target.home.join("config.xml"))?;
+    let migrated = pair
+        .second
+        .refresh()
+        .context("reconcile legacy receiver label")?;
     let mut expected = before.clone();
     expected["label"] = json!(label);
     assert_eq!(
@@ -536,7 +579,7 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
     let mut db: Value = serde_json::from_slice(&fs::read(&file)?)?;
     db["transfers"][0]["witness"] = before;
     fs::write(&file, serde_json::to_vec(&db)?)?;
-    pair.second = Controller::open(target_state, vec![pair.target.home.join("config.xml")])?;
+    pair.second = reopen_controller(&target_state, &pair.target.home.join("config.xml"))?;
     assert_eq!(
         pair.second.snapshot()?.attached[0].label,
         *label,
