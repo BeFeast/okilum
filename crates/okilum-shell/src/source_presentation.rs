@@ -2943,10 +2943,14 @@ mod rope_revision_tests {
     #[test]
     fn native_receipts_bound_compose_and_old_discovery_controls_at_all_sizes() {
         for row in [
-            "Paragraph **bold** and a contraction isn't changed.\r\n\r\n".to_owned(),
+            format!(
+                "# Heading **bold**\r\n\r\nParagraph isn't changed.\r\n{}\r\n",
+                "Ordinary short prose continues on this logical line.\r\n".repeat(20)
+            ),
             "Ordinary prose and a contraction isn't changed.\r\n".to_owned(),
             format!("Paragraph {} end.\r\n\r\n", "ordinary prose ".repeat(200)),
         ] {
+            let line_bytes = row.lines().map(str::len).max().unwrap() + 2;
             let mut scanned = Vec::new();
             for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
                 let mut authored = row.repeat(bytes / row.len());
@@ -2991,14 +2995,14 @@ mod rope_revision_tests {
                 let work = take_work();
                 println!(
                     "RECEIPT_KEY_WORK line_bytes={} note_bytes={bytes} work={work:?}",
-                    row.len()
+                    line_bytes
                 );
                 scanned.push(work.scanned_bytes);
                 assert_eq!(work.flattened_bytes, 0, "{bytes}: {work:?}");
                 assert_eq!(work.display_builds, 0, "{bytes}: {work:?}");
                 assert!(
-                    work.scanned_bytes < row.len() * 16 + 4096
-                        && work.display_bytes < row.len() * 2 + 4096,
+                    work.scanned_bytes < line_bytes * 16 + 4096
+                        && work.display_bytes < line_bytes * 2 + 4096,
                     "{bytes}: {work:?}"
                 );
                 assert_eq!(gpui_component::input::projection::take_flattened_bytes(), 0);

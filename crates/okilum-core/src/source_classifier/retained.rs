@@ -181,29 +181,6 @@ impl RetainedPresentation {
             projection: self.base.clone()?,
         };
 
-        // A heading reveals its `#` markers from a caret anywhere on its line
-        // (#915). Opening markers end where heading content starts; closing ones
-        // start where it ends. Heading spans never overlap, so both orders agree.
-        let headings: Vec<_> = self
-            .styles
-            .iter()
-            .filter(|style| matches!(style.style, Style::Heading(_)))
-            .map(|style| style.range.clone())
-            .collect();
-        let heading_scope = |marker: &Range<usize>| {
-            let heading = headings
-                .binary_search_by_key(&marker.end, |h| h.start)
-                .or_else(|_| headings.binary_search_by_key(&marker.start, |h| h.end))
-                .ok()?;
-            // An ATX heading is one line: every marker's scope is that whole line,
-            // so a caret in the closing hashes also reveals the opening ones.
-            let h = &headings[heading];
-            let source = self.snapshot.text();
-            let start = source.line_bounds(h.start).start;
-            let rest = source.slice(h.end..source.line_bounds(h.end).end);
-            let end = rest.find(['\r', '\n']).map_or(source.len(), |i| h.end + i);
-            Some(start.min(marker.start)..end.max(marker.end))
-        };
         let regions = self
             .plan
             .regions()
@@ -215,15 +192,14 @@ impl RetainedPresentation {
                     markers: markers
                         .iter()
                         .filter(|marker| {
-                            let scope = heading_scope(marker).unwrap_or_else(|| {
-                                self.marker_scopes
-                                    .binary_search_by_key(&marker.start, |(m, _)| m.start)
-                                    .ok()
-                                    .map_or_else(
-                                        || (*marker).clone(),
-                                        |i| self.marker_scopes[i].1.clone(),
-                                    )
-                            });
+                            let scope = self
+                                .marker_scopes
+                                .binary_search_by_key(&marker.start, |(m, _)| m.start)
+                                .ok()
+                                .map_or_else(
+                                    || (*marker).clone(),
+                                    |i| self.marker_scopes[i].1.clone(),
+                                );
                             let touched = reveal.touches(&scope);
                             !touched
                         })

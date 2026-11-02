@@ -265,6 +265,7 @@ pub struct Projection {
     snapshot: Snapshot,
     display: Text,
     anchors: Vec<Anchor>,
+    checked_markers: Vec<Range<usize>>,
     source_boundaries: Index,
     display_boundaries: Index,
 }
@@ -501,6 +502,9 @@ pub(crate) fn project_reusing(
                 return Err(FallbackReason::InvalidBoundary);
             }
         }
+        let preceding =
+            previous.and_then(|p| snapshot.change_from(&p.snapshot).map(|edit| (p, edit)));
+        let mut checked_markers = Vec::new();
         let mut concealed = Vec::new();
         let mut previous_end = 0;
         for region in &plan.regions {
@@ -531,13 +535,32 @@ pub(crate) fn project_reusing(
                     }
                     marker_end = marker.end;
                     work.charge(marker.len())?;
-                    if snapshot
-                        .source
-                        .slice(marker.clone())
-                        .contains(['\r', '\n', '\u{feff}'])
+                    // Reuse the exact predecessor's protected-byte proof for
+                    // untouched markers. Validation must not inspect every
+                    // Markdown delimiter in a large note on each key.
+                    let proven = preceding.as_ref().is_some_and(|(p, edit)| {
+                        let old = if marker.end <= edit.old.start {
+                            Some(marker.clone())
+                        } else if marker.start >= edit.new_end() {
+                            Some(edit.backward(marker.start)..edit.backward(marker.end))
+                        } else {
+                            None
+                        };
+                        old.is_some_and(|old| {
+                            p.checked_markers
+                                .binary_search_by_key(&old.start, |r| r.start)
+                                .is_ok_and(|i| p.checked_markers[i] == old)
+                        })
+                    });
+                    if !proven
+                        && snapshot
+                            .source
+                            .slice(marker.clone())
+                            .contains(['\r', '\n', '\u{feff}'])
                     {
                         return Err(FallbackReason::ProtectedSource);
                     }
+                    checked_markers.push(marker.clone());
                     if !reveal {
                         concealed.push(marker.clone());
                     }
@@ -665,6 +688,7 @@ pub(crate) fn project_reusing(
             snapshot: snapshot.clone(),
             display,
             anchors,
+            checked_markers,
             source_boundaries,
             display_boundaries,
         })
