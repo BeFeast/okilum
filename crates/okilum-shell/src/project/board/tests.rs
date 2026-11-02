@@ -124,7 +124,8 @@ fn source_error_and_recovery_keep_board_geometry_stable(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn board_context_appends_to_the_actual_composer_and_never_sends(cx: &mut TestAppContext) {
+fn discuss_1784_actual_composer_ack_preserves_draft_and_never_sends(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
     cx.update(|cx| {
         crate::test_init(cx);
         bind_keys(cx);
@@ -133,8 +134,17 @@ fn board_context_appends_to_the_actual_composer_and_never_sends(cx: &mut TestApp
     let gateway = Arc::new(super::super::fixture::Fake::default());
     let (root, visual) = cx.add_window_view(|window, cx| {
         let manager = cx.new(|cx| {
+            #[cfg(target_os = "linux")]
+            let mut view = super::super::discuss_handoff::native_tests::view_with_draft(
+                state.path(),
+                "Keep my draft 📝",
+                window,
+                cx,
+            );
+            #[cfg(not(target_os = "linux"))]
             let mut view =
                 super::super::fixture::view(state.path().to_owned(), gateway.clone(), window, cx);
+            view.gateway = Some(gateway.clone());
             view.area = Some(state.path().to_owned());
             view.compose.update(cx, |input, cx| {
                 input.set_value("Keep my draft 📝", window, cx)
@@ -147,25 +157,37 @@ fn board_context_appends_to_the_actual_composer_and_never_sends(cx: &mut TestApp
         root.view().clone().downcast::<ProjectView>().unwrap()
     });
     let area = manager.read_with(visual, |view, _| view.area.clone().unwrap());
+    visual.run_until_parked();
     manager.update_in(visual, |view, window, cx| {
-        assert!(view.append_board_context(&area, "Board context #1767".into(), window, cx));
-        assert_eq!(
-            view.compose.read(cx).value().as_str(),
-            "Keep my draft 📝\n\n---\nBoard context #1767"
-        );
-        assert!(!view.append_board_context(
-            &area.join("different-project"),
-            "WRONG PROJECT".into(),
-            window,
-            cx
-        ));
+        #[cfg(target_os = "linux")]
+        {
+            view.draft_handoff_surface_visible(true, cx);
+            view.append_board_context(&area, "Board context #1767".into(), window, cx)
+                .unwrap();
+            assert_eq!(
+                view.compose.read(cx).value().as_str(),
+                "Keep my draft 📝\n\n---\nBoard context #1767"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(view
+                .append_board_context(&area, "Board context #1767".into(), window, cx)
+                .is_err());
+            assert_eq!(view.compose.read(cx).value().as_str(), "Keep my draft 📝");
+        }
+        assert!(view
+            .append_board_context(
+                &area.join("different-project"),
+                "WRONG PROJECT".into(),
+                window,
+                cx
+            )
+            .is_err());
     });
     assert!(gateway.sends.lock().unwrap().is_empty());
-    visual.simulate_keystrokes(if cfg!(target_os = "macos") {
-        "cmd-z"
-    } else {
-        "ctrl-z"
-    });
+    #[cfg(target_os = "linux")]
+    visual.simulate_keystrokes("ctrl-z");
     visual.run_until_parked();
     manager.read_with(visual, |view, cx| {
         assert_eq!(view.compose.read(cx).value().as_str(), "Keep my draft 📝")
@@ -228,6 +250,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
 fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     cx: &mut TestAppContext,
 ) {
+    cx.executor().allow_parking();
     fn coordinates(position: ListOffset) -> (usize, Pixels) {
         (position.item_ix, position.offset_in_item)
     }
@@ -420,6 +443,20 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     });
     reader.update_in(visual, |reader, window, cx| {
         assert!(reader.project_navigation.board_visible);
+        #[cfg(target_os = "linux")]
+        {
+            let manager = cx.new(|cx| {
+                let mut view = super::super::discuss_handoff::native_tests::view_with_draft(
+                    &temp.path().join("native-drafts"),
+                    "Keep my draft",
+                    window,
+                    cx,
+                );
+                view.area = Some(folder.clone());
+                view
+            });
+            reader.project = Some(manager);
+        }
         let manager = reader.project.clone().expect("actual native Manager");
         manager.update(cx, |manager, cx| {
             manager
@@ -478,8 +515,13 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             .compose
             .read(cx)
             .value();
-        assert!(value.starts_with("Keep my draft"));
-        assert!(value.contains("issues/1767"));
+        #[cfg(target_os = "linux")]
+        {
+            assert!(value.starts_with("Keep my draft"));
+            assert!(value.contains("issues/1767"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(value.as_str(), "Keep my draft");
     });
     let note = visual
         .debug_bounds("board-note-1767-0")
@@ -593,17 +635,19 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             .compose
             .read(cx)
             .value();
-        assert!(draft.starts_with(&draft_before));
-        assert!(draft.contains("Choose a safe alternative"));
-        assert!(draft.contains("decision.md"));
-        assert!(draft.contains("issues/1767"));
-        assert!(draft.contains("Note revision:"));
+        #[cfg(target_os = "linux")]
+        {
+            assert!(draft.starts_with(&draft_before));
+            assert!(draft.contains("Choose a safe alternative"));
+            assert!(draft.contains("decision.md"));
+            assert!(draft.contains("issues/1767"));
+            assert!(draft.contains("Note revision:"));
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(draft.as_str(), draft_before);
     });
-    visual.simulate_keystrokes(if cfg!(target_os = "macos") {
-        "cmd-z"
-    } else {
-        "ctrl-z"
-    });
+    #[cfg(target_os = "linux")]
+    visual.simulate_keystrokes("ctrl-z");
     visual.run_until_parked();
     reader.read_with(visual, |reader, cx| {
         assert_eq!(

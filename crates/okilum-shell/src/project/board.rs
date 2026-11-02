@@ -1368,41 +1368,28 @@ impl Reader {
                 }
                 Action::Discuss(text) => {
                     #[cfg(target_os = "linux")]
-                    let result = this.project.as_ref().ok_or(okilum_t3::draft_handoff::Refusal::Unavailable)
-                        .and_then(|manager| manager.update(cx, |manager, cx| {
-                            use okilum_t3::draft_handoff::{ComposerPort, Refusal, Request};
-                            // Retain the originating Board owner and the exact currently
-                            // visible composer. Do not select/replace a Manager thread here.
-                            if manager.area.as_deref() != Some(owner.as_path()) {
-                                return Err(Refusal::WrongTarget);
+                    let result = this.project.clone().ok_or(okilum_t3::draft_handoff::Refusal::Unavailable)
+                        .and_then(|manager| {
+                            if manager.read(cx).area.as_deref() != Some(owner.as_path()) {
+                                return Err(okilum_t3::draft_handoff::Refusal::WrongTarget);
                             }
-                            let target = manager.draft_handoff_target(cx).ok_or(Refusal::Unavailable)?;
-                            // The receiver survives individual clicks. IDs must therefore
-                            // outlive this callback too, including switching A → B → A.
-                            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-                            let id = NEXT.fetch_update(
-                                std::sync::atomic::Ordering::Relaxed,
-                                std::sync::atomic::Ordering::Relaxed,
-                                |id| id.checked_add(1),
-                            ).map_err(|_| Refusal::Exhausted)?;
-                            if text.trim().is_empty() {
-                                return Err(Refusal::Empty);
-                            }
-                            let request = Request { id, target, text: format!("---\n{text}") };
-                            // UI-thread validation and the single undoable insertion share
-                            // this update. No gateway, send intent or async retry is involved.
-                            let ack = manager.draft_handoff_port(window, cx).append(&request)?;
-                            if ack.id != request.id || ack.target != request.target
-                                || manager.draft_handoff_target(cx).as_ref() != Some(&request.target)
-                            {
-                                return Err(Refusal::StaleAcknowledgement);
-                            }
-                            Ok(())
-                        }));
+                            // Discuss explicitly opens the existing panel first. It never
+                            // selects/creates a thread or inserts into a hidden fallback.
+                            this.panels.open(reader_layout::Panel::Backlinks);
+                            let available = if this.body_bounds.size.width > px(0.) {
+                                f32::from((this.body_bounds.size.width + window.viewport_size().width
+                                    - this.body_viewport_width).max(px(0.)))
+                            } else { f32::from(window.viewport_size().width) };
+                            let visible = this.project_open && this.project_navigation.active.is_some()
+                                && this.workspace_panels().visible(reader_layout::Panel::Backlinks, available);
+                            manager.update(cx, |manager, cx| {
+                                manager.draft_handoff_surface_visible(visible, cx);
+                                manager.append_board_context(&owner, text.clone(), window, cx)
+                            })
+                        });
                     #[cfg(target_os = "linux")]
                     let notice = match result {
                         Ok(()) => {
-                            this.panels.open(reader_layout::Panel::Backlinks);
                             "Context appended to the existing Manager draft. Review and send when ready; Undo removes the block."
                         }
                         Err(okilum_t3::draft_handoff::Refusal::StaleAcknowledgement) =>
@@ -1497,3 +1484,6 @@ impl Reader {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod discuss_tests;

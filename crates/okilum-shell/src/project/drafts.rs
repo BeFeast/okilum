@@ -229,6 +229,7 @@ pub(super) struct State {
     last_edit: Option<LocalDraft>,
     handoff: HandoffIdentity,
     handoff_receiver: okilum_t3::draft_handoff::Receiver,
+    handoff_surface_visible: bool,
     typed_generation: u64,
     suspended: Option<LocalDraft>,
 }
@@ -269,13 +270,13 @@ impl ProjectView {
             .typed_generation
             .checked_add(1)
             .expect("typed composer lease exhausted");
-        self.threads.draft.handoff.invalidate();
+        self.draft_handoff_visibility(false);
     }
     /// Hide the previous conversation's composer while its replacement native
     /// credential is being restored. The old writer already owns its snapshot.
     pub(super) fn draft_prepare_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.draft_key() != self.threads.draft.key {
-            self.threads.draft.handoff.invalidate();
+            self.draft_handoff_visibility(false);
             // Capture has already been queued by edits for the previous owner.
             // Never reinterpret that owner's hidden token under the next key.
             self.composer
@@ -390,6 +391,7 @@ impl ProjectView {
             }
         });
         self.draft_capture(cx);
+        self.discuss.set_visible(None);
         let draft = &mut self.threads.draft;
         draft.handoff.invalidate();
         draft.epoch = draft.epoch.wrapping_add(1);
@@ -1313,7 +1315,7 @@ mod tests {
 #[derive(Default)]
 struct HandoffIdentity {
     visible: bool,
-    scope: Option<(Key, u64)>,
+    scope: Option<(Key, u64, u64)>,
     generation: Option<u64>,
 }
 impl HandoffIdentity {
@@ -1322,7 +1324,7 @@ impl HandoffIdentity {
         self.generation = None;
     }
 
-    fn resolve(&mut self, scope: Option<(Key, u64)>) -> Option<u64> {
+    fn resolve(&mut self, scope: Option<(Key, u64, u64)>) -> Option<u64> {
         let scope = scope.filter(|_| self.visible);
         if scope.is_none() {
             self.invalidate();
@@ -1349,8 +1351,25 @@ mod handoff_identity_tests {
     use super::*;
     use ::core::prelude::v1::test;
     #[test]
+    fn discuss_1784_view_and_connection_epochs_are_independent_components() {
+        let key = ("origin".into(), "project".into(), "thread".into());
+        let mut state = HandoffIdentity {
+            visible: true,
+            ..Default::default()
+        };
+        let first = state.resolve(Some((key.clone(), 1, 2))).unwrap();
+        assert_eq!(state.resolve(Some((key.clone(), 1, 2))), Some(first));
+        let replaced = state.resolve(Some((key.clone(), 2, 1))).unwrap();
+        assert_ne!(
+            replaced, first,
+            "equal sums cannot alias view and connection epochs"
+        );
+        let returned = state.resolve(Some((key, 1, 2))).unwrap();
+        assert_ne!(returned, first, "A → B → A must receive a fresh identity");
+    }
+    #[test]
     fn visible_identity_revokes_on_hide_access_and_replacement() {
-        let scope = (("origin".into(), "project".into(), "thread".into()), 1);
+        let scope = (("origin".into(), "project".into(), "thread".into()), 1, 1);
         let mut state = HandoffIdentity::default();
         assert_eq!(state.resolve(Some(scope.clone())), None);
         state.visible = true;
@@ -1384,12 +1403,30 @@ pub(super) struct NativeComposerPort<'a, 'cx> {
 }
 
 impl ProjectView {
+    /// Reader owns physical visibility. Identical render notifications leave
+    /// the current lease untouched; explicit lifecycle changes revoke it.
+    pub(super) fn draft_handoff_surface_visible(&mut self, visible: bool, cx: &App) {
+        if self.threads.draft.handoff_surface_visible == visible {
+            return;
+        }
+        self.threads.draft.handoff_surface_visible = visible;
+        self.draft_handoff_connection_changing();
+        if visible {
+            self.draft_handoff_connection_ready(cx);
+        }
+    }
+
+    pub(super) fn draft_handoff_surface_is_visible(&self) -> bool {
+        self.threads.draft.handoff_surface_visible
+    }
+
     /// Required owner hook before showing/hiding/replacing the native surface,
     /// and before revoking/replacing access (even for the same thread). Repeated
     /// calls deliberately invalidate old requests. Webview visibility uses false.
     pub(super) fn draft_handoff_visibility(&mut self, visible: bool) {
         self.threads.draft.handoff.invalidate();
         self.threads.draft.handoff.visible = visible;
+        self.discuss.set_visible(None);
     }
 
     pub(super) fn draft_handoff_target(
@@ -1397,18 +1434,28 @@ impl ProjectView {
         cx: &App,
     ) -> Option<okilum_t3::draft_handoff::Target> {
         let allowed = self.active
+            && self.section == ProjectSection::Manager
             && !self.executors_open
+            && self.threads.draft.handoff_surface_visible
             && !self.threads.draft.loading
             && !self.native.deleted()
             && reader_features::enabled(reader_features::Feature::Agents, cx)
-            && self
-                .native
-                .model_client()
-                .is_some_and(|client| client.access_allowed());
+            && self.native.model_client().is_some_and(|client| {
+                client.access_allowed()
+                    && !self
+                        .threads
+                        .handoff_revoked
+                        .as_ref()
+                        .is_some_and(|revoked| Arc::ptr_eq(revoked, &client))
+            });
         let key = self
             .draft_key()
             .filter(|key| allowed && Some(key) == self.threads.draft.key.as_ref());
-        let scope = key.clone().map(|key| (key, self.generation));
+        // Keep epochs as independent identity components. Arithmetic mixing
+        // would collide for different connection/view generations.
+        let scope = key
+            .clone()
+            .map(|key| (key, self.generation, self.native.connection_epoch));
         let generation = self.threads.draft.handoff.resolve(scope)?;
         let (_, project, thread) = key?;
         Some(okilum_t3::draft_handoff::Target {
@@ -1437,6 +1484,20 @@ impl okilum_t3::draft_handoff::ComposerPort for NativeComposerPort<'_, '_> {
         request: &okilum_t3::draft_handoff::Request,
     ) -> Result<okilum_t3::draft_handoff::Acknowledgement, okilum_t3::draft_handoff::Refusal> {
         let target = self.view.draft_handoff_target(self.cx);
+        let input = self.view.compose.read(self.cx);
+        if input.presentation().is_disabled()
+            || !input.is_editable()
+            || input.ime_settling(self.cx)
+            || input.completion_active(self.cx)
+        {
+            return Err(okilum_t3::draft_handoff::Refusal::Unavailable);
+        }
+        let has_source = !self
+            .view
+            .composer
+            .read(self.cx)
+            .typed_source_text(self.cx)
+            .is_empty();
         // Move only the replay guard out, allowing the normal InputEvent capture
         // to run without borrowing draft state across the input transaction.
         let mut receiver = std::mem::take(&mut self.view.threads.draft.handoff_receiver);
@@ -1444,7 +1505,7 @@ impl okilum_t3::draft_handoff::ComposerPort for NativeComposerPort<'_, '_> {
             self.view.compose.update(self.cx, |input, cx| {
                 let end = input.value().len();
                 input.set_selected_range(end..end, cx);
-                let insertion = if end == 0 {
+                let insertion = if !has_source {
                     text.to_owned()
                 } else {
                     format!("\n\n{text}")

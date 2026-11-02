@@ -23,6 +23,8 @@ mod connections;
 mod design;
 mod desktop;
 #[cfg(target_os = "linux")]
+mod discuss_handoff;
+#[cfg(target_os = "linux")]
 mod drafts;
 mod executors;
 #[cfg(target_os = "linux")]
@@ -141,6 +143,8 @@ pub(crate) struct ProjectView {
     composer: Entity<composer::Composer>,
     #[cfg(target_os = "linux")]
     typed: message_types::State,
+    #[cfg(target_os = "linux")]
+    discuss: discuss_handoff::DiscussHandoff,
     #[cfg(target_os = "linux")]
     native: native::Native,
     #[cfg(target_os = "linux")]
@@ -459,6 +463,8 @@ impl ProjectView {
             #[cfg(target_os = "linux")]
             typed: Default::default(),
             #[cfg(target_os = "linux")]
+            discuss: Default::default(),
+            #[cfg(target_os = "linux")]
             native,
             #[cfg(target_os = "linux")]
             threads: threads::Directory::default(),
@@ -662,29 +668,50 @@ impl ProjectView {
         self.clear_connection(cx);
     }
 
-    /// Append one undoable context block; this never prepares or sends a message intent.
+    /// Append only through the exact supported visible composer. This never
+    /// selects a thread, prepares a send intent or falls back to a hidden view.
     pub(super) fn append_board_context(
         &mut self,
         area: &Path,
         text: String,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> bool {
-        if self.area.as_deref() != Some(area) {
-            return false;
+    ) -> Result<(), okilum_t3::draft_handoff::Refusal> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (area, text, window, cx);
+            Err(okilum_t3::draft_handoff::Refusal::Unavailable)
         }
         #[cfg(target_os = "linux")]
-        self.select_manager_thread(window, cx);
-        self.select_section(ProjectSection::Manager, cx);
-        self.executors_open = false;
-        self.compose.update(cx, |input, cx| {
-            let end = input.value().len();
-            input.set_selected_range(end..end, cx);
-            input.insert(format!("\n\n---\n{text}"), window, cx);
-            window.focus(&input.focus_handle(cx), cx);
-        });
-        cx.notify();
-        true
+        {
+            use okilum_t3::draft_handoff::{ComposerPort, Refusal};
+            if self.area.as_deref() != Some(area) {
+                return Err(Refusal::WrongTarget);
+            }
+            if text.trim().is_empty() {
+                return Err(Refusal::Empty);
+            }
+            let target = self.draft_handoff_target(cx).ok_or(Refusal::Unavailable)?;
+            let mut discuss = std::mem::take(&mut self.discuss);
+            // One persistent sender owns IDs across clicks and A → B → A.
+            // Restore it on refusal too: the receiver outlives each action.
+            let result = (|| {
+                discuss.set_visible(Some(target.clone()));
+                let request = discuss.begin(&target.project, format!("---\n{text}"))?;
+                match self.draft_handoff_port(window, cx).append(&request) {
+                    Ok(ack) => {
+                        discuss.set_visible(self.draft_handoff_target(cx));
+                        discuss.acknowledge(ack)
+                    }
+                    Err(error) => {
+                        discuss.cancel(&request);
+                        Err(error)
+                    }
+                }
+            })();
+            self.discuss = discuss;
+            result
+        }
     }
 
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {

@@ -298,7 +298,10 @@ impl super::ProjectView {
     /// A webview cannot use this port: it has no supported atomic bridge here.
     pub(super) fn draft_handoff_connection_ready(&mut self, cx: &gpui::App) {
         let visible = native_handoff_visible(
-            self.active && !self.executors_open,
+            self.active
+                && !self.executors_open
+                && self.section == super::ProjectSection::Manager
+                && self.draft_handoff_surface_is_visible(),
             crate::reader_features::enabled(crate::reader_features::Feature::Agents, cx),
             self.native.model_client().is_some_and(|client| {
                 client.access_allowed()
@@ -326,6 +329,7 @@ fn native_handoff_visible(
 #[cfg(all(test, target_os = "linux"))]
 mod handoff_visibility_tests {
     use super::native_handoff_visible;
+    use ::core::prelude::v1::test;
     #[test]
     fn visibility_requires_surface_feature_and_current_access() {
         assert!(native_handoff_visible(true, true, true));

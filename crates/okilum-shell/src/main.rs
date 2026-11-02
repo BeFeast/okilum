@@ -2935,6 +2935,14 @@ impl Reader {
     ) {
         self.resizing_panel = None;
         self.ui_state.interacted = true;
+        #[cfg(target_os = "linux")]
+        if panel == reader_layout::Panel::Backlinks {
+            if let Some(project) = &self.project {
+                project.update(cx, |project, cx| {
+                    project.draft_handoff_surface_visible(false, cx)
+                });
+            }
+        }
         self.panels.close(panel);
         let focus = self.content.read(cx).focus_handle().clone();
         focus.focus(window, cx);
@@ -7525,6 +7533,15 @@ impl Render for Reader {
                     .panels
                     .visible(reader_layout::Panel::Backlinks, available);
             panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(project) = &self.project {
+            let visible = self.project_open
+                && self.project_navigation.active.is_some()
+                && workspace_panels.visible(reader_layout::Panel::Backlinks, available);
+            project.update(cx, |project, cx| {
+                project.draft_handoff_surface_visible(visible, cx)
+            });
         }
         let bounds_view = cx.entity().downgrade();
         let main = v_flex()
