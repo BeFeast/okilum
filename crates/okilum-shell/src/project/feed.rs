@@ -80,6 +80,9 @@ pub(super) struct Feed {
     scroller: Entity<MessageScrollerState>,
     enabled: bool,
     busy: bool,
+    typed_revision: u64,
+    typed_sources: Option<Arc<Vec<super::message_types::Source>>>,
+    typed_source_owner: Option<(String, String, String)>,
     _scroll: Subscription,
     #[cfg(test)]
     pub(super) row_calls: std::cell::Cell<usize>,
@@ -117,6 +120,9 @@ impl Feed {
             scroller,
             enabled: false,
             busy: false,
+            typed_revision: 0,
+            typed_sources: None,
+            typed_source_owner: None,
             _scroll: scroll,
             #[cfg(test)]
             row_calls: std::cell::Cell::new(0),
@@ -165,7 +171,184 @@ impl Feed {
             .is_some_and(|actions| !actions.read(cx).state.requests.is_empty())
     }
 
+    pub(super) fn typed_revision(&self) -> u64 {
+        self.typed_revision
+    }
+
+    fn typed_data_changed(&mut self) {
+        self.typed_revision = self
+            .typed_revision
+            .checked_add(1)
+            .expect("typed source revision exhausted");
+        self.typed_sources = None;
+    }
+
+    /// Full source and role, never prompt-recall normalization. Rebuilt only
+    /// after data publication, not scrolling, paint or a disclosure change.
+    pub(super) fn typed_snapshot(
+        &mut self,
+        scope: &super::composer::TypedScope,
+    ) -> Arc<Vec<super::message_types::Source>> {
+        let owner = (
+            scope.environment.clone(),
+            scope.project.clone(),
+            scope.thread.clone(),
+        );
+        if self.typed_source_owner.as_ref() != Some(&owner) {
+            self.typed_sources = None;
+            self.typed_source_owner = Some(owner);
+        }
+        if let Some(sources) = &self.typed_sources {
+            return sources.clone();
+        }
+        use okilum_t3::message_types::Author;
+        let order = self
+            .native_order
+            .clone()
+            .unwrap_or_else(|| self.messages.keys().copied().collect());
+        let mut sources = Vec::new();
+        let native_owners = self
+            .native_positions
+            .iter()
+            .map(|(key, position)| (*position, key))
+            .collect::<HashMap<_, _>>();
+        for position in order {
+            if self.native_order.is_some()
+                && native_owners.get(&position).map(|key| key.thread.as_str())
+                    != Some(scope.thread.as_str())
+            {
+                continue;
+            }
+            let Some(message) = self
+                .messages
+                .get(&position)
+                .filter(|message| message.kind == MessageKind::Chat && message.complete_text)
+            else {
+                continue;
+            };
+            let mut aliases = self
+                .ids
+                .get(&position)
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
+            if message.user {
+                // Native send allocates the message ID before publication.
+                // RowKey retains that factual ID; element_id is only a UI key.
+                if let Some(key) = native_owners.get(&position) {
+                    aliases.push(key.item.clone());
+                }
+            }
+            for record in &self.records {
+                if record.message.thread_id == scope.thread
+                    && record.message.text == message.text.as_str()
+                    && record.receipt.as_ref().is_some_and(|receipt| {
+                        receipt.thread_id == scope.thread && aliases.contains(&receipt.message_id)
+                    })
+                {
+                    aliases.push(record.message.client_request_id.clone());
+                }
+            }
+            sources.push(super::message_types::Source {
+                id: message.source_id.clone(),
+                text: message.text.to_string(),
+                author: if message.user {
+                    Author::User
+                } else {
+                    Author::Manager
+                },
+                aliases,
+            });
+        }
+        for record in &self.records {
+            if record.message.thread_id != scope.thread {
+                continue;
+            }
+            if record
+                .receipt
+                .as_ref()
+                .is_some_and(|receipt| self.projected.contains_key(&receipt.message_id))
+            {
+                continue;
+            }
+            sources.push(super::message_types::Source {
+                id: format!("project-retained-{}", record.message.client_request_id),
+                text: record.message.text.clone(),
+                author: Author::User,
+                aliases: vec![record.message.client_request_id.clone()],
+            });
+        }
+        let sources = Arc::new(sources);
+        self.typed_sources = Some(sources.clone());
+        sources
+    }
+
+    pub(super) fn typed_labels_changed(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+    }
+
+    /// The caller revalidates its scoped source immediately before this jump;
+    /// an absent or ambiguous ID never redirects to a neighboring row.
+    pub(super) fn reveal_typed_source(
+        &mut self,
+        scope: &super::composer::TypedScope,
+        expected: &super::message_types::Source,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(parent) = self.parent.upgrade() else {
+            return false;
+        };
+        if parent.read(cx).typed_scope().as_ref() != Some(scope) {
+            return false;
+        }
+        let sources = self.typed_snapshot(scope);
+        let mut matches = sources.iter().filter(|source| source.id == expected.id);
+        if matches.next() != Some(expected) || matches.next().is_some() {
+            return false;
+        }
+        let mut found = self.rows.iter().enumerate().filter_map(|(index, row)| {
+            let id = match row {
+                Row::Message(position) => self.messages.get(position)?.source_id.clone(),
+                Row::Retained(record) => format!(
+                    "project-retained-{}",
+                    self.records.get(*record)?.message.client_request_id
+                ),
+                _ => return None,
+            };
+            (id == expected.id).then_some(index)
+        });
+        let Some(index) = found.next() else {
+            return false;
+        };
+        if found.next().is_some() {
+            return false;
+        }
+        self.scroller
+            .update(cx, |state, cx| state.scroll_to_item(index, cx))
+    }
+
+    fn typed_chip(&self, id: &str, cx: &mut Context<Self>) -> AnyElement {
+        let Some(parent) = self.parent.upgrade() else {
+            return div().into_any_element();
+        };
+        let (scope, composer) = {
+            let parent = parent.read(cx);
+            (parent.typed_scope(), parent.composer.clone())
+        };
+        let Some(scope) = scope else {
+            return div().into_any_element();
+        };
+        let key = okilum_t3::message_types::MessageKey {
+            environment: scope.environment,
+            project: scope.project,
+            thread: scope.thread,
+            message: id.into(),
+        };
+        composer.update(cx, |composer, cx| composer.render_typed_chat_chip(&key, cx))
+    }
+
     pub(super) fn reset(&mut self, cx: &mut Context<Self>) {
+        self.typed_data_changed();
         self.request_cards.clear();
         self.messages.clear();
         self.ids.clear();
@@ -213,11 +396,13 @@ impl Feed {
         previews: Option<&HashMap<u64, SharedString>>,
         cx: &mut Context<Self>,
     ) {
+        let mut typed_changed = force_topology;
         let mut topology = force_topology || self.groups.dirty;
         let mut changed = Vec::new();
         let mut copy_groups_changed = topology;
         for item in items {
             if self.ids.get(&item.position) != item.message_id.as_ref() {
+                typed_changed = true;
                 if let Some(old) = self.ids.remove(&item.position) {
                     if let Some(count) = self.projected.get_mut(&old) {
                         *count -= 1;
@@ -302,6 +487,17 @@ impl Feed {
                 }
             });
             if self.messages.get(&item.position) != next.as_ref() {
+                let exact = |message: &Message| {
+                    (
+                        message.source_id.clone(),
+                        message.text.clone(),
+                        message.user,
+                        message.complete_text,
+                        message.kind == MessageKind::Chat,
+                    )
+                };
+                typed_changed |=
+                    self.messages.get(&item.position).map(exact) != next.as_ref().map(exact);
                 copy_groups_changed |= self
                     .messages
                     .get(&item.position)
@@ -343,6 +539,10 @@ impl Feed {
             self.records = records.to_vec();
             topology = true;
             records_changed = true;
+            typed_changed = true;
+        }
+        if typed_changed {
+            self.typed_data_changed();
         }
         let mut inserted = 0..0;
         if topology {
@@ -474,6 +674,7 @@ impl Feed {
                             .text_color(colors.text_muted)
                             .child(if message.user { "You" } else { "Manager" }),
                     )
+                    .child(self.typed_chip(&message.source_id, cx))
                     .when(self.copy_text(position).is_some(), |row| {
                         row.child(message_actions::MessageActions {
                             feed: cx.weak_entity(),
@@ -528,11 +729,16 @@ impl Feed {
                 let retry = record.clone();
                 let parent = self.parent.clone();
                 let index = *index;
+                let chip = self.typed_chip(
+                    &format!("project-retained-{}", record.message.client_request_id),
+                    cx,
+                );
                 v_flex()
                     .id(SharedString::from(format!(
                         "project-retained-{}",
                         record.message.client_request_id
                     )))
+                    .child(chip)
                     .px(px(design::INSET))
                     .py(px(design::GAP))
                     .mb(px(design::GAP * 2.))
@@ -631,6 +837,9 @@ impl Render for Feed {
 mod native;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod typed_1478_tests;
 
 #[cfg(test)]
 mod design_layout_tests {

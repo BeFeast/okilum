@@ -3,6 +3,20 @@
 //! these local fields to a T3 send request. Sending uses `source_text()`.
 use okilum_t3::message_types::{initial_token, Author, MessageType, Metadata, Provenance};
 
+#[path = "message_types/integration.rs"]
+mod integration;
+pub(super) use integration::State;
+
+/// Exact chat source, separate from normalized prompt recall. Aliases are
+/// existing transport identities used only for local authored-type lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Source {
+    pub id: String,
+    pub text: String,
+    pub author: Author,
+    pub aliases: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TypedDraft {
     /// Original text always survives token conversion and Undo byte for byte.
@@ -174,6 +188,15 @@ pub fn corrected_message(
     expected: &okilum_t3::message_types::Message,
     kind: MessageType,
 ) -> Result<okilum_t3::message_types::Message, &'static str> {
+    corrected_message_with_author(messages, expected, kind, None)
+}
+
+pub(super) fn corrected_message_with_author(
+    messages: &[okilum_t3::message_types::Message],
+    expected: &okilum_t3::message_types::Message,
+    kind: MessageType,
+    source_author: Option<Author>,
+) -> Result<okilum_t3::message_types::Message, &'static str> {
     let mut matches = messages
         .iter()
         .filter(|message| message.key == expected.key);
@@ -186,8 +209,9 @@ pub fn corrected_message(
     }
     let author = source
         .metadata
-        .ok_or("Message author metadata is unavailable")?
-        .author;
+        .map(|metadata| metadata.author)
+        .or(source_author)
+        .ok_or("Message author metadata is unavailable")?;
     let mut corrected = source.clone();
     corrected.metadata = Some(Metadata {
         kind,

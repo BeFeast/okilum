@@ -1563,6 +1563,20 @@ impl ProjectView {
                 .and_then(|progress| progress.transition(request_id)),
             _ => None,
         };
+        self.typed_sync(cx);
+        let typed_capture = match (&intent, &retry, &draft) {
+            (Some(Intent::Message { text, .. }), None, Some(_)) => {
+                match self.typed_send_type(text, cx) {
+                    Ok(capture) => capture,
+                    Err(error) => {
+                        self.error = Some(error);
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+            _ => None,
+        };
         self.busy = true;
         self.native.actions.update(cx, |a, cx| {
             a.busy = true;
@@ -1577,6 +1591,9 @@ impl ProjectView {
             let (result, records, retained) = cx.background_executor().spawn(async move {
                 let mut retained = false;
                 let result = (|| {
+                    if let (Some(capture), Some(Intent::Message { message_id, .. })) = (&typed_capture, &intent) {
+                        capture.retain(message_id).map_err(anyhow::Error::msg)?;
+                    }
                     let record = match retry { Some(r) => r, None => journal.prepare(intent.context("missing action")?)? };
                     retained = true;
                     journal.send(&record, |command| {
@@ -1592,6 +1609,7 @@ impl ProjectView {
                 if generation != this.generation { return; }
                 this.busy = false;
                 if retained { if let Some(sent) = &sent_snapshot { this.draft_clear_after_send(sent,window,cx); } }
+                if retained { this.typed_reload_annotations(cx); }
                 this.native.actions.update(cx, |a,cx| {
                     a.busy=false;
                     match records { Ok(records) => a.records=records, Err(e) => a.error=Some(format!("{e:#}")) }

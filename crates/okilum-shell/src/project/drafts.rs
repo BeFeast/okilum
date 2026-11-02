@@ -229,6 +229,8 @@ pub(super) struct State {
     last_edit: Option<LocalDraft>,
     handoff: HandoffIdentity,
     handoff_receiver: okilum_t3::draft_handoff::Receiver,
+    typed_generation: u64,
+    suspended: Option<LocalDraft>,
 }
 
 /// Captures exactly the local draft handed to durable message preparation.
@@ -242,6 +244,33 @@ pub(super) struct Sent {
 }
 
 impl ProjectView {
+    pub(super) fn draft_typed_owner_valid(&self, scope: &TypedScope) -> bool {
+        !self.threads.draft.loading
+            && self.threads.draft.typed_generation == scope.generation
+            && self.threads.draft.key.as_ref()
+                == Some(&(
+                    scope.environment.clone(),
+                    scope.project.clone(),
+                    scope.thread.clone(),
+                ))
+    }
+    pub(super) fn draft_suspend_typed(&mut self, cx: &mut Context<Self>) {
+        self.draft_flush(cx);
+        if !self.threads.draft.loading && self.composer.read(cx).typed_scope().is_some() {
+            let sent = self.draft_sent(cx);
+            self.threads.draft.suspended = Some(LocalDraft {
+                draft: sent.draft,
+                metadata: sent.metadata,
+            });
+        }
+        self.threads.draft.typed_generation = self
+            .threads
+            .draft
+            .typed_generation
+            .checked_add(1)
+            .expect("typed composer lease exhausted");
+        self.threads.draft.handoff.invalidate();
+    }
     /// Hide the previous conversation's composer while its replacement native
     /// credential is being restored. The old writer already owns its snapshot.
     pub(super) fn draft_prepare_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -280,6 +309,7 @@ impl ProjectView {
     /// Install once per view, before user input is enabled. Safe to call again
     /// after reconnect; a matching key retains its in-memory composer state.
     pub(super) fn draft_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.typed_clear_pending(window, cx);
         if self.threads.draft.subscriptions.is_empty() {
             install_shutdown(cx);
             let weak = cx.weak_entity();
@@ -309,6 +339,13 @@ impl ProjectView {
                     );
                     if this.threads.draft.key.as_ref() != Some(&key)
                         || this.draft_key().as_ref() != Some(&key)
+                        || this.threads.draft.typed_generation != event.scope.generation
+                    {
+                        return;
+                    }
+                    let composer = this.composer.read(cx);
+                    if composer.typed_source_text(cx) != event.text
+                        || composer.typed_draft_metadata() != event.metadata
                     {
                         return;
                     }
@@ -319,6 +356,26 @@ impl ProjectView {
         }
         let Some(key) = self.draft_key() else { return };
         if self.threads.draft.key.as_ref() == Some(&key) {
+            if !self.threads.draft.loading && self.active {
+                if let Some(local) = self.threads.draft.suspended.take() {
+                    let scope = TypedScope {
+                        environment: key.0.clone(),
+                        project: key.1.clone(),
+                        thread: key.2.clone(),
+                        generation: self.threads.draft.typed_generation,
+                    };
+                    self.threads.draft.attachments = local.draft.attachments;
+                    let _ = self.composer.update(cx, |composer, cx| {
+                        composer.restore_typed_context(
+                            scope,
+                            local.draft.text,
+                            local.metadata,
+                            window,
+                            cx,
+                        )
+                    });
+                }
+            }
             return;
         }
         self.composer
@@ -341,6 +398,12 @@ impl ProjectView {
         draft.writer = None;
         draft.attachments.clear();
         draft.last_edit = None;
+        draft.suspended = None;
+        draft.typed_generation = draft
+            .typed_generation
+            .checked_add(1)
+            .expect("typed composer lease exhausted");
+        let typed_generation = draft.typed_generation;
         draft.error = None;
         draft.loading = true;
         self.composer
@@ -360,6 +423,7 @@ impl ProjectView {
                 environment: key.0.clone(),
                 project: key.1.clone(),
                 thread: key.2.clone(),
+                generation: typed_generation,
             };
             let _ = self.composer.update(cx, |composer, cx| {
                 composer.restore_typed_context(scope, local.draft.text, local.metadata, window, cx)
@@ -435,11 +499,20 @@ impl ProjectView {
                     Ok((writer, restored)) => {
                         let writer = Arc::new(writer);
                         this.threads.draft.writer = Some(writer);
+                        if !this.active
+                            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+                            || this.threads.draft.typed_generation != typed_generation
+                        {
+                            this.threads.draft.suspended = Some(restored);
+                            cx.notify();
+                            return;
+                        }
                         this.threads.draft.attachments = restored.draft.attachments;
                         let scope = TypedScope {
                             environment: key.0.clone(),
                             project: key.1.clone(),
                             thread: key.2.clone(),
+                            generation: typed_generation,
                         };
                         if let Err(error) = this.composer.update(cx, |composer, cx| {
                             composer.restore_typed_context(
@@ -455,11 +528,21 @@ impl ProjectView {
                     }
                     Err(error) => {
                         if let Some(initial) = initial {
+                            if !this.active
+                                || !reader_features::enabled(reader_features::Feature::Agents, cx)
+                                || this.threads.draft.typed_generation != typed_generation
+                            {
+                                this.threads.draft.suspended = Some(initial);
+                                this.threads.draft.error = Some(error);
+                                cx.notify();
+                                return;
+                            }
                             this.threads.draft.attachments = initial.draft.attachments;
                             let scope = TypedScope {
                                 environment: key.0.clone(),
                                 project: key.1.clone(),
                                 thread: key.2.clone(),
+                                generation: typed_generation,
                             };
                             let _ = this.composer.update(cx, |composer, cx| {
                                 composer.restore_typed_context(
@@ -605,18 +688,32 @@ impl ProjectView {
     }
 
     pub(super) fn draft_sent(&self, cx: &App) -> Sent {
+        // Hide/revocation clears the visible typed context. Its last complete
+        // snapshot still belongs to this writer, including during quit flush.
+        let suspended = self
+            .composer
+            .read(cx)
+            .typed_scope()
+            .is_none()
+            .then_some(self.threads.draft.suspended.as_ref())
+            .flatten();
         Sent {
             key: self.draft_key(),
             edit_revision: self.threads.draft.edit_revision,
-            draft: ChatDraft {
-                text: self.composer.read(cx).typed_source_text(cx),
-                attachments: self.threads.draft.attachments.clone(),
-            },
-            metadata: self
-                .composer
-                .read(cx)
-                .typed_has_authored_metadata()
-                .then(|| self.composer.read(cx).typed_draft_metadata()),
+            draft: suspended
+                .map(|local| local.draft.clone())
+                .unwrap_or_else(|| ChatDraft {
+                    text: self.composer.read(cx).typed_source_text(cx),
+                    attachments: self.threads.draft.attachments.clone(),
+                }),
+            metadata: suspended
+                .map(|local| local.metadata.clone())
+                .unwrap_or_else(|| {
+                    self.composer
+                        .read(cx)
+                        .typed_has_authored_metadata()
+                        .then(|| self.composer.read(cx).typed_draft_metadata())
+                }),
         }
     }
 
@@ -633,6 +730,9 @@ impl ProjectView {
             && now.metadata == sent.metadata
         {
             self.threads.draft.attachments.clear();
+            if self.threads.draft.suspended.is_some() {
+                self.threads.draft.suspended = Some(LocalDraft::default());
+            }
             self.composer.update(cx, |composer, cx| {
                 // Default metadata is intentionally absent after clearing. The
                 // next draft must not inherit type selection or Undo suppression.
@@ -1362,5 +1462,118 @@ impl okilum_t3::draft_handoff::ComposerPort for NativeComposerPort<'_, '_> {
             self.cx.notify();
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod typed_1478_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn typed_1478_hide_quit_flush_retains_full_token_and_revokes_old_visible_scope(
+        cx: &mut TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        cx.update(crate::test_init);
+        cx.update(reader_features::enable_test_modules);
+        let state = tempfile::tempdir().unwrap();
+        let environment = Environment::new("fixture", "https://typed.invalid").unwrap();
+        let mut owner = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = ProjectView::empty(Some(state.path().to_owned()), window, cx);
+                view.binding = AreaBinding::parse("t3:\n  schema_version: 1\n  environment: fixture\n  manager: {project_id: project, thread_id: thread, workspace_mode: local}\n  executor: {project_id: executors}\n  default_models:\n    manager: {instanceId: codex, model: gpt-6.1-sol}\n    executor: {instanceId: codex, model: gpt-6.1-sol}\n").unwrap();
+                view.chat = Some(Conversation::new("thread"));
+                view.environment = Some(environment.clone());
+                view.draft_restore(window, cx);
+                view
+            });
+            let composer = view.read(cx).composer.clone();
+            owner = Some(view);
+            Root::new(composer, window, cx)
+        });
+        let view = owner.unwrap();
+        visual.run_until_parked();
+        let old_scope = view.update_in(visual, |view, window, cx| {
+            let mut draft =
+                super::super::message_types::TypedDraft::from_text("BUG: Full\r\n🧠  ".into());
+            assert!(draft.detect_token());
+            view.composer.update(cx, |composer, cx| {
+                composer
+                    .replace_typed_draft(
+                        draft.text.clone(),
+                        Some(draft.retained_metadata()),
+                        window,
+                        cx,
+                    )
+                    .unwrap()
+            });
+            view.draft_changed(window, cx);
+            let old = view.composer.read(cx).typed_scope().unwrap().clone();
+            assert_eq!(view.compose.read(cx).value().as_str(), " Full\r\n🧠  ");
+            view.set_active(false, window, cx);
+            assert!(view.composer.read(cx).typed_scope().is_none());
+            assert!(!view.draft_typed_owner_valid(&old));
+            // The ordinary quit path calls capture again after hide.
+            view.draft_flush(cx);
+            futures::executor::block_on(view.threads.draft.writer.as_ref().unwrap().barrier())
+                .unwrap()
+                .unwrap();
+            old
+        });
+        let store = Store::<Attachment>::new(state.path(), &environment, "project", "thread");
+        let (saved, metadata) = store.load_with_metadata().unwrap();
+        assert_eq!(saved.draft.text, "BUG: Full\r\n🧠  ");
+        let restored = super::super::message_types::TypedDraft::restore_metadata(
+            saved.draft.text,
+            serde_json::from_value(metadata.unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(restored.has_token_pill());
+        let edit_revision = view.update_in(visual, |view, window, cx| {
+            // Reopen through the draft boundary only; no native restore/client.
+            view.active = true;
+            view.draft_restore(window, cx);
+            view.typed_sync(cx);
+            assert_ne!(view.composer.read(cx).typed_scope(), Some(&old_scope));
+            assert_eq!(view.composer.read(cx).typed_source_text(cx), restored.text);
+            // A spurious capture would increment the revision. Make the guard
+            // observable even though the current visible draft is unchanged.
+            view.threads.draft.last_edit = None;
+            let edit_revision = view.threads.draft.edit_revision;
+            view.composer.update(cx, |_, cx| {
+                cx.emit(super::super::composer::TypedDraftChanged {
+                    scope: old_scope.clone(),
+                    text: "stale".into(),
+                    metadata: restored.retained_metadata(),
+                })
+            });
+            edit_revision
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, cx| {
+            assert_eq!(view.composer.read(cx).typed_source_text(cx), restored.text);
+            assert_eq!(
+                view.threads.draft.edit_revision, edit_revision,
+                "old-generation event cannot capture a reopened composer"
+            );
+        });
+        view.update_in(visual, |view, window, cx| {
+            let sent = view.draft_sent(cx);
+            view.set_active(false, window, cx);
+            view.draft_clear_after_send(&sent, window, cx);
+            futures::executor::block_on(view.threads.draft.writer.as_ref().unwrap().barrier())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                store.load_with_metadata().unwrap().0.draft.text,
+                "",
+                "retained send completion while hidden clears the suspended draft too"
+            );
+            view.active = true;
+            view.draft_restore(window, cx);
+            assert!(view.composer.read(cx).typed_source_text(cx).is_empty());
+            assert!(!view.composer.read(cx).typed_has_authored_metadata());
+        });
     }
 }

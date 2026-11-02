@@ -3,7 +3,9 @@ use super::*;
 use crate::project::design;
 use gpui_component::{button::ButtonCustomVariant, ThemeStyled as _};
 pub(super) mod history;
-use super::message_types::{corrected_message, filtered_messages, DraftMetadata, TypedDraft};
+use super::message_types::{
+    corrected_message_with_author, filtered_messages, DraftMetadata, TypedDraft,
+};
 use okilum_t3::message_types::{
     DecisionMeaning, Message as TypedMessage, MessageKey, MessageType, Metadata as TypeMetadata,
 };
@@ -13,6 +15,8 @@ pub(super) struct TypedScope {
     pub environment: String,
     pub project: String,
     pub thread: String,
+    /// Visible composer lease; never persisted or transported.
+    pub generation: u64,
 }
 /// Parent saves this local payload with text/attachments under the same durable
 /// conversation identity and revision. It must never enter a T3 wire request.
@@ -30,10 +34,15 @@ pub(super) struct RetypeRequested {
     pub replacement: TypedMessage,
 }
 impl EventEmitter<RetypeRequested> for Composer {}
-pub(super) struct TypedMessageOpened(pub MessageKey);
+pub(super) struct TypedMessageOpened(pub TypedScope, pub TypedMessage);
 impl EventEmitter<TypedMessageOpened> for Composer {}
+pub(super) struct TypedReloadRequested(pub TypedScope);
+impl EventEmitter<TypedReloadRequested> for Composer {}
 pub(super) struct TypedPanelChanged;
 impl EventEmitter<TypedPanelChanged> for Composer {}
+
+#[cfg(test)]
+mod typed_1478_tests;
 
 fn type_icon(kind: MessageType) -> IconName {
     match kind {
@@ -156,9 +165,11 @@ pub(super) struct Composer {
     typed_scope: Option<TypedScope>,
     typed_draft: TypedDraft,
     typed_messages: Vec<TypedMessage>,
+    typed_authors: std::collections::HashMap<MessageKey, okilum_t3::message_types::Author>,
     typed_filter: Option<MessageType>,
     typed_panel_open: bool,
     typed_error: Option<String>,
+    typed_edit_ready: bool,
 }
 impl Composer {
     pub(super) fn new(input: Entity<TextareaState>, cx: &mut Context<Self>) -> Self {
@@ -201,9 +212,11 @@ impl Composer {
             typed_scope: None,
             typed_draft: TypedDraft::default(),
             typed_messages: Vec::new(),
+            typed_authors: Default::default(),
             typed_filter: None,
             typed_panel_open: false,
             typed_error: None,
+            typed_edit_ready: false,
         }
     }
     /// Invoke atomically on conversation activation/restoration, before editing
@@ -224,9 +237,11 @@ impl Composer {
         self.typed_scope = Some(scope);
         self.typed_draft = draft;
         self.typed_messages.clear();
+        self.typed_authors.clear();
         self.typed_filter = None;
         self.typed_panel_open = false;
         self.typed_error = None;
+        self.typed_edit_ready = false;
         self.input.update(cx, |input, cx| {
             input.set_value(self.typed_draft.visible_text().to_owned(), window, cx)
         });
@@ -251,8 +266,10 @@ impl Composer {
         self.typed_scope = None;
         self.typed_draft = TypedDraft::default();
         self.typed_messages.clear();
+        self.typed_authors.clear();
         self.typed_panel_open = false;
         self.typed_error = None;
+        self.typed_edit_ready = false;
         cx.emit(TypedPanelChanged);
         cx.notify();
     }
@@ -309,11 +326,31 @@ impl Composer {
         self.typed_messages = messages
             .into_iter()
             .filter(|message| {
-                message.key.environment == scope.environment && message.key.project == scope.project
+                message.key.environment == scope.environment
+                    && message.key.project == scope.project
+                    && message.key.thread == scope.thread
             })
             .collect();
         cx.emit(TypedPanelChanged);
         cx.notify();
+    }
+    pub(super) fn set_typed_sources(
+        &mut self,
+        scope: &TypedScope,
+        messages: Vec<TypedMessage>,
+        authors: std::collections::HashMap<MessageKey, okilum_t3::message_types::Author>,
+        ready: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.typed_scope.as_ref() != Some(scope) {
+            return;
+        }
+        self.typed_authors = authors;
+        self.typed_edit_ready = ready;
+        self.set_typed_messages(scope, messages, cx);
+    }
+    pub(super) fn typed_scope(&self) -> Option<&TypedScope> {
+        self.typed_scope.as_ref()
     }
     pub(super) fn typed_write_succeeded(&mut self, scope: &TypedScope, cx: &mut Context<Self>) {
         if self.typed_scope.as_ref() == Some(scope) {
@@ -377,12 +414,16 @@ impl Composer {
             .gap(px(4.))
             .debug_selector(|| "project-type-controls".into());
         for kind in MessageType::ALL {
+            let painted_scope = self.typed_scope.clone();
             let selected = self
                 .typed_draft
                 .selection
-                .is_some_and(|selection| selection.kind == kind);
+                .map_or(kind == MessageType::Chat, |selection| {
+                    selection.kind == kind
+                });
             row = row.child(
                 Button::new(SharedString::from(format!("project-type-{}", kind.label())))
+                    .debug_selector(move || format!("project-type-{}", kind.label()))
                     .ghost()
                     .small()
                     .label(kind.label())
@@ -392,6 +433,9 @@ impl Composer {
                     .accessibility_label(format!("Message type: {}", kind.label()))
                     .disabled(!self.enabled || self.busy)
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.typed_scope != painted_scope {
+                            return;
+                        }
                         this.sync_typed_input(window, cx);
                         this.typed_draft.select(kind);
                         this.publish_typed_draft(cx);
@@ -400,27 +444,37 @@ impl Composer {
             );
         }
         if self.typed_draft.has_token_pill() {
+            let painted_scope = self.typed_scope.clone();
             row = row.child(
                 Button::new("project-type-undo")
+                    .debug_selector(|| "project-type-undo".into())
                     .ghost()
                     .small()
                     .label("Undo token")
                     .child(Icon::new(IconName::Undo2).small())
                     .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, window, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.typed_scope != painted_scope {
+                            return;
+                        }
                         this.undo_type_token(window, cx);
                     })),
             );
         }
+        let painted_scope = self.typed_scope.clone();
         row.child(
             Button::new("project-type-panel")
+                .debug_selector(|| "project-type-panel".into())
                 .ghost()
                 .small()
                 .label("Project items")
                 .child(Icon::new(IconName::PanelRight).small())
                 .selected(self.typed_panel_open)
                 .toggled(self.typed_panel_open)
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.typed_scope != painted_scope {
+                        return;
+                    }
                     this.typed_panel_open = !this.typed_panel_open;
                     cx.emit(TypedPanelChanged);
                     cx.notify();
@@ -450,6 +504,8 @@ impl Composer {
         };
         let kind = metadata.kind;
         let key = key.clone();
+        let opened = message.clone();
+        let painted_scope = self.typed_scope.clone();
         Button::new(SharedString::from(format!(
             "typed-chip-{}:{}:{}",
             key.thread.len(),
@@ -461,9 +517,14 @@ impl Composer {
         .label(format!("{} → project item", kind.label()))
         .child(Icon::new(type_icon(kind)).small())
         .on_click(cx.listener(move |this, _, _, cx| {
+            if this.typed_scope != painted_scope {
+                return;
+            }
             this.typed_panel_open = true;
             this.typed_filter = Some(kind);
-            cx.emit(TypedMessageOpened(key.clone()));
+            if let Some(scope) = painted_scope.clone() {
+                cx.emit(TypedMessageOpened(scope, opened.clone()));
+            }
             cx.emit(TypedPanelChanged);
             cx.notify();
         }))
@@ -483,8 +544,12 @@ impl Composer {
             Some(MessageType::Chat),
         ] {
             let label = filter.map_or("All", MessageType::label);
+            let painted_scope = self.typed_scope.clone();
             tabs = tabs.child(
                 Button::new(SharedString::from(format!("project-type-filter-{label}")))
+                    .debug_selector(move || {
+                        format!("typed-filter-{}", filter.map_or("All", MessageType::label))
+                    })
                     .ghost()
                     .small()
                     .label(label)
@@ -494,6 +559,9 @@ impl Composer {
                         button.child(Icon::new(type_icon(kind)).small())
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.typed_scope != painted_scope {
+                            return;
+                        }
                         this.typed_filter = filter;
                         cx.emit(TypedPanelChanged);
                         cx.notify();
@@ -518,31 +586,52 @@ impl Composer {
                 .metadata
                 .map_or(MessageType::Chat, |metadata| metadata.kind);
             count += 1;
-            let key = message.key.clone();
+            let opened = message.clone();
+            let source_scope = scope.clone();
             let expected = message.clone();
             let mut correction = h_flex().flex_wrap().gap(px(4.));
             for new_kind in MessageType::ALL {
                 let expected = expected.clone();
+                let painted_scope = scope.clone();
                 correction = correction.child(
                     Button::new(SharedString::from(format!(
                         "retype-{}-{count}",
                         new_kind.label()
                     )))
+                    .debug_selector(move || format!("typed-retype-{count}-{}", new_kind.label()))
                     .ghost()
                     .small()
                     .label(new_kind.label())
                     .child(Icon::new(type_icon(new_kind)).small())
                     .selected(kind == new_kind)
                     .toggled(kind == new_kind)
-                    .disabled(message.metadata.is_none() || kind == new_kind || self.busy)
-                    .tooltip(if message.metadata.is_none() {
-                        "Type correction unavailable: source author is unknown".to_owned()
-                    } else {
-                        format!("Change type to {}", new_kind.label())
-                    })
+                    .disabled(
+                        !self.typed_edit_ready
+                            || (message.metadata.is_none()
+                                && !self.typed_authors.contains_key(&message.key))
+                            || kind == new_kind
+                            || self.busy,
+                    )
+                    .tooltip(
+                        if message.metadata.is_none()
+                            && !self.typed_authors.contains_key(&message.key)
+                        {
+                            "Type correction unavailable: source author is unknown".to_owned()
+                        } else {
+                            format!("Change type to {}", new_kind.label())
+                        },
+                    )
                     .accessibility_label(format!("Retype message as {}", new_kind.label()))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        match corrected_message(&this.typed_messages, &expected, new_kind) {
+                        if this.typed_scope.as_ref() != Some(&painted_scope) {
+                            return;
+                        }
+                        match corrected_message_with_author(
+                            &this.typed_messages,
+                            &expected,
+                            new_kind,
+                            this.typed_authors.get(&expected.key).copied(),
+                        ) {
                             Ok(replacement) => {
                                 if let Some(scope) = this.typed_scope.clone() {
                                     cx.emit(RetypeRequested {
@@ -577,13 +666,19 @@ impl Composer {
                     .rounded(px(8.))
                     .child(
                         Button::new(SharedString::from(format!("typed-source-{count}")))
+                            .debug_selector(move || format!("typed-source-{count}"))
                             .ghost()
                             .small()
-                            .label(format!("{} → {}", kind.label(), message.key.message))
+                            .label(format!("{} · View message", kind.label()))
                             .child(Icon::new(type_icon(kind)).small())
                             .tooltip("Open original chat message")
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(TypedMessageOpened(key.clone()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.typed_scope.as_ref() == Some(&source_scope) {
+                                    cx.emit(TypedMessageOpened(
+                                        source_scope.clone(),
+                                        opened.clone(),
+                                    ));
+                                }
                             })),
                     )
                     .when_some(message.metadata, |card, metadata| {
@@ -614,9 +709,12 @@ impl Composer {
                 "No messages of this type. Use FR, Bug or Decision in the composer to add one.",
             ));
         }
+        let painted_scope = self.typed_scope.clone();
         v_flex()
             .id("project-typed-panel")
+            .debug_selector(|| "project-typed-panel".into())
             .w(px(320.))
+            .max_w(relative(0.6))
             .min_h_0()
             .h_full()
             .gap(px(8.))
@@ -627,7 +725,10 @@ impl Composer {
                         .ghost()
                         .small()
                         .label("Close")
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.typed_scope != painted_scope {
+                                return;
+                            }
                             this.typed_panel_open = false;
                             cx.emit(TypedPanelChanged);
                             cx.notify();
@@ -644,6 +745,7 @@ impl Composer {
                     ]
                     .into_iter()
                     .map(|kind| {
+                        let painted_scope = self.typed_scope.clone();
                         Button::new(SharedString::from(format!(
                             "typed-panel-add-{}",
                             kind.label()
@@ -655,6 +757,9 @@ impl Composer {
                         .disabled(!self.enabled || self.busy)
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
+                                if this.typed_scope != painted_scope {
+                                    return;
+                                }
                                 this.sync_typed_input(window, cx);
                                 this.typed_draft.select(kind);
                                 this.publish_typed_draft(cx);
@@ -665,7 +770,22 @@ impl Composer {
                 ),
             )
             .when_some(self.typed_error.clone(), |panel, error| {
-                panel.child(div().text_color(cx.theme().danger).child(error))
+                let scope = self.typed_scope.clone();
+                panel
+                    .child(div().text_color(cx.theme().danger).child(error))
+                    .child(
+                        Button::new("typed-reload")
+                            .ghost()
+                            .small()
+                            .label("Reload message types")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.typed_scope == scope {
+                                    if let Some(scope) = &scope {
+                                        cx.emit(TypedReloadRequested(scope.clone()));
+                                    }
+                                }
+                            })),
+                    )
             })
             .child(cards)
             .into_any_element()

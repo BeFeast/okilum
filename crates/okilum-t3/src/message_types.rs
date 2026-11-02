@@ -74,7 +74,7 @@ impl Metadata {
 }
 
 /// Exact source identity. A panel card links back to this same chat message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MessageKey {
     pub environment: String,
     pub project: String,
