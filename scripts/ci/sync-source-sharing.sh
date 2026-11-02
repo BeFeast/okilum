@@ -15,7 +15,7 @@ export OKILUM_SYNC_DIRECT_CLIENT="$cache/syncthing-linux-amd64-v2.1.6/syncthing"
 log="${RUNNER_TEMP:?}/sync-source-sharing.log"
 cargo test --locked -p okilum-sync-controller --lib direct:: -- --nocapture
 cargo test --locked -p okilum-sync-controller --test direct_bidirectional source_sharing:: -- --ignored --nocapture --test-threads=1 | tee "$log"
-for name in managed_source_share_empty_receive_and_bidirectional_hashes managed_source_skipped_share_negative_control managed_source_nonempty_destination_refused_without_writes; do
+for name in managed_source_share_empty_receive_and_bidirectional_hashes managed_source_skipped_share_negative_control managed_source_nonempty_destination_refused_without_writes managed_peer_addresses_without_discovery_negative_then_hashes_and_restart; do
     grep -Fx "test source_sharing::$name ... ok" "$log"
 done
-grep -F 'test result: ok. 3 passed;' "$log"
+grep -F 'test result: ok. 4 passed;' "$log"

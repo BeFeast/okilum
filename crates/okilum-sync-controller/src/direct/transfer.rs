@@ -32,7 +32,11 @@ pub(super) struct Transfer {
     witness: Option<Value>,
 }
 
-pub(super) fn share(source: &ExistingVault, device: &str) -> Result<Connection> {
+pub(super) fn share(
+    source: &ExistingVault,
+    device: &str,
+    addresses: &[String],
+) -> Result<Connection> {
     // Validate the certificate identity syntax before allowing any configuration
     // mutation. Transport itself authenticates possession of its private key.
     ensure!(
@@ -62,9 +66,14 @@ pub(super) fn share(source: &ExistingVault, device: &str) -> Result<Connection> 
     let devices = config["devices"]
         .as_array()
         .context("invalid device inventory")?;
+    let addresses = if super::addresses::managed(&[source.daemon.config_file.clone()])?.is_some() {
+        super::addresses::with_dynamic(addresses)
+    } else {
+        vec!["dynamic".into()]
+    };
     if !devices.iter().any(|d| d["deviceID"] == device) {
         api.add_device(
-            &json!({"deviceID":device,"name":"Okilum paired computer","addresses":["dynamic"],
+            &json!({"deviceID":device,"name":"Okilum paired computer","addresses":addresses,
             "introducer":false,"autoAcceptFolders":false}),
         )?;
     }
@@ -241,7 +250,20 @@ impl Controller {
             .iter()
             .any(|d| d["deviceID"] == connection.device_id)
         {
-            api.add_device(&json!({"deviceID":connection.device_id,"addresses":["dynamic"],"introducer":false,"autoAcceptFolders":false}))?;
+            let addresses = if super::addresses::managed(&configs)?.is_some() {
+                let db = self.shared.db.lock().unwrap();
+                let peer = db.peers.get(&peer_id).context("paired computer missing")?;
+                ensure!(
+                    peer.syncthing_device
+                        .as_ref()
+                        .is_none_or(|id| id == &connection.device_id),
+                    "source transport identity differs"
+                );
+                super::addresses::with_dynamic(&peer.addresses)
+            } else {
+                vec!["dynamic".into()]
+            };
+            api.add_device(&json!({"deviceID":connection.device_id,"addresses":addresses,"introducer":false,"autoAcceptFolders":false}))?;
         }
         let exists = config["folders"]
             .as_array()

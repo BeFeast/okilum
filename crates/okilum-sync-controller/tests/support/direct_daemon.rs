@@ -87,8 +87,8 @@ print(g.find('apikey').text)
     }
     /// Real managed preparation, with no systemd registration. Only this fixture
     /// owns/reaps the child; production source sharing cannot start a daemon.
-    pub fn managed(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
-        use okilum_sync_controller::daemon::{prepare, Preparation};
+    pub fn managed_lan(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
+        use okilum_sync_controller::daemon::{prepare_lan, Preparation};
         let state = root.join(name);
         fs::create_dir(&state)?;
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700))?;
@@ -96,10 +96,10 @@ print(g.find('apikey').text)
         let vault = state.join("ordinary-vault");
         fs::create_dir(&vault)?;
         let rest_guard = TcpListener::bind("127.0.0.1:0")?;
-        let listen_guard = TcpListener::bind("127.0.0.1:0")?;
+        let listen_guard = TcpListener::bind("0.0.0.0:0")?;
         let rest = rest_guard.local_addr()?;
         let listen = listen_guard.local_addr()?;
-        let (instance, identity) = prepare(
+        let (instance, identity) = prepare_lan(
             &prepared,
             &Preparation {
                 executable: binary.clone(),
@@ -107,7 +107,20 @@ print(g.find('apikey').text)
                 listen_address: listen,
             },
         )?;
-        let xml = xmltree::Element::parse(fs::read(&identity.config_file)?.as_slice())?;
+        let mut xml = xmltree::Element::parse(fs::read(&identity.config_file)?.as_slice())?;
+        {
+            // Explicit-address acceptance must never fall back to UDP discovery.
+            let options = xml
+                .get_mut_child("options")
+                .context("fixture options missing")?;
+            options
+                .get_mut_child("localAnnounceEnabled")
+                .context("fixture discovery flag missing")?
+                .children = vec![xmltree::XMLNode::Text("false".into())];
+            let mut bytes = Vec::new();
+            xml.write(&mut bytes)?;
+            fs::write(&identity.config_file, bytes)?;
+        }
         let key = xml
             .get_child("gui")
             .and_then(|g| g.get_child("apikey"))

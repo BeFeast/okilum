@@ -186,3 +186,18 @@ open directory descriptors and is limited to 100,000 entries, 50 results, 64 nes
 directories and a cooperative two-second budget. Unreadable entries or exhausted
 limits produce an incomplete result, never a false all-clear. Kernel filesystem
 calls may still block on an unavailable mount; the UI thread remains independent.
+
+### Direct managed peer addresses (#2397)
+
+The authenticated pairing/catalog/attach channel carries the selected Linux
+managed runtime's current literal TCP/QUIC LAN listen addresses. Loopback,
+link-local, unspecified, multicast and hostname targets are excluded, including
+IPv4-mapped IPv6 equivalents. Hints are bound to the approved Syncthing device
+identity and persisted outside the vault/index. Existing paired device records
+receive a scoped address-only update plus `dynamic`; folder membership and trust
+roles do not change. External reused daemons retain their existing behavior.
+Refresh exchanges current hints and reconciles saved addresses after restart.
+Managed preparation already saves a concrete nonzero listen port in its durable
+request/configuration; restarting retains that port. A disconnected managed peer
+shows its name and firewall/TCP-port guidance after 30 seconds of observation,
+without treating a local idle folder as proof of connectivity.
