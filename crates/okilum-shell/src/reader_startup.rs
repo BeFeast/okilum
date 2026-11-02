@@ -511,6 +511,15 @@ impl Render for Entry {
                             }),
                     ),
             )
+            .when(cfg!(any(target_os = "linux", target_os = "macos")), |card| {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                let card = card.child(
+                    Button::new("startup-sync-pairing")
+                        .label("Get notes from another computer")
+                        .on_click(|_, window, cx| super::reader_settings::show_sync_pairing(window, cx)),
+                );
+                card
+            })
             // Someone without notes yet: any folder works (#1357).
             .child(
                 div()

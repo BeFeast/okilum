@@ -10,7 +10,7 @@ pub(super) fn shared(window: &mut Window, cx: &mut App) -> Entity<SyncSettings> 
     if let Some(background) = cx.try_global::<BackgroundSync>() {
         let view = background.0.clone();
         if view.read(cx).snapshot.is_none() && !view.read(cx).busy {
-            view.update(cx, |view, cx| view.run(Operation::Read, cx));
+            view.update(cx, |view, cx| view.run(Operation::EnterPairing, cx));
         }
         return view;
     }
@@ -22,6 +22,7 @@ pub(super) fn suspend(cx: &mut App) {
     if let Some(view) = cx.try_global::<BackgroundSync>().map(|s| s.0.clone()) {
         view.update(cx, |view, cx| {
             view.epoch.invalidate();
+            view.lifetime.invalidate();
             if let Some(controller) = view.controller.take() {
                 controller.shutdown();
             }
@@ -29,6 +30,7 @@ pub(super) fn suspend(cx: &mut App) {
             view.inspected = None;
             view.busy = false;
             view.error = None;
+            view.awaiting_open = None;
             cx.notify();
         });
     }
@@ -36,10 +38,9 @@ pub(super) fn suspend(cx: &mut App) {
 
 enum Operation {
     Read,
+    EnterPairing,
     #[cfg(target_os = "linux")]
     SelectConnection(PathBuf),
-    #[cfg(target_os = "linux")]
-    PrepareManaged,
     #[cfg(target_os = "linux")]
     Share(PathBuf),
     Begin(String),
@@ -51,7 +52,14 @@ enum Operation {
     Inspect(PathBuf),
     Consent(ExistingVault),
     Attach(uuid::Uuid, String, PathBuf),
+    AttachNew(uuid::Uuid, String, PathBuf),
 }
+#[cfg(test)]
+#[derive(Clone)]
+struct TestWorker(std::sync::Arc<dyn Fn(Operation) -> anyhow::Result<Output> + Send + Sync>);
+#[cfg(test)]
+impl Global for TestWorker {}
+
 struct Output {
     controller: Controller,
     snapshot: Snapshot,
@@ -74,9 +82,18 @@ pub(super) struct SyncSettings {
     selected_peer: Option<uuid::Uuid>,
     busy: bool,
     epoch: Epoch,
+    lifetime: Epoch,
     error: Option<String>,
+    awaiting_open: Option<PathBuf>,
+    receiving: bool,
+    scroll: ScrollHandle,
 }
 impl SyncSettings {
+    pub(super) fn receive(&mut self, cx: &mut Context<Self>) {
+        self.receiving = true;
+        self.scroll.set_offset(point(px(0.), px(0.)));
+        cx.notify();
+    }
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             #[cfg(target_os = "linux")]
@@ -91,14 +108,25 @@ impl SyncSettings {
             selected_peer: None,
             busy: false,
             epoch: Epoch::default(),
+            lifetime: Epoch::default(),
             error: None,
+            awaiting_open: None,
+            receiving: false,
+            scroll: ScrollHandle::new(),
         };
-        this.run(Operation::Read, cx);
+        this.run(Operation::EnterPairing, cx);
         this
     }
     fn run(&mut self, operation: Operation, cx: &mut Context<Self>) {
         if self.busy || !reader_features::enabled(reader_features::Feature::Sync, cx) {
             return;
+        }
+        let refresh = matches!(operation, Operation::Read);
+        if let Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) = &operation {
+            self.awaiting_open = Some(path.clone());
+        }
+        if !refresh {
+            self.scroll.set_offset(point(px(0.), px(0.)));
         }
         let epoch = self.epoch.begin();
         self.busy = true;
@@ -107,6 +135,8 @@ impl SyncSettings {
             self.inspected = None;
         }
         let controller = self.controller.clone();
+        #[cfg(test)]
+        let worker = cx.try_global::<TestWorker>().cloned();
         let access = reader_features::access(reader_features::Feature::Sync, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -115,6 +145,10 @@ impl SyncSettings {
                 let result = cx
                     .background_executor()
                     .spawn(okilum_t3::scope_current_network(async move {
+                        #[cfg(test)]
+                        if let Some(worker) = worker {
+                            return worker_epoch.run(|| (worker.0)(operation))?;
+                        }
                         perform_scoped(controller, operation, &worker_epoch)
                     }))
                     .await;
@@ -130,24 +164,12 @@ impl SyncSettings {
                     this.busy = false;
                     match result {
                         Ok(output) => {
-                            #[cfg(target_os = "linux")]
-                            {
-                                this.runtimes = output.runtimes;
-                                this.vaults = output.vaults;
-                            }
-                            this.controller = Some(output.controller);
-                            if this.selected_peer.is_none()
-                                && !output.snapshot.catalog.is_empty()
-                                && output.snapshot.peers.len() == 1
-                            {
-                                this.selected_peer = Some(output.snapshot.peers[0].id);
-                            }
-                            this.snapshot = Some(output.snapshot);
-                            if let Some(inspected) = output.inspected {
-                                this.inspected = Some(inspected);
-                            }
+                            this.publish(output, cx);
                         }
                         Err(error) => {
+                            if !refresh {
+                                this.awaiting_open = None;
+                            }
                             // Do not echo invitation URLs, keys or remote errors into logs.
                             let message = error.to_string().to_lowercase();
                             if message.contains("expired")
@@ -171,8 +193,56 @@ impl SyncSettings {
         })
         .detach();
     }
+    fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
+        // Refreshes must not pull someone away while they read an unchanged step.
+        let changed = self.snapshot.as_ref().is_none_or(|old| {
+            old.status != output.snapshot.status
+                || old.pending.as_ref().map(|p| (p.request_id, p.incoming))
+                    != output
+                        .snapshot
+                        .pending
+                        .as_ref()
+                        .map(|p| (p.request_id, p.incoming))
+                || old.offer_url != output.snapshot.offer_url
+                || old.peers.iter().map(|p| p.id).collect::<Vec<_>>()
+                    != output
+                        .snapshot
+                        .peers
+                        .iter()
+                        .map(|p| p.id)
+                        .collect::<Vec<_>>()
+                || old.catalog != output.snapshot.catalog
+        });
+        if changed {
+            self.scroll.set_offset(point(px(0.), px(0.)));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.runtimes = output.runtimes;
+            self.vaults = output.vaults;
+        }
+        self.controller = Some(output.controller);
+        if self.selected_peer.is_none()
+            && !output.snapshot.catalog.is_empty()
+            && output.snapshot.peers.len() == 1
+        {
+            self.selected_peer = Some(output.snapshot.peers[0].id);
+        }
+        if self.awaiting_open.as_ref().is_some_and(|path| {
+            !output.snapshot.preparing && output.snapshot.attached.iter().any(|v| &v.path == path)
+        }) {
+            if let Ok(directory) = reader_history::state_directory() {
+                let path = self.awaiting_open.take().unwrap();
+                reader_open::open_vault_in_new_window(path, directory, cx);
+            }
+        }
+        self.snapshot = Some(output.snapshot);
+        if let Some(inspected) = output.inspected {
+            self.inspected = Some(inspected);
+        }
+    }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
-        if !self.snapshot.as_ref().is_some_and(sync_refresh_needed) || self.error.is_some() {
+        if !self.snapshot.as_ref().is_some_and(sync_refresh_needed) {
             return;
         }
         let epoch = self.epoch.ticket();
@@ -212,6 +282,32 @@ impl SyncSettings {
             self.run(Operation::Begin(name), cx);
         }
     }
+    fn choose_new_folder(
+        &mut self,
+        peer: uuid::Uuid,
+        vault: String,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            self.error =
+                Some("Your home folder is unavailable. Choose an existing empty folder.".into());
+            cx.notify();
+            return;
+        };
+        let picker = cx.prompt_for_new_path(&home, Some(&destination_name(label)));
+        let epoch = self.lifetime.ticket();
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(path))) = picker.await {
+                let _ = this.update(cx, |this, cx| {
+                    if epoch.is_current() {
+                        this.run(Operation::AttachNew(peer, vault, path), cx);
+                    }
+                });
+            }
+        })
+        .detach();
+    }
     fn choose_folder(&mut self, remote: Option<(uuid::Uuid, String)>, cx: &mut Context<Self>) {
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -226,7 +322,7 @@ impl SyncSettings {
                 .into(),
             ),
         });
-        let epoch = self.epoch.ticket();
+        let epoch = self.lifetime.ticket();
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picker.await {
                 if let Some(path) = paths.into_iter().next() {
@@ -248,8 +344,24 @@ impl SyncSettings {
         .detach();
     }
 }
+fn destination_name(label: &str) -> String {
+    let name: String = label
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '/' | '\\'))
+        .take(100)
+        .collect();
+    let name = name.trim().trim_matches('.').trim();
+    if name.is_empty() {
+        "Notes".into()
+    } else {
+        name.into()
+    }
+}
 fn sync_refresh_needed(snapshot: &Snapshot) -> bool {
-    snapshot.offer_url.is_some() || snapshot.pending.is_some() || snapshot.preparing
+    snapshot.offer_url.is_some()
+        || snapshot.pending.is_some()
+        || snapshot.preparing
+        || !snapshot.peers.is_empty()
 }
 fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
     let configs = direct::configuration_paths()?;
@@ -359,21 +471,28 @@ fn perform_scoped(
         };
         guard.check()?;
         #[cfg(target_os = "macos")]
-        if matches!(&operation, Operation::Begin(_) | Operation::Redeem(_, _))
-            && controller.configuration_paths()?.is_empty()
+        if matches!(
+            &operation,
+            Operation::EnterPairing | Operation::Begin(_) | Operation::Redeem(_, _)
+        ) && controller.configuration_paths()?.is_empty()
         {
             connect_managed_runtime(&controller)?;
         }
         guard.check()?;
         #[cfg(target_os = "linux")]
         {
-            if matches!(&operation, Operation::PrepareManaged) {
-                // Only the explicit consent action enters preparation. Keep the
-                // complete discovery inventory, not the selected config subset.
-                guard.check()?;
-                linux_runtime::prepare_managed(&state, &complete_configs, || guard.check())?;
-                guard.check()?;
-                runtime = linux_runtime::inspect(&state, &complete_configs)?;
+            if matches!(
+                &operation,
+                Operation::EnterPairing | Operation::Begin(_) | Operation::Redeem(_, _)
+            ) {
+                // Pairing is explicit Sync consent. Reuse the bootstrap's complete
+                // inventory and packaged-runtime guards, including its final rescan.
+                runtime = linux_runtime::prepare_for_pairing(runtime, || {
+                    guard.check()?;
+                    linux_runtime::prepare_managed(&state, &complete_configs, || guard.check())?;
+                    guard.check()?;
+                    linux_runtime::inspect(&state, &complete_configs)
+                })?;
             }
             if let Operation::SelectConnection(path) = &operation {
                 linux_runtime::select(&state, &mut runtime, path, &controller.snapshot()?)?;
@@ -383,6 +502,7 @@ fn perform_scoped(
                 Operation::Begin(_)
                     | Operation::Redeem(_, _)
                     | Operation::Attach(_, _, _)
+                    | Operation::AttachNew(_, _, _)
                     | Operation::Share(_)
             ) {
                 runtime.inventory.folders()?;
@@ -394,18 +514,20 @@ fn perform_scoped(
             if let Operation::Share(path) = &operation {
                 linux_runtime::check_destination(&runtime, path)?;
             }
-            if let Operation::Attach(_, _, path) = &operation {
+            if let Operation::AttachNew(_, _, path) = &operation {
+                guard.check()?;
+                reader_open::create_vault_folder(path)?;
+            }
+            if let Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) = &operation {
                 linux_runtime::check_destination(&runtime, path)?;
             }
             controller.set_configurations(runtime.configs.clone())?;
         }
         let mut inspected = None;
         let snapshot = match operation {
-            Operation::Read => controller.refresh()?,
+            Operation::Read | Operation::EnterPairing => controller.refresh()?,
             #[cfg(target_os = "linux")]
             Operation::SelectConnection(_) => controller.refresh()?,
-            #[cfg(target_os = "linux")]
-            Operation::PrepareManaged => controller.refresh()?,
             #[cfg(target_os = "linux")]
             Operation::Share(path) => {
                 let prepared = state
@@ -436,7 +558,14 @@ fn perform_scoped(
                 controller.attach_existing(&vault, true)?;
                 controller.snapshot()?
             }
-            Operation::Attach(peer, vault, path) => controller.attach(peer, &vault, &path)?,
+            Operation::Attach(peer, vault, path) | Operation::AttachNew(peer, vault, path) => {
+                #[cfg(target_os = "macos")]
+                if !path.exists() {
+                    guard.check()?;
+                    reader_open::create_vault_folder(&path)?;
+                }
+                controller.attach(peer, &vault, &path)?
+            }
         };
         guard.check()?;
         Ok(Output {
@@ -487,6 +616,8 @@ fn user_error(error: &anyhow::Error) -> String {
         "This vault’s .stignore needs review before sharing. Required exclusions: .okilum-index, .okilum-save-*, /.claude/worktrees and /worktrees. Includes and negated rules need a separately reviewed policy.".into()
     } else if cfg!(target_os = "linux") && text.contains("existing synced vault") {
         "This vault already belongs to Syncthing. Use Choose existing synced vault below.".into()
+    } else if cfg!(target_os = "linux") && text.contains("packaged") {
+        "This build does not include the verified Sync runtime. Install a Linux beta with Sync and try again.".into()
     } else if cfg!(target_os = "linux") && text.contains("managed") {
         "Sharing an ordinary vault requires the bundled Sync connection. Keep existing Syncthing vaults on Choose existing synced vault.".into()
     } else if text.contains("choose a sync connection") {

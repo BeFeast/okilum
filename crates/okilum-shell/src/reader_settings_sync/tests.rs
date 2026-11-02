@@ -15,7 +15,11 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
         selected_peer: None,
         busy: false,
         epoch: Epoch::default(),
+        lifetime: Epoch::default(),
         error: None,
+        awaiting_open: None,
+        receiving: false,
+        scroll: ScrollHandle::new(),
     }
 }
 
@@ -386,4 +390,294 @@ fn reader_settings_sync_lists_an_ordinary_vault_and_shared_state(cx: &mut TestAp
         assert!(view.snapshot.as_ref().unwrap().shared.contains(&path));
         assert!(!view.busy);
     });
+}
+
+// Replace only the blocking platform/controller boundary. Clicks, completion
+// publication, timer scheduling, feature consent and Settings layout are real.
+fn guided_worker(
+    cx: &mut TestAppContext,
+    states: Vec<Snapshot>,
+) -> std::sync::Arc<std::sync::Mutex<Vec<&'static str>>> {
+    let directory = tempfile::tempdir().unwrap();
+    let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
+    let states = std::sync::Mutex::new(std::collections::VecDeque::from(states));
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let recorded = calls.clone();
+    cx.update(|cx| {
+        cx.set_global(TestWorker(std::sync::Arc::new(move |operation| {
+            let _keep_directory = &directory;
+            let tag = match operation {
+                Operation::EnterPairing => "enter",
+                Operation::Read => "read",
+                Operation::Begin(_) => "offer",
+                Operation::Redeem(_, _) => "connect",
+                Operation::Approve(_) => "approve",
+                _ => "other",
+            };
+            recorded.lock().unwrap().push(tag);
+            let mut states = states.lock().unwrap();
+            let snapshot = if states.len() > 1 {
+                states.pop_front().unwrap()
+            } else {
+                states.front().unwrap().clone()
+            };
+            Ok(Output {
+                controller: controller.clone(),
+                snapshot,
+                inspected: None,
+                #[cfg(target_os = "linux")]
+                runtimes: vec![linux_runtime::Choice {
+                    identity: okilum_sync_controller::daemon::DaemonIdentity {
+                        config_file: PathBuf::from("/fixture-managed/config.xml"),
+                        device_id: "fixture-device".into(),
+                        certificate_hash: "fixture-certificate".into(),
+                    },
+                    folders: 0,
+                    selected: true,
+                }],
+                #[cfg(target_os = "linux")]
+                vaults: (0..12)
+                    .map(|i| PathBuf::from(format!("/fixture-vault-{i}")))
+                    .collect(),
+            })
+        })))
+    });
+    calls
+}
+
+fn assert_visible(visual: &mut VisualTestContext, selector: &str) {
+    let panel = visual
+        .debug_bounds("sync-panel")
+        .expect("Sync panel is rendered");
+    let element = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    assert!(
+        element.size.height > px(0.) && element.size.width > px(0.),
+        "empty {selector}"
+    );
+    assert!(
+        element.top() >= panel.top()
+            && element.bottom() <= panel.bottom()
+            && element.left() >= panel.left()
+            && element.right() <= panel.right(),
+        "{selector} {element:?} outside panel {panel:?}"
+    );
+}
+
+#[gpui::test]
+fn guided_first_run_welcome_opens_pairing_and_enables_sync(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_open::install(cx);
+        reader_features::install(&state, cx);
+        cx.set_global(reader_history::TestSessionDirectory(state.clone()));
+    });
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    cx.update(|cx| {
+        assert!(!reader_features::enabled(
+            reader_features::Feature::Sync,
+            cx
+        ));
+        reader_startup::launch(
+            Opts {
+                session_directory: Some(state.clone()),
+                ..Default::default()
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let entry = cx.update(|cx| {
+        assert_eq!(cx.windows().len(), 1);
+        cx.windows()[0]
+    });
+    let mut visual = VisualTestContext::from_window(entry, cx);
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds("startup-sync-pairing")
+        .expect("welcome entry");
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let settings = visual.update(|_, cx| {
+        assert!(reader_features::enabled(reader_features::Feature::Sync, cx));
+        assert!(!reader_features::enabled(
+            reader_features::Feature::Agents,
+            cx
+        ));
+        assert!(reader_open::readers(cx).is_empty(), "no dummy vault needed");
+        cx.windows()
+            .into_iter()
+            .find(|w| *w != entry)
+            .expect("Settings window")
+    });
+    let mut settings = VisualTestContext::from_window(settings, visual);
+    settings.run_until_parked();
+    assert_visible(&mut settings, "sync-connect");
+    assert_visible(&mut settings, "sync-status");
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["enter"],
+        "entry dispatches preparation without Set up or Refresh"
+    );
+    settings.update(|_, cx| {
+        let view = &cx.global::<BackgroundSync>().0;
+        assert!(view.read(cx).receiving);
+        #[cfg(target_os = "linux")]
+        assert!(
+            view.read(cx).runtimes[0].selected,
+            "setup result published immediately"
+        );
+    });
+}
+
+#[gpui::test]
+fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_visible(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::test_init);
+    let mut offer = snapshot(None);
+    offer.status = "Waiting for the new computer".into();
+    offer.offer_url = Some(format!("okilum://pair/{}", "fixture".repeat(60)));
+    let id = uuid::Uuid::new_v4();
+    let mut incoming = offer.clone();
+    incoming.pending = Some(direct::Pending {
+        request_id: id,
+        incoming: true,
+        name: "Laptop".into(),
+        device_id: "A".repeat(63),
+        fingerprint: "B".repeat(64),
+    });
+    let mut approved = snapshot(None);
+    approved.status = "Ready".into();
+    approved.peers.push(direct::Peer {
+        id,
+        name: "Laptop".into(),
+        device_id: "device".into(),
+    });
+    let calls = guided_worker(cx, vec![snapshot(None), offer, incoming, approved]);
+    // The real Settings window uses its minimum supported 700x440 viewport below.
+    let owner = cx.add_window(|_, _| gpui::Empty);
+    owner
+        .update(cx, |_, window, cx| {
+            reader_settings::show_sync_pairing(window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let settings = cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .find(|w| *w != owner.into())
+            .unwrap()
+    });
+    let mut visual = VisualTestContext::from_window(settings, cx);
+    visual.update(|window, _| window.resize(size(px(700.), px(440.))));
+    visual.run_until_parked();
+    let view = visual.update(|_, cx| cx.global::<BackgroundSync>().0.clone());
+    view.update_in(&mut visual, |view, window, cx| {
+        view.receiving = false;
+        view.name
+            .update(cx, |input, cx| input.set_value("Desktop", window, cx));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let add = visual.debug_bounds("sync-add-computer").unwrap();
+    visual.simulate_click(add.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_visible(&mut visual, "sync-copy-url");
+    assert_visible(&mut visual, "sync-pairing-url");
+    view.update(&mut visual, |view, cx| {
+        view.scroll.set_offset(point(px(0.), px(-1000.)));
+        cx.notify();
+    });
+    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    assert_visible(&mut visual, "sync-approve-computer");
+    assert!(
+        visual.debug_bounds("sync-copy-url").is_none(),
+        "incoming replaces offer, with positive approval control above"
+    );
+    let confirm = visual.debug_bounds("sync-approve-computer").unwrap();
+    visual.simulate_click(confirm.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_visible(&mut visual, "sync-status");
+    assert_visible(&mut visual, "sync-catalog-0");
+    assert!(visual.debug_bounds("sync-approve-computer").is_none());
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["enter", "offer", "read", "approve"]
+    );
+    // Errors are pinned even when the long list has been scrolled to its end.
+    view.update(&mut visual, |view, cx| {
+        view.scroll.set_offset(point(px(0.), px(-1000.)));
+        view.error = Some("Could not connect. Check both computers and try again.".into());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_visible(&mut visual, "sync-error");
+}
+
+#[gpui::test]
+fn guided_first_run_waiting_then_catalog_arrives_from_timer(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let id = uuid::Uuid::new_v4();
+    let waiting = snapshot(Some(direct::Pending {
+        request_id: id,
+        incoming: false,
+        name: "Laptop".into(),
+        device_id: "device".into(),
+        fingerprint: "key".into(),
+    }));
+    let mut ready = snapshot(None);
+    ready.status = "Ready".into();
+    ready.peers.push(direct::Peer {
+        id,
+        name: "Desktop".into(),
+        device_id: "device".into(),
+    });
+    ready.catalog.push(direct::Vault {
+        id: "notes".into(),
+        label: "Work notes".into(),
+    });
+    let calls = guided_worker(cx, vec![waiting, ready]);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.run(Operation::Read, cx);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    assert_visible(visual, "sync-cancel-request");
+    assert!(visual.debug_bounds("sync-authorized-catalog").is_none());
+    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    assert_visible(visual, "sync-authorized-catalog");
+    assert_visible(visual, "sync-new-vault-folder-0");
+    root.read_with(visual, |root, cx| {
+        let view = root.view().clone().downcast::<SyncSettings>().unwrap();
+        assert_eq!(view.read(cx).selected_peer, Some(id));
+    });
+    assert_eq!(*calls.lock().unwrap(), vec!["read", "read"]);
+    // Polling survives completed confirmation; later changes need no Refresh.
+    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    assert_eq!(calls.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn guided_first_run_destination_proposal_is_one_safe_home_component() {
+    assert_eq!(destination_name("Work notes"), "Work notes");
+    assert_eq!(destination_name("../../Work\\notes\n"), "Worknotes");
+    assert_eq!(destination_name(".."), "Notes");
+    assert_eq!(
+        Path::new(&destination_name("/absolute/path"))
+            .components()
+            .count(),
+        1
+    );
 }

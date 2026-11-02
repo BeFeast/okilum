@@ -31,6 +31,15 @@ pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
     show_section(reader, None, cx);
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn show_sync_pairing(window: &mut Window, cx: &mut App) {
+    reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+    if reader_features::enabled(reader_features::Feature::Sync, cx) {
+        reader_settings_sync::shared(window, cx).update(cx, |view, cx| view.receive(cx));
+    }
+    show_section_from(None, Some(Section::Sync), Some(window.window_handle()), cx);
+}
+
 pub(crate) fn show_features(cx: &mut App) {
     show_section(None, Some(Section::Features), cx);
 }
@@ -1704,7 +1713,7 @@ impl Settings {
                 }
             }
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            Section::Sync => content.children(self.sync.clone()).into_any_element(),
+            Section::Sync => div().size_full().children(self.sync.clone()).into_any_element(),
             Section::T3 => content.children(self.t3.clone()).into_any_element(),
             Section::About => content.child(about::content(cx)).into_any_element(),
             // Nothing to do here yet, and it says so (#1356): connecting an
@@ -1916,7 +1925,11 @@ impl Render for Settings {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .overflow_y_scroll()
+                    .min_h_0()
+                    .when(self.section.key() == "sync", |this| this.overflow_hidden())
+                    .when(self.section.key() != "sync", |this| {
+                        this.overflow_y_scroll()
+                    })
                     .p_6()
                     .child(body),
             );
