@@ -66,8 +66,17 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
         } else {
             query.start
         };
-        let prefix = &text[..delimiter];
-        let paragraph = prefix.rfind("\n\n").map_or(prefix, |at| &prefix[at + 2..]);
+        let mut paragraph_start = line_start;
+        for raw in text[..line_start].split_inclusive('\n').rev() {
+            let body = raw.trim();
+            // Blank lines end inline spans. Fence delimiters are block syntax,
+            // including closing runs longer than their opening run.
+            if body.is_empty() || body.starts_with("```") || body.starts_with("~~~") {
+                break;
+            }
+            paragraph_start -= raw.len();
+        }
+        let paragraph = &text[paragraph_start..delimiter];
         if providers::in_inline_code(paragraph) {
             return None;
         }
@@ -1064,7 +1073,13 @@ impl Reader {
     /// The editor while its link list is open and may take keys.
     fn link_complete_input(&self, window: &Window, cx: &App) -> Option<Entity<EditorState>> {
         let editing = self.editing.as_ref()?;
-        if editing.link_complete.open.is_none() && editing.link_complete.pending.is_none() {
+        if editing.link_complete.open.is_none()
+            && !editing
+                .link_complete
+                .pending
+                .as_ref()
+                .is_some_and(|query| matches!(query.kind, Kind::Note))
+        {
             return None;
         }
         let input = editing.input.read(cx);
@@ -2528,12 +2543,31 @@ mod tests {
 
     #[gpui::test]
     fn paste_ending_in_a_trigger_stays_closed_but_typing_resumes(cx: &mut TestAppContext) {
-        use gpui_component::input::Paste;
+        use gpui_component::input::{
+            clipboard::{ClipboardReadError, ClipboardReadRequest, ExactClipboardProvider},
+            Paste,
+        };
+        struct Exact(String);
+        impl ExactClipboardProvider for Exact {
+            fn read_text_now(&self, _: &App) -> Option<Result<Option<String>, ClipboardReadError>> {
+                Some(Ok(Some(self.0.clone())))
+            }
+            fn read_text(
+                &self,
+                _: ClipboardReadRequest,
+                _: &App,
+            ) -> Task<Result<Option<String>, ClipboardReadError>> {
+                Task::ready(Ok(Some(self.0.clone())))
+            }
+        }
         let (note, visual) = open(cx);
         for text in ["[[", "[[rec", "/", ":smi", "```ru"] {
             set(&note, visual, "|");
-            visual
-                .update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned())));
+            note.input.update_in(visual, |input, window, cx| {
+                input.set_exact_clipboard_provider(Some(Arc::new(Exact(text.into()))), cx);
+                input.focus_handle(cx).focus(window, cx);
+                window.activate_window();
+            });
             visual.dispatch_action(Paste);
             visual.run_until_parked();
             assert_eq!(
@@ -2546,6 +2580,11 @@ mod tests {
                 "paste {text} must not open popup"
             );
         }
+        typed(visual, "s");
+        assert!(
+            offered(&note, visual).is_some(),
+            "positive control: typing after pasted trigger opens popup"
+        );
         set(&note, visual, "|");
         typed(visual, "[[rec");
         assert!(
@@ -2569,7 +2608,7 @@ mod tests {
             set(&note, visual, source);
             assert!(offered(&note, visual).is_none(), "code: {source}");
         }
-        set(&note, visual, "```rust\n[[rec\n```\n[[rec|");
+        set(&note, visual, "```rust\n[[rec\n````\n[[rec|");
         assert_eq!(
             offered(&note, visual).unwrap()[0],
             "Recipes.md",
