@@ -102,6 +102,8 @@ struct Plan {
     attachment_folder: PathBuf,
     assets: Vec<PublishedAsset>,
     note: Capture,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    copy_origin: Option<AttachmentCopyOrigin>,
 }
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -163,7 +165,7 @@ fn validate_assets(assets: &[Asset]) -> Result<()> {
     }
     Ok(())
 }
-fn read<T: serde::de::DeserializeOwned>(path: &Path, max: usize) -> Result<Option<T>> {
+fn read_bytes(path: &Path, max: usize) -> Result<Option<Vec<u8>>> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -175,10 +177,17 @@ fn read<T: serde::de::DeserializeOwned>(path: &Path, max: usize) -> Result<Optio
         bytes.len() <= max,
         "Attachment operational record exceeds bounds"
     );
-    Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
-        format!("Invalid attachment record: {}", path.display())
-    })?))
+    Ok(Some(bytes))
 }
+fn read<T: serde::de::DeserializeOwned>(path: &Path, max: usize) -> Result<Option<T>> {
+    read_bytes(path, max)?
+        .map(|bytes| {
+            serde_json::from_slice(&bytes)
+                .with_context(|| format!("Invalid attachment record: {}", path.display()))
+        })
+        .transpose()
+}
+
 fn plan_name(composer: &str) -> String {
     format!("{composer}.attachments.json")
 }
@@ -334,6 +343,16 @@ impl Plan {
             serde_json::to_vec(self)?.len() <= MAX_PLAN_BYTES,
             "Attachment plan representation exceeds recovery bounds"
         );
+        if let Some(origin) = &self.copy_origin {
+            id(&origin.source_composer_id)?;
+            id(&origin.source_operation_id)?;
+            ensure!(
+                valid_revision(&origin.source_revision)
+                    && origin.source_composer_id != self.composer_id
+                    && origin.source_operation_id != self.note.receipt.operation_id,
+                "Invalid attachment copy provenance"
+            );
+        }
         if let Some(draft) = draft {
             ensure!(
                 draft.id == self.composer_id
@@ -479,6 +498,7 @@ impl<'a> Publisher<'a> {
                 attachment_folder: self.attachment_folder.into(),
                 assets: published,
                 note,
+                copy_origin: None,
             };
             plan.validate(self.root, Some(self.draft))?;
             for asset in &plan.assets {
@@ -510,6 +530,7 @@ impl<'a> Publisher<'a> {
         let mut completed = 0usize;
         let mut note_acknowledged = false;
         let result = (|| -> Result<AttachmentReceipt> {
+            verify_copy_origin(self.root, self.records, &plan)?;
             // Freeze draft/operation before the first canonical byte is published.
             self.draft.persist(self.root, self.records)?;
             persist_equal(
@@ -615,6 +636,7 @@ pub fn verify_cleanup_receipt(
     let plan: Plan = read(&records.join(plan_name(composer_id)), MAX_PLAN_BYTES)?
         .context("No durable attachment plan; cleanup forbidden")?;
     plan.validate(root, None)?;
+    ensure!(plan.copy_origin.is_none(), "A Save copy receipt does not authorize source staging cleanup; original intent and staged bytes are retained");
     ensure!(
         receipt == &plan.receipt()
             && receipt.composer_id == composer_id
@@ -669,6 +691,18 @@ pub(super) fn reconcile_recovered(
         return Ok(false);
     };
     plan.validate(root, Some(draft))?;
+    if plan.copy_origin.is_some() {
+        // Copy authorizations are recovered through recover_copies using the
+        // ORIGINAL staging composer, never a guessed new staging identity.
+        let source = &plan.copy_origin.as_ref().unwrap().source_composer_id;
+        ensure!(
+            recover_copies(root, records, source)?
+                .iter()
+                .any(|copy| copy.plan == plan),
+            "Attachment copy authorization is missing; retain draft and staging"
+        );
+        return Ok(true);
+    }
     draft.attachment_attempt = Some(plan.note.receipt.operation_id.clone());
     if let Some(receipt) =
         read::<AttachmentReceipt>(&records.join(receipt_name(&draft.id)), MAX_RECEIPT_BYTES)?
@@ -703,6 +737,473 @@ pub(super) fn owns_operation(root: &Path, records: &Path, operation: &str) -> Re
         "Attachment operation plan changed"
     );
     Ok(true)
+}
+
+const MAX_COPY_RECORD_BYTES: usize = MAX_PLAN_BYTES + MAX_RECEIPT_BYTES;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentCopyOrigin {
+    source_composer_id: String,
+    source_operation_id: String,
+    source_revision: String,
+}
+
+/// An explicit preview distinguishes absent files from an inspection failure.
+/// The observation is bounded; it is never used as authority to replace a file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentObservation {
+    Missing,
+    Present { byte_length: usize, sha256: String },
+    Unavailable { reason: String },
+}
+fn observe(root: &Path, relative: &Path, max: usize) -> AttachmentObservation {
+    match read_destination_bounded(root, relative, max) {
+        Ok(Some(bytes)) => AttachmentObservation::Present {
+            byte_length: bytes.len(),
+            sha256: hash(&bytes),
+        },
+        Ok(None) => AttachmentObservation::Missing,
+        Err(error) => AttachmentObservation::Unavailable {
+            reason: format!("{error:#}"),
+        },
+    }
+}
+fn valid_revision(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentCopyReview {
+    version: u32,
+    root: PathBuf,
+    origin: AttachmentCopyOrigin,
+    capture_folder: PathBuf,
+    attachment_folder: PathBuf,
+    note: AttachmentObservation,
+    assets: Vec<AttachmentObservation>,
+}
+impl AttachmentCopyReview {
+    fn fingerprint(&self) -> Result<String> {
+        Ok(hash(&serde_json::to_vec(self)?))
+    }
+}
+
+/// Read-only review of exact frozen text/manifest, observed current files and
+/// explicitly chosen destination folders. No UUID is allocated by preview.
+#[derive(Debug)]
+pub struct AttachmentCopyPreview {
+    source: Plan,
+    review: AttachmentCopyReview,
+    existing: Option<AttachmentCopy>,
+}
+impl AttachmentCopyPreview {
+    pub fn root(&self) -> &Path {
+        &self.review.root
+    }
+    pub fn capture_folder(&self) -> &Path {
+        &self.review.capture_folder
+    }
+    pub fn attachment_folder(&self) -> &Path {
+        &self.review.attachment_folder
+    }
+    pub fn source_composer_id(&self) -> &str {
+        &self.source.composer_id
+    }
+    pub fn source_operation_id(&self) -> &str {
+        &self.source.note.receipt.operation_id
+    }
+    pub fn source_note_path(&self) -> &Path {
+        self.source.note.path()
+    }
+    pub fn text(&self) -> &str {
+        &self.source.original_text
+    }
+    pub fn assets(&self) -> &[PublishedAsset] {
+        &self.source.assets
+    }
+    pub fn note_observation(&self) -> &AttachmentObservation {
+        &self.review.note
+    }
+    /// Same order as assets(), including every frozen asset ID and revision.
+    pub fn asset_observations(&self) -> &[AttachmentObservation] {
+        &self.review.assets
+    }
+    /// If this exact review was already authorized, show Resume/Open copy rather
+    /// than suggesting that retry will allocate a fresh operation.
+    pub fn existing_copy(&self) -> Option<&AttachmentCopy> {
+        self.existing.as_ref()
+    }
+
+    /// Explicit Save copy only. A durable authorization is written FIRST and
+    /// contains the full new plan, so even a failed checkpoint can be recovered.
+    /// Repeating this same reviewed action resumes exactly the same identity.
+    pub fn start_copy(&self, root: &Path, records: &Path) -> Result<AttachmentCopy> {
+        ensure!(
+            root.canonicalize()? == self.review.root,
+            "Selected copy vault changed; preview again"
+        );
+        prepare_records(records)?;
+        let lock_path = records.join(format!("{}.attachment-copy", self.source.composer_id));
+        let _lock = crate::file_editor::FileEditor::reserve_destination(
+            &lock_path,
+            &records.join("attachment-locks"),
+        )?;
+        let directory = copy_directory(records, &self.source.composer_id);
+        let name = format!("{}.json", self.review.fingerprint()?);
+        if let Some(copy) = read::<AttachmentCopy>(&directory.join(&name), MAX_COPY_RECORD_BYTES)? {
+            copy.validate(root)?;
+            ensure!(
+                copy.review == self.review,
+                "Copy authorization differs from this review"
+            );
+            persist_equal(&directory, &name, &copy)?;
+            copy.install(root, records)?;
+            return Ok(copy);
+        }
+        let (source, revision) = source_plan(root, records, &self.source.composer_id)?;
+        ensure!(
+            source == self.source && revision == self.review.origin.source_revision,
+            "Frozen attachment intent changed; preview again before Save copy"
+        );
+        super::validate_copy_folder(root, &self.review.capture_folder)?;
+        super::validate_copy_folder(root, &self.review.attachment_folder)?;
+        ensure!(
+            self.review.note == observe(root, source.note.path(), MAX_NOTE_BYTES)
+                && self.review.assets
+                    == source
+                        .assets
+                        .iter()
+                        .map(|a| observe(root, &a.path, MAX_ASSET_BYTES))
+                        .collect::<Vec<_>>(),
+            "Original capture files changed after preview; review the current conflict again"
+        );
+        let operation = uuid::Uuid::new_v4().to_string();
+        let composer = uuid::Uuid::new_v4().to_string();
+        let assets = source
+            .assets
+            .iter()
+            .map(|asset| {
+                Ok(PublishedAsset {
+                    asset: asset.asset.clone(),
+                    path: asset_path(
+                        &self.review.attachment_folder,
+                        &operation,
+                        &asset.asset.id,
+                        asset
+                            .path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .context("Missing frozen attachment type")?,
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let plan = Plan {
+            version: 1,
+            root: self.review.root.clone(),
+            composer_id: composer,
+            original_text: source.original_text.clone(),
+            capture_folder: self.review.capture_folder.clone(),
+            attachment_folder: self.review.attachment_folder.clone(),
+            note: Capture {
+                receipt: Receipt {
+                    operation_id: operation.clone(),
+                    path: self
+                        .review
+                        .capture_folder
+                        .join(format!("Capture-{operation}.md")),
+                },
+                text: note_text(&source.original_text, &self.review.capture_folder, &assets)?,
+            },
+            assets,
+            copy_origin: Some(self.review.origin.clone()),
+        };
+        let copy = AttachmentCopy {
+            review: self.review.clone(),
+            plan,
+        };
+        copy.validate(root)?;
+        prepare_copy_directory(records, &self.source.composer_id)?;
+        // Immutable action-keyed authorization is the recovery authority. No
+        // original composer, intent, staging blob or canonical file is modified.
+        persist_equal(&directory, &name, &copy)?;
+        copy.install(root, records).context("Copy authorization is retained; recover this copy instead of starting another operation")?;
+        Ok(copy)
+    }
+}
+
+/// A durable authorized copy. Asset IDs/kinds/names/lengths/hashes retain their
+/// ORIGINAL staging identities; only copy composer/note operation and generated
+/// canonical paths are new. Its receipt grants no source-staging cleanup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentCopy {
+    review: AttachmentCopyReview,
+    plan: Plan,
+}
+impl AttachmentCopy {
+    pub fn composer_id(&self) -> &str {
+        &self.plan.composer_id
+    }
+    pub fn operation_id(&self) -> &str {
+        &self.plan.note.receipt.operation_id
+    }
+    pub fn source_composer_id(&self) -> &str {
+        &self.review.origin.source_composer_id
+    }
+    pub fn source_operation_id(&self) -> &str {
+        &self.review.origin.source_operation_id
+    }
+    pub fn root(&self) -> &Path {
+        &self.plan.root
+    }
+    pub fn capture_folder(&self) -> &Path {
+        &self.plan.capture_folder
+    }
+    pub fn attachment_folder(&self) -> &Path {
+        &self.plan.attachment_folder
+    }
+    pub fn text(&self) -> &str {
+        &self.plan.original_text
+    }
+    pub fn assets(&self) -> &[PublishedAsset] {
+        &self.plan.assets
+    }
+
+    fn validate(&self, root: &Path) -> Result<()> {
+        self.plan.validate(root, None)?;
+        ensure!(
+            self.review.version == 1
+                && self.review.root == self.plan.root
+                && self.plan.copy_origin.as_ref() == Some(&self.review.origin)
+                && self.review.capture_folder == self.plan.capture_folder
+                && self.review.attachment_folder == self.plan.attachment_folder
+                && self.review.assets.len() == self.plan.assets.len(),
+            "Attachment copy review/plan mismatch"
+        );
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_COPY_RECORD_BYTES,
+            "Attachment copy authorization exceeds recovery bounds"
+        );
+        Ok(())
+    }
+    fn draft(&self) -> ComposerDraft {
+        ComposerDraft {
+            id: self.plan.composer_id.clone(),
+            text: self.plan.original_text.clone(),
+            folder: Some(self.plan.capture_folder.clone()),
+            attachment_attempt: Some(self.plan.note.receipt.operation_id.clone()),
+            attempt: None,
+            copy_origin: None,
+        }
+    }
+
+    fn authorization_path(&self, records: &Path) -> Result<PathBuf> {
+        Ok(copy_directory(records, self.source_composer_id())
+            .join(format!("{}.json", self.review.fingerprint()?)))
+    }
+    fn install(&self, root: &Path, records: &Path) -> Result<()> {
+        self.validate(root)?;
+        let authorized: AttachmentCopy =
+            read(&self.authorization_path(records)?, MAX_COPY_RECORD_BYTES)?
+                .context("Copy authorization is missing; publication refused")?;
+        ensure!(
+            authorized == *self,
+            "Copy authorization changed; publication refused"
+        );
+        persist_equal(records, &plan_name(self.composer_id()), &self.plan)?;
+        let draft = self.draft();
+        if let Some(record) = read::<super::ComposerRecord>(
+            &records.join(format!("{}.composer.json", self.composer_id())),
+            MAX_PLAN_BYTES,
+        )? {
+            ensure!(
+                record.root == self.plan.root && record.draft == draft,
+                "Authorized copy draft changed; keep original staging"
+            );
+            return Ok(());
+        }
+        draft.persist(root, records)
+    }
+    pub fn receipt(&self, root: &Path, records: &Path) -> Result<Option<AttachmentReceipt>> {
+        self.validate(root)?;
+        let authorized: AttachmentCopy =
+            read(&self.authorization_path(records)?, MAX_COPY_RECORD_BYTES)?
+                .context("Copy authorization is missing; receipt lookup refused")?;
+        ensure!(
+            authorized == *self,
+            "Copy authorization changed; receipt lookup refused"
+        );
+        let receipt: Option<AttachmentReceipt> = read(
+            &records.join(receipt_name(self.composer_id())),
+            MAX_RECEIPT_BYTES,
+        )?;
+        if let Some(receipt) = &receipt {
+            ensure!(
+                receipt == &self.plan.receipt(),
+                "Attachment copy receipt changed"
+            );
+        }
+        Ok(receipt)
+    }
+    /// Adapter receives ORIGINAL staging composer/bytes through the unchanged
+    /// frozen publisher trait, then routes them here. Never stage under copy ID.
+    pub fn publish_capture(
+        &self,
+        root: &Path,
+        drafts: &Path,
+        records: &Path,
+        source_composer_id: &str,
+        assets: &[VerifiedAsset],
+    ) -> Result<AttachmentReceipt> {
+        ensure!(
+            source_composer_id == self.source_composer_id(),
+            "Copy was supplied another staging composer"
+        );
+        self.install(root, records)?;
+        let mut draft = self.draft();
+        Publisher::new(root, drafts, records, self.attachment_folder(), &mut draft)
+            .publish_capture(self.composer_id(), assets)
+    }
+}
+
+fn copy_directory(records: &Path, composer: &str) -> PathBuf {
+    records.join("attachment-copies").join(composer)
+}
+fn prepare_copy_directory(records: &Path, composer: &str) -> Result<()> {
+    // Flush both newly introduced directory entries before a marker can become
+    // publication authority. Flushing only the leaf would lose the recovery
+    // namespace after a crash even if its marker file had already been synced.
+    prepare_records(&records.join("attachment-copies"))?;
+    prepare_records(&copy_directory(records, composer))
+}
+fn source_plan(root: &Path, records: &Path, composer: &str) -> Result<(Plan, String)> {
+    id(composer)?;
+    let bytes = read_bytes(&records.join(plan_name(composer)), MAX_PLAN_BYTES)?
+        .context("No frozen attachment intent to preview")?;
+    let plan: Plan = serde_json::from_slice(&bytes)?;
+    plan.validate(root, None)?;
+    ensure!(
+        plan.composer_id == composer,
+        "Source attachment composer changed"
+    );
+    Ok((plan, hash(&bytes)))
+}
+fn verify_copy_origin(root: &Path, records: &Path, plan: &Plan) -> Result<()> {
+    let Some(origin) = &plan.copy_origin else {
+        return Ok(());
+    };
+    let (source, revision) = source_plan(root, records, &origin.source_composer_id)?;
+    ensure!(
+        revision == origin.source_revision
+            && source.note.receipt.operation_id == origin.source_operation_id
+            && source.original_text == plan.original_text
+            && source
+                .assets
+                .iter()
+                .map(|a| &a.asset)
+                .eq(plan.assets.iter().map(|a| &a.asset)),
+        "Frozen source intent/manifest changed; preserve copy and staging and preview again"
+    );
+    Ok(())
+}
+
+pub fn preview_copy(
+    root: &Path,
+    records: &Path,
+    source_composer_id: &str,
+    capture_folder: &Path,
+    attachment_folder: &Path,
+) -> Result<AttachmentCopyPreview> {
+    let (source, revision) = source_plan(root, records, source_composer_id)?;
+    ensure!(
+        source.copy_origin.is_none(),
+        "Choose the original staging composer; a copy ID is not a new staging identity"
+    );
+    super::validate_copy_folder(root, capture_folder)?;
+    super::validate_copy_folder(root, attachment_folder)?;
+    let review = AttachmentCopyReview {
+        version: 1,
+        root: root.canonicalize()?,
+        origin: AttachmentCopyOrigin {
+            source_composer_id: source.composer_id.clone(),
+            source_operation_id: source.note.receipt.operation_id.clone(),
+            source_revision: revision,
+        },
+        capture_folder: capture_folder.into(),
+        attachment_folder: attachment_folder.into(),
+        note: observe(root, source.note.path(), MAX_NOTE_BYTES),
+        assets: source
+            .assets
+            .iter()
+            .map(|a| observe(root, &a.path, MAX_ASSET_BYTES))
+            .collect(),
+    };
+    let existing = read::<AttachmentCopy>(
+        &copy_directory(records, source_composer_id)
+            .join(format!("{}.json", review.fingerprint()?)),
+        MAX_COPY_RECORD_BYTES,
+    )?;
+    if let Some(copy) = &existing {
+        copy.validate(root)?;
+        ensure!(copy.review == review, "Existing copy authorization differs");
+    }
+    Ok(AttachmentCopyPreview {
+        source,
+        review,
+        existing,
+    })
+}
+
+/// Recover both pending and completed copies under the ORIGINAL staging identity.
+/// Corrupt entries fail explicitly; no stage or canonical data is deleted.
+pub fn recover_copies(
+    root: &Path,
+    records: &Path,
+    source_composer_id: &str,
+) -> Result<Vec<AttachmentCopy>> {
+    id(source_composer_id)?;
+    let entries = match std::fs::read_dir(copy_directory(records, source_composer_id)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut copies = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            anyhow::bail!("Invalid copy authorization filename")
+        };
+        // NamedTempFile residue before atomic authorization publication is not
+        // an approved operation. Preserve it, but do not let it hide durable
+        // authorizations or treat its bytes as a publication request.
+        if name.strip_prefix(".tmp").is_some_and(|suffix| {
+            suffix.len() == 6 && suffix.bytes().all(|b| b.is_ascii_alphanumeric())
+        }) {
+            continue;
+        }
+        let Some(stem) = name.strip_suffix(".json") else {
+            anyhow::bail!("Unexpected copy recovery entry")
+        };
+        ensure!(valid_revision(stem), "Invalid copy authorization identity");
+        let copy: AttachmentCopy = read(&entry.path(), MAX_COPY_RECORD_BYTES)?
+            .context("Copy authorization disappeared during recovery")?;
+        copy.validate(root)?;
+        ensure!(
+            copy.source_composer_id() == source_composer_id && copy.review.fingerprint()? == stem,
+            "Copy recovery scope/identity mismatch"
+        );
+        copies.push(copy);
+    }
+    copies.sort_by(|a, b| a.composer_id().cmp(b.composer_id()));
+    Ok(copies)
 }
 
 #[cfg(all(test, unix))]
@@ -999,6 +1500,383 @@ mod tests {
         assert_eq!(
             std::fs::read_dir(root.join("Attachments")).unwrap().count(),
             1
+        );
+    }
+    fn copy_fixture() -> (
+        tempfile::TempDir,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        ComposerDraft,
+        Vec<VerifiedAsset>,
+    ) {
+        let (temp, root, records, drafts, mut draft) = fixture("\u{feff}frozen authored\r\n");
+        std::fs::create_dir(root.join("Copies")).unwrap();
+        std::fs::create_dir(root.join("CopyAssets")).unwrap();
+        let assets = vec![
+            input(
+                ASSET,
+                b"\x89PNG\r\n\x1a\nphoto",
+                AssetKind::Photo,
+                "../photo](url).png",
+            ),
+            input(SECOND, b"\0shared\xff", AssetKind::SharedFile, "file.txt"),
+        ];
+        assert!(
+            crate::unix_publish::inject(rustix::io::Errno::ACCESS, || publish(
+                &root, &drafts, &records, &mut draft, &assets
+            ))
+            .is_err()
+        );
+        (temp, root, records, drafts, draft, assets)
+    }
+
+    #[test]
+    fn attachment_save_copy_preserves_full_manifest_original_intent_and_current_files() {
+        let (_temp, root, records, drafts, original, assets) = copy_fixture();
+        let source = plan(&records, &original);
+        crate::note_files::create_attachment_with_source(
+            &root,
+            &source.assets[0].path,
+            b"external divergent asset",
+        )
+        .unwrap();
+        crate::note_files::create_attachment_with_source(
+            &root,
+            &source.assets[1].path,
+            &assets[1].bytes,
+        )
+        .unwrap();
+        crate::note_files::create_with_source(&root, source.note.path(), b"external current note")
+            .unwrap();
+        let intent_bytes = std::fs::read(records.join(plan_name(&original.id))).unwrap();
+        let draft_bytes =
+            std::fs::read(records.join(format!("{}.composer.json", original.id))).unwrap();
+        let entries = std::fs::read_dir(&records).unwrap().count();
+        let preview = preview_copy(
+            &root,
+            &records,
+            &original.id,
+            Path::new("Copies"),
+            Path::new("CopyAssets"),
+        )
+        .unwrap();
+        assert_eq!(
+            preview.source_operation_id(),
+            source.note.receipt.operation_id
+        );
+        assert_eq!(preview.text(), original.text);
+        assert_eq!(preview.assets(), source.assets);
+        assert_eq!(
+            preview.asset_observations()[0],
+            AttachmentObservation::Present {
+                byte_length: b"external divergent asset".len(),
+                sha256: hash(b"external divergent asset")
+            }
+        );
+        assert_eq!(
+            preview.asset_observations()[1],
+            AttachmentObservation::Present {
+                byte_length: assets[1].bytes.len(),
+                sha256: assets[1].asset.sha256.clone()
+            }
+        );
+        assert!(preview.existing_copy().is_none());
+        assert_eq!(std::fs::read_dir(&records).unwrap().count(), entries);
+        assert_eq!(
+            std::fs::read_dir(root.join("CopyAssets")).unwrap().count(),
+            0
+        );
+        let copy = preview.start_copy(&root, &records).unwrap();
+        assert_ne!(copy.composer_id(), original.id);
+        assert!(preview_copy(
+            &root,
+            &records,
+            copy.composer_id(),
+            Path::new("Copies"),
+            Path::new("CopyAssets")
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("original staging composer"));
+        assert_ne!(copy.operation_id(), source.note.receipt.operation_id);
+        assert_eq!(
+            preview.start_copy(&root, &records).unwrap(),
+            copy,
+            "same approved action resumes its existing IDs"
+        );
+        let repeated = preview_copy(
+            &root,
+            &records,
+            &original.id,
+            Path::new("Copies"),
+            Path::new("CopyAssets"),
+        )
+        .unwrap();
+        assert_eq!(repeated.existing_copy(), Some(&copy));
+        let receipt = copy
+            .publish_capture(&root, &drafts, &records, &original.id, &assets)
+            .unwrap();
+        assert_eq!(receipt.composer_id, copy.composer_id());
+        assert_eq!(receipt.note.operation_id, copy.operation_id());
+        for (published, staged) in receipt.assets.iter().zip(&assets) {
+            assert_eq!(published.asset, staged.asset);
+            assert_eq!(
+                std::fs::read(root.join(&published.path)).unwrap(),
+                staged.bytes
+            );
+        }
+        assert!(std::fs::read_to_string(root.join(&receipt.note.path))
+            .unwrap()
+            .starts_with(&original.text));
+        assert_eq!(
+            std::fs::read(root.join(&source.assets[0].path)).unwrap(),
+            b"external divergent asset"
+        );
+        assert_eq!(
+            std::fs::read(root.join(source.note.path())).unwrap(),
+            b"external current note"
+        );
+        assert_eq!(
+            std::fs::read(records.join(plan_name(&original.id))).unwrap(),
+            intent_bytes
+        );
+        assert_eq!(
+            std::fs::read(records.join(format!("{}.composer.json", original.id))).unwrap(),
+            draft_bytes
+        );
+        let manifest: Vec<_> = assets.iter().map(|a| a.asset.clone()).collect();
+        assert!(
+            verify_cleanup_receipt(&root, &records, &original.id, &manifest, &receipt).is_err()
+        );
+        assert!(
+            verify_cleanup_receipt(&root, &records, copy.composer_id(), &manifest, &receipt)
+                .unwrap_err()
+                .to_string()
+                .contains("does not authorize source staging cleanup")
+        );
+        let recovered = super::super::recover_composers(&root, &records).unwrap();
+        assert_eq!(recovered, vec![original]);
+        assert_eq!(
+            recover_copies(&root, &records, copy.source_composer_id()).unwrap(),
+            vec![copy.clone()]
+        );
+        assert_eq!(copy.receipt(&root, &records).unwrap(), Some(receipt));
+    }
+
+    #[test]
+    fn attachment_copy_preview_revision_guards_refuse_then_same_authorization_retries() {
+        use std::os::unix::fs::symlink;
+        let (_temp, root, records, drafts, original, assets) = copy_fixture();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), root.join("redirect")).unwrap();
+        assert!(preview_copy(
+            &root,
+            &records,
+            &original.id,
+            Path::new("Copies"),
+            Path::new("redirect")
+        )
+        .is_err());
+        assert!(preview_copy(
+            &root,
+            &records,
+            &original.id,
+            Path::new("../outside"),
+            Path::new("CopyAssets")
+        )
+        .is_err());
+        let preview = preview_copy(
+            &root,
+            &records,
+            &original.id,
+            Path::new("Copies"),
+            Path::new("CopyAssets"),
+        )
+        .unwrap();
+        let source = plan(&records, &original);
+        crate::note_files::create_attachment_with_source(
+            &root,
+            &source.assets[0].path,
+            b"changed after preview",
+        )
+        .unwrap();
+        assert!(preview
+            .start_copy(&root, &records)
+            .unwrap_err()
+            .to_string()
+            .contains("changed after preview"));
+        assert!(!copy_directory(&records, &original.id).exists());
+        let fresh = preview_copy(
+            &root,
+            &records,
+            &original.id,
+            Path::new("Copies"),
+            Path::new("CopyAssets"),
+        )
+        .unwrap();
+        let copy = fresh.start_copy(&root, &records).unwrap();
+        let source_path = records.join(plan_name(&original.id));
+        let saved = std::fs::read(&source_path).unwrap();
+        let mut changed = saved.clone();
+        changed.push(b'\n');
+        std::fs::write(&source_path, &changed).unwrap();
+        let error = copy
+            .publish_capture(&root, &drafts, &records, &original.id, &assets)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Frozen source intent/manifest changed"));
+        assert_eq!(
+            std::fs::read_dir(root.join("CopyAssets")).unwrap().count(),
+            0
+        );
+        assert_eq!(std::fs::read(&source_path).unwrap(), changed);
+        std::fs::write(&source_path, &saved).unwrap();
+        let receipt = copy
+            .publish_capture(&root, &drafts, &records, &original.id, &assets)
+            .unwrap();
+        std::fs::write(&source_path, changed).unwrap();
+        std::fs::write(root.join(&receipt.assets[0].path), b"later copy edit").unwrap();
+        std::fs::remove_file(root.join(&receipt.note.path)).unwrap();
+        assert_eq!(
+            copy.publish_capture(&root, &drafts, &records, &original.id, &assets)
+                .unwrap(),
+            receipt
+        );
+        assert_eq!(
+            std::fs::read(root.join(&receipt.assets[0].path)).unwrap(),
+            b"later copy edit"
+        );
+        assert!(!root.join(&receipt.note.path).exists());
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn attachment_copy_authorization_recovers_before_checkpoint_and_keeps_staging_identity() {
+        let (_temp, root, records, drafts, original, assets) = copy_fixture();
+        let copy = preview_copy(
+            &root,
+            &records,
+            &original.id,
+            Path::new("Copies"),
+            Path::new("CopyAssets"),
+        )
+        .unwrap()
+        .start_copy(&root, &records)
+        .unwrap();
+        // Model a crash after immutable authorization, before plan/composer install.
+        std::fs::remove_file(records.join(plan_name(copy.composer_id()))).unwrap();
+        std::fs::remove_file(records.join(format!("{}.composer.json", copy.composer_id())))
+            .unwrap();
+        let temporary = copy_directory(&records, &original.id).join(".tmpAb12xy");
+        std::fs::write(&temporary, b"unpublished temporary authorization").unwrap();
+        let recovered = recover_copies(&root, &records, &original.id)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            std::fs::read(&temporary).unwrap(),
+            b"unpublished temporary authorization"
+        );
+        assert_eq!(recovered, copy);
+        assert!(recovered
+            .publish_capture(&root, &drafts, &records, copy.composer_id(), &assets)
+            .is_err());
+        assert!(
+            crate::unix_publish::inject(rustix::io::Errno::ACCESS, || recovered.publish_capture(
+                &root,
+                &drafts,
+                &records,
+                &original.id,
+                &assets
+            ))
+            .is_err()
+        );
+        assert_eq!(
+            super::super::recover_composers(&root, &records).unwrap(),
+            vec![original.clone()]
+        );
+        assert_eq!(
+            recover_copies(&root, &records, &original.id).unwrap(),
+            vec![copy.clone()]
+        );
+        let reversed = vec![
+            input(
+                SECOND,
+                &assets[1].bytes,
+                assets[1].asset.kind.clone(),
+                &assets[1].asset.display_name,
+            ),
+            input(
+                ASSET,
+                &assets[0].bytes,
+                assets[0].asset.kind.clone(),
+                &assets[0].asset.display_name,
+            ),
+        ];
+        assert!(recovered
+            .publish_capture(&root, &drafts, &records, &original.id, &reversed)
+            .is_err());
+        let receipt = recovered
+            .publish_capture(&root, &drafts, &records, &original.id, &assets)
+            .unwrap();
+        assert_eq!(receipt.note.operation_id, copy.operation_id());
+        assert_eq!(std::fs::read_dir(root.join("Copies")).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_dir(root.join("CopyAssets")).unwrap().count(),
+            2
+        );
+        assert_eq!(
+            std::fs::read_dir(root.join("Attachments")).unwrap().count(),
+            0
+        );
+        assert_eq!(original.text, "\u{feff}frozen authored\r\n");
+    }
+
+    #[test]
+    fn missing_copy_authorization_is_an_explicit_recovery_failure_not_empty_success() {
+        let (_temp, root, records, drafts, original, assets) = copy_fixture();
+        let preview = preview_copy(
+            &root,
+            &records,
+            &original.id,
+            Path::new("Copies"),
+            Path::new("CopyAssets"),
+        )
+        .unwrap();
+        let copy = preview.start_copy(&root, &records).unwrap();
+        let path = copy.authorization_path(&records).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(copy.receipt(&root, &records).is_err());
+        assert!(copy
+            .publish_capture(&root, &drafts, &records, &original.id, &assets)
+            .is_err());
+        assert!(super::super::recover_composers(&root, &records)
+            .unwrap_err()
+            .to_string()
+            .contains("copy authorization is missing"));
+        assert_eq!(
+            std::fs::read_dir(root.join("CopyAssets")).unwrap().count(),
+            0
+        );
+        // Positive control: restoring the exact authorization makes this same
+        // operation recoverable, without allocating or replacing any identities.
+        persist_equal(
+            path.parent().unwrap(),
+            path.file_name().unwrap().to_str().unwrap(),
+            &copy,
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::recover_composers(&root, &records).unwrap(),
+            vec![original.clone()]
+        );
+        assert_eq!(
+            copy.publish_capture(&root, &drafts, &records, &original.id, &assets)
+                .unwrap()
+                .note
+                .operation_id,
+            copy.operation_id()
         );
     }
 }
