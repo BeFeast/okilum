@@ -392,3 +392,51 @@ fn follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias() {
         .iter()
         .any(|c| c.path == archive && c.reason == Reason::DuplicateSource));
 }
+
+#[test]
+fn follow_discovery_race_defers_replacement_to_its_existing_session_even_with_replayed_bytes() {
+    let f = Fixture::new();
+    fs::write(
+        &f.path,
+        r#"{"version":1,"name":"Follow","glob":"logs/**","vault_root":true}"#,
+    )
+    .unwrap();
+    let plan = f.plan();
+    let initial = plan.select(|_, _| {});
+    let mut session = Session::new(&initial).unwrap();
+    let a = f.vault.join("logs/a.log");
+    fs::rename(&a, f.vault.join("logs/a.log.1")).unwrap();
+    fs::write(&a, "second epoch\n").unwrap();
+    session
+        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
+        .unwrap();
+    // Model creation between the tail-read phase and discovery, without a
+    // timing-dependent thread or real watcher.
+    fs::rename(&a, f.vault.join("logs/a.log.2")).unwrap();
+    fs::write(&a, "first\n").unwrap();
+    let mut discovered = plan.select_excluding(&session.known, |_, _| {});
+    assert_eq!(discovered.files.len(), 1);
+    let mut sources = Vec::new();
+    let mut notices = Vec::new();
+    assert!(session
+        .discover(
+            &discovered.files,
+            &mut discovered.candidates,
+            &mut sources,
+            &mut notices
+        )
+        .unwrap());
+    assert!(sources.is_empty() && session.aliases.is_empty());
+    assert_eq!(session.active.len(), 1);
+    let update = session
+        .refresh(&plan, &[], &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(session.published.len(), 3);
+    assert_eq!(session.active.len(), 1);
+    assert_eq!(session.published[&2].snapshot.raw(0).unwrap(), b"first");
+    assert!(update.notice.unwrap().contains("Rotated"));
+    assert!(
+        session.aliases.is_empty(),
+        "a live replayed epoch is not an archive alias"
+    );
+}

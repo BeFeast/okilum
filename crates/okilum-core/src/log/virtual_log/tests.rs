@@ -261,3 +261,31 @@ fn glog_aliases_do_not_duplicate_records_and_outside_links_are_explained() {
         .iter()
         .any(|c| c.reason == Reason::OutsideRoot));
 }
+
+#[test]
+fn hard_link_identities_are_indexed_once_within_one_membership_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("view.okilog");
+    std::fs::write(&path, "{}").unwrap();
+    std::fs::write(dir.path().join("app.log"), "first\n").unwrap();
+    std::fs::hard_link(dir.path().join("app.log"), dir.path().join("alias.log")).unwrap();
+    let def = Definition {
+        glob: "*.log".into(),
+        query: None,
+        ..definition()
+    };
+    let selection = def.plan(dir.path(), &path, 0).unwrap().select(|_, _| {});
+    assert_eq!(selection.files.len(), 1);
+    assert_eq!(
+        selection.checked, 1,
+        "the same physical content must not be opened/indexed twice"
+    );
+    assert_eq!(
+        selection
+            .candidates
+            .iter()
+            .filter(|c| c.reason == Reason::DuplicateSource)
+            .count(),
+        1
+    );
+}

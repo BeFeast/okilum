@@ -186,6 +186,84 @@ impl Session {
         updates.push(source);
         Ok(Some(slot))
     }
+    fn discover(
+        &mut self,
+        files: &[LogFile],
+        candidates: &mut [okilum_core::log::virtual_log::Candidate],
+        updates: &mut Vec<Source>,
+        notices: &mut Vec<String>,
+    ) -> Result<bool> {
+        let mut retry_path = false;
+        let archives: Vec<_> = if files.is_empty() {
+            Vec::new()
+        } else {
+            self.retired
+                .iter()
+                .filter_map(|r| {
+                    let source = self.published.get(&r.slot?)?;
+                    Some((
+                        source.path.clone(),
+                        source.snapshot.clone(),
+                        fingerprint(source.snapshot.bytes()),
+                    ))
+                })
+                .collect()
+        };
+        for file in files {
+            if self
+                .active
+                .iter()
+                .any(|source| source.tail.path() == file.path())
+            {
+                // A replacement appeared after this turn's tail poll. Retry
+                // that retained session instead of creating a second owner.
+                retry_path = true;
+                continue;
+            }
+            if self.known.contains(&file.identity()) {
+                for candidate in &mut *candidates {
+                    if candidate.path == file.path() {
+                        candidate.reason = Reason::DuplicateSource;
+                    }
+                }
+                continue;
+            }
+            let digest = if archives.is_empty() {
+                0
+            } else {
+                fingerprint(file.bytes())
+            };
+            let same_archive = archives.iter().any(|(path, snapshot, hash)| {
+                path.file_name() != file.path().file_name()
+                    && path.parent() == file.path().parent()
+                    && path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|base| rotation_matches(file.path(), base))
+                    && *hash == digest
+                    && snapshot.bytes() == file.bytes()
+            });
+            if same_archive {
+                self.capacity()?;
+                self.known.insert(file.identity());
+                self.aliases.push(file.retain_identity());
+                self.freeze(file.path())?;
+                for candidate in &mut *candidates {
+                    if candidate.path == file.path() {
+                        candidate.reason = Reason::DuplicateSource;
+                    }
+                }
+                notices.push(
+                    "Byte-equivalent same-family archive coalesced with its observed segment"
+                        .into(),
+                );
+            } else {
+                ensure!(!file.is_compressed(), "New compressed archive continuity is unproven; snapshot retained; Rescan explicitly");
+                updates.push(self.accept(file)?);
+            }
+        }
+        Ok(retry_path)
+    }
     pub fn refresh(
         &mut self,
         plan: &SelectionPlan,
@@ -293,6 +371,7 @@ impl Session {
         self.active = active;
         self.retired = retired;
         running(cancel)?;
+        let mut retry_path = false;
         let candidates = if changes.is_empty() {
             None
         } else {
@@ -302,55 +381,12 @@ impl Session {
                 "Membership refresh incomplete; snapshot retained; Rescan explicitly"
             );
             running(cancel)?;
-            let archives: Vec<_> = if selection.files.is_empty() {
-                Vec::new()
-            } else {
-                self.retired
-                    .iter()
-                    .filter_map(|r| {
-                        let source = self.published.get(&r.slot?)?;
-                        Some((
-                            source.path.clone(),
-                            source.snapshot.clone(),
-                            fingerprint(source.snapshot.bytes()),
-                        ))
-                    })
-                    .collect()
-            };
-            for file in &selection.files {
-                let digest = if archives.is_empty() {
-                    0
-                } else {
-                    fingerprint(file.bytes())
-                };
-                let same_archive = archives.iter().any(|(path, snapshot, hash)| {
-                    path.parent() == file.path().parent()
-                        && path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|base| rotation_matches(file.path(), base))
-                        && *hash == digest
-                        && snapshot.bytes() == file.bytes()
-                });
-                if same_archive {
-                    self.capacity()?;
-                    self.known.insert(file.identity());
-                    self.aliases.push(file.retain_identity());
-                    self.freeze(file.path())?;
-                    for candidate in &mut selection.candidates {
-                        if candidate.path == file.path() {
-                            candidate.reason = Reason::DuplicateSource;
-                        }
-                    }
-                    notices.push(
-                        "Byte-equivalent same-family archive coalesced with its observed segment"
-                            .into(),
-                    );
-                } else {
-                    ensure!(!file.is_compressed(), "New compressed archive continuity is unproven; snapshot retained; Rescan explicitly");
-                    updates.push(self.accept(file)?);
-                }
-            }
+            retry_path = self.discover(
+                &selection.files,
+                &mut selection.candidates,
+                &mut updates,
+                &mut notices,
+            )?;
             Some(selection.candidates)
         };
         let bytes: u64 = self
@@ -376,12 +412,13 @@ impl Session {
             "Follow retained byte bound reached; snapshot retained; Rescan explicitly"
         );
         running(cancel)?;
-        let more = self
-            .active
-            .iter()
-            .map(|s| &s.tail)
-            .chain(self.retired.iter().filter_map(|s| s.tail.as_ref()))
-            .any(|tail| tail.window().end < tail.window().file_len);
+        let more = retry_path
+            || self
+                .active
+                .iter()
+                .map(|s| &s.tail)
+                .chain(self.retired.iter().filter_map(|s| s.tail.as_ref()))
+                .any(|tail| tail.window().end < tail.window().file_len);
         Ok(Update {
             sources: updates,
             candidates,

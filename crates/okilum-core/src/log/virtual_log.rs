@@ -188,6 +188,7 @@ impl SelectionPlan {
             decoded_bytes_checked: 0,
         };
         let mut selected_paths = std::collections::HashSet::new();
+        let mut represented = retained.clone();
         let mut entries = walkdir::WalkDir::new(&self.root)
             .follow_links(false)
             .sort_by_file_name()
@@ -236,11 +237,13 @@ impl SelectionPlan {
                     Ok(canonical) if selected_paths.contains(&canonical) => Reason::DuplicateSource,
                     Ok(canonical) => {
                         let reason = match super::tail::path_identity(&path) {
-                            Ok(Some(id)) if retained.contains(&id) => Reason::DuplicateSource,
-                            Ok(_) => self.check(&path, retained, &mut result, &mut progress),
+                            Ok(Some(id)) if represented.contains(&id) => Reason::DuplicateSource,
+                            Ok(_) => self.check(&path, &represented, &mut result, &mut progress),
                             Err(error) => Reason::Unreadable(error.to_string()),
                         };
                         if reason == Reason::Matched {
+                            represented
+                                .insert(result.files.last().expect("matched file").identity());
                             selected_paths.insert(canonical);
                         }
                         reason
