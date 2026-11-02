@@ -338,7 +338,7 @@ impl CachedProvider {
                         })
                 },
                 |local| {
-                    projection
+                    retained
                         .validate_active(&Active {
                             selection: Some(block.start + local.start..block.start + local.end),
                             composition: None,
