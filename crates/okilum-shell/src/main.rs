@@ -7746,11 +7746,11 @@ impl Render for Reader {
                 }),
             )
             .on_action(
-                cx.listener(|this, _: &reader_reminder::RemindOnSelection, window, cx| {
+                cx.listener(|this, action: &reader_reminder::RemindOnSelection, window, cx| {
                     #[cfg(any(unix, windows))]
-                    this.remind_on_editor_selection(window, cx);
+                    this.remind_on_editor_selection(action, window, cx);
                     #[cfg(not(any(unix, windows)))]
-                    let _ = (this, window, cx);
+                    let _ = (this, action, window, cx);
                 }),
             )
             .on_action(cx.listener(|this, _: &QuickOpen, window, cx| {
