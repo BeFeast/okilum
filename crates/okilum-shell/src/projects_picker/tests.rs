@@ -446,7 +446,13 @@ fn right_click_asks_for_the_project_menu_and_the_avatar_follows_t3(cx: &mut Test
             .clone()
     });
     let auto = visual.update(|_, cx| avatar(&editor, cx));
-    assert!(matches!(auto, Avatar::Monogram { ref text, .. } if text == "E"));
+    assert_eq!(
+        auto,
+        Avatar::Icon(ProjectIcon::Lucide {
+            name: "code-xml".into(),
+            color: IconColor::Gray,
+        })
+    );
     editor.appearance.icon = Some(ProjectIcon::Emoji {
         emoji: "📚".into()
     });
