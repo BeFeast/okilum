@@ -1409,6 +1409,15 @@ mod tests {
         visual.run_until_parked();
         let adopted = draw(&input, reference, visual);
         assert_held(&immediate, &adopted, "distant classification adoption");
+        let provider = reader.read_with(visual, |r, _| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .live_preview
+                .accepted
+                .clone()
+                .unwrap()
+        });
         reader.update_in(visual, |_, window, cx| {
             input.update(cx, |i, cx| {
                 i.set_value("x".repeat(1024 * 1024 + 1), window, cx);
@@ -1416,9 +1425,30 @@ mod tests {
             });
         });
         visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.editing.as_ref().unwrap().live_preview.accepted.is_none(),
+                "the real Reader refuses an above-limit source revision"
+            );
+        });
+        // Reader correctly detaches an oversized revision's provider. Its raw
+        // Source frames therefore are not labelled as failed Live composition.
+        // Reattach the known provider without a text event to exercise the
+        // independent native guard, including its zero-compose positive control.
+        let composes = input.update(visual, |i, cx| {
+            let composes = i.layout_diagnostics().unwrap().projection_composes;
+            i.take_layout_frames();
+            i.set_projection_provider(Some(provider), cx);
+            composes
+        });
         visual.update(|window, cx| window.draw(cx).clear(cx));
         input.read_with(visual, |i, _| {
-            assert_eq!(i.value().len(), 1024 * 1024 + 1);
+            assert_eq!(i.value().as_ref(), "x".repeat(1024 * 1024 + 1));
+            assert_eq!(
+                i.layout_diagnostics().unwrap().projection_composes,
+                composes,
+                "above-limit native admission must not invoke the provider"
+            );
             assert!(
                 i.take_layout_frames().iter().any(|f| f.raw),
                 "positive control: above 1 MiB uses exact raw fallback"
