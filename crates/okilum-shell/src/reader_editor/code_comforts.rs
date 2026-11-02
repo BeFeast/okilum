@@ -233,12 +233,12 @@ pub(super) fn typed(
     selection: Range<usize>,
     ch: char,
 ) -> Option<TypedEdit> {
-    // Template quotes belong to JS/TS. In other languages a backtick is
-    // literal syntax, not a guessed string delimiter.
+    // JS/TS template strings and Go raw strings use backtick delimiters.
+    // In other languages backticks remain literal, not a guessed string.
     if ch == '`'
         && !matches!(
             block.language.as_deref(),
-            Some("javascript" | "typescript" | "tsx")
+            Some("javascript" | "typescript" | "tsx" | "go")
         )
     {
         return None;
@@ -267,9 +267,12 @@ pub(super) fn typed(
         edits: Vec::new(),
         selection: at + width..at + width,
     };
-    // An escaped character is literal: no pair, no type-over.
+    // Go raw strings have no escape sequences: a backslash before their
+    // closing backtick must not prevent type-over. Other quotes/pairs keep
+    // their existing escape handling.
     let backslashes = before.chars().rev().take_while(|&c| c == '\\').count();
-    if backslashes % 2 == 1 {
+    let raw_go_quote = ch == '`' && block.language.as_deref() == Some("go");
+    if backslashes % 2 == 1 && !raw_go_quote {
         return None;
     }
     if matches!(ch, ')' | ']' | '}') {
@@ -915,6 +918,85 @@ mod tests {
         assert!(note.reader.read_with(visual, |r, _| {
             r.editing.as_ref().unwrap().live_preview.enabled
         }));
+    }
+
+    fn go_raw_strings_in(note: &Note, visual: &mut VisualTestContext) {
+        set(note, visual, "```go\nvalue := |;\n```");
+        typed(visual, "`");
+        assert_eq!(shown(note, visual), "```go\nvalue := `|`;\n```");
+        undo(visual);
+        assert_eq!(
+            shown(note, visual),
+            "```go\nvalue := |;\n```",
+            "one Undo removes both delimiters"
+        );
+        redo(visual);
+        assert_eq!(shown(note, visual), "```go\nvalue := `|`;\n```");
+        typed(visual, "日");
+        typed(visual, "`");
+        assert_eq!(
+            shown(note, visual),
+            "```go\nvalue := `日`|;\n```",
+            "raw quote type-over"
+        );
+
+        set(note, visual, "```go\r\nvalue := [first\r\nsecond]\r\n```");
+        typed(visual, "`");
+        assert_eq!(
+            shown(note, visual),
+            "```go\r\nvalue := `[first\r\nsecond]`\r\n```",
+            "multiline raw string keeps CRLF and selection"
+        );
+        undo(visual);
+        assert_eq!(
+            shown(note, visual),
+            "```go\r\nvalue := [first\r\nsecond]\r\n```"
+        );
+
+        // A raw path ending in a backslash still closes with one backtick.
+        set(note, visual, "```go\npath := `C:\\tmp\\|`;\n```");
+        typed(visual, "`");
+        assert_eq!(
+            shown(note, visual),
+            "```go\npath := `C:\\tmp\\`|;\n```",
+            "backslash does not escape a Go raw delimiter"
+        );
+        // The JS template-string escape policy remains different.
+        set(note, visual, "```js\npath = `C:\\tmp\\|`;\n```");
+        typed(visual, "`");
+        assert_eq!(
+            shown(note, visual),
+            "```js\npath = `C:\\tmp\\`|`;\n```",
+            "JS backslash still escapes the typed quote"
+        );
+        set(note, visual, "```bash\nvalue=|\n```");
+        typed(visual, "`");
+        assert_eq!(
+            shown(note, visual),
+            "```bash\nvalue=`|\n```",
+            "shell substitution is not a guessed raw string"
+        );
+    }
+
+    #[gpui::test]
+    fn go_raw_strings_pair_wrap_type_over_and_undo_in_source(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        go_raw_strings_in(&note, visual);
+    }
+
+    #[gpui::test]
+    fn go_raw_strings_pair_wrap_type_over_and_undo_in_live_preview(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        note.reader
+            .update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
+        visual.run_until_parked();
+        go_raw_strings_in(&note, visual);
+        assert!(note.reader.read_with(visual, |r, _| r
+            .editing
+            .as_ref()
+            .unwrap()
+            .live_preview
+            .enabled));
     }
 
     #[gpui::test]
