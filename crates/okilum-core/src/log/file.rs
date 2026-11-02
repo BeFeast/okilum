@@ -37,6 +37,9 @@ impl LogFile {
         LogSnapshot::mutable(&mut self.snapshot)?.set_regex(regex);
         Ok(self)
     }
+    pub fn retain_identity(&self) -> super::tail::IdentityLease {
+        super::tail::IdentityLease::new(self.handle.clone(), self.identity)
+    }
     pub fn identity(&self) -> super::tail::FileIdentity {
         self.identity
     }

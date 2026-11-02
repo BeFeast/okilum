@@ -83,30 +83,102 @@ fn follow_adds_new_members_appends_loaded_handles_and_never_reopens_known_identi
     assert!(excluded.files.is_empty());
 }
 #[test]
-fn follow_removal_replacement_and_truncation_pause_without_publishing_changed_identity() {
-    for action in ["remove", "replace", "truncate"] {
-        let f = Fixture::new();
-        let plan = f.plan();
-        let initial = plan.select(|_, _| {});
-        let mut session = Session::new(&initial).unwrap();
-        let a = f.vault.join("logs/a.log");
-        match action {
-            "remove" => fs::remove_file(&a).unwrap(),
-            "replace" => {
-                fs::rename(&a, f.vault.join("logs/a.log.1")).unwrap();
-                fs::write(&a, "replacement\n").unwrap();
-            }
-            _ => fs::write(&a, "x\n").unwrap(),
-        }
-        let error = session
-            .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(error.contains("retained"), "{action}: {error}");
-        assert_eq!(session.published[&0].snapshot.raw(0).unwrap(), b"first");
-        assert_eq!(session.published.len(), 1);
-    }
+fn follow_missing_retains_open_identity_then_continues_replacement_as_a_new_segment() {
+    let f = Fixture::new();
+    let plan = f.plan();
+    let initial = plan.select(|_, _| {});
+    let mut session = Session::new(&initial).unwrap();
+    let a = f.vault.join("logs/a.log");
+    fs::remove_file(&a).unwrap();
+    let missing = session
+        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
+        .unwrap();
+    assert!(missing.notice.unwrap().contains("missing"));
+    assert!(missing.sources.is_empty());
+    assert_eq!(session.published[&0].snapshot.raw(0).unwrap(), b"first");
+    fs::write(&a, "replacement\n").unwrap();
+    let update = session
+        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
+        .unwrap();
+    assert!(update.notice.unwrap().contains("Rotated"));
+    assert_eq!(session.published.len(), 2);
+    assert_eq!(session.published[&0].snapshot.raw(0).unwrap(), b"first");
+    assert_eq!(
+        session.published[&1].snapshot.raw(0).unwrap(),
+        b"replacement"
+    );
+}
+#[test]
+fn follow_rotation_keeps_late_old_descriptor_writes_and_does_not_duplicate_the_moved_inode() {
+    use std::io::Write;
+    let f = Fixture::new();
+    fs::write(
+        &f.path,
+        r#"{"version":1,"name":"Follow","glob":"logs/**","vault_root":true}"#,
+    )
+    .unwrap();
+    let plan = f.plan();
+    let initial = plan.select(|_, _| {});
+    let mut session = Session::new(&initial).unwrap();
+    let a = f.vault.join("logs/a.log");
+    let mut old_writer = fs::OpenOptions::new().append(true).open(&a).unwrap();
+    fs::rename(&a, f.vault.join("logs/a.log.1")).unwrap();
+    old_writer.write_all(b"late before observation\n").unwrap();
+    fs::write(&a, "replacement\n").unwrap();
+    let update = session
+        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
+        .unwrap();
+    assert!(update.notice.unwrap().contains("unobserved gaps"));
+    assert_eq!(session.published.len(), 2);
+    assert_eq!(session.known.len(), 2);
+    assert_eq!(session.published[&0].label, Some("before rotation"));
+    assert_eq!(
+        session.published[&0].snapshot.raw(1).unwrap(),
+        b"late before observation"
+    );
+    old_writer.write_all(b"late after observation\n").unwrap();
+    let update = session
+        .refresh(&plan, &f.change("logs/a.log.1"), &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(update.sources.len(), 1);
+    assert_eq!(update.sources[0].slot, 0);
+    assert_eq!(
+        update.sources[0].snapshot.raw(2).unwrap(),
+        b"late after observation"
+    );
+    assert_eq!(
+        session.published.len(),
+        2,
+        "renamed old inode must not become another source"
+    );
+}
+#[test]
+fn follow_copytruncate_preserves_earlier_logical_epoch_and_coalesces_exact_archive_bytes() {
+    let f = Fixture::new();
+    fs::write(
+        &f.path,
+        r#"{"version":1,"name":"Follow","glob":"logs/**","vault_root":true}"#,
+    )
+    .unwrap();
+    let plan = f.plan();
+    let initial = plan.select(|_, _| {});
+    let mut session = Session::new(&initial).unwrap();
+    let a = f.vault.join("logs/a.log");
+    fs::copy(&a, f.vault.join("logs/a.log.1")).unwrap();
+    fs::write(&a, "x\n").unwrap();
+    let update = session
+        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
+        .unwrap();
+    assert!(update.notice.unwrap().contains("coalesced"));
+    assert_eq!(session.published.len(), 2);
+    assert_eq!(session.aliases.len(), 1);
+    assert!(
+        session.retired[0].tail.is_none(),
+        "truncated live inode must not also be read as its earlier epoch"
+    );
+    assert_eq!(session.published[&0].label, Some("before truncation"));
+    assert_eq!(session.published[&0].snapshot.raw(0).unwrap(), b"first");
+    assert_eq!(session.published[&1].snapshot.raw(0).unwrap(), b"x");
 }
 #[test]
 fn follow_lost_coverage_cancel_and_empty_events_keep_last_successful_snapshot() {
@@ -183,4 +255,227 @@ fn follow_drains_bounded_append_backlog_without_requiring_another_event_or_membe
         "catch-up must not repeat membership discovery"
     );
     assert_eq!(second.sources[0].snapshot.bytes(), bytes);
+}
+
+#[test]
+fn follow_replacement_waits_for_real_query_and_time_membership_before_admission() {
+    use std::io::Write;
+    let f = Fixture::new();
+    fs::write(&f.path, r#"{"version":1,"name":"Follow","glob":"logs/**","vault_root":true,"query":"message=keep","time":{"absolute":{"start":0,"end":2000000000}}}"#).unwrap();
+    let a = f.vault.join("logs/a.log");
+    fs::write(
+        &a,
+        "{\"time\":\"1970-01-01T00:00:01Z\",\"message\":\"keep\"}\n",
+    )
+    .unwrap();
+    let plan = f.plan();
+    let initial = plan.select(|_, _| {});
+    assert_eq!(
+        initial.files.len(),
+        1,
+        "positive control: original meets both frozen criteria"
+    );
+    let mut session = Session::new(&initial).unwrap();
+    fs::rename(&a, f.vault.join("logs/a.log.1")).unwrap();
+    fs::write(
+        &a,
+        "{\"time\":\"1970-01-01T00:00:03Z\",\"message\":\"skip\"}\n",
+    )
+    .unwrap();
+    let update = session
+        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
+        .unwrap();
+    assert!(update.notice.unwrap().contains("query/time"));
+    assert_eq!(session.published.len(), 1);
+    assert!(session.active[0].slot.is_none());
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&a)
+        .unwrap()
+        .write_all(b"{\"time\":\"1970-01-01T00:00:02Z\",\"message\":\"keep\"}\n")
+        .unwrap();
+    let update = session
+        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(update.sources.len(), 1);
+    assert_eq!(update.sources[0].slot, 1);
+    assert_eq!(
+        update.sources[0].snapshot.index().len(),
+        2,
+        "file-level membership admits the whole observed file"
+    );
+    assert!(session.active[0].slot.is_some());
+}
+
+#[test]
+fn follow_changed_observed_prefix_refuses_publication_and_retains_history() {
+    let f = Fixture::new();
+    let plan = f.plan();
+    let initial = plan.select(|_, _| {});
+    let mut session = Session::new(&initial).unwrap();
+    let altered = f.vault.join("logs/altered.log");
+    fs::write(&altered, "unrelated\n").unwrap();
+    let snapshot = LogFile::open(&altered).unwrap().snapshot();
+    let mut updates = Vec::new();
+    assert!(session
+        .stage(
+            Some(0),
+            &f.vault.join("logs/a.log"),
+            snapshot,
+            Some("before rotation"),
+            &plan,
+            &mut updates
+        )
+        .is_err());
+    assert!(updates.is_empty());
+    assert_eq!(session.published[&0].snapshot.raw(0).unwrap(), b"first");
+}
+
+#[test]
+fn follow_history_bounds_are_terminal_without_dropping_accepted_epochs() {
+    let f = Fixture::new();
+    let plan = f.plan();
+    let initial = plan.select(|_, _| {});
+    let mut session = Session::new(&initial).unwrap();
+    let a = f.vault.join("logs/a.log");
+    // This is the receiver's last successful receipt, not unpublished worker
+    // state. The shared lease bound is allowed to stop before the 128-slot cap.
+    let mut receipt = session.published.clone();
+    let mut accepted = 0;
+    let mut terminal = false;
+    for epoch in 1..=MAX_FILES {
+        fs::write(&a, format!("epoch {epoch:04}\n")).unwrap();
+        match session.refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false)) {
+            Ok(update) => {
+                for source in update.sources {
+                    receipt.insert(source.slot, source);
+                }
+                accepted += 1;
+                assert_eq!(
+                    receipt.len(),
+                    accepted + 1,
+                    "every accepted epoch remains represented"
+                );
+                assert!(receipt.len() <= MAX_FILES);
+                assert_eq!(receipt[&0].snapshot.raw(0).unwrap(), b"first");
+                for earlier in 1..=accepted {
+                    assert_eq!(
+                        receipt[&earlier].snapshot.raw(0).unwrap(),
+                        format!("epoch {earlier:04}").as_bytes()
+                    );
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let budget = error.is::<okilum_core::log::window_budget::BudgetBusy>();
+                assert!(
+                    budget
+                        || message.contains("Follow memory bound")
+                        || message.contains("retained segment limit")
+                        || message.contains("rotation lifetime bound"),
+                    "unexpected failure: {message}"
+                );
+                terminal = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        accepted > 0,
+        "positive control: real epochs must be admitted before testing retention at the bound"
+    );
+    assert!(
+        terminal,
+        "a finite shared-memory/segment bound must stop this run"
+    );
+    assert!(receipt.len() <= MAX_FILES);
+    assert_eq!(receipt[&0].snapshot.raw(0).unwrap(), b"first");
+}
+
+#[test]
+fn follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias() {
+    let f = Fixture::new();
+    fs::write(
+        &f.path,
+        r#"{"version":1,"name":"Follow","glob":"logs/**","vault_root":true}"#,
+    )
+    .unwrap();
+    let plan = f.plan();
+    let initial = plan.select(|_, _| {});
+    let mut session = Session::new(&initial).unwrap();
+    let a = f.vault.join("logs/a.log");
+    fs::rename(&a, f.vault.join("logs/a.log.1")).unwrap();
+    fs::write(&a, "replacement\n").unwrap();
+    session
+        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
+        .unwrap();
+    let archive = f.vault.join("logs/a.log.1.gz");
+    fs::write(
+        &archive,
+        [
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 75, 203, 44, 42, 46, 225, 2, 0, 42, 179, 74, 199, 6,
+            0, 0, 0,
+        ],
+    )
+    .unwrap();
+    let update = session
+        .refresh(&plan, &f.change("logs/a.log.1.gz"), &AtomicBool::new(false))
+        .unwrap();
+    assert!(update.notice.unwrap().contains("coalesced"));
+    assert!(update.sources.is_empty());
+    assert_eq!(session.published.len(), 2);
+    assert_eq!(session.aliases.len(), 1);
+    assert!(update
+        .candidates
+        .unwrap()
+        .iter()
+        .any(|c| c.path == archive && c.reason == Reason::DuplicateSource));
+}
+
+#[test]
+fn follow_discovery_race_defers_replacement_to_its_existing_session_even_with_replayed_bytes() {
+    let f = Fixture::new();
+    fs::write(
+        &f.path,
+        r#"{"version":1,"name":"Follow","glob":"logs/**","vault_root":true}"#,
+    )
+    .unwrap();
+    let plan = f.plan();
+    let initial = plan.select(|_, _| {});
+    let mut session = Session::new(&initial).unwrap();
+    let a = f.vault.join("logs/a.log");
+    fs::rename(&a, f.vault.join("logs/a.log.1")).unwrap();
+    fs::write(&a, "second epoch\n").unwrap();
+    session
+        .refresh(&plan, &f.change("logs/a.log"), &AtomicBool::new(false))
+        .unwrap();
+    // Model creation between the tail-read phase and discovery, without a
+    // timing-dependent thread or real watcher.
+    fs::rename(&a, f.vault.join("logs/a.log.2")).unwrap();
+    fs::write(&a, "first\n").unwrap();
+    let mut discovered = plan.select_excluding(&session.known, |_, _| {});
+    assert_eq!(discovered.files.len(), 1);
+    let mut sources = Vec::new();
+    let mut notices = Vec::new();
+    assert!(session
+        .discover(
+            &discovered.files,
+            &mut discovered.candidates,
+            &mut sources,
+            &mut notices
+        )
+        .unwrap());
+    assert!(sources.is_empty() && session.aliases.is_empty());
+    assert_eq!(session.active.len(), 1);
+    let update = session
+        .refresh(&plan, &[], &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(session.published.len(), 3);
+    assert_eq!(session.active.len(), 1);
+    assert_eq!(session.published[&2].snapshot.raw(0).unwrap(), b"first");
+    assert!(update.notice.unwrap().contains("Rotated"));
+    assert!(
+        session.aliases.is_empty(),
+        "a live replayed epoch is not an archive alias"
+    );
 }

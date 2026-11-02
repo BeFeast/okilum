@@ -85,6 +85,23 @@ pub struct FileIdentity {
     device: u64,
     index: u64,
 }
+/// Keeps a physical identity alive while observed history still refers to it.
+/// This also prevents inode/file-index reuse from hiding a new source.
+pub struct IdentityLease {
+    file: Arc<File>,
+    id: FileIdentity,
+}
+impl IdentityLease {
+    pub(super) fn new(file: Arc<File>, id: FileIdentity) -> Self {
+        Self { file, id }
+    }
+    pub fn identity(&self) -> FileIdentity {
+        self.id
+    }
+    pub fn tail(&self, path: &Path, snapshot: Arc<LogSnapshot>) -> Result<LogTail> {
+        LogTail::from_snapshot(path, self.file.clone(), snapshot)
+    }
+}
 pub struct PollRequest {
     generation: u64,
     path: PathBuf,
@@ -176,13 +193,15 @@ impl LogTail {
             !file.is_compressed(),
             "Compressed logs remain immutable snapshots"
         );
-        let handle = file.handle.clone();
-        let snapshot = file.snapshot();
+        Self::from_snapshot(file.path(), file.handle.clone(), file.snapshot())
+    }
+    fn from_snapshot(path: &Path, handle: Arc<File>, snapshot: Arc<LogSnapshot>) -> Result<Self> {
+        let id = identity(&handle)?;
         let guard = snapshot_guard(&handle, &snapshot)?;
         Ok(Self {
-            path: file.path().to_owned(),
+            path: path.to_owned(),
             file: handle,
-            id: file.identity(),
+            id,
             snapshot,
             guard,
             missing: false,
@@ -192,6 +211,9 @@ impl LogTail {
             last_poll: Some(Instant::now()),
             skip_partial: false,
         })
+    }
+    pub fn retain_identity(&self) -> IdentityLease {
+        IdentityLease::new(self.file.clone(), self.id)
     }
     pub fn identity(&self) -> FileIdentity {
         self.id
@@ -374,14 +396,23 @@ impl LogTail {
 }
 impl PollRequest {
     pub fn read(self) -> Result<PollRead> {
-        self.read_policy(true)
+        self.read_policy(true, true)
     }
     /// Read only the already-open identity; never open a rotation replacement.
     pub fn read_pinned(self) -> Result<PollRead> {
-        self.read_policy(false)
+        self.read_policy(false, true)
     }
-    fn read_policy(self, allow_replacement: bool) -> Result<PollRead> {
-        let at_path = path_identity(&self.path).context("The log file cannot be inspected")?;
+    /// Read only the retained descriptor, without following its former name.
+    /// Used for late writes to an observed pre-rotation segment.
+    pub fn read_open_identity(self) -> Result<PollRead> {
+        self.read_policy(false, false)
+    }
+    fn read_policy(self, allow_replacement: bool, inspect_path: bool) -> Result<PollRead> {
+        let at_path = if inspect_path {
+            path_identity(&self.path).context("The log file cannot be inspected")?
+        } else {
+            Some(self.id)
+        };
         ensure!(
             allow_replacement || at_path == Some(self.id),
             "Source removed or replaced; pinned Follow requires explicit reopen"
@@ -654,6 +685,7 @@ mod loaded_tests {
             tail.begin_poll().read_pinned().is_err(),
             "pinned mode must reject the new pathname identity before reading it"
         );
+        let old_identity = tail.retain_identity();
         let TailEvent::Reset {
             reason: ResetReason::Rotated,
             previous,
@@ -665,5 +697,19 @@ mod loaded_tests {
         assert_eq!(previous.raw(0).unwrap(), b"original");
         assert_eq!(tail.raw(0).unwrap(), b"replacement");
         assert_ne!(tail.identity(), loaded.identity());
+        let mut retained = old_identity.tail(&path, previous.snapshot()).unwrap();
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("app.log.1"))
+            .unwrap()
+            .write_all(b"late old write\n")
+            .unwrap();
+        assert!(retained.begin_poll().read_pinned().is_err());
+        let read = retained.begin_poll().read_open_identity().unwrap();
+        assert!(matches!(retained.apply(read), TailEvent::Appended { .. }));
+        assert_eq!(retained.raw(0).unwrap(), b"original");
+        assert_eq!(retained.raw(1).unwrap(), b"late old write");
+        assert_eq!(tail.raw(0).unwrap(), b"replacement");
     }
 }

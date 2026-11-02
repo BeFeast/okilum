@@ -433,7 +433,7 @@ impl Panel {
                     selection.checked,
                     grouped(selection.bytes_checked),
                     if watching && self.following {
-                        " · Following additions/appends; rotations require Rescan"
+                        " · Following observed appends/rotations; unobserved gaps are not ruled out"
                     } else if watching {
                         " · Watching for source changes"
                     } else {
@@ -463,7 +463,7 @@ impl Panel {
                 if let Some(candidates) = update.candidates {
                     self.candidates = candidates;
                 }
-                self.message = "Following additions/appends · Frozen run criteria · Rotation/removal/window gaps pause with history retained".into();
+                self.message = update.notice.unwrap_or_else(|| "Following observed appends/rotations · Frozen run criteria · Unobserved gaps are not ruled out".into());
             }
             worker::Frame::Invalidated(message, error) => {
                 self.message = message;
@@ -544,6 +544,7 @@ impl Panel {
                     State::Held(Arc::new(HeldSource {
                         path: first.path,
                         snapshot: first.snapshot,
+                        label: first.label,
                     })),
                     window,
                     cx,
@@ -563,6 +564,7 @@ impl Panel {
                 let held = Arc::new(HeldSource {
                     path: source.path,
                     snapshot: source.snapshot,
+                    label: source.label,
                 });
                 if source.slot == 0 {
                     view.state = State::Held(held);
@@ -600,7 +602,7 @@ fn reason(reason: &Reason) -> String {
         Reason::NameMismatch => "Glob does not match",
         Reason::RotationMismatch => "Different rotation family",
         Reason::OutsideRoot => "Outside source root",
-        Reason::DuplicateSource => "Already selected source identity",
+        Reason::DuplicateSource => "Already represented source",
         Reason::NoTimestamps => "No timestamps for this time criterion",
         Reason::OutsideTimeRange => "Outside time window",
         Reason::NoMatchingRecord => "Query did not match this file",
@@ -671,7 +673,7 @@ impl Render for Panel {
                 .when(self.time == model::TimeMode::Absolute, |row| row.child(div().flex_1().child(Input::new(&self.from).small().disabled(disabled))).child(div().flex_1().child(Input::new(&self.to).small().disabled(disabled)))))
             .child(h_flex().gap_2().items_center()
                 .child(Button::new("virtual-watch").small().ghost().label("Watch changes").selected(self.watch).disabled(disabled).tooltip("Keep the snapshot and request an explicit Rescan when files change").on_click(cx.listener(|this, _, _, cx| { this.watch = !this.watch; if this.watch { this.following = false; } cx.notify(); })))
-                .child(Button::new("virtual-follow").debug_selector(|| "virtual-follow".into()).small().ghost().label("Follow additions + appends").selected(self.following).disabled(disabled).tooltip("Opt in, then Start. Existing uncompressed identities keep their tail sessions; rotation, removal, uncertain coverage or record-window changes pause with history retained. Gap-free rotation is not established.").on_click(cx.listener(|this, _, _, cx| { this.following = !this.following; if this.following { this.watch = false; } cx.notify(); })))
+                .child(Button::new("virtual-follow").debug_selector(|| "virtual-follow".into()).small().ghost().label("Follow").selected(self.following).disabled(disabled).tooltip("Opt in, then Start. Preserve observed uncompressed rotation/truncation segments and marks; wait on missing paths. Ambiguous identities, record-window changes or lost coverage pause with history retained. Gap-free continuity is not established.").on_click(cx.listener(|this, _, _, cx| { this.following = !this.following; if this.following { this.watch = false; } cx.notify(); })))
                 .child(Button::new("virtual-copy").small().ghost().label("Copy definition").disabled(self.loaded.is_none() || disabled).on_click(cx.listener(|this, _, _, cx| {
                     match this.definition(cx).and_then(|definition| Ok(serde_json::to_string_pretty(&definition)?)) {
                         Ok(source) => cx.write_to_clipboard(ClipboardItem::new_string(source)), Err(error) => { this.error = true; this.message = error.to_string(); cx.notify(); }
@@ -683,7 +685,7 @@ impl Render for Panel {
                 .child(Button::new("virtual-stop").debug_selector(|| "virtual-stop".into()).small().label("Stop").disabled(!self.active || self.stopping).on_click(cx.listener(|this, _, _, cx| this.stop(cx))))
                 .child(Button::new("virtual-details").small().ghost().label(format!("Sources ({})", self.candidates.len())).selected(self.details).on_click(cx.listener(|this, _, _, cx| { this.details = !this.details; cx.notify(); }))))
             .child(div().id("virtual-status").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(if self.error { brand::palette(cx).danger } else { cx.theme().muted_foreground }).child(self.message.clone()))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Criteria select whole files; all records of selected files are merged. Save explicitly updates the original definition with revision checks and History. Changes require an explicit Rescan; Follow additions/appends is explicit opt-in. Rotation/removal or uncertain coverage pauses with retained history; Rescan is explicit."));
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Criteria select whole files; all records of selected files are merged. Save explicitly updates the original definition with revision checks and History. Changes require an explicit Rescan; Follow is explicit opt-in. Observed rotation/truncation history is retained; unobserved gaps are not ruled out. Ambiguity, changed record windows or lost coverage require explicit Rescan."));
         if let Some(error) = &self.save_error {
             controls = controls.child(div().text_sm().text_color(brand::palette(cx).danger).child(
                 format!("Save unavailable: {error}. Session Start remains available. To review Source, use the original document in Reader (close a standalone Virtual logs window first)."),
@@ -754,15 +756,18 @@ impl Render for Panel {
             })
             .child(controls);
         body = if let Some(view) = &self.view {
-            body.child(
-                div()
-                    .text_sm()
-                    .px_3()
-                    .child(format!("Snapshot · {}", self.applied_name)),
-            )
+            body.child(div().text_sm().px_3().child(format!(
+                "{} · {}",
+                if self.following {
+                    "Observed log"
+                } else {
+                    "Snapshot"
+                },
+                self.applied_name
+            )))
             .child(div().flex_1().min_h_0().child(view.clone()))
         } else {
-            body.child(div().flex_1().p_4().child("No selected log rows. Open a saved .okilog definition and Start; source files are read-only."))
+            body.child(div().flex_1().p_4().child(if self.active && self.following { "No matching sources yet. Follow is waiting for files that meet the frozen criteria." } else { "No selected log rows. Open a saved .okilog definition and Start; source files are read-only." }))
         };
         body
     }

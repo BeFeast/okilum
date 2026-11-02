@@ -188,6 +188,7 @@ impl SelectionPlan {
             decoded_bytes_checked: 0,
         };
         let mut selected_paths = std::collections::HashSet::new();
+        let mut represented = retained.clone();
         let mut entries = walkdir::WalkDir::new(&self.root)
             .follow_links(false)
             .sort_by_file_name()
@@ -236,11 +237,13 @@ impl SelectionPlan {
                     Ok(canonical) if selected_paths.contains(&canonical) => Reason::DuplicateSource,
                     Ok(canonical) => {
                         let reason = match super::tail::path_identity(&path) {
-                            Ok(Some(id)) if retained.contains(&id) => Reason::DuplicateSource,
-                            Ok(_) => self.check(&path, retained, &mut result, &mut progress),
+                            Ok(Some(id)) if represented.contains(&id) => Reason::DuplicateSource,
+                            Ok(_) => self.check(&path, &represented, &mut result, &mut progress),
                             Err(error) => Reason::Unreadable(error.to_string()),
                         };
                         if reason == Reason::Matched {
+                            represented
+                                .insert(result.files.last().expect("matched file").identity());
                             selected_paths.insert(canonical);
                         }
                         reason
@@ -290,12 +293,24 @@ impl SelectionPlan {
         {
             return Reason::SizeLimit;
         }
-        let window = file.window();
+        let reason = self.snapshot_reason(&file.snapshot());
+        if reason != Reason::Matched {
+            return reason;
+        }
+        result.files.push(file);
+        Reason::Matched
+    }
+    /// Evaluate existing observed bytes without reopening their pathname.
+    pub fn snapshot_reason(&self, snapshot: &super::LogSnapshot) -> Reason {
+        if snapshot.bytes().len() as u64 > MAX_FILE_BYTES {
+            return Reason::SizeLimit;
+        }
+        let window = snapshot.window();
         if window.tail || window.oversized {
             return Reason::IncompleteWindow;
         }
         if let Some((start, end)) = self.range {
-            let mut timestamps = file
+            let mut timestamps = snapshot
                 .index()
                 .entries()
                 .iter()
@@ -311,13 +326,22 @@ impl SelectionPlan {
             }
         }
         if let Some(query) = &self.query {
-            if !file.index().entries().iter().enumerate().any(|(i, entry)| {
-                query.matches_indexed_line(entry, file.raw(i).unwrap_or_default(), file.index())
-            }) {
+            if !snapshot
+                .index()
+                .entries()
+                .iter()
+                .enumerate()
+                .any(|(i, entry)| {
+                    query.matches_indexed_line(
+                        entry,
+                        snapshot.raw(i).unwrap_or_default(),
+                        snapshot.index(),
+                    )
+                })
+            {
                 return Reason::NoMatchingRecord;
             }
         }
-        result.files.push(file);
         Reason::Matched
     }
 }
@@ -328,7 +352,8 @@ fn finish(mut result: Selection) -> Selection {
     result
 }
 
-fn rotation_matches(path: &Path, base: &str) -> bool {
+/// Whether a path belongs to the explicitly named rotation family.
+pub fn rotation_matches(path: &Path, base: &str) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
