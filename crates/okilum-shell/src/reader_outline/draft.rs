@@ -1,4 +1,5 @@
 use okilum_core::document_links::{HeadingEntry, HeadingInventory};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Comrak remains the sole authority for container boundaries and references.
 /// The existing cache handles ordinary notes and ambiguous container revisions.
@@ -12,11 +13,13 @@ struct ContainerReferences {
     source: String,
     sections: Vec<ReferenceSection>,
     environment: String,
+    dependencies: CanonicalDependencies,
 }
 
 struct ReferenceSection {
     source: String,
     heading: Option<HeadingEntry>,
+    probes: Option<BTreeSet<String>>,
 }
 
 const REFERENCE_BOUNDARY: &str = "# Okilum outline reference boundary\n\n";
@@ -67,7 +70,7 @@ impl DraftCache {
 impl ContainerReferences {
     fn new(source: &str, parse: &mut impl FnMut(&str) -> Vec<HeadingEntry>) -> Option<Self> {
         let entries = parse(source);
-        let sections = reference_sections(source, entries)?;
+        let mut sections = reference_sections(source, entries)?;
         let environment = reference_environment(sections.iter().map(|s| s.source.as_str()))?;
         // Cold admission compares every reference-capable root heading with
         // the canonical whole-document result. A partial environment or an
@@ -81,10 +84,21 @@ impl ContainerReferences {
                 }
             }
         }
+        let mut dependencies = CanonicalDependencies::default();
+        for section in &mut sections {
+            section.discover_probes(&environment)?;
+        }
+        dependencies.refresh(
+            &environment,
+            sections.iter().map(|s| s.source.as_str()),
+            &sections,
+            parse,
+        )?;
         Some(Self {
             source: source.into(),
             sections,
             environment,
+            dependencies,
         })
     }
 
@@ -174,38 +188,240 @@ impl ContainerReferences {
             .filter(|h| h.target.offset < dirty.len())
             .collect();
         let mut middle = reference_sections(dirty, dirty_entries)?;
+        let known_headers = self
+            .sections
+            .iter()
+            .filter_map(|s| {
+                s.probes
+                    .as_ref()
+                    .map(|probes| (s.header().to_owned(), probes.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        // These are the same parser-certified source chunks that constructed
+        // the environment above, including the canonical dirty container span.
+        let definition_sources = self.sections[..start_index]
+            .iter()
+            .map(|s| s.source.clone())
+            .chain(std::iter::once(dirty.to_owned()))
+            .chain(self.sections[end_index..].iter().map(|s| s.source.clone()))
+            .collect::<Vec<_>>();
         let mut sections = self.sections;
         let suffix_sections = sections.split_off(end_index);
         sections.truncate(start_index);
         sections.append(&mut middle);
         sections.extend(suffix_sections);
-        if environment != self.environment {
-            // Reference-capable headings depend on the ordered definition
-            // containers. Reparse those headers; ordinary headings and the
-            // shifted authored suffix retain their exact cached coordinates.
-            for section in &mut sections {
-                if section.header_references() {
-                    let mut parsed = reference_fragment(&environment, section.header(), parse)?;
-                    if parsed.len() != 1
-                        || parsed[0].target.offset != 0
-                        || !parsed[0].supported_container
-                        || parsed[0].target.setext
-                    {
-                        return None;
-                    }
-                    section.heading = parsed.pop();
-                }
+        for section in &mut sections {
+            if section.probes.is_none() {
+                section.probes = known_headers.get(section.header()).cloned();
+                section.discover_probes(&environment)?;
             }
+        }
+        let mut dependencies = self.dependencies;
+        let affected = dependencies.refresh(
+            &environment,
+            definition_sources.iter().map(String::as_str),
+            &sections,
+            parse,
+        )?;
+        for section in &mut sections {
+            if section.probes.as_ref()?.is_disjoint(&affected) {
+                continue;
+            }
+            let mut parsed = reference_fragment(&environment, section.header(), parse)?;
+            if parsed.len() != 1
+                || parsed[0].target.offset != 0
+                || !parsed[0].supported_container
+                || parsed[0].target.setext
+            {
+                return None;
+            }
+            section.heading = parsed.pop();
         }
         Some(Self {
             source: source.into(),
             sections,
             environment,
+            dependencies,
         })
     }
 }
 
+/// Keys are exact authored link spans certified by the existing Comrak-backed
+/// link API. No label normalization, definition grammar or binding is inferred.
+#[derive(Default)]
+struct CanonicalDependencies {
+    containers: BTreeMap<String, BTreeMap<String, Option<ReferenceBinding>>>,
+    global: BTreeMap<String, Option<ReferenceBinding>>,
+    contributions: BTreeMap<String, Vec<ReferenceBinding>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReferenceBinding {
+    target: String,
+    title: String,
+}
+
+impl CanonicalDependencies {
+    fn refresh<'a>(
+        &mut self,
+        environment: &str,
+        sources: impl Iterator<Item = &'a str>,
+        sections: &[ReferenceSection],
+        parse: &mut impl FnMut(&str) -> Vec<HeadingEntry>,
+    ) -> Option<BTreeSet<String>> {
+        let active = sections
+            .iter()
+            .flat_map(|s| s.probes.iter().flatten().cloned())
+            .collect::<BTreeSet<_>>();
+        let mut next = BTreeMap::new();
+        let mut ordered = Vec::new();
+        for source in sources.filter(|s| s.contains("]:")) {
+            ordered.push(source.to_owned());
+            if next.contains_key(source) {
+                continue;
+            }
+            let mut known = self.containers.remove(source).unwrap_or_default();
+            known.retain(|probe, _| active.contains(probe));
+            let missing = active
+                .iter()
+                .filter(|p| !known.contains_key(*p))
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if !missing.is_empty() {
+                let isolated = reference_environment(std::iter::once(source))?;
+                reference_fragment(&isolated, "", parse)?;
+                known.extend(canonical_probe_bindings(&isolated, &missing)?);
+            }
+            next.insert(source.to_owned(), known);
+        }
+        // Preserve parser-produced binding order and duplicates. A changed
+        // first definition or duplicate fallback must consult canonical Comrak.
+        let contributions = active
+            .iter()
+            .map(|probe| {
+                let bindings = ordered
+                    .iter()
+                    .filter_map(|key| next.get(key).and_then(|m| m.get(probe)).cloned().flatten())
+                    .collect::<Vec<_>>();
+                (probe.clone(), bindings)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let candidates = active
+            .iter()
+            .filter(|probe| {
+                self.contributions.get(*probe) != contributions.get(*probe)
+                    || !self.global.contains_key(*probe)
+            })
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let bindings = canonical_probe_bindings(environment, &candidates)?;
+        let affected = candidates
+            .iter()
+            .filter(|probe| self.global.get(*probe) != bindings.get(*probe))
+            .cloned()
+            .collect();
+        self.global.retain(|probe, _| active.contains(probe));
+        self.global.extend(bindings);
+        self.contributions = contributions;
+        self.containers = next;
+        Some(affected)
+    }
+}
+
+fn canonical_probe_bindings(
+    environment: &str,
+    probes: &BTreeSet<String>,
+) -> Option<BTreeMap<String, Option<ReferenceBinding>>> {
+    if probes.is_empty() {
+        return Some(BTreeMap::new());
+    }
+    let mut source = format!("{environment}{REFERENCE_BOUNDARY}");
+    let mut ranges = Vec::new();
+    for probe in probes {
+        // The prose prefix prevents a shortcut span from becoming a definition
+        // row when probed on its own. Authored UTF-8 bytes remain untouched.
+        source.push_str("Okilum probe ");
+        let start = source.len();
+        source.push_str(probe);
+        ranges.push((start..source.len(), probe));
+        source.push_str("\n\n");
+    }
+    let links = okilum_core::document_links::parse(&source);
+    let mut result = BTreeMap::new();
+    for (range, probe) in ranges {
+        let mut matched = links.iter().filter(|link| link.range == range);
+        let binding = if let Some(link) = matched.next() {
+            if !link.exact_range || link.wiki || matched.next().is_some() {
+                return None;
+            }
+            Some(ReferenceBinding {
+                target: link.target.clone(),
+                title: link.title.clone(),
+            })
+        } else {
+            if links
+                .iter()
+                .any(|link| link.range.start < range.end && link.range.end > range.start)
+            {
+                return None;
+            }
+            None
+        };
+        result.insert(probe.clone(), binding);
+    }
+    Some(result)
+}
+
+fn canonical_header_probes(environment: &str, header: &str) -> Option<BTreeSet<String>> {
+    if header.contains("![") {
+        return None;
+    }
+    let prefix = environment.len() + REFERENCE_BOUNDARY.len();
+    let source = format!("{environment}{REFERENCE_BOUNDARY}{header}");
+    let mut links = okilum_core::document_links::parse(&source)
+        .into_iter()
+        .filter(|link| link.range.start >= prefix)
+        .collect::<Vec<_>>();
+    links.sort_by_key(|link| link.range.start);
+    let mut spans = BTreeSet::new();
+    let mut offset = prefix;
+    for link in links {
+        if !link.exact_range || link.wiki || link.range.start < offset {
+            return None;
+        }
+        if source.get(offset..link.range.start)?.contains(['[', ']']) {
+            return None;
+        }
+        let authored = source.get(link.range.clone())?;
+        if authored.starts_with('[') {
+            spans.insert(authored.to_owned());
+        }
+        offset = link.range.end;
+    }
+    // Unresolved, escaped, image or otherwise unaccounted bracket syntax has
+    // no exact canonical dependency boundary: retain the full-parse fallback.
+    if source.get(offset..)?.contains(['[', ']']) {
+        return None;
+    }
+    let independent = canonical_probe_bindings("", &spans)?;
+    spans.retain(|probe| independent.get(probe) == Some(&None));
+    Some(spans)
+}
+
 impl ReferenceSection {
+    fn discover_probes(&mut self, environment: &str) -> Option<()> {
+        if self.probes.is_some() {
+            return Some(());
+        }
+        let probes = if self.header_references() {
+            canonical_header_probes(environment, self.header())?
+        } else {
+            BTreeSet::new()
+        };
+        self.probes = Some(probes);
+        Some(())
+    }
+
     fn header(&self) -> &str {
         if self.heading.is_none() {
             return "";
@@ -235,6 +451,7 @@ fn reference_sections(source: &str, entries: Vec<HeadingEntry>) -> Option<Vec<Re
             result.push(ReferenceSection {
                 source: source.get(start..end)?.into(),
                 heading,
+                probes: None,
             });
         }
         start = end;
@@ -245,6 +462,7 @@ fn reference_sections(source: &str, entries: Vec<HeadingEntry>) -> Option<Vec<Re
         result.push(ReferenceSection {
             source: source.get(start..)?.into(),
             heading,
+            probes: None,
         });
     }
     Some(result)
@@ -564,6 +782,125 @@ mod tests {
             assert!(
                 cache.containers.is_none(),
                 "unsupported ambiguity is not retained"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_label_bindings_reuse_unrelated_headings_and_follow_duplicate_fallback() {
+        let initial = "# Ω [A][a]\r\n\r\n# Ψ [B][b]\r\n\r\n# First definitions\r\n\r\n> [a]: /first\r\n> [unused]: /unused\r\n\r\n# Other definitions\r\n\r\n- [b]: /bee\r\n\r\n# Duplicate definitions\r\n\r\n- [a]: /fallback\r\n\r\n# Tail 🎯\r\n\r\n";
+        let mut cache = DraftCache::default();
+        let outline = draft_parity(&mut cache, initial);
+        assert_eq!(
+            outline.entries[0].text, "Ω A",
+            "positive control: canonical reference resolution"
+        );
+        assert_eq!(outline.entries[1].text, "Ψ B");
+        let edits = [
+            (
+                initial.replace("/unused", "/unrelated-edited"),
+                (0, 0),
+                Some("/first"),
+            ),
+            (
+                initial.replace("/first", "/changed-first"),
+                (1, 0),
+                Some("/changed-first"),
+            ),
+            (
+                initial
+                    .replace("/first", "/changed-first")
+                    .replace("/fallback", "/changed-shadow"),
+                (0, 0),
+                Some("/changed-first"),
+            ),
+            (
+                initial
+                    .replace("> [a]: /first\r\n", "")
+                    .replace("/fallback", "/changed-shadow"),
+                (1, 0),
+                Some("/changed-shadow"),
+            ),
+            (
+                initial
+                    .replace("> [a]: /first\r\n", "")
+                    .replace("- [a]: /fallback\r\n", ""),
+                (1, 0),
+                None,
+            ),
+            (
+                initial
+                    .replace("> [a]: /first\r\n", "")
+                    .replace("- [a]: /fallback", "- [a]: /restored"),
+                (1, 0),
+                Some("/restored"),
+            ),
+        ];
+        for (source, counts, target) in edits {
+            let mut calls = Vec::new();
+            let mut entries = cache.update_with(&source, &mut |input| {
+                calls.push(input.to_owned());
+                HeadingInventory::new(input).entries
+            });
+            let mut expected = HeadingInventory::new(&source)
+                .entries
+                .into_iter()
+                .filter(|h| h.supported_container)
+                .collect::<Vec<_>>();
+            entries.retain(|h| h.supported_container);
+            for inventory in [&mut entries, &mut expected] {
+                for (index, heading) in inventory.iter_mut().enumerate() {
+                    heading.target.block = index;
+                }
+            }
+            assert_eq!(
+                entries, expected,
+                "canonical UTF-8 authored offsets and heading parity"
+            );
+            let observed = (
+                calls
+                    .iter()
+                    .filter(|s| s.contains("# Ω [A][a]\r\n"))
+                    .count(),
+                calls
+                    .iter()
+                    .filter(|s| s.contains("# Ψ [B][b]\r\n"))
+                    .count(),
+            );
+            assert_eq!(
+                observed, counts,
+                "heading inventory refresh counts; unrelated B stays reused"
+            );
+            let state = cache
+                .containers
+                .as_ref()
+                .expect("positive control: actual incremental cache remains admitted");
+            assert_eq!(
+                state.dependencies.global["[A][a]"]
+                    .as_ref()
+                    .map(|b| b.target.as_str()),
+                target
+            );
+            assert_eq!(
+                state.dependencies.global["[B][b]"].as_ref().unwrap().target,
+                "/bee"
+            );
+            draft_parity(&mut cache, &source);
+        }
+    }
+
+    #[test]
+    fn unknown_dependency_spans_keep_canonical_full_fallback() {
+        for source in [
+            "# [Unresolved][missing]\n\n> [other]: /target\n\n",
+            "# Literal `[id]`\n\n> [id]: /target\n\n",
+            "# ![Image][id]\n\n> [id]: /target\n\n",
+        ] {
+            let mut cache = DraftCache::default();
+            draft_parity(&mut cache, source);
+            assert!(
+                cache.containers.is_none(),
+                "no exact canonical dependency boundary means fallback"
             );
         }
     }
