@@ -24,9 +24,11 @@ and open its PR there as usual. Agent checks supplement existing merge admission
 The standard public `ubuntu-24.04` runner has 4 vCPUs. The job records its CPU,
 memory and exact source SHA, verifies the pinned Rust toolchain and the complete
 gpui-kit/comrak patch trees, fetches public dependencies with the workspace lock,
-then runs the full `okilum-core` suite and `scripts/ci/check-linux.sh` with Cargo
-offline. Both test shells raise their soft nofile limit via `test-nofile.sh`.
-The Linux gate retains its existing conditional vendor workspace tests.
+then builds the Linux desktop/sync supervisor and runs the full `okilum-core`
+suite and `scripts/ci/linux-rust-tests.sh` with Cargo offline. These are the same
+Rust suites called by full Linux acceptance (`scripts/ci/check-linux.sh`); the
+nightly acceptance Python/packaging checks retain their existing scope. Both test shells raise their soft nofile limit via `test-nofile.sh`.
+The Linux Rust suites retain their existing conditional vendor workspace tests.
 
 Rust downloads and `target/` are cached with the toolchain, dependency/manifests,
 vendor patches and workflow configuration in the key. Each source SHA can save a

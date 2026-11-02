@@ -1,8 +1,11 @@
 """Controls for source-pinned hosted worker verdicts (no compiler or network)."""
 import copy
 import importlib.util
+import contextlib
+import io
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,8 +19,8 @@ def receipt():
     return {"headSha": SHA, "status": "completed", "conclusion": "success", "jobs": [
         {"name": "linux", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
-                "Prepare and verify pinned vendor and comrak",
-                "Run complete okilum-core suite offline", "Run full Linux gate offline")]}]}
+                "Prepare and verify pinned vendor and comrak", "Build Linux desktop offline",
+                "Run complete okilum-core suite offline", "Run Linux Rust suites offline")]}]}
 
 
 class VerdictTests(unittest.TestCase):
@@ -26,13 +29,13 @@ class VerdictTests(unittest.TestCase):
 
     def test_other_head_or_missing_tests_cannot_pass(self):
         self.assertEqual(helper.verdict(receipt(), "b" * 40), 75)
-        for index in range(3):
+        for index in range(4):
             data = receipt()
             data["jobs"][0]["steps"].pop(index)
             self.assertEqual(helper.verdict(data, SHA), 75)
 
     def test_failure_vs_infrastructure_and_cancelled(self):
-        for name, expected in (("Run full Linux gate offline", 1),
+        for name, expected in (("Run Linux Rust suites offline", 1),
                                ("Run complete okilum-core suite offline", 1),
                                ("Prepare and verify pinned vendor and comrak", 1),
                                ("Install system libraries", 75),
@@ -64,6 +67,65 @@ class VerdictTests(unittest.TestCase):
         for other in (ROOT / ".github/workflows").glob("*.yml"):
             if other.name != "agent-checks.yml":
                 self.assertNotIn("agent-checks/", other.read_text(), other.name)
+
+
+class HelperFlowTests(unittest.TestCase):
+    def test_discovery_rejects_another_source_workflow_branch_or_event(self):
+        good = dict(id=7, head_sha=SHA, head_branch="agent-checks/topic", event="push",
+                    path=".github/workflows/agent-checks.yml")
+        variants = [good]
+        for field, value in (("head_sha", "b" * 40), ("head_branch", "main"),
+                             ("event", "workflow_dispatch"), ("path", "ci.yml")):
+            variants.append({**good, field: value})
+        with patch.object(helper, "gh_json", return_value={"workflow_runs": variants}):
+            self.assertEqual(helper.find_run("agent-checks/topic", SHA, "push"), [good])
+
+    def git_output(self, *args):
+        if args[1:] == ("status", "--porcelain"):
+            return ""
+        if args[1:] == ("rev-parse", "HEAD"):
+            return SHA
+        if "symbolic-ref" in args:
+            return "topic"
+        if "ls-remote" in args:
+            return ""
+        raise AssertionError(args)
+
+    def test_rerun_waits_for_new_attempt_before_watch_and_verdict(self):
+        info = {**receipt(), "attempt": 2, "url": "https://github.com/run/7"}
+        replies = [{"attempt": 1}, {"attempt": 1, "status": "completed"},
+                   {"attempt": 2, "status": "queued"}, info]
+        with patch.object(helper.sys, "argv", ["gh-check", "--rerun"]), \
+                patch.object(helper, "output", side_effect=self.git_output), \
+                patch.object(helper, "run") as run, \
+                patch.object(helper, "find_run", return_value=[{"id": 7, "status": "completed"}]), \
+                patch.object(helper, "gh_json", side_effect=replies) as gh_json, \
+                patch.object(helper.time, "sleep") as sleep, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(helper.main(), 0)
+            self.assertEqual(gh_json.call_count, 4)
+            sleep.assert_called_once()
+            self.assertTrue(any(c.args[:3] == ("gh", "run", "watch") for c in run.call_args_list))
+            push = next(c.args for c in run.call_args_list if "push" in c.args)
+            self.assertIn("--force-with-lease=refs/heads/agent-checks/topic:", push)
+            self.assertIn(SHA + ":refs/heads/agent-checks/topic", push)
+
+    def test_dirty_worktree_never_pushes_or_reuses_a_green_result(self):
+        with patch.object(helper.sys, "argv", ["gh-check"]), \
+                patch.object(helper, "output", return_value=" M source.rs"), \
+                patch.object(helper, "run") as run, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(helper.main(), 75)
+            self.assertEqual(run.call_count, 1)  # repository existence only
+
+    def test_linux_suite_extraction_preserves_existing_acceptance_commands(self):
+        linux = (ROOT / "scripts/ci/check-linux.sh").read_text()
+        suites = (ROOT / "scripts/ci/linux-rust-tests.sh").read_text()
+        self.assertIn("python3 -m unittest discover -s scripts/ci", linux)
+        self.assertIn("bash scripts/ci/linux-rust-tests.sh", linux)
+        for command in ("cargo test -p okilum-appimage --all-features",
+                        "cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3",
+                        "bash scripts/ci/vendor-tests.sh",
+                        "cargo test -p okilum-core --no-default-features --test portable_reader"):
+            self.assertIn(command, suites)
 
 
 if __name__ == "__main__":

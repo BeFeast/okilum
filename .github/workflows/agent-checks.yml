@@ -69,16 +69,24 @@ jobs:
           cargo fetch --locked
           # vendor-tests.sh can test its independent workspace on patch changes.
           cargo fetch --manifest-path vendor/gpui-component/Cargo.toml
+      - name: Verify agent helper controls
+        run: python3 -m unittest discover -s scripts/ci -p test_agent_checks.py
+      - name: Build Linux desktop offline
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: |
+          cargo fmt --check
+          cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
       - name: Run complete okilum-core suite offline
         env:
           CARGO_NET_OFFLINE: 'true'
         run: |
           source scripts/ci/test-nofile.sh
           cargo test --offline --locked -p okilum-core
-      - name: Run full Linux gate offline
+      - name: Run Linux Rust suites offline
         env:
           CARGO_NET_OFFLINE: 'true'
-        run: tini -s -- bash scripts/ci/check-linux.sh
+        run: tini -s -- bash scripts/ci/linux-rust-tests.sh
       - name: Save Rust downloads and target cache
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
