@@ -127,7 +127,7 @@ pub(super) fn select(
     Ok(())
 }
 pub(super) fn check_destination(runtime: &Runtime, path: &Path) -> anyhow::Result<()> {
-    let path = path.canonicalize()?;
+    let path = destination::canonical_path(path)?;
     let selected = runtime
         .configs
         .first()
@@ -310,6 +310,48 @@ mod guided_tests {
             },
         )?;
         assert!(!called.get(), "unavailable inventory is not absence");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn sync_new_destination_overlap_is_checked_before_leaf_creation() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let other = root.path().join("other-vault");
+        std::fs::create_dir(&other)?;
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&other, &alias)?;
+        let runtime = Runtime {
+            configs: vec![root.path().join("selected.xml")],
+            choices: vec![],
+            inventory: Discovery {
+                unavailable: vec![],
+                candidates: vec![daemon::Candidate {
+                    identity: DaemonIdentity {
+                        config_file: root.path().join("other.xml"),
+                        device_id: "other".into(),
+                        certificate_hash: "other".into(),
+                    },
+                    folders: vec![("other".into(), other.clone())],
+                    version: "v2.1.6".into(),
+                }],
+            },
+        };
+        for path in [other.join("Notes"), alias.join("Notes")] {
+            assert!(check_destination(&runtime, &path).is_err());
+            assert!(!path.exists());
+        }
+        let free = root.path().join("Notes");
+        check_destination(&runtime, &free)?;
+        assert!(
+            !free.exists(),
+            "preflight does not create the proposed destination"
+        );
         Ok(())
     }
 }

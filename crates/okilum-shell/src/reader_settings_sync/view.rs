@@ -226,6 +226,21 @@ impl Render for SyncSettings {
                                     ),
                             ),
                     );
+                    if let Some((_, message)) = self
+                        .destination_error
+                        .as_ref()
+                        .filter(|(id, _)| id == &vault.id)
+                    {
+                        content = content.child(
+                            div()
+                                .id(("sync-destination-error", index))
+                                .debug_selector(move || {
+                                    format!("sync-destination-error-{index}").into()
+                                })
+                                .text_sm()
+                                .child(message.clone()),
+                        );
+                    }
                 }
                 content = content.child(div().text_sm().text_color(p.text_muted)
                     .child("An empty folder starts syncing automatically. A folder with existing files requires a lossless merge preview before Sync can start."));

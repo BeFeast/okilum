@@ -18,6 +18,8 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
         lifetime: Epoch::default(),
         error: None,
         awaiting_open: None,
+        pending_destination: None,
+        destination_error: None,
         receiving: false,
         scroll: ScrollHandle::new(),
     }
@@ -984,4 +986,129 @@ fn sync_network_external_connection_has_no_mutating_switch(cx: &mut TestAppConte
         visual.debug_bounds("sync-network-local-only").is_some(),
         "positive control: same rendered connection offers switch only when managed"
     );
+}
+
+#[gpui::test]
+fn sync_new_destination_picker_answer_during_refresh_is_not_dropped(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let root_dir = tempfile::tempdir().unwrap();
+    let peer = uuid::Uuid::new_v4();
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture(window, cx));
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    view.update(visual, |view, cx| {
+        view.choose_new_folder(peer, "notes".into(), "Notes", cx);
+        // The periodic Read can be in flight when the native dialog answers.
+        view.busy = true;
+    });
+    assert!(visual.did_prompt_for_new_path(), "production picker opened");
+    visual.simulate_new_path_selection(|_| Some(root_dir.path().join("Notes")));
+    visual.run_until_parked();
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "selection waits for current IO"
+    );
+    view.update(visual, |view, cx| {
+        view.busy = false;
+        view.run(Operation::Read, cx);
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["read", "other"],
+        "completion of Read must dispatch the accepted destination exactly once"
+    );
+    visual.update(|_, cx| cx.set_global(BackgroundSync(view.clone())));
+    view.update(visual, |view, cx| {
+        view.choose_new_folder(peer, "notes".into(), "Notes", cx);
+        view.busy = true;
+    });
+    assert!(visual.did_prompt_for_new_path());
+    visual.simulate_new_path_selection(|_| Some(root_dir.path().join("Revoked notes")));
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| {
+        assert!(view.pending_destination.is_some())
+    });
+    visual.update(|_, cx| reader_features::set_enabled(reader_features::Feature::Sync, false, cx));
+    view.read_with(visual, |view, _| {
+        assert!(view.pending_destination.is_none())
+    });
+    assert_eq!(*calls.lock().unwrap(), vec!["read", "other"]);
+    assert!(!root_dir.path().join("Revoked notes").exists());
+}
+
+#[gpui::test]
+fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    let peer = uuid::Uuid::new_v4();
+    let mut ready = snapshot(None);
+    ready.peers.push(direct::Peer {
+        id: peer,
+        name: "Source".into(),
+        device_id: "source".into(),
+    });
+    ready.catalog.push(direct::Vault {
+        id: "notes".into(),
+        label: "Notes".into(),
+    });
+    let controller = Controller::open(directory.path().join("state"), vec![]).unwrap();
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    cx.update(|cx| {
+        let calls = calls.clone();
+        cx.set_global(TestWorker(std::sync::Arc::new(move |operation| {
+            if let Operation::AttachNew(_, _, path) = operation {
+                calls.lock().unwrap().push("attach");
+                destination::prepare(&path)?;
+                anyhow::bail!("positive control: invalid destination unexpectedly accepted");
+            }
+            calls.lock().unwrap().push("read");
+            Ok(Output {
+                controller: controller.clone(),
+                snapshot: ready.clone(),
+                inspected: None,
+                selected_destination: None,
+                #[cfg(target_os = "linux")]
+                runtimes: vec![],
+                #[cfg(target_os = "linux")]
+                vaults: vec![],
+            })
+        })));
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.run(Operation::Read, cx);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual.run_until_parked();
+    let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
+    visual.simulate_click(pick.center(), Modifiers::default());
+    assert!(visual.did_prompt_for_new_path());
+    visual.simulate_new_path_selection(|_| Some(directory.path().join("absent/Notes")));
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec!["read", "attach"]);
+    assert!(visual.debug_bounds("sync-destination-error-0").is_some());
+    view.read_with(visual, |view, _| {
+        assert!(view.error.as_ref().unwrap().contains("local folder"));
+        assert!(!view.busy);
+        assert!(view.awaiting_open.is_none());
+    });
+    view.update(visual, |view, cx| view.run(Operation::Read, cx));
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("sync-destination-error-0").is_some(),
+        "refresh preserves actionable failure"
+    );
+    assert!(!directory.path().join("absent").exists());
 }
