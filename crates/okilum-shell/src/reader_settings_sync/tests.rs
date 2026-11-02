@@ -589,8 +589,13 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
             .unwrap()
     });
     let mut visual = VisualTestContext::from_window(settings, cx);
-    visual.update(|window, _| window.resize(size(px(700.), px(440.))));
+    visual.simulate_resize(size(px(700.), px(440.)));
     visual.run_until_parked();
+    assert_eq!(
+        visual.update(|window, _| window.viewport_size()),
+        size(px(700.), px(440.)),
+        "positive control: minimum viewport resize reached GPUI layout"
+    );
     let view = visual.update(|_, cx| cx.global::<BackgroundSync>().0.clone());
     view.update_in(&mut visual, |view, window, cx| {
         view.receiving = false;
