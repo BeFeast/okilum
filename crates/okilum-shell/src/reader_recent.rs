@@ -396,6 +396,18 @@ impl Reader {
                     .on_mouse_down_out(
                         cx.listener(|this, _, window, cx| this.close_recent_gallery(window, cx)),
                     )
+                    .capture_action(gallery::capture_arrow::<gpui_component::input::MoveLeft>(
+                        session.view.clone(), "left",
+                    ))
+                    .capture_action(gallery::capture_arrow::<gpui_component::input::MoveRight>(
+                        session.view.clone(), "right",
+                    ))
+                    .capture_action(gallery::capture_arrow::<gpui_component::input::MoveUp>(
+                        session.view.clone(), "up",
+                    ))
+                    .capture_action(gallery::capture_arrow::<gpui_component::input::MoveDown>(
+                        session.view.clone(), "down",
+                    ))
                     .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                         let key = event.keystroke.key.as_str();
                         let modifiers = event.keystroke.modifiers;
