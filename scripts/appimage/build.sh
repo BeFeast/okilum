@@ -48,13 +48,6 @@ fi
 echo 'APPIMAGE_STATIC_RUNTIME_PASS (dynamic shell positive control passed)'
 # Extraction mode avoids any FUSE requirement on the build runner.
 export APPIMAGE_EXTRACT_AND_RUN=1
-# Stage the checksum-pinned runtime and notices before assembling the AppImage.
-# An explicit local archive supports offline fixture/build inputs with the same pins.
-syncthing_bundle_args=(--appdir AppDir)
-if [[ -n "${OKILUM_SYNCTHING_ARCHIVE:-}" ]]; then
-    syncthing_bundle_args+=(--archive "$OKILUM_SYNCTHING_ARCHIVE")
-fi
-python3 ../../scripts/syncthing/linux_bundle.py "${syncthing_bundle_args[@]}"
 ./tools/linuxdeploy --appdir AppDir --executable ../../target/release/okilum \
     --executable /usr/bin/gpgv \
     --desktop-file ../../scripts/arch/okilum.desktop \
@@ -67,6 +60,13 @@ install -Dm644 ../../THIRD_PARTY_NOTICES.md AppDir/usr/share/licenses/okilum/THI
 printf '%s\n' "$GITHUB_SHA" > AppDir/SOURCE_SHA
 # Keep the dependency inventory beside the immutable source marker.
 find AppDir/usr/lib -type f -printf '%f\n' | sort > bundled-libraries.txt
+# Stage the checksum-pinned runtime and notices before assembling the AppImage.
+# An explicit local archive supports offline fixture/build inputs with the same pins.
+syncthing_bundle_args=(--appdir AppDir)
+if [[ -n "${OKILUM_SYNCTHING_ARCHIVE:-}" ]]; then
+    syncthing_bundle_args+=(--archive "$OKILUM_SYNCTHING_ARCHIVE")
+fi
+python3 ../../scripts/syncthing/linux_bundle.py "${syncthing_bundle_args[@]}"
 ARCH=x86_64 ./tools/appimagetool --runtime-file tools/runtime AppDir Okilum-x86_64.AppImage
 sha256sum Okilum-x86_64.AppImage > SHA256SUMS
 python3 ../../scripts/appimage/provenance.py
