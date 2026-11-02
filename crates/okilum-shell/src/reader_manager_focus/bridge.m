@@ -85,6 +85,7 @@ bool okilum_manager_focus_cycle_regression(void) {
 @end
 
 @interface OkilumManagerFocus (Keys)
+- (BOOL)handleFocusedKeyEvent:(NSEvent *)event;
 - (BOOL)handleCommandEvent:(NSEvent *)event;
 - (void)performNativeCommand:(NSEvent *)event before:(NSDictionary *)before serial:(NSUInteger)serial generation:(NSUInteger)generation activity:(NSUInteger)activity;
 - (void)pageCommand:(NSString *)action context:(NSDictionary *)context serial:(NSUInteger)serial generation:(NSUInteger)generation activity:(NSUInteger)activity;

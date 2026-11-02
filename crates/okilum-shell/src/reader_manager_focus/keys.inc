@@ -47,7 +47,7 @@ static void KeyHookEvent(Class cls, SEL selector, BOOL returnsBool, BOOL interce
     if (returnsBool) {
         replacement = imp_implementationWithBlock(^BOOL(id object, NSEvent *event) {
             OkilumManagerFocus *router = KeyFocusedRouter();
-            if (intercept && router && !router.nativeRouting && [router handleCommandEvent:event]) {
+            if (intercept && object == router.webview.window && [router handleFocusedKeyEvent:event]) {
                 return YES;
             }
             BOOL result = ((BOOL (*)(id, SEL, NSEvent *))original)(object, selector, event);
@@ -196,8 +196,7 @@ static void KeyInstallRouter(id object) {
         KeyOriginalSendEvent = ^(NSEvent *event) { ((void (*)(id, SEL, NSEvent *))original)(NSApp, sendEvent, event); };
         IMP replacement = imp_implementationWithBlock(^(id app, NSEvent *event) {
             OkilumManagerFocus *focused = KeyFocusedRouter();
-            if (focused && !focused.nativeRouting) KeyNoteUserInput(focused, event);
-            if (focused && !focused.nativeRouting && [focused handleCommandEvent:event]) return;
+            if ([focused handleFocusedKeyEvent:event]) return;
             ((void (*)(id, SEL, NSEvent *))original)(app, sendEvent, event);
         });
         class_replaceMethod(appClass, sendEvent, replacement, method_getTypeEncoding(method));
@@ -232,6 +231,17 @@ static void KeyRemoveRouter(id object) {
 }
 
 @implementation OkilumManagerFocus (Keys)
+- (BOOL)handleFocusedKeyEvent:(NSEvent *)event {
+    if (self.nativeRouting || !self.focused || event.window != self.webview.window) return NO;
+    if (event.type != NSEventTypeKeyDown && event.type != NSEventTypeKeyUp
+        && event.type != NSEventTypeFlagsChanged) return NO;
+    // AppKit tries window/menu key equivalents before local event monitors.
+    // Own the entire keyboard path here, including Cmd+Shift+V, Cmd+arrows
+    // and T3 shortcuts that share a binding with Okilum (for example Cmd+K).
+    // The six editing commands retain their native attempt + guarded fallback.
+    if ([self handleCommandEvent:event]) return YES;
+    return [self event:event] == nil;
+}
 - (BOOL)handleCommandEvent:(NSEvent *)event {
     NSString *action = KeyAction(event);
     if (!action || self.nativeRouting || !self.focused || (event.window && event.window != self.webview.window)) return NO;
