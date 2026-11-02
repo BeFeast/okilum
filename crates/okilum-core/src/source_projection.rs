@@ -640,6 +640,10 @@ pub(crate) fn project_reusing(
                     (display, index)
                 }
                 None => {
+                    revision::charge(|w| {
+                        w.display_builds += 1;
+                        w.display_bytes += snapshot.source.len();
+                    });
                     let mut rope = snapshot.source.rope().clone();
                     for range in concealed.iter().rev() {
                         rope.remove(range.clone());
