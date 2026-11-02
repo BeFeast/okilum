@@ -408,7 +408,7 @@ fn collect_generations_with(
             discarded.push(entry.path());
         }
     }
-    retire_unused(
+    let result = retire_unused(
         base,
         &pins,
         &retired,
@@ -416,7 +416,20 @@ fn collect_generations_with(
         &mut discarded,
         after_scan,
         retire,
-    )?;
+    );
+    match result {
+        // SourceRevision's fingerprint read can race an atomic checkpoint
+        // replacement too. As with the explicit before/after hint comparison,
+        // defer collection; never infer that a raced hint references nothing.
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) =>
+        {
+            report.skipped = Some("persisted search hints changed");
+        }
+        result => result?,
+    }
     for path in discarded {
         if let Err(error) = cleanup(&path) {
             report.cleanup_errors.push(format!(

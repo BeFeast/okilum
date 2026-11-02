@@ -1013,12 +1013,18 @@ mod tests {
                 .is_empty());
         });
         visual.update(|window, cx| window.draw(cx).clear(cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
         let undo = visual
             .debug_bounds("undo-trash")
             .expect("actual Trash Undo action");
         visual.simulate_click(undo.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
+            assert!(
+                v.trash_undo.items.is_empty(),
+                "positive control: Undo dispatched and restored"
+            );
             assert_eq!(v.loading.as_ref().unwrap().generation, generation);
             assert!(v.vault.notes.iter().any(|note| note.path == "New.md"));
             assert_eq!(v.vault.backlinks("New.md").len(), 1);
