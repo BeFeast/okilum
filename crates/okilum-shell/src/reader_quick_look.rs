@@ -57,6 +57,15 @@ type Decoder = Rc<
     ) -> Task<DecodeResult>,
 >;
 
+// One matching Tree-created entity consumes the offline decoder seam. Tests
+// still enter through the real Tree action, never replace the Reader route.
+#[cfg(test)]
+thread_local! {
+    static NEXT_DECODER: std::cell::RefCell<Option<(PathBuf, Decoder)>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
 fn decoder() -> Decoder {
     Rc::new(|path, kind, ticket, cx| {
         cx.background_executor()
@@ -83,7 +92,17 @@ impl Preview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::with_decoder(root, rel, path, decoder(), window, cx)
+        let decoder = decoder();
+        #[cfg(test)]
+        let decoder = NEXT_DECODER.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.as_ref().is_some_and(|(expected, _)| expected == &path) {
+                slot.take().unwrap().1
+            } else {
+                decoder
+            }
+        });
+        Self::with_decoder(root, rel, path, decoder, window, cx)
     }
 
     fn with_decoder(
@@ -190,6 +209,9 @@ impl Render for Preview {
                     .child(div().px_6().child(notice.clone()))
                     .child(
                         img(ImageSource::Render(image.clone()))
+                            .when(cfg!(test), |image| {
+                                image.debug_selector(|| "quick-look-image".into())
+                            })
                             .size_full()
                             .object_fit(ObjectFit::Contain),
                     )
@@ -208,6 +230,9 @@ impl Render for Preview {
                     .child(message.clone())
                     .child(
                         gpui_component::button::Button::new("quick-look-retry")
+                            .when(cfg!(test), |button| {
+                                button.debug_selector(|| "quick-look-retry".into())
+                            })
                             .label("Retry preview")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.retry_media(cx);
@@ -219,6 +244,9 @@ impl Render for Preview {
         };
         v_flex()
             .id("tree-readonly-quick-look")
+            .when(cfg!(test), |surface| {
+                surface.debug_selector(|| "tree-readonly-quick-look".into())
+            })
             .size_full()
             .min_h_0()
             .gap_3()
