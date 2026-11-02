@@ -1,0 +1,61 @@
+//! Debug-only synthetic server. Build and run on a development/build host.
+#[cfg(debug_assertions)]
+fn main() -> anyhow::Result<()> {
+    use okilum_core::remote_log::fake::{record, FakeKibana, Scenario};
+    let mut args = std::env::args().skip(1);
+    let address = args.next().unwrap_or_else(|| "127.0.0.1:5609".into());
+    anyhow::ensure!(
+        address.parse::<std::net::SocketAddr>()?.ip().is_loopback(),
+        "Bind only to loopback"
+    );
+    let scenario = match args.next().as_deref().unwrap_or("sync") {
+        "sync" => Scenario::default(),
+        "async" => Scenario {
+            async_polls: 3,
+            ..Default::default()
+        },
+        "partial-id" => Scenario {
+            async_polls: 3,
+            partial_with_id: true,
+            ..Default::default()
+        },
+        "partial" => Scenario {
+            partial: true,
+            ..Default::default()
+        },
+        "timeout" => Scenario {
+            never_complete: true,
+            ..Default::default()
+        },
+        "legacy" => Scenario {
+            legacy_total: true,
+            ..Default::default()
+        },
+        "lower-bound" => Scenario {
+            lower_bound: true,
+            ..Default::default()
+        },
+        _ => anyhow::bail!(
+            "Scenario: sync | async | partial-id | partial | timeout | legacy | lower-bound"
+        ),
+    };
+    let server = FakeKibana::start(&address, 603, scenario)?;
+    println!("Endpoint: {}\nIndex: remote-*:events\nTime: 2026-11-01T00:00:00Z to 2026-11-05T00:00:00Z\nAPI key: test-secret\nSynthetic only; adds one current and one late event every two seconds", server.endpoint);
+    let mut next = 603;
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let mut current = record(next);
+        let now = time::OffsetDateTime::now_utc();
+        current["_source"]["@timestamp"] =
+            serde_json::json!(now.format(&time::format_description::well_known::Rfc3339)?);
+        current["sort"][0] = serde_json::json!(i64::try_from(now.unix_timestamp_nanos())?);
+        server.add(current);
+        next += 1;
+        server.add(record(next));
+        next += 1;
+    }
+}
+#[cfg(not(debug_assertions))]
+fn main() {
+    eprintln!("The fake Kibana server is available only in debug builds");
+}

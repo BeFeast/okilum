@@ -31,9 +31,10 @@ provider jobs, canonical enrollment or deployment.
 
 **Remote Log view extension (2026-10-20, #1441):** [vault-scoped Kibana sources](remote-log-view.md)
 adds explicit Discover import and bounded remote history in the existing Log view.
-Credentials use OS storage; event data stays session-only. Live reconciliation reads the
-whole selected window through a fresh PIT per cycle and confirms coverage only after
-all pages finish; bounds stop explicitly as incomplete. Corporate/native live acceptance
+Credentials use OS storage; event data stays session-only. The [internal-search protocol](kibana-internal-search.md) (#2388) supports direct
+index-pattern sources, optional version discovery and bounded full-window live
+reconciliation without PIT. Totals, partial results, timeout and truncation remain
+visible beside loaded rows; paging does not imply an immutable server snapshot. Corporate/native live acceptance
 and the visibility target remain unproven and cannot be silently substituted.
 
 **Note aliases (2026-10-23, #1562):** [reserved frontmatter aliases](note-aliases.md)

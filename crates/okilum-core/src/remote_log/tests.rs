@@ -1,6 +1,6 @@
 use super::*;
 use discover::{Discover, TimeRange};
-use serde_json::{json, Value};
+use serde_json::json;
 
 pub(super) fn url(app: &str, global: &str) -> String {
     let query = url::form_urlencoded::Serializer::new(String::new())
@@ -10,7 +10,7 @@ pub(super) fn url(app: &str, global: &str) -> String {
     format!("https://logs.example/s/work/app/discover#/?{query}")
 }
 fn sample() -> String {
-    url("(dataSource:(dataViewId:'*:log-2',type:dataView),query:(language:kuery,query:'service:שלום'),columns:!(description,correlation_id),sort:!(!('@timestamp',desc)),filters:!((meta:(disabled:!t,negate:!f,key:description),query:(match_phrase:(description:old))),(meta:(disabled:!f,negate:!f,index:'*:log-2',key:correlation_id),query:(match_phrase:(correlation_id:'a%2Fb')))))", "(time:(from:'2026-10-20T12:00:00.123456789Z',to:'2026-10-20T12:15:00Z'),refreshInterval:(pause:!t,value:0),filters:!(('$state':(store:globalState),meta:(disabled:!f,negate:!t),query:(term:(service:noise)))))")
+    url("(dataSource:(dataViewId:'remote-*:events',type:dataView),query:(language:kuery,query:'service:שלום'),columns:!(message,request_id),sort:!(!('@timestamp',desc)),filters:!((meta:(disabled:!t,negate:!f,key:message),query:(match_phrase:(message:old))),(meta:(disabled:!f,negate:!f,index:'remote-*:events',key:request_id),query:(match_phrase:(request_id:'a%2Fb')))))", "(time:(from:'2026-10-20T12:00:00.123456789Z',to:'2026-10-20T12:15:00Z'),refreshInterval:(pause:!t,value:0),filters:!(('$state':(store:globalState),meta:(disabled:!f,negate:!t),query:(term:(service:noise)))))")
 }
 #[test]
 fn full_real_shape_import_preserves_semantics_and_decodes_once() {
@@ -21,7 +21,7 @@ fn full_real_shape_import_preserves_semantics_and_decodes_once() {
     assert_eq!(state.filters[0]["$state"]["store"], "globalState");
     assert_eq!(state.filters[1]["meta"]["disabled"], true);
     assert_eq!(
-        state.filters[2]["query"]["match_phrase"]["correlation_id"],
+        state.filters[2]["query"]["match_phrase"]["request_id"],
         "a%2Fb"
     );
     let body = state
@@ -41,9 +41,7 @@ fn full_real_shape_import_preserves_semantics_and_decodes_once() {
         json!({"term":{"service":"noise"}})
     );
     let filter = body["query"]["bool"]["filter"].as_array().unwrap();
-    assert!(!filter
-        .iter()
-        .any(|v| v["match_phrase"]["description"] == "old"));
+    assert!(!filter.iter().any(|v| v["match_phrase"]["message"] == "old"));
     assert!(filter.iter().any(|v| v["kql"]["query"] == "service:שלום"));
     assert!(!serde_json::to_string(&body)
         .unwrap()
@@ -52,7 +50,7 @@ fn full_real_shape_import_preserves_semantics_and_decodes_once() {
 }
 #[test]
 fn legacy_index_fallback_and_unknown_semantics_fail_closed() {
-    let app = "(index:'*:log-2',query:(language:kuery,query:''))";
+    let app = "(index:'remote-*:events',query:(language:kuery,query:''))";
     let (_, state) = discover::import(&url(app, "()")).unwrap();
     assert_eq!(
         state.time,
@@ -159,7 +157,4 @@ fn ambiguous_enabled_filters_and_unproven_time_rounding_refuse_execution() {
 
 pub(super) fn state() -> Discover {
     discover::import(&sample()).unwrap().1
-}
-pub(super) fn quality() -> Value {
-    json!({"_shards":{"total":1,"successful":1,"failed":0},"_clusters":{"total":1,"successful":1,"skipped":0,"partial":0,"failed":0,"running":0}})
 }

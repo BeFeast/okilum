@@ -256,7 +256,7 @@ impl Discover {
             );
             ensure!(
                 sort.field != "_shard_doc",
-                "Discover must not supply its own PIT tie-breaker"
+                "Discover must not supply an internal tie-breaker"
             );
         }
         ensure!(
@@ -347,20 +347,32 @@ impl Discover {
         size: usize,
     ) -> Result<Value> {
         self.validate()?;
+        self.search_body_for(range, after, size, "@timestamp")
+    }
+    pub fn search_body_for(
+        &self,
+        range: &TimeRange,
+        after: Option<&Value>,
+        size: usize,
+        time_field: &str,
+    ) -> Result<Value> {
         let (mut filter, must_not) = self.filter_clauses()?;
-        filter.push(json!({"range":{"@timestamp":{"gte":range.from,"lte":range.to,"format":"strict_date_optional_time_nanos"}}}));
+        filter.push(json!({"range":{time_field:{"gte":range.from,"lt":range.to,"format":"strict_date_optional_time_nanos"}}}));
         if !self.query.query.trim().is_empty() {
             filter.push(json!({"kql":{"query":self.query.query}}));
         }
         let mut sort: Vec<_> = self.sort.iter().map(|sort| {
-            if sort.field == "@timestamp" { json!({"@timestamp":{"order":sort.order,"format":"strict_date_optional_time_nanos","numeric_type":"date_nanos"}}) }
+            if sort.field == time_field { json!({time_field:{"order":sort.order,"format":"strict_date_optional_time_nanos","numeric_type":"date_nanos"}}) }
             else { json!({sort.field.clone():{"order":sort.order}}) }
         }).collect();
-        sort.push(json!({"_shard_doc": "asc"}));
-        let mut body = json!({"size":size,"_source":true,"fields":[{"field":"*","include_unmapped":true},{"field":"@timestamp","format":"strict_date_optional_time_nanos"}],"query":{"bool":{"filter":filter,"must_not":must_not}},"sort":sort,"track_total_hits":false,"timeout":"5s"});
+        // Fixed shard preference plus boundary replay in History handles ties
+        // across shards, where _doc alone is not globally unique.
+        sort.push(json!({"_doc": "asc"}));
+        let mut body = json!({"size":size,"_source":true,"fields":[{"field":"*","include_unmapped":true},{"field":time_field,"format":"strict_date_optional_time_nanos"}],"query":{"bool":{"filter":filter,"must_not":must_not}},"sort":sort,"track_total_hits":super::MAX_ROWS,"timeout":"5s"});
         if let Some(after) = after {
             body["search_after"] = after.clone();
         }
+
         Ok(body)
     }
 }

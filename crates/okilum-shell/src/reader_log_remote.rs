@@ -88,6 +88,11 @@ struct Panel {
     state: PathBuf,
     name: Entity<InputState>,
     url: Entity<InputState>,
+    pattern: Entity<InputState>,
+    time_field: Entity<InputState>,
+    requested: Option<Source>,
+    auth_error: bool,
+    quality: Option<remote_log::result::ResultStatus>,
     key: Entity<InputState>,
     kql: Entity<InputState>,
     filters: Entity<InputState>,
@@ -115,7 +120,9 @@ impl Panel {
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
         };
         let name = input("Source name", cx, window);
-        let url = input("Paste a complete Discover URL", cx, window);
+        let url = input("HTTPS endpoint or complete Discover URL", cx, window);
+        let pattern = input("Index pattern (required for a direct endpoint)", cx, window);
+        let time_field = input("Time field (default @timestamp)", cx, window);
         let key = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Encoded API key → OS credential storage")
@@ -153,7 +160,7 @@ impl Panel {
                 cx.notify();
             });
         });
-        Self{generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
+        Self{generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
     }
     fn choose(&mut self, source: Source, window: &mut Window, cx: &mut Context<Self>) {
         self.stop();
@@ -164,6 +171,13 @@ impl Panel {
         });
         self.name
             .update(cx, |i, cx| i.set_value(&source.name, window, cx));
+        self.pattern.update(cx, |i, cx| {
+            i.set_value(source.index_pattern.as_deref().unwrap_or(""), window, cx)
+        });
+        self.time_field
+            .update(cx, |i, cx| i.set_value(&source.time_field, window, cx));
+        self.auth_error = false;
+        self.requested = None;
         self.kql.update(cx, |i, cx| {
             i.set_value(&source.discover.query.query, window, cx)
         });
@@ -210,7 +224,17 @@ impl Panel {
         cx.notify();
     }
     fn import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let result = Source::import(&self.name.read(cx).value(), &self.url.read(cx).value());
+        let input = self.url.read(cx).value();
+        let result = if input.contains("/app/discover") {
+            Source::import(&self.name.read(cx).value(), &input)
+        } else {
+            Source::direct(
+                &self.name.read(cx).value(),
+                &input,
+                &self.pattern.read(cx).value(),
+                &self.time_field.read(cx).value(),
+            )
+        };
         match result {
             Ok(source) => {
                 self.url.update(cx, |i, cx| i.set_value("", window, cx));
@@ -227,6 +251,19 @@ impl Panel {
             .draft
             .clone()
             .context("Import or select a saved source first")?;
+        let pattern = self.pattern.read(cx).value();
+        if !pattern.trim().is_empty() {
+            source.index_pattern = Some(pattern.trim().into());
+        }
+        let field = self.time_field.read(cx).value();
+        if !field.trim().is_empty() && source.time_field != field.trim() {
+            if let Some(sort) = source.discover.sort.first_mut() {
+                if sort.field == source.time_field {
+                    sort.field = field.trim().into();
+                }
+            }
+            source.time_field = field.trim().into();
+        }
         source.name = self.name.read(cx).value().trim().to_owned();
         source.discover.query.query = self.kql.read(cx).value().to_string();
         source.discover.filters = serde_json::from_str(&self.filters.read(cx).value())
@@ -249,6 +286,41 @@ impl Panel {
                 return;
             }
         };
+        self.submit_query(source, false, requested_generation, window, cx);
+    }
+    fn replace_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.auth_error || self.busy || self.credential_pending {
+            return;
+        }
+        let Some(source) = self.requested.clone() else {
+            return;
+        };
+        if !self.key.read(cx).value().is_empty()
+            && self
+                .draft
+                .as_ref()
+                .is_some_and(|draft| draft.id != source.id || draft.endpoint != source.endpoint)
+        {
+            self.error =
+                Some("Select the failed source before entering its replacement API key".into());
+            cx.notify();
+            return;
+        }
+        self.stop();
+        self.submit_query(source, true, self.generation, window, cx);
+    }
+    fn submit_query(
+        &mut self,
+        source: Source,
+        replacement: bool,
+        requested_generation: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.requested = Some(source.clone());
+        if !replacement {
+            self.auth_error = false;
+        }
         let mut secret = self.key.read(cx).value().as_bytes().to_vec();
         // Drop the entire input/undo history after handing bytes to the keychain task.
         self.key = cx.new(|cx| {
@@ -308,8 +380,14 @@ impl Panel {
                         } else {
                             this.sources.push(source.clone());
                         }
-                        this.draft = Some(source.clone());
-                        this.generation = this.worker.apply(source, key);
+                        if !replacement {
+                            this.draft = Some(source.clone());
+                        }
+                        this.generation = if replacement {
+                            this.worker.replace_key(key)
+                        } else {
+                            this.worker.apply(source, key)
+                        };
                     }
                     Err(error) => {
                         this.busy = false;
@@ -376,7 +454,7 @@ impl Panel {
         cx.notify();
     }
     fn cancel_start(&mut self, cx: &mut Context<Self>) {
-        // Dismissing consent must not close the history PIT or change the
+        // Dismissing consent must not close the history traversal or change the
         // draft, loaded snapshot, coverage status or worker generation.
         self.proposal = None;
         cx.notify();
@@ -385,6 +463,8 @@ impl Panel {
         let Some(applied) = &self.applied else {
             return;
         };
+        self.requested = Some(applied.clone());
+        self.auth_error = false;
         self.generation = self.worker.start_live(mode, applied);
         self.following = true;
         self.busy = true;
@@ -399,6 +479,7 @@ impl Panel {
         self.more = false;
         self.busy = matches!(update.status, Status::CatchingUp { .. });
         if let Some(loaded) = update.loaded {
+            self.quality = Some(loaded.quality.clone());
             let changed = self
                 .data
                 .as_ref()
@@ -432,11 +513,14 @@ impl Panel {
                 complete,
                 limited,
                 warning,
+                quality,
             } => {
+                self.auth_error = false;
+                self.quality = Some(quality);
                 self.error = warning;
                 self.message = format!(
                     "History loaded{}{}",
-                    if complete { " · End of snapshot" } else { "" },
+                    if complete { " · End of result" } else { "" },
                     if limited {
                         " · Loaded limit reached; older pages not covered"
                     } else {
@@ -457,9 +541,12 @@ impl Panel {
                 began,
                 seconds,
                 pages,
+                quality,
             } => {
+                self.auth_error = false;
+                self.quality = Some(quality);
                 self.error = None;
-                self.message = format!("Window snapshot complete · {pages} pages in {seconds:.2}s · cycle began {began} · {} → {}. Later searchable arrivals await a new cycle; no five-second guarantee.", range.from, range.to);
+                self.message = format!("Window traversal complete · {pages} pages in {seconds:.2}s · cycle began {began} · {} → {}. Later searchable arrivals await a new cycle; no five-second guarantee.", range.from, range.to);
             }
             Status::Reconnecting {
                 attempt,
@@ -476,6 +563,19 @@ impl Panel {
             } => {
                 self.error = Some(reason);
                 self.message = format!("Incomplete · {scanned} scanned · Following stopped; previous snapshot retained{}", range.map(|r|format!(" · {} → {}",r.from,r.to)).unwrap_or_default());
+            }
+            Status::TimedOut => {
+                self.error = Some(remote_log::result::SearchTimeout.to_string());
+                self.message = "Search timeout · previous query and rows retained".into();
+            }
+            Status::AuthError(error) => {
+                self.auth_error = true;
+                self.error = Some(error.to_string());
+                self.message = "Enter a replacement API key, then Replace API key to re-run the same query. Loaded rows and settings are retained.".into();
+            }
+            Status::IndexPatternRequired => {
+                self.error = Some(remote_log::result::IndexPatternRequired.to_string());
+                self.message = "Enter the index pattern above and Apply again.".into();
             }
             Status::Error(error) => {
                 self.error = Some(error);
@@ -603,8 +703,10 @@ impl Render for Panel {
             });
         let mut body=v_flex().size_full().min_h_0().child(TitleBar::new().child("Kibana logs"))
             .child(v_flex().p_3().gap_2().flex_none()
-                .child(h_flex().gap_2().child(div().w(px(180.)).child(Input::new(&self.name).small())).child(div().flex_1().child(Input::new(&self.url).small())).child(Button::new("remote-import").small().label("Import Discover URL").disabled(self.busy).on_click(cx.listener(|this,_,window,cx|this.import(window,cx)))).child(saved))
-                .child(Input::new(&self.key).small())
+                .child(h_flex().gap_2().child(div().w(px(180.)).child(Input::new(&self.name).small())).child(div().flex_1().child(Input::new(&self.url).small())).child(Button::new("remote-import").small().label("Add source / import").disabled(self.busy).on_click(cx.listener(|this,_,window,cx|this.import(window,cx)))).child(saved))
+                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.pattern).small())).child(div().w(px(240.)).child(Input::new(&self.time_field).small())))
+                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.key).small()))
+                    .when(self.auth_error, |row| row.child(Button::new("remote-replace-key").debug_selector(|| "remote-replace-key".into()).small().label("Replace API key").disabled(self.busy || self.credential_pending).on_click(cx.listener(|this,_,window,cx|this.replace_key(window,cx))))))
                 .child(h_flex().gap_2()
                     .child(div().flex_1().min_w_0().child(Input::new(&self.kql).small()))
                     .child(Button::new("remote-apply").small().label("Apply query and filters").on_click(cx.listener(|this,_,window,cx|this.apply(window,cx))))
@@ -625,6 +727,7 @@ impl Render for Panel {
                 .child(div().text_xs().child(remote_log::LIVE_LIMITATION))
                 .child(div().text_xs().child(remote_log::KQL_LIMITATION))
                 .child(div().text_sm().child(self.message.clone()))
+                .children(self.quality.as_ref().map(|q| div().text_sm().child(q.label(self.data.as_ref().map_or(0, |d| d.events.len())))))
                 .children(self.applied.as_ref().map(|source|div().text_xs().child(format!("Applied source: {} · Start follows the applied query; draft edits require Apply",source.name))))
                 .children(self.range.as_ref().map(|range|div().text_xs().child(format!("Applied absolute range: {} → {} · Limit 10,000 events / 16 MiB original JSON; loaded-only export",range.from,range.to))))
                 .children(self.error.as_ref().map(|error|div().text_sm().text_color(brand::palette(cx).danger).child(error.clone()))));
@@ -824,3 +927,7 @@ mod recovery_tests;
 #[cfg(test)]
 #[path = "reader_log_remote/start_tests.rs"]
 mod start_tests;
+
+#[cfg(test)]
+#[path = "reader_log_remote/protocol_tests.rs"]
+mod protocol_tests;

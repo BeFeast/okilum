@@ -1,7 +1,11 @@
-//! Version-specific Kibana transport. No redirects, secret diagnostics, or disk
+//! Capability-checked Kibana internal-search transport. No redirects, secret diagnostics, or disk
 //! event cache. A history session must be owned by a background worker.
 use super::{
     discover::{Discover, TimeRange},
+    result::{
+        AuthError, FieldBucket, FieldType, FieldValue, FieldValues, FieldValuesRequest,
+        IndexPatternRequired, ResultStatus, SearchTimeout,
+    },
     Source, MAX_EVENT_BYTES, MAX_ROWS, PAGE_ROWS,
 };
 use anyhow::{bail, ensure, Context, Result};
@@ -51,15 +55,6 @@ impl std::fmt::Display for Transient {
 impl std::error::Error for Transient {}
 
 #[derive(Debug)]
-pub(super) struct Incomplete(pub String);
-impl std::fmt::Display for Incomplete {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-impl std::error::Error for Incomplete {}
-
-#[derive(Debug)]
 struct Rejected(String);
 impl std::fmt::Display for Rejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -72,6 +67,7 @@ impl std::error::Error for Rejected {}
 pub struct Kibana {
     client: Client,
     endpoint: Url,
+    source_id: Option<uuid::Uuid>,
     key: Arc<ApiKey>,
     runtime: Arc<tokio::runtime::Runtime>,
     cancelled: Arc<AtomicBool>,
@@ -79,7 +75,9 @@ pub struct Kibana {
 impl Kibana {
     pub fn new(source: &Source, key: ApiKey, cancelled: Arc<AtomicBool>) -> Result<Self> {
         source.validate()?;
-        Self::with_endpoint(Url::parse(&source.endpoint)?, key, cancelled)
+        let mut kibana = Self::with_endpoint(Url::parse(&source.endpoint)?, key, cancelled)?;
+        kibana.source_id = Some(source.id);
+        Ok(kibana)
     }
     pub(super) fn with_endpoint(
         endpoint: Url,
@@ -107,6 +105,7 @@ impl Kibana {
         Ok(Self {
             client,
             endpoint,
+            source_id: None,
             key: Arc::new(key),
             runtime,
             cancelled,
@@ -124,8 +123,18 @@ impl Kibana {
         route: &str,
         query: &[(&str, &str)],
         body: Option<&Value>,
-        proxy: bool,
         cleanup: bool,
+    ) -> Result<Value> {
+        self.request_budget(method, route, query, body, cleanup, Duration::from_secs(10))
+    }
+    fn request_budget(
+        &self,
+        method: Method,
+        route: &str,
+        query: &[(&str, &str)],
+        body: Option<&Value>,
+        cleanup: bool,
+        budget: Duration,
     ) -> Result<Value> {
         ensure!(
             cleanup || !self.cancelled.load(Ordering::Relaxed),
@@ -154,49 +163,35 @@ impl Kibana {
         if let Some(body) = body {
             request = request.json(body);
         }
-        request = request.timeout(
-            if cleanup
-                && !query
-                    .iter()
-                    .any(|(key, value)| *key == "method" && *value == "POST")
-            {
-                Duration::from_secs(2)
-            } else {
-                Duration::from_secs(10)
-            },
-        );
+        request = request.timeout(budget);
         let execute = async {
             let mut response = request.send().await.map_err(|error| {
-                anyhow::anyhow!(Transient(if error.is_timeout() {
-                    "Kibana request timed out; check VPN and server availability"
+                if error.is_timeout() {
+                    anyhow::anyhow!(SearchTimeout)
                 } else {
-                    "Kibana connection failed; check VPN, HTTPS trust and the saved source"
-                }))
+                    anyhow::anyhow!(Transient(
+                        "Kibana connection failed; check VPN, HTTPS trust and the saved source"
+                    ))
+                }
             })?;
             let status = response.status().as_u16();
-            let backend = response
-                .headers()
-                .get("x-console-proxy-status-code")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u16>().ok());
             match status {
                 407 => return Err(anyhow::anyhow!(Rejected(okilum_http::http_reason(407)))),
-                401 | 403 => return Err(anyhow::anyhow!(Rejected(format!("Kibana authentication or permission denied (HTTP {status}); update this source's OS-stored key")))),
+                401 | 403 => return Err(anyhow::anyhow!(AuthError { status })),
                 300..=399 => bail!("Kibana redirected the request; credentials were not forwarded. Import the final HTTPS Discover URL"),
                 400 => return Err(anyhow::anyhow!(Rejected("Kibana rejected the query or internal route (HTTP 400); this Kibana/Elasticsearch capability may be unsupported".into()))),
                 500..=599 => return Err(anyhow::anyhow!(Transient("Kibana server is unavailable"))),
                 200..=299 => {},
                 _ => bail!("Kibana request failed (HTTP {status})"),
             }
-            if proxy {
-                ensure!(backend.is_some_and(|s| (200..300).contains(&s)), "Elasticsearch console-proxy request failed or its backend status is unknown ({backend:?})");
-            }
             let mut bytes = Vec::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|_| anyhow::anyhow!(Transient("Kibana response was interrupted")))?
-            {
+            while let Some(chunk) = response.chunk().await.map_err(|error| {
+                if error.is_timeout() {
+                    anyhow::anyhow!(SearchTimeout)
+                } else {
+                    anyhow::anyhow!(Transient("Kibana response was interrupted"))
+                }
+            })? {
                 ensure!(
                     bytes.len() + chunk.len() <= RESPONSE_BYTES as usize,
                     "Kibana response exceeds 8 MiB; use a narrower time range"
@@ -218,6 +213,9 @@ impl Kibana {
                 } => bail!("Log request cancelled"),
             }
         })?;
+        if bytes.is_empty() && cleanup {
+            return Ok(Value::Null);
+        }
         let value: Value =
             serde_json::from_slice(&bytes).context("Kibana did not return valid JSON")?;
         ensure!(
@@ -230,615 +228,445 @@ impl Kibana {
         );
         Ok(value)
     }
-    fn proxy(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&Value>,
-        cleanup: bool,
-    ) -> Result<Value> {
-        self.request(
-            Method::POST,
-            "/api/console/proxy",
-            &[("path", path), ("method", method)],
-            body,
-            true,
-            cleanup,
-        )
-    }
+}
+
+impl Kibana {
     fn route_id(prefix: &str, id: &str) -> String {
         let encoded: String = url::form_urlencoded::byte_serialize(id.as_bytes()).collect();
         format!("{prefix}/{encoded}")
     }
+    fn version(&self) -> Option<String> {
+        self.request(Method::GET, "/api/status", &[], None, false)
+            .ok()
+            .and_then(|v| {
+                v["version"]["number"]
+                    .as_str()
+                    .filter(|s| {
+                        s.len() <= 64
+                            && s.chars()
+                                .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c))
+                    })
+                    .map(str::to_owned)
+            })
+    }
+    pub fn resolve_source(&self, source: &Source) -> Result<Source> {
+        source.validate()?;
+        ensure!(
+            Url::parse(&source.endpoint)? == self.endpoint
+                && self.source_id.is_none_or(|id| id == source.id),
+            "Kibana client belongs to another source; create a client for the selected source"
+        );
+        if source.index_pattern.is_some() {
+            return Ok(source.clone());
+        }
+        let route = Self::route_id("/api/data_views/data_view", &source.discover.data_view);
+        let view = match self.request(Method::GET, &route, &[], None, false) {
+            Ok(view) => view,
+            Err(error)
+                if error
+                    .downcast_ref::<AuthError>()
+                    .is_some_and(|auth| auth.status == 401) =>
+            {
+                return Err(error)
+            }
+            Err(_) => return Err(anyhow::anyhow!(IndexPatternRequired)),
+        };
+        let pattern = view["data_view"]["title"]
+            .as_str()
+            .ok_or(IndexPatternRequired)?;
+        super::validate_pattern(pattern)?;
+        let mut resolved = source.clone();
+        resolved.index_pattern = Some(pattern.into());
+        resolved.time_field = view["data_view"]["timeFieldName"]
+            .as_str()
+            .unwrap_or(&source.time_field)
+            .into();
+        if let Some(sort) = resolved.discover.sort.first_mut() {
+            if sort.field == source.time_field {
+                sort.field = resolved.time_field.clone();
+            }
+        }
+        resolved.validate()?;
+        Ok(resolved)
+    }
+    fn search(&self, params: &Value, deadline: Duration) -> Result<(Value, bool)> {
+        let clock = std::time::Instant::now();
+        let payload = json!({"params":params,"legacyHitsTotal":false});
+        let mut response = self.request_budget(
+            Method::POST,
+            "/internal/search/es",
+            &[],
+            Some(&payload),
+            false,
+            deadline,
+        )?;
+        let mut id: Option<String> = None;
+        loop {
+            if let Some(next) = response["id"].as_str() {
+                id = Some(next.into());
+            }
+            for flag in ["isRunning", "isPartial"] {
+                ensure!(
+                    response.get(flag).is_none_or(Value::is_boolean),
+                    "Malformed Kibana search: invalid {flag}"
+                );
+            }
+            if response["isRunning"] != true
+                && !(response["isPartial"] == true && response["id"].is_string())
+            {
+                return Ok((response, false));
+            }
+            let current = id
+                .as_deref()
+                .context("Malformed async search: missing id")?;
+            if clock.elapsed() >= deadline {
+                return Ok((timeout_response(response), true));
+            }
+            // The verified protocol polls the same route with the current id
+            // and unchanged flat params. Closing only cancels local polling.
+            let poll_payload = json!({"id":current,"params":params,"legacyHitsTotal":false});
+            for _ in 0..5 {
+                if clock.elapsed() >= deadline {
+                    break;
+                }
+                if self.cancelled.load(Ordering::Acquire) {
+                    bail!("Log request cancelled");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if clock.elapsed() >= deadline {
+                continue;
+            }
+            match self.request_budget(
+                Method::POST,
+                "/internal/search/es",
+                &[],
+                Some(&poll_payload),
+                false,
+                deadline.saturating_sub(clock.elapsed()),
+            ) {
+                Ok(value) => response = value,
+                Err(error) if error.is::<SearchTimeout>() => {
+                    return Ok((timeout_response(response), true));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    /// Top-N server aggregation over the same source, absolute time and server
+    /// filters as history. Missing is a separate aggregation, never a sentinel key.
+    pub fn field_values(
+        &self,
+        source: &Source,
+        request: &FieldValuesRequest,
+    ) -> Result<FieldValues> {
+        ensure!(
+            !request.field.is_empty()
+                && request.field.len() <= 256
+                && (1..=1000).contains(&request.limit),
+            "Invalid field-values field or limit (1–1000)"
+        );
+        ensure!(
+            matches!(
+                request.field_type,
+                FieldType::String | FieldType::Number | FieldType::Boolean
+            ),
+            "Field values require a scalar field type"
+        );
+        let source = self.resolve_source(source)?;
+        let range = source
+            .discover
+            .time
+            .resolve(time::OffsetDateTime::now_utc())?;
+        let mut params = source
+            .discover
+            .search_body_for(&range, None, 0, &source.time_field)?;
+        params.as_object_mut().unwrap().remove("sort");
+        params["index"] = json!(source.index_pattern.as_ref().unwrap());
+        params["aggs"] = json!({"values":{"terms":{"field":request.field,"size":request.limit}},"missing_values":{"missing":{"field":request.field}}});
+        let (response, timeout) = self.search(&params, Duration::from_secs(10))?;
+        let mut status = ResultStatus::parse(
+            &response,
+            &params["track_total_hits"],
+            source.index_pattern.as_ref().unwrap().contains(':'),
+        )?;
+        status.timed_out |= timeout;
+        status.partial |= timeout;
+        let aggs = &response["rawResponse"]["aggregations"];
+        if aggs.is_null() && status.timed_out {
+            return Err(anyhow::anyhow!(SearchTimeout));
+        }
+        let mut buckets = Vec::new();
+        for bucket in aggs["values"]["buckets"]
+            .as_array()
+            .context("Malformed field-values buckets")?
+        {
+            let value = match (&bucket["key"], request.field_type) {
+                (Value::Bool(value), FieldType::Boolean) => FieldValue::Boolean(*value),
+                (Value::Number(_), FieldType::Boolean) => match bucket["key_as_string"].as_str() {
+                    Some("true") => FieldValue::Boolean(true),
+                    Some("false") => FieldValue::Boolean(false),
+                    _ => bail!("Malformed boolean aggregation key"),
+                },
+                (Value::Number(value), FieldType::Number) => FieldValue::Number(value.clone()),
+                (Value::String(value), FieldType::String) => FieldValue::String(value.clone()),
+                _ => bail!("Unexpected field-values key type"),
+            };
+            buckets.push(FieldBucket {
+                value,
+                count: bucket["doc_count"]
+                    .as_u64()
+                    .context("Missing bucket count")?,
+            });
+        }
+        Ok(FieldValues {
+            buckets,
+            missing_count: aggs["missing_values"]["doc_count"]
+                .as_u64()
+                .context("Missing missing-value count")?,
+            sum_other_doc_count: aggs["values"]["sum_other_doc_count"]
+                .as_u64()
+                .context("Missing other-value count")?,
+            doc_count_error_upper_bound: aggs["values"]["doc_count_error_upper_bound"].as_u64(),
+            status,
+        })
+    }
+}
+
+fn timeout_response(mut response: Value) -> Value {
+    if response.get("rawResponse").is_none() {
+        response["rawResponse"] = json!({});
+    }
+    if response["rawResponse"].is_object() && response["rawResponse"].get("hits").is_none() {
+        response["rawResponse"]["hits"] = json!({"hits":[]});
+    }
+    response
 }
 
 #[derive(Clone, Debug)]
 pub struct Page {
-    /// Original server hits: all source fields, doc values and document identity.
     pub events: Vec<Value>,
     pub complete: bool,
     pub limited: bool,
     pub range: TimeRange,
     pub cleanup_warning: Option<String>,
+    pub status: ResultStatus,
 }
 
+/// Bounded non-snapshot paging. Time is primary; original cursor values are
+/// forwarded verbatim. Boundary replay includes equal-time documents whose _doc
+/// values collide across shards. The whole window is reconciled again in live.
 pub struct History {
     kibana: Kibana,
     pub state: Discover,
     pub range: TimeRange,
-    pit: Option<String>,
-    async_ids: HashSet<String>,
     after: Option<Value>,
     seen: HashSet<(String, String)>,
     bytes: usize,
     finished: bool,
-    unacknowledged_search: bool,
     pub pattern: String,
+    time_field: String,
+    preference: String,
+    status: ResultStatus,
+    boundary: Option<(String, usize)>,
+    main_exhausted: bool,
+    search_timeout: Duration,
 }
-// A failed acquisition still owns a received handle when cleanup is unavailable.
-// The session extracts this owner before returning the underlying visible error.
-pub(super) struct AcquireFailure {
-    pub error: anyhow::Error,
-    pub history: Box<History>,
-}
-impl std::fmt::Debug for AcquireFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("AcquireFailure").field(&self.error).finish()
-    }
-}
-impl std::fmt::Display for AcquireFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.error)
-    }
-}
-impl std::error::Error for AcquireFailure {}
-
 impl History {
     pub fn set_cancellation(&mut self, cancelled: Arc<AtomicBool>) {
         self.kibana.cancelled = cancelled;
     }
-    pub(super) fn uncertain(&self) -> bool {
-        self.unacknowledged_search
-    }
-    pub(super) fn has_resources(&self) -> bool {
-        self.unacknowledged_search || self.pit.is_some() || !self.async_ids.is_empty()
-    }
     pub fn can_page(&self) -> bool {
-        !self.finished && !self.unacknowledged_search && self.pit.is_some()
+        !self.finished
     }
     pub fn open(kibana: Kibana, state: Discover) -> Result<Self> {
-        state.validate()?;
-        let range = state.time.resolve(time::OffsetDateTime::now_utc())?;
-        // Guard the internal transport by the version actually researched. A
-        // different version is a visible limitation, not implicit compatibility.
-        let status = kibana.request(Method::GET, "/api/status", &[], None, false, false)?;
+        let source = Source {
+            id: kibana.source_id.unwrap_or_else(uuid::Uuid::new_v4),
+            name: "History".into(),
+            endpoint: kibana.endpoint.to_string(),
+            discover: state,
+            index_pattern: None,
+            time_field: "@timestamp".into(),
+        };
+        Self::for_source(kibana, &source)
+    }
+    pub fn for_source(kibana: Kibana, source: &Source) -> Result<Self> {
+        let source = kibana.resolve_source(source)?;
         ensure!(
-            status["version"]["number"] == "9.5.4",
-            "This source is not Kibana 9.5.4; its internal search contract has not been verified"
+            source.discover.sort[0].field == source.time_field,
+            "History requires the time field as the primary sort"
         );
-        let route = Kibana::route_id("/api/data_views/data_view", &state.data_view);
-        let view = kibana.request(Method::GET, &route, &[], None, false, false)?;
-        let pattern = view["data_view"]["title"]
-            .as_str()
-            .context("Data view did not resolve to an index pattern")?
-            .to_owned();
-        ensure!(
-            !pattern.is_empty()
-                && pattern.len() <= 1024
-                && !pattern.contains(['?', '#', '&', '/'])
-                && !pattern.chars().any(char::is_whitespace),
-            "Unsupported data-view index pattern"
-        );
-        ensure!(
-            view["data_view"]["timeFieldName"] == "@timestamp",
-            "Only data views using @timestamp are currently supported"
-        );
-        let path = format!("{pattern}/_pit?keep_alive=1m&allow_partial_search_results=false");
-        ensure!(
-            !kibana.cancelled.load(Ordering::Acquire),
-            "Log request cancelled"
-        );
-        // Shield handle acquisition from local cancellation, then close a stale
-        // acquired handle. An unreceived handle cannot be retried as an outage.
-        let opened = kibana.proxy("POST", &path, None, true).map_err(|error| anyhow::anyhow!("Cannot open history snapshot: {error}; server cleanup is unconfirmed if an ID was not received; automatic retry stopped"))?;
-        let pit = opened["id"]
-            .as_str()
-            .context("PIT ID missing; server cleanup is unconfirmed")?
-            .to_owned();
-        let mut history = Self {
+        let range = source
+            .discover
+            .time
+            .resolve(time::OffsetDateTime::now_utc())?;
+        let version = kibana.version();
+        Ok(Self {
             kibana,
-            state,
+            state: source.discover,
             range,
-            pit: Some(pit),
-            async_ids: HashSet::new(),
             after: None,
             seen: HashSet::new(),
             bytes: 0,
             finished: false,
-            unacknowledged_search: false,
-            pattern,
-        };
-        // A successfully acquired handle is already guarded before inspecting quality.
-        if let Err(error) = quality(&opened, history.pattern.contains(':')) {
-            let cleanup = history.close();
-            let error = anyhow::anyhow!(Incomplete(format!(
-                "{error}; PIT cleanup {}",
-                if cleanup.is_ok() {
-                    "confirmed"
-                } else {
-                    "unconfirmed"
-                }
-            )));
-            if history.has_resources() {
-                return Err(anyhow::anyhow!(AcquireFailure {
-                    error,
-                    history: Box::new(history)
-                }));
-            }
-            return Err(error);
-        }
-        Ok(history)
+            pattern: source.index_pattern.unwrap(),
+            time_field: source.time_field,
+            preference: uuid::Uuid::new_v4().to_string(),
+            status: ResultStatus {
+                version,
+                ..Default::default()
+            },
+            boundary: None,
+            main_exhausted: false,
+            search_timeout: Duration::from_secs(10),
+        })
     }
     pub fn page(&mut self) -> Result<Page> {
         ensure!(
             !self.finished,
-            "This history snapshot has ended; Apply to start a new query"
+            "History has ended; Apply to start a new query"
         );
-        match self.read_page() {
-            Ok(page) => Ok(page),
-            Err(error) => {
-                let cleanup = self.close();
-                if self.unacknowledged_search {
-                    return Err(anyhow::anyhow!(Incomplete(format!("{error:#}; latest PIT/async handle may be unreceived. Cleanup unconfirmed; automatic continuation stopped"))));
-                }
-                match cleanup {
-                    Ok(()) => Err(error),
-                    Err(_) => Err(error.context("Resource cleanup could not be confirmed")),
-                }
-            }
+        let result = self.read_page();
+        if result.is_err() {
+            self.finished = true;
         }
+        result
     }
     fn read_page(&mut self) -> Result<Page> {
-        let pit = self
-            .pit
-            .clone()
-            .context("History snapshot has been closed; Apply to restart")?;
-        let size = PAGE_ROWS.min(MAX_ROWS.saturating_sub(self.seen.len()));
+        // A replay can contain only duplicates. Do not shrink HTTP pages to
+        // the remaining unique-row budget and re-read that prefix one row at a time.
+        let size = PAGE_ROWS;
         ensure!(
-            size > 0 && self.bytes < MAX_EVENT_BYTES,
-            "Loaded history reached the 10,000-event / 16 MiB limit"
+            self.seen.len() < MAX_ROWS && self.bytes < MAX_EVENT_BYTES,
+            "Loaded history reached the limit"
         );
-        let body = self
-            .state
-            .search_body(&self.range, self.after.as_ref(), size)?;
-        let payload = json!({"params":{"pit":{"id":pit,"keep_alive":"1m"},"body":body,"track_total_hits":false,"timeout":"5s","allow_partial_search_results":false},"legacyHitsTotal":false});
-        ensure!(
-            !self.kibana.cancelled.load(Ordering::Acquire),
-            "Log request cancelled"
-        );
-        self.unacknowledged_search = true;
-        let mut response = self
-            .kibana
-            .request(
-                Method::POST,
-                "/internal/search/es",
-                &[],
-                Some(&payload),
-                false,
-                false,
-            )
-            .inspect_err(|error| {
-                if error.is::<Rejected>() {
-                    self.unacknowledged_search = false;
-                }
-            })?;
-        for poll in 0..=2 {
-            if let Some(id) = response.get("id").and_then(Value::as_str) {
-                self.async_ids.insert(id.into());
-            }
-            let raw = response.get("rawResponse").unwrap_or(&response);
-            if let Some(id) = raw.get("pit_id").and_then(Value::as_str) {
-                self.pit = Some(id.to_owned());
-                self.unacknowledged_search = false;
-            }
-            ensure!(
-                response["isRunning"].is_boolean() && response["isPartial"].is_boolean(),
-                "Search completion metadata is unknown"
-            );
-            if response["isRunning"] == false {
-                self.async_ids.clear();
-                break;
-            }
-            ensure!(
-                poll < 2,
-                "Search is still running after the bounded async wait; narrow the range"
-            );
-            let id = response["id"]
-                .as_str()
-                .context("Async search ID is missing")?;
-            let route = Kibana::route_id("/internal/search/es", id);
-            self.unacknowledged_search = true;
-            response =
-                self.kibana
-                    .request(Method::POST, &route, &[], Some(&payload), false, false)?;
+        let replay = self.boundary.clone();
+        let mut params = self.state.search_body_for(
+            &self.range,
+            if replay.is_none() {
+                self.after.as_ref()
+            } else {
+                None
+            },
+            size,
+            &self.time_field,
+        )?;
+        params["index"] = json!(self.pattern);
+        params["preference"] = json!(self.preference);
+        if let Some((stamp, offset)) = &replay {
+            // Preserve the selected half-open interval AND include both sides of
+            // the exact boundary timestamp. Offset is bounded by the row cap.
+            params["query"]["bool"]["filter"].as_array_mut().unwrap().push(json!({"range":{&self.time_field:{"gte":stamp,"lte":stamp,"format":"strict_date_optional_time_nanos"}}}));
+            params["from"] = json!(offset);
+            params["size"] = json!(size.min(MAX_ROWS - offset));
         }
-        if self.unacknowledged_search {
-            return Err(anyhow::anyhow!(Incomplete(
-                "Search did not acknowledge its current PIT handle".into()
-            )));
+        let (response, timeout) = self.kibana.search(&params, self.search_timeout)?;
+        let mut quality = ResultStatus::parse(
+            &response,
+            &params["track_total_hits"],
+            self.pattern.contains(':'),
+        )?;
+        quality.timed_out |= timeout;
+        quality.partial |= timeout;
+        // Boundary aggregations describe a subset; retain the main-query total.
+        if replay.is_some() {
+            quality.total = None;
         }
-        if response["isPartial"] != false {
-            return Err(anyhow::anyhow!(Incomplete(
-                "Kibana returned an incomplete result; previous results are retained".into()
-            )));
-        }
-        let raw = response
-            .get("rawResponse")
-            .context("Search raw response is missing")?;
-        ensure!(
-            raw["timed_out"] == false,
-            "Search timed out or its timeout status is unknown"
-        );
-        quality(raw, self.pattern.contains(':'))
-            .map_err(|error| anyhow::anyhow!(Incomplete(error.to_string())))?;
-        let hits = raw["hits"]["hits"]
+        self.status.accumulate(quality);
+        let hits = response["rawResponse"]["hits"]["hits"]
             .as_array()
-            .context("Search hits are missing")?;
+            .context("Malformed Kibana search: hits are missing")?;
+        let requested = params["size"].as_u64().unwrap() as usize;
         ensure!(
-            hits.len() <= size,
+            hits.len() <= requested,
             "Server exceeded the requested page size"
         );
-        let next = hits.last().map(|hit| hit["sort"].clone());
-        if let Some(next) = &next {
+        let mut events = Vec::new();
+        for hit in hits {
+            let key = (
+                hit["_index"]
+                    .as_str()
+                    .context("Missing event index")?
+                    .to_owned(),
+                hit["_id"].as_str().context("Missing event id")?.to_owned(),
+            );
             ensure!(
-                next.as_array()
+                hit["sort"]
+                    .as_array()
                     .is_some_and(|a| a.len() == self.state.sort.len() + 1
                         && a.iter().all(|v| v.is_string() || v.is_number())),
-                "History cursor is missing or unsupported"
+                "Missing or unsupported history cursor"
             );
-            ensure!(
-                self.after.as_ref() != Some(next),
-                "History cursor did not advance"
-            );
-        }
-        let mut events = Vec::new();
-        let mut limited = false;
-        for hit in hits {
-            let index = hit["_index"]
-                .as_str()
-                .context("Event index identity is missing")?;
-            let id = hit["_id"]
-                .as_str()
-                .context("Event document identity is missing")?;
-            let key = (index.to_owned(), id.to_owned());
             if self.seen.contains(&key) {
                 continue;
             }
             let bytes = serde_json::to_vec(hit)?.len();
-            if self.bytes + bytes > MAX_EVENT_BYTES || self.seen.len() == MAX_ROWS {
-                limited = true;
+            if self.seen.len() >= MAX_ROWS || self.bytes + bytes > MAX_EVENT_BYTES {
+                self.status.truncated = true;
                 break;
             }
             self.bytes += bytes;
             self.seen.insert(key);
             events.push(hit.clone());
         }
-        self.after = next;
-        limited |= self.bytes >= MAX_EVENT_BYTES || self.seen.len() >= MAX_ROWS;
-        let complete = hits.len() < size && !limited;
-        self.finished = complete || limited;
-        let cleanup_warning = if self.finished {
-            self.close()
-                .err()
-                .map(|_| "History loaded, but PIT/async cleanup could not be confirmed".into())
+        if self.seen.len() >= MAX_ROWS || self.bytes >= MAX_EVENT_BYTES {
+            self.status.truncated = true;
+        }
+        if let Some((stamp, offset)) = replay {
+            if let Some(last) = hits.last() {
+                self.after = Some(last["sort"].clone());
+            }
+            if hits.len() < requested {
+                self.boundary = None;
+                self.finished = self.main_exhausted;
+            } else if offset + hits.len() >= MAX_ROWS {
+                self.status.truncated = true;
+            } else {
+                self.boundary = Some((stamp, offset + hits.len()));
+            }
         } else {
-            None
-        };
+            self.main_exhausted = hits.len() < size;
+            if let Some(last) = hits.last() {
+                let cursor = last["sort"].clone();
+                ensure!(
+                    self.after.as_ref() != Some(&cursor),
+                    "History cursor did not advance"
+                );
+                let stamp = timestamp(&cursor[0])?;
+                self.after = Some(cursor);
+                self.boundary = Some((stamp, 0));
+            } else {
+                self.finished = true;
+            }
+        }
+        self.finished |= self.status.incomplete();
         Ok(Page {
             events,
-            complete,
-            limited,
+            complete: self.finished && !self.status.incomplete(),
+            limited: self.status.truncated,
             range: self.range.clone(),
-            cleanup_warning,
+            cleanup_warning: None,
+            status: self.status.clone(),
         })
     }
     pub fn close(&mut self) -> Result<()> {
         self.finished = true;
-        let mut failed = self.unacknowledged_search;
-        for id in self.async_ids.clone() {
-            let route = Kibana::route_id("/internal/search/es", &id);
-            if self
-                .kibana
-                .request(Method::DELETE, &route, &[], None, false, true)
-                .is_ok()
-            {
-                self.async_ids.remove(&id);
-            } else {
-                failed = true;
-            }
-        }
-        if let Some(id) = self.pit.clone() {
-            match self
-                .kibana
-                .proxy("DELETE", "_pit", Some(&json!({"id":id})), true)
-            {
-                Ok(value)
-                    if value["succeeded"] == true && value["num_freed"].as_u64().is_some() =>
-                {
-                    self.pit = None
-                }
-                _ => failed = true,
-            }
-        }
-        ensure!(!failed, "PIT or async cleanup could not be confirmed");
         Ok(())
     }
 }
-impl Drop for History {
-    fn drop(&mut self) {
-        let _ = self.close();
+fn timestamp(value: &Value) -> Result<String> {
+    if let Some(stamp) = value.as_str() {
+        return Ok(stamp.into());
     }
-}
-
-fn quality(raw: &Value, ccs: bool) -> Result<()> {
-    let shards = raw
-        .get("_shards")
-        .context("Shard completion metadata is unknown")?;
-    let total = shards["total"].as_u64().context("Shard total is unknown")?;
-    ensure!(
-        shards["failed"] == 0 && shards["successful"].as_u64() == Some(total),
-        "Some search shards failed or did not complete"
-    );
-    if let Some(clusters) = raw.get("_clusters") {
-        let total = clusters["total"]
-            .as_u64()
-            .context("Cluster total is unknown")?;
-        ensure!(
-            clusters["successful"].as_u64() == Some(total),
-            "Cross-cluster search is incomplete"
-        );
-        for key in ["skipped", "partial", "failed", "running"] {
-            ensure!(
-                clusters[key].as_u64() == Some(0),
-                "Cross-cluster {key} result is nonzero or unknown"
-            );
-        }
-    } else {
-        ensure!(!ccs, "Cross-cluster completion metadata is unknown");
-    }
-    Ok(())
+    // date_nanos numbers exceed 2^53. Parse the JSON integer directly, never f64.
+    let nanos: i128 = value
+        .to_string()
+        .parse()
+        .context("Unsupported numeric time cursor")?;
+    Ok(time::OffsetDateTime::from_unix_timestamp_nanos(nanos)?
+        .format(&time::format_description::well_known::Rfc3339)?)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        io::{BufRead, BufReader, Read, Write},
-        net::TcpListener,
-        sync::Mutex,
-        thread,
-    };
-    struct Reply {
-        status: u16,
-        body: Value,
-        backend: Option<u16>,
-    }
-    type RecordedCalls = Arc<Mutex<Vec<(String, Value)>>>;
-    fn ok(body: Value) -> Reply {
-        Reply {
-            status: 200,
-            body,
-            backend: Some(200),
-        }
-    }
-    fn server(replies: Vec<Reply>) -> (Url, RecordedCalls, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let endpoint =
-            Url::parse(&format!("http://{}/s/test", listener.local_addr().unwrap())).unwrap();
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let recorded = calls.clone();
-        let thread = thread::spawn(move || {
-            for reply in replies {
-                let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                let mut stream = loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => break stream,
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            assert!(
-                                std::time::Instant::now() < deadline,
-                                "expected HTTP request never arrived"
-                            );
-                            thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(error) => panic!("mock listener failed: {error}"),
-                    }
-                };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut first = String::new();
-                reader.read_line(&mut first).unwrap();
-                let mut size = 0;
-                let mut auth = false;
-                let mut user_agent = false;
-                loop {
-                    let mut line = String::new();
-                    reader.read_line(&mut line).unwrap();
-                    if line == "\r\n" {
-                        break;
-                    }
-                    let lower = line.to_ascii_lowercase();
-                    if let Some(value) = lower.strip_prefix("content-length:") {
-                        size = value.trim().parse().unwrap();
-                    }
-                    if lower.starts_with("user-agent: okilum/") {
-                        user_agent = true;
-                    }
-                    if lower.starts_with("authorization:") {
-                        auth = line.contains("ApiKey test-secret");
-                    }
-                }
-                assert!(
-                    auth,
-                    "positive control: actual HTTP request contains the key header"
-                );
-                assert!(
-                    user_agent,
-                    "production per-endpoint client sends an explicit User-Agent"
-                );
-                let mut body = vec![0; size];
-                reader.read_exact(&mut body).unwrap();
-                let body = if body.is_empty() {
-                    Value::Null
-                } else {
-                    serde_json::from_slice(&body).unwrap()
-                };
-                recorded.lock().unwrap().push((first.trim().into(), body));
-                let bytes = serde_json::to_vec(&reply.body).unwrap();
-                let backend = reply
-                    .backend
-                    .map(|s| format!("x-console-proxy-status-code: {s}\r\n"))
-                    .unwrap_or_default();
-                write!(stream,"HTTP/1.1 {} OK\r\nConnection: close\r\nContent-Type: application/json\r\n{backend}Content-Length: {}\r\n\r\n",reply.status,bytes.len()).unwrap();
-                stream.write_all(&bytes).unwrap();
-            }
-        });
-        (endpoint, calls, thread)
-    }
-    fn controls() -> Vec<Reply> {
-        let mut pit = super::super::tests::quality();
-        pit["id"] = json!("pit-original");
-        vec![
-            ok(json!({"version":{"number":"9.5.4"}})),
-            ok(json!({"data_view":{"title":"*:log-2","timeFieldName":"@timestamp"}})),
-            ok(pit),
-        ]
-    }
-    fn search(hits: Vec<Value>, pit: &str) -> Reply {
-        let mut raw = super::super::tests::quality();
-        raw["pit_id"] = json!(pit);
-        raw["timed_out"] = json!(false);
-        raw["hits"] = json!({"hits":hits});
-        ok(json!({"isRunning":false,"isPartial":false,"rawResponse":raw}))
-    }
-    fn hit(id: usize) -> Value {
-        json!({"_index":"log-2","_id":id.to_string(),"_source":{"@timestamp":"2026-10-20T12:00:00.123456789Z","description":"שלום","all":{"nested":[1,2]}},"sort":["2026-10-20T12:00:00.123456789Z",9223372036854775807u64-id as u64]})
-    }
-    fn client(endpoint: Url) -> Kibana {
-        Kibana::with_endpoint(
-            endpoint,
-            ApiKey::new(b"test-secret".to_vec()).unwrap(),
-            Arc::new(AtomicBool::new(false)),
-        )
-        .unwrap()
-    }
-    #[test]
-    fn actual_http_paging_preserves_cursor_fields_identity_and_latest_scalar_cleanup() {
-        let mut replies = controls();
-        replies.push(search((0..PAGE_ROWS).map(hit).collect(), "pit-page-1"));
-        replies.push(search(
-            vec![hit(PAGE_ROWS - 1), hit(PAGE_ROWS)],
-            "pit-latest",
-        ));
-        replies.push(ok(json!({"succeeded":true,"num_freed":273})));
-        let (endpoint, calls, thread) = server(replies);
-        let mut history = History::open(client(endpoint), super::super::tests::state()).unwrap();
-        let first = history.page().unwrap();
-        assert!(!first.complete);
-        assert_eq!(first.events.len(), PAGE_ROWS);
-        let second = history.page().unwrap();
-        assert!(second.complete);
-        assert_eq!(second.events.len(), 1);
-        assert_eq!(second.events[0]["_source"]["all"]["nested"], json!([1, 2]));
-        assert!(second.cleanup_warning.is_none());
-        drop(history);
-        thread.join().unwrap();
-        let calls = calls.lock().unwrap();
-        assert!(calls[3].0.starts_with("POST /s/test/internal/search/es "));
-        assert!(calls[3].1["params"].get("index").is_none());
-        assert_eq!(
-            calls[4].1["params"]["body"]["search_after"],
-            first.events.last().unwrap()["sort"]
-        );
-        assert_eq!(calls.last().unwrap().1, json!({"id":"pit-latest"}));
-    }
-    #[test]
-    fn incomplete_search_still_closes_rotated_pit_and_does_not_accept_rows() {
-        let mut replies = controls();
-        let mut partial = search(vec![hit(0)], "rotated-before-error");
-        partial.body["rawResponse"]["_clusters"]["skipped"] = json!(1);
-        replies.push(partial);
-        replies.push(ok(json!({"succeeded":true,"num_freed":273})));
-        let (endpoint, calls, thread) = server(replies);
-        let mut history = History::open(client(endpoint), super::super::tests::state()).unwrap();
-        assert!(history.page().unwrap_err().to_string().contains("skipped"));
-        drop(history);
-        thread.join().unwrap();
-        assert_eq!(
-            calls.lock().unwrap().last().unwrap().1,
-            json!({"id":"rotated-before-error"})
-        );
-    }
-    #[test]
-    fn proxy_outer_success_cannot_hide_backend_failure_and_key_never_enters_error() {
-        let mut replies = controls();
-        replies[2].backend = Some(400);
-        replies[2].body = json!({"error":"echo test-secret"});
-        let (endpoint, _, thread) = server(replies);
-        let error = History::open(client(endpoint), super::super::tests::state())
-            .err()
-            .unwrap();
-        assert!(!format!("{error:#}").contains("test-secret"));
-        assert!(format!("{error:#}").contains("backend status"));
-        thread.join().unwrap();
-    }
-    #[test]
-    fn cleanup_failure_is_visible_and_cancellation_still_attempts_cleanup() {
-        let mut replies = controls();
-        replies.push(Reply {
-            status: 200,
-            backend: Some(200),
-            body: json!({"succeeded":false,"num_freed":0}),
-        });
-        let (endpoint, calls, thread) = server(replies);
-        let client = client(endpoint);
-        let token = client.cancelled.clone();
-        let mut history = History::open(client, super::super::tests::state()).unwrap();
-        token.store(true, Ordering::Relaxed);
-        let error = format!("{:#}", history.page().unwrap_err());
-        assert!(error.contains("cancelled") && error.contains("cleanup"));
-        drop(history);
-        thread.join().unwrap();
-        assert_eq!(
-            calls.lock().unwrap().last().unwrap().1,
-            json!({"id":"pit-original"})
-        );
-    }
-    #[test]
-    fn errors_and_redirects_are_distinct_without_forwarding_credentials() {
-        for status in [302, 400, 401, 407] {
-            let (endpoint, calls, thread) = server(vec![Reply {
-                status,
-                backend: None,
-                body: json!({"echo":"test-secret"}),
-            }]);
-            let error = History::open(client(endpoint), super::super::tests::state())
-                .err()
-                .unwrap()
-                .to_string();
-            assert!(!error.contains("test-secret"));
-            assert!(match status {
-                302 => error.contains("not forwarded"),
-                400 => error.contains("unsupported"),
-                407 =>
-                    error.contains("proxy requires authentication")
-                        && error.contains("not supported"),
-                _ => error.contains("authentication"),
-            });
-            thread.join().unwrap();
-            assert_eq!(calls.lock().unwrap().len(), 1);
-        }
-    }
-}
+#[path = "transport_tests.rs"]
+mod tests;

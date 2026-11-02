@@ -47,12 +47,14 @@ fn cancel_live_start_keeps_draft_history_paging_and_marks_without_worker_command
                 generation: panel.generation,
                 following: false,
                 loaded: Some(Arc::new(Loaded {
+                    quality: Default::default(),
                     source: source.clone(),
                     range: source.discover.time.clone(),
                     window: data.clone(),
                     more: true,
                 })),
                 status: Status::History {
+                    quality: Default::default(),
                     complete: false,
                     limited: false,
                     warning: Some("Retained coverage warning".into()),

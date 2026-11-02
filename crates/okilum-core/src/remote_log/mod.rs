@@ -2,8 +2,12 @@
 //! Source definitions contain no credentials. Live completeness is not inferred
 //! from event timestamps, bounded compatibility checks, or history pagination.
 pub mod discover;
+#[cfg(any(test, debug_assertions))]
+#[doc(hidden)]
+pub mod fake;
 pub mod link;
 pub mod live;
+pub mod result;
 mod rison;
 #[cfg(test)]
 mod tests;
@@ -18,7 +22,7 @@ use std::sync::Arc;
 pub const PAGE_ROWS: usize = 200;
 pub const MAX_ROWS: usize = 10_000;
 pub const MAX_EVENT_BYTES: usize = 16 * 1024 * 1024;
-pub const LIVE_LIMITATION: &str = "Live reconciles the entire selected window through a fresh PIT each cycle, including late arrivals still in that window. Coverage is confirmed only after ALL pages complete. Bounds stop follow explicitly; large windows have no five-second guarantee.";
+pub const LIVE_LIMITATION: &str = "Live re-reads every page of the selected window, including late arrivals. Paging is not an immutable snapshot. Limits and partial results stop following explicitly; large windows have no five-second guarantee.";
 pub const KQL_LIMITATION: &str = "Server-side KQL; general parity with Discover has not been established. Unsupported queries leave the previous results intact.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -28,6 +32,11 @@ pub struct Source {
     pub name: String,
     pub endpoint: String,
     pub discover: discover::Discover,
+    /// Absent in legacy Discover-only sources; resolved on first Apply.
+    #[serde(default)]
+    pub index_pattern: Option<String>,
+    #[serde(default = "default_time_field")]
+    pub time_field: String,
 }
 impl Source {
     pub fn import(name: &str, input: &str) -> Result<Self> {
@@ -41,7 +50,43 @@ impl Source {
             name: name.trim().into(),
             endpoint,
             discover,
+            index_pattern: None,
+            time_field: default_time_field(),
         })
+    }
+    pub fn direct(name: &str, endpoint: &str, pattern: &str, time_field: &str) -> Result<Self> {
+        let time_field = if time_field.trim().is_empty() {
+            default_time_field()
+        } else {
+            time_field.trim().into()
+        };
+        let source = Self {
+            id: uuid::Uuid::new_v4(),
+            name: name.trim().into(),
+            endpoint: endpoint.trim().trim_end_matches('/').into(),
+            index_pattern: Some(pattern.trim().into()),
+            time_field: time_field.clone(),
+            discover: discover::Discover {
+                data_view: pattern.trim().into(),
+                query: discover::Query {
+                    language: "kuery".into(),
+                    query: String::new(),
+                },
+                filters: Vec::new(),
+                columns: Vec::new(),
+                sort: vec![discover::Sort {
+                    field: time_field,
+                    order: "asc".into(),
+                }],
+                time: discover::TimeRange {
+                    from: "now-15m".into(),
+                    to: "now".into(),
+                },
+                refresh_paused: true,
+            },
+        };
+        source.validate()?;
+        Ok(source)
     }
     /// Include the endpoint to prevent an edited source redirecting an existing key.
     pub fn credential_url(&self, vault: &Path) -> String {
@@ -56,7 +101,7 @@ impl Source {
         );
         let endpoint = url::Url::parse(&self.endpoint).context("Invalid Kibana endpoint")?;
         ensure!(
-            endpoint.scheme() == "https"
+            valid_endpoint_scheme(&endpoint)
                 && endpoint.host_str().is_some()
                 && endpoint.username().is_empty()
                 && endpoint.password().is_none()
@@ -64,8 +109,39 @@ impl Source {
                 && endpoint.fragment().is_none(),
             "Saved source endpoint must be HTTPS without credentials, query or fragment"
         );
+        ensure!(
+            !self.time_field.is_empty() && self.time_field.len() <= 256,
+            "Invalid time field"
+        );
+        if let Some(pattern) = &self.index_pattern {
+            validate_pattern(pattern)?;
+        }
         self.discover.validate()
     }
+}
+
+fn default_time_field() -> String {
+    "@timestamp".into()
+}
+/// Release builds require HTTPS. Debug/test HTTP is restricted to literal loopback IPs.
+pub(crate) fn valid_endpoint_scheme(url: &url::Url) -> bool {
+    url.scheme() == "https"
+        || (cfg!(any(test, debug_assertions))
+            && url.scheme() == "http"
+            && url
+                .host_str()
+                .and_then(|h| h.trim_matches(['[', ']']).parse::<std::net::IpAddr>().ok())
+                .is_some_and(|ip| ip.is_loopback()))
+}
+pub(crate) fn validate_pattern(pattern: &str) -> Result<()> {
+    ensure!(
+        !pattern.is_empty()
+            && pattern.len() <= 1024
+            && !pattern.contains(['?', '#', '&', '/'])
+            && !pattern.chars().any(char::is_whitespace),
+        "Enter a valid index pattern"
+    );
+    Ok(())
 }
 
 pub fn vault_scope(vault: &Path) -> String {
@@ -137,6 +213,8 @@ pub struct EventWindow {
     pub index: crate::log::LogIndex,
     pub path: std::path::PathBuf,
     pub identity_scope: String,
+    /// Observed source paths; counts describe loaded documents, not the whole index.
+    pub fields: Vec<result::FieldInfo>,
 }
 impl EventWindow {
     pub fn new(events: Vec<Arc<serde_json::Value>>, source: &Source) -> Result<Self> {
@@ -171,7 +249,9 @@ impl EventWindow {
             );
         }
         let index = crate::log::LogIndex::build(&bytes);
+        let fields = result::describe_fields(&events);
         Ok(Self {
+            fields,
             events,
             bytes,
             index,
@@ -180,6 +260,8 @@ impl EventWindow {
                 source.id,
                 &source.endpoint,
                 &source.discover.data_view,
+                &source.index_pattern,
+                &source.time_field,
             ))?,
         })
     }

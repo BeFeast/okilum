@@ -1,6 +1,10 @@
 # Remote Log view: accepted requirements and compatibility boundary
 
 Issue: [#1440](https://git.oklabs.uk/BeFeast/okilum/issues/1440).
+**Current protocol:** [Internal-search sources (#2388)](kibana-internal-search.md)
+supersedes the historical PIT, console-proxy, version-gate and cleanup behavior
+below. The history is retained as evidence, not the active transport contract.
+
 Accepted requirements recorded on 2026-10-20. This document records the product
 contract; the compatibility runner does not implement these native features.
 

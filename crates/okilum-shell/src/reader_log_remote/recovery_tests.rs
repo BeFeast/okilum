@@ -13,6 +13,7 @@ fn source(name: &str) -> Source {
 }
 fn loaded(source: &Source, id: &str) -> Arc<Loaded> {
     Arc::new(Loaded {
+        quality: Default::default(),
         source: source.clone(), range: source.discover.time.clone(), more: true,
         window: Arc::new(EventWindow::new(vec![Arc::new(serde_json::json!({"_index":"events","_id":id,"_source":{"@timestamp":"2026-10-20T12:01:00.123456789Z","description":id,"nested":{"all":[1,2]}}}))], source).unwrap()),
     })
@@ -23,6 +24,7 @@ fn history(generation: u64, loaded: Arc<Loaded>) -> Update {
         following: false,
         loaded: Some(loaded),
         status: Status::History {
+            quality: Default::default(),
             complete: false,
             limited: false,
             warning: None,
