@@ -2,7 +2,8 @@
 //! The mobile staging owner maps its frozen VerifiedAsset fields to these values.
 //! This module never opens provider paths, deletes staging, or widens a protocol.
 use super::{
-    persist_equal, prepare_records, read_destination_bounded, Capture, ComposerDraft, Receipt,
+    inspect_destination_bounded, persist_equal, prepare_records, read_destination_bounded, Capture,
+    ComposerDraft, Receipt,
 };
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -166,11 +167,28 @@ fn validate_assets(assets: &[Asset]) -> Result<()> {
     Ok(())
 }
 fn read_bytes(path: &Path, max: usize) -> Result<Option<Vec<u8>>> {
-    let file = match std::fs::File::open(path) {
+    #[cfg(unix)]
+    let opened = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map(std::fs::File::from)
+    .map_err(std::io::Error::from);
+    #[cfg(not(unix))]
+    let opened = std::fs::File::open(path);
+    let file = match opened {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
+    ensure!(
+        file.metadata()?.is_file(),
+        "Attachment operational record is not a regular file"
+    );
     let mut bytes = Vec::new();
     file.take((max + 1) as u64).read_to_end(&mut bytes)?;
     ensure!(
@@ -622,6 +640,103 @@ impl<'a> Publisher<'a> {
             .into()
         })
     }
+}
+
+/// Recover an exact durable attachment receipt by composer identity after restart.
+///
+/// `None` means no durable aggregate completion exists yet, NOT an empty capture:
+/// retain the original draft/staging and resume the existing publisher explicitly.
+/// An invalid ledger, vault mismatch, missing/changed/unreadable canonical file or
+/// exceeded read bound returns an error; keep that capture held for recovery.
+/// `Some` validates the plan, operation owner, aggregate and subordinate receipts,
+/// and the current exact note/asset bytes observed during this read. It is not a
+/// lease on those files or a CleanupPermit. This function creates no files, does
+/// not reconstruct/persist missing completion, and never publishes or performs GC.
+pub fn recover_receipt(
+    root: &Path,
+    records: &Path,
+    composer_id: &str,
+) -> Result<Option<AttachmentReceipt>> {
+    id(composer_id)?;
+    let plan: Option<Plan> = read(&records.join(plan_name(composer_id)), MAX_PLAN_BYTES)?;
+    let receipt: Option<AttachmentReceipt> =
+        read(&records.join(receipt_name(composer_id)), MAX_RECEIPT_BYTES)?;
+    let Some(plan) = plan else {
+        ensure!(
+            receipt.is_none(),
+            "Attachment receipt held: durable plan is missing; retain staging"
+        );
+        return Ok(None);
+    };
+    plan.validate(root, None)?;
+    ensure!(
+        plan.composer_id == composer_id,
+        "Attachment receipt held: composer identity differs from its plan"
+    );
+    let Some(receipt) = receipt else {
+        return Ok(None);
+    };
+    ensure!(
+        receipt == plan.receipt(),
+        "Attachment receipt held: aggregate identity differs from its plan"
+    );
+    let owner: Owner = read(
+        &records.join(format!(
+            "{}.attachment-owner.json",
+            receipt.note.operation_id
+        )),
+        MAX_RECEIPT_BYTES,
+    )?
+    .context("Attachment receipt held: operation owner is missing")?;
+    ensure!(
+        owner.root == plan.root
+            && owner.composer_id == composer_id
+            && owner.operation_id == receipt.note.operation_id,
+        "Attachment receipt held: operation owner differs"
+    );
+    for asset in &receipt.assets {
+        let durable: PublishedAsset = read(
+            &records.join(asset_receipt_name(
+                &receipt.note.operation_id,
+                &asset.asset.id,
+            )),
+            MAX_RECEIPT_BYTES,
+        )?
+        .context("Attachment receipt held: asset receipt is missing")?;
+        ensure!(
+            &durable == asset,
+            "Attachment receipt held: asset receipt identity differs"
+        );
+        let bytes = inspect_destination_bounded(root, &asset.path, MAX_ASSET_BYTES)
+            .with_context(|| {
+                format!(
+                    "Attachment receipt held: cannot inspect {}",
+                    asset.path.display()
+                )
+            })?
+            .context("Attachment receipt held: canonical attachment is missing; retain staging")?;
+        ensure!(
+            bytes.len() == asset.asset.byte_length && hash(&bytes) == asset.asset.sha256,
+            "Attachment receipt held: canonical attachment changed; retain staging"
+        );
+    }
+    let note: Receipt = read(
+        &records.join(format!("{}.receipt.json", receipt.note.operation_id)),
+        MAX_RECEIPT_BYTES,
+    )?
+    .context("Attachment receipt held: note receipt is missing")?;
+    ensure!(
+        note == receipt.note,
+        "Attachment receipt held: note receipt identity differs"
+    );
+    let bytes = inspect_destination_bounded(root, &receipt.note.path, MAX_NOTE_BYTES)
+        .context("Attachment receipt held: cannot inspect canonical note")?
+        .context("Attachment receipt held: canonical note is missing; retain staging")?;
+    ensure!(
+        bytes == plan.note.text().as_bytes(),
+        "Attachment receipt held: canonical note changed; retain staging"
+    );
+    Ok(Some(receipt))
 }
 
 pub fn verify_cleanup_receipt(
@@ -1877,6 +1992,210 @@ mod tests {
                 .note
                 .operation_id,
             copy.operation_id()
+        );
+    }
+    fn receipt_record_snapshot(directory: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        fn visit(directory: &Path, values: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+            if !directory.exists() {
+                return;
+            }
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(&path, values);
+                } else {
+                    values.insert(path.clone(), std::fs::read(path).unwrap());
+                }
+            }
+        }
+        let mut values = std::collections::BTreeMap::new();
+        visit(directory, &mut values);
+        values
+    }
+
+    #[test]
+    fn receipt_lookup_restart_is_read_only_and_never_completes_a_missing_aggregate() {
+        let (_temp, root, records, drafts, mut draft) = fixture("original\r\n");
+        let assets = vec![input(ASSET, b"\0exact\xff", AssetKind::SharedFile, "file")];
+        assert_eq!(recover_receipt(&root, &records, &draft.id).unwrap(), None);
+        assert!(
+            !records.exists(),
+            "unknown lookup must not provision storage"
+        );
+        assert!(
+            crate::unix_publish::inject(rustix::io::Errno::ACCESS, || publish(
+                &root, &drafts, &records, &mut draft, &assets
+            ))
+            .is_err()
+        );
+        let pending = receipt_record_snapshot(&records);
+        assert_eq!(recover_receipt(&root, &records, &draft.id).unwrap(), None);
+        assert_eq!(receipt_record_snapshot(&records), pending);
+        let receipt = publish(&root, &drafts, &records, &mut draft, &assets).unwrap();
+        let composer = draft.id.clone();
+        drop(draft); // The public lookup needs no in-memory session or input bytes.
+        let complete = receipt_record_snapshot(&records);
+        assert_eq!(
+            recover_receipt(&root, &records, &composer).unwrap(),
+            Some(receipt.clone())
+        );
+        assert_eq!(receipt_record_snapshot(&records), complete);
+        let aggregate = records.join(receipt_name(&composer));
+        let saved = std::fs::read(&aggregate).unwrap();
+        std::fs::remove_file(&aggregate).unwrap();
+        let incomplete = receipt_record_snapshot(&records);
+        assert_eq!(recover_receipt(&root, &records, &composer).unwrap(), None);
+        assert!(
+            !aggregate.exists(),
+            "read must not synthesize an aggregate from subordinate receipts"
+        );
+        assert_eq!(receipt_record_snapshot(&records), incomplete);
+        std::fs::write(aggregate, saved).unwrap();
+        assert_eq!(
+            recover_receipt(&root, &records, &composer).unwrap(),
+            Some(receipt)
+        );
+        assert_eq!(
+            std::fs::read_dir(root.join("Attachments")).unwrap().count(),
+            1
+        );
+        assert_eq!(std::fs::read_dir(root.join("Inbox")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn receipt_lookup_holds_changed_missing_or_redirected_canonical_bytes() {
+        use std::os::unix::fs::symlink;
+        let (_temp, root, records, drafts, mut draft) = fixture("exact note");
+        let assets = vec![input(
+            ASSET,
+            b"original bytes",
+            AssetKind::SharedFile,
+            "file",
+        )];
+        let receipt = publish(&root, &drafts, &records, &mut draft, &assets).unwrap();
+        let operation = draft.attachment_attempt.clone();
+        let original_ledger = receipt_record_snapshot(&records);
+        let asset = root.join(&receipt.assets[0].path);
+        std::fs::write(&asset, b"external changed asset").unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id)
+            .unwrap_err()
+            .to_string()
+            .contains("canonical attachment changed"));
+        assert_eq!(std::fs::read(&asset).unwrap(), b"external changed asset");
+        std::fs::remove_file(&asset).unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id)
+            .unwrap_err()
+            .to_string()
+            .contains("canonical attachment is missing"));
+        assert!(!asset.exists(), "lookup must not recreate deleted data");
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("same.bin"), &assets[0].bytes).unwrap();
+        symlink(outside.path().join("same.bin"), &asset).unwrap();
+        assert!(
+            recover_receipt(&root, &records, &draft.id).is_err(),
+            "same bytes behind a symlink are not canonical identity"
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("same.bin")).unwrap(),
+            assets[0].bytes
+        );
+        std::fs::remove_file(&asset).unwrap();
+        crate::note_files::create_attachment_with_source(
+            &root,
+            &receipt.assets[0].path,
+            &assets[0].bytes,
+        )
+        .unwrap();
+        assert_eq!(
+            recover_receipt(&root, &records, &draft.id).unwrap(),
+            Some(receipt.clone())
+        );
+        let note = root.join(&receipt.note.path);
+        let saved_note = std::fs::read(&note).unwrap();
+        std::fs::write(&note, b"external changed note").unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id)
+            .unwrap_err()
+            .to_string()
+            .contains("canonical note changed"));
+        assert_eq!(std::fs::read(&note).unwrap(), b"external changed note");
+        std::fs::remove_file(&note).unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id)
+            .unwrap_err()
+            .to_string()
+            .contains("canonical note is missing"));
+        assert!(!note.exists());
+        std::fs::write(note, saved_note).unwrap();
+        assert_eq!(
+            recover_receipt(&root, &records, &draft.id).unwrap(),
+            Some(receipt)
+        );
+        assert_eq!(draft.attachment_attempt, operation);
+        assert_eq!(receipt_record_snapshot(&records), original_ledger);
+    }
+
+    #[test]
+    fn receipt_lookup_bounds_and_exact_ledger_binding_fail_closed() {
+        let (_temp, root, records, drafts, mut draft) = fixture("text");
+        let assets = vec![input(ASSET, b"bytes", AssetKind::SharedFile, "file")];
+        let receipt = publish(&root, &drafts, &records, &mut draft, &assets).unwrap();
+        let foreign = tempfile::tempdir().unwrap();
+        assert!(recover_receipt(foreign.path(), &records, &draft.id).is_err());
+        assert!(recover_receipt(&root, &records, "../escape").is_err());
+        let aggregate = records.join(receipt_name(&draft.id));
+        let aggregate_bytes = std::fs::read(&aggregate).unwrap();
+        let mut wrong = receipt.clone();
+        wrong.assets[0].asset.display_name = "different delivery".into();
+        std::fs::write(&aggregate, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id).is_err());
+        std::fs::write(&aggregate, &aggregate_bytes).unwrap();
+        let asset_receipt = records.join(asset_receipt_name(&receipt.note.operation_id, ASSET));
+        let saved_asset = std::fs::read(&asset_receipt).unwrap();
+        std::fs::remove_file(&asset_receipt).unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id).is_err());
+        assert!(!asset_receipt.exists());
+        std::fs::write(asset_receipt, saved_asset).unwrap();
+        let plan_path = records.join(plan_name(&draft.id));
+        let saved_plan = std::fs::read(&plan_path).unwrap();
+        std::fs::remove_file(&plan_path).unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id)
+            .unwrap_err()
+            .to_string()
+            .contains("durable plan is missing"));
+        std::fs::write(&plan_path, vec![b' '; MAX_PLAN_BYTES + 1]).unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id)
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds bounds"));
+        std::fs::write(&plan_path, &saved_plan).unwrap();
+        std::fs::remove_file(&aggregate).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &aggregate,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id)
+            .unwrap_err()
+            .to_string()
+            .contains("not a regular file"));
+        std::fs::remove_file(&aggregate).unwrap();
+        let linked = records.join("untrusted-receipt");
+        std::fs::write(&linked, &aggregate_bytes).unwrap();
+        std::os::unix::fs::symlink(&linked, &aggregate).unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id).is_err());
+        assert_eq!(std::fs::read(&linked).unwrap(), aggregate_bytes);
+        std::fs::remove_file(&aggregate).unwrap();
+        std::fs::write(&aggregate, vec![b' '; MAX_RECEIPT_BYTES + 1]).unwrap();
+        assert!(recover_receipt(&root, &records, &draft.id)
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds bounds"));
+        std::fs::write(&aggregate, aggregate_bytes).unwrap();
+        assert_eq!(
+            recover_receipt(&root, &records, &draft.id).unwrap(),
+            Some(receipt)
         );
     }
 }

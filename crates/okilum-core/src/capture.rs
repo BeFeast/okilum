@@ -696,6 +696,24 @@ fn read_destination(root: &Path, relative: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 fn read_destination_bounded(root: &Path, relative: &Path, max: usize) -> Result<Option<Vec<u8>>> {
+    read_destination_guarded(root, relative, max, true)
+}
+
+/// Read-only inspection never flushes, repairs or publishes canonical source.
+fn inspect_destination_bounded(
+    root: &Path,
+    relative: &Path,
+    max: usize,
+) -> Result<Option<Vec<u8>>> {
+    read_destination_guarded(root, relative, max, false)
+}
+
+fn read_destination_guarded(
+    root: &Path,
+    relative: &Path,
+    max: usize,
+    flush: bool,
+) -> Result<Option<Vec<u8>>> {
     #[cfg(unix)]
     {
         use rustix::fs::{open, openat, Mode, OFlags};
@@ -740,8 +758,10 @@ fn read_destination_bounded(root: &Path, relative: &Path, max: usize) -> Result<
             bytes.len() <= max,
             "Capture destination exceeds recovery bounds"
         );
-        file.sync_all()?;
-        std::fs::File::from(folder).sync_all()?;
+        if flush {
+            file.sync_all()?;
+            std::fs::File::from(folder).sync_all()?;
+        }
         Ok(Some(bytes))
     }
     #[cfg(windows)]
@@ -770,7 +790,9 @@ fn read_destination_bounded(root: &Path, relative: &Path, max: usize) -> Result<
             bytes.len() <= max,
             "Capture destination exceeds recovery bounds"
         );
-        file.sync_all()?;
+        if flush {
+            file.sync_all()?;
+        }
         Ok(Some(bytes))
     }
 }
