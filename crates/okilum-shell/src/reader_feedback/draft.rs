@@ -157,7 +157,9 @@ fn publish(directory: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     fs::File::open(directory)?.sync_all()?;
     Ok(())
 }
-pub(crate) fn discover(root: &Path) -> Result<(Vec<(Store, Saved)>, Vec<String>)> {
+pub(crate) type Discovered = (Vec<(Store, Saved)>, Vec<String>);
+
+pub(crate) fn discover(root: &Path) -> Result<Discovered> {
     if !root.try_exists()? {
         return Ok((Vec::new(), Vec::new()));
     }
