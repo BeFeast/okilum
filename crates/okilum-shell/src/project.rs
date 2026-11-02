@@ -806,7 +806,10 @@ impl ProjectView {
                         move |result, _, cx| {
                             let _ = open.update(cx, |this, cx| {
                                 if !agent_skills::display_current(
-                                    this, displayed_scope.as_ref(), displayed_revision.as_ref(), cx,
+                                    this,
+                                    displayed_scope.as_ref(),
+                                    displayed_revision.as_ref(),
+                                    cx,
                                 ) {
                                     return;
                                 }

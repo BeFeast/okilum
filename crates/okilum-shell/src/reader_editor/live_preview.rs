@@ -381,7 +381,9 @@ impl Reader {
 
     pub(crate) fn toggle_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.editing.as_ref().is_some_and(|editing| {
-            editing.table_grid.update(cx, |grid, cx| grid.retain_pending_cells(cx))
+            editing
+                .table_grid
+                .update(cx, |grid, cx| grid.retain_pending_cells(cx))
         }) {
             return;
         }

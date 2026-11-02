@@ -20,8 +20,8 @@ pub use capabilities::{NativeEnvironmentCapabilities, NativeEnvironmentProfile};
 pub mod thread_create;
 pub mod turn_item;
 pub use manager::{ManagerThread, ManagerThreadDetails};
-pub mod shell;
 pub mod model_catalog;
+pub mod shell;
 
 #[cfg(test)]
 mod tests;
@@ -330,9 +330,8 @@ impl NativeClient {
                 break;
             }
         }
-        let stream = connected.ok_or_else(|| {
-            transport_failure("TCP connection", Instant::now() >= deadline)
-        })?;
+        let stream = connected
+            .ok_or_else(|| transport_failure("TCP connection", Instant::now() >= deadline))?;
         stream
             .set_read_timeout(Some(self.timeout))
             .map_err(|_| transport_failure("socket read configuration", false))?;
