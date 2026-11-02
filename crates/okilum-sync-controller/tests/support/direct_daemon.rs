@@ -87,8 +87,19 @@ print(g.find('apikey').text)
     }
     /// Real managed preparation, with no systemd registration. Only this fixture
     /// owns/reaps the child; production source sharing cannot start a daemon.
+    pub fn managed(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
+        Self::managed_with_listener(root, name, binary, false)
+    }
     pub fn managed_lan(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
-        use okilum_sync_controller::daemon::{prepare_lan, Preparation};
+        Self::managed_with_listener(root, name, binary, true)
+    }
+    fn managed_with_listener(
+        root: &Path,
+        name: &str,
+        binary: PathBuf,
+        lan: bool,
+    ) -> Result<(Self, PathBuf)> {
+        use okilum_sync_controller::daemon::{prepare, prepare_lan, Preparation};
         let state = root.join(name);
         fs::create_dir(&state)?;
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700))?;
@@ -96,10 +107,11 @@ print(g.find('apikey').text)
         let vault = state.join("ordinary-vault");
         fs::create_dir(&vault)?;
         let rest_guard = TcpListener::bind("127.0.0.1:0")?;
-        let listen_guard = TcpListener::bind("0.0.0.0:0")?;
+        let listen_guard = TcpListener::bind(if lan { "0.0.0.0:0" } else { "127.0.0.1:0" })?;
         let rest = rest_guard.local_addr()?;
         let listen = listen_guard.local_addr()?;
-        let (instance, identity) = prepare_lan(
+        let prepare = if lan { prepare_lan } else { prepare };
+        let (instance, identity) = prepare(
             &prepared,
             &Preparation {
                 executable: binary.clone(),

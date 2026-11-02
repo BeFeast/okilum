@@ -7,6 +7,7 @@ use okilum_sync_controller::daemon::{self, DaemonIdentity, Discovery};
 pub(super) struct Choice {
     pub identity: DaemonIdentity,
     pub folders: usize,
+    pub managed: bool,
     pub selected: bool,
 }
 pub(super) struct Runtime {
@@ -47,6 +48,17 @@ pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runti
     } else {
         None
     };
+    let managed_identity = if inventory
+        .candidates
+        .iter()
+        .any(|c| c.identity.config_file == managed)
+    {
+        Some(daemon::managed_identity(
+            managed.parent().unwrap().parent().unwrap(),
+        )?)
+    } else {
+        None
+    };
     let mut choices = inventory
         .candidates
         .iter()
@@ -54,6 +66,7 @@ pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runti
         .map(|c| Choice {
             identity: c.identity.clone(),
             folders: c.folders.len(),
+            managed: managed_identity.as_ref() == Some(&c.identity),
             selected: false,
         })
         .collect::<Vec<_>>();

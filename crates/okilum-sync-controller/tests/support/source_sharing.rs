@@ -16,14 +16,25 @@ struct Pair {
 }
 impl Pair {
     fn new() -> Result<Self> {
+        Self::with_lan(true)
+    }
+    fn loopback() -> Result<Self> {
+        Self::with_lan(false)
+    }
+    fn with_lan(lan: bool) -> Result<Self> {
         let root = tempfile::tempdir()?;
         let binary = PathBuf::from(
             std::env::var_os("OKILUM_SYNC_DIRECT_CLIENT")
                 .context("set pinned Syncthing 2.1.6 binary")?,
         )
         .canonicalize()?;
-        let (source, prepared) = Peer::managed_lan(root.path(), "managed-source", binary.clone())?;
-        let (target, _) = Peer::managed_lan(root.path(), "managed-target", binary)?;
+        let prepare = if lan {
+            Peer::managed_lan
+        } else {
+            Peer::managed
+        };
+        let (source, prepared) = prepare(root.path(), "managed-source", binary.clone())?;
+        let (target, _) = prepare(root.path(), "managed-target", binary)?;
         assert_eq!(source.api.version()?["version"], "v2.1.6");
         assert_eq!(target.api.version()?["version"], "v2.1.6");
         let source_state = root.path().join("source-controller");
@@ -43,6 +54,18 @@ impl Pair {
         let approved = second.refresh()?;
         assert!(approved.catalog.is_empty());
         let peer = approved.peers[0].id;
+        if !lan {
+            // Naming/migration uses real pinned daemons with deterministic routing.
+            // The separate LAN test exercises production hint exchange.
+            source
+                .api
+                .add_device(&json!({"deviceID":target.id,"name":"Target fixture",
+                "addresses":[format!("tcp://{}",target.listen)]}))?;
+            target
+                .api
+                .add_device(&json!({"deviceID":source.id,"name":"Source fixture",
+                "addresses":[format!("tcp://{}",source.listen)]}))?;
+        }
         Ok(Self {
             _root: root,
             source,
@@ -367,6 +390,26 @@ fn managed_peer_addresses_without_discovery_negative_then_hashes_and_restart() -
     let peer = second.refresh()?.peers[0].id;
     let id = second.catalog(peer)?[0].id.clone();
     second.attach(peer, &id, &target.vault)?;
+    // Syncthing fills an empty device name from the first remote handshake.
+    // Pin fixture names before comparing the complete device configuration so
+    // that asynchronous daemon metadata cannot look like a controller mutation.
+    for (runtime, remote, name) in [
+        (&source, &target, "Target fixture"),
+        (&target, &source, "Source fixture"),
+    ] {
+        reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()?
+            .patch(format!(
+                "http://{}/rest/config/devices/{}",
+                runtime.rest, remote.id
+            ))
+            .header("X-API-Key", &runtime.api_key)
+            .json(&json!({"name":name}))
+            .send()?
+            .error_for_status()?;
+        assert_eq!(runtime.api.device(&remote.id)?["name"], name);
+    }
     let connected = || -> Result<bool> {
         Ok(
             source.api.connections()?["connections"][&target.id]["connected"] == true
@@ -468,5 +511,87 @@ fn managed_peer_addresses_without_discovery_negative_then_hashes_and_restart() -
             b"stable port after restart",
         ))
     })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
+    let mut pair = Pair::loopback()?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let catalog = pair.second.catalog(pair.peer)?;
+    let id = &catalog[0].id;
+    let label = &catalog[0].label;
+    let attached = pair.second.attach(pair.peer, id, &pair.target.vault)?;
+    assert_eq!(attached.attached[0].label, *label);
+    assert_eq!(pair.target.api.folder(id)?["label"], *label);
+    let target_state = pair._root.path().join("target-controller");
+    assert_eq!(
+        okilum_sync_controller::direct::received_vault_names(&target_state)?,
+        vec![(pair.target.vault.clone(), label.clone())]
+    );
+    pair.second.shutdown();
+    drop(pair.second);
+    let file = target_state.join("direct.json");
+    let mut db: Value = serde_json::from_slice(&fs::read(&file)?)?;
+    let old_label = format!(
+        "Okilum Sync {}",
+        db["transfers"][0]["owner"].as_str().unwrap()
+    );
+    // A 7504 receiver with a complete ownership witness, already bidirectional.
+    pair.target
+        .api
+        .patch_folder(id, &json!({"label":old_label,"type":"sendreceive"}))?;
+    let before = pair.target.api.folder(id)?;
+    db["transfers"][0].as_object_mut().unwrap().remove("label");
+    db["transfers"][0]["phase"] = json!("bidirectional");
+    db["transfers"][0]["witness"] = before.clone();
+    db["attached"][0]["label"] = json!(old_label);
+    // Another computer's selected catalog must stay selected during migration.
+    db["catalog_peer"] = json!(uuid::Uuid::new_v4());
+    db["catalog"] = json!([{"id":"other-vault","label":"Other selected catalog"}]);
+    fs::write(&file, serde_json::to_vec(&db)?)?;
+    fs::write(
+        pair.target.vault.join("local-sentinel.md"),
+        "preserved local bytes",
+    )?;
+    pair.second = Controller::open(
+        target_state.clone(),
+        vec![pair.target.home.join("config.xml")],
+    )?;
+    let migrated = pair
+        .second
+        .refresh()
+        .context("reconcile legacy receiver label")?;
+    let mut expected = before.clone();
+    expected["label"] = json!(label);
+    assert_eq!(
+        pair.target.api.folder(id)?,
+        expected,
+        "migration changed more than label"
+    );
+    assert_eq!(migrated.attached[0].label, *label);
+    assert_eq!(migrated.catalog[0].label, "Other selected catalog");
+    assert_eq!(
+        fs::read_to_string(pair.target.vault.join("local-sentinel.md"))?,
+        "preserved local bytes"
+    );
+    pair.second.shutdown();
+    drop(pair.second);
+    // Lost label PATCH acknowledgement: new label on daemon, old witness on disk.
+    let mut db: Value = serde_json::from_slice(&fs::read(&file)?)?;
+    db["transfers"][0]["witness"] = before;
+    fs::write(&file, serde_json::to_vec(&db)?)?;
+    pair.second = Controller::open(
+        target_state.clone(),
+        vec![pair.target.home.join("config.xml")],
+    )?;
+    assert_eq!(
+        pair.second.snapshot()?.attached[0].label,
+        *label,
+        "restart must preserve the catalog name before daemon refresh"
+    );
+    assert_eq!(pair.second.refresh()?.attached[0].label, *label);
+    assert_eq!(pair.target.api.folder(id)?, expected);
     Ok(())
 }

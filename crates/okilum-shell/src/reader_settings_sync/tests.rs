@@ -440,6 +440,7 @@ fn guided_worker(
                         certificate_hash: "fixture-certificate".into(),
                     },
                     folders: 0,
+                    managed: true,
                     selected: true,
                 }],
                 #[cfg(target_os = "linux")]
@@ -708,7 +709,7 @@ fn guided_first_run_received_vault_opens_only_after_readiness_and_keeps_owner_al
 ) {
     let directory = tempfile::tempdir().unwrap();
     let state = directory.path().join("state");
-    let vault = directory.path().join("Received notes");
+    let vault = directory.path().join("local-replica");
     std::fs::create_dir(&state).unwrap();
     std::fs::create_dir(&vault).unwrap();
     std::fs::write(vault.join("First.md"), "# Received note").unwrap();
@@ -785,7 +786,28 @@ fn guided_first_run_received_vault_opens_only_after_readiness_and_keeps_owner_al
             !cx.windows().contains(&entry),
             "only the real reader replaces welcome"
         );
+        assert_eq!(
+            super::super::vault_name::shown(&vault, cx),
+            "Received notes"
+        );
+        assert!(reader_startup::recent_label(&vault, cx).starts_with("Received notes — "));
+        assert!(
+            !vault.join(".okilum").exists(),
+            "display names never modify received files"
+        );
     });
+    let handle = cx.update(|cx| {
+        reader_open::reader_of(&vault, cx)
+            .unwrap()
+            .upgrade()
+            .unwrap()
+            .read(cx)
+            .reader_window
+    });
+    assert!(gpui::VisualTestContext::from_window(handle, cx)
+        .window_title()
+        .unwrap()
+        .ends_with(" — Received notes"));
     assert_eq!(*calls.lock().unwrap(), vec!["enter", "other", "read"]);
 }
 
@@ -844,3 +866,7 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
         "disabled Sync must ignore a late dialog answer"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[path = "labels_tests.rs"]
+mod labels_tests;
