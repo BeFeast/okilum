@@ -258,6 +258,10 @@ preceding indexes. Full classification remains off the UI thread;
 byte comparison and bounded metadata reconciliation still inspect the document.
 Smart punctuation checks quote endpoints against that canonical index too,
 instead of segmenting every unchanged prose paragraph again during compose.
+Native displayed-hit clipping segments from the last LF before the hit, an
+unconditional grapheme break, so distant caret/hit lookups visit only their
+logical line. A whole-source Unicode oracle covers both biases, CRLF, combining
+marks, ZWJ and flags, including hits inside UTF-8 scalars.
 
 Semantic code captures use local block coordinates. A current retained CodeBlock
 with identical literal bytes may reuse its captures after unrelated prose edits;
