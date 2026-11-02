@@ -5,6 +5,8 @@ use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use okilum_core::log::virtual_log::{Candidate, Definition, Reason};
 #[path = "reader_log_virtual/model.rs"]
 mod model;
+#[path = "reader_log_virtual/save.rs"]
+mod save;
 #[path = "reader_log_virtual/worker.rs"]
 mod worker;
 
@@ -22,18 +24,20 @@ pub(crate) fn eligible(path: &Path) -> bool {
 pub(crate) fn embedded(
     vault: PathBuf,
     path: PathBuf,
+    state: Option<PathBuf>,
     window: &mut Window,
     cx: &mut App,
 ) -> Entity<Panel> {
     cx.new(|cx| {
         let mut panel = Panel::new(vault, window, cx);
         panel.embedded = true;
+        panel.state = state;
         panel.load_definition(path, cx);
         panel
     })
 }
 
-pub(crate) fn show(vault: PathBuf, cx: &mut App) {
+pub(crate) fn show(vault: PathBuf, state: Option<PathBuf>, cx: &mut App) {
     let scope = okilum_core::remote_log::vault_scope(&vault);
     if let Some(handle) = cx
         .try_global::<Windows>()
@@ -57,7 +61,11 @@ pub(crate) fn show(vault: PathBuf, cx: &mut App) {
     };
     if let Ok(handle) = cx.open_window(options, move |window, cx| {
         window.set_window_title("Virtual logs");
-        let panel = cx.new(|cx| Panel::new(vault, window, cx));
+        let panel = cx.new(|cx| {
+            let mut panel = Panel::new(vault, window, cx);
+            panel.state = state;
+            panel
+        });
         cx.new(|cx| Root::new(panel, window, cx))
     }) {
         if cx.try_global::<Windows>().is_none() {
@@ -74,6 +82,11 @@ struct Pending {
 pub(crate) struct Panel {
     vault: PathBuf,
     embedded: bool,
+    state: Option<PathBuf>,
+    session: Option<save::Session>,
+    save_error: Option<String>,
+    saving: bool,
+    save_task: Option<Task<()>>,
     loaded: Option<PathBuf>,
     path: Entity<InputState>,
     name: Entity<InputState>,
@@ -113,6 +126,11 @@ impl Panel {
         Self {
             vault,
             embedded: false,
+            state: None,
+            session: None,
+            save_error: None,
+            saving: false,
+            save_task: None,
             loaded: None,
             path: input("Saved .okilog path, relative to this vault", cx, window),
             name: input("Name", cx, window),
@@ -162,9 +180,11 @@ impl Panel {
         .detach();
     }
     fn load_definition(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if self.active {
+        if self.active || self.saving {
             return;
         }
+        self.session = None;
+        self.save_error = None;
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
         self.loading = true;
@@ -174,10 +194,22 @@ impl Panel {
         self.error = false;
         self.message = "Loading definition…".into();
         let vault = self.vault.clone();
+        let state = self.state.clone();
         self.load = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { model::load(&vault, &path) })
+                .spawn(async move {
+                    let mut loaded = model::load(&vault, &path)?;
+                    match state
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("Reader recovery storage is unavailable"))
+                        .and_then(|state| save::Session::open(&loaded, state))
+                    {
+                        Ok(session) => loaded.session = Some(session),
+                        Err(error) => loaded.save_error = Some(format!("{error:#}")),
+                    }
+                    Ok::<_, anyhow::Error>(loaded)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.load_generation != generation {
@@ -196,7 +228,12 @@ impl Panel {
         }));
         cx.notify();
     }
-    fn configure(&mut self, loaded: model::Loaded, window: &mut Window, cx: &mut Context<Self>) {
+    fn configure(
+        &mut self,
+        mut loaded: model::Loaded,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let fields = model::Fields::from_definition(&loaded.definition);
         for (input, value) in [
             (&self.name, fields.name),
@@ -212,11 +249,13 @@ impl Panel {
         self.path.update(cx, |input, cx| {
             input.set_value(loaded.path.to_string_lossy().into_owned(), window, cx)
         });
+        self.session = loaded.session.take();
+        self.save_error = loaded.save_error.take();
         self.loaded = Some(loaded.path);
         self.time = fields.time;
         self.vault_root = fields.vault_root;
         self.error = false;
-        self.message = "Definition loaded. Criteria edits apply to this session; the saved file stays unchanged.".into();
+        self.message = "Definition loaded. Start applies session criteria; Save updates this original definition.".into();
     }
     fn definition(&self, cx: &App) -> anyhow::Result<Definition> {
         let text = |input: &Entity<InputState>| input.read(cx).value().to_string();
@@ -233,8 +272,58 @@ impl Panel {
         }
         .definition()
     }
+    pub(crate) fn release_for_source(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.loading || self.saving || self.active {
+            return false;
+        }
+        self.session = None;
+        self.save_error =
+            Some("Source owns editing; return to Read or Load to reopen criteria saving".into());
+        cx.notify();
+        true
+    }
+    fn save(&mut self, cx: &mut Context<Self>) {
+        if self.active || self.loading || self.saving {
+            return;
+        }
+        let definition = match self.definition(cx) {
+            Ok(definition) => definition,
+            Err(error) => {
+                self.error = true;
+                self.message = format!("{error:#}");
+                cx.notify();
+                return;
+            }
+        };
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
+        let generation = self.load_generation;
+        let vault = self.vault.clone();
+        self.saving = true;
+        self.save_task = Some(cx.spawn(async move |this, cx| {
+            let (session, result) = cx.background_executor().spawn(async move {
+                let result = session.save(&vault, &definition);
+                (session, result)
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.load_generation != generation { return; }
+                this.session = Some(session);
+                this.saving = false;
+                this.error = !matches!(&result, Ok(save::Outcome::Saved | save::Outcome::Unchanged));
+                this.message = match result {
+                    Ok(save::Outcome::Saved) => "Original definition saved. Snapshot retained; Start/Rescan is still explicit.".into(),
+                    Ok(save::Outcome::Unchanged) => "No criteria changes; original bytes preserved.".into(),
+                    Ok(save::Outcome::Conflict) => "Original definition changed externally. Criteria draft retained; review the file and recovery in Source before reloading.".into(),
+                    Err(error) => format!("{error:#}. Criteria retained; no automatic retry."),
+                };
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
     fn start(&mut self, cx: &mut Context<Self>) {
-        if self.active || self.loading {
+        if self.active || self.loading || self.saving {
             return;
         }
         let Some(path) = self.loaded.clone() else {
@@ -438,7 +527,7 @@ impl Render for Panel {
             self.configure(loaded, window, cx);
         }
         self.install(window, cx);
-        let disabled = self.active || self.loading;
+        let disabled = self.active || self.loading || self.saving;
         let owner = cx.entity().downgrade();
         let time = self.time;
         let time_menu = Button::new("virtual-time")
@@ -485,12 +574,18 @@ impl Render for Panel {
                         Ok(source) => cx.write_to_clipboard(ClipboardItem::new_string(source)), Err(error) => { this.error = true; this.message = error.to_string(); cx.notify(); }
                     }
                 })))
+                .child(Button::new("virtual-save").debug_selector(|| "virtual-save".into()).small().label(if self.saving { "Saving…" } else { "Save" }).disabled(disabled || self.session.is_none()).tooltip("Save criteria to the original .okilog with conflict checks and History; does not rescan").on_click(cx.listener(|this, _, _, cx| this.save(cx))))
                 .child(div().flex_1())
                 .child(Button::new("virtual-start").debug_selector(|| "virtual-start".into()).small().primary().label(if self.view.is_some() { "Rescan" } else { "Start" }).disabled(disabled || self.loaded.is_none()).on_click(cx.listener(|this, _, _, cx| this.start(cx))))
                 .child(Button::new("virtual-stop").debug_selector(|| "virtual-stop".into()).small().label("Stop").disabled(!self.active || self.stopping).on_click(cx.listener(|this, _, _, cx| this.stop(cx))))
                 .child(Button::new("virtual-details").small().ghost().label(format!("Sources ({})", self.candidates.len())).selected(self.details).on_click(cx.listener(|this, _, _, cx| { this.details = !this.details; cx.notify(); }))))
             .child(div().id("virtual-status").max_h(px(64.)).overflow_y_scroll().text_sm().text_color(if self.error { brand::palette(cx).danger } else { cx.theme().muted_foreground }).child(self.message.clone()))
-            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Criteria select whole files; all records of selected files are merged. Session edits do not rewrite the saved definition. Changes require an explicit Rescan; automatic rotation/membership Follow is not enabled."));
+            .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Criteria select whole files; all records of selected files are merged. Save explicitly updates the original definition with revision checks and History. Changes require an explicit Rescan; automatic rotation/membership Follow is not enabled."));
+        if let Some(error) = &self.save_error {
+            controls = controls.child(div().text_sm().text_color(brand::palette(cx).danger).child(
+                format!("Save unavailable: {error}. Session Start remains available. To review Source, use the original document in Reader (close a standalone Virtual logs window first)."),
+            ));
+        }
         if self.details {
             controls = controls.child(
                 div()

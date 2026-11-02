@@ -33,7 +33,7 @@ pub(crate) fn language(rel: &str) -> Option<&'static str> {
         "tsx" => "tsx",
         "go" => "go",
         "sh" | "bash" | "zsh" => "bash",
-        "json" | "jsonc" => "json",
+        "json" | "jsonc" | "okilog" => "json",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
         "sql" => "sql",

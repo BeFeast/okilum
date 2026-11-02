@@ -24,14 +24,18 @@ impl TimeMode {
 pub(super) struct Loaded {
     pub path: PathBuf,
     pub definition: Definition,
+    pub source: String,
+    pub source_path: PathBuf,
+    pub session: Option<super::save::Session>,
+    pub save_error: Option<String>,
 }
 pub(super) fn load(vault: &Path, path: &Path) -> Result<Loaded> {
-    let path = if path.is_absolute() {
+    let source_path = if path.is_absolute() {
         path.to_owned()
     } else {
         vault.join(path)
-    }
-    .canonicalize()?;
+    };
+    let path = source_path.canonicalize()?;
     ensure!(
         path.starts_with(vault.canonicalize()?),
         "Definition is outside this vault"
@@ -45,7 +49,14 @@ pub(super) fn load(vault: &Path, path: &Path) -> Result<Loaded> {
         .take(64 * 1024 + 1)
         .read_to_string(&mut source)?;
     let definition = Definition::parse(&source)?;
-    Ok(Loaded { path, definition })
+    Ok(Loaded {
+        path,
+        definition,
+        source,
+        source_path,
+        session: None,
+        save_error: None,
+    })
 }
 
 pub(super) struct Fields {

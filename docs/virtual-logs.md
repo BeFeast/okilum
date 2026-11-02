@@ -4,8 +4,9 @@ The core source layer uses a versioned JSON file with extension `.okilog`.
 JSON reuses the existing core serialization stack. The definition is canonical;
 indexes, selection diagnostics and merged rows are rebuildable and never saved.
 The desktop can load a saved definition, edit session criteria and copy the
-resulting JSON explicitly. The saved definition is edited externally; session
-changes do not rewrite it. No source log is modified.
+resulting JSON explicitly. **Save** publishes changed criteria to the original
+definition through the Reader FileEditor, revision checks, recovery and History.
+Criteria edits alone do not write; no source log is modified.
 
 ```json
 {
@@ -95,10 +96,22 @@ wakes an idle watcher immediately. A currently running backend selection pass
 finishes within its existing bounds before cleanup; its result is discarded after
 Stop. No immediate interruption inside a file read is claimed.
 
-In-app canonical definition saving and automatic membership/rotation Follow
-remain open. Full Follow must keep existing `LogTail`
+Canonical Save uses the loaded original identity, never the editable Load path or
+any selected log path. Semantically unchanged criteria preserve exact original
+bytes (including JSON formatting/escapes/CRLF). Changed definitions are validated
+without source selection and serialized as supported JSON. External changes,
+deleted originals and invalid criteria retain the form; a valid serialized draft
+is journaled before plan/publication checks. Existing dirty recovery is preserved
+and must be reviewed in Source rather than silently overwritten. Save is disabled
+when the original cannot acquire the shared Reader editor/recovery storage.
+A filesystem publication error can mean the write reached the drive; the UI
+requires review before retrying and does not claim rollback. Save never rescans or
+replaces the retained source-locked result. Closing before Save does not persist
+unsubmitted form edits; invalid typed fields remain in the open form.
+
+Automatic membership/rotation Follow remains open. Full Follow must keep existing `LogTail`
 sessions, consume reset segments and avoid duplicating a moved source. #1382
-remains open for these capabilities and native acceptance; a usable desktop
+remains open for full Follow and native acceptance; a usable desktop
 snapshot flow does not establish them.
 
 ## Verification boundary
