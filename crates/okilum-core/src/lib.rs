@@ -14,6 +14,7 @@ pub mod analyzer;
 pub mod archive;
 pub mod callout;
 pub mod capture;
+mod change_detection;
 pub mod code_language;
 #[cfg(all(unix, feature = "brain"))]
 pub mod decision_reuse;

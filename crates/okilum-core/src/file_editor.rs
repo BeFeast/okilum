@@ -163,10 +163,9 @@ struct Draft {
 }
 
 /// What a `stat` of the note says about it: which file it is, its size, and
-/// when its content or metadata last changed. A write in place changes the
-/// size, the mtime or at least the ctime, which no program can set back; a
-/// replacement (a save, Syncthing) is another inode. The note is read again
-/// whenever any of them differ.
+/// when its content or metadata last changed. Same-tick writes can preserve all
+/// of these fields. Refresh verifies bytes on coarse/network filesystems and
+/// during the current timestamp tick; save always checks exact bytes.
 #[cfg(unix)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiskStamp {
@@ -184,7 +183,7 @@ impl DiskStamp {
             ino: metadata.ino(),
             size: metadata.size(),
             mtime: (metadata.mtime(), metadata.mtime_nsec()),
-            ctime: (metadata.ctime(), metadata.ctime_nsec()),
+            ctime: crate::change_detection::change_time(metadata.ctime(), metadata.ctime_nsec()),
         }
     }
 }
@@ -434,11 +433,27 @@ impl FileEditor {
         #[cfg(windows)]
         Ok((text, None))
     }
-    /// The note's stamp now, without reading it.
+    /// The note's stamp now, verifying content against the base when required.
     #[cfg(unix)]
     fn stamp_now(&self) -> Result<Option<DiskStamp>> {
         let file = open_regular_at(&self.directory.file, self.draft.path.file_name().unwrap())?;
-        Ok(Some(DiskStamp::of(&file.metadata()?)))
+        let stamp = DiskStamp::of(&file.metadata()?);
+        if self.on_disk == Some(stamp) {
+            let changed = u64::try_from(stamp.ctime.0)
+                .ok()
+                .and_then(|seconds| {
+                    std::time::UNIX_EPOCH
+                        .checked_add(std::time::Duration::new(seconds, stamp.ctime.1 as u32))
+                })
+                .unwrap_or(std::time::SystemTime::now());
+            if crate::change_detection::needs_content_check(&self.draft.path, changed)
+                && crate::change_detection::hash_reader(&file, stamp.size)?
+                    != crate::change_detection::digest(self.base_bytes())
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(stamp))
     }
     #[cfg(windows)]
     fn stamp_now(&self) -> Result<Option<DiskStamp>> {
@@ -477,8 +492,9 @@ impl FileEditor {
     /// Refresh only a clean buffer. Dirty source is never replaced by a watcher.
     ///
     /// The folder is checked every time; the note itself is read only when its
-    /// stamp differs from the one this editor last saw holding its base
-    /// (#1363), so a refresh after the editor's own save does no read.
+    /// stamp differs from the one this editor last saw holding its base.
+    /// Coarse/network filesystems and the current tick additionally compare a
+    /// bounded fingerprint against that exact base, including after own saves.
     pub fn refresh_from_disk(&mut self) -> Result<Save> {
         self.directory.validate(self.draft.path.parent().unwrap())?;
         if self.on_disk.is_some() && self.stamp_now()? == self.on_disk {
@@ -1546,6 +1562,51 @@ mod tests {
             .unwrap();
         assert_eq!(editor.save().unwrap(), Save::Conflict);
         assert_eq!(fs::read_to_string(path).unwrap(), "external");
+    }
+
+    #[test]
+    fn content_fallback_refresh_conflict_and_failed_recovery_keep_exact_baselines() {
+        crate::change_detection::with_content_checks(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("note.md");
+            fs::write(&path, "original").unwrap();
+            let mut editor = FileEditor::open(&path, &dir.path().join("state")).unwrap();
+            let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+            let cheap = DiskStamp::of(&fs::metadata(&path).unwrap());
+            let write = |text| {
+                fs::write(&path, text).unwrap();
+                File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(mtime)
+                    .unwrap();
+                assert_eq!(
+                    cheap,
+                    DiskStamp::of(&fs::metadata(&path).unwrap()),
+                    "positive control: identical cheap metadata"
+                );
+            };
+            write("external");
+            // Failed durable recovery must leave both visible text and save base intact.
+            fs::create_dir(&editor.journal).unwrap();
+            assert!(editor.refresh_from_disk().is_err());
+            assert_eq!(editor.text(), "original");
+            fs::remove_dir(&editor.journal).unwrap();
+            editor.set_text("my draft".into()).unwrap();
+            assert_eq!(editor.refresh_from_disk().unwrap(), Save::Conflict);
+            assert_eq!(editor.save().unwrap(), Save::Conflict);
+            assert_eq!(editor.text(), "my draft");
+            assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+            editor.reload().unwrap();
+            write("NEW text");
+            assert_eq!(editor.refresh_from_disk().unwrap(), Save::Saved);
+            assert_eq!(editor.text(), "NEW text");
+            editor.set_text("mine now".into()).unwrap();
+            write("last one");
+            assert_eq!(editor.keep_mine("NEW text").unwrap(), Save::Conflict);
+            assert_eq!(fs::read_to_string(&path).unwrap(), "last one");
+        });
     }
 
     #[test]

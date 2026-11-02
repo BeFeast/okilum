@@ -60,6 +60,8 @@ pub struct PreviewTimings {
     pub read_ms: f64,
     pub rewrite_ms: f64,
     pub total_ms: f64,
+    /// Sources decoded for rewriting; revision fingerprints are additional IO
+    /// included in candidates_ms, and validate independently fingerprints again.
     pub files_read: usize,
 }
 impl Preview {
@@ -845,7 +847,21 @@ mod tests {
     #[test]
     fn indexed_preview_reuses_imported_sources_but_detects_preserved_mtime_new_links() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        if !crate::change_detection::native_ctime_changes(dir.path()) {
+            return;
+        }
+        preserved_mtime_preview_case(dir.path());
+    }
+
+    #[test]
+    fn content_fallback_finds_new_referrers_and_rejects_stale_preview() {
+        crate::change_detection::with_content_checks(|| {
+            let dir = tempfile::tempdir().unwrap();
+            preserved_mtime_preview_case(dir.path());
+        });
+    }
+
+    fn preserved_mtime_preview_case(root: &Path) {
         let imported = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         for (path, raw) in [
             ("from.md", "source"),
