@@ -23,6 +23,35 @@ pub(super) fn handle_link(
     window: &mut Window,
     cx: &mut App,
 ) {
+    // Remote Markdown never enters local prepared-link navigation, writer state
+    // or history. Rewritten links use captured source identity, not diagnostics.
+    let remote = entity.upgrade().map_or_else(
+        || reader_remote_markdown::authored_ssh_url(url, []),
+        |entity| {
+            let reader = entity.read(cx);
+            reader_remote_markdown::authored_ssh_url(
+                url,
+                reader
+                    .link_identities
+                    .iter()
+                    .map(|link| (link.url.as_str(), link.wiki, link.target.as_str())),
+            )
+        },
+    );
+    let remote_result = match remote {
+        Ok(Some(url)) => Some(reader_remote_markdown::show(&url, cx)),
+        Err(error) => Some(Err(error)),
+        Ok(None) => None,
+    };
+    if let Some(result) = remote_result {
+        if let Err(error) = result {
+            let _ = entity.update(cx, |this, cx| {
+                this.link_notice = Some(error.to_string().into());
+                cx.notify();
+            });
+        }
+        return;
+    }
     if let Some(entity) = entity.upgrade() {
         let landed = entity.update(cx, |this, cx| {
             let landing = reader_obsidian::footnote_landing(url, &this.note_source)?;
