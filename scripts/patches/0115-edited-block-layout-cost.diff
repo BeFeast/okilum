@@ -236,7 +236,7 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
  }
 
  #[cfg(test)]
-@@ -133,6 +311,160 @@
+@@ -133,6 +311,403 @@
      fn line() -> LineItem {
          // Construct through the sibling module's test helper.
          LineItem::cached_test_line(8, smallvec::smallvec![0..4, 4..8])
@@ -291,6 +291,249 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +        });
 +        cache.remember_projection(next);
 +        (tree, KEY_BUILDS.with(|count| count.get()))
++    }
++
++
++    fn installed_pin(
++        projection: Arc<dyn SourceProjection>,
++        epoch: u64,
++    ) -> crate::input::projection::PinnedProjection {
++        crate::input::projection::PinnedProjection {
++            stamp: crate::input::projection::LayoutStamp {
++                source: projection.source().stamp,
++                presentation: epoch,
++            },
++            projection,
++        }
++    }
++
++    fn real_map(
++        projection: Arc<dyn SourceProjection>,
++        epoch: u64,
++        width: f32,
++        window: &gpui::Window,
++        cx: &mut gpui::App,
++    ) -> super::super::DisplayMap {
++        let mut map = super::super::DisplayMap::new(gpui::font("sans-serif"), px(16.), Some(px(width)));
++        map.set_wrapping_indent(super::super::WrappingIndent::None, cx);
++        let source = ropey::Rope::from(projection.source().text.as_ref());
++        map.ensure_text_prepared(&source, cx);
++        map.install_projection(Some(installed_pin(projection, epoch)), &source, window, cx);
++        map
++    }
++
++    fn same_real_geometry(
++        actual: &super::super::DisplayMap,
++        cold: &super::super::DisplayMap,
++        source: &str,
++    ) {
++        use crate::input::RopeExt as _;
++        use unicode_segmentation::UnicodeSegmentation as _;
++        assert_eq!(actual.buffer_line_count(), cold.buffer_line_count());
++        assert_eq!(actual.display_row_count(), cold.display_row_count());
++        for row in 0..cold.buffer_line_count() {
++            assert_eq!(
++                actual.buffer_line_to_display_row_range(row),
++                cold.buffer_line_to_display_row_range(row),
++                "wrapped row {row}"
++            );
++        }
++        let rope = ropey::Rope::from(source);
++        for at in source
++            .grapheme_indices(true)
++            .map(|(at, _)| at)
++            .chain(std::iter::once(source.len()))
++        {
++            let point = rope.offset_to_point(at);
++            let buffer = super::super::BufferPoint::new(point.row, point.column);
++            let expected = cold.buffer_pos_to_display_pos(buffer);
++            assert_eq!(
++                actual.buffer_pos_to_display_pos(buffer),
++                expected,
++                "source byte {at}"
++            );
++            assert_eq!(
++                actual.display_pos_to_buffer_pos(expected),
++                cold.display_pos_to_buffer_pos(expected)
++            );
++        }
++    }
++
++    #[gpui::test]
++    fn dirty_install_uses_real_wrapping_and_matches_cold_after_edit_resize_and_undo(
++        cx: &mut gpui::TestAppContext,
++    ) {
++        cx.update(crate::init);
++        let window = cx.add_empty_window();
++        window.update(|window, cx| {
++            use crate::input::RopeExt as _;
++            let raw: String = (0..700)
++                .map(|n| format!("row{n} e\u{301} אבג 👩\u{200d}💻 wrapping tail\r\n"))
++                .collect();
++            let original = Arc::new(snapshot(&raw));
++            KEY_BUILDS.with(|count| count.set(0));
++            let mut map = real_map(original.clone(), 1, 100., window, cx);
++            assert_eq!(
++                KEY_BUILDS.with(|count| count.get()),
++                701,
++                "cold positive control traverses the production row layout closure"
++            );
++            assert!(
++                map.display_row_count() > map.buffer_line_count(),
++                "actual soft wraps exist"
++            );
++            let at = ropey::Rope::from(raw.as_str()).line_start_offset(350);
++            let mut edited = raw.clone();
++            edited.insert(at, 'X');
++            let mut next = snapshot(&edited);
++            next.source.stamp.generation = 2;
++            let next = Arc::new(next);
++            let source = ropey::Rope::from(edited.as_str());
++            map.on_text_changed(&source, &(at..at), &ropey::Rope::from("X"), cx);
++            KEY_BUILDS.with(|count| count.set(0));
++            let reshaped =
++                map.install_projection(Some(installed_pin(next.clone(), 2)), &source, window, cx);
++            assert_eq!(
++                KEY_BUILDS.with(|count| count.get()),
++                1,
++                "no keys built for retained rows"
++            );
++            assert_eq!(
++                reshaped, 1,
++                "real production shaping stays on the edited row"
++            );
++            let cold = real_map(next.clone(), 3, 100., window, cx);
++            same_real_geometry(&map, &cold, &edited);
++            KEY_BUILDS.with(|count| count.set(0));
++            assert_eq!(
++                map.install_projection(Some(installed_pin(next.clone(), 4)), &source, window, cx),
++                0
++            );
++            assert_eq!(
++                KEY_BUILDS.with(|count| count.get()),
++                0,
++                "unchanged metrics are not reconstructed"
++            );
++            map.on_layout_changed(Some(px(80.)), cx);
++            KEY_BUILDS.with(|count| count.set(0));
++            map.install_projection(Some(installed_pin(next, 5)), &source, window, cx);
++            assert_eq!(
++                KEY_BUILDS.with(|count| count.get()),
++                701,
++                "width change invalidates global geometry"
++            );
++            same_real_geometry(
++                &map,
++                &real_map(Arc::new(snapshot(&edited)), 6, 80., window, cx),
++                &edited,
++            );
++            let source = ropey::Rope::from(raw.as_str());
++            map.on_text_changed(&source, &(at..at + 1), &ropey::Rope::new(), cx);
++            let mut undo = snapshot(&raw);
++            undo.source.stamp.generation = 3;
++            KEY_BUILDS.with(|count| count.set(0));
++            assert_eq!(
++                map.install_projection(Some(installed_pin(Arc::new(undo), 7)), &source, window, cx),
++                1
++            );
++            assert_eq!(KEY_BUILDS.with(|count| count.get()), 1);
++            same_real_geometry(&map, &real_map(original, 8, 80., window, cx), &raw);
++        });
++    }
++
++    struct HiddenPrefix {
++        source: crate::input::projection::SourceSnapshot,
++        prefix: usize,
++    }
++    impl SourceProjection for HiddenPrefix {
++        fn source(&self) -> &crate::input::projection::SourceSnapshot {
++            &self.source
++        }
++        fn text(&self) -> &str {
++            &self.source.text[self.prefix..]
++        }
++        fn styles(&self) -> &[ProjectionStyle] {
++            &[]
++        }
++        fn to_projected(
++            &self,
++            byte: crate::input::projection::SourceByte,
++            _: crate::input::projection::ConcealBias,
++        ) -> Option<crate::input::projection::ProjectedByte> {
++            (byte.0 <= self.source.text.len()).then_some(crate::input::projection::ProjectedByte(
++                byte.0.saturating_sub(self.prefix),
++            ))
++        }
++        fn to_source(
++            &self,
++            byte: crate::input::projection::ProjectedByte,
++            bias: crate::input::projection::ConcealBias,
++        ) -> Option<crate::input::projection::SourceByte> {
++            (byte.0 <= self.text().len()).then_some(crate::input::projection::SourceByte(
++                if byte.0 == 0 && bias == crate::input::projection::ConcealBias::Left {
++                    0
++                } else {
++                    self.prefix + byte.0
++                },
++            ))
++        }
++    }
++
++    #[gpui::test]
++    fn dirty_install_reuses_metrics_but_replaces_the_exact_source_hit_map(
++        cx: &mut gpui::TestAppContext,
++    ) {
++        cx.update(crate::init);
++        let window = cx.add_empty_window();
++        window.update(|window, cx| {
++            let body = "e\u{301} אבג 👩\u{200d}💻 wraps here\r\nnext\r\n";
++            let make = |prefix: &str, generation| {
++                Arc::new(HiddenPrefix {
++                    source: crate::input::projection::SourceSnapshot {
++                        stamp: crate::input::projection::SourceStamp {
++                            document: 9,
++                            generation,
++                        },
++                        text: Arc::from(format!("{prefix}{body}")),
++                    },
++                    prefix: prefix.len(),
++                })
++            };
++            let old = make("# ", 1);
++            let mut map = real_map(old.clone(), 1, 100., window, cx);
++            let next = make("## ", 2);
++            let source = ropey::Rope::from(next.source.text.as_ref());
++            map.on_text_changed(&source, &(0..2), &ropey::Rope::from("## "), cx);
++            KEY_BUILDS.with(|count| count.set(0));
++            assert_eq!(
++                map.install_projection(Some(installed_pin(next.clone(), 2)), &source, window, cx),
++                0
++            );
++            assert_eq!(
++                KEY_BUILDS.with(|count| count.get()),
++                0,
++                "identical displayed geometry retained"
++            );
++            let start = super::super::DisplayPoint::new(0, 0);
++            assert_eq!(
++                map.display_pos_to_buffer_pos(start),
++                super::super::BufferPoint::new(0, 3),
++                "new canonical prefix is read through the current pin, never cached old identity"
++            );
++            assert_eq!(
++                old.to_source(
++                    crate::input::projection::ProjectedByte(0),
++                    crate::input::projection::ConcealBias::Right
++                ),
++                Some(crate::input::projection::SourceByte(2)),
++                "previous immutable hit map is unchanged"
++            );
++            same_real_geometry(
++                &map,
++                &real_map(next, 3, 100., window, cx),
++                source.to_string().as_str(),
++            );
++        });
 +    }
 +
 +    #[test]
