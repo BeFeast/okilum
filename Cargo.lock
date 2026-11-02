@@ -6620,6 +6620,7 @@ dependencies = [
  "objc2-service-management",
  "okilum-sync",
  "reqwest",
+ "ring",
  "rustix",
  "serde",
  "serde_json",

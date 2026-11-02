@@ -84,6 +84,47 @@ fn helper_policy() -> CodeRequirement {
 }
 
 #[test]
+fn bundled_runtime_requires_fixed_path_outer_seal_nested_signature_and_exact_digest() -> Result<()>
+{
+    use sha2::{Digest, Sha256};
+    let fixture = Fixture::new()?;
+    let guard = fixture.guard()?;
+    let policy =
+        CodeRequirement::team_and_identifier("ABCDE12345", "org.example.fixture.syncthing")?;
+    assert!(guard.bundled_runtime(&fixture.binding, &policy).is_err());
+    let executable = fixture.app.join(SYNCTHING);
+    fs::write(&executable, b"synthetic runtime, never executed")?;
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))?;
+    let digest = format!("{:x}", Sha256::digest(fs::read(&executable)?));
+    let provenance = fixture.app.join(SYNCTHING_PROVENANCE);
+    fs::create_dir_all(provenance.parent().unwrap())?;
+    fs::write(
+        &provenance,
+        serde_json::to_vec(&serde_json::json!({
+            "version": "2.1.6", "signed": true, "signed_binary_sha256": digest
+        }))?,
+    )?;
+    let (path, hash, receipt) = guard.bundled_runtime(&fixture.binding, &policy)?;
+    assert_eq!(path, executable);
+    assert_eq!(hash, digest);
+    assert_eq!(receipt, fs::read(&provenance)?);
+    assert!(fixture
+        .signatures
+        .calls
+        .borrow()
+        .contains(&(executable.clone(), policy.clone())));
+    *fixture.signatures.refusal.borrow_mut() = Some(executable.clone());
+    assert!(guard.bundled_runtime(&fixture.binding, &policy).is_err());
+    *fixture.signatures.refusal.borrow_mut() = None;
+    fs::write(&executable, b"tampered")?;
+    assert!(guard.bundled_runtime(&fixture.binding, &policy).is_err());
+    fs::remove_file(&executable)?;
+    symlink("/usr/bin/true", &executable)?;
+    assert!(guard.bundled_runtime(&fixture.binding, &policy).is_err());
+    Ok(())
+}
+
+#[test]
 fn valid_bundle_checks_outer_seal_and_separate_helper_policy_without_writes() -> Result<()> {
     let fixture = Fixture::new()?;
     let guard = fixture.guard()?;
@@ -232,4 +273,80 @@ fn read_only_foreign_ownership_is_not_a_trusted_installation() {
     }
     assert!(trusted_owner(0, 0));
     assert!(!trusted_owner(501, 0));
+}
+
+#[test]
+fn preparation_runtime_authenticates_without_private_state_or_binding() -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let fixture = Fixture::new()?;
+    fs::remove_dir(Path::new(&fixture.binding.state_directory))?;
+    let runtime = fixture.app.join(SYNCTHING);
+    fs::write(&runtime, b"synthetic signed runtime; never executed")?;
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755))?;
+    let provenance = fixture.app.join(SYNCTHING_PROVENANCE);
+    fs::create_dir_all(provenance.parent().unwrap())?;
+    for relative in [
+        "",
+        "Contents",
+        "Contents/MacOS",
+        "Contents/Library",
+        "Contents/Library/LaunchAgents",
+        "Contents/Resources",
+        "Contents/Resources/Syncthing",
+    ] {
+        fs::set_permissions(
+            fixture.app.join(relative),
+            fs::Permissions::from_mode(0o755),
+        )?;
+    }
+    let hash = format!("{:x}", Sha256::digest(fs::read(&runtime)?));
+    fs::write(
+        &provenance,
+        serde_json::to_vec(
+            &serde_json::json!({"version":"2.1.6", "signed":true, "signed_binary_sha256":hash}),
+        )?,
+    )?;
+    fs::set_permissions(&provenance, fs::Permissions::from_mode(0o644))?;
+    let policy =
+        CodeRequirement::team_and_identifier("ABCDE12345", "org.example.fixture.syncthing")?;
+    let run = |exe: &Path| {
+        trusted_preparation_runtime_with(
+            &fixture.app,
+            "reader",
+            &app_policy(),
+            &helper_policy(),
+            &policy,
+            exe,
+            &fixture.signatures,
+        )
+    };
+    let current = fixture.app.join("Contents/MacOS/reader");
+    assert!(run(&runtime).is_err()); // A signed sibling is not the invoking app.
+    let (selected, digest, _) = run(&current)?;
+    assert_eq!(selected, runtime);
+    assert_eq!(digest, hash);
+    assert!(!Path::new(&fixture.binding.state_directory).exists());
+    assert!(fixture
+        .signatures
+        .calls
+        .borrow()
+        .iter()
+        .any(|(path, _)| path == &fixture.app));
+    for refused in [
+        fixture.app.clone(),
+        fixture.app.join(HELPER),
+        runtime.clone(),
+    ] {
+        *fixture.signatures.refusal.borrow_mut() = Some(refused);
+        assert!(run(&current).is_err());
+    }
+    *fixture.signatures.refusal.borrow_mut() = None;
+    fs::write(&runtime, b"changed after signing")?;
+    assert!(run(&current).is_err());
+    fs::write(&runtime, b"synthetic signed runtime; never executed")?;
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o777))?;
+    assert!(run(&current).is_err());
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755))?;
+    run(&current)?; // Positive control after restoring exactly the trusted bytes.
+    Ok(())
 }

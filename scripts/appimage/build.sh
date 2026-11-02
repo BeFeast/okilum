@@ -58,6 +58,13 @@ python3 ../../scripts/appimage/check-elf.py AppDir/usr/bin/okilum \
 install -Dm644 ../../LICENSE AppDir/usr/share/licenses/okilum/LICENSE
 install -Dm644 ../../THIRD_PARTY_NOTICES.md AppDir/usr/share/licenses/okilum/THIRD_PARTY_NOTICES.md
 printf '%s\n' "$GITHUB_SHA" > AppDir/SOURCE_SHA
+# Stage after linuxdeploy stripping so the checksum-pinned Go ELF stays exact.
+# An explicit local archive supports offline fixture/build inputs with the same pins.
+syncthing_bundle_args=(--appdir AppDir)
+if [[ -n "${OKILUM_SYNCTHING_ARCHIVE:-}" ]]; then
+    syncthing_bundle_args+=(--archive "$OKILUM_SYNCTHING_ARCHIVE")
+fi
+python3 ../../scripts/syncthing/linux_bundle.py "${syncthing_bundle_args[@]}"
 # Keep the dependency inventory beside the immutable source marker.
 find AppDir/usr/lib -type f -printf '%f\n' | sort > bundled-libraries.txt
 ARCH=x86_64 ./tools/appimagetool --runtime-file tools/runtime AppDir Okilum-x86_64.AppImage

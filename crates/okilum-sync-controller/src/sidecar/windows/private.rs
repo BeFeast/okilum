@@ -109,16 +109,60 @@ fn validate_grant(descriptor: &Descriptor, sid: &str, flags: u8) -> Result<()> {
     }
     Ok(())
 }
+/// Open from the drive root outwards. Each successful open must retain a
+/// non-delete-sharing handle and reject reparse points before the next lookup.
+/// Keeping the handles alive prevents a checked prefix being renamed away while
+/// a later full-path lookup resolves it again.
+fn pin_ancestors<T>(path: &str, mut open: impl FnMut(&str) -> Result<T>) -> Result<Vec<T>> {
+    let mut handles = Vec::new();
+    for (index, _) in path.match_indices('\\') {
+        let end = if index == 2 { index + 1 } else { index };
+        handles.push(open(&path[..end])?);
+    }
+    Ok(handles)
+}
+fn open_ancestor(path: &str) -> Result<OwnedHandle> {
+    let text: Vec<_> = path.encode_utf16().chain(Some(0)).collect();
+    let raw = unsafe {
+        CreateFileW(
+            PCWSTR(text.as_ptr()),
+            FILE_LIST_DIRECTORY.0 | FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )?
+    };
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe {
+        GetFileInformationByHandle(HANDLE(handle.as_raw_handle()), &mut info)?;
+    }
+    ensure!(
+        info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0
+            && info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0,
+        "ordinary state ancestor directory required"
+    );
+    Ok(handle)
+}
 /// Keeps the directory open without FILE_SHARE_DELETE to prevent replacement
 /// while a future journal holds its lock. Does not create files or start Sync.
 pub struct PrivateDirectory {
     handle: OwnedHandle,
+    // Keep every ancestor pinned until after the leaf handle is released.
+    _ancestors: Vec<OwnedHandle>,
 }
 impl PrivateDirectory {
     /// Explicit opt-in only. Parent must already exist; never recursively creates
     /// or changes permissions on user-provided ancestors.
     pub fn prepare(path: &str) -> Result<Self> {
         super::path(path)?;
+        let path = path.trim_end_matches('\\');
+        super::path(path)?;
+        // Pin before creation too: refusing a redirected path after creating a
+        // directory there would already have modified the wrong location.
+        let _ancestors = pin_ancestors(path, open_ancestor)?;
         let sid = current_sid()?;
         let descriptor = parse(&format!("O:{sid}D:P(A;OICI;FA;;;{sid})"))?;
         let attrs = SECURITY_ATTRIBUTES {
@@ -159,7 +203,7 @@ impl PrivateDirectory {
         )
     }
     /// Validation and identity only. Neither blocks nor is blocked by a holder of
-    /// the exclusive lock, and it does not prevent replacement of the directory.
+    /// the exclusive lock. The leaf may be replaced; its ancestors remain pinned.
     pub fn inspect(path: &str) -> Result<Self> {
         Self::open_with(
             path,
@@ -169,6 +213,9 @@ impl PrivateDirectory {
     }
     fn open_with(path: &str, access: u32, share: FILE_SHARE_MODE) -> Result<Self> {
         super::path(path)?;
+        let path = path.trim_end_matches('\\');
+        super::path(path)?;
+        let ancestors = pin_ancestors(path, open_ancestor)?;
         let text: Vec<_> = path.encode_utf16().chain(Some(0)).collect();
         let raw = unsafe {
             CreateFileW(
@@ -183,6 +230,7 @@ impl PrivateDirectory {
         };
         let directory = Self {
             handle: unsafe { OwnedHandle::from_raw_handle(raw.0) },
+            _ancestors: ancestors,
         };
         directory.verify()?;
         Ok(directory)
@@ -303,6 +351,69 @@ pub(crate) fn verify_private_file(file: &std::fs::File) -> Result<()> {
     }
     validate_grant(&Descriptor(descriptor), &current_sid()?, 0)
         .map_err(|e| e.context("private regular journal required"))
+}
+
+#[cfg(test)]
+mod ancestor_fixtures {
+    use super::pin_ancestors;
+    use std::{cell::Cell, rc::Rc};
+
+    struct Pin(Rc<Cell<usize>>);
+    impl Drop for Pin {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() - 1);
+        }
+    }
+
+    #[test]
+    fn retains_every_prefix_until_the_directory_is_released() {
+        let live = Rc::new(Cell::new(0));
+        let mut visited = Vec::new();
+        let pins = pin_ancestors(r"C:\Users\owner\state", |prefix| {
+            // Before resolving the next prefix, every earlier one is pinned.
+            assert_eq!(live.get(), visited.len());
+            visited.push(prefix.to_string());
+            live.set(live.get() + 1);
+            Ok(Pin(live.clone()))
+        })
+        .unwrap();
+        assert_eq!(visited, [r"C:\", r"C:\Users", r"C:\Users\owner"]);
+        assert_eq!(live.get(), 3);
+        drop(pins);
+        assert_eq!(live.get(), 0);
+    }
+
+    #[test]
+    fn refuses_reparse_ancestors_before_resolving_their_children() {
+        let prefixes = [r"C:\", r"C:\Users", r"C:\Users\owner"];
+        // An ordinary final directory would pass the old leaf-only check.
+        // Inject a reparse refusal at every possible ancestor, including root.
+        for refused in 0..prefixes.len() {
+            let live = Rc::new(Cell::new(0));
+            let mut visited = Vec::new();
+            let result = pin_ancestors(r"C:\Users\owner\state", |prefix| {
+                assert_eq!(live.get(), visited.len());
+                visited.push(prefix.to_string());
+                if prefix == prefixes[refused] {
+                    return Err(std::io::Error::other(
+                        "ordinary state ancestor directory required",
+                    )
+                    .into());
+                }
+                live.set(live.get() + 1);
+                Ok(Pin(live.clone()))
+            });
+            assert!(result.is_err());
+            assert_eq!(visited, prefixes[..=refused]);
+            assert_eq!(live.get(), 0, "failed walks release all earlier pins");
+        }
+    }
+
+    #[test]
+    fn direct_drive_child_still_pins_the_root() {
+        let pins = pin_ancestors(r"D:\state", |prefix| Ok(prefix.to_string())).unwrap();
+        assert_eq!(pins, [r"D:\"]);
+    }
 }
 
 #[cfg(test)]

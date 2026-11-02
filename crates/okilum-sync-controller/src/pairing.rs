@@ -172,27 +172,11 @@ impl Service {
             None,
         )?;
         let approval: Approval = serde_json::from_value(value)?;
-        ensure!(
-            approval.request.id == s.id
-                && approval.request.device_id == s.device_id
-                && approval.request.name == s.name,
-            "pairing request identity differs"
-        );
-        let url = Url::parse(&approval.approval_url)?;
-        ensure!(
-            url.origin().ascii_serialization() == self.origin
-                && url.path() == "/"
-                && url.query().is_none()
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.fragment() == Some(format!("sync={}", s.id).as_str()),
-            "unexpected approval URL"
-        );
-        ensure!(
-            approval.request.code.len() == 8
-                && approval.request.code.bytes().all(|b| b.is_ascii_hexdigit()),
-            "invalid comparison code"
-        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("system clock precedes Unix epoch")?
+            .as_secs();
+        approval.validate(&self.origin, s, now)?;
         Ok(approval)
     }
     pub fn exchange(&self, s: &Session) -> Result<Option<Registration>> {
@@ -272,6 +256,36 @@ impl Service {
         Ok(state)
     }
 }
+impl Approval {
+    fn validate(&self, origin: &str, s: &Session, now: u64) -> Result<()> {
+        ensure!(
+            self.request.id == s.id
+                && self.request.device_id == s.device_id
+                && self.request.name == s.name,
+            "pairing request identity differs"
+        );
+        let url = Url::parse(&self.approval_url)?;
+        ensure!(
+            url.origin().ascii_serialization() == origin
+                && url.path() == "/"
+                && url.query().is_none()
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment() == Some(format!("sync={}", s.id).as_str()),
+            "unexpected approval URL"
+        );
+        ensure!(
+            self.request.code.len() == 8
+                && self.request.code.bytes().all(|b| b.is_ascii_hexdigit()),
+            "invalid comparison code"
+        );
+        ensure!(
+            self.request.expires > 0 && self.request.expires as u64 > now,
+            "pairing request expired"
+        );
+        Ok(())
+    }
+}
 impl Descriptor {
     pub fn validate(&self) -> Result<()> {
         ensure!(
@@ -338,6 +352,45 @@ mod tests {
     use super::*;
     fn id() -> String {
         ["AAAAAAA"; 8].join("-")
+    }
+    #[test]
+    fn invitation_expiry_scope_and_unicode_round_trip() -> Result<()> {
+        let name = "Олег — מחשב 💻 e\u{301}";
+        let session = Session::new(id(), name.into())?;
+        let restored: Session = serde_json::from_slice(&serde_json::to_vec(&session)?)?;
+        assert_eq!(restored.name(), name);
+        let origin = "https://pairing.example.test";
+        let value = json!({
+            "approval_url": format!("{origin}/#sync={}", session.id()),
+            "request": {
+                "id": session.id(),
+                "device_id": session.device_id(),
+                "name": name,
+                "code": "1234abcd",
+                "state": "requested",
+                "expires": 1_001
+            }
+        });
+        let approval: Approval = serde_json::from_slice(&serde_json::to_vec(&value)?)?;
+        assert_eq!(approval.request.name, name);
+        assert!(approval.validate(origin, &restored, 1_000).is_ok());
+        assert!(approval.validate(origin, &restored, 1_001).is_err());
+        assert!(approval.validate(origin, &restored, 1_002).is_err());
+        for expires in [0, -1] {
+            let mut invalid = approval.clone();
+            invalid.request.expires = expires;
+            assert!(invalid.validate(origin, &restored, 1_000).is_err());
+        }
+        let mut invalid = approval.clone();
+        invalid.approval_url = format!("https://other.example.test/#sync={}", session.id());
+        assert!(invalid.validate(origin, &restored, 1_000).is_err());
+        let mut invalid = approval.clone();
+        invalid.request.device_id = ["BBBBBBB"; 8].join("-");
+        assert!(invalid.validate(origin, &restored, 1_000).is_err());
+        let mut invalid = approval.clone();
+        invalid.request.id = Uuid::new_v4();
+        assert!(invalid.validate(origin, &restored, 1_000).is_err());
+        Ok(())
     }
     #[test]
     fn service_urls_and_descriptor_authority_fail_closed() {
