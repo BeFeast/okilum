@@ -2954,7 +2954,17 @@ mod rope_revision_tests {
             let mut scanned = Vec::new();
             for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
                 let mut authored = row.repeat(bytes / row.len());
-                authored.push_str(&"z".repeat(bytes - authored.len()));
+                // Keep the tail within the same logical-line bound as the
+                // fixture, rather than appending a note-dependent long line.
+                while authored.len() < bytes {
+                    let width = (bytes - authored.len()).min(line_bytes);
+                    if width > 2 {
+                        authored.push_str(&"z".repeat(width - 2));
+                        authored.push_str("\r\n");
+                    } else {
+                        authored.push_str(&"z".repeat(width));
+                    }
+                }
                 let source = SourceSnapshot {
                     stamp: SourceStamp {
                         document: 2403,
@@ -3028,15 +3038,19 @@ mod rope_revision_tests {
                 assert_eq!(frame.styles(), oracle.styles());
                 // Independent old-style text has no native edit receipt. Running
                 // that compatibility path must exceed the SAME byte-scan budget.
+                let legacy_provider = CachedProvider::classify(source.clone());
                 let legacy = SourceSnapshot {
                     stamp: SourceStamp {
                         generation: 3,
                         ..source.stamp
                     },
-                    text: SourceText::from(format!("{}r", &authored[..bytes - 1])),
+                    // The exact same single key, supplied without its receipt.
+                    // Keep this independent from the provider already advanced
+                    // by the native path, so no second/nonlocal edit is added.
+                    text: SourceText::from(edited.text.as_ref()),
                 };
                 reset_work();
-                let _old = provider.compose(&legacy, &active).unwrap();
+                let _old = legacy_provider.compose(&legacy, &active).unwrap();
                 let old = take_work();
                 assert!(
                     old.scanned_bytes >= bytes,
