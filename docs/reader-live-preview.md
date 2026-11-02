@@ -256,6 +256,8 @@ regional-indicator sequences keep exact boundaries. Reveal, canonical classifier
 coordinate checks, projection validation and background refresh all reuse the
 preceding indexes. Full classification remains off the UI thread;
 byte comparison and bounded metadata reconciliation still inspect the document.
+Smart punctuation checks quote endpoints against that canonical index too,
+instead of segmenting every unchanged prose paragraph again during compose.
 
 Semantic code captures use local block coordinates. A current retained CodeBlock
 with identical literal bytes may reuse its captures after unrelated prose edits;

@@ -322,19 +322,30 @@ impl CachedProvider {
             if reveal.is_raw(snapshot, block) {
                 continue;
             }
-            let candidates = punctuation::replacements(&source[block.clone()], |local| {
-                let range = block.start + local.start..block.start + local.end;
-                !markers
-                    .iter()
-                    .any(|m| m.start < range.end && range.start < m.end)
-                    && !styles.iter().any(|s| {
-                        matches!(
-                            s.style,
-                            Style::Code | Style::CodeBlock | Style::Math | Style::Definition
-                        ) && s.range.start < range.end
-                            && range.start < s.range.end
-                    })
-            });
+            let candidates = punctuation::replacements_indexed(
+                &source[block.clone()],
+                |local| {
+                    let range = block.start + local.start..block.start + local.end;
+                    !markers
+                        .iter()
+                        .any(|m| m.start < range.end && range.start < m.end)
+                        && !styles.iter().any(|s| {
+                            matches!(
+                                s.style,
+                                Style::Code | Style::CodeBlock | Style::Math | Style::Definition
+                            ) && s.range.start < range.end
+                                && range.start < s.range.end
+                        })
+                },
+                |local| {
+                    projection
+                        .validate_active(&Active {
+                            selection: Some(block.start + local.start..block.start + local.end),
+                            composition: None,
+                        })
+                        .is_ok()
+                },
+            );
             for (range, glyph) in candidates {
                 let (Some(start), Some(end)) =
                     (map(block.start + range.start), map(block.start + range.end))
@@ -1223,6 +1234,48 @@ mod tests {
             anchor: SourceByte(source.text.len()),
             head: SourceByte(source.text.len()),
             ..ActiveSource::default()
+        }
+    }
+
+    #[test]
+    fn large_prose_punctuation_uses_retained_canonical_boundaries() {
+        for bytes in [130 * 1024, source_classifier::MAX_BYTES] {
+            let line = format!(
+                "Prose **bold** \"Hello\" ... e\u{301} {}\r\n\r\n",
+                "a".repeat(2048)
+            );
+            let mut text = line.repeat(bytes / line.len());
+            text.push_str(&"z".repeat(bytes - text.len()));
+            let note = source(&text);
+            punctuation::INDEXED_BYTES.with(|n| n.set(0));
+            let cold = punctuation::replacements(&text, |_| true);
+            assert!(
+                !cold.is_empty(),
+                "positive control: quotes and ellipses are decorated"
+            );
+            assert_eq!(
+                punctuation::INDEXED_BYTES.with(|n| n.get()),
+                bytes,
+                "positive control: standalone punctuation builds a whole-note boundary index"
+            );
+            let provider = CachedProvider::classify(note.clone());
+            punctuation::INDEXED_BYTES.with(|n| n.set(0));
+            let initial = provider.compose(&note, &inactive(&note)).unwrap();
+            assert!(initial.text().contains("“Hello” …"));
+            let edited = SourceSnapshot {
+                stamp: SourceStamp {
+                    generation: note.stamp.generation + 1,
+                    ..note.stamp
+                },
+                text: text.replacen("Prose", "qrose", 1).into(),
+            };
+            let frame = provider.compose(&edited, &inactive(&edited)).unwrap();
+            assert!(frame.text().contains("“Hello” …"));
+            assert_eq!(
+                punctuation::INDEXED_BYTES.with(|n| n.get()),
+                0,
+                "compose must use the retained source index, including after an edit"
+            );
         }
     }
 
