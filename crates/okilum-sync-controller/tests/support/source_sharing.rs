@@ -127,11 +127,22 @@ fn managed_source_share_empty_receive_and_bidirectional_hashes() -> Result<()> {
     );
     pair.first.shutdown();
     drop(pair.first);
+    // Lost completion acknowledgement: the folder was unpaused but only its
+    // earlier durable creation/witness reached disk. Resume the original scope.
+    let journal_file = pair.source_state.join("direct.json");
+    let mut interrupted: Value = serde_json::from_slice(&fs::read(&journal_file)?)?;
+    interrupted["sources"][0]["active"] = json!(false);
+    interrupted["attached"] = json!([]);
+    for peer in interrupted["peers"].as_object_mut().unwrap().values_mut() {
+        peer["allowed"] = json!([]);
+    }
+    fs::write(&journal_file, serde_json::to_vec(&interrupted)?)?;
     pair.first = Controller::open(
         pair.source_state.clone(),
         vec![pair.source.home.join("config.xml")],
     )?;
     pair.first.refresh()?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
     assert_eq!(
         pair.shared_catalog()?,
         id,
@@ -225,9 +236,56 @@ fn managed_source_skipped_share_negative_control() -> Result<()> {
         fs::read_to_string(pair.source.vault.join("sentinel.md"))?,
         "source stays here"
     );
+    // A selected external config cannot be taken over by supplying a managed
+    // receipt for a different identity. No second daemon is bootstrapped.
+    let pid = pair.source.child.as_ref().unwrap().id();
+    pair.first
+        .set_configurations(vec![pair.target.home.join("config.xml")])?;
+    assert!(pair
+        .first
+        .share_vault(&pair.prepared, &pair.source.vault)
+        .is_err());
+    assert_eq!(pair.source.api.config()?, before);
+    assert!(!pair.source.vault.join(".stignore").exists());
+    pair.first
+        .set_configurations(vec![pair.source.home.join("config.xml")])?;
+    fs::write(
+        pair.source.vault.join(".stignore"),
+        "private custom rule\r\n",
+    )?;
+    assert!(pair
+        .first
+        .share_vault(&pair.prepared, &pair.source.vault)
+        .is_err());
+    assert_eq!(
+        fs::read_to_string(pair.source.vault.join(".stignore"))?,
+        "private custom rule\r\n"
+    );
+    assert_eq!(pair.source.api.config()?, before);
+    // Remove only the fixture-created policy after asserting exact preservation.
+    fs::remove_file(pair.source.vault.join(".stignore"))?;
     // Positive control for the exact observer that rejected the skipped step.
     pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
     pair.shared_catalog()?;
+    assert_eq!(pair.source.child.as_ref().unwrap().id(), pid);
+    let shared_config = pair.source.api.config()?;
+    let previous = pair.source.vault.with_file_name("preserved-source");
+    fs::rename(&pair.source.vault, &previous)?;
+    fs::create_dir(&pair.source.vault)?;
+    fs::write(
+        pair.source.vault.join("replacement.md"),
+        "replacement bytes",
+    )?;
+    assert!(pair
+        .first
+        .share_vault(&pair.prepared, &pair.source.vault)
+        .is_err());
+    assert_eq!(pair.source.api.config()?, shared_config);
+    assert_eq!(fs::read_dir(&pair.source.vault)?.count(), 1);
+    assert_eq!(
+        fs::read_to_string(previous.join("sentinel.md"))?,
+        "source stays here"
+    );
     Ok(())
 }
 
