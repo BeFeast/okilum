@@ -187,13 +187,7 @@ pub(super) fn confirm_startup() {
 
 /// Shared by the production Restart action and real-editor regression tests.
 pub(crate) fn prepare_restart(cx: &mut gpui::App) -> anyhow::Result<Vec<std::ffi::OsString>> {
-    let args = crate::reader_open::update_restart_args(cx)?;
-    anyhow::ensure!(
-        crate::reader_editor::protect_all_for_quit(cx),
-        "Your latest edits could not be protected. Okilum will stay open."
-    );
-    crate::reader_ui_state::prepare_for_restart(cx)?;
-    Ok(args)
+    crate::reader_update_restart::prepare(cx)
 }
 
 #[cfg(feature = "appimage-acceptance-harness")]

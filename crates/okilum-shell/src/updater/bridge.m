@@ -657,6 +657,8 @@ bool okilum_updater_ready(void) { return TSDriver.restartReply != nil || TSDrive
 
 // Polled on the GPUI main thread; the guard runs only after freshness succeeds.
 bool okilum_updater_guard_requested(void) { return TSGuardRequested; }
+// Ordinary AppKit Quit uses the same save guard but does not relaunch.
+bool okilum_updater_restart_relaunches(void) { return TSDriver.quitReply == nil; }
 void okilum_updater_refuse_restart(void) {
     TSGuardRequested = NO;
     if (TSDriver.restartReply) {

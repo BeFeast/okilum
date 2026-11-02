@@ -123,3 +123,16 @@ jobs:
         }
         cargo test --locked -p okilum-shell --bin okilum owned_ -- --nocapture --test-threads=1
         exit $LASTEXITCODE
+
+    - name: Run exact update window restoration and dirty single-file regressions
+      shell: pwsh
+      run: |
+        $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
+        foreach ($filter in @('reader_update_restart::tests::', 'reader_editor::tests::update_restart_refuses_unprotected_single_file_then_preserves_latest_draft')) {
+          $list = & cargo test --locked -p okilum-shell --bin okilum $filter -- --list
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $list
+          if (-not ($list | Select-String ': test$')) { Write-Error "No test matches $filter"; exit 1 }
+          cargo test --locked -p okilum-shell --bin okilum $filter -- --nocapture --test-threads=1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        }

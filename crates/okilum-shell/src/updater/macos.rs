@@ -15,6 +15,7 @@ extern "C" {
     fn okilum_updater_finish_restart() -> bool;
     fn okilum_updater_ready() -> bool;
     fn okilum_updater_guard_requested() -> bool;
+    fn okilum_updater_restart_relaunches() -> bool;
     fn okilum_updater_refuse_restart();
     fn okilum_updater_beta() -> bool;
     fn okilum_updater_set_beta(enabled: bool);
@@ -116,6 +117,7 @@ pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
     }
     let result = protect_verified_install(
         cx,
+        unsafe { okilum_updater_restart_relaunches() },
         || {
             anyhow::ensure!(
                 unsafe { okilum_updater_finish_restart() },
@@ -143,21 +145,37 @@ pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
 /// and always reads the current GPUI editor state before committing either path.
 pub(crate) fn protect_verified_install(
     cx: &mut gpui::App,
+    relaunch: bool,
     commit: impl FnOnce() -> anyhow::Result<()>,
     refuse: impl FnOnce(),
 ) -> anyhow::Result<()> {
+    #[cfg(test)]
+    let directory = cx
+        .try_global::<crate::reader_history::TestSessionDirectory>()
+        .map(|directory| Ok(directory.0.clone()))
+        .unwrap_or_else(crate::reader_history::state_directory);
+    #[cfg(not(test))]
+    let directory = crate::reader_history::state_directory();
     install_guard::finish(
         cx,
+        crate::reader_update_restart::protect_editors,
         |cx| {
-            anyhow::ensure!(
-                crate::reader_editor::protect_all_for_quit(cx),
-                "Your latest edits could not be protected. Okilum will stay open."
-            );
+            crate::reader_ui_state::prepare_for_restart(cx)?;
+            if relaunch {
+                let directory = directory
+                    .as_ref()
+                    .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+                crate::reader_update_restart::persist(directory, cx)?;
+            }
             Ok(())
         },
-        crate::reader_ui_state::prepare_for_restart,
         |_| commit(),
-        |_| refuse(),
+        |_| {
+            if let Ok(directory) = &directory {
+                crate::reader_update_restart::clear(directory);
+            }
+            refuse();
+        },
     )
 }
 
