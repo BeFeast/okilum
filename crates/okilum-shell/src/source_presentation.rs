@@ -2944,10 +2944,10 @@ mod rope_revision_tests {
     fn native_receipts_bound_compose_and_old_discovery_controls_at_all_sizes() {
         for row in [
             format!(
-                "# Heading **bold**\r\n\r\nParagraph isn't changed.\r\n{}\r\n| A | B |\r\n|---|---|\r\n| one | two |\r\n\r\n",
-                "Ordinary short prose continues on this logical line.\r\n".repeat(50)
+                "# Heading **bold**\r\n\r\nParagraph isn't changed.\r\n\r\n| A | B |\r\n|---|---|\r\n| one | two |\r\n\r\n```text\r\n{}```\r\n\r\n",
+                "Ordinary short source lines remain unchanged in this code block.\r\n".repeat(300)
             ),
-            "Ordinary prose and a contraction isn't changed.\r\n".to_owned(),
+            format!("Ordinary prose and a contraction isn't changed. {}\r\n", "ordinary prose ".repeat(48)),
             format!("Paragraph {} end.\r\n\r\n", "ordinary prose ".repeat(200)),
         ] {
             let line_bytes = row.lines().map(str::len).max().unwrap() + 2;
@@ -2965,6 +2965,7 @@ mod rope_revision_tests {
                 reset_work();
                 let provider = CachedProvider::classify(source.clone());
                 let cold = take_work();
+                assert!(!provider.limited(), "fixture must stay within independent structure limits: {}", provider.reasons());
                 assert!(
                     cold.display_builds > 0 && cold.flattened_bytes >= bytes,
                     "cold controls: {cold:?}"
