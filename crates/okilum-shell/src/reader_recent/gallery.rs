@@ -6,6 +6,35 @@ use std::collections::HashMap;
 const MAX_CARDS: usize = 40;
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    static PREVIEW_PUBLICATION_HOLD: std::cell::RefCell<Option<(
+        PathBuf,
+        String,
+        futures::channel::oneshot::Sender<()>,
+        futures::channel::oneshot::Receiver<()>,
+    )>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+async fn hold_preview_publication(root: &Path, relative: &str) {
+    let hold = PREVIEW_PUBLICATION_HOLD.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot
+            .as_ref()
+            .is_some_and(|(r, p, _, _)| r == root && p == relative)
+        {
+            slot.take()
+        } else {
+            None
+        }
+    });
+    if let Some((_, _, reached, release)) = hold {
+        let _ = reached.send(());
+        let _ = release.await;
+    }
+}
+
 /// Never resolve a card by its display name, index, or a suffix match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OpenFile {
@@ -196,12 +225,14 @@ impl Gallery {
                     {
                         break;
                     }
-                    let root = root.clone();
+                    let source_root = root.clone();
                     let source_relative = relative.clone();
                     let result = cx
                         .background_executor()
-                        .spawn(async move { load_cached(&root, &source_relative, cached) })
+                        .spawn(async move { load_cached(&source_root, &source_relative, cached) })
                         .await;
+                    #[cfg(test)]
+                    hold_preview_publication(&root, &relative).await;
                     let applied = this.update(cx, |this, cx| {
                         if this.generation != generation {
                             return false;
@@ -387,6 +418,7 @@ impl Render for Gallery {
                                 let retry_path = relative.clone();
                                 v_flex().gap_2().child(div().text_xs().child(reason.clone()))
                                     .child(Button::new(("recent-preview-retry", index)).small().label("Retry preview")
+                                        .debug_selector(move || format!("recent-preview-retry-{index}"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             cx.stop_propagation();
                                             this.retry(&retry_path, cx);
@@ -396,6 +428,7 @@ impl Render for Gallery {
                         };
                         v_flex()
                             .id(("recent-gallery-card", index))
+                            .debug_selector(move || format!("recent-gallery-card-{index}"))
                             .w(px(240.))
                             .p_2()
                             .gap_2()
@@ -405,7 +438,8 @@ impl Render for Gallery {
                                 card.bg(palette.selected)
                             })
                             .hover(|card| card.bg(palette.selected))
-                            .child(div().w_full().h(px(144.)).overflow_hidden().child(preview))
+                            .child(div().debug_selector(move || format!("recent-gallery-preview-{index}"))
+                                .w_full().h(px(144.)).overflow_hidden().child(preview))
                             .when(matches!(&self.previews[index], Preview::Markdown(prepared) if prepared.partial), |card| {
                                 card.child(div().text_xs().text_color(palette.text_muted).child("Partial preview"))
                             })
@@ -586,6 +620,380 @@ mod selection {
                 Some("a.md")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod mounted_tests {
+    use super::*;
+
+    struct Fixture {
+        reader: Entity<Reader>,
+        root: PathBuf,
+        originals: Vec<(String, Vec<u8>)>,
+        _directory: tempfile::TempDir,
+    }
+
+    fn draw(visual: &mut VisualTestContext) {
+        visual.run_until_parked();
+        for _ in 0..2 {
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            visual.run_until_parked();
+        }
+    }
+
+    fn notes(paths: &[&str]) -> Arc<Vec<okilum_core::vault::Note>> {
+        Arc::new(
+            paths
+                .iter()
+                .map(|path| okilum_core::vault::Note {
+                    path: (*path).into(),
+                    title: (*path).into(),
+                })
+                .collect(),
+        )
+    }
+
+    fn mount(cx: &mut TestAppContext, broken: bool) -> (Fixture, &mut VisualTestContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("vault");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        for (path, source) in [
+            ("start.md", "# Start"),
+            (
+                "a.md",
+                "# Alpha\n\n**Bold** and [inert](https://example.invalid)\n",
+            ),
+            ("nested/a.md", "# Nested\n\nDifferent source\n"),
+            ("code.rs", "fn main() { println!(\"**literal**\"); }\r\n"),
+        ] {
+            std::fs::write(root.join(path), source).unwrap();
+        }
+        if broken {
+            std::fs::write(root.join("picture.png"), b"not an image").unwrap();
+        } else {
+            image::RgbaImage::from_pixel(12, 12, image::Rgba([7, 8, 9, 255]))
+                .save(root.join("picture.png"))
+                .unwrap();
+        }
+        let originals = ["start.md", "a.md", "nested/a.md", "code.rs", "picture.png"]
+            .into_iter()
+            .map(|p| (p.to_owned(), std::fs::read(root.join(p)).unwrap()))
+            .collect();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+            reader_fonts::install(cx);
+            reader_ui_state::install(&directory.path().join("state"), cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        session_directory: Some(directory.path().join("state")),
+                        index_dir: Some(directory.path().join("index")),
+                        panel_settings_override: Some(directory.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(960.)));
+        draw(visual);
+        reader.update_in(visual, |reader, window, cx| {
+            reader.sidebar.recent = ["a.md", "code.rs", "picture.png", "nested/a.md"]
+                .into_iter()
+                .map(|p| (p.to_owned(), 0))
+                .collect();
+            reader.quick_open.inventory = Some(notes(&[
+                "start.md",
+                "a.md",
+                "code.rs",
+                "picture.png",
+                "nested/a.md",
+            ]));
+            reader.focus_handle.focus(window, cx);
+            cx.notify();
+        });
+        draw(visual);
+        (
+            Fixture {
+                reader,
+                root,
+                originals,
+                _directory: directory,
+            },
+            visual,
+        )
+    }
+
+    fn open(f: &Fixture, visual: &mut VisualTestContext) -> Entity<Gallery> {
+        let trigger = visual
+            .debug_bounds("title-recent")
+            .expect("existing Recent trigger painted");
+        visual.simulate_click(trigger.center(), Modifiers::default());
+        draw(visual);
+        assert!(
+            visual.debug_bounds("recent-gallery-overlay").is_some(),
+            "real trigger mounted gallery, not the old menu"
+        );
+        f.reader.update_in(visual, |reader, window, cx| {
+            assert!(reader.title_nav.menu.is_none());
+            let session = reader.recent_switcher.gallery.as_ref().unwrap();
+            assert!(session.input.read(cx).focus_handle(cx).is_focused(window));
+            session.view.clone()
+        })
+    }
+
+    fn unchanged(f: &Fixture) {
+        for (p, bytes) in &f.originals {
+            assert_eq!(
+                &std::fs::read(f.root.join(p)).unwrap(),
+                bytes,
+                "canonical {p} unchanged"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn recent35_real_trigger_paints_all_adapters_and_opens_exact_duplicate(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, visual) = mount(cx, false);
+        let gallery = open(&f, visual);
+        gallery.read_with(visual, |g, _| {
+            assert!(matches!(g.previews[0], Preview::Markdown(_)));
+            assert!(matches!(g.previews[1], Preview::Code(_)));
+            assert!(matches!(g.previews[2], Preview::Image(_)));
+            assert!(g.presentation_keys.contains_key("a.md"));
+            assert!(g.presentation_keys.contains_key("code.rs"));
+        });
+        for selector in [
+            "recent-gallery-preview-0",
+            "recent-gallery-preview-1",
+            "recent-gallery-preview-2",
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .expect("real adapter preview painted");
+            assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        }
+        visual.simulate_input("a.md");
+        draw(visual);
+        visual.simulate_keystrokes("right");
+        draw(visual);
+        gallery.read_with(visual, |g, _| {
+            assert_eq!(g.selected_path(), Some("nested/a.md"))
+        });
+        visual.simulate_event(ModifiersChangedEvent::default());
+        draw(visual);
+        f.reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.current_rel, "start.md",
+                "highlight and Control release are not navigation"
+            );
+            assert!(r.recent_switcher.gallery_open);
+        });
+        visual.simulate_keystrokes("enter");
+        draw(visual);
+        f.reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.selected_file(),
+                "nested/a.md",
+                "exact duplicate identity accepted"
+            );
+            assert!(!r.recent_switcher.gallery_open);
+        });
+        assert!(visual.debug_bounds("recent-gallery-overlay").is_none());
+        unchanged(&f);
+    }
+
+    #[gpui::test]
+    fn recent35_retry_button_and_hidden_reply_validate_revision_without_navigation(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, visual) = mount(cx, true);
+        let gallery = open(&f, visual);
+        gallery.read_with(visual, |g, _| {
+            assert!(
+                matches!(g.previews[2], Preview::Unavailable(_)),
+                "decoder failure positive control"
+            );
+            assert_eq!(g.selected_path(), Some("a.md"));
+        });
+        let replacement = f.root.join("replacement.png");
+        image::RgbaImage::from_pixel(12, 12, image::Rgba([1, 2, 3, 255]))
+            .save(&replacement)
+            .unwrap();
+        std::fs::rename(replacement, f.root.join("picture.png")).unwrap();
+        let (reached, mut waiting) = futures::channel::oneshot::channel();
+        let (release, held) = futures::channel::oneshot::channel();
+        PREVIEW_PUBLICATION_HOLD.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some((f.root.clone(), "picture.png".into(), reached, held));
+        });
+        let retry = visual
+            .debug_bounds("recent-preview-retry-2")
+            .expect("actual unavailable Retry painted");
+        visual.simulate_click(retry.center(), Modifiers::default());
+        draw(visual);
+        assert_eq!(
+            waiting.try_recv().unwrap(),
+            Some(()),
+            "real replacement decode reached publication hold"
+        );
+        f.reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.current_rel, "start.md",
+                "Retry must not bubble to card accept"
+            )
+        });
+        visual.simulate_keystrokes("escape");
+        draw(visual);
+        let generation = gallery.read_with(visual, |g, _| {
+            assert!(g.suspended);
+            g.generation
+        });
+        release.send(()).unwrap();
+        draw(visual);
+        gallery.read_with(visual, |g, _| {
+            assert_eq!(g.generation, generation);
+            assert!(
+                !g.cache.contains_key("picture.png"),
+                "obsolete hidden decode was not installed"
+            );
+        });
+        let reopened = open(&f, visual);
+        assert_eq!(
+            gallery, reopened,
+            "one retained Gallery owns cache and worker"
+        );
+        gallery.read_with(visual, |g, _| {
+            let Preview::Image(image) = &g.previews[2] else {
+                panic!("reopen must validate replacement bytes")
+            };
+            assert_eq!(&image.as_bytes(0).unwrap()[..4], &[3, 2, 1, 255]);
+            assert_eq!(g.selected_path(), Some("a.md"));
+        });
+        visual.simulate_keystrokes("escape");
+        draw(visual);
+        f.reader.update_in(visual, |r, window, cx| {
+            assert_eq!(r.current_rel, "start.md");
+            assert!(
+                r.content.read(cx).focus_handle().is_focused(window),
+                "Escape restores document focus"
+            );
+        });
+        for (path, bytes) in &f.originals {
+            if path != "picture.png" {
+                assert_eq!(&std::fs::read(f.root.join(path)).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn recent35_inventory_preparation_theme_and_font_preserve_exact_cached_identity(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, visual) = mount(cx, false);
+        let gallery = open(&f, visual);
+        let (before_key, revision, image) = gallery.read_with(visual, |g, _| {
+            let Preview::Image(image) = &g.previews[2] else {
+                panic!("decoded image positive control")
+            };
+            (
+                g.presentation_keys["a.md"].1,
+                g.cache["a.md"].revision.clone(),
+                image.clone(),
+            )
+        });
+        visual.update(|window, cx| {
+            let next = if cx.theme().is_dark() {
+                gpui_component::ThemeMode::Light
+            } else {
+                gpui_component::ThemeMode::Dark
+            };
+            Theme::change(next, Some(window), cx);
+        });
+        draw(visual);
+        let theme_key = gallery.read_with(visual, |g, _| {
+            let epoch = g.presentation_keys["a.md"].1;
+            assert!(
+                epoch > before_key,
+                "actual theme change invalidated rendered layout"
+            );
+            epoch
+        });
+        visual.update(|_, cx| {
+            let next_size = if reader_ui_state::base_font_size(cx) < 22. {
+                23.
+            } else {
+                18.
+            };
+            reader_ui_state::set_reading(next_size, 800., cx);
+            reader_ui_state::set_selected_font(reader_fonts::Role::Note, brand::MONO_FONT, cx);
+            assert_eq!(
+                reader_ui_state::base_font_size(cx),
+                next_size,
+                "positive control: real reading preference changed"
+            );
+            assert_eq!(
+                reader_fonts::note(cx).as_ref(),
+                brand::MONO_FONT,
+                "positive control: requested embedded font resolves"
+            );
+        });
+        draw(visual);
+        gallery.read_with(visual, |g, _| {
+            assert!(
+                g.presentation_keys["a.md"].1 > theme_key,
+                "font updates independently invalidated layout identity"
+            );
+            assert_eq!(
+                g.cache["a.md"].revision, revision,
+                "appearance is not a source revision"
+            );
+            let Preview::Image(after) = &g.previews[2] else {
+                panic!()
+            };
+            assert!(Arc::ptr_eq(&image, after));
+            assert_eq!(g.selected_path(), Some("a.md"));
+        });
+        f.reader.update(visual, |r, cx| {
+            r.quick_open.inventory = None;
+            cx.notify();
+        });
+        draw(visual);
+        gallery.read_with(visual, |g, _| {
+            assert!(g.suspended, "missing inventory is preparation");
+            assert_eq!(g.selected_path(), Some("a.md"), "not evidence of deletion");
+        });
+        f.reader.update(visual, |r, cx| {
+            r.quick_open.inventory = Some(notes(&["code.rs", "picture.png", "nested/a.md"]));
+            cx.notify();
+        });
+        draw(visual);
+        gallery.read_with(visual, |g, _| {
+            assert!(!g.suspended);
+            assert_eq!(
+                g.selected_path(),
+                Some("code.rs"),
+                "accepted deletion falls to next surviving exact identity"
+            );
+            assert!(!g.cache.contains_key("a.md"));
+        });
+        unchanged(&f);
     }
 }
 
