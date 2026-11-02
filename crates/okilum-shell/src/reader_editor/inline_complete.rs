@@ -11,53 +11,90 @@ pub(super) enum Kind {
 
 /// Lower is better. Path fragments match consecutive path segments by prefix;
 /// subsequences are a final fallback for all providers.
+#[cfg(test)]
 pub(super) fn score(query: &str, title: &str, path: &str) -> Option<u8> {
-    if query.is_empty() || title == query {
-        return Some(0);
+    Matcher::new(query).score(title, path)
+}
+
+/// Prepare the query once per search, rather than allocating query/path segment
+/// vectors for each note. Matching a path walks borrowed segment iterators.
+pub(super) struct Matcher<'a> {
+    query: &'a str,
+    fragments: Vec<&'a str>,
+}
+
+impl<'a> Matcher<'a> {
+    pub(super) fn new(query: &'a str) -> Self {
+        let fragments = if query.trim_start_matches('/').contains('/') {
+            query.trim_start_matches('/').split('/').collect()
+        } else {
+            Vec::new()
+        };
+        Self { query, fragments }
     }
-    if title.starts_with(query) {
-        return Some(1);
-    }
-    if title
-        .match_indices(query)
-        .any(|(at, _)| title[..at].ends_with([' ', '-', '_', '.', '(']))
-    {
-        return Some(2);
-    }
-    if title.contains(query) {
-        return Some(3);
-    }
-    if path.contains(query) {
-        return Some(4);
-    }
-    let fragments: Vec<_> = query.trim_start_matches('/').split('/').collect();
-    if fragments.len() > 1 {
-        let segments: Vec<_> = path.split('/').collect();
-        if segments.windows(fragments.len()).any(|parts| {
-            parts
-                .iter()
-                .zip(&fragments)
-                .all(|(part, fragment)| part.starts_with(fragment))
-        }) {
-            return Some(5);
+
+    pub(super) fn score(&self, title: &str, path: &str) -> Option<u8> {
+        let query = self.query;
+        if query.is_empty() || title == query {
+            return Some(0);
         }
-    }
-    let mut chars = query.chars().filter(|c| *c != '/');
-    let mut next = chars.next();
-    for ch in path.chars() {
-        if next == Some(ch) {
-            next = chars.next();
+        if title.starts_with(query) {
+            return Some(1);
         }
-        if next.is_none() {
-            return Some(6);
+        if title
+            .match_indices(query)
+            .any(|(at, _)| title[..at].ends_with([' ', '-', '_', '.', '(']))
+        {
+            return Some(2);
         }
+        if title.contains(query) {
+            return Some(3);
+        }
+        if path.contains(query) {
+            return Some(4);
+        }
+        if !self.fragments.is_empty() {
+            let mut segments = path.split('/');
+            while segments.clone().next().is_some() {
+                let mut parts = segments.clone();
+                if self
+                    .fragments
+                    .iter()
+                    .all(|fragment| parts.next().is_some_and(|part| part.starts_with(fragment)))
+                {
+                    return Some(5);
+                }
+                segments.next();
+            }
+        }
+        let mut chars = query.chars().filter(|c| *c != '/');
+        let mut next = chars.next();
+        for ch in path.chars() {
+            if next == Some(ch) {
+                next = chars.next();
+            }
+            if next.is_none() {
+                return Some(6);
+            }
+        }
+        None
     }
-    None
 }
 
 /// (provider, replacement start relative to the line, query).
 pub(super) fn trigger(line: &str, emoji: bool) -> Option<(Kind, usize, String)> {
     if let Some(open) = line.rfind("[[") {
+        if in_inline_code(&line[..open])
+            || line[..open]
+                .chars()
+                .rev()
+                .take_while(|c| *c == '\\')
+                .count()
+                % 2
+                == 1
+        {
+            return None;
+        }
         let query = &line[open + 2..];
         if !query.contains(['[', ']', '|', '^']) && query.chars().count() <= 120 {
             if let Some((note, heading)) = query.split_once('#') {
@@ -94,6 +131,33 @@ pub(super) fn trigger(line: &str, emoji: bool) -> Option<(Kind, usize, String)> 
         }
     }
     None
+}
+
+/// Backtick runs close only a run of the same length. Escaped backticks in
+/// prose are literal; backslashes inside code do not escape its delimiter.
+fn in_inline_code(prefix: &str) -> bool {
+    let bytes = prefix.as_bytes();
+    let mut delimiter = None;
+    let mut at = 0;
+    while at < bytes.len() {
+        if delimiter.is_none() && bytes[at] == b'\\' {
+            at += 2;
+        } else if bytes[at] == b'`' {
+            let start = at;
+            while at < bytes.len() && bytes[at] == b'`' {
+                at += 1;
+            }
+            let len = at - start;
+            if delimiter == Some(len) {
+                delimiter = None;
+            } else if delimiter.is_none() {
+                delimiter = Some(len);
+            }
+        } else {
+            at += 1;
+        }
+    }
+    delimiter.is_some()
 }
 
 /// One replacement, one Undo step. Existing link aliases and closing marks
@@ -366,6 +430,109 @@ mod tests {
         }
         assert_eq!(trigger(":smile", false), None);
     }
+    fn legacy_score(query: &str, title: &str, path: &str) -> Option<u8> {
+        if query.is_empty() || title == query {
+            return Some(0);
+        }
+        if title.starts_with(query) {
+            return Some(1);
+        }
+        if title
+            .match_indices(query)
+            .any(|(at, _)| title[..at].ends_with([' ', '-', '_', '.', '(']))
+        {
+            return Some(2);
+        }
+        if title.contains(query) {
+            return Some(3);
+        }
+        if path.contains(query) {
+            return Some(4);
+        }
+        let fragments: Vec<_> = query.trim_start_matches('/').split('/').collect();
+        if fragments.len() > 1 {
+            let segments: Vec<_> = path.split('/').collect();
+            if segments.windows(fragments.len()).any(|parts| {
+                parts
+                    .iter()
+                    .zip(&fragments)
+                    .all(|(part, fragment)| part.starts_with(fragment))
+            }) {
+                return Some(5);
+            }
+        }
+        let mut chars = query.chars().filter(|c| *c != '/');
+        let mut next = chars.next();
+        for ch in path.chars() {
+            if next == Some(ch) {
+                next = chars.next();
+            }
+            if next.is_none() {
+                return Some(6);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn prepared_ranker_preserves_scores_and_measures_same_host_work() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let paths: Vec<_> = (0..5576)
+            .map(|n| format!("library/group {}/observation {n:04} about biology", n % 73))
+            .collect();
+        let queries = [
+            "", "obs", "bio", "zzz", "l/gr", "/lib/gro", "gr/obs", "///", "a//b", "éla",
+        ];
+        for query in queries {
+            let matcher = Matcher::new(query);
+            for path in &paths {
+                let title = path.rsplit('/').next().unwrap();
+                assert_eq!(matcher.score(title, path), legacy_score(query, title, path));
+            }
+            for path in [
+                "",
+                "a",
+                "/a/b",
+                "a//b",
+                "dev/projects/macbook",
+                "écriture/élan",
+                "a/b/",
+            ] {
+                assert_eq!(matcher.score(path, path), legacy_score(query, path, path));
+            }
+        }
+        let mut samples = [Vec::new(), Vec::new()];
+        for rep in 0..8 {
+            // Alternate ordering on the same corpus and CPU in this invocation.
+            for variant in [rep % 2, 1 - rep % 2] {
+                let start = Instant::now();
+                let mut checksum = 0usize;
+                for query in queries {
+                    let matcher = Matcher::new(query);
+                    for path in &paths {
+                        let title = path.rsplit('/').next().unwrap();
+                        checksum += if variant == 0 {
+                            legacy_score(black_box(query), title, black_box(path))
+                        } else {
+                            matcher.score(black_box(title), black_box(path))
+                        }
+                        .map_or(7, usize::from);
+                    }
+                }
+                black_box(checksum);
+                samples[variant].push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        println!(
+            "COMPLETION_RANK_AB {}",
+            serde_json::json!({
+                "notes": paths.len(), "queries": queries, "boundary": "rank-score-only",
+                "baseline_ms": samples[0], "prepared_ms": samples[1],
+            })
+        );
+    }
+
     #[test]
     fn shared_ranker_matches_path_fragments_and_fuzzy_short_names() {
         assert_eq!(
