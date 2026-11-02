@@ -29,7 +29,7 @@
 
 @interface KeyFixtureWebView : NSObject
 @property(nonatomic, strong) NSWindow *window;
-@property(nonatomic) BOOL hidden;
+@property(nonatomic, getter=isHidden) BOOL hidden;
 @end
 @implementation KeyFixtureWebView
 - (WKWebViewConfiguration *)configuration { return nil; }
@@ -114,6 +114,7 @@ int main(void) {
                 @(NSEventModifierFlagCommand | NSEventModifierFlagOption | NSEventModifierFlagShift)]) {
             for (NSString *letter in @[@"k", @"f", @"p", @"\uF702", @"\x7f", @"v"]) {
                 key.charactersIgnoringModifiers = letter;
+                key.keyCode = [letter isEqual:@"\uF702"] ? 123 : ([letter isEqual:@"\x7f"] ? 51 : 0);
                 key.modifierFlags = modifiers.unsignedIntegerValue;
                 if (KeyAction(event)) continue; // Primary edits are checked below.
                 NSUInteger downs = content.downs;
