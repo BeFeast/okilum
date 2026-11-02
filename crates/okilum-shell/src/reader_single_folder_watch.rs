@@ -32,6 +32,11 @@ impl Selection {
     }
 }
 
+fn read_selected_source(root: &Path, rel: &str) -> anyhow::Result<String> {
+    let path = super::checked_path(root, rel)?;
+    Ok(std::fs::read_to_string(path)?)
+}
+
 impl Reader {
     pub(crate) fn refresh_single_folder_document(
         &mut self,
@@ -49,10 +54,7 @@ impl Reader {
             let read = selected.clone();
             let source = cx
                 .background_executor()
-                .spawn(async move {
-                    let path = super::checked_path(&read.root, &read.rel)?;
-                    Ok::<_, anyhow::Error>(std::fs::read_to_string(path)?)
-                })
+                .spawn(async move { read_selected_source(&read.root, &read.rel) })
                 .await;
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 this.publish_single_folder_document(selected, source.ok(), window, cx);
@@ -84,6 +86,27 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
+
+    #[test]
+    fn source_reads_refuse_paths_escaping_the_open_root() {
+        let fixture = fixture();
+        let root = fixture.path().join("notes");
+        let outside = fixture.path().join("outside.md");
+        std::fs::write(&outside, "outside bytes").unwrap();
+        assert_eq!(
+            read_selected_source(&root, "start.md").unwrap(),
+            "# Original\n"
+        );
+        assert!(read_selected_source(&root, "../outside.md").is_err());
+        assert!(read_selected_source(&root, outside.to_str().unwrap()).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("redirect.md")).unwrap();
+            assert!(read_selected_source(&root, "redirect.md").is_err());
+        }
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "outside bytes");
+    }
 
     fn open<'a>(
         cx: &'a mut TestAppContext,

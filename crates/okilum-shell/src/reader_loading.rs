@@ -7356,31 +7356,7 @@ fn quick_vault(root: &Path, mut entries: Vec<okilum_core::vault::VaultEntry>) ->
 
 impl Reader {
     fn refresh_quick_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
-        let navigation = self.navigation.generation;
-        cx.spawn_in(window, async move |this, cx| {
-            let path = root.join(&rel);
-            let source = cx
-                .background_executor()
-                .spawn(async move { std::fs::read_to_string(path) })
-                .await;
-            let _ = this.update_in_own_window(cx, |this, window, cx| {
-                if !this.single_file
-                    || this.vault_root != root
-                    || this.navigation.generation != navigation
-                {
-                    return;
-                }
-                let sources = source
-                    .ok()
-                    .map(|source| (rel, source))
-                    .into_iter()
-                    .collect();
-                this.reconcile_inventory_document(&sources, window, cx);
-            });
-        })
-        .detach();
+        self.refresh_single_folder_document(window, cx);
     }
 
     fn publish_quick_folder(&mut self, vault: Vault, cx: &mut Context<Self>) {
