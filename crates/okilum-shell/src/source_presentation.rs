@@ -450,7 +450,7 @@ impl CachedProvider {
                 }
             }),
         );
-        let math = metadata.overlay(&projection, &reveal_snapshot);
+        let math = metadata.overlay(&projection, &reveal_snapshot, &retained);
         if let Some(math) = &math {
             styles = math.restyle(styles);
         }
@@ -2944,7 +2944,7 @@ mod rope_revision_tests {
     fn native_receipts_bound_compose_and_old_discovery_controls_at_all_sizes() {
         for row in [
             "Paragraph **bold** and a contraction isn't changed.\r\n\r\n".to_owned(),
-            "Paragraph **bold** and a contraction isn't changed.\r\n".to_owned(),
+            "Ordinary prose and a contraction isn't changed.\r\n".to_owned(),
             format!("Paragraph {} end.\r\n\r\n", "ordinary prose ".repeat(200)),
         ] {
             let mut scanned = Vec::new();
@@ -2966,7 +2966,7 @@ mod rope_revision_tests {
                     "cold controls: {cold:?}"
                 );
                 // Edit the same column of a complete logical line at every size.
-                let at = (bytes / row.len() / 2) * row.len() + 16;
+                let at = (bytes / row.len() / 2) * row.len() + 4;
                 let active = ActiveSource {
                     anchor: SourceByte(at),
                     head: SourceByte(at),

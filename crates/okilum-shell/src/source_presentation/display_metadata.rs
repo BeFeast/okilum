@@ -9,9 +9,15 @@ pub(super) struct Inline {
     scope: Range<usize>,
     rendered: Arc<tex::Linear>,
 }
+#[derive(Clone)]
+struct Prose {
+    range: Range<usize>,
+    inventory: punctuation::Inventory,
+}
 pub(super) struct Metadata {
     snapshot: Snapshot,
     inline: Vec<Inline>,
+    prose: Vec<Prose>,
     indents: Vec<(usize, usize)>,
     tables: Vec<(Range<usize>, u64)>,
     overlay: Arc<Mutex<Option<MathOverlay>>>,
@@ -73,6 +79,17 @@ impl Metadata {
             .collect();
         Self {
             inline: candidates(provider, retained, None),
+            prose: retained
+                .prose_blocks()
+                .map(|(block, _)| Prose {
+                    range: block.clone(),
+                    inventory: punctuation::Inventory::new(
+                        &text.slice(block.clone()),
+                        block.start,
+                        |range| boundary(retained, range),
+                    ),
+                })
+                .collect(),
             snapshot,
             indents,
             tables,
@@ -116,6 +133,49 @@ impl Metadata {
         let old_lines = self.snapshot.text().line_bounds(edit.old.start).start
             ..self.snapshot.text().line_bounds(edit.old.end).end;
         let new_lines = old_lines.start..old_lines.end - edit.old.end + edit.new_end();
+        self.prose = retained
+            .prose_blocks()
+            .filter_map(|(block, _)| {
+                let old = self.prose.iter().find(|p| {
+                    let mapped = moved(&p.range, &edit).or_else(|| {
+                        (p.range.start <= edit.old.start && edit.old.end <= p.range.end)
+                            .then(|| p.range.start..p.range.end - edit.old.end + edit.new_end())
+                    });
+                    mapped.as_ref() == Some(block)
+                });
+                let inventory = if let Some(old) = old {
+                    if old.range.end <= old_lines.start || old.range.start >= old_lines.end {
+                        old.inventory.shifted(|at| edit.forward(at))
+                    } else {
+                        let dirty =
+                            old_lines.start.max(old.range.start)..old_lines.end.min(old.range.end);
+                        let new_end = dirty.end - edit.old.end + edit.new_end();
+                        old.inventory.remap(
+                            dirty.clone(),
+                            &next.text().slice(dirty.start..new_end),
+                            &edit,
+                            |range| boundary(retained, range),
+                        )
+                    }
+                } else {
+                    // A new structural run has no reusable lexical proof. The
+                    // retained classifier already bounds local reparses; leave an
+                    // oversized new run raw until canonical worker adoption.
+                    if block.len() > new_lines.len() + 4096 {
+                        return None;
+                    }
+                    punctuation::Inventory::new(
+                        &next.text().slice(block.clone()),
+                        block.start,
+                        |range| boundary(retained, range),
+                    )
+                };
+                Some(Prose {
+                    range: block.clone(),
+                    inventory,
+                })
+            })
+            .collect();
         self.indents = self
             .indents
             .iter()
@@ -185,9 +245,10 @@ impl Metadata {
         &mut self,
         projection: &Projection,
         reveal: &source_classifier::RevealSnapshot,
+        retained: &RetainedPresentation,
     ) -> Option<MathOverlay> {
         let map = |at| projection.source_to_display(projection.snapshot(), at).ok();
-        let formulas: Vec<_> = self
+        let mut formulas: Vec<_> = self
             .inline
             .iter()
             .filter(|item| !reveal.is_raw(projection.snapshot(), &item.scope))
@@ -196,6 +257,36 @@ impl Metadata {
                 (start < end).then_some((start..end, item.rendered.clone()))
             })
             .collect();
+        for prose in &self.prose {
+            if reveal.is_raw(projection.snapshot(), &prose.range) {
+                continue;
+            }
+            let Some((_, markers)) = retained
+                .prose_blocks()
+                .find(|(block, _)| **block == prose.range)
+            else {
+                continue;
+            };
+            formulas.extend(
+                prose
+                    .inventory
+                    .replacements(|range| eligible(retained, markers, range))
+                    .into_iter()
+                    .filter_map(|(range, glyph)| {
+                        let (start, end) = (map(range.start)?, map(range.end)?);
+                        (start < end).then(|| {
+                            (
+                                start..end,
+                                Arc::new(tex::Linear {
+                                    text: glyph.into(),
+                                    runs: Vec::new(),
+                                }),
+                            )
+                        })
+                    }),
+            );
+        }
+        formulas.sort_by_key(|(range, _)| range.start);
         // An empty overlay still records its persistent display receipt, so
         // entering/leaving the last formula cannot force cold native layout.
         let mut last = self.overlay.lock().ok()?;
@@ -255,42 +346,31 @@ fn candidates(
             rendered,
         });
     }
-    for (block, markers) in retained.prose_blocks().filter(|(b, _)| touched(b)) {
-        let text = source.slice(block.clone());
-        for (range, glyph) in punctuation::replacements_indexed(
-            &text,
-            |local| {
-                let range = block.start + local.start..block.start + local.end;
-                !markers
-                    .iter()
-                    .any(|m| m.start < range.end && range.start < m.end)
-                    && !styles.iter().any(|s| {
-                        matches!(
-                            s.style,
-                            Style::Code | Style::CodeBlock | Style::Math | Style::Definition
-                        ) && s.range.start < range.end
-                            && range.start < s.range.end
-                    })
-            },
-            |local| {
-                retained
-                    .validate_active(&Active {
-                        selection: Some(block.start + local.start..block.start + local.end),
-                        composition: None,
-                    })
-                    .is_ok()
-            },
-        ) {
-            out.push(Inline {
-                range: block.start + range.start..block.start + range.end,
-                scope: block.clone(),
-                rendered: Arc::new(tex::Linear {
-                    text: glyph.into(),
-                    runs: Vec::new(),
-                }),
-            });
-        }
-    }
     out.sort_by_key(|item| item.range.start);
     out
+}
+
+fn boundary(retained: &RetainedPresentation, range: &Range<usize>) -> bool {
+    retained
+        .validate_active(&Active {
+            selection: Some(range.clone()),
+            composition: None,
+        })
+        .is_ok()
+}
+fn eligible(
+    retained: &RetainedPresentation,
+    markers: &[Range<usize>],
+    range: &Range<usize>,
+) -> bool {
+    !markers
+        .iter()
+        .any(|m| m.start < range.end && range.start < m.end)
+        && !retained.styles().iter().any(|s| {
+            matches!(
+                s.style,
+                Style::Code | Style::CodeBlock | Style::Math | Style::Definition
+            ) && s.range.start < range.end
+                && range.start < s.range.end
+        })
 }
