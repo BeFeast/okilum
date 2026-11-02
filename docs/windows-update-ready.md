@@ -75,8 +75,9 @@ Sparkle relaunches without application arguments. After the final editor guard a
 UI-state flush, macOS atomically writes the same target list to a one-use
 `update-restart-windows.json` in Reader state, outside disposable indexes. Normal
 startup consumes it before ordinary vault restoration. A failed installation
-continuation clears the handoff and keeps the application open. Ordinary startup
-continues to record vault windows only.
+continuation clears the handoff and keeps the application open. Ordinary Quit
+with a prepared update creates no relaunch handoff. Ordinary startup continues
+to record vault windows only.
 
 Every platform keeps the existing `protect_all_for_quit` boundary: save current
 editor contents or retain the latest durable recovery draft, including canonical

@@ -3314,6 +3314,7 @@ mod tests {
         let root = temp.path().join("vault");
         let state = temp.path().join("state");
         std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
         std::fs::write(root.join("note.md"), "original").unwrap();
         cx.update(|cx| {
             crate::test_init(cx);
@@ -3539,6 +3540,7 @@ mod tests {
         visual.update(|_, cx| {
             crate::updater::protect_verified_install(
                 cx,
+                true,
                 || {
                     assert_eq!(
                         std::fs::read_to_string(root.join("note.md")).unwrap(),
@@ -3559,6 +3561,21 @@ mod tests {
         );
         assert!(committed.get());
         assert!(!refused.get());
+        visual.update(|_, cx| {
+            crate::updater::protect_verified_install(
+                cx,
+                false,
+                || Ok(()),
+                || panic!("safe ordinary Quit"),
+            )
+            .unwrap();
+        });
+        assert!(
+            crate::reader_update_restart::take(&state)
+                .unwrap()
+                .is_empty(),
+            "ordinary Quit creates no relaunch handoff"
+        );
         let drafts = state.join("editor-drafts");
         let backup = state.join("drafts-backup");
         std::fs::rename(&drafts, &backup).unwrap();
@@ -3573,6 +3590,7 @@ mod tests {
         visual.update(|_, cx| {
             assert!(crate::updater::protect_verified_install(
                 cx,
+                true,
                 || {
                     committed.set(true);
                     Ok(())

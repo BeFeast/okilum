@@ -190,7 +190,7 @@ mod tests {
         let root = root.canonicalize().unwrap();
         std::fs::write(root.join("A.md"), "# A").unwrap();
         std::fs::write(root.join("Б.md"), "# B").unwrap();
-        let path = root.join("standalone.txt");
+        let path = root.join("standalone file Ю.txt");
         std::fs::write(&path, "standalone").unwrap();
         let base = Opts {
             session_directory: Some(fixture.path().join("state")),
@@ -221,7 +221,7 @@ mod tests {
             reader_open::create_window(
                 Opts {
                     vault: Some(root.clone()),
-                    note: Some("standalone.txt".into()),
+                    note: Some("standalone file Ю.txt".into()),
                     single_file: true,
                     ..base.clone()
                 },
