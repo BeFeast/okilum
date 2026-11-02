@@ -60,10 +60,13 @@ impl Controller {
                 );
                 saved.clone()
             } else {
-                ensure!(
-                    !path.join(".stfolder").try_exists()?,
-                    "existing Syncthing vault requires Choose existing synced vault"
-                );
+                match fs::symlink_metadata(path.join(".stfolder")) {
+                    Ok(_) => anyhow::bail!(
+                        "existing Syncthing vault requires Choose existing synced vault"
+                    ),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
                 let id = format!("okilum-{}", Uuid::new_v4());
                 no_overlap(&configs, &path, &id)?;
                 let ignores = policy(&path)?;
