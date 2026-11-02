@@ -194,11 +194,11 @@ impl Table {
         None
     }
 
-    fn render(&self, row: usize, column: usize) -> Change {
-        self.render_cells(row, column).0
+    fn render(&self, row: usize, column: usize) -> Option<Change> {
+        self.render_cells(row, column).map(|(change, _)| change)
     }
 
-    fn render_cells(&self, row: usize, column: usize) -> (Change, Vec<Vec<Range<usize>>>) {
+    fn render_cells(&self, row: usize, column: usize) -> Option<(Change, Vec<Vec<Range<usize>>>)> {
         let widths: Vec<_> = (0..self.alignment.len())
             .map(|col| {
                 self.rows
@@ -209,6 +209,22 @@ impl Table {
                     .max(3)
             })
             .collect();
+        // Alignment can multiply a long cell's padding across many rows.
+        // Keep the output under the same admission bound before allocating it.
+        let line_width = self.indent.len()
+            + 1
+            + widths.iter().map(|width| width + 3).sum::<usize>()
+            + self.newline.len();
+        let estimate = line_width * (self.rows.len() + 1)
+            + self
+                .rows
+                .iter()
+                .flatten()
+                .map(|cell| cell.len() - UnicodeWidthStr::width(cell.as_str()).min(cell.len()))
+                .sum::<usize>();
+        if estimate > 64 * 1024 {
+            return None;
+        }
         let mut source = String::new();
         let mut selection = 0..0;
         let mut ranges = Vec::new();
@@ -251,7 +267,7 @@ impl Table {
                 source.push_str(self.newline);
             }
         }
-        (Change { source, selection }, ranges)
+        Some((Change { source, selection }, ranges))
     }
 }
 
@@ -416,7 +432,7 @@ impl CellGrid {
                     .collect()
             })
             .collect();
-        let (change, ranges) = table.render_cells(row, column);
+        let (change, ranges) = table.render_cells(row, column)?;
         let next = Self {
             source: change.source.clone(),
             ranges,
@@ -507,20 +523,58 @@ fn line_range(source: &str, cell: &Range<usize>) -> Range<usize> {
     start..end
 }
 
+// Physical row/column mapping includes the delimiter row and padding, so an
+// idle format also works after typing an alignment colon or a trailing space.
+fn map_format_position(before: &str, after: &str, at: usize) -> Option<usize> {
+    let mut from = 0;
+    let mut to = 0;
+    for (old, new) in before
+        .split_inclusive('\n')
+        .zip(after.split_inclusive('\n'))
+    {
+        if at < from + old.len() || (at == before.len() && from + old.len() == before.len()) {
+            let old_raw = old.trim_end_matches(['\r', '\n']);
+            let new_raw = new.trim_end_matches(['\r', '\n']);
+            let offset = at.checked_sub(from)?;
+            if offset >= old_raw.len() {
+                return Some(
+                    to + new_raw.len() + (offset - old_raw.len()).min(new.len() - new_raw.len()),
+                );
+            }
+            let spans = cell_spans(old_raw, 0, false)?;
+            if let Some(column) = spans
+                .iter()
+                .position(|span| span.start <= offset && offset <= span.end)
+            {
+                let old_cell = cells(old_raw, 0)?.get(column)?.clone();
+                let new_cell = cells(new_raw, 0)?.get(column)?.clone();
+                return Some(
+                    to + new_cell.start + offset.saturating_sub(old_cell.start).min(new_cell.len()),
+                );
+            }
+            return Some(to + offset.min(new_raw.len()));
+        }
+        from += old.len();
+        to += new.len();
+    }
+    None
+}
+
 pub(super) fn edit(source: &str, selection: Range<usize>, command: Command) -> Option<Change> {
-    if !source.is_char_boundary(selection.start) || !source.is_char_boundary(selection.end) {
+    if selection.start > selection.end
+        || !source.is_char_boundary(selection.start)
+        || !source.is_char_boundary(selection.end)
+    {
         return None;
     }
     let table = Table::parse(source)?;
-    let (mut row, mut col) = table.locate(source, &selection)?;
     if matches!(command, Command::Format) {
-        let mut change = table.render(row, col);
-        let start = change.selection.start;
-        let old = &table.ranges[row][col];
-        let offset = |at: usize| at.saturating_sub(old.start).min(old.len());
-        change.selection = start + offset(selection.start)..start + offset(selection.end);
+        let mut change = table.render(0, 0)?;
+        change.selection = map_format_position(source, &change.source, selection.start)?
+            ..map_format_position(source, &change.source, selection.end)?;
         return Some(change);
     }
+    let (mut row, mut col) = table.locate(source, &selection)?;
     let mut updated = source.to_owned();
     let width = table.alignment.len();
     match command {
@@ -984,5 +1038,45 @@ mod remaining_scope_tests {
         assert!(formatted.source[..formatted.selection.start].ends_with('x'));
         let next = edit(source, at..at, Command::Next).unwrap();
         assert_eq!(&next.source[next.selection], "y");
+    }
+    #[test]
+    fn formatting_maps_delimiter_carets_and_multi_cell_selections() {
+        let source = "| Name | 值 |\r\n|:---------|--:|\r\n| 😀 | 東京 |";
+        let at = source.find(":---------").unwrap() + 2;
+        let changed = edit(source, at..at, Command::Format).unwrap();
+        assert_ne!(
+            changed.source, source,
+            "positive control: delimiter edit formats"
+        );
+        assert!(changed.selection.is_empty());
+        assert_eq!(
+            changed.source[..changed.selection.start]
+                .matches('\n')
+                .count(),
+            1
+        );
+        let from = source.find("Name").unwrap();
+        let to = source.find("東京").unwrap() + "東京".len();
+        let changed = edit(source, from..to, Command::Format).unwrap();
+        assert!(changed.source[changed.selection].starts_with("Name"));
+    }
+    #[test]
+    fn alignment_refuses_pathological_padding_expansion_before_allocation() {
+        let small = "|a|b|\n|--|--|\n|x|y|";
+        assert!(
+            edit(small, 2..2, Command::Format).is_some(),
+            "positive control: ordinary format accepted"
+        );
+        let large = format!(
+            "|{}|b|\n|--|--|\n{}",
+            "x".repeat(60000),
+            "|x|y|\n".repeat(100)
+        );
+        assert!(
+            Table::parse(&large).is_some(),
+            "authored input is within the bound"
+        );
+        assert!(edit(&large, 2..2, Command::Format).is_none());
+        assert!(CellGrid::new(&large).unwrap().format(0, 0).is_none());
     }
 }

@@ -57,7 +57,9 @@ impl TableGrid {
         if self.input.read(cx).source_stamp() != event.stamp {
             return;
         }
-        let text = self.input.read(cx).value().to_string();
+        // Persistent Rope clones keep whole-note copying/scanning off the
+        // typing path shared with Live Preview layout (#1679).
+        let text = self.input.read(cx).text().clone();
         let before = std::mem::replace(&mut self.seen_document, text.clone());
         cx.notify();
         if self.formatted_stamp.take() == Some(event.stamp)
@@ -73,19 +75,26 @@ impl TableGrid {
         }) {
             return;
         }
-        let Some(touched) = touched(&before, &text) else {
+        if text.len() > source_classifier::MAX_BYTES {
             return;
-        };
+        }
         self.idle = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(PAUSE).await;
-            let document = text.clone();
-            let range = cx
+            let candidate = cx
                 .background_executor()
-                .spawn(async move { table_range(&document, touched) })
+                .spawn(async move {
+                    let before = before.to_string();
+                    let text = text.to_string();
+                    let touched = touched(&before, &text)?;
+                    let range = table_range(&text, touched)?;
+                    Some((text, range))
+                })
                 .await;
-            if let Some(range) = range {
-                let _ = this.update_in_own_window(cx, |this, window, cx| {
-                    this.format_idle(event.stamp, &text, range, window, cx);
+            if let Some((text, range)) = candidate {
+                let _ = cx.update(|window, app| {
+                    this.update(app, |this, cx| {
+                        this.format_idle(event.stamp, &text, range, window, cx);
+                    })
                 });
             }
         }));
