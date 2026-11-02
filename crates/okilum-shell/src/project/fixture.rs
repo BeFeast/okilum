@@ -353,7 +353,6 @@ fn open_mounted_header(state: PathBuf, gateway: Arc<Fake>, cx: &mut App) {
                         note: Some("home.md".into()),
                         index_dir: Some(state.join("index")),
                         session_directory: Some(state.clone()),
-                        panel_settings_override: Some(state.join("panels.json")),
                         ..Default::default()
                     },
                     window,
