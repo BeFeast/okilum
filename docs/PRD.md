@@ -25,6 +25,8 @@ provider jobs, canonical enrollment or deployment.
 
 **Vault window extension (2026-10-06, #551):** [vault windows](vault-windows.md) defines vault-window selection (Ask every time by default, configurable reuse or new window) and explicit duplicate windows sharing vault resources.
 
+**Sync network policy (2026-11-02, #2047):** [Computer network settings](sync-enrollment.md#computer-network-settings-2047) defaults managed Linux transport to public discovery and encrypted relays, with a per-computer LAN/VPN-only switch and one-time durable migration. External Syncthing network options remain unchanged; first pairing stays within the LAN.
+
 **Sync extension (2026-10-06, #574):** [explicit Sync enrollment](sync-enrollment.md) defines the approved opt-in background/reuse contract. Slice 1 tests compatibility only; it does not enable Sync in the reader.
 
 **Typed note views extension (2026-10-07, #636):** [typed views and Tasks editing](typed-note-views.md) defines native views over plain Markdown, explicit revision-checked task edits and Undo. The reader/MCP protocol remains read-only.

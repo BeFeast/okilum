@@ -16,6 +16,8 @@ use xmltree::Element;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+pub(crate) use linux::managed_listen_address;
+#[cfg(target_os = "linux")]
 pub(crate) use linux::managed_transport_identity;
 #[cfg(target_os = "linux")]
 pub use linux::{configuration_paths, managed_identity, prepare, prepare_lan, Preparation};

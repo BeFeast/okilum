@@ -4,6 +4,9 @@ use epoch::{Epoch, Ticket};
 use gpui_component::input::{Input, InputState};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
 
+#[cfg(target_os = "linux")]
+type DaemonIdentityForNetwork = okilum_sync_controller::daemon::DaemonIdentity;
+
 struct BackgroundSync(Entity<SyncSettings>);
 impl Global for BackgroundSync {}
 pub(super) fn shared(window: &mut Window, cx: &mut App) -> Entity<SyncSettings> {
@@ -41,6 +44,11 @@ enum Operation {
     EnterPairing,
     #[cfg(target_os = "linux")]
     SelectConnection(PathBuf),
+    #[cfg(target_os = "linux")]
+    Network(
+        DaemonIdentityForNetwork,
+        okilum_sync_controller::network_policy::Policy,
+    ),
     #[cfg(target_os = "linux")]
     Share(PathBuf),
     Begin(String),
@@ -539,6 +547,35 @@ fn perform_with_locations(
             if let Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) = &operation {
                 linux_runtime::check_destination(&runtime, path)?;
             }
+            if let Some(selected) = runtime.choices.iter().find(|c| c.selected) {
+                let requested = if let Operation::Network(expected, policy) = &operation {
+                    anyhow::ensure!(
+                        selected.managed && selected.identity == *expected,
+                        "network policy selected managed identity changed"
+                    );
+                    Some(*policy)
+                } else {
+                    None
+                };
+                if selected.managed {
+                    guard.check()?;
+                    okilum_sync_controller::network_policy::reconcile(
+                        &state.parent().unwrap().join("managed/prepared"),
+                        &selected.identity,
+                        requested,
+                    )?;
+                } else {
+                    anyhow::ensure!(
+                        requested.is_none(),
+                        "network policy external runtime is read-only"
+                    );
+                }
+            } else {
+                anyhow::ensure!(
+                    !matches!(&operation, Operation::Network(..)),
+                    "network policy choose a Sync connection first"
+                );
+            }
             controller.set_configurations(runtime.configs.clone())?;
         }
         #[cfg(target_os = "macos")]
@@ -556,7 +593,7 @@ fn perform_with_locations(
         let snapshot = match operation {
             Operation::Read | Operation::EnterPairing => controller.refresh()?,
             #[cfg(target_os = "linux")]
-            Operation::SelectConnection(_) => controller.refresh()?,
+            Operation::SelectConnection(_) | Operation::Network(..) => controller.refresh()?,
             #[cfg(target_os = "linux")]
             Operation::Share(path) => {
                 let prepared = state
@@ -643,7 +680,9 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
 }
 fn user_error(error: &anyhow::Error) -> String {
     let text = error.to_string().to_lowercase();
-    if text.starts_with("not connected to ") {
+    if text.contains("network policy") {
+        "The network setting could not be verified. Refresh and try again. Custom connection addresses may need review in Syncthing.".into()
+    } else if text.starts_with("not connected to ") {
         error.to_string()
     } else if cfg!(target_os = "linux") && text.contains("ignore policy") {
         "This vault’s .stignore needs review before sharing. Required exclusions: .okilum-index, .okilum-save-*, /.claude/worktrees and /worktrees. Includes and negated rules need a separately reviewed policy.".into()

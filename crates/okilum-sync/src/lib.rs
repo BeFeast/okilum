@@ -82,6 +82,13 @@ impl Syncthing {
     pub fn config(&self) -> Result<Value> {
         self.request(Method::GET, "/rest/config", None)
     }
+    /// Update transport options only and verify the authenticated runtime's reply.
+    pub fn patch_options(&self, changes: &Value) -> Result<Value> {
+        self.request(Method::PATCH, "/rest/config/options", Some(changes))?;
+        let actual = self.config()?["options"].clone();
+        verify_fields(&actual, changes)?;
+        Ok(actual)
+    }
     pub fn folder(&self, id: &str) -> Result<Value> {
         self.request(
             Method::GET,
