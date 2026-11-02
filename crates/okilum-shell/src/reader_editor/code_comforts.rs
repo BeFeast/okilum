@@ -354,7 +354,11 @@ pub(super) fn enter(text: &str, block: &Block, selection: Range<usize>) -> Optio
 fn selected_lines(text: &str, block: &Block, selection: &Range<usize>) -> Vec<usize> {
     let from = lists::line_start(text, selection.start.max(block.body.start));
     let mut last = selection.end.min(block.body.end);
-    if selection.end > selection.start && last > from && lists::line_start(text, last) == last {
+    if selection.end > selection.start
+        && selection.end <= block.body.end
+        && last > from
+        && lists::line_start(text, last) == last
+    {
         last -= 1;
     }
     let mut lines = Vec::new();
@@ -414,7 +418,9 @@ pub(super) fn indent(
             if remove > 0 {
                 edits.push((start..start + remove, String::new()));
             }
-        } else if !line.trim().is_empty() {
+        } else {
+            // Input's selected-line indent includes blank lines too. Keeping
+            // their indentation lets the next typed line stay at this level.
             edits.push((start..start, unit.clone()));
         }
     }
@@ -1095,6 +1101,80 @@ mod tests {
     fn tab_and_shift_tab_indent_the_selected_code_lines(cx: &mut TestAppContext) {
         let (note, visual) = open(cx);
         indent_in(&note, visual);
+    }
+
+    fn blank_line_indent_in(note: &Note, visual: &mut VisualTestContext) {
+        // The selection includes the body newlines, ending at the untouched
+        // closing fence. Every selected blank code line must receive a level.
+        for nl in ["\n", "\r\n"] {
+            let source = "intro\n```python\n[\n\n]```\nafter".replace('\n', nl);
+            set(note, visual, &source);
+            keys(visual, "tab");
+            let indented = "intro\n```python\n[    \n    \n]```\nafter".replace('\n', nl);
+            assert_eq!(
+                shown(note, visual),
+                indented,
+                "selected empty code lines, {nl:?}"
+            );
+            keys(visual, "shift-tab");
+            assert_eq!(shown(note, visual), source, "round trip, {nl:?}");
+            undo(visual);
+            assert_eq!(shown(note, visual), indented, "outdent is one Undo");
+            undo(visual);
+            assert_eq!(shown(note, visual), source, "indent is one Undo");
+            redo(visual);
+            assert_eq!(shown(note, visual), indented);
+        }
+        set(note, visual, "```python\n[ \n\t\n]```");
+        keys(visual, "tab");
+        assert_eq!(
+            shown(note, visual),
+            "```python\n[\t \n\t\t\n]```",
+            "selected whitespace keeps its authored spaces/tabs"
+        );
+        keys(visual, "shift-tab");
+        assert_eq!(shown(note, visual), "```python\n[ \n\t\n]```");
+        // A selection ending at the next body line's start must not indent
+        // that unselected line. Blank lines in a mixed selection still count.
+        set(note, visual, "```python\n[call()\n\n]next()\n```");
+        keys(visual, "tab");
+        assert_eq!(
+            shown(note, visual),
+            "```python\n[    call()\n    \n]next()\n```"
+        );
+        undo(visual);
+        assert_eq!(shown(note, visual), "```python\n[call()\n\n]next()\n```");
+        // Extending through the closer/prose still modifies only code lines,
+        // including the last empty line, not the fence or following paragraph.
+        set(note, visual, "```python\n[call()\n\n```\nafter]");
+        keys(visual, "tab");
+        assert_eq!(
+            shown(note, visual),
+            "```python\n[    call()\n    \n```\nafter]"
+        );
+        keys(visual, "shift-tab");
+        assert_eq!(shown(note, visual), "```python\n[call()\n\n```\nafter]");
+    }
+
+    #[gpui::test]
+    fn blank_selected_code_lines_indent_outdent_and_undo_in_source(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        blank_line_indent_in(&note, visual);
+    }
+
+    #[gpui::test]
+    fn blank_selected_code_lines_indent_outdent_and_undo_in_live_preview(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        note.reader
+            .update_in(visual, |r, window, cx| r.set_live_preview(true, window, cx));
+        visual.run_until_parked();
+        blank_line_indent_in(&note, visual);
+        assert!(note.reader.read_with(visual, |r, _| r
+            .editing
+            .as_ref()
+            .unwrap()
+            .live_preview
+            .enabled));
     }
 
     fn comment_in(note: &Note, visual: &mut VisualTestContext) {

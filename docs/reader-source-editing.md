@@ -657,3 +657,9 @@ history in Source and Live Preview. A backslash is literal inside a Go raw
 string; it does not escape the closing delimiter. JS/TS template-string escapes
 keep their existing behavior, and shell backticks remain literal command syntax.
 The existing bracket-pair preference, IME guards and one-step Undo/Redo apply.
+
+Tab on a fenced-code selection also indents its empty lines, including an empty
+last body line before the closing fence. Shift+Tab removes that indentation;
+selection mapping, CRLF and one-step Undo/Redo use the existing Input transaction.
+A line at the exclusive selection end, the closing fence and following prose
+are not indented. This matches the embedded Input's selected-line indentation.
