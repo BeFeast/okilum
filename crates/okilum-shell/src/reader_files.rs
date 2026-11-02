@@ -3,6 +3,8 @@ use super::*;
 use crate::platform::labels::Os;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 mod live;
+#[path = "reader_single_folder_watch.rs"]
+mod single_folder_watch;
 
 #[derive(Clone, Copy)]
 pub(crate) enum FileAction {
