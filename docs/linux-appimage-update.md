@@ -1,8 +1,20 @@
 # AppImage in-app updates (#1470, slice 3)
 
 An AppImage launch is identified by `APPIMAGE`. Settings and About use the existing
-channel selector, inline check result and Restart to update action. Stable is the
-default; selecting Beta is explicit and persisted outside the disposable index.
+channel selector, inline check result and Restart to update action. The existing
+`appimage-update-channel` preference outside the disposable index always wins.
+Without one (#2369), the background check verifies the signed Stable descriptor.
+A running build at or below Stable starts on Stable (equal builds must match the
+published source). A newer build starts on Beta only after its immutable signed
+`linux/builds/<build>/release.json` proves the exact beta build/source was published;
+this also covers a download older than the latest Beta. Stable promotion reuses
+those same archived bytes, so publication scripts need no artifact mutation.
+Successful discovery records the preference once without overwriting a concurrent
+explicit choice. Offline, missing or invalid publication evidence leaves the
+channel undetermined and writes no preference; Check for Updates retries.
+About and Settings show the resolved channel, or an undetermined state with no
+channel selected. Discovery never downloads an application payload; the normal
+update path still accepts only builds strictly newer than the running build.
 An ordinary Linux package continues to use its package manager.
 
 The updater downloads `https://updates.befeast.com/okilum/linux/{beta,stable}/latest.json`

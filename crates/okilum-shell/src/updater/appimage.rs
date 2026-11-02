@@ -1,17 +1,17 @@
 //! AppImage uses the same Settings/About and protected restart flow as Windows.
 use super::status::{self, CheckStatus};
+use okilum_appimage::channel::{self, Channel};
 use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, OnceLock,
+        Mutex,
     },
 };
 
 static ANNOUNCE: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
-static BETA: AtomicBool = AtomicBool::new(false);
-static INITIALIZED: OnceLock<()> = OnceLock::new();
+static CHANNEL: Mutex<Option<Channel>> = Mutex::new(None);
 static PENDING: Mutex<Option<okilum_appimage::Staged>> = Mutex::new(None);
 
 fn preference() -> anyhow::Result<PathBuf> {
@@ -20,14 +20,14 @@ fn preference() -> anyhow::Result<PathBuf> {
 pub(super) fn packaged() -> bool {
     crate::linux_sprint::allows_updates() && std::env::var_os("APPIMAGE").is_some()
 }
-pub(super) fn beta() -> bool {
-    INITIALIZED.get_or_init(|| {
-        let saved = preference()
+pub(super) fn channel() -> &'static str {
+    let mut current = CHANNEL.lock().unwrap();
+    if current.is_none() {
+        *current = preference()
             .ok()
-            .and_then(|p| std::fs::read_to_string(p).ok());
-        BETA.store(saved.as_deref() == Some("beta"), Ordering::SeqCst);
-    });
-    BETA.load(Ordering::SeqCst)
+            .and_then(|p| channel::read(&p).ok().flatten());
+    }
+    current.map_or("Not determined", Channel::label)
 }
 pub(super) fn set_beta(enabled: bool) {
     // Serialize channel changes with checks/downloads/restart. A stale channel
@@ -42,15 +42,13 @@ pub(super) fn set_beta(enabled: bool) {
         return;
     }
     let result = (|| -> anyhow::Result<()> {
-        let path = preference()?;
-        std::fs::create_dir_all(path.parent().unwrap())?;
-        let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-        use std::io::Write;
-        file.write_all(if enabled { b"beta" } else { b"stable" })?;
-        file.as_file().sync_all()?;
-        file.persist(path)?;
-        beta();
-        BETA.store(enabled, Ordering::SeqCst);
+        let chosen = if enabled {
+            Channel::Beta
+        } else {
+            Channel::Stable
+        };
+        channel::save(&preference()?, chosen)?;
+        *CHANNEL.lock().unwrap() = Some(chosen);
         *PENDING.lock().unwrap() = None;
         status::set(CheckStatus::Idle);
         Ok(())
@@ -94,9 +92,19 @@ pub(super) fn check() {
         let result = (|| -> anyhow::Result<()> {
             okilum_appimage::recover_interrupted()?;
             let target = okilum_appimage::Target::detect()?;
-            let beta = beta();
             let current = env!("OKILUM_BUILD_VERSION").parse()?;
             let verifier = gpgv()?;
+            let chosen = channel::resolve(
+                &preference()?,
+                current,
+                env!("OKILUM_SOURCE_COMMIT"),
+                &verifier,
+            )?;
+            *CHANNEL.lock().unwrap() = Some(chosen);
+            // Refresh About/Settings as soon as discovery finishes, even if
+            // the subsequent update feed request is slow or unavailable.
+            status::set(CheckStatus::Checking);
+            let beta = chosen == Channel::Beta;
             match okilum_appimage::check(beta, current, &verifier)? {
                 Some(release) => {
                     status::set(CheckStatus::Note(format!(

@@ -1583,7 +1583,11 @@ impl Settings {
                 if self.preview_channel().is_some() || updater::available() {
                     let beta = self
                         .preview_channel()
-                        .unwrap_or_else(|| updater::channel() == "Beta");
+                        .or_else(|| match updater::channel() {
+                            "Beta" => Some(true),
+                            "Stable" => Some(false),
+                            _ => None,
+                        });
                     content
                         .child(
                             h_flex()
@@ -1609,7 +1613,7 @@ impl Settings {
                                             ]
                                             .map(
                                                 |(id, label, value, icon)| {
-                                                    let selected = beta == value;
+                                                    let selected = beta == Some(value);
                                                     Button::new(id)
                                                         .ghost()
                                                         .debug_selector(move || id.into())
@@ -1652,10 +1656,10 @@ impl Settings {
                                 ),
                         )
                         .children(update_status_row("settings", cx))
-                        .child(div().text_sm().text_color(p.text_muted).child(if beta {
-                            "Beta selected — preview new features and fixes."
-                        } else {
-                            "Stable selected — receive approved releases."
+                        .child(div().text_sm().text_color(p.text_muted).child(match beta {
+                            Some(true) => "Beta selected — preview new features and fixes.",
+                            Some(false) => "Stable selected — receive approved releases.",
+                            None => "Connect and check for updates to determine the channel, or choose one above.",
                         }))
                         .into_any_element()
                 } else {

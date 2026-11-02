@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 
+pub mod channel;
 pub mod desktop;
 pub mod installation;
 
@@ -350,23 +351,28 @@ fn verify_authority(
 
 pub fn check(beta: bool, current: u64, gpgv: &Path) -> Result<Option<Release>> {
     let channel = if beta { "beta" } else { "stable" };
+    let release = descriptor(
+        &format!("okilum/linux/{channel}/latest.json"),
+        channel,
+        gpgv,
+    )?;
+    Ok(newer_release(release, current))
+}
+
+fn newer_release(release: Release, current: u64) -> Option<Release> {
+    (release.build > current).then_some(release)
+}
+
+fn descriptor(key: &str, channel: &str, gpgv: &Path) -> Result<Release> {
     let dir = tempfile::tempdir()?;
     let descriptor = dir.path().join("release.json");
     let sig = dir.path().join("release.json.sig");
-    download(
-        &format!("okilum/linux/{channel}/latest.json"),
-        &descriptor,
-        64 * 1024,
-    )?;
-    download(
-        &format!("okilum/linux/{channel}/latest.json.sig"),
-        &sig,
-        16 * 1024,
-    )?;
+    download(key, &descriptor, 64 * 1024)?;
+    download(&format!("{key}.sig"), &sig, 16 * 1024)?;
     verify(gpgv, &descriptor, &sig, dir.path())?;
     let release: Release = serde_json::from_slice(&fs::read(descriptor)?)?;
     release.validate(channel)?;
-    Ok((release.build > current).then_some(release))
+    Ok(release)
 }
 
 /// Staging is ephemeral until an explicit restart. Crash before restart leaves
@@ -767,7 +773,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
-    fn release() -> Release {
+    pub(super) fn release() -> Release {
         serde_json::from_value(serde_json::json!({
             "schema":1,"platform":"linux-appimage","channel":"beta",
             "build":5010,"version":"0.1.5010","source":"a".repeat(40),
@@ -776,6 +782,12 @@ mod tests {
             "fingerprint":FINGERPRINT,"provenance_sha256":"c".repeat(64)
         }))
         .unwrap()
+    }
+    #[test]
+    fn channel_switch_never_replaces_an_equal_or_newer_install() {
+        assert!(newer_release(release(), 5009).is_some());
+        assert!(newer_release(release(), 5010).is_none());
+        assert!(newer_release(release(), 7488).is_none());
     }
     #[test]
     fn descriptor_rejects_wrong_channel_authority_identity_and_paths() {
