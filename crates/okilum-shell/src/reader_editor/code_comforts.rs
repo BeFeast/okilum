@@ -373,7 +373,12 @@ pub(super) fn typed(
 /// Enter in a code block: the new line keeps the indentation; after an
 /// opening bracket (or `:` in Python) it goes one level deeper, and a closer
 /// right at the caret moves to its own line at the old indentation.
-pub(super) fn enter(text: &str, selection: Range<usize>, unit: &str) -> Option<ListEdit> {
+pub(super) fn enter(
+    text: &str,
+    block: &Block,
+    selection: Range<usize>,
+    unit: &str,
+) -> Option<ListEdit> {
     let start = lists::line_start(text, selection.start);
     let line_end_offset = lists::line_end(text, lists::line_start(text, selection.end));
     let before = &text[start..selection.start];
@@ -624,7 +629,7 @@ impl Reader {
         let Some(unit) = self.code_indent_unit(&input, &text, &block, cx) else {
             return;
         };
-        if let Some(edit) = enter(&text, selection, &unit) {
+        if let Some(edit) = enter(&text, &block, selection, &unit) {
             if self.apply_list_edit(&input, edit, window, cx) {
                 cx.stop_propagation();
             }
@@ -823,6 +828,10 @@ mod tests {
 
     /// Replace the note (no history) and place the marked caret or selection.
     fn set(note: &Note, visual: &mut VisualTestContext, text: &str) {
+        // Each fixture scenario replaces its document/history. Reset its
+        // ephemeral fence policy too; ordinary typing/Undo below does not.
+        note.reader
+            .update(visual, |reader, _| reader.clear_code_indentation());
         let (text, selection) = marked(text);
         note.input
             .update_in(visual, |i, window, cx| i.set_value(text, window, cx));
