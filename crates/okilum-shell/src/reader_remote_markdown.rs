@@ -752,12 +752,15 @@ mod view {
                 cancelled.unwrap().load(Ordering::Acquire),
                 "Stop cancels the owned generation"
             );
+            // Dropping a never-polled GPUI task schedules cancellation; its
+            // captured receiver is released when the executor drains. Generation
+            // revocation above is synchronous and already prevents publication.
+            draw(visual);
             let (send, reply) = held.take().unwrap();
             assert!(
                 send.try_send(reply).is_err(),
-                "Stop dropped the pending UI receiver"
+                "Stop dropped the pending UI receiver after executor cancellation"
             );
-            draw(visual);
             panel.read_with(visual, |panel, _| {
                 assert!(matches!(panel.controller.state, State::Cancelled));
                 assert!(
