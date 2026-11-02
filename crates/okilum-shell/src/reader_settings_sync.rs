@@ -1,7 +1,5 @@
 // Shared desktop Sync settings. All controller IO runs off the GPUI thread.
 use super::*;
-#[cfg(target_os = "linux")]
-use anyhow::Context as _;
 use epoch::{Epoch, Ticket};
 use gpui_component::input::{Input, InputState};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
@@ -412,7 +410,7 @@ fn perform_scoped(
             Operation::Share(path) => {
                 let prepared = state
                     .parent()
-                    .context("Sync state parent unavailable")?
+                    .ok_or_else(|| anyhow::anyhow!("Sync state parent unavailable"))?
                     .join("managed/prepared");
                 controller.share_vault(&prepared, &path)?
             }
