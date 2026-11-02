@@ -160,6 +160,8 @@ struct Saved {
     auto_pair_markdown: bool,
     /// Fenced code closes independently of inline Markdown pairing (#1893).
     close_code_fences: bool,
+    /// Colon-triggered emoji completion in note editors (#1638).
+    emoji_completion: bool,
     /// Pasting or dropping a file larger than this many MB asks before
     /// copying it into the vault (#1611); 0 never asks.
     paste_ask_above_mb: u32,
@@ -226,6 +228,7 @@ impl Default for Saved {
             auto_pair_brackets: true,
             auto_pair_markdown: false,
             close_code_fences: true,
+            emoji_completion: true,
             paste_ask_above_mb: crate::note_paste::files::DEFAULT_ASK_ABOVE_MB,
             image_import: Default::default(),
             json_raw: false,
@@ -270,6 +273,7 @@ struct Store {
     settings_section_changed: bool,
     auto_pair_changed: bool,
     close_code_fences_changed: bool,
+    emoji_completion_changed: bool,
     paste_ask_changed: bool,
     image_import_changed: bool,
     json_raw_changed: bool,
@@ -374,6 +378,7 @@ pub(crate) fn install(directory: &Path, cx: &mut App) {
         settings_section_changed: false,
         auto_pair_changed: false,
         close_code_fences_changed: false,
+        emoji_completion_changed: false,
         paste_ask_changed: false,
         image_import_changed: false,
         json_raw_changed: false,
@@ -610,6 +615,7 @@ struct WriteJob {
     settings_section_changed: bool,
     auto_pair_changed: bool,
     close_code_fences_changed: bool,
+    emoji_completion_changed: bool,
     paste_ask_changed: bool,
     image_import_changed: bool,
     json_raw_changed: bool,
@@ -728,6 +734,9 @@ impl WriteJob {
         }
         if self.close_code_fences_changed {
             latest.close_code_fences = self.saved.close_code_fences;
+        }
+        if self.emoji_completion_changed {
+            latest.emoji_completion = self.saved.emoji_completion;
         }
         if self.paste_ask_changed {
             latest.paste_ask_above_mb = self.saved.paste_ask_above_mb;
@@ -859,6 +868,7 @@ fn job(cx: &App) -> Option<WriteJob> {
             && !state.auto_pair_changed
             && !state.image_import_changed
             && !state.close_code_fences_changed
+            && !state.emoji_completion_changed
             && !state.paste_ask_changed
             && !state.json_raw_changed
             && !state.log_editor_changed
@@ -900,6 +910,7 @@ fn job(cx: &App) -> Option<WriteJob> {
         settings_section_changed: state.settings_section_changed,
         auto_pair_changed: state.auto_pair_changed,
         close_code_fences_changed: state.close_code_fences_changed,
+        emoji_completion_changed: state.emoji_completion_changed,
         paste_ask_changed: state.paste_ask_changed,
         image_import_changed: state.image_import_changed,
         json_raw_changed: state.json_raw_changed,
@@ -1597,6 +1608,21 @@ pub(crate) fn set_close_code_fences(value: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
+pub(crate) fn emoji_completion(cx: &App) -> bool {
+    cx.try_global::<Store>()
+        .is_none_or(|state| state.saved.emoji_completion)
+}
+pub(crate) fn set_emoji_completion(value: bool, cx: &mut App) {
+    if !installed(cx) || emoji_completion(cx) == value {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.emoji_completion = value;
+    state.emoji_completion_changed = true;
+    schedule(cx);
+    cx.refresh_windows();
+}
+
 /// Settings → Editor (#1636): whether brackets and quotes, and `*` `_` `` ` ``,
 /// close themselves as they are typed in a note. Without the store (tests,
 /// a failed install) the defaults hold.
@@ -2111,6 +2137,7 @@ fn mark_saved(generation: u64, cx: &mut App) {
         state.settings_section_changed = false;
         state.auto_pair_changed = false;
         state.close_code_fences_changed = false;
+        state.emoji_completion_changed = false;
         state.paste_ask_changed = false;
         state.image_import_changed = false;
         state.json_raw_changed = false;
@@ -2241,6 +2268,32 @@ mod tests {
         assert_eq!(upgraded.text_zoom, 1.25);
         assert_eq!(upgraded.reading_width, 960.);
         assert!(upgraded.toolbar_labels);
+    }
+
+    #[gpui::test]
+    fn emoji_completion_defaults_on_and_persists_independently(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("reader-ui.json"), br#"{"version":1}"#).unwrap();
+        cx.update(|cx| {
+            install(directory.path(), cx);
+            assert!(emoji_completion(cx));
+            set_emoji_completion(false, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert!(!emoji_completion(cx));
+            set_close_code_fences(false, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert!(
+                !emoji_completion(cx),
+                "another editor preference preserves the choice"
+            );
+            set_emoji_completion(true, cx);
+            flush(cx);
+            install(directory.path(), cx);
+            assert!(emoji_completion(cx));
+            assert!(!close_code_fences(cx));
+        });
     }
 
     #[gpui::test]
@@ -2869,6 +2922,7 @@ mod tests {
                 settings_section_changed: false,
                 auto_pair_changed: false,
                 close_code_fences_changed: false,
+                emoji_completion_changed: false,
                 paste_ask_changed: false,
                 image_import_changed: false,
                 json_raw_changed: false,
