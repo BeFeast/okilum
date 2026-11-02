@@ -76,6 +76,7 @@ jobs:
       - name: Verify agent helper controls
         run: python3 -m unittest discover -s scripts/ci -p test_agent_checks.py
       - name: Build Linux desktop offline
+        id: build
         env:
           CARGO_NET_OFFLINE: 'true'
         run: |
@@ -88,25 +89,27 @@ jobs:
           source scripts/ci/test-nofile.sh
           cargo test --offline --locked -p okilum-core
       - name: Run Linux Rust suites offline
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           CARGO_NET_OFFLINE: 'true'
         run: tini -s -- bash scripts/ci/linux-rust-tests.sh
       # Explicit benchmark refs repeat on this SAME VM: cross-host timings are
       # not a controlled comparison. Ordinary worker checks pay for one pass.
       - name: Warm build Linux desktop offline
-        if: startsWith(github.ref, 'refs/heads/agent-checks-benchmark/')
+        id: warm-build
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && startsWith(github.ref, 'refs/heads/agent-checks-benchmark/') }}
         env:
           CARGO_NET_OFFLINE: 'true'
         run: cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
       - name: Warm complete okilum-core suite offline
-        if: startsWith(github.ref, 'refs/heads/agent-checks-benchmark/')
+        if: ${{ !cancelled() && steps.warm-build.outcome == 'success' }}
         env:
           CARGO_NET_OFFLINE: 'true'
         run: |
           source scripts/ci/test-nofile.sh
           cargo test --offline --locked -p okilum-core
       - name: Warm Linux Rust suites offline
-        if: startsWith(github.ref, 'refs/heads/agent-checks-benchmark/')
+        if: ${{ !cancelled() && steps.warm-build.outcome == 'success' }}
         env:
           CARGO_NET_OFFLINE: 'true'
         run: tini -s -- bash scripts/ci/linux-rust-tests.sh

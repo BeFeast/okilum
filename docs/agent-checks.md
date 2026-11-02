@@ -60,8 +60,8 @@ The total helper wait ceiling is two hours (`--timeout SECONDS`); the job ceilin
 is 100 minutes. For GitHub outages or checks needing local hardware, use the
 build-slot fallback recipe in the project operations notes.
 
-`--benchmark` pushes to the sibling `agent-checks-benchmark/<branch>` namespace
+`--benchmark` pushes to the sibling `agent-checks-benchmark/<sha>/<branch>` namespace
 and repeats the build, core suite and Linux suites using the already warm
 Cargo downloads/target on the same 4-vCPU VM. Each pass has separately timed steps;
-use a new benchmark branch for a cold baseline. `--rerun` instead measures a new
+each new head gets a cold branch cache scope. `--rerun` instead measures a new
 hosted job including archive restoration; its VM hardware may differ.
