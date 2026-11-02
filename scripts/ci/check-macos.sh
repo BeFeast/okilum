@@ -6,6 +6,7 @@ set -Eeuo pipefail
 python3 scripts/ci/test_supervisor_bundle.py
 # Pure page guard units; no GUI/NSApp activation and no production browser data.
 node scripts/ci/test-manager-page-keys.mjs
+bash scripts/ci/check-manager-key-routing.sh
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"

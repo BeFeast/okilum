@@ -76,9 +76,11 @@ previously focused origin input cannot receive paste. Escape restores that prior
 GPUI focus; outside clicks choose their own target.
 While that view (or a descendant) is the key window's first responder, editing
 shortcuts use native responder actions and all other keyboard events go directly
-to WebKit. Paste keeps the original system pasteboard, including images; no
-JavaScript clipboard emulation is involved. The bridge temporarily provides a
-native Edit menu with nil-target responder actions and restores the original menu
+to WebKit. Routing starts at `NSApplication.sendEvent:` and the owning window's
+`performKeyEquivalent:`, before AppKit can dispatch a host menu shortcut; a local
+event monitor alone is too late. This also protects modified editing keys,
+Cmd+arrows and T3 shortcuts such as Cmd+K. The bridge temporarily provides a
+native Edit menu with explicit browser targets and restores the original menu
 on blur, hide, window change or teardown. Escape and outside clicks return first
 responder to the GPUI parent. Native focus, rather than delayed DOM notifications,
 controls suppression of Reader shortcuts.
@@ -123,7 +125,11 @@ cancel queued edits. Copy/cut excludes password and CSS-masked secure fields.
 The page helper uses document/target identities and revision guards. Clipboard
 content and key events are not logged. `page_keys.js` is canonical; regenerate its
 Objective-C string with `python3 scripts/dev/generate-manager-page-keys.py`.
-Required macOS CI runs pure page-guard and native dispatch unit regressions.
+The hosted macOS gate runs pure page-guard and native dispatch unit regressions.
+`scripts/ci/check-manager-key-routing.sh` also installs the production app/window
+hooks over headless boundary doubles. It checks focused keyboard delivery,
+all six editing dispatches, outside/other-window host controls, native replay,
+and re-entry. These doubles do not establish real WebKit editing acceptance.
 The real-NSApp fixture remains ignored/manual-only (`OKILUM_NATIVE_GUI=1`) because
 hosted runners cannot establish an active/key application.
 
