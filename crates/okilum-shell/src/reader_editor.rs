@@ -11,6 +11,7 @@ mod lists;
 mod live_preview;
 mod math_preview;
 mod paste_jobs;
+mod tables;
 mod writing_modes;
 use super::*;
 use crate::platform::labels::Os;
@@ -78,6 +79,8 @@ pub(super) struct Editing {
     live_preview: live_preview::LivePreview,
     /// The card under an inline formula holding the caret (#1645).
     math_preview: Entity<math_preview::MathPreview>,
+    /// One persistent cell grid per editor; cell changes use the source Undo path.
+    table_grid: Entity<tables::TableGrid>,
     input: Entity<EditorState>,
     conflict: Option<String>,
     conflict_detected: bool,
@@ -308,6 +311,7 @@ impl Editing {
             store,
             live_preview,
             math_preview,
+            table_grid,
             input,
             conflict,
             conflict_detected,
@@ -335,6 +339,7 @@ impl Editing {
             store,
             live_preview,
             math_preview,
+            table_grid,
             input,
             conflict,
             conflict_detected,
@@ -924,11 +929,15 @@ impl Reader {
         let live_preview =
             live_preview::LivePreview::new(self, cx.entity_id(), &store, &input, !plain_file);
         let reader = cx.entity();
-        let math_preview = cx.new(|cx| math_preview::MathPreview::new(reader, input.clone(), cx));
+        let math_preview =
+            cx.new(|cx| math_preview::MathPreview::new(reader.clone(), input.clone(), cx));
+        let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), cx));
+        let table_watch = cx.observe(&table_grid, |_, _, cx| cx.notify());
         self.editing = Some(Editing {
             store,
             live_preview,
             math_preview,
+            table_grid,
             input: input.clone(),
             conflict: None,
             conflict_detected: false,
@@ -957,6 +966,7 @@ impl Reader {
                 toggled,
                 highlighting,
                 menu_watch,
+                table_watch,
                 pasted,
             ],
         });
@@ -1761,6 +1771,9 @@ impl Reader {
         // Room below the last line for toasts, focus and typewriter (#1643).
         self.apply_writing_modes(window, cx);
         let editing = self.editing.as_ref().unwrap();
+        editing.table_grid.update(cx, |grid, cx| {
+            grid.sync_presentation(editing.live_preview.enabled, window, cx);
+        });
         let palette = brand::palette(cx);
         let column = v_flex().key_context("ReaderSource").size_full().min_w_0();
         // #1992: Enter, Tab and the comment key in a code block's body, before
@@ -1775,6 +1788,7 @@ impl Reader {
         // #1993: the caret's code block in an external editor.
         let column = self.external_block_actions(column, cx);
         let column = self.format_actions(column, cx);
+        let column = self.table_actions(column, cx);
         self.list_actions(column, cx)
             // #1611: the paste commands beside Cmd+V, and files dropped onto
             // the note, through the same router.
@@ -1906,7 +1920,17 @@ impl Reader {
                     .context_menu({
                         let facts = editing.menu_facts.clone();
                         let markdown = editing.markdown;
-                        move |menu, _, cx| context_menu::editor_menu(menu, &facts, markdown, cx)
+                        move |menu, _, cx| {
+                            let menu = context_menu::editor_menu(menu, &facts, markdown, cx);
+                            if markdown && facts.editable() {
+                                menu.separator().submenu(
+                                    "Table",
+                                    gpui_component::native_menu::NativeMenu::from(tables::menu()),
+                                )
+                            } else {
+                                menu
+                            }
+                        }
                     })
                     .font_family(if editing.live_preview.enabled {
                         reader_fonts::note(cx)
@@ -1954,6 +1978,25 @@ fn live_blocks(
         let Some(this) = reader.upgrade() else {
             return div().into_any_element();
         };
+        let table_range = block.source.start.0..block.source.end.0;
+        let grid = {
+            let reader = this.read(cx);
+            reader
+                .editing
+                .as_ref()
+                .filter(|editing| editing.live_preview.enabled)
+                .map(|editing| {
+                    (
+                        editing.table_grid.clone(),
+                        editing.input.read(cx).source_stamp(),
+                    )
+                })
+        };
+        if let Some((grid, _)) = &grid {
+            if grid.read(cx).active_range(cx).as_ref() == Some(&table_range) {
+                return grid.clone().into_any_element();
+            }
+        }
         let (vault, states, identities, code_source, focused) = {
             let this = this.read(cx);
             (
@@ -2041,8 +2084,34 @@ fn live_blocks(
             let source: Arc<str> = source.into();
             move |cell: gpui_component::text::TableCellPress,
                   event: &gpui::MouseDownEvent,
-                  _: &mut Window,
-                  _: &mut App| {
+                  window: &mut Window,
+                  cx: &mut App| {
+                // A plain cell press opens the revision-bound persistent grid.
+                // Double-click and modified presses retain the existing source hooks.
+                if event.click_count == 1
+                    && !event.modifiers.shift
+                    && !event.modifiers.control
+                    && !event.modifiers.platform
+                    && !event.modifiers.alt
+                {
+                    if let Some((grid, stamp)) = &grid {
+                        let opened = grid.update(cx, |grid, cx| {
+                            grid.open_cell(
+                                table_range.clone(),
+                                *stamp,
+                                &source,
+                                cell.row,
+                                cell.column,
+                                window,
+                                cx,
+                            )
+                        });
+                        if opened {
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
+                }
                 let Some(at) =
                     crate::source_presentation::table_cell_offset(&source, cell.row, cell.column)
                 else {
