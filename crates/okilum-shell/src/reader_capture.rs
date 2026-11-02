@@ -12,6 +12,8 @@ use std::{
     rc::Rc,
 };
 mod namespace;
+#[cfg(test)]
+mod mounted_tests;
 use namespace::{Binding, PreparedNamespace, Snapshot};
 
 type EntryKey = (WindowId, PathBuf);
@@ -147,6 +149,8 @@ pub(crate) fn menu_item(
         let token = generation.clone();
         let task = cx.spawn(async move |cx| {
             let result: anyhow::Result<Arc<PreparedNamespace>> = work.await;
+            #[cfg(test)]
+            let test_done = mounted_tests::pause_prepared(&snapshot.root).await;
             let delivered = asking_window.update(cx, |_, window, cx| {
                 let task = ENTRIES.with(|entries| {
                     let mut entries = entries.borrow_mut();
@@ -221,6 +225,8 @@ pub(crate) fn menu_item(
                 });
                 show_composer(view, window, cx);
             });
+            #[cfg(test)]
+            if let Some(done) = test_done { let _ = done.send(()); }
             if delivered.is_err() {
                 ENTRIES.with(|entries| {
                     let mut entries = entries.borrow_mut();
@@ -279,6 +285,7 @@ fn show_composer(view: Entity<CaptureComposer>, window: &mut Window, cx: &mut Ap
             .child(
                 div()
                     .id("capture-composer-dialog")
+                    .debug_selector(|| "capture-composer-dialog".into())
                     .max_h(px(620.))
                     .overflow_y_scroll()
                     .child(content.clone()),
@@ -1053,6 +1060,7 @@ impl Render for CaptureComposer {
                 .gap_2()
                 .child(
                     Button::new("capture-cancel")
+                        .debug_selector(|| "capture-cancel".into())
                         .label("Cancel — keep draft")
                         .disabled(self.busy || self.loading)
                         .on_click(cx.listener(|this, _, _, cx| {
