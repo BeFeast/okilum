@@ -140,6 +140,7 @@ pub(super) fn read<T: DeserializeOwned>(stream: &mut TcpStream) -> Result<T> {
     let mut length = [0; 4];
     stream
         .read_exact(&mut length)
+        .map_err(socket_timeout)
         .context("read pairing frame length (socket receive timeout may report WouldBlock)")?;
     let length = u32::from_be_bytes(length) as usize;
     ensure!(
@@ -149,15 +150,18 @@ pub(super) fn read<T: DeserializeOwned>(stream: &mut TcpStream) -> Result<T> {
     let mut body = vec![0; length];
     stream
         .read_exact(&mut body)
+        .map_err(socket_timeout)
         .context("read pairing frame body (socket receive timeout may report WouldBlock)")?;
     Ok(serde_json::from_slice(&body)?)
 }
 pub(super) fn write<T: Serialize>(stream: &mut TcpStream, value: &T) -> Result<()> {
     let body = bounded_json(value, MAX_FRAME)?;
     ensure!(body.len() <= MAX_FRAME, "pairing frame exceeds bound");
-    stream.write_all(&(body.len() as u32).to_be_bytes())?;
-    stream.write_all(&body)?;
-    stream.flush()?;
+    stream
+        .write_all(&(body.len() as u32).to_be_bytes())
+        .map_err(socket_timeout)?;
+    stream.write_all(&body).map_err(socket_timeout)?;
+    stream.flush().map_err(socket_timeout)?;
     Ok(())
 }
 pub(super) fn connect(endpoint: SocketAddr) -> Result<TcpStream> {
@@ -167,9 +171,23 @@ pub(super) fn connect(endpoint: SocketAddr) -> Result<TcpStream> {
     Ok(stream)
 }
 pub(super) fn limits(stream: &TcpStream) -> Result<()> {
+    // Accepted sockets can inherit the nonblocking listener mode on BSD/macOS.
+    // Frame I/O uses blocking sockets with bounded kernel timeouts everywhere.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
     Ok(())
+}
+
+fn socket_timeout(error: std::io::Error) -> std::io::Error {
+    // Linux reports SO_RCVTIMEO/SO_SNDTIMEO expiry as EAGAIN/WouldBlock.
+    // Preserve the cause but expose the same timeout kind as other platforms so
+    // transfer reconciliation can keep an offline peer pending safely.
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        std::io::Error::new(std::io::ErrorKind::TimedOut, error)
+    } else {
+        error
+    }
 }
 
 #[cfg(test)]
@@ -177,6 +195,30 @@ mod tests {
     use super::*;
     use serde::ser::SerializeSeq;
     use std::cell::Cell;
+
+    #[test]
+    fn blocking_socket_timeout_is_recognized_as_an_offline_peer() -> Result<()> {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let mut sender = connect(listener.local_addr()?)?;
+        let (mut receiver, _) = listener.accept()?;
+        receiver.set_nonblocking(true)?;
+        limits(&receiver)?;
+        assert!(!rustix::fs::fcntl_getfl(&receiver)?.contains(rustix::fs::OFlags::NONBLOCK));
+        receiver.set_read_timeout(Some(Duration::from_millis(20)))?;
+        // Positive control: the same socket and frame reader receive data.
+        write(&mut sender, &"delivered")?;
+        assert_eq!(read::<String>(&mut receiver)?, "delivered");
+        // Keep the peer connected but send no next frame: exercise the real
+        // kernel receive timeout, rather than a mocked WouldBlock value.
+        let error = read::<String>(&mut receiver).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert!(super::super::transfer::offline(&error));
+        Ok(())
+    }
 
     struct Oversized<'a>(&'a Cell<usize>);
     impl Serialize for Oversized<'_> {
