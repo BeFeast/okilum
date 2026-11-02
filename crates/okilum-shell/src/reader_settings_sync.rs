@@ -633,7 +633,7 @@ impl Render for SyncSettings {
         // Before anything is set up, the steps come first and the switch
         // after them; an «Off» status says nothing new then (#1356).
         let mut rows = Some((switch_row, status_row));
-        let mut content = v_flex().w_full().gap_4();
+        let mut content = v_flex().w_full().gap_4().child(crate::reader_sync_help::entry());
         if !order.steps_first {
             if let Some((switch_row, status_row)) = rows.take() {
                 content = content.child(switch_row).child(status_row);

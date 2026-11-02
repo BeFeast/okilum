@@ -1,19 +1,21 @@
 # Windows installation and updates
 
 Windows Reader uses Velopack 1.2.161. The Linux CI runner cross-compiles with
-cargo-xwin and packages unsigned Setup.exe/full/delta/feed artifacts with
+cargo-xwin and packages unsigned Beta Setup.exe/full/delta/feed artifacts with
 `vpk [win] pack`. No Windows runner, Wine or user-installed .NET is required.
 The existing Windows workflow performs one cross-build per PR/main event;
-PR artifacts never publish. Main publishes beta; the [unified releases workflow](releases.md)
-promotes the matching builds on all three platforms without rebuilding or signing them.
+PR artifacts never publish. Main publishes Beta; [release promotion](releases.md)
+supports an independently accepted Windows Stable build without rebuilding it.
+Windows Stable is signed-only: the promotion gate refuses unsigned Beta artifacts
+and does not sign them during promotion.
 
 Public installer URLs:
 - https://updates.befeast.com/okilum/windows/beta/Setup.exe
 - https://updates.befeast.com/okilum/windows/stable/Setup.exe
 
 Every install follows **stable** unless beta was chosen explicitly (#1307), on
-both installers: a promoted stable package is the beta build re-signed, so the
-default cannot come from the binary. Beta is an opt-in: **Settings → Updates →
+both installers: the update-channel preference is separate from the downloaded
+installer. Beta is an opt-in: **Settings → Updates →
 Beta**, which writes `beta` to `%LOCALAPPDATA%\okilum\windows-update-channel`.
 No file, or any other value, means stable. QA machines that must follow every
 merge write that file before installing.
@@ -42,17 +44,20 @@ have no automatic updates; use an installed release for update acceptance.
 Installation lives under `%LOCALAPPDATA%\BeFeast.Okilum`, separate from existing
 Reader state `%LOCALAPPDATA%\okilum`. No uninstall hook deletes user state or
 vaults. The Windows Reader reads, searches and edits notes with native safe
-saves. Shaders and third-party notices ship with the app. The installer and app are currently unsigned: Windows SmartScreen
-may show “Windows protected your PC”; verify the official URL, then use
-**More info → Run anyway** for this owner-approved testing phase.
+saves. Shaders and third-party notices ship with the app. Beta installers and the
+Beta app are currently unsigned: Windows SmartScreen may show “Windows protected
+your PC”; verify the official URL, then use **More info → Run anyway** for this
+owner-approved preview. Stable requires signed artifacts and separate native
+installation/update acceptance; this preview does not establish either gate.
 
 CI restores the previous full beta package to create deltas. Publishing verifies
 package sizes/SHA256, uploads packages first and the feed last; failure before
 feed publication leaves clients on the previous release. Immutable build metadata
 and Setup.exe support exact-build promotion. Failed or older publications cannot
 roll the feed back. The optional `OKILUM_WINDOWS_SIGN_TEMPLATE` packager hook is
-unset until a signing service/certificate is configured; no signing secret exists.
-The unsigned feed relies on HTTPS and the update host; package hashes provide
+used for signed packaging; unsigned Beta publication does not establish that it ran.
+Stable promotion separately verifies signed metadata and the signer fingerprint.
+The unsigned Beta feed relies on HTTPS and the update host; package hashes provide
 integrity, not independent publisher authentication.
 
 ## Owner acceptance on bragi
@@ -84,5 +89,5 @@ console, and the build refuses a package without it (`scripts/windows/pack.sh`,
 When Enable exists it copies the helper out of the application folder to
 `<private state>/supervisor/<version>/` (`sidecar::stage`), because Velopack replaces the
 application folder on every update and a background process running from it would block
-the update and the uninstall. Like the app, the helper is unsigned until the code-signing
-certificate exists; Velopack signs everything it packs through the same hook.
+the update and the uninstall. The Beta helper is unsigned, like the Beta app;
+signed Stable packaging must sign it through the same Velopack signing hook.

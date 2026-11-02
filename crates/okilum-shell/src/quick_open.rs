@@ -4,6 +4,7 @@
 //! (#1518, the keyboard path of #1508). One query matches all four; ↑ ↓ move
 //! through every row, Tab jumps to the next section and ⌘1…⌘4 to a given
 //! one. Content search (⇧⌘F) stays a single list of matches.
+use super::reader_agent_search::AgentSearch;
 use super::*;
 use okilum_core::quick_open::FileFilter;
 use okilum_core::search_snippet::{plain_snippet, PlainSnippet};
@@ -217,10 +218,9 @@ pub(super) fn folder_note_title(vault_name: &str, path: &str) -> Option<String> 
     )
 }
 
-/// Every indexed-inventory path the filter admits, from the vault snapshot the
-/// query started with: notes and other files, as the full-text index holds
-/// them. Handed to the searcher so filtering precedes its top-N (#1589).
-fn eligible_paths(vault: &Vault, filter: FileFilter) -> Vec<String> {
+/// Canonical indexed-inventory paths from the query snapshot. AgentSearch
+/// applies the exact file-class filter before the engine top-N (#1589).
+fn eligible_paths(vault: &Vault) -> Vec<String> {
     vault
         .notes
         .iter()
@@ -232,7 +232,6 @@ fn eligible_paths(vault: &Vault, filter: FileFilter) -> Vec<String> {
                 .filter(|entry| entry.kind == okilum_core::vault::EntryKind::Attachment)
                 .map(|entry| &entry.path),
         )
-        .filter(|path| filter.admits(path))
         .cloned()
         .collect()
 }
@@ -526,7 +525,10 @@ pub(super) struct Palette {
     full_text: bool,
     /// Agent files are hidden unless this chip view asks for them (#1589).
     /// Transient: never persisted, reset by every explicit open.
-    filter: FileFilter,
+    scope: AgentSearch,
+    /// Identity of the visible result snapshot, independent of live input.
+    result_query: String,
+    result_root: Option<PathBuf>,
     pub(super) input: Entity<InputState>,
     pub inventory: Option<Arc<Vec<okilum_core::vault::Note>>>,
     _subscription: Subscription,
@@ -577,7 +579,9 @@ impl Palette {
         Self {
             open: false,
             full_text: false,
-            filter: FileFilter::Default,
+            scope: AgentSearch::default(),
+            result_query: String::new(),
+            result_root: None,
             input,
             inventory: None,
             _subscription: subscription,
@@ -604,6 +608,8 @@ impl Palette {
         self.supersede();
         self.rows.clear();
         self.snippets.clear();
+        self.result_query.clear();
+        self.result_root = None;
         self.sections = Sections::default();
     }
 
@@ -641,7 +647,7 @@ impl Reader {
         self.shortcut_sheet.open = false;
         self.quick_open.open = true;
         self.quick_open.full_text = full_text;
-        self.quick_open.filter = FileFilter::Default;
+        self.quick_open.scope.open();
         self.quick_open.input.update(cx, |input, cx| {
             input.set_placeholder(
                 if full_text {
@@ -691,6 +697,17 @@ impl Reader {
             self.quick_open.invalidate();
             return;
         }
+        // Empty input cancels the visible search immediately. A different vault
+        // must never borrow the previous vault's result snapshot.
+        if self.quick_open_query(cx).is_empty()
+            || self
+                .quick_open
+                .result_root
+                .as_ref()
+                .is_some_and(|root| root != &self.vault_root)
+        {
+            self.quick_open.invalidate();
+        }
         self.quick_open.supersede();
         self.quick_open.pending = true;
         self.quick_open.message = "Searching…".into();
@@ -709,10 +726,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.quick_open.open || self.quick_open.filter == filter {
+        if !self.quick_open.open || self.quick_open.scope.filter() == filter {
             return;
         }
-        self.quick_open.filter = filter;
+        self.quick_open.scope.set_filter(filter);
         self.quick_open.accept_when_ready = None;
         self.quick_open.invalidate();
         self.quick_open
@@ -773,12 +790,16 @@ impl Reader {
             return Sections::default();
         }
         let query = self.quick_open.query.clone();
-        let filter = self.quick_open.filter;
+        let filter = self.quick_open.scope.filter();
         let now = reader_sidebar::now();
         let aliases = self.vault.aliases();
         let mut pinned = matching(
             filtered_entries(
-                self.nav_entries(reader_title_nav::Menu::Pinned, now),
+                self.nav_entries_with_agents(
+                    reader_title_nav::Menu::Pinned,
+                    now,
+                    filter == FileFilter::AgentFiles,
+                ),
                 filter,
             ),
             &query,
@@ -788,10 +809,14 @@ impl Reader {
         let current = self.selected_file();
         let mut recent = matching(
             filtered_entries(
-                self.nav_entries(reader_title_nav::Menu::Recent, now)
-                    .into_iter()
-                    .filter(|entry| entry.path != current)
-                    .collect(),
+                self.nav_entries_with_agents(
+                    reader_title_nav::Menu::Recent,
+                    now,
+                    filter == FileFilter::AgentFiles,
+                )
+                .into_iter()
+                .filter(|entry| entry.path != current)
+                .collect(),
                 filter,
             ),
             &query,
@@ -933,7 +958,7 @@ impl Reader {
             if section == PaletteSection::Files && !has_rows {
                 // Files always says what it would list.
                 let idle = !palette.running && !palette.pending && palette.message.is_empty();
-                let files = match palette.filter {
+                let files = match palette.scope.filter() {
                     FileFilter::Default => "files",
                     FileFilter::AgentFiles => "agent files",
                 };
@@ -969,7 +994,9 @@ impl Reader {
         let query = self.quick_open.input.read(cx).value().trim().to_string();
         let recent = self.quick_open.recent.clone();
         let full_text = self.quick_open.full_text;
-        let filter = self.quick_open.filter;
+        let scope = self.quick_open.scope;
+        let filter = scope.filter();
+        let result_query = query.clone();
         // Inside a project its files rank first, then the rest (#1518).
         let first = self.project_folder().unwrap_or_default();
         #[cfg(test)]
@@ -988,8 +1015,13 @@ impl Reader {
                 match searcher {
                     // Ownership applies before the top-N cut (#1589): the
                     // current inventory snapshot, narrowed by the filter.
-                    Some(searcher) => searcher
-                        .search_in_paths(&query, 100, &eligible_paths(&vault, filter))
+                    Some(searcher) => scope
+                        .search(
+                            &searcher,
+                            eligible_paths(&vault).iter().map(String::as_str),
+                            &query,
+                            100,
+                        )
                         .map(|rows| (rows, String::new()))
                         .map_err(|error| error.to_string()),
                     None => Ok((
@@ -1063,7 +1095,8 @@ impl Reader {
                 let mut accept = None;
                 if this.quick_open.open
                     && this.quick_open.generation == generation
-                    && this.quick_open.filter == filter
+                    && this.quick_open.scope.filter() == filter
+                    && this.quick_open_query(cx) == result_query
                     && this.vault_root == root
                     && this.watcher_generation == inventory
                 {
@@ -1089,12 +1122,16 @@ impl Reader {
                             } else {
                                 message
                             };
+                            this.quick_open.result_query = result_query;
+                            this.quick_open.result_root = Some(root);
                             this.quick_open.rows = rows;
                             this.quick_open.snippets = snippets;
                         }
                         Err(error) => {
                             this.quick_open.rows.clear();
                             this.quick_open.snippets.clear();
+                            this.quick_open.result_query.clear();
+                            this.quick_open.result_root = None;
                             this.quick_open.message = error;
                         }
                     }
@@ -1133,7 +1170,7 @@ impl Reader {
     fn still_shows(&self, held: &HeldEnter, cx: &App) -> bool {
         held.query == self.quick_open_query(cx)
             && held.full_text == self.quick_open.full_text
-            && held.filter == self.quick_open.filter
+            && held.filter == self.quick_open.scope.filter()
             && held.root == self.vault_root
     }
 
@@ -1148,7 +1185,7 @@ impl Reader {
                 window: window.window_handle(),
                 query: self.quick_open_query(cx),
                 full_text: self.quick_open.full_text,
-                filter: self.quick_open.filter,
+                filter: self.quick_open.scope.filter(),
                 root: self.vault_root.clone(),
             });
             return;
@@ -1212,6 +1249,11 @@ impl Reader {
     /// previous text: clicking what is on screen opens it (#1006).
     fn open_quick_open_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.quick_open.accept_when_ready = None;
+        if self.quick_open.result_root.as_ref() != Some(&self.vault_root) {
+            self.quick_open.invalidate();
+            cx.notify();
+            return;
+        }
         let Some(hit) = self.quick_open.rows.get(ix).cloned() else {
             return;
         };
@@ -1228,7 +1270,7 @@ impl Reader {
     /// switching views never moves the list. Selected, it lists agent files
     /// only; otherwise they stay out of every section.
     fn render_agent_files_chip(&self, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.quick_open.filter == FileFilter::AgentFiles;
+        let active = self.quick_open.scope.filter() == FileFilter::AgentFiles;
         Button::new("quick-open-agent-files")
             .debug_selector(|| "quick-open-agent-files".into())
             .xsmall()
@@ -1246,7 +1288,7 @@ impl Reader {
                 "Show only agent files"
             })
             .on_click(cx.listener(|this, _, window, cx| {
-                let filter = if this.quick_open.filter == FileFilter::AgentFiles {
+                let filter = if this.quick_open.scope.filter() == FileFilter::AgentFiles {
                     FileFilter::Default
                 } else {
                     FileFilter::AgentFiles
@@ -1284,7 +1326,7 @@ impl Reader {
         let lines = self.palette_lines(&items, scope);
         // Results are capped at 100. Content-sized rows avoid reserving blank
         // snippet/reason lines, and keep the keyboard scroll target exact.
-        let query = self.quick_open.input.read(cx).value().to_string();
+        let query = self.quick_open.result_query.clone();
         // One Files row (or content-search row): `ix` is its place among all
         // palette items, `row` its index in `rows`.
         let file_row = |ix: usize, row: usize| -> AnyElement {
@@ -2341,6 +2383,10 @@ mod tests {
             assert_eq!(paths, before, "the previous results stay while it runs");
             assert_eq!(v.quick_open.snippets.len(), before.len());
             assert_eq!(
+                v.quick_open.result_query, "meridia",
+                "highlights belong to visible rows"
+            );
+            assert_eq!(
                 v.quick_open.selected, 0,
                 "a new query restarts the selection"
             );
@@ -2387,6 +2433,41 @@ mod tests {
                 .collect();
             assert_eq!(paths, ["Rare.md"], "the answer replaces the previous rows");
             assert_eq!(v.quick_open.selected, 0);
+        });
+
+        // Cancellation retires the snapshot even while another worker is held.
+        let (release, hold) = async_channel::bounded(1);
+        reader.update_in(visual, |v, window, cx| {
+            v.quick_open.hold_query = Some(hold);
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("meridia", window, cx));
+            v.refresh_quick_open(cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| {
+            assert!(
+                !v.quick_open.rows.is_empty(),
+                "positive control: snapshot exists"
+            );
+            v.quick_open
+                .input
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            v.refresh_quick_open(cx);
+            assert!(
+                v.quick_open.rows.is_empty(),
+                "empty input retires old results immediately"
+            );
+            assert!(v.quick_open.result_query.is_empty());
+            assert!(v.quick_open.result_root.is_none());
+        });
+        release.try_send(()).unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |v, window, cx| {
+            assert!(
+                v.quick_open.rows.is_empty(),
+                "cancelled reply cannot resurrect rows"
+            );
             // Reopening, like closing, never shows rows of an earlier session.
             v.open_quick_open(true, window, cx);
             assert!(v.quick_open.rows.is_empty());
@@ -3312,7 +3393,7 @@ canaryhidden [[Target]]",
             std::fs::write(root.join(path), body).unwrap();
         }
         cx.update(|cx| {
-            gpui_component::init(cx);
+            crate::test_init(cx);
             bind_keys(cx);
         });
         let mut reader = None;
@@ -3402,7 +3483,7 @@ canaryhidden [[Target]]",
         reader.update_in(visual, |v, window, cx| v.open_quick_open(false, window, cx));
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.quick_open.filter, FileFilter::Default);
+            assert_eq!(v.quick_open.scope.filter(), FileFilter::Default);
             assert_eq!(
                 palette_rows(v),
                 [
@@ -3426,7 +3507,7 @@ canaryhidden [[Target]]",
         // The chip switches to agent files only and keeps the text.
         click(visual, "quick-open-agent-files");
         reader.read_with(visual, |v, cx| {
-            assert_eq!(v.quick_open.filter, FileFilter::AgentFiles);
+            assert_eq!(v.quick_open.scope.filter(), FileFilter::AgentFiles);
             assert_eq!(v.quick_open.input.read(cx).value().to_string(), "AGENTS");
             let rows: Vec<_> = v.quick_open.rows.iter().map(|h| h.path.as_str()).collect();
             for path in ["AGENTS.md", "Dev/App/AGENTS.md", "Ops/Deep/AGENTS.md"] {
@@ -3473,7 +3554,7 @@ canaryhidden [[Target]]",
         // Back to the default view: the lower-ranked ordinary match survives.
         click(visual, "quick-open-agent-files");
         reader.read_with(visual, |v, cx| {
-            assert_eq!(v.quick_open.filter, FileFilter::Default);
+            assert_eq!(v.quick_open.scope.filter(), FileFilter::Default);
             assert_eq!(v.quick_open.input.read(cx).value().to_string(), "CLAUDE");
         });
         assert_eq!(paths(visual), ["Bulk/claude-digest.md"]);
@@ -3502,7 +3583,7 @@ canaryhidden [[Target]]",
         });
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
-            assert_eq!(v.quick_open.filter, FileFilter::Default)
+            assert_eq!(v.quick_open.scope.filter(), FileFilter::Default)
         });
         type_text(visual, "quillword");
         assert_eq!(paths(visual), ["Bulk/claude-digest.md"]);
@@ -3612,6 +3693,17 @@ canaryhidden [[Target]]",
         });
         visual.run_until_parked();
         assert_eq!(paths(visual), ["Ops/GEMINI.md"]);
+        reader.update(visual, |v, cx| {
+            assert_eq!(v.quick_open.result_root.as_ref(), Some(&root));
+            v.vault_root = PathBuf::from("replacement-root");
+            v.refresh_quick_open(cx);
+            assert!(
+                v.quick_open.rows.is_empty(),
+                "vault refresh retires the old snapshot synchronously"
+            );
+            assert!(v.quick_open.result_root.is_none());
+            v.vault_root = root.clone();
+        });
         reader.update_in(visual, |v, window, cx| v.close_quick_open(window, cx));
 
         // Pins and history are stored as they were; no source was touched.

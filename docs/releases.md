@@ -75,7 +75,7 @@ the original files and merged PR titles since the previous stable source.
 Stable URLs stay fixed:
 - `https://updates.befeast.com/okilum/macos/latest.zip`
 - `https://updates.befeast.com/okilum/windows/stable/Setup.exe`
-- [Arch stable repository](linux-releases.md)
+- [Signed Linux AppImage](https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage) · [signature verification and legacy Arch migration](linux-releases.md)
 
 Channels on separate systems cannot change atomically. A saved promotion manifest
 pins the exact source and platform builds. If a network/API failure interrupts

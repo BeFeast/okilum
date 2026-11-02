@@ -102,7 +102,10 @@ impl FileEditor {
             raw_transaction: Some(transaction),
         };
         let result = editor.save_before_exchange(before_exchange);
-        if !matches!(result, Ok(Save::Saved)) {
+        let retain_recovery = result.as_ref().err().is_some_and(|error| {
+            error.is::<UnconfirmedSave>() || error.is::<PublishedSaveNeedsAttention>()
+        });
+        if !matches!(result, Ok(Save::Saved)) && !retain_recovery {
             editor
                 .rollback_raw_transaction()
                 .context("Encoding change failed; recovery must be inspected")?;
@@ -611,7 +614,7 @@ mod partial_write_tests {
     }
 
     #[test]
-    fn unsupported_exchange_raw_failures_preserve_bytes_and_leave_no_tails() {
+    fn unsupported_exchange_raw_failures_clean_before_publish_and_retain_after_publish() {
         for restoring in [false, true] {
             for failure in 0..3 {
                 crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
@@ -648,6 +651,18 @@ mod partial_write_tests {
                         ),
                         _ => assert!(format!("{error:#}").contains("History acknowledgement")),
                     }
+                    if failure == 2 {
+                        assert!(error.is::<UnconfirmedSave>());
+                        assert_eq!(fs::read(&note).unwrap(), after);
+                        let listing = crate::source_history::list(&state, &root).unwrap();
+                        assert!(listing.versions.iter().any(|v| v.bytes() == before));
+                        assert!(fs::read_dir(&root).unwrap().any(|e| e
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".okilum-save-")));
+                        return;
+                    }
                     assert_clean(&root, &note, before);
                     assert!(crate::source_history::list(&state, &root)
                         .unwrap()
@@ -660,6 +675,52 @@ mod partial_write_tests {
                     assert_clean(&root, &note, after);
                 });
             }
+        }
+    }
+
+    #[test]
+    fn raw_unconfirmed_publication_never_blindly_rolls_back() {
+        use network_save_tests::{fail_publication, PublicationFailure};
+        for failure in [
+            PublicationFailure::LostReply,
+            PublicationFailure::OutcomeProbe,
+            PublicationFailure::DirectorySync,
+        ] {
+            crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
+                let fixture = tempfile::tempdir().unwrap();
+                let root = fixture.path().join("vault");
+                let state = fixture.path().join("state");
+                fs::create_dir(&root).unwrap();
+                let note = root.join("Synthetic.md");
+                let before = b"\xef\xbb\xbfBefore \xff\r\n";
+                let after = b"\xef\xbb\xbfRepaired\r\n";
+                fs::write(&note, before).unwrap();
+                let error = fail_publication(failure, || {
+                    FileEditor::replace_bytes(&note, &state, before, after)
+                })
+                .unwrap_err();
+                assert!(error.is::<UnconfirmedSave>());
+                assert_eq!(
+                    fs::read(&note).unwrap(),
+                    if failure == PublicationFailure::OutcomeProbe {
+                        before.as_slice()
+                    } else {
+                        after.as_slice()
+                    }
+                );
+                let listing = crate::source_history::list(&state, &root).unwrap();
+                assert!(listing.versions.iter().any(|v| v.bytes() == before));
+                let history = fs::read_dir(state.join("source-history"))
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .find(|p| crate::source_history::RawRecord::is_path(p))
+                    .unwrap();
+                let record = crate::source_history::RawRecord::load(&history).unwrap();
+                assert_eq!(record.before, before);
+                assert_eq!(record.after, after);
+                assert_eq!(fs::read(&record.displaced).unwrap(), before);
+                assert!(!record.completed);
+            });
         }
     }
 
@@ -678,5 +739,628 @@ mod partial_write_tests {
         assert_eq!(fs::read(&note).unwrap(), original);
         assert_eq!(fs::metadata(&note).unwrap().nlink(), 1);
         assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+    }
+}
+
+// The intent names existing History and its two private namespace entries; it
+// is operational state, never placed in the rebuildable index. Original bytes
+// stay in the existing History record. No mount or filesystem heuristic is used.
+#[cfg(unix)]
+#[derive(Clone, Serialize, Deserialize)]
+struct LinkRecovery {
+    schema: u32,
+    note: PathBuf,
+    history: PathBuf,
+    displaced: OsString,
+    prepared: OsString,
+    original_identity: Identity,
+    staged_identity: Identity,
+    ancestors: Vec<Identity>,
+    before_hash: Vec<u8>,
+    after_hash: Vec<u8>,
+    #[serde(default)]
+    retained_current: Option<Vec<u8>>,
+    #[serde(default)]
+    resolved: bool,
+}
+
+#[cfg(unix)]
+impl LinkRecovery {
+    fn persist(&self, path: &Path) -> Result<()> {
+        let bytes = serde_json::to_vec(self)?;
+        anyhow::ensure!(
+            bytes.len() <= 128 * 1024 * 1024,
+            "Recovery snapshot exceeds storage limit; all entries retained"
+        );
+        crate::source_state::persist(path, &bytes)
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, PartialEq, Eq)]
+struct RecoveryRevision {
+    identity: Identity,
+    bytes: Vec<u8>,
+}
+
+#[cfg(unix)]
+pub(super) struct RecoveryInspection {
+    directory: Directory,
+    intent: LinkRecovery,
+    intent_path: PathBuf,
+    intent_bytes: Vec<u8>,
+    history_bytes: Vec<u8>,
+    original: Vec<u8>,
+    current: RecoveryRevision,
+    artifacts: Vec<(OsString, Option<RecoveryRevision>)>,
+    _lock: Arc<EditorLock>,
+}
+
+#[cfg(unix)]
+impl Directory {
+    // Interrupted link publication deliberately has two names for one inode.
+    // Ordinary editor reads keep their stricter nlink==1 rule.
+    fn recovery_revision(&self, name: &std::ffi::OsStr) -> Result<Option<RecoveryRevision>> {
+        use rustix::fs::{openat, AtFlags, Mode, OFlags};
+        let fd = match openat(
+            &self.file,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut file = File::from(fd);
+        let meta = file.metadata()?;
+        anyhow::ensure!(
+            meta.is_file() && meta.len() <= 128 * 1024 * 1024,
+            "Recovery entry is not a bounded regular file; retained"
+        );
+        let mut bytes = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(128 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        anyhow::ensure!(
+            bytes.len() <= 128 * 1024 * 1024,
+            "Recovery entry grew; retained"
+        );
+        let now = rustix::fs::statat(&self.file, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        anyhow::ensure!(
+            crate::unix_publish::same_identity(&now, &meta),
+            "Recovery entry replaced during inspection; retained"
+        );
+        Ok(Some(RecoveryRevision {
+            identity: (meta.dev(), meta.ino()),
+            bytes,
+        }))
+    }
+}
+
+#[cfg(unix)]
+impl FileEditor {
+    pub(super) fn record_link_recovery(
+        &self,
+        history: &Path,
+        displaced: &std::ffi::OsStr,
+        prepared: &str,
+    ) -> Result<()> {
+        let original = self
+            .directory
+            .recovery_revision(self.draft.path.file_name().unwrap())?
+            .context("Source disappeared before recovery preparation")?;
+        let staged = self
+            .directory
+            .recovery_revision(displaced)?
+            .context("Missing staged save")?;
+        anyhow::ensure!(
+            original.bytes == self.base_bytes() && staged.bytes == self.proposed_bytes(),
+            "Source or staged revision changed; recovery retained"
+        );
+        let intent = LinkRecovery {
+            schema: 1,
+            note: self.draft.path.clone(),
+            history: history.to_owned(),
+            displaced: displaced.to_owned(),
+            prepared: prepared.into(),
+            original_identity: original.identity,
+            staged_identity: staged.identity,
+            ancestors: self.directory.ancestor_identities().to_vec(),
+            before_hash: Sha256::digest(&original.bytes).to_vec(),
+            after_hash: Sha256::digest(&staged.bytes).to_vec(),
+            retained_current: None,
+            resolved: false,
+        };
+        intent.persist(&history.with_extension("link-recovery"))
+    }
+
+    pub(super) fn refuse_unresolved_link_recovery(&self) -> Result<()> {
+        let folder = self.journal.parent().unwrap().join("source-history");
+        if !folder.try_exists()? {
+            return Ok(());
+        }
+        for entry in fs::read_dir(folder)? {
+            let path = entry?.path();
+            if path.extension().is_none_or(|e| e != "link-recovery") {
+                continue;
+            }
+            let intent: LinkRecovery = serde_json::from_slice(&read_bounded_recovery(&path)?)?;
+            if intent.note == self.draft.path && !intent.resolved {
+                return Err(UnconfirmedSave::UnknownPublication.into());
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn forget_link_recovery(&self, history: &Path) {
+        // Completed saves have already archived the original and acknowledged
+        // the draft. A failed removal merely leaves explicit recovery to inspect.
+        let _ = fs::remove_file(history.with_extension("link-recovery"));
+    }
+
+    /// Explicit recovery discovery for an already-open editor. It shares its
+    /// lock with pending worker copies; each inspection is revision-bound.
+    pub fn inspect_uncertain_saves(&self) -> Result<Vec<InterruptedSave>> {
+        Self::inspect_link_recovery(
+            &self.draft.path,
+            self.journal.parent().unwrap(),
+            self.lock.clone(),
+        )
+    }
+
+    /// Restart path that also works when an interrupted hard link prevents a
+    /// normal editor open. Does not adopt, discard or change a dirty draft.
+    pub fn inspect_interrupted_saves(note: &Path, state: &Path) -> Result<Vec<InterruptedSave>> {
+        let parent = note
+            .parent()
+            .context("Missing source folder")?
+            .canonicalize()?;
+        let note = parent.join(note.file_name().context("Missing source name")?);
+        let key = format!("{:x}", Sha256::digest(note.as_os_str().as_encoded_bytes()));
+        let lock = Arc::new(EditorLock::acquire_or(
+            &state.join(format!("{key}.lock")),
+            "This note has an active editor; inspect recovery in that editor",
+        )?);
+        Self::inspect_link_recovery(&note, state, lock)
+    }
+
+    fn inspect_link_recovery(
+        note: &Path,
+        state: &Path,
+        lock: Arc<EditorLock>,
+    ) -> Result<Vec<InterruptedSave>> {
+        let folder = state.join("source-history");
+        if !folder.try_exists()? {
+            return Ok(Vec::new());
+        }
+        let mut result = Vec::new();
+        for entry in fs::read_dir(&folder)? {
+            let path = entry?.path();
+            if path.extension().is_none_or(|e| e != "link-recovery") {
+                continue;
+            }
+            let intent_bytes = read_bounded_recovery(&path)?;
+            let intent: LinkRecovery = serde_json::from_slice(&intent_bytes)?;
+            if intent.note != note || intent.resolved {
+                continue;
+            }
+            anyhow::ensure!(
+                intent.schema == 1
+                    && intent.history.parent() == Some(folder.as_path())
+                    && intent.history.with_extension("link-recovery") == path,
+                "Recovery identity changed; retained"
+            );
+            anyhow::ensure!(
+                intent.displaced != intent.prepared,
+                "Recovery names alias; retained"
+            );
+            for name in [&intent.displaced, &intent.prepared] {
+                anyhow::ensure!(
+                    Some(name.as_os_str()) != note.file_name(),
+                    "Recovery entry aliases source; retained"
+                );
+                anyhow::ensure!(
+                    Path::new(name).components().count() == 1
+                        && name.to_string_lossy().starts_with(".okilum-save-"),
+                    "Invalid recovery name; retained"
+                );
+            }
+            let history_bytes = read_bounded_recovery(&intent.history)?;
+            let original = if crate::source_history::RawRecord::is_path(&intent.history) {
+                let record = crate::source_history::RawRecord::load(&intent.history)?;
+                anyhow::ensure!(
+                    record.note == note && record.displaced.file_name() == Some(&intent.displaced),
+                    "Raw History identity changed; retained"
+                );
+                record.before
+            } else {
+                let record: crate::source_history::Preimage =
+                    serde_json::from_slice(&history_bytes)?;
+                anyhow::ensure!(
+                    record.note == note && record.displaced.file_name() == Some(&intent.displaced),
+                    "History identity changed; retained"
+                );
+                record.text.into_bytes()
+            };
+            anyhow::ensure!(
+                Sha256::digest(&original).as_slice() == intent.before_hash,
+                "Original snapshot changed; retained"
+            );
+            let directory = Directory::open(note.parent().unwrap())?;
+            anyhow::ensure!(
+                directory.ancestor_identities() == intent.ancestors,
+                "Source folder identity changed; recovery retained"
+            );
+            let current = directory
+                .recovery_revision(note.file_name().unwrap())?
+                .context("Current source is missing; recovery retained")?;
+            let mut artifacts = Vec::new();
+            for name in [&intent.displaced, &intent.prepared] {
+                artifacts.push((name.clone(), directory.recovery_revision(name)?));
+            }
+            result.push(InterruptedSave {
+                inner: RecoveryInspection {
+                    directory,
+                    intent,
+                    intent_path: path,
+                    intent_bytes,
+                    history_bytes,
+                    original,
+                    current,
+                    artifacts,
+                    _lock: lock.clone(),
+                },
+            });
+        }
+        Ok(result)
+    }
+}
+
+#[cfg(unix)]
+fn read_bounded_recovery(path: &Path) -> Result<Vec<u8>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(
+            (rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::NONBLOCK
+                | rustix::fs::OFlags::CLOEXEC)
+                .bits() as i32,
+        )
+        .open(path)?;
+    anyhow::ensure!(
+        file.metadata()?.is_file() && file.metadata()?.len() <= 128 * 1024 * 1024,
+        "Invalid recovery record; retained"
+    );
+    let mut bytes = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take(128 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= 128 * 1024 * 1024,
+        "Recovery record grew; retained"
+    );
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+impl InterruptedSave {
+    pub fn state(&self) -> InterruptedSaveState {
+        let hash = Sha256::digest(&self.inner.current.bytes);
+        if hash.as_slice() == self.inner.intent.after_hash {
+            InterruptedSaveState::ProposedPresent
+        } else if hash.as_slice() == self.inner.intent.before_hash {
+            InterruptedSaveState::OriginalPresent
+        } else {
+            InterruptedSaveState::ChangedExternally
+        }
+    }
+    pub fn current_bytes(&self) -> &[u8] {
+        &self.inner.current.bytes
+    }
+    pub fn original_bytes(&self) -> &[u8] {
+        &self.inner.original
+    }
+
+    /// Explicit Keep current + clean owned links. Never publishes proposed bytes
+    /// and never acknowledges/discards a draft. A changed revision requires a
+    /// fresh inspection. Current bytes are flushed into the durable intent before
+    /// cleanup; the existing original History record stays protected/pending.
+    pub fn keep_current(self) -> Result<()> {
+        let r = self.inner;
+        let parent = r.intent.note.parent().unwrap();
+        r.directory.validate(parent)?;
+        anyhow::ensure!(
+            read_bounded_recovery(&r.intent_path)? == r.intent_bytes
+                && read_bounded_recovery(&r.intent.history)? == r.history_bytes,
+            "Recovery changed since inspection; inspect again"
+        );
+        anyhow::ensure!(
+            r.directory
+                .recovery_revision(r.intent.note.file_name().unwrap())?
+                .as_ref()
+                == Some(&r.current),
+            "Source changed since inspection; inspect again"
+        );
+        for (name, revision) in &r.artifacts {
+            anyhow::ensure!(
+                r.directory.recovery_revision(name)? == *revision,
+                "Recovery entry changed since inspection; retained"
+            );
+            if let Some(revision) = revision {
+                let hash = Sha256::digest(&revision.bytes);
+                anyhow::ensure!(
+                    (revision.identity == r.intent.original_identity
+                        && hash.as_slice() == r.intent.before_hash)
+                        || (revision.identity == r.intent.staged_identity
+                            && hash.as_slice() == r.intent.after_hash),
+                    "Recovery entry belongs to another revision; retained"
+                );
+            }
+        }
+        let mut intent = r.intent.clone();
+        intent.retained_current = Some(r.current.bytes.clone());
+        intent.persist(&r.intent_path)?;
+        // Same optimistic namespace boundary as ordinary checked cleanup: POSIX
+        // offers no conditional unlink. Recheck bytes and identity immediately
+        // before each unlink, and stop on any uncertainty. Never rename over note.
+        for (name, revision) in &r.artifacts {
+            if revision.is_none() {
+                continue;
+            }
+            anyhow::ensure!(
+                r.directory
+                    .recovery_revision(r.intent.note.file_name().unwrap())?
+                    .as_ref()
+                    == Some(&r.current)
+                    && r.directory.recovery_revision(name)? == *revision,
+                "Source or recovery changed during cleanup; remaining recovery retained"
+            );
+            rustix::fs::unlinkat(&r.directory.file, name, rustix::fs::AtFlags::empty())?;
+            r.directory.file.sync_all()?;
+        }
+        intent.resolved = true;
+        intent.persist(&r.intent_path)?;
+        Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod interrupted_link_tests {
+    use super::*;
+
+    // Exact interruption boundaries from the real fallback, not a mount or
+    // process-kill timing test: prepare intent, optional staging rename/link,
+    // optional publication, then drop the editor without running cleanup.
+    fn interrupted(stage: u8, raw: bool) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let state = fixture.path().join("state");
+        fs::create_dir(&root).unwrap();
+        let note = root.join("Synthetic.md");
+        fs::write(&note, b"\xef\xbb\xbforiginal\r\n").unwrap();
+        let mut editor = FileEditor::open(&note, &state).unwrap();
+        editor.set_text("proposed\r\n".into()).unwrap();
+        if raw {
+            let original = b"\xef\xbb\xbforiginal\xff\r\n";
+            fs::write(&note, original).unwrap();
+            let meta = fs::metadata(&note).unwrap();
+            editor.raw_transaction = Some(Arc::new(ByteTransaction {
+                before: original.to_vec(),
+                after: b"proposed\r\n".to_vec(),
+                before_identity: (meta.dev(), meta.ino()),
+                artifacts: Mutex::default(),
+                history: Mutex::default(),
+            }));
+        }
+        let (mut staged, name) = editor.directory.temporary().unwrap();
+        staged.write_all(editor.proposed_bytes()).unwrap();
+        staged.sync_all().unwrap();
+        let displaced = root.join(&name);
+        let history = editor.begin_save_history(&displaced, None).unwrap();
+        let prepared = format!(".okilum-save-{}", uuid::Uuid::new_v4());
+        editor
+            .record_link_recovery(&history, name.as_ref(), &prepared)
+            .unwrap();
+        let directory = &editor.directory.file;
+        if stage >= 1 {
+            rustix::fs::renameat(directory, name.as_str(), directory, prepared.as_str()).unwrap();
+        }
+        if stage >= 2 {
+            rustix::fs::linkat(
+                directory,
+                "Synthetic.md",
+                directory,
+                name.as_str(),
+                rustix::fs::AtFlags::empty(),
+            )
+            .unwrap();
+        }
+        if stage >= 3 {
+            rustix::fs::renameat(directory, prepared.as_str(), directory, "Synthetic.md").unwrap();
+        }
+        directory.sync_all().unwrap();
+        drop(editor);
+        (fixture, note, state)
+    }
+
+    #[test]
+    fn every_interruption_boundary_keeps_current_original_and_dirty_draft() {
+        for raw in [false, true] {
+            for stage in 0..4 {
+                let (_fixture, note, state) = interrupted(stage, raw);
+                let before = fs::read(&note).unwrap();
+                let draft_paths: Vec<_> = fs::read_dir(&state)
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                    .collect();
+                assert_eq!(draft_paths.len(), 1);
+                let journal_before = fs::read(&draft_paths[0]).unwrap();
+                let mut inspections = FileEditor::inspect_interrupted_saves(&note, &state).unwrap();
+                assert_eq!(inspections.len(), 1);
+                let inspection = inspections.pop().unwrap();
+                assert_eq!(
+                    inspection.state(),
+                    if stage < 3 {
+                        InterruptedSaveState::OriginalPresent
+                    } else {
+                        InterruptedSaveState::ProposedPresent
+                    }
+                );
+                assert_eq!(inspection.current_bytes(), before);
+                let original = if raw {
+                    b"\xef\xbb\xbforiginal\xff\r\n".as_slice()
+                } else {
+                    b"\xef\xbb\xbforiginal\r\n".as_slice()
+                };
+                assert_eq!(inspection.original_bytes(), original);
+                inspection.keep_current().unwrap();
+                assert_eq!(fs::read(&note).unwrap(), before);
+                assert_eq!(fs::metadata(&note).unwrap().nlink(), 1);
+                assert_eq!(fs::read_dir(note.parent().unwrap()).unwrap().count(), 1);
+                assert_eq!(fs::read(&draft_paths[0]).unwrap(), journal_before);
+                let listing = crate::source_history::list(&state, note.parent().unwrap()).unwrap();
+                assert!(listing.versions.iter().any(|v| v.bytes() == original));
+                let intent = fs::read_dir(state.join("source-history"))
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .find(|p| p.extension().is_some_and(|e| e == "link-recovery"))
+                    .unwrap();
+                let record: LinkRecovery =
+                    serde_json::from_slice(&fs::read(intent).unwrap()).unwrap();
+                assert!(record.resolved);
+                assert_eq!(record.retained_current, Some(before));
+                assert!(FileEditor::inspect_interrupted_saves(&note, &state)
+                    .unwrap()
+                    .is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn stale_revision_and_same_byte_replacement_cannot_authorize_cleanup() {
+        for same_bytes in [false, true] {
+            let (_fixture, note, state) = interrupted(3, false);
+            let inspection = FileEditor::inspect_interrupted_saves(&note, &state)
+                .unwrap()
+                .pop()
+                .unwrap();
+            let replacement = note.with_file_name("external.md");
+            fs::write(
+                &replacement,
+                if same_bytes {
+                    b"proposed\r\n".as_slice()
+                } else {
+                    b"external".as_slice()
+                },
+            )
+            .unwrap();
+            fs::rename(replacement, &note).unwrap();
+            let expected = fs::read(&note).unwrap();
+            assert!(inspection.keep_current().is_err());
+            assert_eq!(fs::read(&note).unwrap(), expected);
+            assert_eq!(fs::read_dir(note.parent().unwrap()).unwrap().count(), 2);
+            let inspection = FileEditor::inspect_interrupted_saves(&note, &state)
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(inspection.current_bytes(), expected);
+            inspection.keep_current().unwrap();
+            assert_eq!(fs::read(&note).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn foreign_preimage_bytes_and_symlink_are_retained() {
+        for symlink in [false, true] {
+            let (_fixture, note, state) = interrupted(3, false);
+            let inspection = FileEditor::inspect_interrupted_saves(&note, &state)
+                .unwrap()
+                .pop()
+                .unwrap();
+            let displaced = note
+                .parent()
+                .unwrap()
+                .join(&inspection.inner.intent.displaced);
+            if symlink {
+                fs::remove_file(&displaced).unwrap();
+                std::os::unix::fs::symlink(&note, &displaced).unwrap();
+            } else {
+                fs::write(&displaced, b"external old-fd bytes").unwrap();
+            }
+            assert!(inspection.keep_current().is_err());
+            assert!(fs::symlink_metadata(&displaced).is_ok());
+            assert_eq!(fs::read(&note).unwrap(), b"proposed\r\n");
+            if !symlink {
+                let fresh = FileEditor::inspect_interrupted_saves(&note, &state)
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+                assert!(fresh.keep_current().is_err());
+                assert_eq!(fs::read(&displaced).unwrap(), b"external old-fd bytes");
+            }
+        }
+    }
+
+    #[test]
+    fn interrupted_cleanup_reinspects_remaining_links_without_touching_current() {
+        for remove_prepared in [false, true] {
+            let (_fixture, note, state) = interrupted(2, true);
+            let inspection = FileEditor::inspect_interrupted_saves(&note, &state)
+                .unwrap()
+                .pop()
+                .unwrap();
+            // Simulate interruption after the durable Keep-current snapshot and
+            // exactly one unlink, before the resolved acknowledgement.
+            let mut intent = inspection.inner.intent.clone();
+            intent.retained_current = Some(inspection.current_bytes().to_vec());
+            crate::source_state::persist(
+                &inspection.inner.intent_path,
+                &serde_json::to_vec(&intent).unwrap(),
+            )
+            .unwrap();
+            let removed = if remove_prepared {
+                &intent.prepared
+            } else {
+                &intent.displaced
+            };
+            fs::remove_file(note.parent().unwrap().join(removed)).unwrap();
+            let current = fs::read(&note).unwrap();
+            drop(inspection);
+            let fresh = FileEditor::inspect_interrupted_saves(&note, &state)
+                .unwrap()
+                .pop()
+                .unwrap();
+            fresh.keep_current().unwrap();
+            assert_eq!(fs::read(&note).unwrap(), current);
+            assert_eq!(fs::metadata(&note).unwrap().nlink(), 1);
+            assert_eq!(fs::read_dir(note.parent().unwrap()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn replaced_parent_is_refused_after_restart_with_a_matching_public_revision() {
+        let (fixture, note, state) = interrupted(3, false);
+        let original_parent = note.parent().unwrap();
+        let moved = fixture.path().join("moved-vault");
+        fs::rename(original_parent, &moved).unwrap();
+        fs::create_dir(original_parent).unwrap();
+        fs::write(&note, b"proposed\r\n").unwrap();
+        assert!(FileEditor::inspect_interrupted_saves(&note, &state).is_err());
+        assert_eq!(fs::read(&note).unwrap(), b"proposed\r\n");
+        assert_eq!(fs::read_dir(&moved).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn unresolved_intent_blocks_worker_retry_until_explicit_resolution() {
+        let (_fixture, note, state) = interrupted(3, false);
+        let mut editor = FileEditor::open(&note, &state).unwrap();
+        assert!(editor.save().unwrap_err().is::<UnconfirmedSave>());
+        let inspection = editor.inspect_uncertain_saves().unwrap().pop().unwrap();
+        inspection.keep_current().unwrap();
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        assert_eq!(fs::read(&note).unwrap(), b"proposed\r\n");
     }
 }

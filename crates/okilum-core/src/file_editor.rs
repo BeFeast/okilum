@@ -15,6 +15,19 @@ pub(crate) use directory::open_regular_at;
 use directory::Directory;
 #[cfg(unix)]
 use rustix::fs::RenameFlags;
+/// An explicit inspection token. Cleanup accepts only the exact revision shown
+/// by this token and never writes the public note. The editor lock stays held.
+#[cfg(unix)]
+pub struct InterruptedSave {
+    inner: raw_transaction::RecoveryInspection,
+}
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptedSaveState {
+    OriginalPresent,
+    ProposedPresent,
+    ChangedExternally,
+}
 /// The public note was written, but its preimage changed before verification.
 /// Distinct from Conflict: callers must not claim that nothing was published.
 #[derive(Debug)]
@@ -25,6 +38,25 @@ impl std::fmt::Display for PublishedSaveNeedsAttention {
     }
 }
 impl std::error::Error for PublishedSaveNeedsAttention {}
+/// Publication may have reached the drive, but completion was not confirmed.
+/// Keep the durable draft and preimage; this error never authorizes rollback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnconfirmedSave {
+    /// A failed rename reply or failed outcome probe cannot establish publication.
+    UnknownPublication,
+    /// Rename succeeded, but durability or recovery acknowledgement failed.
+    Published,
+}
+impl std::fmt::Display for UnconfirmedSave {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::UnknownPublication => "The drive did not confirm whether the save was published. Draft and recovery are retained; inspect the file before retrying.",
+            Self::Published => "The save was published, but the drive or recovery did not confirm completion. Inspect the file before retrying.",
+        })
+    }
+}
+impl std::error::Error for UnconfirmedSave {}
+
 #[cfg(unix)]
 fn missing(error: &anyhow::Error) -> bool {
     error.chain().any(|e| {
@@ -530,6 +562,7 @@ impl FileEditor {
     }
     #[cfg(unix)]
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
+        self.refuse_unresolved_link_recovery()?;
         if !self.dirty() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
             return Ok(Save::Saved);
@@ -589,9 +622,19 @@ impl FileEditor {
             Ok(()) => {}
             Err(error) if crate::unix_publish::unsupported(error) => {
                 compatible = true;
-                if !self.compatible_replace(directory, &backup)? {
+                if !self.compatible_replace(directory, &backup, &history)? {
                     return Ok(Save::Conflict);
                 }
+            }
+            Err(error)
+                if matches!(
+                    error,
+                    rustix::io::Errno::IO | rustix::io::Errno::TIMEDOUT | rustix::io::Errno::STALE
+                ) =>
+            {
+                // A remote exchange may have executed before its reply failed.
+                // Do not unlink either name or guess which revision is current.
+                return Err(anyhow::Error::from(error).context(UnconfirmedSave::UnknownPublication));
             }
             Err(error) => {
                 return Err(with_cleanup(
@@ -600,58 +643,86 @@ impl FileEditor {
                 ))
             }
         }
-        directory.sync_all()?;
-        #[cfg(test)]
-        if compatible && network_save_tests::ALTER_PREIMAGE_AFTER_PUBLISH.with(|v| v.replace(false))
-        {
-            fs::write(&backup, b"external preimage write")?;
-        }
-        let displaced =
-            open_regular_at(directory, backup.file_name().unwrap()).and_then(|mut file| {
-                // A racing writer may not have synced its replacement yet.
-                // Protect that inode before either archiving or rolling back.
-                file.sync_all()?;
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes)?;
-                Ok(bytes)
-            });
-        if !displaced.is_ok_and(|bytes| bytes == self.base_bytes()) {
-            if compatible {
-                // Plain rename cannot safely roll back a third-party change.
-                // Both the draft and pending displaced preimage stay protected.
-                return Err(PublishedSaveNeedsAttention.into());
+        let completion = (|| -> Result<Option<Save>> {
+            #[cfg(test)]
+            if network_save_tests::FAIL_PUBLICATION.with(|v| v.get())
+                == Some(network_save_tests::PublicationFailure::DirectorySync)
+            {
+                return Err(rustix::io::Errno::IO.into());
             }
-            // A racing replacement is restored, and the displaced version from
-            // this second exchange also remains on disk. Never delete either.
-            renameat_with(
-                directory,
-                backup.file_name().unwrap(),
-                directory,
-                self.draft.path.file_name().unwrap(),
-                RenameFlags::EXCHANGE,
-            )?;
-            directory.sync_all()?;
-            return Ok(Save::Conflict);
-        }
-        // Complete all fallible publication checks while the preimage remains
-        // available for a raw transaction rollback.
-        if self.raw_transaction.is_some() {
+            directory.sync_all().context(UnconfirmedSave::Published)?;
+            #[cfg(test)]
+            if compatible
+                && network_save_tests::ALTER_PREIMAGE_AFTER_PUBLISH.with(|v| v.replace(false))
+            {
+                fs::write(&backup, b"external preimage write")?;
+            }
+            let displaced =
+                open_regular_at(directory, backup.file_name().unwrap()).and_then(|mut file| {
+                    // A racing writer may not have synced its replacement yet.
+                    // Protect that inode before either archiving or rolling back.
+                    file.sync_all()?;
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes)?;
+                    Ok(bytes)
+                });
+            if !displaced.is_ok_and(|bytes| bytes == self.base_bytes()) {
+                if compatible {
+                    // Plain rename cannot safely roll back a third-party change.
+                    // Both the draft and pending displaced preimage stay protected.
+                    return Err(PublishedSaveNeedsAttention.into());
+                }
+                // A racing replacement is restored, and the displaced version from
+                // this second exchange also remains on disk. Never delete either.
+                renameat_with(
+                    directory,
+                    backup.file_name().unwrap(),
+                    directory,
+                    self.draft.path.file_name().unwrap(),
+                    RenameFlags::EXCHANGE,
+                )?;
+                directory.sync_all()?;
+                return Ok(Some(Save::Conflict));
+            }
+            // Complete all fallible publication checks while the preimage remains
+            // available for a raw transaction rollback.
+            if self.raw_transaction.is_some() {
+                self.directory.validate(parent)?;
+                let _ = temp.metadata()?;
+                self.finish_raw_history_unix(&history)?;
+                return Ok(Some(Save::Saved));
+            }
+            if compatible {
+                crate::source_history::Preimage::finish_compatible(&history, directory)?;
+            } else {
+                crate::source_history::Preimage::finish_bound(&history, directory)?;
+            }
             self.directory.validate(parent)?;
-            let _ = temp.metadata()?;
-            self.finish_raw_history_unix(&history)?;
-            return Ok(Save::Saved);
+            Ok(None)
+        })();
+        // Once compatible rename succeeded, any subsequent error must retain
+        // recovery. A plain rename cannot safely reverse a racing writer.
+        let completed = completion.map_err(|error| {
+            if compatible && !error.is::<PublishedSaveNeedsAttention>() {
+                error.context(UnconfirmedSave::Published)
+            } else {
+                error
+            }
+        })?;
+        if let Some(outcome) = completed {
+            if outcome == Save::Saved {
+                self.forget_link_recovery(&history);
+            }
+            return Ok(outcome);
         }
-        if compatible {
-            crate::source_history::Preimage::finish_compatible(&history, directory)?;
-        } else {
-            crate::source_history::Preimage::finish_bound(&history, directory)?;
+        let stamp = DiskStamp::of(&temp.metadata().context(UnconfirmedSave::Published)?);
+        let previous_base = std::mem::replace(&mut self.draft.base, self.draft.text.clone());
+        if let Err(error) = self.persist() {
+            self.draft.base = previous_base;
+            return Err(error.context(UnconfirmedSave::Published));
         }
-        self.directory.validate(parent)?;
-        self.draft.base = self.draft.text.clone();
-        // The note is now the inode written above; its stamp after the
-        // exchange is what a later refresh will find unless someone writes.
-        self.on_disk = Some(DiskStamp::of(&temp.metadata()?));
-        self.persist()?;
+        self.on_disk = Some(stamp);
+        self.forget_link_recovery(&history);
         // Cleanup is best effort; a retention error never reverses a saved note.
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
         Ok(Save::Saved)
@@ -661,7 +732,7 @@ impl FileEditor {
     /// publication. Unlike EXCHANGE, POSIX cannot detect a replacement in the
     /// last check→rename window; no post-publication rollback is attempted.
     #[cfg(unix)]
-    fn compatible_replace(&self, directory: &File, backup: &Path) -> Result<bool> {
+    fn compatible_replace(&self, directory: &File, backup: &Path, history: &Path) -> Result<bool> {
         use rustix::fs::{linkat, openat, renameat, AtFlags, Mode, OFlags};
         let note = self.draft.path.file_name().unwrap();
         let old_name = backup.file_name().unwrap();
@@ -680,6 +751,9 @@ impl FileEditor {
             clean_recovery_file(directory, old_name, self.proposed_bytes())?;
             return Ok(false);
         }
+        // Record both private names and inode ownership before the first
+        // namespace change. Existing History remains the original-byte store.
+        self.record_link_recovery(history, old_name, &prepared)?;
         self.track_raw_renamed(old_name, &prepared)?;
         if let Err(error) = renameat(directory, old_name, directory, prepared.as_str()) {
             return Err(with_cleanup(
@@ -752,7 +826,23 @@ impl FileEditor {
             directory.sync_all()?;
             self.directory.validate(self.draft.path.parent().unwrap())?;
             publication_attempted = true;
+            #[cfg(test)]
+            if network_save_tests::FAIL_PUBLICATION.with(|v| v.get())
+                == Some(network_save_tests::PublicationFailure::OutcomeProbe)
+            {
+                return Err(rustix::io::Errno::IO.into());
+            }
             renameat(directory, prepared.as_str(), directory, note)?;
+            #[cfg(test)]
+            if matches!(
+                network_save_tests::FAIL_PUBLICATION.with(|v| v.get()),
+                Some(
+                    network_save_tests::PublicationFailure::LostReply
+                        | network_save_tests::PublicationFailure::OutcomeProbe
+                )
+            ) {
+                return Err(rustix::io::Errno::IO.into());
+            }
             Ok(true)
         })();
         match result {
@@ -761,15 +851,32 @@ impl FileEditor {
                 // A server can publish a rename but lose its reply. Once the
                 // prepared name disappeared, retain the preimage for recovery.
                 if publication_attempted {
-                    match rustix::fs::statat(
-                        directory,
-                        prepared.as_str(),
-                        AtFlags::SYMLINK_NOFOLLOW,
+                    #[cfg(test)]
+                    let probe_error = (network_save_tests::FAIL_PUBLICATION.with(|v| v.get())
+                        == Some(network_save_tests::PublicationFailure::OutcomeProbe))
+                    .then_some(rustix::io::Errno::IO);
+                    #[cfg(not(test))]
+                    let probe_error: Option<rustix::io::Errno> = None;
+                    match probe_error.map_or_else(
+                        || {
+                            rustix::fs::statat(
+                                directory,
+                                prepared.as_str(),
+                                AtFlags::SYMLINK_NOFOLLOW,
+                            )
+                        },
+                        Err,
                     ) {
-                        Err(rustix::io::Errno::NOENT) => return outcome,
+                        Err(rustix::io::Errno::NOENT) => {
+                            return outcome.map_err(|error| {
+                                error.context(UnconfirmedSave::UnknownPublication)
+                            })
+                        }
                         Err(error) => {
                             return outcome.map_err(|original| {
-                                original.context(format!("Cannot verify unpublished save: {error}"))
+                                original
+                                    .context(format!("Cannot verify unpublished save: {error}"))
+                                    .context(UnconfirmedSave::UnknownPublication)
                             })
                         }
                         Ok(_) => {}
@@ -785,6 +892,9 @@ impl FileEditor {
                 } else {
                     Ok(())
                 };
+                if draft_cleanup.is_ok() && preimage_cleanup.is_ok() {
+                    self.forget_link_recovery(history);
+                }
                 match outcome {
                     Err(error) => Err(with_cleanup(
                         with_cleanup(error, draft_cleanup),
@@ -1614,6 +1724,84 @@ fn clean_recovery_file(directory: &File, name: &std::ffi::OsStr, expected: &[u8]
 #[cfg(all(test, unix))]
 mod network_save_tests {
     use super::*;
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(super) enum PublicationFailure {
+        LostReply,
+        OutcomeProbe,
+        DirectorySync,
+    }
+    thread_local! {
+        pub(super) static FAIL_PUBLICATION: std::cell::Cell<Option<PublicationFailure>> = const { std::cell::Cell::new(None) };
+    }
+    pub(super) fn fail_publication<T>(failure: PublicationFailure, body: impl FnOnce() -> T) -> T {
+        struct Reset(Option<PublicationFailure>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                FAIL_PUBLICATION.with(|v| v.set(self.0));
+            }
+        }
+        let _reset = Reset(FAIL_PUBLICATION.with(|v| v.replace(Some(failure))));
+        body()
+    }
+
+    #[test]
+    fn unconfirmed_publication_keeps_draft_preimage_and_revision() {
+        for failure in [
+            PublicationFailure::LostReply,
+            PublicationFailure::OutcomeProbe,
+            PublicationFailure::DirectorySync,
+        ] {
+            crate::unix_publish::inject(rustix::io::Errno::NOTSUP, || {
+                let fixture = tempfile::tempdir().unwrap();
+                let root = fixture.path().join("vault");
+                fs::create_dir(&root).unwrap();
+                let note = root.join("note.md");
+                fs::write(&note, b"base\r\n").unwrap();
+                let mut editor = FileEditor::open(&note, &fixture.path().join("state")).unwrap();
+                editor.set_text("mine\r\n".into()).unwrap();
+                let error = fail_publication(failure, || editor.save()).unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<UnconfirmedSave>(),
+                    Some(&match failure {
+                        PublicationFailure::DirectorySync => UnconfirmedSave::Published,
+                        _ => UnconfirmedSave::UnknownPublication,
+                    })
+                );
+                let unknown_before_publish = failure == PublicationFailure::OutcomeProbe;
+                assert_eq!(
+                    fs::read(&note).unwrap(),
+                    if unknown_before_publish {
+                        b"base\r\n".as_slice()
+                    } else {
+                        b"mine\r\n".as_slice()
+                    }
+                );
+                assert!(editor.dirty());
+                assert_eq!(editor.draft.base, "base\r\n");
+                let draft: Draft =
+                    serde_json::from_slice(&fs::read(&editor.journal).unwrap()).unwrap();
+                assert_eq!(draft.base, "base\r\n");
+                assert_eq!(draft.text, "mine\r\n");
+                let artifacts: Vec<_> = fs::read_dir(&root)
+                    .unwrap()
+                    .filter_map(|e| {
+                        let e = e.unwrap();
+                        e.file_name()
+                            .to_string_lossy()
+                            .starts_with(".okilum-save-")
+                            .then_some(e.path())
+                    })
+                    .collect();
+                assert_eq!(artifacts.len(), if unknown_before_publish { 2 } else { 1 });
+                assert!(artifacts
+                    .iter()
+                    .any(|p| fs::read(p).unwrap() == b"base\r\n"));
+                drop(editor);
+                assert!(draft.text != draft.base);
+            });
+        }
+    }
+
     thread_local! {
         pub(super) static LINK_ERROR: std::cell::Cell<Option<rustix::io::Errno>> = const { std::cell::Cell::new(None) };
         pub(super) static ERROR_AFTER_LINK: std::cell::Cell<Option<rustix::io::Errno>> = const { std::cell::Cell::new(None) };
@@ -1674,17 +1862,49 @@ mod network_save_tests {
         }
     }
     #[test]
-    fn unpublished_exchange_error_removes_temp() {
+    fn exchange_io_error_retains_draft_and_staging_without_guessing_outcome() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let note = root.join("note.md");
+        fs::write(&note, b"base").unwrap();
+        let mut editor = FileEditor::open(&note, &fixture.path().join("state")).unwrap();
+        editor.set_text("mine".into()).unwrap();
+        crate::unix_publish::inject(rustix::io::Errno::IO, || {
+            let error = editor.save().unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<UnconfirmedSave>(),
+                Some(&UnconfirmedSave::UnknownPublication)
+            );
+        });
+        assert_eq!(fs::read(&note).unwrap(), b"base");
+        assert!(editor.dirty());
+        let staging = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".okilum-save-")
+            })
+            .unwrap();
+        assert_eq!(fs::read(staging).unwrap(), b"mine");
+        assert!(editor.journal.exists());
+    }
+
+    #[test]
+    fn denied_exchange_removes_unpublished_temp() {
         let root = tempfile::tempdir().unwrap();
         let note = root.path().join("note.md");
         fs::write(&note, b"base").unwrap();
         let mut editor = FileEditor::open(&note, &root.path().join("state")).unwrap();
         editor.set_text("mine".into()).unwrap();
-        crate::unix_publish::inject(rustix::io::Errno::IO, || {
+        crate::unix_publish::inject(rustix::io::Errno::ACCESS, || {
             let error = editor.save().unwrap_err();
             assert_eq!(
                 error.downcast_ref::<rustix::io::Errno>(),
-                Some(&rustix::io::Errno::IO)
+                Some(&rustix::io::Errno::ACCESS)
             );
         });
         assert_unpublished(&editor, root.path(), &note);

@@ -41,6 +41,9 @@ impl Directory {
         }
         Ok(Self { file, ancestors })
     }
+    pub(super) fn ancestor_identities(&self) -> &[(u64, u64)] {
+        &self.ancestors
+    }
     pub fn try_clone(&self) -> Result<Self> {
         Ok(Self {
             file: self.file.try_clone()?,

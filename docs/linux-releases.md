@@ -1,4 +1,4 @@
-# Linux releases (Arch / Omarchy / CachyOS)
+# Linux installation and releases (AppImage)
 
 ## AppImage-only Linux delivery (#1564)
 
@@ -26,9 +26,11 @@ Download the signed Linux image from the selected channel (`stable` only after
 accepted promotion; otherwise explicit `beta`) and verify before opening:
 
 ```bash
+# Explicit preview channel; use stable only after its accepted promotion.
+okilum_channel=beta
 mkdir -p "$HOME/.local/share/okilum"
-curl -fL -A curl https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage -o "$HOME/.local/share/okilum/Okilum.AppImage"
-curl -fL -A curl https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage.sig -o "$HOME/.local/share/okilum/Okilum.AppImage.sig"
+curl -fL -A curl "https://updates.befeast.com/okilum/linux/$okilum_channel/Okilum-x86_64.AppImage" -o "$HOME/.local/share/okilum/Okilum.AppImage"
+curl -fL -A curl "https://updates.befeast.com/okilum/linux/$okilum_channel/Okilum-x86_64.AppImage.sig" -o "$HOME/.local/share/okilum/Okilum.AppImage.sig"
 curl -fL -A curl https://updates.befeast.com/okilum/arch/okilum-signing-key.asc -o /tmp/okilum-signing-key.asc
 gpg --show-keys --with-fingerprint /tmp/okilum-signing-key.asc
 ```
@@ -44,19 +46,24 @@ chmod +x "$HOME/.local/share/okilum/Okilum.AppImage"
 Notes and user state retain their existing paths. The migration does not remove
 packages or launch an application. Desktop lifecycle hookup and real signed
 beta-to-beta Ubuntu/Arch plus muninn acceptance remain explicit release gates.
-The pacman instructions below describe the retained historical repository.
+These instructions do not establish fresh-machine Linux bootstrap acceptance.
 
+## Legacy pacman repository
 
-Okilum is distributed as the `okilum` x86_64 Arch package. Updates arrive with
-your normal system upgrade (`sudo pacman -Syu`, or `omarchy update` on Omarchy);
-the Linux app has no **Check for Updates** menu. A desktop entry
-and icon are included. The Markdown MIME association is available through
-**Open With**, but installation does not replace your default application.
+The repository is retained for existing Arch/Omarchy/CachyOS installations and
+migration. Its packages and databases are signed. The instructions in this section
+apply only to the legacy `okilum` package; new installations use the signed AppImage
+above. System upgrades through `pacman` or `omarchy update` do not update an AppImage.
 
-## Install
+The legacy package includes a desktop entry and icon. Its Markdown MIME association
+is available through **Open With** without replacing your default application.
 
-This installs the stable channel, the releases offered on okilum.app. For a build
-of every merge to `main`, see [Beta channel](#beta-channel).
+<a id="install"></a>
+
+### Legacy Stable package
+
+This selects the legacy Arch Stable repository. For its testing repository, see
+[Legacy Beta channel](#legacy-beta-channel).
 
 Download the public signing key and verify its full fingerprint against the
 value below **before** trusting it:
@@ -99,7 +106,7 @@ pacman -Q okilum
 okilum
 ```
 
-Subsequent releases arrive through `sudo pacman -Syu`.
+Legacy package updates, when published, arrive through `sudo pacman -Syu`.
 
 **Omarchy:** Omarchy blocks direct `pacman -Syu` with its update guard and asks
 for `omarchy update`, which also takes a snapshot and runs its migrations. Upgrade
@@ -113,17 +120,19 @@ pacman -Q okilum
 okilum
 ```
 
-`pacman -S` without `-u` installs only Okilum, and the guard allows it. Subsequent
-releases arrive through `omarchy update`. Do not bypass the guard
-(`OMARCHY_ALLOW_DIRECT_PACMAN=1`) to install Okilum.
+`pacman -S` without `-u` installs only Okilum, and the guard allows it. Legacy
+package updates, when published, arrive through `omarchy update`. Do not bypass
+the guard (`OMARCHY_ALLOW_DIRECT_PACMAN=1`) to install Okilum.
 
 A compatible Vulkan driver is required by GPUI; Omarchy normally already has one.
 Open a vault using the app's folder picker, or `okilum /path/to/vault`.
 
-## Beta channel
+<a id="beta-channel"></a>
 
-Beta carries every merge to `main` and is for testing. To follow it, use this
-**instead of** the stable stanza:
+### Legacy Beta channel
+
+This is the retained Arch testing repository, separate from AppImage Beta.
+For an existing legacy package installation, use this **instead of** the stable stanza:
 
 ```ini
 [okilum-beta]
@@ -341,19 +350,15 @@ and all Stable behavior remain unchanged.
 
 ### AppImage-only Linux transition (approved 2026-10-23, #1564)
 
-The approved destination is AppImage-only Linux delivery, with Linux Stable using
-the signed AppImage. This handoff change does not activate that transition:
-current pacman beta/Stable delivery remains available until #1564. The repository
-will be frozen, not deleted, after a final pacman release communicates the switch.
+Current Linux delivery uses signed AppImages, with separate Beta and Stable
+channels. The legacy pacman repository is retained for migration; its final release
+and freeze require the separately authorized switch described above. The repository
+is not deleted, and documentation does not authorize changing its live feeds.
 
-Delivery order is #1488 (independent AppImage publication), #1470 slice 3
-(self-update, blocking the switch), then #1564 (first-launch desktop integration,
-muninn launch/vault/update acceptance, final pacman switch message, AppImage Stable
-promotion and one Linux download page), followed by #1559 and #1557.
-Self-update must pass N-to-N+1 acceptance on Arch and Ubuntu. The first-launch
-integration must create a user-local desktop entry and icon, support removal, and
-require no AppImageLauncher. These remain pending product work, not capabilities
-implemented by this publication PR.
+AppImage self-update and first-launch desktop integration have source implementations.
+Signed N-to-N+1 acceptance on Arch and Ubuntu, muninn launch/vault/update acceptance,
+the final pacman switch and Stable promotion remain separate gates. Source integration
+is not evidence of fresh-machine bootstrap or native platform acceptance.
 
 Signed AppImage build 6606 from source `0c58` has already been delivered to Dima;
 no additional publication is needed for this revision. The parent owns subsequent

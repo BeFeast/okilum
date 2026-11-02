@@ -11,6 +11,8 @@ use okilum_t3::{
 };
 use std::time::Duration;
 
+mod agent_rules;
+mod agent_skills;
 #[cfg(target_os = "linux")]
 mod attachments;
 pub(crate) mod board;
@@ -31,6 +33,7 @@ mod links;
 mod models;
 #[cfg(target_os = "linux")]
 mod native;
+mod rules_reread;
 mod setup;
 #[cfg(target_os = "linux")]
 mod threads;
@@ -71,10 +74,29 @@ pub(super) fn prefill_browser_origin(
     connections::prefill_origin(area, alias, state)
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum ProjectSection {
+    #[default]
+    Manager,
+    Rules,
+    Skills,
+}
+
+/// An explicit Skills open keeps the portable vault-relative source identity.
+struct ProjectSkillOpen(PathBuf);
+impl EventEmitter<ProjectSkillOpen> for ProjectView {}
+
 pub(crate) struct ProjectView {
     binding: Option<AreaBinding>,
     area: Option<PathBuf>,
     context_path: String,
+    section: ProjectSection,
+    resource_vault: Option<PathBuf>,
+    _resource_observer: Option<Subscription>,
+    _resource_open: Option<Subscription>,
+    rules: Option<Entity<agent_rules::RulesView>>,
+    skills: okilum_core::agent_skills::Inventory,
+    skills_notice: Option<String>,
     state: Option<PathBuf>,
     environment: Option<Environment>,
     project_override: bool,
@@ -351,6 +373,13 @@ impl ProjectView {
             binding: None,
             area: None,
             context_path: String::new(),
+            section: ProjectSection::Manager,
+            resource_vault: None,
+            _resource_observer: None,
+            _resource_open: None,
+            rules: None,
+            skills: Default::default(),
+            skills_notice: None,
             state,
             environment: None,
             project_override: true,
@@ -398,6 +427,198 @@ impl ProjectView {
         }
     }
 
+    /// Observe the Reader's reconciled vault publication. This covers the
+    /// existing local watcher and shared-session path without a second watcher.
+    fn bind_resources(
+        &mut self,
+        reader: &Entity<Reader>,
+        root: PathBuf,
+        mut published: Arc<Vault>,
+        cx: &mut Context<Self>,
+    ) {
+        let scope_changed = self.resource_vault.as_ref() != Some(&root);
+        self.resource_vault = Some(root.clone());
+        self._resource_observer = Some(cx.observe(reader, move |this, reader, cx| {
+            let reader = reader.read(cx);
+            if reader.vault_root != root || Arc::ptr_eq(&published, &reader.vault) {
+                return;
+            }
+            published = reader.vault.clone();
+            // A publication represents a reconciled source batch; rebuild rather
+            // than infer which imported/renamed source influenced the stack.
+            this.resources_changed(
+                &okilum_core::Changes {
+                    rescan: true,
+                    ..Default::default()
+                },
+                cx,
+            );
+        }));
+        if scope_changed {
+            self.sync_resource_lifecycle(cx);
+        }
+    }
+
+    fn select_section(&mut self, section: ProjectSection, cx: &mut Context<Self>) {
+        if self.section == section {
+            return;
+        }
+        self.section = section;
+        self.sync_resource_lifecycle(cx);
+        cx.notify();
+    }
+
+    fn sync_resource_lifecycle(&mut self, cx: &mut Context<Self>) {
+        let enabled = self.active && reader_features::enabled(reader_features::Feature::Agents, cx);
+        let scope = self.resource_vault.clone().zip(self.area.clone());
+        if enabled && self.section == ProjectSection::Rules {
+            if let Some((vault, area)) = scope {
+                if let Some(rules) = &self.rules {
+                    rules.update(cx, |view, cx| view.bind(vault, area, cx));
+                } else {
+                    self.rules =
+                        Some(cx.new(|cx| agent_rules::RulesView::for_project(vault, area, cx)));
+                }
+            }
+        } else if let Some(rules) = &self.rules {
+            rules.update(cx, |view, cx| view.deactivate(cx));
+        }
+        if enabled && self.section == ProjectSection::Skills {
+            self.refresh_skills(cx);
+        } else {
+            self.skills.clear();
+            self.skills_notice = None;
+        }
+    }
+
+    /// Also usable by the owner's immediate watcher callback before reconciliation.
+    fn resources_changed(&mut self, changes: &okilum_core::Changes, cx: &mut Context<Self>) {
+        if !self.active
+            || changes.is_empty()
+            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+        {
+            return;
+        }
+        if self.section == ProjectSection::Rules {
+            if let Some(rules) = &self.rules {
+                rules.update(cx, |view, cx| view.external_changed(changes, cx));
+            }
+        }
+        // Invalidate even while another request runs: its old generation must
+        // never restore availability after a rename/delete or project switch.
+        if self.section == ProjectSection::Skills {
+            self.skills.invalidate("Local project sources changed");
+            self.refresh_skills(cx);
+        }
+    }
+
+    fn refresh_skills(&mut self, cx: &mut Context<Self>) {
+        if !self.active
+            || self.section != ProjectSection::Skills
+            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+        {
+            return;
+        }
+        let Some((root, project)) = self.resource_vault.clone().zip(self.area.clone()) else {
+            return;
+        };
+        // No provider/global configuration is inferred. This inventory describes
+        // the supported local project scope; it never installs or runs skills.
+        self.skills
+            .configure(okilum_core::agent_skills::DiscoveryScope {
+                root,
+                project,
+                disabled: Vec::new(),
+                config_revision: 0,
+            });
+        let Some(request) = self.skills.begin_refresh() else {
+            return;
+        };
+        self.skills_notice = None;
+        cx.spawn(async move |this, cx| {
+            let job = request.clone();
+            let snapshot = cx
+                .background_executor()
+                .spawn(async move { job.discover() })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.skills.finish_refresh(&request, Ok(snapshot)) {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn render_resource_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        match self.section {
+            ProjectSection::Rules => self.rules.as_ref().map_or_else(
+                || {
+                    div()
+                        .child("Select a local project to inspect its rules.")
+                        .into_any_element()
+                },
+                |rules| {
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(rules.clone())
+                        .into_any_element()
+                },
+            ),
+            ProjectSection::Skills => {
+                let refresh = cx.entity().downgrade();
+                let open = refresh.clone();
+                let displayed_scope = self.skills.scope().cloned();
+                v_flex()
+                    .id("project-skills")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_3()
+                    .gap_2()
+                    .when_some(self.skills_notice.clone(), |view, notice| {
+                        view.child(div().text_color(cx.theme().danger).child(notice))
+                    })
+                    .child(agent_skills::render(
+                        &self.skills,
+                        move |_, cx| {
+                            let _ = refresh.update(cx, |this, cx| this.refresh_skills(cx));
+                        },
+                        move |result, _, cx| {
+                            let _ = open.update(cx, |this, cx| {
+                                if this.skills.scope() != displayed_scope.as_ref() {
+                                    return;
+                                }
+                                match result {
+                                    Ok(path)
+                                        if this.active
+                                            && this.section == ProjectSection::Skills
+                                            && this.skills.scope() == displayed_scope.as_ref()
+                                            && reader_features::enabled(
+                                                reader_features::Feature::Agents,
+                                                cx,
+                                            ) =>
+                                    {
+                                        cx.emit(ProjectSkillOpen(path))
+                                    }
+                                    Ok(_) => {}
+                                    Err(error) => {
+                                        this.skills.invalidate(error.clone());
+                                        this.skills_notice = Some(error);
+                                        cx.notify();
+                                    }
+                                }
+                            });
+                        },
+                    ))
+                    .into_any_element()
+            }
+            ProjectSection::Manager => div().into_any_element(),
+        }
+    }
+
     pub(super) fn suspend_module(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.set_active(false, window, cx);
         self.clear_connection(cx);
@@ -416,6 +637,7 @@ impl ProjectView {
         }
         #[cfg(target_os = "linux")]
         self.select_manager_thread(window, cx);
+        self.select_section(ProjectSection::Manager, cx);
         self.executors_open = false;
         self.compose.update(cx, |input, cx| {
             let end = input.value().len();
@@ -433,6 +655,7 @@ impl ProjectView {
             self.draft_flush(cx);
         }
         self.active = active;
+        self.sync_resource_lifecycle(cx);
         if !active {
             self.opening_t3 = false;
         }
@@ -1567,21 +1790,65 @@ impl ProjectView {
 
 impl Render for ProjectView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(target_os = "linux")]
-        if self.threads.enabled {
-            let content = self.render_body(window, cx);
-            return v_flex()
-                .size_full()
-                .min_h_0()
-                .child(self.render_manager_notices(cx))
-                .child(div().flex_1().min_h_0().child(content))
-                .into_any_element();
+        let enabled = reader_features::enabled(reader_features::Feature::Agents, cx);
+        if !enabled {
+            return div().into_any_element();
         }
-        self.render_body(window, cx)
+        let mut tabs = h_flex().id("project-sections").gap_2().p_2();
+        for (id, label, section) in [
+            (
+                "project-section-manager",
+                "Manager",
+                ProjectSection::Manager,
+            ),
+            ("project-section-rules", "Rules", ProjectSection::Rules),
+            ("project-section-skills", "Skills", ProjectSection::Skills),
+        ] {
+            tabs = tabs.child(
+                Button::new(id)
+                    .ghost()
+                    .label(label)
+                    .selected(self.section == section)
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_section(section, cx))),
+            );
+        }
+        let content = if self.section == ProjectSection::Manager {
+            let content = self.render_body(window, cx);
+            #[cfg(target_os = "linux")]
+            let content = if self.threads.enabled {
+                v_flex()
+                    .size_full()
+                    .min_h_0()
+                    .child(self.render_manager_notices(cx))
+                    .child(div().flex_1().min_h_0().child(content))
+                    .into_any_element()
+            } else {
+                content
+            };
+            content
+        } else {
+            self.render_resource_section(cx)
+        };
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .child(tabs)
+            .child(div().flex_1().min_h_0().child(content))
+            .into_any_element()
     }
 }
 
 impl Reader {
+    pub(super) fn refresh_project_resources(
+        &mut self,
+        changes: &okilum_core::Changes,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(project) = self.project.as_ref().filter(|_| self.project_open) {
+            project.update(cx, |view, cx| view.resources_changed(changes, cx));
+        }
+    }
+
     pub(super) fn close_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.project_request = self.project_request.wrapping_add(1);
         if let Some(project) = self.project.as_ref().filter(|_| self.project_open) {
@@ -1690,6 +1957,27 @@ impl Reader {
                         view
                     }),
                 };
+                let root = this.vault_root.clone();
+                let published = this.vault.clone();
+                let reader = cx.entity();
+                project.update(cx, |view, cx| {
+                    view.bind_resources(&reader, root, published, cx)
+                });
+                let _resource_open = cx.subscribe_in(
+                    &project,
+                    window,
+                    |this, project, request: &ProjectSkillOpen, window, cx| {
+                        if this.project.as_ref() != Some(project)
+                            || !this.project_open
+                            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+                        {
+                            return;
+                        }
+                        let relative = okilum_core::vault::note_path(&request.0);
+                        this.open_note_landing(&relative, None, None, None, window, cx);
+                    },
+                );
+                project.update(cx, |view, _| view._resource_open = Some(_resource_open));
                 this.connect_project_board(project.clone(), window, cx);
                 this.project = Some(project);
                 cx.notify();
