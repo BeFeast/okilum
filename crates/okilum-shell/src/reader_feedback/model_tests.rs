@@ -85,8 +85,19 @@ fn network_failures_offer_remediation_and_keep_the_underlying_cause() {
     let draft = report();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/feedback", listener.local_addr().unwrap());
-    drop(listener);
+    // Retain ownership until the request arrives: parallel mocks can otherwise
+    // reuse a released port and turn the intended failure into a real response.
+    let disconnected = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let request = read_mock_request(&mut socket);
+        socket.shutdown(std::net::Shutdown::Both).unwrap();
+        request
+    });
     let error = send_to(&endpoint, &draft).unwrap_err();
+    assert!(String::from_utf8_lossy(&disconnected.join().unwrap()).contains(&draft.text));
     assert!(error.to_string().contains("Check your connection and VPN"));
     assert!(error.to_string().contains("Host: 127.0.0.1"));
     assert!(error.to_string().contains("diagnostic.log") || !cfg!(windows));
