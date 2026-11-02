@@ -417,7 +417,7 @@ impl FileEditor {
         ) {
             Ok(()) => {}
             Err(error) if crate::unix_publish::unsupported(error) => {
-                rustix::fs::renameat(&self.directory.file, &original, &self.directory.file, note)?;
+                anyhow::bail!("This drive cannot safely exchange a rollback; draft and preimage retained for explicit recovery");
             }
             Err(error) => return Err(error.into()),
         }
@@ -791,7 +791,7 @@ pub(super) struct RecoveryInspection {
     intent_bytes: Vec<u8>,
     history_bytes: Vec<u8>,
     original: Vec<u8>,
-    current: RecoveryRevision,
+    current: Option<RecoveryRevision>,
     artifacts: Vec<(OsString, Option<RecoveryRevision>)>,
     _lock: Arc<EditorLock>,
 }
@@ -992,9 +992,7 @@ impl FileEditor {
                 directory.ancestor_identities() == intent.ancestors,
                 "Source folder identity changed; recovery retained"
             );
-            let current = directory
-                .recovery_revision(note.file_name().unwrap())?
-                .context("Current source is missing; recovery retained")?;
+            let current = directory.recovery_revision(note.file_name().unwrap())?;
             let mut artifacts = Vec::new();
             for name in [&intent.displaced, &intent.prepared] {
                 artifacts.push((name.clone(), directory.recovery_revision(name)?));
@@ -1047,7 +1045,10 @@ fn read_bounded_recovery(path: &Path) -> Result<Vec<u8>> {
 #[cfg(unix)]
 impl InterruptedSave {
     pub fn state(&self) -> InterruptedSaveState {
-        let hash = Sha256::digest(&self.inner.current.bytes);
+        let Some(current) = &self.inner.current else {
+            return InterruptedSaveState::SourceMissing;
+        };
+        let hash = Sha256::digest(&current.bytes);
         if hash.as_slice() == self.inner.intent.after_hash {
             InterruptedSaveState::ProposedPresent
         } else if hash.as_slice() == self.inner.intent.before_hash {
@@ -1056,8 +1057,43 @@ impl InterruptedSave {
             InterruptedSaveState::ChangedExternally
         }
     }
-    pub fn current_bytes(&self) -> &[u8] {
-        &self.inner.current.bytes
+    pub fn current_bytes(&self) -> Option<&[u8]> {
+        self.inner.current.as_ref().map(|v| v.bytes.as_slice())
+    }
+
+    /// Explicitly restore the captured source after an interrupted namespace
+    /// gap. The inspection pins exact bytes/identity. linkat is create-only:
+    /// a writer recreating the note wins, and both recovery versions remain.
+    /// The proposal is never adopted. Reinspect before cleaning recovery.
+    pub fn restore_missing_source(&self) -> Result<()> {
+        let r = &self.inner;
+        anyhow::ensure!(r.current.is_none(), "Source was present at inspection");
+        r.directory.validate(r.intent.note.parent().unwrap())?;
+        anyhow::ensure!(
+            read_bounded_recovery(&r.intent_path)? == r.intent_bytes
+                && read_bounded_recovery(&r.intent.history)? == r.history_bytes,
+            "Recovery changed since inspection; retained"
+        );
+        let captured = r
+            .artifacts
+            .iter()
+            .find(|(name, _)| name == &r.intent.displaced)
+            .and_then(|(_, revision)| revision.as_ref())
+            .context("Captured source is missing; recovery retained")?;
+        anyhow::ensure!(
+            captured.identity != r.intent.staged_identity
+                && r.directory.recovery_revision(&r.intent.displaced)?.as_ref() == Some(captured),
+            "Captured source changed since inspection; retained"
+        );
+        rustix::fs::linkat(
+            &r.directory.file,
+            &r.intent.displaced,
+            &r.directory.file,
+            r.intent.note.file_name().unwrap(),
+            rustix::fs::AtFlags::empty(),
+        )?;
+        r.directory.file.sync_all()?;
+        Ok(())
     }
     pub fn original_bytes(&self) -> &[u8] {
         &self.inner.original
@@ -1069,6 +1105,10 @@ impl InterruptedSave {
     /// cleanup; the existing original History record stays protected/pending.
     pub fn keep_current(self) -> Result<()> {
         let r = self.inner;
+        let current = r
+            .current
+            .as_ref()
+            .context("Source is missing; restore captured source before cleanup")?;
         let parent = r.intent.note.parent().unwrap();
         r.directory.validate(parent)?;
         anyhow::ensure!(
@@ -1080,7 +1120,7 @@ impl InterruptedSave {
             r.directory
                 .recovery_revision(r.intent.note.file_name().unwrap())?
                 .as_ref()
-                == Some(&r.current),
+                == Some(current),
             "Source changed since inspection; inspect again"
         );
         for (name, revision) in &r.artifacts {
@@ -1094,13 +1134,14 @@ impl InterruptedSave {
                     (revision.identity == r.intent.original_identity
                         && hash.as_slice() == r.intent.before_hash)
                         || (revision.identity == r.intent.staged_identity
-                            && hash.as_slice() == r.intent.after_hash),
+                            && hash.as_slice() == r.intent.after_hash)
+                        || revision == current,
                     "Recovery entry belongs to another revision; retained"
                 );
             }
         }
         let mut intent = r.intent.clone();
-        intent.retained_current = Some(r.current.bytes.clone());
+        intent.retained_current = Some(current.bytes.clone());
         intent.persist(&r.intent_path)?;
         // Same optimistic namespace boundary as ordinary checked cleanup: POSIX
         // offers no conditional unlink. Recheck bytes and identity immediately
@@ -1113,7 +1154,7 @@ impl InterruptedSave {
                 r.directory
                     .recovery_revision(r.intent.note.file_name().unwrap())?
                     .as_ref()
-                    == Some(&r.current)
+                    == Some(current)
                     && r.directory.recovery_revision(name)? == *revision,
                 "Source or recovery changed during cleanup; remaining recovery retained"
             );
@@ -1177,14 +1218,71 @@ mod interrupted_link_tests {
             )
             .unwrap();
         }
-        if stage >= 3 {
+        if stage == 3 {
+            // Legacy plain-rename records must remain inspectable too.
             rustix::fs::renameat(directory, prepared.as_str(), directory, "Synthetic.md").unwrap();
+        }
+        if stage >= 4 {
+            rustix::fs::unlinkat(directory, name.as_str(), rustix::fs::AtFlags::empty()).unwrap();
+            rustix::fs::renameat(directory, "Synthetic.md", directory, name.as_str()).unwrap();
+        }
+        if stage >= 5 {
+            rustix::fs::linkat(
+                directory,
+                prepared.as_str(),
+                directory,
+                "Synthetic.md",
+                rustix::fs::AtFlags::empty(),
+            )
+            .unwrap();
         }
         directory.sync_all().unwrap();
         drop(editor);
         (fixture, note, state)
     }
 
+    #[test]
+    fn captured_source_restores_exclusively_after_a_crash_in_the_namespace_gap() {
+        for raw in [false, true] {
+            for external in [false, true] {
+                let (_fixture, note, state) = interrupted(4, raw);
+                assert!(!note.exists());
+                let inspection = FileEditor::inspect_interrupted_saves(&note, &state)
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+                assert_eq!(inspection.state(), InterruptedSaveState::SourceMissing);
+                assert_eq!(inspection.current_bytes(), None);
+                assert!(!inspection.original_bytes().is_empty());
+                if external {
+                    fs::write(&note, b"newer external").unwrap();
+                    assert!(inspection.restore_missing_source().is_err());
+                    assert_eq!(fs::read(&note).unwrap(), b"newer external");
+                } else {
+                    inspection.restore_missing_source().unwrap();
+                    assert_eq!(fs::read(&note).unwrap(), inspection.original_bytes());
+                }
+                drop(inspection);
+                FileEditor::inspect_interrupted_saves(&note, &state)
+                    .unwrap()
+                    .pop()
+                    .unwrap()
+                    .keep_current()
+                    .unwrap();
+                assert_eq!(fs::metadata(&note).unwrap().nlink(), 1);
+                assert_eq!(fs::read_dir(note.parent().unwrap()).unwrap().count(), 1);
+            }
+            let (_fixture, note, state) = interrupted(5, raw);
+            let inspection = FileEditor::inspect_interrupted_saves(&note, &state)
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(inspection.state(), InterruptedSaveState::ProposedPresent);
+            inspection.keep_current().unwrap();
+            assert_eq!(fs::read(&note).unwrap(), b"proposed\r\n");
+            assert_eq!(fs::metadata(&note).unwrap().nlink(), 1);
+        }
+    }
     #[test]
     fn every_interruption_boundary_keeps_current_original_and_dirty_draft() {
         for raw in [false, true] {
@@ -1209,7 +1307,7 @@ mod interrupted_link_tests {
                         InterruptedSaveState::ProposedPresent
                     }
                 );
-                assert_eq!(inspection.current_bytes(), before);
+                assert_eq!(inspection.current_bytes(), Some(before.as_slice()));
                 let original = if raw {
                     b"\xef\xbb\xbforiginal\xff\r\n".as_slice()
                 } else {
@@ -1266,7 +1364,7 @@ mod interrupted_link_tests {
                 .unwrap()
                 .pop()
                 .unwrap();
-            assert_eq!(inspection.current_bytes(), expected);
+            assert_eq!(inspection.current_bytes(), Some(expected.as_slice()));
             inspection.keep_current().unwrap();
             assert_eq!(fs::read(&note).unwrap(), expected);
         }
@@ -1315,7 +1413,7 @@ mod interrupted_link_tests {
             // Simulate interruption after the durable Keep-current snapshot and
             // exactly one unlink, before the resolved acknowledgement.
             let mut intent = inspection.inner.intent.clone();
-            intent.retained_current = Some(inspection.current_bytes().to_vec());
+            intent.retained_current = Some(inspection.current_bytes().unwrap().to_vec());
             crate::source_state::persist(
                 &inspection.inner.intent_path,
                 &serde_json::to_vec(&intent).unwrap(),

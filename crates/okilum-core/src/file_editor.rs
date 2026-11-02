@@ -27,6 +27,8 @@ pub enum InterruptedSaveState {
     OriginalPresent,
     ProposedPresent,
     ChangedExternally,
+    /// Capture completed but create-only publication/restoration was interrupted.
+    SourceMissing,
 }
 /// The public note was written, but its preimage changed before verification.
 /// Distinct from Conflict: callers must not claim that nothing was published.
@@ -743,10 +745,10 @@ impl FileEditor {
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
         Ok(Save::Saved)
     }
-    /// NFS/SMB do not implement RENAME_SWAP. Preserve the old inode before
-    /// atomic plain replacement, rechecking exact revision immediately before
-    /// publication. Unlike EXCHANGE, POSIX cannot detect a replacement in the
-    /// last check→rename window; no post-publication rollback is attempted.
+    /// Without EXCHANGE, capture the public entry before checking it and publish
+    /// with an exclusive hard link. No rename ever targets the public note.
+    /// This deliberately has a brief absent-name interval; durable intent and
+    /// the captured inode permit create-only restoration after interruption.
     #[cfg(unix)]
     fn compatible_replace(&self, directory: &File, backup: &Path, history: &Path) -> Result<bool> {
         use rustix::fs::{linkat, openat, renameat, AtFlags, Mode, OFlags};
@@ -779,6 +781,7 @@ impl FileEditor {
         }
         let mut linked = false;
         let mut publication_attempted = false;
+        let mut captured = false;
         let result = (|| -> Result<bool> {
             // No symlink following; private UUID backup name is created exclusively.
             #[cfg(test)]
@@ -848,7 +851,64 @@ impl FileEditor {
             {
                 return Err(rustix::io::Errno::IO.into());
             }
-            renameat(directory, prepared.as_str(), directory, note)?;
+            // The preflight hard link proved support without removing the note.
+            // Remove that private alias, then capture whichever entry is current.
+            // A replacement after our earlier byte check is captured and checked
+            // below, never overwritten by a plain rename to the public name.
+            rustix::fs::unlinkat(directory, old_name, AtFlags::empty())?;
+            linked = false;
+            #[cfg(test)]
+            network_save_tests::at_boundary(&network_save_tests::BEFORE_CAPTURE);
+            captured = true;
+            renameat(directory, note, directory, old_name)?;
+            open_regular_at(directory, old_name)?.sync_all()?;
+            linked = true;
+            directory.sync_all()?;
+            let (displaced, _) = self.directory.read_bytes(old_name)?;
+            #[cfg(test)]
+            network_save_tests::at_boundary(&network_save_tests::AFTER_CAPTURE);
+            if displaced != self.base_bytes() {
+                // Restore the actual captured revision, including a raced newer
+                // inode. EEXIST preserves both that revision and the new occupant.
+                linkat(directory, old_name, directory, note, AtFlags::empty())?;
+                directory.sync_all()?;
+                rustix::fs::unlinkat(directory, old_name, AtFlags::empty())?;
+                linked = false;
+                captured = false;
+                return Ok(false);
+            }
+            // Even if another writer creates the public name during the gap,
+            // this cannot clobber it. Old-fd writes remain on the captured inode.
+            match linkat(
+                directory,
+                prepared.as_str(),
+                directory,
+                note,
+                AtFlags::empty(),
+            ) {
+                Ok(()) => {}
+                Err(rustix::io::Errno::EXIST) => {
+                    // Distinguish an external occupant from an unconfirmed
+                    // retry that may already have linked our prepared inode.
+                    let proposed = rustix::fs::statat(
+                        directory,
+                        prepared.as_str(),
+                        AtFlags::SYMLINK_NOFOLLOW,
+                    )?;
+                    let occupant = rustix::fs::statat(directory, note, AtFlags::SYMLINK_NOFOLLOW)?;
+                    if proposed.st_dev == occupant.st_dev && proposed.st_ino == occupant.st_ino {
+                        return Err(rustix::io::Errno::EXIST.into());
+                    }
+                    clean_recovery_file(directory, old_name, self.base_bytes())?;
+                    linked = false;
+                    captured = false;
+                    return Ok(false);
+                }
+                Err(error) => return Err(error.into()),
+            }
+            // Persist the new public link before retiring the prepared name.
+            directory.sync_all()?;
+            rustix::fs::unlinkat(directory, prepared.as_str(), AtFlags::empty())?;
             #[cfg(test)]
             if matches!(
                 network_save_tests::FAIL_PUBLICATION.with(|v| v.get()),
@@ -864,6 +924,13 @@ impl FileEditor {
         match result {
             Ok(true) => Ok(true),
             outcome => {
+                // Once capture ran, a failed reply may hide a completed link.
+                // Keep both complete versions and the durable intent. In
+                // particular, never remove the captured inode on EEXIST.
+                if captured {
+                    return outcome
+                        .map_err(|error| error.context(UnconfirmedSave::UnknownPublication));
+                }
                 // A server can publish a rename but lose its reply. Once the
                 // prepared name disappeared, retain the preimage for recovery.
                 if publication_attempted {
@@ -1869,6 +1936,135 @@ mod network_save_tests {
         pub(super) static DELETE_AFTER_LINK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         pub(super) static ALTER_PREIMAGE_AFTER_PUBLISH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
+    pub(super) type Boundary = std::cell::RefCell<Option<Box<dyn FnOnce()>>>;
+    thread_local! {
+        pub(super) static BEFORE_CAPTURE: Boundary = const { std::cell::RefCell::new(None) };
+        pub(super) static AFTER_CAPTURE: Boundary = const { std::cell::RefCell::new(None) };
+    }
+    pub(super) fn at_boundary(hook: &'static std::thread::LocalKey<Boundary>) {
+        if let Some(body) = hook.with(|v| v.borrow_mut().take()) {
+            body();
+        }
+    }
+    #[test]
+    fn interrupted_actual_capture_keeps_both_versions_and_restores_only_the_source() {
+        for raw in [false, true] {
+            crate::unix_publish::inject(rustix::io::Errno::INVAL, || {
+                let fixture = tempfile::tempdir().unwrap();
+                let root = fixture.path().join("vault");
+                fs::create_dir(&root).unwrap();
+                let note = root.join("note.md");
+                let state = fixture.path().join("state");
+                let before = if raw {
+                    b"base\xff\r\n".as_slice()
+                } else {
+                    b"base\r\n".as_slice()
+                };
+                fs::write(&note, before).unwrap();
+                AFTER_CAPTURE.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(|| {
+                        panic!("simulated process interruption after capture")
+                    }))
+                });
+                let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if raw {
+                        FileEditor::replace_bytes(&note, &state, before, b"mine\r\n").unwrap();
+                    } else {
+                        let mut editor = FileEditor::open(&note, &state).unwrap();
+                        editor.set_text("mine\r\n".into()).unwrap();
+                        editor.save().unwrap();
+                    }
+                }));
+                assert!(interrupted.is_err());
+                assert!(!note.exists()); // positive control: the actual capture ran
+                let inspection = FileEditor::inspect_interrupted_saves(&note, &state)
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+                assert_eq!(inspection.state(), InterruptedSaveState::SourceMissing);
+                assert_eq!(inspection.original_bytes(), before);
+                assert!(fs::read_dir(&root)
+                    .unwrap()
+                    .any(|entry| fs::read(entry.unwrap().path()).unwrap() == b"mine\r\n"));
+                inspection.restore_missing_source().unwrap();
+                assert_eq!(fs::read(&note).unwrap(), before);
+                drop(inspection);
+                FileEditor::inspect_interrupted_saves(&note, &state)
+                    .unwrap()
+                    .pop()
+                    .unwrap()
+                    .keep_current()
+                    .unwrap();
+                assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+                // Both proposals remain in durable state, even after alias cleanup.
+                let history = crate::source_history::list(&state, &root).unwrap();
+                assert!(history.versions.iter().any(|v| v.bytes() == before));
+                if raw {
+                    let record = fs::read_dir(state.join("source-history"))
+                        .unwrap()
+                        .map(|v| v.unwrap().path())
+                        .find(|p| crate::source_history::RawRecord::is_path(p))
+                        .unwrap();
+                    assert_eq!(
+                        crate::source_history::RawRecord::load(&record)
+                            .unwrap()
+                            .after,
+                        b"mine\r\n"
+                    );
+                } else {
+                    let journal = fs::read_dir(&state)
+                        .unwrap()
+                        .map(|v| v.unwrap().path())
+                        .find(|p| p.extension().is_some_and(|ext| ext == "json"))
+                        .unwrap();
+                    let draft: Draft = serde_json::from_slice(&fs::read(journal).unwrap()).unwrap();
+                    assert_eq!(draft.text, "mine\r\n");
+                    assert_ne!(draft.text, draft.base);
+                }
+            });
+        }
+    }
+    #[test]
+    fn compatible_save_never_overwrites_a_publication_boundary_replacement() {
+        for error in [
+            rustix::io::Errno::NOTSUP,
+            rustix::io::Errno::INVAL,
+            rustix::io::Errno::NOSYS,
+        ] {
+            for after_capture in [false, true] {
+                crate::unix_publish::inject(error, || {
+                    let fixture = tempfile::tempdir().unwrap();
+                    let root = fixture.path().join("vault");
+                    fs::create_dir(&root).unwrap();
+                    let note = root.join("note.md");
+                    fs::write(&note, b"base").unwrap();
+                    let state = fixture.path().join("state");
+                    let mut editor = FileEditor::open(&note, &state).unwrap();
+                    editor.set_text("mine".into()).unwrap();
+                    let path = note.clone();
+                    let replacement = root.join("external.tmp");
+                    fs::write(&replacement, b"newer external").unwrap();
+                    let identity = fs::metadata(&replacement).unwrap().ino();
+                    let hook = if after_capture {
+                        &AFTER_CAPTURE
+                    } else {
+                        &BEFORE_CAPTURE
+                    };
+                    hook.with(|v| {
+                        *v.borrow_mut() =
+                            Some(Box::new(move || fs::rename(replacement, path).unwrap()))
+                    });
+                    let result = editor.save();
+                    assert_eq!(result.unwrap(), Save::Conflict);
+                    assert_eq!(fs::read(&note).unwrap(), b"newer external");
+                    assert_eq!(fs::metadata(&note).unwrap().ino(), identity);
+                    assert!(editor.dirty());
+                    assert_eq!(editor.text(), "mine");
+                    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+                });
+            }
+        }
+    }
     fn assert_unpublished(editor: &FileEditor, root: &Path, note: &Path) {
         assert_eq!(fs::read(note).unwrap(), b"base");
         assert_eq!(fs::metadata(note).unwrap().nlink(), 1);
@@ -1883,7 +2079,11 @@ mod network_save_tests {
     }
     #[test]
     fn link_failure_leaves_no_service_files() {
-        for flag in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+        for flag in [
+            rustix::io::Errno::NOTSUP,
+            rustix::io::Errno::INVAL,
+            rustix::io::Errno::NOSYS,
+        ] {
             for error in [rustix::io::Errno::PERM, rustix::io::Errno::NOTSUP] {
                 crate::unix_publish::inject(flag, || {
                     let root = tempfile::tempdir().unwrap();
@@ -1903,7 +2103,11 @@ mod network_save_tests {
     }
     #[test]
     fn failure_after_link_keeps_note_editable() {
-        for flag in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+        for flag in [
+            rustix::io::Errno::NOTSUP,
+            rustix::io::Errno::INVAL,
+            rustix::io::Errno::NOSYS,
+        ] {
             crate::unix_publish::inject(flag, || {
                 let root = tempfile::tempdir().unwrap();
                 let note = root.path().join("note.md");
@@ -1973,7 +2177,11 @@ mod network_save_tests {
     }
     #[test]
     fn unsupported_exchange_handles_deletion_and_reports_publication_truthfully() {
-        for error in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+        for error in [
+            rustix::io::Errno::NOTSUP,
+            rustix::io::Errno::INVAL,
+            rustix::io::Errno::NOSYS,
+        ] {
             for published in [false, true] {
                 crate::unix_publish::inject(error, || {
                     let root = tempfile::tempdir().unwrap();
@@ -2004,7 +2212,11 @@ mod network_save_tests {
     }
     #[test]
     fn unsupported_exchange_rechecks_external_write_at_publication_boundary() {
-        for error in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+        for error in [
+            rustix::io::Errno::NOTSUP,
+            rustix::io::Errno::INVAL,
+            rustix::io::Errno::NOSYS,
+        ] {
             crate::unix_publish::inject(error, || {
                 let root = tempfile::tempdir().unwrap();
                 let note = root.path().join("note.md");

@@ -689,6 +689,8 @@ impl Vault {
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
     ) -> Result<Vault> {
         checkpoint("Discovering notes", 0)?;
+        #[cfg(unix)]
+        let _ = crate::unix_publish::register_vault(root);
         // A bad root is a failed open, not an empty successful inventory.
         std::fs::read_dir(root)
             .with_context(|| format!("Read vault directory {}", root.display()))?;

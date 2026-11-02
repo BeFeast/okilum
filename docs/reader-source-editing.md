@@ -182,8 +182,11 @@ writer racing that exchange can briefly observe the proposed file. A crash durin
 commit leaves the durable draft and displaced inode available rather than losing
 either version. Recovery files currently remain until manually removed.
 
-File permissions are preserved. Symlinks, hard-linked notes and unsupported
-atomic-exchange filesystems fail closed. Native GUI behavior on macOS is checked
+File permissions are preserved. Symlinks and hard-linked notes fail closed.
+Filesystems rejecting exclusive rename/exchange use the revision-checked,
+create-only [compatible publication path](network-write-fallback.md), with its
+explicit brief missing-name interval and durable captured-source recovery.
+Drives that also reject hard links fail safely. Native GUI behavior on macOS is checked
 on the beta build by the user; automated source and lifecycle tests run in CI.
 
 ## Notes deleted outside Okilum (#1986)

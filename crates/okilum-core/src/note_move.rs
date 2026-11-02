@@ -23,6 +23,7 @@ fn parent(root: &Path, relative: &Path) -> Result<(File, OsString)> {
 }
 
 fn parent_any(root: &Path, relative: &Path) -> Result<(File, OsString)> {
+    crate::unix_publish::register_vault(root)?;
     let parts: Vec<_> = relative.components().collect();
     if parts.is_empty() || parts.iter().any(|p| !matches!(p, Component::Normal(_))) {
         bail!("Choose a note inside the open folder");
