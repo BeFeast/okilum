@@ -272,8 +272,8 @@ fn pending_partial_foreign_refused_retry_and_two_unpainted_roots_do_not_adopt() 
     let at_cap = Snapshot::new("note", 4, "🧠".repeat(max_bytes / 4));
     assert!(a.begin_root(at_cap, Context::LivePreview).is_ok());
     for bad in [
-        Snapshot::new("note", 4, "\0"),
-        Snapshot::new("note", 4, "x".repeat(max_bytes + 1)),
+        Snapshot::new("note", 5, "\0"),
+        Snapshot::new("note", 6, "x".repeat(max_bytes + 1)),
     ] {
         assert!(a.begin_root(bad, Context::LivePreview).is_err());
         assert!(a.current().is_none());
