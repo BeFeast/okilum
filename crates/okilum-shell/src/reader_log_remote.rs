@@ -128,16 +128,7 @@ impl Panel {
         let (worker, events) = Worker::start();
         let _events = cx.spawn(async move |this, cx| {
             while let Ok(reply) = events.recv().await {
-                if this
-                    .update(cx, |this, cx| {
-                        if reply.generation != this.generation || this.credential_pending {
-                            return;
-                        }
-                        this.receive(reply, cx);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
+                if this.update(cx, |this, cx| this.receive(reply, cx)).is_err() {
                     break;
                 }
             }
@@ -201,6 +192,21 @@ impl Panel {
         );
         self.draft = Some(source);
         self.error = None;
+        cx.notify();
+    }
+    /// Recover the last successful inputs without changing the retained rows or
+    /// issuing Apply. Saved definitions may already contain a failed candidate.
+    fn restore_applied(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.credential_pending {
+            return;
+        }
+        let Some(source) = self.applied.clone() else {
+            return;
+        };
+        self.choose(source, window, cx);
+        self.url
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.message = "Last applied inputs restored. Loaded snapshot and its absolute range are unchanged; Apply explicitly to re-query, or Start the applied query.".into();
         cx.notify();
     }
     fn import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -360,6 +366,9 @@ impl Panel {
         self.message = "Catching up — reconciling every page of the selected window".into();
     }
     fn receive(&mut self, update: Update, cx: &mut Context<Self>) {
+        if update.generation != self.generation || self.credential_pending {
+            return;
+        }
         self.following = update.following;
         self.more = false;
         self.busy = matches!(update.status, Status::CatchingUp { .. });
@@ -453,6 +462,7 @@ impl Panel {
                 self.message = "Stopped · loaded rows retained; Apply to page a new history snapshot, or Start explicitly.".into();
             }
         }
+        cx.notify();
     }
     fn export(&mut self, cx: &mut Context<Self>) {
         if self.exporting {
@@ -569,7 +579,10 @@ impl Render for Panel {
             .child(v_flex().p_3().gap_2().flex_none()
                 .child(h_flex().gap_2().child(div().w(px(180.)).child(Input::new(&self.name).small())).child(div().flex_1().child(Input::new(&self.url).small())).child(Button::new("remote-import").small().label("Import Discover URL").disabled(self.busy).on_click(cx.listener(|this,_,window,cx|this.import(window,cx)))).child(saved))
                 .child(Input::new(&self.key).small())
-                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.kql).small())).child(Button::new("remote-apply").small().label("Apply query and filters").on_click(cx.listener(|this,_,window,cx|this.apply(window,cx)))))
+                .child(h_flex().gap_2()
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.kql).small()))
+                    .child(Button::new("remote-apply").small().label("Apply query and filters").on_click(cx.listener(|this,_,window,cx|this.apply(window,cx))))
+                    .child(Button::new("remote-restore-applied").debug_selector(|| "remote-restore-applied".into()).small().ghost().label("Restore applied settings").disabled(self.applied.is_none() || self.busy || self.credential_pending).tooltip("Restore the last successful source/query/filter/time/sort/column inputs as a draft. Stop existing following; retain the loaded snapshot, absolute range, selection and marks. Re-query only with Apply; no keychain access.").on_click(cx.listener(|this,_,window,cx|this.restore_applied(window,cx)))))
                 .child(div().text_xs().child("Filters JSON — includes disabled, negated and pinned filters; edits apply together with KQL"))
                 .child(Input::new(&self.filters).small())
                 .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.from).small())).child(div().flex_1().child(Input::new(&self.to).small()))
@@ -776,3 +789,7 @@ mod tests {
         cx.quit();
     }
 }
+
+#[cfg(test)]
+#[path = "reader_log_remote/recovery_tests.rs"]
+mod recovery_tests;
