@@ -432,7 +432,12 @@ fn input_and_structure_limits_preserve_exact_source() {
         classify(&snapshot(&over)).reasons(),
         &[SourceReason::InputLimit]
     );
-    assert_eq!(display(&over), over);
+    // Classification and native projection now share the same byte ceiling.
+    // Oversized bytes travel through SourceFallback, not a projected identity map.
+    let current = snapshot(&over);
+    let rejected = project(&current, classify(&current).plan(), &Active::default()).unwrap_err();
+    assert_eq!(rejected.reason, FallbackReason::SourceLimit);
+    assert_eq!(rejected.source(), over);
     let nodes = "**x** ".repeat(1500);
     assert_eq!(
         classify(&snapshot(&nodes)).reasons(),
@@ -501,7 +506,12 @@ fn range_limit_has_a_positive_below_limit_control() {
         classify(&snapshot(&over)).reasons(),
         &[SourceReason::StructureLimit]
     );
-    assert_eq!(display(&over), over);
+    // Classification and native projection now share the same byte ceiling.
+    // Oversized bytes travel through SourceFallback, not a projected identity map.
+    let current = snapshot(&over);
+    let rejected = project(&current, classify(&current).plan(), &Active::default()).unwrap_err();
+    assert_eq!(rejected.reason, FallbackReason::SourceLimit);
+    assert_eq!(rejected.source(), over);
 }
 
 #[test]

@@ -8,14 +8,25 @@ cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -
 for test in large_note_native_typing_ime_undo_and_scroll long_note_native_typing_ime_undo_and_scroll; do
     grep -q "::$test: test$" "$RUNNER_TEMP/live-preview-tests.txt"
 done
-cargo test --locked -p okilum-core --lib source_projection::
-cargo test --locked -p okilum-core --lib source_classifier::
-cargo test --locked -p okilum-core --lib file_editor::
-cargo test --locked -p okilum-shell --bin okilum source_presentation::
-cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture
-cargo test --locked -p okilum-shell --bin okilum input_anchor_tests::
+# Execute independent suites even after an assertion fails, then fail the gate.
+# One cold test-binary build should report all regressions, not just the first.
+failures=0
+run_suite() {
+    "$@" || failures=$((failures + 1))
+}
+run_suite cargo test --locked -p okilum-core --lib source_projection::
+run_suite cargo test --locked -p okilum-core --lib source_classifier::
+run_suite cargo test --locked -p okilum-core --lib file_editor::
+run_suite cargo test --locked -p okilum-shell --bin okilum source_presentation::
+run_suite cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture
+run_suite cargo test --locked -p okilum-shell --bin okilum input_anchor_tests::
 # Vendor workspace lock resolution follows vendor-tests.sh: patches add deps.
 # Root Cargo.lock and gpui core remain unchanged.
-cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::editor::display_map::projected_cache:: -- --list > "$RUNNER_TEMP/projected-cache-tests.txt"
-grep -q '::dirty_install_uses_real_wrapping_and_matches_cold_after_edit_resize_and_undo: test$' "$RUNNER_TEMP/projected-cache-tests.txt"
-cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::editor::display_map::projected_cache::
+if cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::editor::display_map::projected_cache:: -- --list > "$RUNNER_TEMP/projected-cache-tests.txt"; then
+    grep -q '::dirty_install_uses_real_wrapping_and_matches_cold_after_edit_resize_and_undo: test$' "$RUNNER_TEMP/projected-cache-tests.txt"
+    run_suite cargo test --manifest-path vendor/gpui-component/Cargo.toml -p gpui-base --lib input::editor::display_map::projected_cache::
+else
+    failures=$((failures + 1))
+fi
+printf 'LIVE_PREVIEW_REGRESSION_FAILURES=%s\n' "$failures"
+test "$failures" = 0

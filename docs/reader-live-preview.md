@@ -19,7 +19,8 @@ still the native provider's responsibility, including selection and IME changes.
 Supported presentation remains S1: headings, strong/emphasis/strike, code, ordinary
 links and wikilinks. Unsupported blocks remain exact Source. The 1 MiB
 and 4,096-node limits remain; the glyph tooltip explains whole-note Source fallback.
-There is no startup indexing, new dependency, new vendor patch or gpui-core change.
+There is no startup indexing, new dependency or gpui-core change. The #1679 update
+below extends the native admission patch and reuses derived indexes.
 
 ## Acceptance evidence to complete before merge
 
