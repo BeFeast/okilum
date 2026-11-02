@@ -291,12 +291,13 @@ mod tests {
         // full managed_identity check, without a timing assertion or a daemon.
         let executable = root.path().join("syncthing");
         private::write(&executable, b"changed package")?;
+        let device = ["AAAAAAA"; 8].join("-");
         let mut receipt = json!({
             "request": {"executable": executable, "rest_address": "127.0.0.1:12345",
                 "listen_address": "0.0.0.0:23456"},
             "binary_version": crate::daemon::CLIENT_VERSION,
             "binary_hash": crate::linux_bootstrap::BINARY_SHA,
-            "identity": {"config_file": config, "device_id": ["AAAAAAA"; 8].join("-"),
+            "identity": {"config_file": config, "device_id": device,
                 "certificate_hash": format!("{:x}", Sha256::digest(b"synthetic certificate"))}
         });
         let file = state.join("prepared.json");
