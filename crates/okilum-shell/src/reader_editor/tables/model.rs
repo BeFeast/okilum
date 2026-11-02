@@ -753,7 +753,16 @@ pub(super) fn edit(source: &str, selection: Range<usize>, command: Command) -> O
                     };
                     edits.push((range.end..range.end, value));
                 } else if col + 1 < width {
-                    edits.push((range.start..ranges[col + 1].start, ""));
+                    // Removing a bare first cell exposes its separator as an
+                    // apparent outer border. Supply a real border so an empty
+                    // next cell or literal block prefix retains its identity.
+                    let border =
+                        if col == 0 && !raw.trim_start_matches([' ', '\t']).starts_with('|') {
+                            "|"
+                        } else {
+                            ""
+                        };
+                    edits.push((range.start..ranges[col + 1].start, border));
                 } else {
                     edits.push((ranges[col - 1].end..range.end, ""));
                 }

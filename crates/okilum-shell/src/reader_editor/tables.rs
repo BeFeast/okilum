@@ -415,6 +415,36 @@ mod tests {
     }
 
     #[test]
+    fn deleting_the_first_of_three_columns_keeps_literal_block_markers_in_the_table() {
+        for newline in ["\n", "\r\n"] {
+            for value in ["", "# Heading 😀", "> quote", "<div>", "- item", "1. task"] {
+                let source = [
+                    format!("Remove|{value}|Last"),
+                    "---|---|---".to_owned(),
+                    format!("remove|{value}|tail"),
+                ]
+                .join(newline);
+                let at = source.find("Remove").unwrap();
+                let changed = model::edit(&source, at..at, Command::DeleteColumn).unwrap();
+                let table = model::Table::parse(&changed.source).unwrap();
+                assert_eq!(table.rows[0], [value, "Last"]);
+                assert_eq!(table.rows[1], [value, "tail"]);
+                let snapshot = Snapshot::new("delete-leading-cell", 0, changed.source.as_str());
+                let classified = source_classifier::classify(&snapshot);
+                assert!(
+                    classified
+                        .decorations_for(&snapshot)
+                        .unwrap()
+                        .iter()
+                        .any(|marker| marker.kind == Kind::Table
+                            && marker.range == (0..changed.source.len())),
+                    "positive control: column deletion preserves the complete GFM table"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn editing_bare_cell_block_markers_keeps_a_classified_table_and_exact_values() {
         let source = "Name|Value\n---|---\nold|neighbor";
         for row in [0, 1] {
