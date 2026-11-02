@@ -663,3 +663,10 @@ last body line before the closing fence. Shift+Tab removes that indentation;
 selection mapping, CRLF and one-step Undo/Redo use the existing Input transaction.
 A line at the exclusive selection end, the closing fence and following prose
 are not indented. This matches the embedded Input's selected-line indentation.
+
+The inferred code indentation unit stays with the active fence while its body
+is edited. Repeated Tab/Shift+Tab, Enter, typing and Undo/Redo do not re-detect
+width from indentation they just inserted: a two-space line returns to its
+original two spaces after Tab then Shift+Tab. Another fence/document or changed
+fence structure detects its own policy. Adjacent differently-indented snippets
+therefore keep independent units; this session state is not persisted.
