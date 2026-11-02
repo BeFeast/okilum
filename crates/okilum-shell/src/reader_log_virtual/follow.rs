@@ -23,6 +23,7 @@ pub(super) struct Source {
     pub path: PathBuf,
     pub snapshot: Arc<LogSnapshot>,
 }
+#[derive(Clone)]
 pub(super) struct Update {
     pub sources: Vec<Source>,
     pub candidates: Option<Vec<okilum_core::log::virtual_log::Candidate>>,

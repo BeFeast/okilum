@@ -128,9 +128,11 @@ fn virtual_start_reads_prepared_snapshots_and_preserves_results_on_failure_and_s
             cx,
         );
         assert!(
-            !panel.active && !panel.stopping,
-            "late Ready becomes stopped, never reactivates watch"
+            panel.active && panel.stopping,
+            "late Ready cannot acknowledge worker exit"
         );
+        panel.receive(generation, worker::Frame::Stopped, cx);
+        assert!(!panel.active && !panel.stopping);
         assert!(panel.pending.is_none());
         assert_eq!(panel.view.as_ref().unwrap().entity_id(), id);
         panel.receive(
@@ -643,8 +645,16 @@ fn membership_follow_keeps_view_record_selection_marks_and_rejects_stale_or_stop
         );
         assert!(panel.pending_follow.is_none());
         panel.stopping = true;
+        panel.receive(1, worker::Frame::Updated(update.clone()), cx);
+        panel.receive(1, worker::Frame::Updated(update.clone()), cx);
+        assert!(panel.pending_follow.is_none() && panel.active && panel.stopping);
+        panel.receive(1, worker::Frame::Stopped, cx);
+        assert!(!panel.active && !panel.stopping);
         panel.receive(1, worker::Frame::Updated(update), cx);
-        assert!(panel.pending_follow.is_none() && !panel.active && !panel.stopping);
+        assert!(
+            panel.pending_follow.is_none(),
+            "terminal generation rejects every later queued batch"
+        );
     });
     visual.run_until_parked();
     panel.read_with(visual, |panel, cx| {

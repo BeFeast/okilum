@@ -375,12 +375,23 @@ impl Panel {
         if generation != self.generation {
             return;
         }
-        if self.stopping && !matches!(&frame, worker::Frame::Progress { .. }) {
-            self.message = "Stopped; loaded snapshot retained.".into();
-            self.active = false;
-            self.stopping = false;
-            self.worker = None;
-            cx.notify();
+        if self.stopping {
+            // Ready/update frames may already be queued when Stop is clicked.
+            // Discard all of them until the worker acknowledges a terminal turn;
+            // the first queued batch is not proof of worker exit.
+            if matches!(
+                &frame,
+                worker::Frame::Stopped
+                    | worker::Frame::Failed(_)
+                    | worker::Frame::Invalidated(_, _)
+            ) {
+                self.message = "Stopped; loaded snapshot retained.".into();
+                self.active = false;
+                self.stopping = false;
+                self.worker = None;
+                self.generation = self.generation.wrapping_add(1);
+                cx.notify();
+            }
             return;
         }
         match frame {
