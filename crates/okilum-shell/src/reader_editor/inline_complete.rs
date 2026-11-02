@@ -135,7 +135,7 @@ pub(super) fn trigger(line: &str, emoji: bool) -> Option<(Kind, usize, String)> 
 
 /// Backtick runs close only a run of the same length. Escaped backticks in
 /// prose are literal; backslashes inside code do not escape its delimiter.
-fn in_inline_code(prefix: &str) -> bool {
+pub(super) fn in_inline_code(prefix: &str) -> bool {
     let bytes = prefix.as_bytes();
     let mut delimiter = None;
     let mut at = 0;
