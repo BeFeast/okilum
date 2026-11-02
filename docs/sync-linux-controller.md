@@ -71,8 +71,8 @@ OKILUM_SYNC_CLIENT=/path/to/pinned/syncthing-2.1.6 \
 ```
 
 A container user-manager test is not native desktop/login QA. Before a later UI
-PR, follow the project's ten UI rules and attach Linux light/dark before/after
-screenshots from the manager's QA sub-session. Final slice acceptance also needs
+PR, check the actual Linux light/dark UI before and after the change. These checks
+do not require a manager-owned QA session. Final slice acceptance also needs
 real login/update behavior, reuse preservation, empty first receive, known
 replica/path checks, folder Pause, offline Remove, conflicts and the Linux beta.
 

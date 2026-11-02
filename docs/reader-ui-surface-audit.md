@@ -70,11 +70,12 @@ merged work is a baseline to preserve, not permission to claim current native PA
 2. Take Recover notes presentation separately. Establish native fixtures for retained,
    protected and absent drafts before changing text or labels. Keep canonical paths
    available in details and test same-title entries; no change to durable recovery.
-3. Coordinate other surfaces with their owners before editing shared render files.
-   Existing issue claims and merged PRs take precedence over this list.
+3. Check current issues and merged changes before using this historical list.
+   Shared render files are open to any worker; CI and rebase handle integration.
 
-Every subsequent UI PR needs native Linux before/after in light and dark, the same
-fixture/window size, keyboard/click checks and one review. A source inspection cannot
-prove visual spacing, contrast, font size, focus or platform equivalence. This docs-only
+Native Linux checks use light and dark, the same fixture/window size and
+keyboard/click scenarios. Review policy comes from [AGENTS.md](../AGENTS.md). A
+source inspection cannot prove visual spacing, contrast, font size, focus or
+platform equivalence. This docs-only
 inventory has no new screenshot or native PASS claim. Hosted commit CI is used before
-PR publication; no heavy cargo runs on maestro.
+PR publication; never run cargo on maestro.

@@ -40,12 +40,12 @@ wrong exception chain and false success remain failures. No gate retry is added.
 Offline PowerShell7 controls cover success, nested/write/bootstrap/parse/log/trap
 errors and retained phase/PID evidence. Session quiet tests mock registry/process
 operations and cover restoration and failures. Actual Windows PowerShell5.1
-behavior remains UNVERIFIED until a separately granted harness self-test.
+behavior remains UNVERIFIED until the native harness self-test passes.
 
-No VM/reservation/build is authorized by this patch. Request a slot from Manager
-when review is complete. #1698 r4 requires this fix merged plus explicit Manager
-GO; never infer authority from a passing local test. Keep original seed5226 /
-8113ab0a bytes. No signing/promotion or #1667 closure.
+Use the existing VM reservation and isolation controls for the native self-test;
+manager permission is not a development gate. Keep original seed5226 / 8113ab0a
+bytes. Passing local controls alone do not establish native acceptance or signing,
+promotion or #1667 completion.
 
 #1808's copied-build and #1414 external-file identity scenario are subsequent
 work; this patch does not implement or claim their native acceptance.
@@ -68,5 +68,6 @@ unknown responses and nonzero/missing counts stop immediately. A later-ready
 positive-control regression passes at235seconds with the new window and remains
 UNKNOWN with the old120-second window; release cutoff tests still pass.
 
-No new VM self-test is authorized by these code changes. Manager must grant r2;
-merge and #1698r4 remain held pending r2 and explicit GO.
+The r2 native self-test remains unverified by these code changes. Run it through
+the existing reservation controls; merge policy comes from v3 in
+[AGENTS.md](../../../AGENTS.md), with no manager GO step.

@@ -2,9 +2,10 @@
 
 ## AppImage-only Linux delivery (#1564)
 
-Linux Stable is a signed AppImage. After acceptance and the manager's concrete GO,
-dispatch `releases.yml` on `main` with `linux_only: "true"`, `build: "<original
-AppImage build>"` and `source: "<full main SHA>"`. The build is embedded in the
+Linux Stable is a signed AppImage. For a build selected under the working process
+in [AGENTS.md](../AGENTS.md), dispatch `releases.yml` on `main` with
+`linux_only: "true"`, `build: "<original AppImage build>"` and
+`source: "<full main SHA>"`. The build is embedded in the
 AppImage, not its separate Forgejo publication number. This reuses the archived
 binary and original payload signature, verifies the signed descriptor and
 provenance, and signs a Stable-channel descriptor with the same pinned GPG key.
@@ -153,7 +154,7 @@ The package version is `0.1.<5000 + workflow run number>-1`. PRs touching packag
 build/install the package and test signing with a disposable key; they cannot
 publish. Main builds publish beta. Workflow concurrency serializes publication.
 
-For independent Linux promotion after manager GO, use the
+For independent Linux promotion, use the
 [Linux-only releases path](releases.md#linux-only-stable-1432) with `linux_only=true`,
 the accepted Linux `build` and exact full `source` SHA. It uses the existing
 protected publication lock, verifies the archived package/catalog identity,

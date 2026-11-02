@@ -148,11 +148,12 @@ not establish exactly-once provider callback execution, stdout delivery, arbitra
 tools or external side effects. Automatic integration for other worker runtimes
 is a later source contract; this pilot installs no global prompt hook.
 
-## Manager-approved window checklist
+## Isolated native test setup
 
 Prepare exact source SHAs, installed profile/runtime hashes, native worker
-instruction, private journal paths and rollback command files before requesting
-the window. Maestro owner performs source deployment/profile/grant changes;
+instruction, private journal paths and rollback command files for the test.
+Live deployment/profile/grant changes need authority for that infrastructure
+change, not development-manager approval. Maestro owner performs those changes;
 Inbox owner handles its existing scope and adapter. Do not start another bridge
 journal for a scope already managed by the #601 adapter.
 
@@ -230,10 +231,8 @@ general production proxy. If containment termination ends the scheduler attempt,
 it is not a same-generation restart: test consumer-process restart within the
 admitted service, and record whole-attempt termination separately.
 
-Retain a sanitized evidence index with exact SHAs, bindings, actor/UTC times,
-native transcript reference, operation IDs, source/Inbox statuses, transaction
-counts, fault checkpoints, scope/revocation controls and backup/rollback receipts.
-Keep raw credentials/configuration and private backups outside the repository.
-Source fixtures and hosted CI can validate protocol code before the window, but
-cannot close #728. Closure requires manager acceptance of the real native path,
-all recovery/scope controls and scoped revocation.
+Validate the real native path, recovery/scope controls and scoped revocation;
+source fixtures and hosted CI alone do not exercise that integration. Preserve
+the operational records needed for retry and recovery. Keep raw credentials,
+configuration and private backups outside the repository. Issue completion follows
+the working process in [AGENTS.md](../AGENTS.md).

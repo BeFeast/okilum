@@ -13,10 +13,10 @@ Todoist tasks, T3 stages and saved results. Reopening uses the saved workspace a
 connections; evaluating the product no longer depends on a one-off POC launcher.
 Export returns a portable, exact copy of that brain.
 
-Development, brainstorming, execution supervision, review and recovery remain in
-external T3 Code. The alpha may execute isolated acceptance goals. It does not take
-over Okilum development, the original project or daily work. The selected fixture
-is a small engineering-only copy of halenote materials, not its live repository or
+The alpha may execute isolated acceptance goals. It does not take over Okilum
+development, the original project or daily work. This product isolation boundary
+adds no approval step to the working process in [AGENTS.md](../AGENTS.md). The
+selected fixture is a small engineering-only copy of halenote materials, not its live repository or
 Oleg's health records. This planning scope does not provision or migrate anything.
 
 ## User-visible acceptance

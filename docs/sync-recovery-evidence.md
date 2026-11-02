@@ -99,5 +99,5 @@ This fixture injects approved pairing and readiness receipts. It does not prove
 browser/passkey → HTTPS service → native Settings, service-side revoke reconciliation,
 OS disk-full recovery, cross-platform case collisions, Windows/macOS lifecycle or login.
 Those remain separate acceptance work. Native Settings QA uses the published Linux
-beta and the manager's muninn QA session. CT119 rollout still requires its own
+beta on a native Linux desktop. CT119 rollout still requires its own
 backup/rollback plan and explicit daytime approval. No live rollout is implied.

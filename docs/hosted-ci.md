@@ -1,7 +1,7 @@
 # Run a commit in CI
 
 Heavy PR checks run on standard GitHub-hosted runners in the public
-`BeFeast/okilum` mirror. Executors do not need to compile on maestro. Source
+`BeFeast/okilum` mirror. Workers must never run cargo on maestro. Source
 and logs must be suitable for that public repository; no signing or private
 cache credentials go to GitHub.
 

@@ -13,7 +13,7 @@ claim that these capabilities are implemented.
 **AI Brain alpha extension (2026-09-05):** [one-project scope and acceptance](ai-brain-alpha.md)
 define the next phase after the accepted POC: ordinary workspace integration, reusable
 goals, saved connectors and exact export, evaluated on a separate halenote copy
-under external T3 development control.
+with development kept outside the product under test (see [AGENTS.md](../AGENTS.md)).
 
 **Proposed next slice (issue166):** [persisted AI proposals](ai-brain-proposals.md)
 records a P1 implementation contract and gated breakdown. It does not enable

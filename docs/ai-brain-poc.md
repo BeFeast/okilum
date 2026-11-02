@@ -16,11 +16,11 @@ results. A Maestro stage owns its own workers and PR execution; Okilum chooses t
 next step after its outcome or failure. This is a product ownership boundary, not
 an instruction to duplicate an engine's scheduler.
 
-Development of Okilum stays under external T3 Code control: brainstorming,
-implementation steering, review, debugging and recovery. No dogfooding or daily
-workflow migration at this stage. Okilum may drive a selected test goal inside
-the POC; it does not manage its own development. A separate fixture brain, test
-task project and thread are the proposed test setup, not already provisioned state.
+The POC may drive a selected isolated test goal; it does not manage Okilum's own
+development or migrate daily work. This product isolation boundary adds no
+approval or coordination step to the working process in [AGENTS.md](../AGENTS.md).
+A separate fixture brain, test task project and thread are the proposed test
+setup, not already provisioned state.
 
 ## Selected vertical
 

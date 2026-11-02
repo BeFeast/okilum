@@ -130,7 +130,7 @@ actions are inside the expanded card. Related-note navigation retains the same o
 still collapses the card. Refresh is automatic and silent.
 There is no new source poll, execution inference, delivery claim or status mapping.
 The human-attention lane, item/stage colours and richer live-agent presentation
-wait for Oleg's visual mockup acceptance.
+remain separate product work; this slice adds none of them.
 
 ## Accepted look, push 1
 
@@ -197,7 +197,8 @@ its own intrinsic width. There is no full-width command strip.
 The manager-owned attention source is
 `Dev/Areas/okilum/ops/board.toml`, field `attention`.
 This change leaves that vault file untouched; the manager authors the real list.
-Issue #1795 stays open until Oleg approves the resulting build.
+Issue #1795 completion follows the working process in [AGENTS.md](../AGENTS.md);
+Oleg's build approval is not a development gate.
 
 ## Live agent source, push 3
 

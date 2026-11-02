@@ -1,8 +1,8 @@
 # Artifact-only native macOS verification
 
 `macos-native-verify.yml` is a manual, first-attempt, trusted-main workflow. It
-does not change macOS release/preview policy or lane variables. A manager must
-coordinate its M4 slot after higher-priority saving/recovery gates. The nightly
+does not change macOS release/preview policy or lane variables. Use the existing
+runner admission and resource locks to coordinate the M4 slot. The nightly
 03:05 beta has priority: admission refuses starts between 00:50 and 09:00 Israel,
 leaving a full 90-minute job before the existing 02:20 night guard.
 
@@ -28,4 +28,5 @@ and no access to the Sparkle private update key. Regression tests check the clos
 job/step graph, `verify_only=false` admission refusal, read-only API paths, and
 the full coordinator's single build invocation without publication credentials.
 
-No automatic reruns. Any failure/infra blocker requires manager disposition.
+Failures retain their diagnostics; resolve the cause before another attempt.
+A real infrastructure blocker goes to the task owner through the v3 process.

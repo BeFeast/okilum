@@ -64,13 +64,14 @@ GitHub's five-Mac sub-cap; the Depot runner pool is separate.
    Set `OKILUM_DEPOT_PILOT_ENABLED=true` only once the guard is reviewed and its
    permissions/usage readback have been verified. Let the ordinary 5-minute tick
    validate the guard first; no workflow dispatch is needed.
-7. After manager activation GO, set **GitHub** repo variables
+7. Once the paid pilot and its infrastructure changes are authorized, set
+   **GitHub** repo variables
    `OKILUM_DEPOT_MACOS_RUNNER=depot-macos-15` and
    `OKILUM_DEPOT_MACOS_SHADOW=true`. Both absent is the shipped default and skips
    the shadow before any nonexistent runner label can queue. Pair ordinary
    unsigned PR gate results; shadow is not required, saves no duplicate cache,
    and receives no signing identity, LAN secret or Forgejo/App credential.
-8. Switching the real macOS lane later is separate manager GO:
+8. Switching the real macOS lane is a separate infrastructure change:
    **GitHub** `OKILUM_GITHUB_MACOS_RUNNER=depot-macos-15`. Unset restores the
    free `macos-15` label. Do not change `OKILUM_MACOS_LANE`, the local M4 route,
    shipping/signing, feeds or required acceptance gates for this pilot.
@@ -97,7 +98,8 @@ variables. New required jobs select free `macos-15`; shadow skips. The 5-minute
 schedule detects the 10-minute threshold on its next successful tick (up to about
 5 additional minutes plus scheduler/API delay). It does not cancel, rerun or
 turn an existing queued/failed gate green. A current pending gate remains visible
-for manager disposition. Paid execution remains protected by Depot's hard cap.
+until its cause is resolved by the task owner. Paid execution remains protected
+by Depot's hard cap.
 
 A Variables permission/token failure means the guard cannot confirm fallback:
 it fails with an operator-action message, never claims success. Do not enable

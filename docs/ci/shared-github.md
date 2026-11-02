@@ -39,10 +39,11 @@ No dispatch, empty commit or rerun is needed to create observations.
 
 Record local and hosted queue+run for the SAME full source SHA from the ordinary
 CI job timestamps and bridge log/native run. Include all queue waiting, full
-suite receipts, sample count and p50/p90 in the PR. A one-run p90 is descriptive
-only. Activation requires reviewed green exact-head CI and manager acceptance
-of hosted queue+run at roughly 20 minutes or less. The baseline supplied for
-planning was local p50 24 / p90 38 minutes; same-SHA measurements supersede it.
+suite results, sample count and p50/p90 when evaluating routing. A one-run p90 is
+descriptive only. Activation requires green exact-head CI and measured hosted
+queue+run at roughly 20 minutes or less; manager approval is not a gate. The
+baseline supplied for planning was local p50 24 / p90 38 minutes; same-SHA
+measurements supersede it.
 If hosted is slower, keep local active and propose a budgeted cache follow-up.
 Rollback after activation is `OKILUM_SHARED_LANE=local` for subsequent runs.
 

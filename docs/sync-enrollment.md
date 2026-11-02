@@ -66,9 +66,10 @@ cursor loss triggers fresh status/connection/error snapshots. Preserve both
 conflict versions. Sync is not backup: sendreceive deletions propagate; hub
 versioning does not protect local hub edits. No iCloud migration is authorized.
 
-Live hub installation/socket mounts require a separate concrete backup/rollback
-plan and explicit manager approval. Native GUI QA belongs to a separate QA
-session; no desktop/platform behavior is inferred from a Linux container test.
+Live hub installation/socket mounts need a concrete backup/rollback plan and
+authority for that infrastructure change; the development manager is not an
+approval gate. Native GUI checks must exercise the actual platform; no desktop
+behavior is inferred from a Linux container test.
 
 ## Slice 1 compatibility boundary
 

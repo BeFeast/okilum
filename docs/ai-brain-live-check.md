@@ -4,8 +4,8 @@ Preparation for #61, 2026-09-05. This document contains no live task, thread,
 provider request or successful acceptance receipt. The product requirements remain
 [the POC scope](ai-brain-poc.md) and [ai-brain/v1](ai-brain-contracts.md).
 
-Development, review and recovery stay in external T3 Code. This fixture does not
-make Okilum responsible for its own development or migrate daily work. Executing
+This fixture does not make Okilum responsible for its own development or migrate
+daily work. Development process comes from [AGENTS.md](../AGENTS.md). Executing
 this isolated synthetic task through the actual Okilum UI, Todoist and T3 can
 satisfy the POC's functional acceptance. A mocked or backend-only scripted run
 cannot. No additional personal-project run is required by this procedure.
@@ -25,12 +25,12 @@ brain. Do not copy the goal template as `goal-*.md`: canonical goals must be cre
 by the backend, and existing owned goals without their journal require recovery.
 Keep the acceptance oracle in this document outside the engine's source context.
 
-Record a fresh brain ID, source paths and SHA-256 revisions in the run receipt.
+Use a fresh brain ID and retain source revisions needed to test lossless writes.
 All cooperating writes must use the managed source store. Live personal notes and
 the development checkout are not fixture storage. Do not delete operational state
 to reset a failed run; preserve it for external recovery and use a new isolated run.
 
-## Configuration receipt required before a live attempt
+## Test configuration
 
 | Field | Current value |
 |---|---|
@@ -41,11 +41,11 @@ to reset a failed run; preserve it for external recovery and use a new isolated 
 | CLIProxyAPI endpoint and selected model | Unselected |
 | Todoist account instance and dedicated test project ID | Unselected |
 | T3 instance, test project/root and thread-opening route | Unselected |
-| Secret loader references | Bind locally; never put values in the receipt |
+| Secret loader references | Bind locally; never put values in test output |
 | Concrete live operations and cleanup policy | Not authorized by this document |
 
-When these values and the build exist, record exact startup/connection commands
-and provider operations for review. Do not substitute guessed CLI options or a
+Resolve the test configuration and verify startup/connection commands against
+the selected build. Do not substitute guessed CLI options or a
 currently empty adapter registry. Verify the real application API before binding
 this fixture to it. The prepared runtime JSON-lines service alone is not evidence
 that the complete UI/provider vertical is connected.

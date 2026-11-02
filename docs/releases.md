@@ -56,16 +56,15 @@ tag. It contains the macOS ZIP, Windows installer and portable ZIP, Arch package
 and signature, and `SHA256SUMS`. During asset replacement it is temporarily a draft,
 so partially replaced assets are not offered as a completed release.
 
-## Stable promotion — explicit approval required
+## Stable promotion
 
-All-platform stable promotion is gated on owner QA: all OSes must open as quickly
-as macOS. The separately authorized Linux-only pilot is gated on Linux QA, review,
-required CI and manager GO, independently of macOS/Windows readiness. Implementing
-or merging this workflow does **not** authorize promotion.
+The working process in [AGENTS.md](../AGENTS.md) governs Stable selection and
+promotion. Manager approval is not a release gate. The coordinator's artifact,
+signature, CI and recovery checks still apply; Windows requires Oleg's signing.
 
-After approval, run **releases** on **main** with `build` set to the accepted macOS
-Beta build. This promotes all OSes together; the explicit Linux-only path below
-is independent. Use these protected coordinator paths for promotion.
+For the all-platform coordinator path, run **releases** on **main** with `build`
+set to the accepted macOS Beta build. This promotes all OSes together; the explicit
+Linux-only path below is independent. Use these protected coordinator paths for promotion.
 
 The action validates all artifacts and Arch signatures, mirrors the release tag
 with public main, then promotes the signed Arch repository, Windows stable feed,
@@ -94,7 +93,7 @@ appcast publication lock; scheduled Beta does not block the macOS release queue.
 
 ### Linux-only Stable (#1432)
 
-After manager GO, dispatch **releases** on **main** with both the exact Linux
+Dispatch **releases** on **main** with both the exact Linux
 `build` and full lowercase `source` SHA, and `linux_only=true`. Leave
 `windows_only`, `skip_windows`, `supersede_pending` and `linux_rollback` false.
 For the first accepted pilot the inputs are:
@@ -213,8 +212,8 @@ and merge-to-feed separately; this removes PR queue starvation, not build time.
 
 ## Independent signed Windows Stable (#1688)
 
-After exact-build Windows installation/feed/Restart/data acceptance and the manager's
-concrete signing and promotion GO, dispatch `releases.yml` on `main` with
+With a signed Windows build selected under v3 and exact-build
+installation/feed/Restart/data checks satisfied, dispatch `releases.yml` on `main` with
 `windows_only: true`, `build: "<Windows build>"`, and `source: "<full main SHA>"`.
 Forgejo's dispatch API represents boolean inputs as strings (`"true"`). This selects
 that Windows build, independently of the current Mac Stable build/source. Without

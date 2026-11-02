@@ -1,7 +1,9 @@
 # Stable release procedure — 9 October 2026
 
-Status: preparation only. Publishing requires the manager's explicit approval after
-muninn and bragi QA. A rolling mixed-source Beta is not a stable candidate.
+Historical all-platform procedure, superseded as process policy by **Okilum —
+how we work (v3, 02.11)** (see [AGENTS.md](../AGENTS.md)). Current per-platform
+promotion mechanics are in [releases.md](releases.md). The same-source steps below
+describe this older all-platform path, not a gate on daily per-platform Stable.
 
 1. Freeze one accepted `main` commit S. Record required CI success and QA evidence
    on muninn (Linux) and bragi (Windows), plus the signed macOS packaged smoke test.
@@ -16,8 +18,7 @@ muninn and bragi QA. A rolling mixed-source Beta is not a stable candidate.
    `Setup.exe` and `Okilum-windows-portable.zip`, Arch `.pkg.tar.zst` and detached
    signature. Verify the Sparkle enclosure signature, Velopack archived feed and
    Arch metadata/signature. Keep the original platform version numbers.
-4. Send the manager S, the three build numbers, QA receipts, and artifact hashes.
-   **Wait for explicit go-ahead.** Then dispatch `releases.yml` on `main` with
+4. Dispatch `releases.yml` on `main` with
    `build=<accepted macOS beta build>`, `supersede_pending=false`.
 5. The existing coordinator tags S as `v0.1.<macOS build>`, mirrors that tag,
    promotes existing artifacts without rebuilding to Sparkle stable, the signed
@@ -31,4 +32,4 @@ muninn and bragi QA. A rolling mixed-source Beta is not a stable candidate.
 Feeds cannot be changed atomically. An interrupted promotion retains its exact
 selection in `okilum/releases/promoting.json`; resume the same build. Do not
 roll back feeds or silently pick a newer source. A different recovery selection
-requires manager approval and the existing explicit supersede procedure.
+uses the existing explicit supersede procedure and its recovery checks.
