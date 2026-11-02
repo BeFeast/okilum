@@ -38,6 +38,8 @@ enum Operation {
     Read,
     #[cfg(target_os = "linux")]
     SelectConnection(PathBuf),
+    #[cfg(target_os = "linux")]
+    PrepareManaged,
     Begin(String),
     Redeem(String, String),
     Approve(uuid::Uuid),
@@ -332,6 +334,8 @@ fn perform_scoped(
         }
         let (state, configs) = locations()?;
         #[cfg(target_os = "linux")]
+        let complete_configs = configs.clone();
+        #[cfg(target_os = "linux")]
         let mut runtime = linux_runtime::inspect(&state, &configs)?;
         #[cfg(target_os = "linux")]
         let configs = runtime.configs.clone();
@@ -354,6 +358,14 @@ fn perform_scoped(
         guard.check()?;
         #[cfg(target_os = "linux")]
         {
+            if matches!(&operation, Operation::PrepareManaged) {
+                // Only the explicit consent action enters preparation. Keep the
+                // complete discovery inventory, not the selected config subset.
+                guard.check()?;
+                linux_runtime::prepare_managed(&state, &complete_configs)?;
+                guard.check()?;
+                runtime = linux_runtime::inspect(&state, &complete_configs)?;
+            }
             if let Operation::SelectConnection(path) = &operation {
                 linux_runtime::select(&state, &mut runtime, path, &controller.snapshot()?)?;
             }
@@ -377,6 +389,8 @@ fn perform_scoped(
             Operation::Read => controller.refresh()?,
             #[cfg(target_os = "linux")]
             Operation::SelectConnection(_) => controller.refresh()?,
+            #[cfg(target_os = "linux")]
+            Operation::PrepareManaged => controller.refresh()?,
             Operation::Begin(name) => controller.begin_pairing(&name)?,
             Operation::Redeem(url, name) => controller.redeem(&url, &name)?,
             Operation::Approve(id) => controller.approve(id)?,
