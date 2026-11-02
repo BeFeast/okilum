@@ -52,3 +52,10 @@ Open and Save fetch a fresh signed asset URL on explicit action. Downloads verif
 the declared size and stay in an owned temporary directory; Save uses an atomic
 replacement at the chosen destination. Unsupported attachment types stay visible
 as unavailable entries. Activity/detail and virtualized history remain independent.
+
+Uploaded image drafts restore their thumbnail and image viewer after restart or
+reconnect by downloading the existing asset from the confirmed environment.
+Preview failure keeps the completed attachment and text intact and offers
+**Retry preview**; it never uploads again. Preview caches are scoped to the
+exact draft row, project/thread generation and native client. Unfinished local
+sources show **Needs reselect** with **Select again** and **Remove**.
