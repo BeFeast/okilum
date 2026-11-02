@@ -18,6 +18,9 @@ struct FakeT3 {
     projects: Mutex<Vec<okilum_t3::Project>>,
     creates: Mutex<Vec<(String, String)>>,
     icons: Mutex<Vec<(String, Option<ProjectIcon>)>>,
+    verified_identity: Option<String>,
+    identity_reads: std::sync::atomic::AtomicUsize,
+    project_reads: std::sync::atomic::AtomicUsize,
 }
 impl okilum_t3::ManagerGateway for FakeT3 {
     fn status(&self) -> okilum_t3::GatewayStatus {
@@ -26,10 +29,29 @@ impl okilum_t3::ManagerGateway for FakeT3 {
         }
     }
     fn server_identity(&self) -> GatewayResult<okilum_t3::ServerIdentity> {
-        panic!("unused identity")
+        self.identity_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(okilum_t3::ServerIdentity {
+            environment_id: self
+                .verified_identity
+                .clone()
+                .expect("ordinary local Create must not contact T3"),
+            label: "Offline verified fixture".into(),
+        })
     }
     fn list_projects(&self) -> GatewayResult<Vec<okilum_t3::Project>> {
         Ok(self.projects.lock().unwrap().clone())
+    }
+    fn read_project(&self, id: &str) -> GatewayResult<okilum_t3::Project> {
+        self.project_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.projects
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|project| project.id == id)
+            .cloned()
+            .ok_or_else(|| okilum_t3::GatewayError::Protocol("Owner missing".into()))
     }
     fn create_project(&self, title: &str, root: &str) -> GatewayResult<okilum_t3::Project> {
         self.creates
@@ -90,6 +112,10 @@ impl okilum_t3::ManagerGateway for FakeT3 {
     ) -> GatewayResult<okilum_t3::ThreadConfiguration> {
         panic!("unused configure")
     }
+}
+
+mod local_binding_tests {
+    include!("local_binding_tests.rs");
 }
 
 fn connect(reader: &mut Reader, t3: &Arc<FakeT3>) {

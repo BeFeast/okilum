@@ -26,7 +26,95 @@ struct LocalOwnerChoice {
     title: String,
 }
 
+/// Listing remains separate from binding: every candidate is still an
+/// explicit choice, verified again by the revision-aware save operation.
+fn verified_local_owner_choices(
+    binding: &Binding,
+    environment: okilum_t3::Environment,
+    gateway: Arc<dyn okilum_t3::ManagerGateway>,
+) -> anyhow::Result<(Vec<LocalOwnerChoice>, Vec<String>)> {
+    okilum_t3::projects::local_manager::environment(&environment.origin())?;
+    anyhow::ensure!(
+        binding
+            .pinned_environment()
+            .is_none_or(|pinned| pinned == &environment),
+        "Saved local endpoint changed; binding and drafts retained"
+    );
+    let identity = gateway.server_identity()?;
+    let listing = gateway.list_projects()?;
+    anyhow::ensure!(
+        gateway.server_identity()?.environment_id == identity.environment_id,
+        "T3 environment changed while loading Projects"
+    );
+    let mut choices = Vec::new();
+    let mut unresolved = Vec::new();
+    for target in &listing {
+        if binding
+            .pinned_owner()
+            .is_some_and(|owner| owner.project_id != target.id)
+        {
+            continue;
+        }
+        // A path is validated only after the server identity has
+        // been read. It never selects an owner automatically.
+        let selected = Selection::select(
+            &identity.environment_id,
+            &target.id,
+            Path::new(&target.workspace_root),
+            &listing,
+        )
+        .and_then(|selection| {
+            binding.check_selection(&environment, &selection)?;
+            Ok(selection)
+        });
+        match selected {
+            Ok(selection) => choices.push(LocalOwnerChoice {
+                environment: environment.clone(),
+                gateway: gateway.clone(),
+                selection,
+                title: target.title.clone(),
+            }),
+            Err(error) => unresolved.push(format!(
+                "{} · {} · {}: {error:#}",
+                environment.origin(),
+                target.title,
+                target.id
+            )),
+        }
+    }
+    if let Some(owner) = binding.pinned_owner() {
+        if choices.is_empty() && unresolved.is_empty() {
+            unresolved.push(format!("Saved local owner {} is absent from the complete project listing; binding and drafts retained", owner.project_id));
+        }
+    }
+    Ok::<_, anyhow::Error>((choices, unresolved))
+}
+
 impl Reader {
+    /// A held menu/dialog cannot bind a replaced project entry. The canonical
+    /// manifest and Manager registry are checked again by Binding::save.
+    pub(super) fn local_binding_target_current(&self, expected: &Project) -> bool {
+        let mut found = false;
+        for current in self
+            .project_navigation
+            .discovery
+            .projects
+            .iter()
+            .chain(self.project_navigation.active.iter())
+            .filter(|project| project.folder == expected.folder)
+        {
+            found = true;
+            if current.environment != expected.environment
+                || current.manager_project != expected.manager_project
+                || current.manager != expected.manager
+                || current.kind != expected.kind
+                || current.appearance.source_checkout != expected.appearance.source_checkout
+            {
+                return false;
+            }
+        }
+        found
+    }
     /// The tree's folder menu offers «Make this a project…» only for a
     /// folder inside the vault that is not a project already.
     pub(super) fn can_make_project(&self, relative: &str) -> bool {
@@ -115,6 +203,7 @@ impl Reader {
                 .child(content.clone())
                 .child(
                     Button::new("create-and-bind-local")
+                        .debug_selector(|| "create-and-bind-local".into())
                         .label("Create locally and connect an existing T3 project…")
                         .on_click({
                             let local_dialog = local_dialog.clone();
@@ -304,13 +393,16 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx)
+            || !self.local_binding_target_current(&project)
+        {
             return;
         }
         let access = reader_features::access(reader_features::Feature::Agents, cx);
         let state = self.session_directory.clone();
         let projects = self.project_navigation.discovery.projects.clone();
         let vault = self.vault_root.clone();
+        let request = self.project_request;
         cx.spawn_in(window, async move |this, cx| {
             let area = project.folder.clone();
             let loaded = cx
@@ -324,10 +416,13 @@ impl Reader {
                             Some(state) => project::browser_connections(&state, &projects)?,
                             None => Default::default(),
                         };
-                        origins.into_iter().filter_map(|(alias, origin)| {
-                            okilum_t3::projects::local_manager::environment(&origin).ok()?;
-                            okilum_t3::Environment::new(alias, &origin).ok()
-                        }).collect::<Vec<_>>()
+                        origins
+                            .into_iter()
+                            .filter_map(|(alias, origin)| {
+                                okilum_t3::projects::local_manager::environment(&origin).ok()?;
+                                okilum_t3::Environment::new(alias, &origin).ok()
+                            })
+                            .collect::<Vec<_>>()
                     };
                     Ok::<_, anyhow::Error>((binding, environments))
                 })
@@ -344,11 +439,15 @@ impl Reader {
             let mut choices = Vec::new();
             let mut errors = Vec::new();
             for environment in environments {
-                let credential = match this.update_in_own_window(cx, |_, _, cx| {
-                    cx.read_credentials(&environment.credential_url())
+                let credential = match this.update_in_own_window(cx, |this, _, cx| {
+                    (this.vault_root == vault
+                        && this.project_request == request
+                        && this.local_binding_target_current(&project)
+                        && access.allowed())
+                    .then(|| cx.read_credentials(&environment.credential_url()))
                 }) {
-                    Ok(task) => task,
-                    Err(_) => return,
+                    Ok(Some(task)) => task,
+                    _ => return,
                 };
                 let token = match credential.await {
                     Ok(Some((_, bytes))) => okilum_t3::StoredToken::from_secret(&bytes).ok(),
@@ -360,52 +459,15 @@ impl Reader {
                     .background_executor()
                     .spawn(async move {
                         let _access = request_access.enter();
-                        let gateway =
-                            paired_gateway(environment.clone(), token, manager_session())?;
-                        let identity = gateway.server_identity()?;
-                        let listing = gateway.list_projects()?;
-                        anyhow::ensure!(
-                            gateway.server_identity()?.environment_id == identity.environment_id,
-                            "T3 environment changed while loading Projects"
-                        );
-                        let mut choices = Vec::new();
-                        let mut unresolved = Vec::new();
-                        for target in &listing {
-                            if expected_binding.pinned_owner().is_some_and(|owner| owner.project_id != target.id) {
-                                continue;
-                            }
-                            // A path is validated only after the server identity has
-                            // been read. It never selects an owner automatically.
-                            let selected = Selection::select(
-                                &identity.environment_id,
-                                &target.id,
-                                Path::new(&target.workspace_root),
-                                &listing,
-                            ).and_then(|selection| {
-                                expected_binding.check_selection(&environment, &selection)?;
-                                Ok(selection)
-                            });
-                            match selected {
-                                Ok(selection) => choices.push(LocalOwnerChoice {
-                                    environment: environment.clone(),
-                                    gateway: gateway.clone(),
-                                    selection,
-                                    title: target.title.clone(),
-                                }),
-                                Err(error) => unresolved.push(format!(
-                                    "{} · {} · {}: {error:#}",
-                                    environment.origin(),
-                                    target.title,
-                                    target.id
-                                )),
-                            }
-                        }
-                        if let Some(owner) = expected_binding.pinned_owner() {
-                            if choices.is_empty() && unresolved.is_empty() {
-                                unresolved.push(format!("Saved local owner {} is absent from the complete project listing; binding and drafts retained", owner.project_id));
-                            }
-                        }
-                        Ok::<_, anyhow::Error>((choices, unresolved))
+                        let gateway = crate::reader_project_navigation::manager_gateway(
+                            environment.clone(),
+                            Arc::new(
+                                okilum_t3::McpGateway::new(environment.clone(), token)?
+                                    .with_access(request_access.clone()),
+                            ),
+                            request_access,
+                        )?;
+                        verified_local_owner_choices(&expected_binding, environment, gateway)
                     })
                     .await;
                 match result {
@@ -418,6 +480,8 @@ impl Reader {
             }
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 if this.vault_root != vault
+                    || this.project_request != request
+                    || !this.local_binding_target_current(&project)
                     || !reader_features::enabled(reader_features::Feature::Agents, cx)
                 {
                     return;
@@ -445,12 +509,13 @@ impl Reader {
             let mut content = v_flex().gap_2().child(
                 "Select the existing T3 project that owns your local source checkout. No T3 project or Manager will be created."
             );
+            content = content.debug_selector(|| "local-owner-picker".into());
             if let Some(owner) = binding.pinned_owner() {
                 content = content.child(format!("Reconnect saved owner: {} · {} · {}. Manager, executor and drafts stay retained.",
                     owner.environment_id, owner.project_id, owner.checkout.display()));
             }
             if let Some(error) = diagnostic.read(cx) {
-                content = content.child(error.clone());
+                content = content.child(div().debug_selector(|| "local-owner-error".into()).child(error.clone()));
             }
             if choices.is_empty() {
                 content = content.child("Owner unresolved: no verified local checkout is available. Sign in to local T3 in Settings, then reopen setup. Your local project and drafts are retained.");
@@ -464,7 +529,8 @@ impl Reader {
                 let (reader, binding, project, choice, busy) =
                     (reader.clone(), binding.clone(), project.clone(), choice.clone(), busy.clone());
                 let diagnostic = diagnostic.clone();
-                rows = rows.child(Button::new(("local-owner", index)).label(label).on_click(move |_, window, cx| {
+                rows = rows.child(Button::new(("local-owner", index)).debug_selector(move || format!("local-owner-{index}"))
+                    .label(label).disabled(busy.get()).on_click(move |_, window, cx| {
                     if busy.replace(true) { return; }
                     let delivered = reader.update(cx, |this, cx| {
                         this.save_local_project_binding(project.clone(), binding.clone(), choice.clone(), busy.clone(), diagnostic.clone(), window, cx);
@@ -487,11 +553,14 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+        if !reader_features::enabled(reader_features::Feature::Agents, cx)
+            || !self.local_binding_target_current(&project)
+        {
             busy.set(false);
             return;
         }
         let vault = self.vault_root.clone();
+        let request = self.project_request;
         let alias = choice.environment.alias.clone();
         let gateway = choice.gateway.clone();
         let access = reader_features::access(reader_features::Feature::Agents, cx);
@@ -503,7 +572,9 @@ impl Reader {
             let _ = this.update_in_own_window(cx, |this, window, cx| {
                 use gpui_component::WindowExt as _;
                 busy.set(false);
-                if this.vault_root != vault { return; }
+                if this.vault_root != vault || this.project_request != request
+                    || !this.local_binding_target_current(&project)
+                    || !reader_features::enabled(reader_features::Feature::Agents, cx) { return; }
                 match result {
                     Ok(linked) => {
                         // Only a freshly revalidated owner may replace a cached
