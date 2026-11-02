@@ -20,8 +20,9 @@ concurrency:
 jobs:
   check:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Dedicated baldr fast-only runner: capacity 4, four independent warm targets.
-    runs-on: fast-linux
+    # Native test binaries exceed the fast runner's 10-minute host cap on a cold target.
+    # Use the existing long Linux CI lane; fast admission retains its own runner.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       OKILUM_LIVE_PREVIEW_TESTS: "1"
@@ -43,7 +44,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Prepare local Linux toolchain
+      - name: Prepare Linux toolchain
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -57,7 +58,9 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq --no-install-recommends "${packages[@]}"
           fi
-          test -x "$HOME/.cargo/bin/cargo"
+          if [ ! -x "$HOME/.cargo/bin/cargo" ]; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          fi
           # Resolve/install the pinned toolchain before the bounded sccache probe.
           cargo --version
           rustc --version
