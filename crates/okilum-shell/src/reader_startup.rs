@@ -29,7 +29,13 @@ pub(crate) fn supersede(cx: &mut App) {
     let Some(entry) = state.entry else {
         return;
     };
-    if cx.windows().iter().any(|window| *window != entry) {
+    // Owned tools (including first-run Sync Settings) do not replace the start
+    // window. Keep its owner alive until the received vault window really exists.
+    if cx
+        .windows()
+        .iter()
+        .any(|window| *window != entry && super::reader_owned_windows::owner(*window, cx) != entry)
+    {
         cx.global_mut::<Startup>().entry = None;
         let _ = entry.update(cx, |_, window, _| window.remove_window());
     }

@@ -514,7 +514,7 @@ fn guided_first_run_welcome_opens_pairing_and_enables_sync(cx: &mut TestAppConte
             .find(|w| *w != entry)
             .expect("Settings window")
     });
-    let mut settings = VisualTestContext::from_window(settings, visual);
+    let mut settings = VisualTestContext::from_window(settings, &visual);
     settings.run_until_parked();
     assert_visible(&mut settings, "sync-connect");
     assert_visible(&mut settings, "sync-status");
@@ -680,4 +680,91 @@ fn guided_first_run_destination_proposal_is_one_safe_home_component() {
             .count(),
         1
     );
+}
+
+#[gpui::test]
+fn guided_first_run_received_vault_opens_only_after_readiness_and_keeps_owner_alive(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    let vault = directory.path().join("Received notes");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::create_dir(&vault).unwrap();
+    std::fs::write(vault.join("First.md"), "# Received note").unwrap();
+    let vault = vault.canonicalize().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_open::install(cx);
+        cx.set_global(reader_history::TestSessionDirectory(state.clone()));
+    });
+    let mut receiving = snapshot(None);
+    receiving.preparing = true;
+    receiving.attached.push(ExistingVault {
+        daemon: okilum_sync_controller::daemon::DaemonIdentity {
+            config_file: directory.path().join("config.xml"),
+            device_id: "fixture-device".into(),
+            certificate_hash: "fixture-certificate".into(),
+        },
+        version: "v2.1.6".into(),
+        folder_id: "fixture-vault".into(),
+        path: vault.clone(),
+        label: "Received notes".into(),
+        paused: false,
+        folder_type: "receiveonly".into(),
+        peers: vec![],
+        root_identity: None,
+    });
+    let mut ready = receiving.clone();
+    ready.preparing = false;
+    ready.attached[0].folder_type = "sendreceive".into();
+    let calls = guided_worker(cx, vec![snapshot(None), receiving, ready]);
+    cx.update(|cx| {
+        reader_startup::launch(
+            Opts {
+                session_directory: Some(state),
+                index_dir: Some(directory.path().join("index")),
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let entry = cx.update(|cx| cx.windows()[0]);
+    let mut visual = VisualTestContext::from_window(entry, cx);
+    visual.run_until_parked();
+    let button = visual.debug_bounds("startup-sync-pairing").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let view = visual.update(|_, cx| cx.global::<BackgroundSync>().0.clone());
+    view.update(&mut visual, |view, cx| {
+        view.run(
+            Operation::Attach(uuid::Uuid::new_v4(), "fixture-vault".into(), vault.clone()),
+            cx,
+        )
+    });
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert!(
+            reader_open::readers(cx).is_empty(),
+            "receiveonly is not ready to open"
+        );
+        assert!(
+            cx.windows().contains(&entry),
+            "Settings alone never retires welcome"
+        );
+    });
+    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert!(
+            reader_open::reader_of(&vault, cx).is_some(),
+            "ready vault opened automatically"
+        );
+        assert!(
+            !cx.windows().contains(&entry),
+            "only the real reader replaces welcome"
+        );
+    });
+    assert_eq!(*calls.lock().unwrap(), vec!["enter", "other", "read"]);
 }
