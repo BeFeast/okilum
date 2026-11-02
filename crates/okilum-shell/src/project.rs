@@ -37,6 +37,8 @@ mod message_types;
 mod models;
 #[cfg(target_os = "linux")]
 mod native;
+#[cfg(target_os = "linux")]
+mod rotation;
 mod rules_reread;
 mod setup;
 #[cfg(target_os = "linux")]
@@ -101,6 +103,22 @@ pub(crate) struct ProjectView {
     rules: Option<Entity<agent_rules::RulesView>>,
     skills: okilum_core::agent_skills::Inventory,
     skills_notice: Option<String>,
+    #[cfg(target_os = "linux")]
+    rotation: Option<Entity<rotation::coordinator::Coordinator>>,
+    #[cfg(target_os = "linux")]
+    rotation_epoch: u64,
+    #[cfg(target_os = "linux")]
+    rotation_connection_epoch: Option<u64>,
+    #[cfg(target_os = "linux")]
+    rotation_validity: Option<Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(target_os = "linux")]
+    rotation_resolver: Option<rotation::coordinator::OwnerResolver>,
+    #[cfg(target_os = "linux")]
+    rotation_expected_owner: Option<okilum_t3::rotation::Owner>,
+    #[cfg(target_os = "linux")]
+    rotation_notice: Option<String>,
+    #[cfg(target_os = "linux")]
+    rotation_policy: rotation::policy_owner::State,
     state: Option<PathBuf>,
     environment: Option<Environment>,
     project_override: bool,
@@ -420,6 +438,22 @@ impl ProjectView {
             rules: None,
             skills: Default::default(),
             skills_notice: None,
+            #[cfg(target_os = "linux")]
+            rotation: None,
+            #[cfg(target_os = "linux")]
+            rotation_epoch: 0,
+            #[cfg(target_os = "linux")]
+            rotation_connection_epoch: None,
+            #[cfg(target_os = "linux")]
+            rotation_validity: None,
+            #[cfg(target_os = "linux")]
+            rotation_resolver: None,
+            #[cfg(target_os = "linux")]
+            rotation_expected_owner: None,
+            #[cfg(target_os = "linux")]
+            rotation_notice: None,
+            #[cfg(target_os = "linux")]
+            rotation_policy: Default::default(),
             state,
             environment: None,
             project_override: true,
@@ -471,6 +505,158 @@ impl ProjectView {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn invalidate_rotation(&mut self, cx: &mut Context<Self>) {
+        // Revoke before dropping/hiding the retained surface, including while a
+        // draft barrier or store read is outstanding. Durable claims stay intact.
+        if let Some(coordinator) = &self.rotation {
+            coordinator.update(cx, |coordinator, cx| coordinator.invalidate(cx));
+        }
+        self.revoke_rotation();
+    }
+
+    /// Also callable from the existing synchronous handoff lifecycle hook,
+    /// before the next paint or an async draft/store completion can run.
+    #[cfg(target_os = "linux")]
+    pub(super) fn revoke_rotation(&mut self) {
+        self.rotation_policy.revoke_requests();
+        let active = self.rotation_resolver.is_some() || self.rotation.is_some();
+        if let Some(valid) = self.rotation_validity.take() {
+            valid.store(false, std::sync::atomic::Ordering::Release);
+        }
+        self.rotation = None;
+        if active {
+            self.rotation_epoch = self
+                .rotation_epoch
+                .checked_add(1)
+                .expect("Rotation mount generation exhausted");
+        }
+        self.rotation_connection_epoch = None;
+        self.rotation_resolver = None;
+        self.rotation_expected_owner = None;
+        self.rotation_notice = None;
+    }
+
+    /// The configured policy owner supplies its exact lifecycle revision; never
+    /// derive one from a loaded checkpoint or substitute the connection counter.
+    #[cfg(target_os = "linux")]
+    fn rotation_owner(view: &ProjectView, cx: &App) -> Option<okilum_t3::rotation::Owner> {
+        if !view.active
+            || view.section != ProjectSection::Manager
+            || view.executors_open
+            || !view.draft_handoff_surface_is_visible()
+            || !view.draft_handoff_owner_ready(cx)
+            || view.typed_scope().is_none()
+            || view.native.deleted()
+            || view.rotation_connection_epoch != Some(view.native.connection_epoch)
+            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+        {
+            return None;
+        }
+        let client = view.native.model_client()?;
+        if !client.access_allowed()
+            || view
+                .threads
+                .handoff_revoked
+                .as_ref()
+                .is_some_and(|revoked| Arc::ptr_eq(revoked, &client))
+        {
+            return None;
+        }
+        let environment = view.environment.as_ref()?;
+        if reader_t3_settings::signed_out(&environment.origin(), cx) {
+            return None;
+        }
+        let owner = (view.rotation_resolver?)(view, cx)?;
+        let binding = view.binding.as_ref()?;
+        if owner.origin != environment.origin()
+            || binding.manager.project_id.as_ref() != Some(&owner.project)
+            || binding.manager.thread_id.as_ref() != Some(&owner.manager)
+            || view.chat.as_ref()?.thread_id != owner.manager
+        {
+            return None;
+        }
+        Some(owner)
+    }
+
+    /// Policy owner handoff: the caller supplies its canonical PolicyStore and
+    /// resolver, plus only an exact reviewed source (None keeps Resume disabled).
+    /// Loading is off-thread; Coordinator::mount captures the fresh typed draft.
+    #[cfg(target_os = "linux")]
+    pub(super) fn mount_pending_rotation(
+        &mut self,
+        store: Arc<okilum_t3::rotation::PolicyStore>,
+        exact_reviewed_source: Option<String>,
+        owner: fn(&ProjectView, &App) -> Option<okilum_t3::rotation::Owner>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.invalidate_rotation(cx);
+        self.rotation_resolver = Some(owner);
+        self.rotation_connection_epoch = Some(self.native.connection_epoch);
+        let Some(expected_owner) = Self::rotation_owner(self, cx) else {
+            self.revoke_rotation();
+            return;
+        };
+        self.rotation_expected_owner = Some(expected_owner.clone());
+        let epoch = self.rotation_epoch;
+        cx.spawn_in(window, async move |this, cx| {
+            let read_store = store.clone();
+            let loaded = cx
+                .background_executor()
+                .spawn(async move { read_store.load() })
+                .await;
+            // Mount outside ProjectView::update: the coordinator re-enters the
+            // owner to capture ComposerSnapshot and must not borrow it recursively.
+            let _ = cx.update(|window, cx| {
+                let Some(project) = this.upgrade() else {
+                    return;
+                };
+                let current = project.update(cx, |view, cx| {
+                    view.rotation_epoch == epoch
+                        && Self::rotation_owner(view, cx).as_ref() == Some(&expected_owner)
+                });
+                if !current {
+                    return;
+                }
+                let mounted = match loaded {
+                    Ok(Some(checkpoint)) if checkpoint.pending.is_some() => {
+                        rotation::coordinator::Coordinator::mount(
+                            &project,
+                            store,
+                            checkpoint,
+                            exact_reviewed_source,
+                            Self::rotation_owner,
+                            window,
+                            cx,
+                        )
+                        .map(Some)
+                    }
+                    Ok(_) => Ok(None),
+                    Err(error) => Err(error),
+                };
+                project.update(cx, |view, cx| {
+                    if view.rotation_epoch != epoch
+                        || Self::rotation_owner(view, cx).as_ref() != Some(&expected_owner)
+                    {
+                        return;
+                    }
+                    match mounted {
+                        Ok(coordinator) => {
+                            view.rotation_validity = coordinator
+                                .as_ref()
+                                .map(|coordinator| coordinator.read(cx).revocation_token());
+                            view.rotation = coordinator;
+                        }
+                        Err(error) => view.rotation_notice = Some(error),
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
     /// Observe the Reader's reconciled vault publication. This covers the
     /// existing local watcher and shared-session path without a second watcher.
     fn bind_resources(
@@ -481,6 +667,10 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) {
         let scope_changed = self.resource_vault.as_ref() != Some(&root);
+        #[cfg(target_os = "linux")]
+        if scope_changed {
+            self.invalidate_rotation(cx);
+        }
         self.resource_vault = Some(root.clone());
         self._resource_observer = Some(cx.observe(reader, move |this, reader, cx| {
             let reader = reader.read(cx);
@@ -507,6 +697,8 @@ impl ProjectView {
         if self.section == section {
             return;
         }
+        #[cfg(target_os = "linux")]
+        self.invalidate_rotation(cx);
         #[cfg(target_os = "linux")]
         self.draft_handoff_connection_changing();
         self.section = section;
@@ -721,6 +913,10 @@ impl ProjectView {
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(target_os = "linux")]
         if !active {
+            self.invalidate_rotation(cx);
+        }
+        #[cfg(target_os = "linux")]
+        if !active {
             self.draft_suspend_typed(cx);
             self.typed_invalidate(false, cx);
         }
@@ -765,6 +961,8 @@ impl ProjectView {
         }
         match result {
             Ok((env, gateway)) => {
+                #[cfg(target_os = "linux")]
+                self.invalidate_rotation(cx);
                 #[cfg(target_os = "linux")]
                 self.attachments.clear();
                 #[cfg(target_os = "linux")]
@@ -815,6 +1013,8 @@ impl ProjectView {
     }
 
     fn clear_connection(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        self.invalidate_rotation(cx);
         #[cfg(target_os = "linux")]
         self.attachments.clear();
         #[cfg(target_os = "linux")]
@@ -902,13 +1102,15 @@ impl ProjectView {
                     .small()
                     .icon(IconName::Ellipsis)
                     .tooltip("Manager options")
-                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
                         let change = owner.clone();
                         let diagnostics = owner.clone();
                         let executors = owner.clone();
                         let launch = owner.clone();
                         let sign_out = env.clone();
                         let terminal_area = terminal_area.clone();
+                        #[cfg(target_os = "linux")]
+                        let menu = menu.item(rotation::policy_owner::menu_item(owner.clone(), cx));
                         menu.item(PopupMenuItem::new("Diagnostics").on_click(move |_, _, cx| {
                             let _ = diagnostics.update(cx, |this, cx| {
                                 this.connection_details = true;
@@ -927,6 +1129,8 @@ impl ProjectView {
                         .item(
                             PopupMenuItem::new("Executors").on_click(move |_, window, cx| {
                                 let _ = executors.update(cx, |this, cx| {
+                                    #[cfg(target_os = "linux")]
+                                    this.invalidate_rotation(cx);
                                     this.executors_open = !this.executors_open;
                                     this.start_polling(window, cx);
                                     cx.notify();
@@ -1002,6 +1206,7 @@ impl ProjectView {
         };
         #[cfg(target_os = "linux")]
         if self.threads.enabled {
+            self.invalidate_rotation(cx);
             self.set_threads_active(false, window, cx);
             self.threads.reset(cx);
             self.native.clear();
@@ -1921,6 +2126,8 @@ impl Render for ProjectView {
         let enabled = reader_features::enabled(reader_features::Feature::Agents, cx);
         if !enabled {
             #[cfg(target_os = "linux")]
+            self.invalidate_rotation(cx);
+            #[cfg(target_os = "linux")]
             if self.composer.read(cx).typed_scope().is_some() {
                 self.draft_suspend_typed(cx);
                 self.typed_invalidate(false, cx);
@@ -1931,6 +2138,12 @@ impl Render for ProjectView {
         if self.active {
             self.draft_restore(window, cx);
             self.typed_sync(cx);
+        }
+        #[cfg(target_os = "linux")]
+        if self.rotation_resolver.is_some()
+            && Self::rotation_owner(self, cx) != self.rotation_expected_owner
+        {
+            self.invalidate_rotation(cx);
         }
         let mut tabs = h_flex().id("project-sections").gap_2().p_2();
         for (id, label, section) in [
@@ -1967,10 +2180,20 @@ impl Render for ProjectView {
         } else {
             self.render_resource_section(cx)
         };
-        v_flex()
-            .size_full()
-            .min_h_0()
-            .child(tabs)
+        let surface = v_flex().size_full().min_h_0().child(tabs);
+        #[cfg(target_os = "linux")]
+        let surface = surface
+            .when_some(self.rotation_notice.clone(), |surface, error| {
+                surface.child(div().text_color(cx.theme().danger).child(error))
+            })
+            .when_some(self.rotation.clone(), |surface, coordinator| {
+                surface.child(coordinator)
+            });
+        #[cfg(target_os = "linux")]
+        let surface = surface.when(self.rotation_policy.is_open(), |surface| {
+            surface.child(self.render_rotation_policy(window, cx))
+        });
+        surface
             .child(div().flex_1().min_h_0().child(content))
             .into_any_element()
     }
