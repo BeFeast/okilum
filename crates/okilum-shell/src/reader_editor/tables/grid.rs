@@ -2,6 +2,8 @@
 //! Parent owns the Reader field/render/click hooks. Keep this entity alive for
 //! the lifetime of Editing; do not recreate it in the Reader render function.
 use super::*;
+#[path = "idle.rs"]
+mod idle;
 use crate::source_presentation::{CachedProvider, ProjectionColors};
 use gpui_component::input::projection::{
     ConcealBias, LineIndent, LineScale, ProjectedByte, ProjectionBlock, ProjectionMarker,
@@ -110,6 +112,10 @@ pub(in crate::reader_editor) struct TableGrid {
     cells: Vec<Vec<Entity<TextareaState>>>,
     subscriptions: Vec<Subscription>,
     _source: Subscription,
+    _input_watch: Subscription,
+    idle: Option<Task<()>>,
+    seen_document: String,
+    formatted_stamp: Option<SourceStamp>,
     error: Option<&'static str>,
     provider: Option<Arc<CachedProvider>>,
     base: Option<Arc<dyn ProjectionProvider>>,
@@ -126,11 +132,22 @@ impl TableGrid {
     pub(in crate::reader_editor) fn new(
         reader: Entity<Reader>,
         input: Entity<EditorState>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             reader: reader.downgrade(),
-            _source: cx.observe(&input, |_, _, cx| cx.notify()),
+            _input_watch: cx.observe(&input, |_, _, cx| cx.notify()),
+            _source: cx.subscribe_in(
+                &input,
+                window,
+                |this, _, event: &SourceMutation, window, cx| {
+                    this.source_changed(*event, window, cx);
+                },
+            ),
+            idle: None,
+            seen_document: input.read(cx).value().to_string(),
+            formatted_stamp: None,
             input,
             binding: None,
             cells: Vec::new(),
@@ -722,6 +739,7 @@ impl Render for TableGrid {
         let palette = brand::palette(cx);
         let mut root = div()
             .id("editable-table-grid")
+            .key_context("TableGrid")
             .debug_selector(|| "editable-table-grid".into())
             .flex()
             .flex_col()
@@ -759,7 +777,14 @@ impl Render for TableGrid {
                     binding.cells.value(r, c).map(model::cell_text).as_deref()
                         != Some(cell.read(cx).value().as_ref())
                 });
-                let input = Textarea::new(cell).disabled(stale);
+                let input = Textarea::new(cell)
+                    .disabled(stale)
+                    .context_menu(|menu, _, _| {
+                        menu.separator().submenu(
+                            "Table",
+                            gpui_component::native_menu::NativeMenu::from(super::menu()),
+                        )
+                    });
                 let input = match alignment.get(c) {
                     Some(Alignment::Center) => input.text_center(),
                     Some(Alignment::Right) => input.text_right(),
@@ -863,6 +888,12 @@ impl Render for TableGrid {
         }))
         .on_action(cx.listener(|this, _: &TableInsertRow, window, cx| {
             this.command(Command::InsertRow, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &TableMoveRowUp, window, cx| {
+            this.command(Command::MoveRowUp, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &TableMoveRowDown, window, cx| {
+            this.command(Command::MoveRowDown, window, cx)
         }))
         .on_action(cx.listener(|this, _: &TableDeleteRow, window, cx| {
             this.command(Command::DeleteRow, window, cx)

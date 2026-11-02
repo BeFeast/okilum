@@ -1,6 +1,7 @@
 //! Exact-source table operations. The caller admits only a current classifier
 //! Table range; this parser never decides whether prose or code is a table.
 use std::ops::Range;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Alignment {
@@ -16,6 +17,8 @@ pub(super) enum Command {
     Previous,
     InsertRow,
     DeleteRow,
+    MoveRowUp,
+    MoveRowDown,
     InsertColumn,
     DeleteColumn,
     Align(Alignment),
@@ -162,7 +165,7 @@ impl Table {
         })
     }
 
-    fn locate(&self, selection: &Range<usize>) -> Option<(usize, usize)> {
+    fn locate(&self, source: &str, selection: &Range<usize>) -> Option<(usize, usize)> {
         if selection.start > selection.end {
             return None;
         }
@@ -173,15 +176,34 @@ impl Table {
                 }
             }
         }
+        // A caret in Markdown cell padding still belongs to that cell. Do
+        // not extend this to cross-cell selections or the delimiter row.
+        if selection.is_empty() {
+            for (r, row) in self.ranges.iter().enumerate() {
+                let line = line_range(source, &row[0]);
+                let raw = source[line.clone()].trim_end_matches(['\r', '\n']);
+                if let Some(spans) = cell_spans(raw, line.start, false) {
+                    if let Some(c) = spans.iter().position(|span| {
+                        span.start <= selection.start && selection.start <= span.end
+                    }) {
+                        return Some((r, c));
+                    }
+                }
+            }
+        }
         None
     }
 
     fn render(&self, row: usize, column: usize) -> Change {
+        self.render_cells(row, column).0
+    }
+
+    fn render_cells(&self, row: usize, column: usize) -> (Change, Vec<Vec<Range<usize>>>) {
         let widths: Vec<_> = (0..self.alignment.len())
             .map(|col| {
                 self.rows
                     .iter()
-                    .map(|row| row[col].chars().count())
+                    .map(|row| UnicodeWidthStr::width(row[col].as_str()))
                     .max()
                     .unwrap_or(0)
                     .max(3)
@@ -189,19 +211,23 @@ impl Table {
             .collect();
         let mut source = String::new();
         let mut selection = 0..0;
+        let mut ranges = Vec::new();
         for (r, cells) in self.rows.iter().enumerate() {
+            let mut row_ranges = Vec::new();
             source.push_str(&self.indent);
             source.push('|');
             for (c, cell) in cells.iter().enumerate() {
                 source.push(' ');
                 let start = source.len();
                 source.push_str(cell);
+                row_ranges.push(start..source.len());
                 if r == row && c == column {
                     selection = start..source.len();
                 }
-                source.push_str(&" ".repeat(widths[c] - cell.chars().count()));
+                source.push_str(&" ".repeat(widths[c] - UnicodeWidthStr::width(cell.as_str())));
                 source.push_str(" |");
             }
+            ranges.push(row_ranges);
             if r == 0 {
                 source.push_str(self.newline);
                 source.push_str(&self.indent);
@@ -225,7 +251,7 @@ impl Table {
                 source.push_str(self.newline);
             }
         }
-        Change { source, selection }
+        (Change { source, selection }, ranges)
     }
 }
 
@@ -378,6 +404,26 @@ impl CellGrid {
         })
     }
 
+    pub(super) fn format(&self, row: usize, column: usize) -> Option<(Self, Change)> {
+        let mut table = Table::parse(&self.source)?;
+        table.rows = self
+            .ranges
+            .iter()
+            .map(|cells| {
+                cells
+                    .iter()
+                    .map(|range| self.source[range.clone()].to_owned())
+                    .collect()
+            })
+            .collect();
+        let (change, ranges) = table.render_cells(row, column);
+        let next = Self {
+            source: change.source.clone(),
+            ranges,
+        };
+        Some((next, change))
+    }
+
     pub(super) fn value(&self, row: usize, column: usize) -> Option<&str> {
         self.source.get(self.ranges.get(row)?.get(column)?.clone())
     }
@@ -466,9 +512,14 @@ pub(super) fn edit(source: &str, selection: Range<usize>, command: Command) -> O
         return None;
     }
     let table = Table::parse(source)?;
-    let (mut row, mut col) = table.locate(&selection)?;
+    let (mut row, mut col) = table.locate(source, &selection)?;
     if matches!(command, Command::Format) {
-        return Some(table.render(row, col));
+        let mut change = table.render(row, col);
+        let start = change.selection.start;
+        let old = &table.ranges[row][col];
+        let offset = |at: usize| at.saturating_sub(old.start).min(old.len());
+        change.selection = start + offset(selection.start)..start + offset(selection.end);
+        return Some(change);
     }
     let mut updated = source.to_owned();
     let width = table.alignment.len();
@@ -490,6 +541,32 @@ pub(super) fn edit(source: &str, selection: Range<usize>, command: Command) -> O
         }
         Command::InsertRow => {
             row += 1;
+        }
+        Command::MoveRowUp | Command::MoveRowDown => {
+            let other = if matches!(command, Command::MoveRowUp) {
+                row.checked_sub(1)?
+            } else {
+                row + 1
+            };
+            // The header and delimiter are structural, never movable data rows.
+            if row == 0 || other == 0 || other >= table.rows.len() {
+                return None;
+            }
+            let a = row.min(other);
+            let b = row.max(other);
+            let first = line_range(source, &table.ranges[a][0]);
+            let second = line_range(source, &table.ranges[b][0]);
+            let body = |range: Range<usize>| source[range].trim_end_matches(['\r', '\n']);
+            let ending = if source[second.clone()].ends_with('\n') {
+                table.newline
+            } else {
+                ""
+            };
+            updated.replace_range(
+                first.start..second.end,
+                &format!("{}{}{}{}", body(second), table.newline, body(first), ending),
+            );
+            row = other;
         }
         Command::DeleteRow => {
             if row == 0 {
@@ -825,5 +902,87 @@ mod tests {
             edit(source, 3..3, Command::Next).is_none(),
             "UTF-8 boundary"
         );
+    }
+}
+
+#[cfg(test)]
+mod remaining_scope_tests {
+    use super::*;
+
+    #[test]
+    fn format_aligns_cyrillic_cjk_emoji_sequences_and_retains_the_caret() {
+        let source = "| Имя | 值 |\r\n|:--|--:|\r\n|😀👨‍👩‍👧‍👦|é|\r\n|длинное|東京|";
+        let caret = source.find("👨").unwrap();
+        let change = edit(source, caret..caret, Command::Format).unwrap();
+        assert_ne!(change.source, source, "positive control: formatting ran");
+        assert!(change.source[change.selection.start..].starts_with("👨‍👩‍👧‍👦"));
+        assert!(change.selection.is_empty());
+        let lines: Vec<_> = change.source.split("\r\n").collect();
+        let positions = |line: &str| {
+            cells(line, 0)
+                .unwrap()
+                .iter()
+                .map(|cell| {
+                    let delimiter = line[cell.end..].find('|').unwrap() + cell.end;
+                    UnicodeWidthStr::width(&line[..delimiter])
+                })
+                .collect::<Vec<_>>()
+        };
+        for line in &lines[1..] {
+            assert_eq!(positions(line), positions(lines[0]));
+        }
+        assert!(!change.source.replace("\r\n", "").contains('\n'));
+        let again = edit(&change.source, change.selection, Command::Format).unwrap();
+        assert_eq!(again.source, change.source, "formatting is idempotent");
+    }
+
+    #[test]
+    fn moving_rows_preserves_bytes_escapes_and_newlines_at_eof() {
+        for newline in ["\n", "\r\n"] {
+            for ending in [false, true] {
+                let source = ["Name|値", "---|---:", r"one\|😀 | 東京  ", "two | Привет"]
+                    .join(newline)
+                    + if ending { newline } else { "" };
+                let at = source.find("one").unwrap();
+                let moved = edit(&source, at..at, Command::MoveRowDown).unwrap();
+                assert_ne!(moved.source, source, "positive control: row moved");
+                assert_eq!(&moved.source[moved.selection.clone()], r"one\|😀");
+                let restored = edit(&moved.source, moved.selection, Command::MoveRowUp).unwrap();
+                assert_eq!(restored.source, source);
+                assert!(
+                    edit(&source, at..at, Command::MoveRowUp).is_none(),
+                    "header stays fixed"
+                );
+                let header = source.find("Name").unwrap();
+                assert!(edit(&source, header..header, Command::MoveRowDown).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn idle_cell_format_keeps_typed_spaces_and_escape_spellings() {
+        let source = "|A|B|\n|--|--:|\n|old|a\\|b<BR/>😀|";
+        let grid = CellGrid::new(source).unwrap();
+        let (grid, _) = grid.replace_text(source, 1, 0, "  новый ").unwrap();
+        let (formatted, change) = grid.format(1, 0).unwrap();
+        assert!(change.source.contains("a\\|b<BR/>😀"));
+        assert_eq!(formatted.value(1, 0), Some("  новый "));
+        let (_, change) = formatted
+            .replace_text(&change.source, 1, 0, "  новый !")
+            .unwrap();
+        assert!(change.source.contains("  новый !"));
+    }
+    #[test]
+    fn a_raw_caret_in_padding_formats_and_navigates_in_the_same_cell() {
+        let source = "|A| B |\n|--|--|\n| x    | y |";
+        let at = source.find("x    ").unwrap() + 4;
+        let formatted = edit(source, at..at, Command::Format).unwrap();
+        assert_ne!(
+            formatted.source, source,
+            "positive control: formatter accepted padding"
+        );
+        assert!(formatted.source[..formatted.selection.start].ends_with('x'));
+        let next = edit(source, at..at, Command::Next).unwrap();
+        assert_eq!(&next.source[next.selection], "y");
     }
 }

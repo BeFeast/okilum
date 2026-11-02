@@ -650,6 +650,7 @@ impl Reader {
         });
         // Cmd/Ctrl+/ comments code-block lines; elsewhere it falls through.
         code_comforts::ensure_keys(cx);
+        tables::ensure_keys(cx);
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .document_newlines(true)
@@ -950,7 +951,7 @@ impl Reader {
         let reader = cx.entity();
         let math_preview =
             cx.new(|cx| math_preview::MathPreview::new(reader.clone(), input.clone(), cx));
-        let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), cx));
+        let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), window, cx));
         let table_watch = cx.observe(&table_grid, |_, _, cx| cx.notify());
         self.editing = Some(Editing {
             store,

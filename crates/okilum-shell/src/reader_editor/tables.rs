@@ -18,6 +18,8 @@ gpui::actions!(
     [
         TableEditGrid,
         TableInsertRow,
+        TableMoveRowUp,
+        TableMoveRowDown,
         TableDeleteRow,
         TableInsertColumn,
         TableDeleteColumn,
@@ -27,6 +29,22 @@ gpui::actions!(
         TableFormat,
     ]
 );
+
+pub(super) fn ensure_keys(cx: &mut App) {
+    struct Bound;
+    impl Global for Bound {}
+    if cx.has_global::<Bound>() {
+        return;
+    }
+    cx.set_global(Bound);
+    for context in ["ReaderSource > Input", "TableGrid > Input"] {
+        cx.bind_keys([
+            KeyBinding::new("secondary-enter", TableInsertRow, Some(context)),
+            KeyBinding::new("alt-up", TableMoveRowUp, Some(context)),
+            KeyBinding::new("alt-down", TableMoveRowDown, Some(context)),
+        ]);
+    }
+}
 
 pub(super) fn menu() -> Menu {
     Menu {
@@ -211,6 +229,12 @@ impl Reader {
             }))
             .on_action(cx.listener(|this, _: &TableInsertRow, window, cx| {
                 this.table_command(Command::InsertRow, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &TableMoveRowUp, window, cx| {
+                this.table_command(Command::MoveRowUp, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &TableMoveRowDown, window, cx| {
+                this.table_command(Command::MoveRowDown, window, cx)
             }))
             .on_action(cx.listener(|this, _: &TableDeleteRow, window, cx| {
                 this.table_command(Command::DeleteRow, window, cx)
