@@ -187,7 +187,7 @@ fn rotation_policy_1473_stale_configuration_and_replaced_authority_reject_old_ca
         )
         .unwrap();
     assert!(store
-        .with_current(&first.record.owner(), |_| panic!(
+        .with_current::<()>(&first.record.owner(), |_| panic!(
             "stale owner reached checkpoint CAS"
         ))
         .is_err());
@@ -280,7 +280,7 @@ fn rotation_policy_1473_configure_and_held_ack_share_one_lock_through_existing_c
         )
         .unwrap();
     assert!(store
-        .with_current(&owner, |_| panic!(
+        .with_current::<()>(&owner, |_| panic!(
             "old acknowledgement crossed replacement"
         ))
         .is_err());
