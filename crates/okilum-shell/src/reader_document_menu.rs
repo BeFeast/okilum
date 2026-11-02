@@ -556,6 +556,14 @@ impl Reader {
     }
 
     pub(super) fn show_empty_vault(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.leaving_deleted_note(None, cx) {
+            self.ask_leaving_deleted_note(
+                Box::new(|this, window, cx| this.show_empty_vault(window, cx)),
+                window,
+                cx,
+            );
+            return;
+        }
         self.tree_preview.close();
         if !self.save_source(cx) {
             return;

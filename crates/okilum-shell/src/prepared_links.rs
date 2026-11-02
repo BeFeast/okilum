@@ -308,7 +308,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         // A deleted note asks before its contents are left behind (#1986).
-        if self.leaving_deleted_note(Some(rel)) {
+        if self.leaving_deleted_note(Some(rel), cx) {
             let retry = rel.to_owned();
             let jump = location.0.map(str::to_owned);
             let heading = location.1.map(str::to_owned);

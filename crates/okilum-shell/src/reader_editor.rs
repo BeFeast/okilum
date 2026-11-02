@@ -1070,6 +1070,10 @@ impl Reader {
     }
 
     pub(super) fn refresh_source_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Every refresh entry point (including shared-window publications and
+        // deferred autosave refreshes) preserves an observed deletion. Do this
+        // before FileEditor can silently refresh a clean buffer on file return.
+        let retain_deleted = self.track_deleted_note(&Default::default(), cx);
         let trace = self
             .loading
             .as_ref()
@@ -1099,6 +1103,20 @@ impl Reader {
                 cx.notify();
                 return;
             }
+        }
+        if retain_deleted {
+            // A retained returned version also blocks autosave until an explicit
+            // Reload/Keep mine decision. The banner itself is never modal.
+            if self
+                .deleted_note
+                .as_ref()
+                .is_some_and(|deleted| deleted.disk == reader_deleted_note::Disk::Different)
+            {
+                editing.conflict_detected = true;
+                editing.conflict = editing.store.current().ok();
+            }
+            cx.notify();
+            return;
         }
         let mut outcome = "unchanged";
         let mut resume_autosave = None;
@@ -1205,14 +1223,15 @@ impl Reader {
             return true;
         };
         let text = editing.input.read(cx).value().to_string();
-        match editing.store.reload() {
+        if !editing.store.current().is_ok_and(|current| current == text) {
+            return false;
+        }
+        let acknowledged = editing
+            .store
+            .set_text(text.clone())
+            .and_then(|_| editing.store.saved_as(text));
+        match acknowledged {
             Ok(()) => {
-                if editing.store.text() != text {
-                    let updated = editing.store.text().to_owned();
-                    editing
-                        .input
-                        .update(cx, |input, cx| input.set_value(updated, window, cx));
-                }
                 editing.conflict = None;
                 editing.conflict_detected = false;
                 editing.compare = false;
@@ -1223,7 +1242,6 @@ impl Reader {
             }
             Err(error) => {
                 eprintln!("The restored note could not be reopened in the editor: {error:#}");
-                let _ = editing.store.saved_as(text);
                 false
             }
         }
@@ -1244,13 +1262,36 @@ impl Reader {
         cx.notify();
     }
 
+    /// Detach only after protecting the latest buffer. Explicit Don't Save
+    /// still retains the durable recovery draft, but must not retry a canonical
+    /// save (or overwrite a returned file) during the authorized navigation.
+    pub(super) fn release_deleted_editor(&mut self, cx: &mut Context<Self>) -> bool {
+        if let Some(editing) = &mut self.editing {
+            if let Err(error) = editing
+                .store
+                .set_text(editing.input.read(cx).value().to_string())
+            {
+                self.link_notice = Some(
+                    format!("Cannot protect this draft: {error:#}. Copy the draft before closing.")
+                        .into(),
+                );
+                return false;
+            }
+        }
+        self.remember_source_mode();
+        self.editing = None;
+        true
+    }
+
     pub(super) fn save_source(&mut self, cx: &mut Context<Self>) -> bool {
         self.save_source_outcome(cx).0
     }
 
     fn save_source_outcome(&mut self, cx: &mut Context<Self>) -> (bool, bool) {
         if self.editing.as_ref().is_some_and(|editing| {
-            editing.table_grid.update(cx, |grid, cx| grid.retain_pending_cells(cx))
+            editing
+                .table_grid
+                .update(cx, |grid, cx| grid.retain_pending_cells(cx))
         }) {
             return (false, false);
         }
@@ -1284,7 +1325,14 @@ impl Reader {
         let rules_revision = protected
             .then(|| pending_agents_revision(&editing.store, editing.store.dirty()))
             .flatten();
-        let result = draft.and_then(|_| editing.store.save());
+        let retained = self.deleted_note.is_some();
+        let result = draft.and_then(|_| {
+            if retained {
+                Ok(Save::Conflict)
+            } else {
+                editing.store.save()
+            }
+        });
         let saved = match result {
             Ok(Save::Saved) => {
                 editing.saved_at = Some(
@@ -1360,7 +1408,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.move_applying || self.active_timeline().is_some_and(|t| t.selected.is_some()) {
+        if self.deleted_current().is_some()
+            || self.move_applying
+            || self.active_timeline().is_some_and(|t| t.selected.is_some())
+        {
             return;
         }
         let Some(editing) = &mut self.editing else {
@@ -1626,7 +1677,12 @@ impl Reader {
             editing.kept_preference = Some(preferred);
         }
     }
-    fn resolve_source(&mut self, reload: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn resolve_source(
+        &mut self,
+        reload: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(mut editing) = self.editing.take() else {
             return;
         };
@@ -1681,6 +1737,7 @@ impl Reader {
         }
         self.editing = Some(editing);
         if changed_rules_saved {
+            self.deleted_note = None;
             if let Some((absolute_path, saved_revision)) = rules_revision {
                 self.agents_rules_saved(&absolute_path, &saved_revision, cx);
             }
