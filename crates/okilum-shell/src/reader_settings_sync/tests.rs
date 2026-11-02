@@ -456,6 +456,14 @@ fn assert_visible(visual: &mut VisualTestContext, selector: &'static str) {
     let panel = visual
         .debug_bounds("sync-panel")
         .expect("Sync panel is rendered");
+    let viewport = visual.update(|window, _| window.viewport_size());
+    assert!(
+        panel.top() >= px(0.)
+            && panel.left() >= px(0.)
+            && panel.bottom() <= viewport.height
+            && panel.right() <= viewport.width,
+        "panel {panel:?} exceeds window viewport {viewport:?}"
+    );
     let element = visual
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing {selector}"));
@@ -774,4 +782,60 @@ fn guided_first_run_received_vault_opens_only_after_readiness_and_keeps_owner_al
         );
     });
     assert_eq!(*calls.lock().unwrap(), vec!["enter", "other", "read"]);
+}
+
+#[gpui::test]
+fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    let peer = uuid::Uuid::new_v4();
+    let mut ready = snapshot(None);
+    ready.peers.push(direct::Peer {
+        id: peer,
+        name: "Desktop".into(),
+        device_id: "device".into(),
+    });
+    ready.catalog.push(direct::Vault {
+        id: "notes".into(),
+        label: "Work notes".into(),
+    });
+    let calls = guided_worker(cx, vec![ready]);
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.run(Operation::Read, cx);
+            view
+        });
+        cx.set_global(BackgroundSync(view.clone()));
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
+    visual.simulate_click(pick.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.did_prompt_for_new_path(),
+        "positive control: real folder dialog opened"
+    );
+    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    visual.simulate_new_path_selection(|_| Some(directory.path().join("Work notes")));
+    visual.run_until_parked();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["read", "read", "other"],
+        "background refresh must not discard the accepted local folder"
+    );
+    let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
+    visual.simulate_click(pick.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.did_prompt_for_new_path());
+    visual.update(|_, cx| reader_features::set_enabled(reader_features::Feature::Sync, false, cx));
+    visual.simulate_new_path_selection(|_| Some(directory.path().join("Late choice")));
+    visual.run_until_parked();
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        3,
+        "disabled Sync must ignore a late dialog answer"
+    );
 }
