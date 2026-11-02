@@ -103,7 +103,8 @@ pub(crate) struct ProjectView {
     _resource_observer: Option<Subscription>,
     _resource_open: Option<Subscription>,
     rules: Option<Entity<agent_rules::RulesView>>,
-    skills: okilum_core::agent_skills::Inventory,
+    skills: okilum_core::agent_skills::Inventory<agent_skills::Publication>,
+    skills_owner: Option<agent_skills::Owner>,
     skills_notice: Option<String>,
     #[cfg(target_os = "linux")]
     rotation: Option<Entity<rotation::coordinator::Coordinator>>,
@@ -441,6 +442,7 @@ impl ProjectView {
             _resource_open: None,
             rules: None,
             skills: Default::default(),
+            skills_owner: None,
             skills_notice: None,
             #[cfg(target_os = "linux")]
             rotation: None,
@@ -678,6 +680,7 @@ impl ProjectView {
         if scope_changed {
             self.invalidate_rotation(cx);
         }
+        agent_skills::bind(self, reader.downgrade(), root.clone());
         self.resource_vault = Some(root.clone());
         self._resource_observer = Some(cx.observe(reader, move |this, reader, cx| {
             let reader = reader.read(cx);
@@ -685,6 +688,7 @@ impl ProjectView {
                 return;
             }
             published = reader.vault.clone();
+            agent_skills::published(this, cx);
             // A publication represents a reconciled source batch; rebuild rather
             // than infer which imported/renamed source influenced the stack.
             this.resources_changed(
@@ -760,42 +764,7 @@ impl ProjectView {
     }
 
     fn refresh_skills(&mut self, cx: &mut Context<Self>) {
-        if !self.active
-            || self.section != ProjectSection::Skills
-            || !reader_features::enabled(reader_features::Feature::Agents, cx)
-        {
-            return;
-        }
-        let Some((root, project)) = self.resource_vault.clone().zip(self.area.clone()) else {
-            return;
-        };
-        // No provider/global configuration is inferred. This inventory describes
-        // the supported local project scope; it never installs or runs skills.
-        self.skills
-            .configure(okilum_core::agent_skills::DiscoveryScope {
-                root,
-                project,
-                disabled: Vec::new(),
-                config_revision: 0,
-            });
-        let Some(request) = self.skills.begin_refresh() else {
-            return;
-        };
-        self.skills_notice = None;
-        cx.spawn(async move |this, cx| {
-            let job = request.clone();
-            let snapshot = cx
-                .background_executor()
-                .spawn(async move { job.discover() })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.skills.finish_refresh(&request, Ok(snapshot)) {
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        cx.notify();
+        agent_skills::reload(self, cx);
     }
 
     fn render_resource_section(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -818,6 +787,7 @@ impl ProjectView {
                 let refresh = cx.entity().downgrade();
                 let open = refresh.clone();
                 let displayed_scope = self.skills.scope().cloned();
+                let displayed_revision = self.skills.inventory_revision().cloned();
                 v_flex()
                     .id("project-skills")
                     .flex_1()
@@ -835,7 +805,9 @@ impl ProjectView {
                         },
                         move |result, _, cx| {
                             let _ = open.update(cx, |this, cx| {
-                                if this.skills.scope() != displayed_scope.as_ref() {
+                                if !agent_skills::display_current(
+                                    this, displayed_scope.as_ref(), displayed_revision.as_ref(), cx,
+                                ) {
                                     return;
                                 }
                                 match result {
