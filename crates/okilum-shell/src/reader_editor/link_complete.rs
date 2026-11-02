@@ -2179,7 +2179,7 @@ mod tests {
                 open.selected
             });
             assert!(visual
-                .debug_bounds(&format!("link-complete-{last}"))
+                .debug_bounds(format!("link-complete-{last}").leak())
                 .is_some());
             keys(visual, "tab");
             assert!(shown(&note, visual).contains(&target));
