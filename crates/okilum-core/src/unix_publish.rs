@@ -7,7 +7,10 @@ use rustix::{
     fs::{AtFlags, RenameFlags},
     io::{Errno, Result},
 };
-use std::{collections::HashMap, ffi::OsStr};
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsStr,
+};
 
 #[derive(Default)]
 struct Capabilities {
@@ -18,9 +21,7 @@ type Identity = (u64, u64);
 type Scope = (Identity, u64);
 #[derive(Default)]
 struct Cache {
-    roots: HashMap<Identity, rustix::fd::OwnedFd>,
-    standalone: HashMap<Identity, rustix::fd::OwnedFd>,
-    directories: HashMap<Identity, Scope>,
+    roots: HashSet<Identity>,
     flags: HashMap<Scope, Capabilities>,
 }
 // Each open vault has independent capabilities, shared by its folders/editors.
@@ -63,23 +64,17 @@ pub(crate) fn register_vault(root: &std::path::Path) -> Result<()> {
     )?;
     let root = identity(&fd)?;
     capabilities(|cache| {
-        if let std::collections::hash_map::Entry::Vacant(entry) = cache.roots.entry(root) {
-            entry.insert(fd); // pin the inode: remount/recreate cannot reuse its identity
-            cache.directories.clear();
-        }
+        cache.roots.insert(root);
     });
     Ok(())
 }
 fn scope(fd: rustix::fd::BorrowedFd<'_>) -> Result<Scope> {
     use rustix::fs::{openat, Mode, OFlags};
     let directory = identity(fd)?;
-    if let Some(scope) = capabilities(|cache| cache.directories.get(&directory).copied()) {
-        return Ok(scope);
-    }
     let mut current = directory;
     let mut parent = None;
     let root = loop {
-        if capabilities(|cache| cache.roots.contains_key(&current)) {
+        if capabilities(|cache| cache.roots.contains(&current)) {
             break current;
         }
         let next = match openat(
@@ -98,26 +93,10 @@ fn scope(fd: rustix::fd::BorrowedFd<'_>) -> Result<Scope> {
         current = next_identity;
         parent = Some(next);
     };
-    let scope = (root, directory.0);
-    // A stand-alone file's containing folder is its scope. Pin it too, so an
-    // old negative capability cannot attach to a recycled directory inode.
-    let pin = if root == directory {
-        Some(openat(
-            fd,
-            ".",
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?)
-    } else {
-        None
-    };
-    capabilities(|cache| {
-        if let Some(pin) = pin {
-            cache.standalone.entry(root).or_insert(pin);
-        }
-        cache.directories.insert(directory, scope);
-    });
-    Ok(scope)
+    // Cache capabilities, not mutable ancestry or open descriptors. A moved
+    // folder must resolve its new vault, and closing a vault must not leave a
+    // global directory handle that prevents unmounting the network drive.
+    Ok((root, directory.0))
 }
 
 #[cfg(test)]
@@ -290,6 +269,8 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             fs::create_dir(root.path().join("nested")).unwrap();
             register_vault(root.path()).unwrap();
+            let other = tempfile::tempdir().unwrap();
+            register_vault(other.path()).unwrap();
             let parent = File::open(root.path()).unwrap();
             let child = File::open(root.path().join("nested")).unwrap();
             FLAG_CALLS.with(|v| v.set(0));
@@ -314,8 +295,16 @@ mod tests {
             .is_err());
             assert_eq!(FLAG_CALLS.with(|v| v.get()), 2);
             capabilities(|cache| assert!(cache.flags.values().all(|v| v.reported)));
-            let other = tempfile::tempdir().unwrap();
-            register_vault(other.path()).unwrap();
+            fs::rename(root.path().join("nested"), other.path().join("nested")).unwrap();
+            assert!(flagged_rename(
+                &child,
+                OsStr::new("a"),
+                &child,
+                OsStr::new("b"),
+                RenameFlags::NOREPLACE
+            )
+            .is_err());
+            assert_eq!(FLAG_CALLS.with(|v| v.get()), 3);
             let fd = File::open(other.path()).unwrap();
             assert!(flagged_rename(
                 &fd,

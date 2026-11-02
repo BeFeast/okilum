@@ -5,8 +5,9 @@ exchange with ENOTSUP, EOPNOTSUPP, EINVAL or ENOSYS. Okilum tries the native
 operation first and remembers unsupported flags separately for each open vault
 and device, across its folders and editors. A nested mount has its own device
 entry. Single-file viewers use their containing folder. The cache is process
-local; reopening the app probes again. Directory handles pin scope identities,
-so an unmounted/recreated vault cannot inherit a recycled inode's capability.
+local; reopening the app probes again. Capability routing rechecks directory
+ancestry, so moving a folder to another open vault uses that vault's state.
+The cache retains no directory handles that could prevent a drive unmount.
 One stderr diagnostic per vault/device announces compatible publication.
 Ordinary permission, I/O and timeout errors do not downgrade capabilities.
 
