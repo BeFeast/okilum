@@ -10,10 +10,8 @@ describe CI and producer mechanics, not additional merge gates.
 `fast / check (pull_request)` is the sole required main protection context.
 It runs the exact PR head on baldr's dedicated `fast-linux` Forgejo host runner (capacity two):
 desktop/supervisor build, `cargo check --locked --workspace --tests` (compilation
-only), the complete Linux headless shell binary suite
-(`cargo test --offline --locked -p okilum-shell --bin okilum`, #2415), plus
-deterministic okilum-paste library unit tests. The shell suite also catches
-runtime contract drift and executor teardown failures that compilation cannot.
+only), plus deterministic okilum-paste library unit tests. Test fixture/API drift
+therefore blocks merge without executing the full overnight suites.
 The fifteen-minute job budget includes setup and build. The LAN compiler cache and
 Cargo downloads are reused; two separately locked persistent targets
 allow two simultaneous builds. Each job has three compiler workers (six total).
@@ -25,10 +23,9 @@ Windows and macOS compilation moves to each post-merge beta producer. This is
 post-merge OS validation, not an OS waiver. The first production timing must be
 measured rather than inferred from timeout.
 
-Review and merge policy comes from v3. Native OS acceptance, Brain/transport, perf,
+Review and merge policy comes from v3. Full shell/native, Brain/transport, perf,
 apt timing and main-health checks stay in the full workflows. The process-local nofile helper
-remains; no system hard limits change. The shell tests use GPUI's headless test
-platform; real desktop/device acceptance stays in the full workflows.
+remains; no system hard limits change. No data/native gate is added to fast CI.
 
 ## Full acceptance
 

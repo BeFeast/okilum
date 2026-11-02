@@ -439,7 +439,13 @@ fn forbidden_custom_is_not_rendered_or_sent_and_message_choices_keep_exact_value
         answers(&view, visual, "closed")["q"],
         json!("[\" exact \",\"β\"]")
     );
-    view.update(visual, |view, _| view.active = true);
+    // #2321/#2324: activation restores the typed composer and can redraw
+    // request controls. Exercise the settled, active surface like a real user.
+    view.update(visual, |view, cx| {
+        view.active = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
     click(visual, "respond-closed");
     view.read_with(visual, |view, cx| {
         let actions = view.native.actions.read(cx);
@@ -649,7 +655,13 @@ fn a_real_click_deferred_across_a_conversation_switch_cannot_answer_a_reused_req
 ) {
     let (view, visual, temp, armed) = fixture(cx, 0);
     show(&view, visual, 0, vec![request("same", "approval_request")]);
-    view.update(visual, |view, _| view.active = true);
+    // #2321/#2324: activation restores the typed composer and can redraw
+    // request controls. Exercise the settled, active surface like a real user.
+    view.update(visual, |view, cx| {
+        view.active = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
     armed.set(true);
     click(visual, "approval-same-3");
     view.read_with(visual, |view, cx| {

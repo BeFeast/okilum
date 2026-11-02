@@ -29,6 +29,7 @@ impl ProjectView {
                     .child("Manager"),
             );
         let mut actions = h_flex()
+            .flex_none()
             .items_center()
             .gap_1()
             .child(self.connection_line(status, cx));

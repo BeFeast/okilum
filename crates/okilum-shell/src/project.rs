@@ -1781,11 +1781,6 @@ impl ProjectView {
             .filter(|chat| chat.pending_question_error.is_none())
             .map(|chat| chat.pending_questions)
             .unwrap_or(0);
-        let open = self
-            .identity
-            .as_ref()
-            .zip(self.chat.as_ref())
-            .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
         #[cfg(target_os = "linux")]
         let history = {
             self.typed_sync(cx);
@@ -1936,7 +1931,6 @@ impl ProjectView {
             .text_color(brand::palette(cx).text)
             .bg(brand::palette(cx).surface)
             .gap_2()
-            .child(self.render_chat_header(&status, open, cx))
             .when(self.connection_details, |view| view.child(self.render_chat_diagnostics(cx)))
             .when(
                 self.binding
@@ -2167,7 +2161,24 @@ impl Render for ProjectView {
         } else {
             self.render_resource_section(cx)
         };
-        let surface = v_flex().size_full().min_h_0().child(tabs);
+        // The mounted workspace owns the identity header. Section navigation
+        // and notices follow it, so the conversation aligns with the panel top.
+        let status = self
+            .gateway
+            .as_ref()
+            .map(|gateway| gateway.status())
+            .unwrap_or(GatewayStatus::NotConnected);
+        let open = self
+            .identity
+            .as_ref()
+            .zip(self.chat.as_ref())
+            .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
+        let surface = v_flex()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .child(self.render_chat_header(&status, open, cx))
+            .child(tabs);
         #[cfg(target_os = "linux")]
         let surface = surface
             .when_some(self.rotation_notice.clone(), |surface, error| {
