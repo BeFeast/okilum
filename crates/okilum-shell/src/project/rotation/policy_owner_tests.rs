@@ -287,7 +287,26 @@ fn rotation_policy_1473_configure_and_held_ack_share_one_lock_through_existing_c
     assert_eq!(store.load().unwrap().unwrap().record, next.record);
 }
 
-pub(in crate::project) fn seed(view: &mut ProjectView, cx: &App) -> Arc<PolicyStore> {
+pub(in crate::project) fn ready(view: &mut ProjectView, cx: &mut Context<ProjectView>) {
+    // These fixtures mount the composer, not ProjectView itself. Publish the
+    // typed owner through the same hook as ProjectView::render after restore.
+    view.typed_sync(cx);
+    assert!(
+        view.typed_scope().is_some(),
+        "positive control: real parent typed owner is ready"
+    );
+    view.draft_handoff_surface_visible(true, cx);
+    assert!(
+        exact_identity(view, cx).is_ok(),
+        "positive control: current native identity passes the unchanged readiness guard"
+    );
+}
+
+pub(in crate::project) fn seed(
+    view: &mut ProjectView,
+    cx: &mut Context<ProjectView>,
+) -> Arc<PolicyStore> {
+    ready(view, cx);
     let store = Store::new(
         view.state.as_deref().unwrap(),
         exact_identity(view, cx).unwrap(),
@@ -334,7 +353,7 @@ fn rotation_policy_1473_explicit_save_review_and_restart_keep_authority_and_unse
     let project = owner.unwrap();
     visual.run_until_parked();
     project.update_in(visual, |view, window, cx| {
-        view.draft_handoff_surface_visible(true, cx);
+        ready(view, cx);
         view.open_rotation_policy(window, cx);
     });
     visual.run_until_parked();
@@ -433,7 +452,7 @@ fn rotation_policy_1473_stale_open_menu_refuses_same_entity_rebind_and_client_re
     let project = owner.unwrap();
     visual.run_until_parked();
     project.update_in(visual, |view, window, cx| {
-        view.draft_handoff_surface_visible(true, cx);
+        ready(view, cx);
         let ticket = MenuTicket::capture(view, cx).unwrap();
         view.draft_handoff_connection_changing();
         view.generation += 1;
@@ -491,7 +510,7 @@ fn rotation_policy_1473_close_hide_and_rebind_cancel_queued_save_and_preserve_dr
         let project = owner.unwrap();
         visual.run_until_parked();
         project.update_in(visual, |view, window, cx| {
-            view.draft_handoff_surface_visible(true, cx);
+            ready(view, cx);
             view.open_rotation_policy(window, cx);
         });
         visual.run_until_parked();
