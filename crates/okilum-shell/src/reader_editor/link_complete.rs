@@ -59,6 +59,14 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
     if lists::in_code(text, line_start) {
         return None;
     }
+    if matches!(query.kind, Kind::Note | Kind::Heading(_)) {
+        // Inline code may cross a soft line break, but not a blank paragraph.
+        let prefix = &text[..query.start - 2];
+        let paragraph = prefix.rfind("\n\n").map_or(prefix, |at| &prefix[at + 2..]);
+        if providers::in_inline_code(paragraph) {
+            return None;
+        }
+    }
     Some(query)
 }
 
@@ -741,7 +749,7 @@ impl Reader {
     }
 
     /// Recompute the list after the text or the caret changed.
-    pub(super) fn refresh_link_complete(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh_link_complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(test)]
         let _timing = RefreshTiming(std::time::Instant::now());
         let emoji = reader_ui_state::emoji_completion(cx);
@@ -854,7 +862,7 @@ impl Reader {
             } else {
                 NOTE_READ_HOLD.with(|hold| hold.borrow_mut().take())
             };
-            state.task = Some(cx.spawn(async move |this, cx| {
+            state.task = Some(cx.spawn_in(window, async move |this, cx| {
                 let worker_query = query.clone();
                 let enriched = cx
                     .background_executor()
@@ -1078,7 +1086,8 @@ impl Reader {
         cx.notify();
     }
 
-    fn link_complete_dismiss(&mut self, window: &Window, cx: &mut Context<Self>) {
+    fn link_complete_dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_link_complete(window, cx);
         if let Some(editing) = self
             .editing
             .as_mut()
@@ -1136,7 +1145,7 @@ impl Reader {
         if !self.ime_allows(trigger, cx) {
             return;
         }
-        self.refresh_link_complete(cx);
+        self.refresh_link_complete(window, cx);
         let Some(input) = self.link_complete_input(window, cx) else {
             return;
         };
@@ -1225,7 +1234,7 @@ impl Reader {
                         // Keep the draft and recompute this same query once.
                         editing.link_complete.dismissed = None;
                         editing.link_complete.seen = None;
-                        reader.refresh_link_complete(cx);
+                        reader.refresh_link_complete(window, cx);
                         cx.notify();
                         return;
                     }
@@ -2369,6 +2378,7 @@ mod tests {
     fn pending_enter_cannot_outlive_escape_caret_source_or_ime(cx: &mut TestAppContext) {
         let (note, visual) = open(cx);
         for cancel in ["escape", "caret", "source", "ime"] {
+            set(&note, visual, "plain|");
             let (mut reached, release) = hold_notes();
             set(&note, visual, "[[road|");
             assert_eq!(
@@ -2411,6 +2421,55 @@ mod tests {
     }
 
     #[gpui::test]
+    fn popup_waits_during_preedit_and_commit_enter_settle(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        set(&note, visual, "|");
+        visual.update(|window, cx| {
+            note.input.update(cx, |i, cx| {
+                i.replace_and_mark_text_in_range(None, "[[rec", None, window, cx);
+            })
+        });
+        visual.run_until_parked();
+        assert!(
+            note.input.read_with(visual, |i, _| i.ime_composing()),
+            "positive control: preedit is active"
+        );
+        assert!(offered(&note, visual).is_none());
+        visual.update(|window, cx| {
+            note.input.update(cx, |i, cx| {
+                let marked = i.marked_text_range(window, cx);
+                assert!(marked.is_some());
+                i.replace_text_in_range(marked, "[[rec", window, cx);
+            })
+        });
+        visual.run_until_parked();
+        assert!(
+            offered(&note, visual).is_some(),
+            "committed trigger is typing"
+        );
+        note.reader.update_in(visual, |r, window, cx| {
+            r.link_complete_accept(None, Trigger::Enter, window, cx)
+        });
+        assert_eq!(
+            shown(&note, visual),
+            "[[rec|",
+            "commit Enter does not accept"
+        );
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(600));
+        visual.run_until_parked();
+        keys(visual, "enter");
+        assert_eq!(
+            shown(&note, visual),
+            "[[Recipes]]|",
+            "positive control: settled Enter accepts"
+        );
+        undo(visual);
+        assert_eq!(shown(&note, visual), "[[rec|", "one acceptance Undo");
+    }
+
+    #[gpui::test]
     fn paste_ending_in_a_trigger_stays_closed_but_typing_resumes(cx: &mut TestAppContext) {
         use gpui_component::input::Paste;
         let (note, visual) = open(cx);
@@ -2444,6 +2503,7 @@ mod tests {
         for source in [
             "`[[rec|`",
             "``[[rec|``",
+            "``line\n[[rec|``",
             "```rust\n[[rec|\n```",
             "~~~\n[[rec|\n~~~",
             "    [[rec|",
@@ -2573,6 +2633,36 @@ mod tests {
             "COMPLETION_5576 {}",
             serde_json::json!({"corpus": "synthetic-topic-and-folder-inventory",
             "notes": 5576, "boundary": "GPUI-test-worker-to-popup-draw", "measurements": measurements})
+        );
+    }
+
+    #[gpui::test]
+    fn large_source_pending_worker_keeps_ui_refresh_bounded(cx: &mut TestAppContext) {
+        let (note, visual) = open(cx);
+        let mut source = "paragraph\n\n".repeat((1 << 20) / 11);
+        source.push_str("[[rec|");
+        let (mut reached, release) = hold_notes();
+        REFRESH_TIMES.with(|times| times.borrow_mut().clear());
+        set(&note, visual, &source);
+        assert_eq!(
+            reached.try_recv(),
+            Ok(Some(())),
+            "positive control: 1 MiB source worker reached hold"
+        );
+        let samples = REFRESH_TIMES.with(|times| times.borrow().clone());
+        assert!(!samples.is_empty());
+        let max = samples.iter().copied().fold(0.0, f64::max);
+        assert!(max < 16.0, "bounded UI query: {max} ms");
+        release.send(()).unwrap();
+        visual.run_until_parked();
+        assert_eq!(
+            offered(&note, visual).unwrap()[0],
+            "Recipes.md",
+            "positive control: query actually published"
+        );
+        println!(
+            "COMPLETION_LARGE_SOURCE_UI {}",
+            serde_json::json!({"bytes": source.len()-1, "max_refresh_ms": max, "samples": samples.len(), "boundary": "completion refresh only; Source mode"})
         );
     }
 

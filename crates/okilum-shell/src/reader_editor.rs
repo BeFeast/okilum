@@ -729,7 +729,7 @@ impl Reader {
                 .as_ref()
                 .is_some_and(|editing| editing.input == input)
             {
-                this.refresh_link_complete(cx);
+                this.refresh_link_complete(window, cx);
             }
         });
         let changed = cx.subscribe(&input, move |this, input, _: &SourceMutation, cx| {
