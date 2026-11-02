@@ -5,7 +5,7 @@ use anyhow::{ensure, Result};
 use crate::{Capabilities, ManagerGateway, ModelSelection, ThreadConfiguration, ThreadQuery};
 
 pub const SCHEDULED_TASK_LIMIT: &str =
-    "Scheduled tasks do not follow this model change. Manager migration remains blocked.";
+    "Changing a conversation’s model does not change models used by scheduled tasks.";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Target {
@@ -250,3 +250,24 @@ pub(crate) fn selections_match(a: &ModelSelection, b: &ModelSelection) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod help_tests {
+    #[test]
+    fn scheduled_model_help_explains_the_effect_without_internal_policy_terms() {
+        let help = super::SCHEDULED_TASK_LIMIT;
+        assert!(help.contains("scheduled tasks") && help.contains("model"));
+        for internal in [
+            "migration",
+            "blocked",
+            "credential",
+            "readback",
+            "full-access",
+        ] {
+            assert!(
+                !help.contains(internal),
+                "internal term leaked into model help: {internal}"
+            );
+        }
+    }
+}

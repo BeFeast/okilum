@@ -1079,8 +1079,41 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
     });
     assert!(visual.debug_bounds("project-executors-list").is_some());
     assert!(visual.debug_bounds("project-executor-0").is_some());
+    let (connection, generation, reads) = view.read_with(visual, |v, _| {
+        (
+            v.gateway.clone().unwrap(),
+            v.generation,
+            gateway.reads.lock().unwrap().len(),
+        )
+    });
+    *gateway.threads.lock().unwrap() = vec![summary("mcp:missing")];
+    let refresh = visual
+        .debug_bounds("project-executors-refresh")
+        .expect("explicit Refresh");
+    visual.simulate_click(refresh.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(visual, |v, cx| {
+        assert!(
+            Arc::ptr_eq(v.gateway.as_ref().unwrap(), &connection),
+            "Refresh keeps the authenticated gateway"
+        );
+        assert_eq!(v.generation, generation, "Refresh never reconnects");
+        assert_eq!(v.chat.as_ref().unwrap().thread_id, "mcp:fixture-manager");
+        assert_eq!(v.compose.read(cx).value().as_ref(), "Keep manager draft");
+        let snapshot = v.executors.as_ref().unwrap();
+        assert!(snapshot.registered[0].thread.is_none());
+        assert!(
+            snapshot.registered[1].thread.is_some(),
+            "button read the changed server listing before polling"
+        );
+    });
+    assert_eq!(
+        gateway.reads.lock().unwrap().len(),
+        reads,
+        "executor refresh does not re-read Manager history"
+    );
     *gateway.list_error.lock().unwrap() = Some("metadata unavailable".into());
-    visual.executor().advance_clock(Duration::from_secs(20));
+    visual.simulate_click(refresh.center(), Modifiers::default());
     visual.run_until_parked();
     view.read_with(visual, |v, cx| {
         assert!(v
@@ -1091,8 +1124,32 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
         assert_eq!(v.executors.as_ref().unwrap().registered.len(), 2);
         assert_eq!(v.compose.read(cx).value().as_ref(), "Keep manager draft");
     });
-    // A registry/manifest mismatch is equally visible and never rebinds ownership.
+    assert!(gateway.sends.lock().unwrap().is_empty());
     *gateway.list_error.lock().unwrap() = None;
+    std::fs::write(
+        area.join("ops/thread-ids.md"),
+        registry.replace(
+            "`mcp:fixture-manager`",
+            "[Manager](t3-thread://env/mcp:fixture-manager)",
+        ),
+    )
+    .unwrap();
+    visual.simulate_click(refresh.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(visual, |v, _| {
+        let error = v.executors_error.as_ref().unwrap();
+        assert!(
+            error.contains("ops/thread-ids.md:5")
+                && error.contains("Manager")
+                && error.contains("`mcp:<id>`"),
+            "{error}"
+        );
+        assert!(
+            v.executors.as_ref().unwrap().registered[1].thread.is_some(),
+            "invalid source retains previous rows"
+        );
+    });
+    // A registry/manifest mismatch is equally visible and never rebinds ownership.
     std::fs::write(
         area.join("ops/thread-ids.md"),
         registry.replace("mcp:fixture-manager", "mcp:other-manager"),
@@ -1105,12 +1162,34 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
             .executors_error
             .as_deref()
             .unwrap()
-            .contains("Registry Manager differs"));
+            .contains("ops/thread-ids.md:5: Manager row"));
         assert_eq!(
             v.executors.as_ref().unwrap().registered[0].entry.thread_id,
             "mcp:ui"
         );
         assert_eq!(v.compose.read(cx).value().as_ref(), "Keep manager draft");
+    });
+    // Correcting the source recovers immediately without reconnecting or waiting
+    // for the regular poll. Then a late read cannot publish into a new binding.
+    std::fs::write(area.join("ops/thread-ids.md"), registry).unwrap();
+    visual.simulate_click(refresh.center(), Modifiers::default());
+    visual.run_until_parked();
+    view.read_with(visual, |v, _| assert!(v.executors_error.is_none()));
+    visual.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.refresh_executors(window, cx);
+            assert_eq!(v.executors_refreshing, Some(v.generation));
+            v.generation = v.generation.wrapping_add(1);
+            v.executors = None;
+        })
+    });
+    visual.run_until_parked();
+    view.read_with(visual, |v, _| {
+        assert!(
+            v.executors.is_none(),
+            "stale refresh must not repopulate another project"
+        );
+        assert!(v.executors_refreshing.is_none());
     });
 }
 
