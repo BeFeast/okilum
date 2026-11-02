@@ -82,6 +82,7 @@ fn restored_upload_previews_without_a_local_source_and_keeps_its_exact_reference
                 input.set_value("Retain text and image", window, cx)
             });
             view.draft_set_attachments(vec![row()], window, cx);
+            view.draft_restore(window, cx);
             view
         });
         let host = cx.new(|_| Host(view));
@@ -99,6 +100,7 @@ fn restored_upload_previews_without_a_local_source_and_keeps_its_exact_reference
     });
     view.update_in(visual, |view, window, cx| {
         view.active = true;
+        view.draft_restore(window, cx);
         view.restore_attachment_previews(window, cx);
     });
     visual.run_until_parked();
@@ -198,6 +200,7 @@ fn preview_failure_retries_only_the_download_and_needs_reselect_stays_unsendable
                 input.set_value("Never discard this draft", window, cx)
             });
             view.draft_set_attachments(vec![row()], window, cx);
+            view.draft_restore(window, cx);
             view
         });
         let host = cx.new(|_| Host(view));
@@ -215,6 +218,7 @@ fn preview_failure_retries_only_the_download_and_needs_reselect_stays_unsendable
     });
     view.update_in(visual, |view, window, cx| {
         view.active = true;
+        view.draft_restore(window, cx);
         view.restore_attachment_previews(window, cx);
     });
     visual.run_until_parked();

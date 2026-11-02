@@ -110,7 +110,10 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.active || !reader_features::enabled(reader_features::Feature::Agents, cx) {
+        if !self.active
+            || !self.draft_ready()
+            || !reader_features::enabled(reader_features::Feature::Agents, cx)
+        {
             return;
         }
         let Some(scope) = self.attachment_scope() else {
@@ -196,6 +199,7 @@ impl ProjectView {
                 if this.attachments.restored.inflight != Some(job) { return; }
                 this.attachments.restored.inflight = None;
                 let current = this.active
+                    && this.draft_ready()
                     && this.attachment_scope().as_ref() == Some(&scope)
                     && this.native.model_client().is_some_and(|current| Arc::ptr_eq(&current, &client))
                     && client.access_allowed()
