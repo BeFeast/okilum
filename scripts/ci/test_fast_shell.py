@@ -42,11 +42,11 @@ if [[ "$*" == *'--list' ]]; then echo 'parsing_control: test'; fi
             )
             return result, commands.read_text().splitlines()
 
-    def test_complete_shell_suite_runs_without_filters_before_workspace_check(self):
+    def test_complete_shell_suite_runs_without_filters_after_dependency_check(self):
         result, commands = self.execute(0)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(commands.count(SHELL), 1)
-        self.assertLess(commands.index(SHELL), commands.index('check --locked --workspace --tests'))
+        self.assertLess(commands.index('check --locked --workspace --tests'), commands.index(SHELL))
         self.assertIn('FAST_PHASE_END=shell-binary-tests', result.stdout)
 
     def test_a_shell_failure_stops_the_gate_with_the_original_verdict(self):

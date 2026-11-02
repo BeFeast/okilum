@@ -34,14 +34,15 @@ if [ "${RUNNER_OS:-Linux}" = Linux ]; then
     phase appimage-channel-tests cargo test --locked -p okilum-appimage --lib channel -- --test-threads=1
 fi
 phase build "$@"
+# Compile every workspace test target; fixture/API drift must block merge even
+# when its suite runs only during full overnight acceptance. This also fetches
+# test-only dependencies before the offline shell execution on a fresh target.
+phase workspace-test-check cargo check --locked --workspace --tests
 if [ "${RUNNER_OS:-Linux}" = Linux ]; then
     # #2415: checking test targets cannot detect stale runtime contracts or
     # cross-executor task teardown. Execute the whole headless shell binary.
     phase shell-binary-tests cargo test --offline --locked -p okilum-shell --bin okilum
 fi
-# Compile every workspace test target; fixture/API drift must block merge even
-# when its suite runs only during full overnight acceptance. Do not execute it.
-phase workspace-test-check cargo check --locked --workspace --tests
 # Pure HTML/Markdown parsing tests, no UI, process trees, network or timers.
 phase list-tests cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/fast-tests.txt"
