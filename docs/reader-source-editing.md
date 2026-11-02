@@ -648,3 +648,12 @@ explicit Reload/Keep mine decision before app-owned Quit. A failed draft write o
 continues to block this explicit Quit action. This matches recovery-aware OS close
 and updater exit behavior; canonical save errors keep their friendly access notice
 and detailed diagnostics remain in the application log.
+
+## Code quote comforts (#1992)
+
+Fenced Go snippets now pair raw-string backticks, wrap selected text (including
+multiple lines) and type over their closing backtick through the existing Input
+history in Source and Live Preview. A backslash is literal inside a Go raw
+string; it does not escape the closing delimiter. JS/TS template-string escapes
+keep their existing behavior, and shell backticks remain literal command syntax.
+The existing bracket-pair preference, IME guards and one-step Undo/Redo apply.
