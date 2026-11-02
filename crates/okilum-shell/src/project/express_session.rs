@@ -1297,35 +1297,35 @@ impl ProjectView {
                         &form,
                         window,
                         |view, form, event: &SelectionRestoreRequested, window, cx| {
-                            view.express_restore(form, event.clone(), window, cx)
+                            view.express_restore(form.clone(), event.clone(), window, cx)
                         },
                     ),
                     cx.subscribe_in(
                         &form,
                         window,
                         |view, form, event: &SelectionPersistenceRequested, window, cx| {
-                            view.express_remember(form, event.clone(), window, cx)
+                            view.express_remember(form.clone(), event.clone(), window, cx)
                         },
                     ),
                     cx.subscribe_in(
                         &form,
                         window,
                         |view, form, event: &SelectionForgetRequested, window, cx| {
-                            view.express_forget(form, event.clone(), window, cx)
+                            view.express_forget(form.clone(), event.clone(), window, cx)
                         },
                     ),
                     cx.subscribe_in(
                         &form,
                         window,
                         |view, form, event: &SessionsRequested, window, cx| {
-                            view.express_sessions(form, event.clone(), window, cx)
+                            view.express_sessions(form.clone(), event.clone(), window, cx)
                         },
                     ),
                     cx.subscribe_in(
                         &form,
                         window,
                         |view, form, event: &SessionChosen, window, cx| {
-                            view.express_selected(form, event.clone(), false, window, cx)
+                            view.express_selected(form.clone(), event.clone(), false, window, cx)
                         },
                     ),
                     cx.subscribe_in(
@@ -1333,7 +1333,7 @@ impl ProjectView {
                         window,
                         |view, form, _: &RefreshRequested, window, cx| {
                             if let Some(chosen) = form.read(cx).selected_session() {
-                                view.express_selected(form, chosen, false, window, cx);
+                                view.express_selected(form.clone(), chosen, false, window, cx);
                             } else {
                                 view.express_hold(
                                     &form,
@@ -1348,7 +1348,7 @@ impl ProjectView {
                         window,
                         |view, form, _: &ContinueHistoryRequested, window, cx| {
                             if let Some(chosen) = form.read(cx).selected_session() {
-                                view.express_selected(form, chosen, true, window, cx);
+                                view.express_selected(form.clone(), chosen, true, window, cx);
                             } else {
                                 view.express_hold(
                                     &form,
@@ -1362,14 +1362,14 @@ impl ProjectView {
                         &form,
                         window,
                         |view, form, event: &ClosureRequested, window, cx| {
-                            view.express_close_session(form, event.clone(), window, cx)
+                            view.express_close_session(form.clone(), event.clone(), window, cx)
                         },
                     ),
                     cx.subscribe_in(
                         &form,
                         window,
                         |view, form, event: &Requested, window, cx| {
-                            view.express_request(form, event.clone(), window, cx)
+                            view.express_request(form.clone(), event.clone(), window, cx)
                         },
                     ),
                 ];
