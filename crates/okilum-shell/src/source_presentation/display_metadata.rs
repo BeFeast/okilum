@@ -14,7 +14,7 @@ pub(super) struct Metadata {
     inline: Vec<Inline>,
     indents: Vec<(usize, usize)>,
     tables: Vec<(Range<usize>, u64)>,
-    overlay: Option<MathOverlay>,
+    overlay: Arc<Mutex<Option<MathOverlay>>>,
 }
 fn moved(range: &Range<usize>, edit: &Edit) -> Option<Range<usize>> {
     if range.end <= edit.old.start {
@@ -27,12 +27,14 @@ fn moved(range: &Range<usize>, edit: &Edit) -> Option<Range<usize>> {
 }
 impl Metadata {
     pub(super) fn reusing(mut self, previous: Option<&CachedProvider>) -> Self {
-        self.overlay = previous.and_then(|p| {
+        if let Some(overlay) = previous.and_then(|p| {
             p.display_metadata
                 .lock()
                 .ok()
-                .and_then(|m| m.as_ref().and_then(|m| m.overlay.clone()))
-        });
+                .and_then(|m| m.as_ref().map(|m| m.overlay.clone()))
+        }) {
+            self.overlay = overlay;
+        }
         self
     }
     pub(super) fn ranges_for(&self, source: &SourceSnapshot) -> Vec<Range<usize>> {
@@ -74,7 +76,7 @@ impl Metadata {
             snapshot,
             indents,
             tables,
-            overlay: None,
+            overlay: Default::default(),
         }
     }
     pub(super) fn advance(
@@ -196,9 +198,10 @@ impl Metadata {
             .collect();
         // An empty overlay still records its persistent display receipt, so
         // entering/leaving the last formula cannot force cold native layout.
+        let mut last = self.overlay.lock().ok()?;
         let overlay =
-            MathOverlay::new_persistent(projection.display_text(), formulas, self.overlay.as_ref());
-        self.overlay = Some(overlay.clone());
+            MathOverlay::new_persistent(projection.display_text(), formulas, last.as_ref());
+        *last = Some(overlay.clone());
         Some(overlay)
     }
 }

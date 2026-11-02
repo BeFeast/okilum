@@ -114,9 +114,7 @@ impl RetainedPresentation {
             contexts: classified.contexts.clone(),
             references: classified.references.clone().into(),
             local_cache: Default::default(),
-            last_reveal: Arc::new(Mutex::new(
-                previous.and_then(|p| p.last_reveal.lock().ok().and_then(|value| value.clone())),
-            )),
+            last_reveal: previous.map_or_else(Default::default, |p| p.last_reveal.clone()),
         }
     }
     pub fn snapshot(&self) -> &Snapshot {
@@ -444,7 +442,25 @@ impl RetainedPresentation {
         let old = self.snapshot.text();
         let new = current.text();
         let edit = current.change_from(&self.snapshot)?;
-        let (start, end, new_end) = (edit.old.start, edit.old.end, edit.new_end());
+        let (mut start, mut end, mut new_end) = (edit.old.start, edit.old.end, edit.new_end());
+        // Independent legacy snapshots discover the longest prefix. Only that
+        // compatibility route needs the old whitespace-run normalization;
+        // native receipts already name the place the user actually edited.
+        if current.edit_from(&self.snapshot).is_none() {
+            while start > 0 && (start == end) != (start == new_end) {
+                let changed = if start == end {
+                    new.byte(new_end - 1)?
+                } else {
+                    old.byte(end - 1)?
+                };
+                if !matches!(changed, b'\n' | b' ') || old.byte(start - 1) != Some(changed) {
+                    break;
+                }
+                start -= 1;
+                end -= 1;
+                new_end -= 1;
+            }
+        }
         // Include both neighbors when an edit joins/splits their whitespace gap.
         // Never bridge unsupported containers hidden between accepted regions.
         let source_regions = self.plan.regions();

@@ -116,6 +116,7 @@ impl Text {
     }
     pub fn same(&self, other: &Self) -> bool {
         self.id() == other.id()
+            && ropey::extra::esoterica::ropes_are_instances(self.rope(), other.rope())
     }
     pub fn rope(&self) -> &Rope {
         &self.0.rope
