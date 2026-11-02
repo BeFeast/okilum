@@ -479,12 +479,13 @@ impl CachedProvider {
             math.as_ref()
                 .map_or(projection.display(), |math| math.text.as_str()),
         );
-        let blocks = table_blocks(
-            &projection,
+        let blocks = table_blocks_indexed(
+            &source.text,
             self.current_tables(&current, &source.text),
             std::iter::once(active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0))
                 .chain(active.composition.as_ref().map(raw_range))
                 .chain(active.replacement.as_ref().map(raw_range)),
+            |at| projection.source_line_at(at),
         );
         Some(Arc::new(MappedProjection {
             source: source.clone(),
@@ -779,13 +780,24 @@ impl CachedProvider {
 /// Rendered blocks: every table or image not touched by the caret, selection,
 /// composition or replacement (edges included), by whole projected lines.
 fn table_blocks(
-    projection: &Projection,
+    text: &str,
     tables: Vec<Range<usize>>,
     active: impl Iterator<Item = Range<usize>> + Clone,
 ) -> Vec<ProjectionBlock> {
+    table_blocks_indexed(text, tables, active, |at| {
+        text.as_bytes()[..at]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+    })
+}
+fn table_blocks_indexed(
+    text: &str,
+    tables: Vec<Range<usize>>,
+    active: impl Iterator<Item = Range<usize>> + Clone,
+    line_of: impl Fn(usize) -> usize,
+) -> Vec<ProjectionBlock> {
     use std::hash::{Hash, Hasher};
-    let text = projection.snapshot().source();
-    let line_of = |at: usize| projection.source_line_at(at);
     tables
         .into_iter()
         .filter(|table| {
@@ -955,8 +967,8 @@ fn heading_line_scales(
         .filter_map(|style| match style.style {
             Style::Heading(level) => {
                 let start = projection.map_source(style.range.start)?;
-                let line = newlines.partition_point(|&at| at < start);
-                let line_start = line.checked_sub(1).map_or(0, |prev| newlines[prev] + 1);
+                let line = projection.display_line_at(start);
+                let line_start = projection.display_line_start(line)?;
                 let scale = heading_scale(level);
                 // Only a bare revealed marker hangs: a quote or list prefix
                 // before it stays in the text so per-row markers keep aligning.
