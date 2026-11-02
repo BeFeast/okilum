@@ -7292,8 +7292,6 @@ fn quick_folder(
             .all(|part| matches!(part, std::path::Component::Normal(_))),
         "Invalid quick viewer folder path"
     );
-    let canonical_root = root.canonicalize()?;
-    let root = canonical_root.as_path();
     let requested = root.join(folder);
     let directory = requested.canonicalize()?;
     if directory != requested || !directory.starts_with(root) {
@@ -7710,6 +7708,7 @@ mod quick_view_tests {
         let root = fixture.path().join("notes");
         std::fs::create_dir_all(root.join("child")).unwrap();
         std::fs::write(root.join("child/inside.md"), "# Inside").unwrap();
+        let root = root.canonicalize().unwrap();
         assert_eq!(listing(&root, "child").unwrap().notes.len(), 1);
         assert!(listing(&root, "child/..").is_err());
         assert!(listing(&root, root.to_str().unwrap()).is_err());
@@ -7717,6 +7716,22 @@ mod quick_view_tests {
         {
             std::os::unix::fs::symlink(root.join("child"), root.join("redirect")).unwrap();
             assert!(listing(&root, "redirect").is_err());
+            let outside = fixture.path().join("outside");
+            std::fs::create_dir(&outside).unwrap();
+            std::fs::write(outside.join("private.md"), "# Outside").unwrap();
+            assert_eq!(
+                listing(&outside.canonicalize().unwrap(), "")
+                    .unwrap()
+                    .notes
+                    .len(),
+                1
+            );
+            std::fs::rename(&root, fixture.path().join("old-notes")).unwrap();
+            std::os::unix::fs::symlink(outside, &root).unwrap();
+            assert!(
+                listing(&root, "").is_err(),
+                "a redirected root cannot widen containment"
+            );
         }
     }
 
@@ -7725,6 +7740,7 @@ mod quick_view_tests {
         let directory = std::env::temp_dir().join(format!("okilum-quick-{}", uuid::Uuid::new_v4()));
         let root = directory.join("notes");
         std::fs::create_dir_all(root.join("child")).unwrap();
+        let root = root.canonicalize().unwrap();
         std::fs::create_dir(root.join(".obsidian")).unwrap();
         std::fs::write(
             root.join("start.md"),
@@ -7829,6 +7845,7 @@ mod quick_view_tests {
         let root =
             std::env::temp_dir().join(format!("okilum-quick-names-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
         std::fs::write(root.join("valid.md"), "# Valid").unwrap();
         std::fs::write(
             root.join(std::ffi::OsString::from_vec(b"invalid-\xff.md".to_vec())),

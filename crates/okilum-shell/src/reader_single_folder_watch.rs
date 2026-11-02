@@ -33,6 +33,10 @@ impl Selection {
 }
 
 fn read_selected_source(root: &Path, rel: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        root.canonicalize()? == root,
+        "The opened folder has been redirected"
+    );
     let path = super::checked_path(root, rel)?;
     Ok(std::fs::read_to_string(path)?)
 }
@@ -91,7 +95,7 @@ mod tests {
     #[test]
     fn source_reads_refuse_paths_escaping_the_open_root() {
         let fixture = fixture();
-        let root = fixture.path().join("notes");
+        let root = fixture.path().join("notes").canonicalize().unwrap();
         let outside = fixture.path().join("outside.md");
         std::fs::write(&outside, "outside bytes").unwrap();
         assert_eq!(
@@ -104,6 +108,16 @@ mod tests {
         {
             std::os::unix::fs::symlink(&outside, root.join("redirect.md")).unwrap();
             assert!(read_selected_source(&root, "redirect.md").is_err());
+            let outside_root = fixture.path().join("outside-folder");
+            std::fs::create_dir(&outside_root).unwrap();
+            std::fs::write(outside_root.join("start.md"), "outside selected bytes").unwrap();
+            assert_eq!(
+                read_selected_source(&outside_root.canonicalize().unwrap(), "start.md").unwrap(),
+                "outside selected bytes"
+            );
+            std::fs::rename(&root, fixture.path().join("old-notes")).unwrap();
+            std::os::unix::fs::symlink(outside_root, &root).unwrap();
+            assert!(read_selected_source(&root, "start.md").is_err());
         }
         assert_eq!(std::fs::read_to_string(outside).unwrap(), "outside bytes");
     }
