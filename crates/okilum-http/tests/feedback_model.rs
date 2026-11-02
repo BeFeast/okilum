@@ -5,6 +5,10 @@
 #[path = "../../okilum-shell/src/reader_feedback/model.rs"]
 mod model;
 
+#[allow(dead_code)]
+#[path = "../../okilum-shell/src/reader_feedback/video.rs"]
+mod video;
+
 // Only the UI diagnostic sink and disabled Sprint mode are substituted. Payload,
 // attachment reopening, endpoint policy and receipt validation are production code.
 mod reader_diagnostics {

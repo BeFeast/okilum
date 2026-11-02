@@ -1,0 +1,49 @@
+# The portable harness imports production Feedback sources without linking GPUI.
+# Run it when either side changes, including the exact post-merge main source.
+name: feedback-ci
+on:
+  pull_request:
+    paths:
+      - 'crates/okilum-http/**'
+      - 'crates/okilum-shell/src/reader_feedback/**'
+      - 'Cargo.lock'
+      - '.forgejo/workflows/feedback-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/okilum-http/**'
+      - 'crates/okilum-shell/src/reader_feedback/**'
+      - 'Cargo.lock'
+      - '.forgejo/workflows/feedback-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  feedback-model:
+    runs-on: docker
+    container:
+      image: ghcr.io/catthehacker/ubuntu:act-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install compiler and pinned Rust
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends build-essential curl git
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Resolve and verify pinned workspace dependencies
+        run: |
+          scripts/vendor-setup.sh
+          scripts/vendor-setup.sh --verify
+      - name: Format, lint and execute the complete portable Feedback suite
+        run: |
+          cargo fmt -p okilum-http --check
+          cargo clippy --locked -p okilum-http --test feedback_model -- -D warnings
+          cargo test --locked -p okilum-http --test feedback_model
