@@ -1356,6 +1356,9 @@ mod tests {
                 "large projected Copy preserves exact authored CRLF bytes"
             );
         });
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-down");
+        #[cfg(not(target_os = "macos"))]
         visual.simulate_keystrokes("ctrl-end");
         visual.run_until_parked();
         input.read_with(visual, |i, _| {
