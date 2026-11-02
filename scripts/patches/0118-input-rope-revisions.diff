@@ -3,7 +3,7 @@ index ce7d65ea..cd748dbd 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -30,6 +30,7 @@ use super::{
- 
+
  /// Map a current source anchor into the last displayed revision. Positions in
  /// the replacement map to its old start; unchanged suffixes retain exact bytes.
 +#[cfg(test)]
@@ -110,9 +110,9 @@ index 9abbca2d..403b2203 100644
 +use std::{ops::Range, rc::Rc};
 +#[cfg(test)]
 +use std::borrow::Cow;
- 
+
  use gpui::{Bounds, Half, Pixels, ShapedLine, TextAlign, px};
- 
+
 @@ -399,6 +401,7 @@ pub(super) struct LastLayout {
      pub(super) projection: Option<PinnedProjection>,
      // Cheap persistent source clone bound to this exact painted layout. Needed
@@ -124,7 +124,7 @@ index 9abbca2d..403b2203 100644
 @@ -431,6 +434,7 @@ impl LastLayout {
          self.rows.row_height(self.rows.row_at(y))
      }
- 
+
 +    #[cfg(test)]
      pub(super) fn source_for_anchor(&self, current: SourceStamp) -> Option<Cow<'_, str>> {
          if self.source_stamp.document != current.document {
@@ -268,7 +268,7 @@ index 15843cf6..90a344bc 100644
 @@ -1246,6 +1246,14 @@ impl<M: InputModeKind> InputBaseState<M> {
          self.projection.stamp.source
      }
- 
+
 +    pub fn source_snapshot(&self) -> crate::input::projection::SourceSnapshot {
 +        crate::input::projection::SourceSnapshot {
 +            stamp: self.source_stamp(),
@@ -309,7 +309,7 @@ index 15843cf6..90a344bc 100644
 @@ -4499,6 +4508,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
              }
          }
- 
+
 +        let preceding = self.projection.source_text.clone();
          self.record_source_mutation(
              if !self.emit_events {
@@ -331,7 +331,7 @@ index 15843cf6..90a344bc 100644
 @@ -4658,7 +4673,13 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
              }
          }
- 
+
 +        let preceding = self.projection.source_text.clone();
          self.record_source_mutation(SourceMutationReason::Preedit, cx);
 +        if self.is_multi_line() {
@@ -439,7 +439,7 @@ index 08df61c4..99b1c322 100644
 @@ -350,20 +375,19 @@ fn row_start(text: &str, row: usize) -> usize {
          .nth(row - 1).map_or(text.len(), |(i, _)| i + 1)
  }
- 
+
 -fn indexed_row_start(text: &str, index: Option<&Rope>, row: usize) -> usize {
 +fn indexed_row_start(projection: &dyn SourceProjection, index: Option<&Rope>, row: usize) -> usize {
      match index {
@@ -512,14 +512,14 @@ index 11e0b1ce..76d07927 100644
 @@ -12,6 +12,10 @@ use std::{
      },
  };
- 
+
 +#[path = "source_text.rs"]
 +mod source_text;
 +pub use source_text::{SourceText, EditDelta, take_flattened_bytes};
 +
  /// Maximum canonical bytes admitted to native projected layout and anchoring.
  pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
- 
+
 @@ -69,7 +73,7 @@ impl Default for ActiveSource {
  #[derive(Clone, Debug)]
  pub struct SourceSnapshot {
@@ -527,10 +527,10 @@ index 11e0b1ce..76d07927 100644
 -    pub text: Arc<str>,
 +    pub text: SourceText,
  }
- 
+
  /// A native click resolved against the current source layout. Consumers must
 @@ -237,6 +241,26 @@ pub trait SourceProjection: Send + Sync {
- 
+
      fn source(&self) -> &SourceSnapshot;
      fn text(&self) -> &str;
 +    /// Persistent display and its exact edit receipt. Legacy providers may keep
