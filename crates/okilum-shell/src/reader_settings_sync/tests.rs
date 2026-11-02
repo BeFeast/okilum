@@ -1318,3 +1318,57 @@ fn sync_2419_first_use_keeps_sync_off_when_preferences_cannot_be_saved(cx: &mut 
         "failed consent must not reach the controller"
     );
 }
+
+#[gpui::test]
+fn sync_2419_real_pairing_timer_skips_full_runtime_inspection(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    let prepared = directory.path().join("prepared");
+    std::fs::create_dir(&prepared).unwrap();
+    std::fs::write(prepared.join("prepared.json"), b"invalid runtime receipt").unwrap();
+    let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
+    let offer = controller
+        .begin_pairing_at(
+            "Desktop",
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1".parse().unwrap(),
+        )
+        .unwrap();
+    controller
+        .set_configurations(vec![prepared.join("syncthing/config.xml")])
+        .unwrap();
+    assert!(
+        controller.refresh().is_err(),
+        "positive control: full runtime inspection detects the invalid receipt"
+    );
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.controller = Some(controller.clone());
+            view.snapshot = Some(offer);
+            view.schedule_refresh(cx);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual.executor().advance_clock(Duration::from_millis(999));
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| assert_eq!(view.epoch.current(), 0));
+    visual.executor().advance_clock(Duration::from_millis(1));
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| {
+        assert_eq!(view.epoch.current(), 1, "timer really dispatched a worker");
+        assert!(!view.busy, "real worker completed");
+        assert!(
+            view.error.is_none(),
+            "pairing must not wait for unrelated runtime inspection"
+        );
+        assert!(view.snapshot.as_ref().unwrap().offer_url.is_some());
+    });
+    assert_visible(visual, "sync-copy-url");
+    controller.shutdown();
+}
