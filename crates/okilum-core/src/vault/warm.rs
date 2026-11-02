@@ -19,6 +19,8 @@ pub struct SourceRevision {
     device: u64,
     inode: u64,
     changed: i128,
+    #[serde(default)]
+    content_hash: Option<[u8; 32]>,
 }
 impl SourceRevision {
     /// Accepted source mtime for derived recency ordering, without additional IO.
@@ -26,11 +28,13 @@ impl SourceRevision {
         self.modified
     }
 
-    /// Imported mtime can be rounded even on a precise native filesystem. Native
-    /// change time also changes on same-size writes with a restored mtime. Reuse still
-    /// requires equality of the entire revision, never just either timestamp.
+    /// Reuse requires a verified fingerprint, or native timestamps outside the
+    /// vulnerable tick on a known local filesystem. `read` supplies fingerprints
+    /// whenever fractional timestamp digits cannot establish that guarantee.
     pub fn is_precise(&self) -> bool {
-        !self.modified.is_multiple_of(1_000_000_000) || self.precise_change_time()
+        self.content_hash.is_some()
+            || !self.modified.is_multiple_of(1_000_000_000)
+            || self.precise_change_time()
     }
 
     fn precise_change_time(&self) -> bool {
@@ -38,6 +42,32 @@ impl SourceRevision {
     }
 
     pub fn read(path: &Path) -> std::io::Result<Self> {
+        let mut revision = Self::metadata(path)?;
+        let changed = u64::try_from(revision.changed / 1_000_000_000)
+            .ok()
+            .and_then(|seconds| {
+                std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(
+                    seconds,
+                    revision.changed.rem_euclid(1_000_000_000) as u32,
+                ))
+            })
+            .unwrap_or(std::time::SystemTime::now());
+        if crate::change_detection::needs_content_check(path, changed) {
+            let hash = crate::change_detection::hash_file(path, revision.size)?;
+            if Self::metadata(path)? != revision {
+                return Err(std::io::Error::other("File changed during revision check"));
+            }
+            revision.content_hash = Some(hash);
+        }
+        Ok(revision)
+    }
+
+    fn matches_bytes(&self, bytes: &[u8]) -> bool {
+        self.content_hash
+            .is_none_or(|hash| hash == crate::change_detection::digest(bytes))
+    }
+
+    fn metadata(path: &Path) -> std::io::Result<Self> {
         #[cfg(windows)]
         {
             Self::read_windows(path)
@@ -56,10 +86,12 @@ impl SourceRevision {
             #[cfg(unix)]
             let (device, inode, changed) = {
                 use std::os::unix::fs::MetadataExt;
+                let (seconds, nanos) =
+                    crate::change_detection::change_time(meta.ctime(), meta.ctime_nsec());
                 (
                     meta.dev(),
                     meta.ino(),
-                    meta.ctime() as i128 * 1_000_000_000 + meta.ctime_nsec() as i128,
+                    seconds as i128 * 1_000_000_000 + nanos as i128,
                 )
             };
             #[cfg(not(unix))]
@@ -70,6 +102,7 @@ impl SourceRevision {
                 device,
                 inode,
                 changed,
+                content_hash: None,
             })
         }
     }
@@ -116,7 +149,8 @@ impl SourceRevision {
             modified,
             device: u64::from(info.dwVolumeSerialNumber),
             inode: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
-            changed: i128::from(basic.ChangeTime) * 100,
+            changed: (i128::from(basic.ChangeTime) - 116_444_736_000_000_000) * 100,
+            content_hash: None,
         })
     }
 }
@@ -244,7 +278,7 @@ pub fn remember_primary(base: &Path, root: &Path, path: &str) -> Result<()> {
         "Primary exceeds cache size limit"
     );
     ensure!(
-        SourceRevision::read(&file_path)? == before,
+        SourceRevision::read(&file_path)? == before && before.matches_bytes(&bytes),
         "Primary changed during cache read"
     );
     let snapshot = PrimarySnapshot {
@@ -559,6 +593,10 @@ pub struct ReuseDiagnostics {
     pub changed_revision: usize,
     pub coarse_mtime: usize,
     pub precise_ctime: usize,
+    /// Initial revision fingerprint IO, separate from source decoding reads.
+    /// Changed/cold sources also verify a second revision after reading bytes.
+    pub fingerprinted: usize,
+    pub fingerprint_bytes: u64,
     pub mismatch: RevisionMismatches,
 }
 
@@ -581,6 +619,12 @@ impl ReuseDiagnostics {
         if let Some(stamp) = before {
             self.coarse_mtime += usize::from(stamp.modified.is_multiple_of(1_000_000_000));
             self.precise_ctime += usize::from(stamp.precise_change_time());
+            self.fingerprinted += usize::from(stamp.content_hash.is_some());
+            self.fingerprint_bytes += if stamp.content_hash.is_some() {
+                stamp.size
+            } else {
+                0
+            };
         }
         let counter = if force {
             &mut self.forced
@@ -659,8 +703,10 @@ impl Snapshot {
             .take(MAX_BYTES + 1)
             .read_to_end(&mut bytes)?;
         // A file replaced during the read is decoded but never trusted as persisted.
-        let file =
-            before.filter(|before| SourceRevision::read(&path).ok().as_ref() == Some(before));
+        let file = before.filter(|before| {
+            SourceRevision::read(&path).ok().as_ref() == Some(before)
+                && before.matches_bytes(&bytes)
+        });
         ensure!(
             bytes.len() as u64 <= MAX_BYTES,
             "Reader source bank exceeds size limit"
@@ -1043,7 +1089,10 @@ fn check_source(
                 });
             }
             let after = SourceRevision::read(&path).ok();
-            let stamp = (before == after).then_some(after).flatten();
+            let stamp = (before == after)
+                .then_some(after)
+                .flatten()
+                .filter(|stamp| stamp.matches_bytes(&bytes));
             result.source = Some(Source {
                 stamp,
                 bytes: STANDARD.encode(bytes),
@@ -1089,6 +1138,8 @@ impl CheckedSources {
         counters.changed_revision += other.changed_revision;
         counters.coarse_mtime += other.coarse_mtime;
         counters.precise_ctime += other.precise_ctime;
+        counters.fingerprinted += other.fingerprinted;
+        counters.fingerprint_bytes += other.fingerprint_bytes;
         counters.mismatch.size += other.mismatch.size;
         counters.mismatch.modified += other.mismatch.modified;
         counters.mismatch.device += other.mismatch.device;
@@ -1635,6 +1686,9 @@ mod tests {
     #[test]
     fn parallel_warm_reuse_detects_same_size_restored_mtime_edits() {
         let temp = tempfile::tempdir().unwrap();
+        if !crate::change_detection::native_ctime_changes(temp.path()) {
+            return;
+        }
         let root = temp.path().join("vault");
         std::fs::create_dir(&root).unwrap();
         let path = root.join("source.md");
@@ -2316,6 +2370,9 @@ mod tests {
     #[test]
     fn coarse_mtime_with_precise_change_time_reuses_sources_and_detects_preserved_mtime_edits() {
         let temp = tempfile::tempdir().unwrap();
+        if !crate::change_detection::native_ctime_changes(temp.path()) {
+            return;
+        }
         let path = temp.path().join("Coarse.md");
         std::fs::write(&path, "same length").unwrap();
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -2417,6 +2474,7 @@ mod tests {
             device: 1,
             inode: 2,
             changed: 1_700_000_000_000_000_000,
+            content_hash: None,
         };
         let source = Source {
             stamp: Some(coarse.clone()),
@@ -2446,6 +2504,76 @@ mod tests {
             cfg!(any(unix, windows)),
             "only a native change time can strengthen reuse"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_fallback_detects_identical_stat_edits_and_reuses_unchanged_sources() {
+        crate::change_detection::with_content_checks(|| {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("source.md");
+            std::fs::write(&path, "[[Old]]").unwrap();
+            std::fs::write(temp.path().join("New.md"), "target").unwrap();
+            let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+            let cheap = SourceRevision::metadata(&path).unwrap();
+            let (_, cold, _) = reconcile(temp.path(), None, false, &mut |_, _| Ok(())).unwrap();
+            let (_, warm, stats) =
+                reconcile(temp.path(), Some(&cold), false, &mut |_, _| Ok(())).unwrap();
+            assert_eq!((stats.read, stats.reused), (0, 2));
+            assert_eq!(stats.reuse.fingerprinted, 2);
+            assert_eq!(stats.reuse.fingerprint_bytes, 13);
+            std::fs::write(&path, "[[New]]").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+            assert_eq!(
+                cheap,
+                SourceRevision::metadata(&path).unwrap(),
+                "positive control: size, mtime, ctime and identity all collide"
+            );
+            let (vault, updated, stats) =
+                reconcile(temp.path(), Some(&warm), false, &mut |_, _| Ok(())).unwrap();
+            assert_eq!((stats.read, stats.reused), (1, 1));
+            assert_eq!(updated.source("source.md").as_deref(), Some("[[New]]"));
+            assert_eq!(vault.backlinks("New.md").len(), 1);
+            // Old caches without a fingerprint must revalidate, never authorize reuse.
+            let mut old_cache = updated.clone();
+            old_cache
+                .sources
+                .get_mut("source.md")
+                .unwrap()
+                .stamp
+                .as_mut()
+                .unwrap()
+                .content_hash = None;
+            let (_, _, stats) =
+                reconcile(temp.path(), Some(&old_cache), false, &mut |_, _| Ok(())).unwrap();
+            assert_eq!((stats.read, stats.reused), (1, 1));
+            // A same-stat write racing the source read cannot stamp stale bytes
+            // with a fingerprint belonging to the later source.
+            let (_, raced, _) = reconcile_with_reader(
+                temp.path(),
+                Some(&updated),
+                true,
+                &mut |_, _| Ok(()),
+                &mut |read_path| {
+                    let bytes = std::fs::read(read_path)?;
+                    if read_path == path {
+                        std::fs::write(read_path, "[[Old]]")?;
+                        std::fs::File::options()
+                            .write(true)
+                            .open(read_path)?
+                            .set_modified(mtime)?;
+                    }
+                    Ok(bytes)
+                },
+            )
+            .unwrap();
+            assert!(raced.source_revision("source.md").is_none());
+        });
     }
 
     #[test]
