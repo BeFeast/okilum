@@ -2229,7 +2229,13 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert!(!all.contains(&"note.md".to_owned()));
         typed(visual, "rec");
-        assert_eq!(offered(&note, visual), Some(vec!["Recipes.md".into()]));
+        assert_eq!(
+            offered(&note, visual),
+            Some(vec!["Recipes.md".into(), "Projects/Roadmap.md".into()]),
+            // The shared fuzzy ranker also matches r/e/c in Projects; the
+            // direct title match remains first and is the accepted row.
+            "title prefix ranks before a fuzzy folder match"
+        );
         // The list is painted under the caret.
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let list = visual
