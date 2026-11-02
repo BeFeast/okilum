@@ -40,6 +40,14 @@ pub(crate) fn show_sync_pairing(window: &mut Window, cx: &mut App) {
     show_section_from(None, Some(Section::Sync), Some(window.window_handle()), cx);
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn share_sync_menu_item(
+    reader: WeakEntity<Reader>,
+) -> gpui_component::menu::PopupMenuItem {
+    gpui_component::menu::PopupMenuItem::new("Share with another computer…")
+        .on_click(move |_, _, cx| show_section(Some(reader.clone()), Some(Section::Sync), cx))
+}
+
 pub(crate) fn show_features(cx: &mut App) {
     show_section(None, Some(Section::Features), cx);
 }
@@ -446,8 +454,6 @@ impl Section {
     fn available(self, cx: &App) -> bool {
         match self {
             Self::T3 => reader_features::enabled(reader_features::Feature::Agents, cx),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            Self::Sync => reader_features::enabled(reader_features::Feature::Sync, cx),
             _ => true,
         }
     }
@@ -559,7 +565,23 @@ struct Settings {
     vault_color_saved: Option<Option<brand::VaultColor>>,
 }
 impl Settings {
+    fn enable_section(&mut self, section: Section, cx: &mut Context<Self>) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if section == Section::Sync {
+            reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+            if !reader_features::enabled(reader_features::Feature::Sync, cx) {
+                return false;
+            }
+        }
+        true
+    }
+
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if !self.enable_section(section, cx) {
+            self.section = Section::Features;
+            cx.notify();
+            return;
+        }
         self.section = if section.available(cx) {
             section
         } else {
@@ -577,6 +599,11 @@ impl Settings {
 
     /// Explicit entries do not replace the pane chosen in the sidebar (#1496).
     fn show_entry_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if !self.enable_section(section, cx) {
+            self.section = Section::Features;
+            cx.notify();
+            return;
+        }
         self.section = if section.available(cx) {
             section
         } else {
@@ -596,6 +623,11 @@ impl Settings {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 {
                     this.sync = None;
+                    if this.section == Section::Sync
+                        && !reader_features::enabled(reader_features::Feature::Sync, cx)
+                    {
+                        this.section = Section::Features;
+                    }
                 }
                 if !this.section.available(cx) {
                     this.section = Section::Features;
@@ -1731,7 +1763,10 @@ impl Render for Settings {
             self.section = Section::Features;
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.section == Section::Sync && self.sync.is_none() {
+        if self.section == Section::Sync
+            && reader_features::enabled(reader_features::Feature::Sync, cx)
+            && self.sync.is_none()
+        {
             self.sync = Some(reader_settings_sync::shared(window, cx));
         }
         #[cfg(any(unix, windows))]
@@ -2081,7 +2116,7 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("settings-section-T3").is_none());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        assert!(visual.debug_bounds("settings-section-Sync").is_none());
+        assert!(visual.debug_bounds("settings-section-Sync").is_some());
         for feature in Feature::ALL
             .into_iter()
             .filter(|feature| feature.available())

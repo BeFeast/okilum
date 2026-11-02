@@ -160,16 +160,83 @@ pub fn connect(
     );
     check()?;
     Lifecycle::new(state.join("service"), units.to_owned(), Systemd).enable(instance)?;
-    identity.connect()?;
+    wait_for_rest(&check, || identity.connect().map(|_| ()))?;
     check()?;
     crate::network_policy::reconcile(&state.join("prepared"), &identity, None)?;
     check()?;
     Ok(identity)
 }
 
+// systemd start confirms process launch, not authenticated REST readiness.
+// Only a transport startup failure is retryable; identity/version failures stay errors.
+fn wait_for_rest(
+    check: impl Fn() -> Result<()>,
+    mut connect: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        check()?;
+        match connect() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error
+                    .chain()
+                    .any(|e| e.to_string() == "Syncthing REST unavailable")
+                    && std::time::Instant::now() < deadline => {}
+            Err(error) => {
+                return Err(error.context(
+                    "Sync setup could not verify the bundled connection; refresh to retry",
+                ))
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sync_2419_managed_startup_retries_rest_readiness_but_not_incompatible_identity() -> Result<()>
+    {
+        let mut attempts = 0;
+        wait_for_rest(
+            || Ok(()),
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    anyhow::bail!("Syncthing REST unavailable");
+                }
+                Ok(())
+            },
+        )?;
+        assert_eq!(attempts, 3, "startup waited for actual REST readiness");
+        attempts = 0;
+        let error = wait_for_rest(
+            || Ok(()),
+            || {
+                attempts += 1;
+                anyhow::bail!("unsupported Syncthing version")
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            attempts, 1,
+            "positive control: incompatible identity must not retry"
+        );
+        assert!(format!("{error:#}").contains("unsupported Syncthing version"));
+        let called = std::cell::Cell::new(false);
+        assert!(wait_for_rest(
+            || anyhow::bail!("Sync is disabled"),
+            || {
+                called.set(true);
+                Ok(())
+            }
+        )
+        .is_err());
+        assert!(!called.get(), "revocation precedes another REST request");
+        Ok(())
+    }
     #[test]
     fn explicit_scope_rejects_other_configuration_before_discovery() {
         let owned = Path::new("/private/managed/config.xml");

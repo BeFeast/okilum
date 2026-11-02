@@ -6956,6 +6956,8 @@ fn reader_more_menu(
                     .checked(current == mode)
                     .on_click(move |_, window, cx| set_appearance(mode, Some(&vault), window, cx))
             };
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let settings_reader_for_sync = reader.clone();
             let settings_reader = reader.clone();
             let wrap_reader = reader.clone();
             let reader = reader.clone();
@@ -7008,6 +7010,11 @@ fn reader_more_menu(
                         reader_settings::show(Some(settings_reader.clone()), cx);
                     }),
             )
+            .map(|menu| {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                let menu = menu.item(reader_settings::share_sync_menu_item(settings_reader_for_sync.clone()));
+                menu
+            })
             .menu("Keyboard shortcuts", Box::new(ToggleShortcutSheet))
             .menu("Maximize note", Box::new(MaximizeNote))
             .separator()
