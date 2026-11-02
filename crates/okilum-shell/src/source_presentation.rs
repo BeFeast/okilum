@@ -2942,82 +2942,99 @@ mod rope_revision_tests {
 
     #[test]
     fn native_receipts_bound_compose_and_old_discovery_controls_at_all_sizes() {
-        for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
-            let row = "Paragraph **bold** and a contraction isn't changed.\r\n\r\n";
-            let mut authored = row.repeat(bytes / row.len());
-            authored.push_str(&"z".repeat(bytes - authored.len()));
-            let source = SourceSnapshot {
-                stamp: SourceStamp {
-                    document: 2403,
-                    generation: 1,
-                },
-                text: SourceText::from_rope(Rope::from_str(&authored)),
-            };
-            reset_work();
-            let provider = CachedProvider::classify(source.clone());
-            let cold = take_work();
+        for row in [
+            "Paragraph **bold** and a contraction isn't changed.\r\n\r\n".to_owned(),
+            "Paragraph **bold** and a contraction isn't changed.\r\n".to_owned(),
+            format!("Paragraph {} end.\r\n\r\n", "ordinary prose ".repeat(200)),
+        ] {
+            let mut scanned = Vec::new();
+            for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
+                let mut authored = row.repeat(bytes / row.len());
+                authored.push_str(&"z".repeat(bytes - authored.len()));
+                let source = SourceSnapshot {
+                    stamp: SourceStamp {
+                        document: 2403,
+                        generation: 1,
+                    },
+                    text: SourceText::from_rope(Rope::from_str(&authored)),
+                };
+                reset_work();
+                let provider = CachedProvider::classify(source.clone());
+                let cold = take_work();
+                assert!(
+                    cold.display_builds > 0 && cold.flattened_bytes >= bytes,
+                    "cold controls: {cold:?}"
+                );
+                // Edit the same column of a complete logical line at every size.
+                let at = (bytes / row.len() / 2) * row.len() + 16;
+                let active = ActiveSource {
+                    anchor: SourceByte(at),
+                    head: SourceByte(at),
+                    ..Default::default()
+                };
+                let before = provider.compose(&source, &active).unwrap();
+                let mut rope = source.text.rope().clone();
+                rope.remove(at..at + 1);
+                rope.insert(at, "q");
+                let edited = SourceSnapshot {
+                    stamp: SourceStamp {
+                        generation: 2,
+                        ..source.stamp
+                    },
+                    text: source.text.edited(rope, at..at + 1, 1),
+                };
+                reset_work();
+                gpui_component::input::projection::take_flattened_bytes();
+                let frame = provider
+                    .compose(&edited, &active)
+                    .expect("retained receipt");
+                let work = take_work();
+                println!(
+                    "RECEIPT_KEY_WORK line_bytes={} note_bytes={bytes} work={work:?}",
+                    row.len()
+                );
+                scanned.push(work.scanned_bytes);
+                assert_eq!(work.flattened_bytes, 0, "{bytes}: {work:?}");
+                assert_eq!(work.display_builds, 0, "{bytes}: {work:?}");
+                assert!(
+                    work.scanned_bytes < row.len() * 16 + 4096
+                        && work.display_bytes < row.len() * 2 + 4096,
+                    "{bytes}: {work:?}"
+                );
+                assert_eq!(gpui_component::input::projection::take_flattened_bytes(), 0);
+                assert!(
+                    frame
+                        .display_edit(before.display_revision().unwrap())
+                        .is_some(),
+                    "native cache must receive a display receipt"
+                );
+                // Compare the real incremental output to an independent cold parse.
+                let oracle = CachedProvider::classify(edited.clone())
+                    .compose(&edited, &active)
+                    .unwrap();
+                assert_eq!(frame.text(), oracle.text());
+                assert_eq!(frame.line_indents(), oracle.line_indents());
+                assert_eq!(frame.styles(), oracle.styles());
+                // Independent old-style text has no native edit receipt. Running
+                // that compatibility path must exceed the SAME byte-scan budget.
+                let legacy = SourceSnapshot {
+                    stamp: SourceStamp {
+                        generation: 3,
+                        ..source.stamp
+                    },
+                    text: SourceText::from(format!("{}r", &authored[..bytes - 1])),
+                };
+                reset_work();
+                let _old = provider.compose(&legacy, &active).unwrap();
+                let old = take_work();
+                assert!(
+                    old.scanned_bytes >= bytes,
+                    "old-path scan positive control: {old:?}"
+                );
+            }
             assert!(
-                cold.display_builds > 0 && cold.flattened_bytes >= bytes,
-                "cold controls: {cold:?}"
-            );
-            let at = source.text.len() - 8;
-            let active = ActiveSource {
-                anchor: SourceByte(at),
-                head: SourceByte(at),
-                ..Default::default()
-            };
-            let before = provider.compose(&source, &active).unwrap();
-            let mut rope = source.text.rope().clone();
-            rope.remove(at..at + 1);
-            rope.insert(at, "q");
-            let edited = SourceSnapshot {
-                stamp: SourceStamp {
-                    generation: 2,
-                    ..source.stamp
-                },
-                text: source.text.edited(rope, at..at + 1, 1),
-            };
-            reset_work();
-            gpui_component::input::projection::take_flattened_bytes();
-            let frame = provider
-                .compose(&edited, &active)
-                .expect("retained receipt");
-            let work = take_work();
-            assert_eq!(work.flattened_bytes, 0, "{bytes}: {work:?}");
-            assert_eq!(work.display_builds, 0, "{bytes}: {work:?}");
-            assert!(
-                work.scanned_bytes < 16 * 1024 && work.display_bytes < 16 * 1024,
-                "{bytes}: {work:?}"
-            );
-            assert_eq!(gpui_component::input::projection::take_flattened_bytes(), 0);
-            assert!(
-                frame
-                    .display_edit(before.display_revision().unwrap())
-                    .is_some(),
-                "native cache must receive a display receipt"
-            );
-            // Compare the real incremental output to an independent cold parse.
-            let oracle = CachedProvider::classify(edited.clone())
-                .compose(&edited, &active)
-                .unwrap();
-            assert_eq!(frame.text(), oracle.text());
-            assert_eq!(frame.line_indents(), oracle.line_indents());
-            assert_eq!(frame.styles(), oracle.styles());
-            // Independent old-style text has no native edit receipt. Running
-            // that compatibility path must exceed the SAME byte-scan budget.
-            let legacy = SourceSnapshot {
-                stamp: SourceStamp {
-                    generation: 3,
-                    ..source.stamp
-                },
-                text: SourceText::from(format!("{}r", &authored[..bytes - 1])),
-            };
-            reset_work();
-            let _old = provider.compose(&legacy, &active).unwrap();
-            let old = take_work();
-            assert!(
-                old.scanned_bytes >= bytes,
-                "old-path scan positive control: {old:?}"
+                scanned.iter().max().unwrap() - scanned.iter().min().unwrap() < 1024,
+                "work must stay flat across note sizes: {scanned:?}"
             );
         }
     }
