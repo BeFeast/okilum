@@ -590,10 +590,10 @@ index 11e0b1ce..76d07927 100644
          self.current = None;
 diff --git a/crates/base/src/input/source_text.rs b/crates/base/src/input/source_text.rs
 new file mode 100644
-index 00000000..280940ec
+index 00000000..916b29e5
 --- /dev/null
 +++ b/crates/base/src/input/source_text.rs
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,110 @@
 +//! Immutable native Rope revisions and bounded edit ancestry. No source mutation
 +//! is inferred by comparing complete note bytes.
 +use std::{ops::{Deref, Range}, sync::{Arc, OnceLock, atomic::{AtomicU64, Ordering}}};
@@ -639,6 +639,8 @@ index 00000000..280940ec
 +    pub fn id(&self) -> u64 { self.0.id }
 +    pub fn rope(&self) -> &Rope { &self.0.rope }
 +    pub fn len(&self) -> usize { self.0.rope.len() }
++    pub fn is_empty(&self) -> bool { self.len() == 0 }
++    pub fn is_char_boundary(&self, at: usize) -> bool { at <= self.len() && self.0.rope.is_char_boundary(at) }
 +    pub fn edit_steps(&self, steps: u64) -> Option<EditDelta> {
 +        if steps == 0 { return Some(EditDelta { previous: self.id(), old: self.len()..self.len(), inserted: 0 }); }
 +        self.0.ancestors.get(usize::try_from(steps).ok()?.checked_sub(1)?).cloned()
