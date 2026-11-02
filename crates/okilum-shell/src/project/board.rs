@@ -1367,12 +1367,43 @@ impl Reader {
                     }
                 }
                 Action::Discuss(text) => {
-                    let appended = this.project.as_ref().is_some_and(|manager| manager.update(cx, |manager, cx|
-                        manager.append_board_context(&owner, text.clone(), window, cx)));
-                    if appended { this.panels.open(reader_layout::Panel::Backlinks); }
+                    #[cfg(target_os = "linux")]
+                    let result = this.project.clone().ok_or(okilum_t3::draft_handoff::Refusal::Unavailable)
+                        .and_then(|manager| {
+                            if manager.read(cx).area.as_deref() != Some(owner.as_path()) {
+                                return Err(okilum_t3::draft_handoff::Refusal::WrongTarget);
+                            }
+                            // Discuss explicitly opens the existing panel first. It never
+                            // selects/creates a thread or inserts into a hidden fallback.
+                            this.panels.open(reader_layout::Panel::Backlinks);
+                            let available = if this.body_bounds.size.width > px(0.) {
+                                f32::from((this.body_bounds.size.width + window.viewport_size().width
+                                    - this.body_viewport_width).max(px(0.)))
+                            } else { f32::from(window.viewport_size().width) };
+                            let visible = this.project_open && this.project_navigation.active.is_some()
+                                && this.workspace_panels().visible(reader_layout::Panel::Backlinks, available);
+                            manager.update(cx, |manager, cx| {
+                                manager.draft_handoff_surface_visible(visible, cx);
+                                manager.append_board_context(&owner, text.clone(), window, cx)
+                            })
+                        });
+                    #[cfg(target_os = "linux")]
+                    let notice = match result {
+                        Ok(()) => {
+                            "Context appended to the existing Manager draft. Review and send when ready; Undo removes the block."
+                        }
+                        Err(okilum_t3::draft_handoff::Refusal::StaleAcknowledgement) =>
+                            "Manager target changed. Check its draft before trying again.",
+                        Err(_) => "Manager draft unavailable. Open the Manager and try again.",
+                    };
+                    // No supported atomic web composer bridge is published. Never
+                    // report success after changing an invisible native fallback.
+                    #[cfg(target_os = "macos")]
+                    let notice = "Draft handoff to the Manager webview is unavailable. No draft was changed.";
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    let notice = "Draft handoff to this Manager panel is unavailable. No draft was changed.";
                     board.update(cx, |board, cx| {
-                        board.notice = Some(if appended { "Context appended to the existing Manager draft. Review and send when ready; Undo removes the block." }
-                            else { "Manager is still loading; the draft was not changed. Try again." }.into());
+                        board.notice = Some(notice.into());
                         cx.notify();
                     });
                 }
@@ -1453,3 +1484,6 @@ impl Reader {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod discuss_tests;

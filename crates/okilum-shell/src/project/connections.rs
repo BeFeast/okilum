@@ -284,3 +284,68 @@ mod origin_tests {
         std::fs::remove_dir_all(base).unwrap();
     }
 }
+
+/// UI lifecycle only: changing a connection invalidates outstanding composer
+/// requests before any credential, gateway or stream task may complete. Durable
+/// drafts remain owned by their original writer and are not cleared here.
+#[cfg(target_os = "linux")]
+impl super::ProjectView {
+    pub(super) fn draft_handoff_connection_changing(&mut self) {
+        self.draft_handoff_visibility(false);
+    }
+
+    /// Called by the native surface lifecycle after installing its connection.
+    /// A webview cannot use this port: it has no supported atomic bridge here.
+    pub(super) fn draft_handoff_connection_ready(&mut self, cx: &gpui::App) {
+        let visible = native_handoff_visible(
+            self.active
+                && !self.executors_open
+                && self.section == super::ProjectSection::Manager
+                && self.draft_handoff_surface_is_visible()
+                && self.draft_handoff_owner_ready(cx),
+            crate::reader_features::enabled(crate::reader_features::Feature::Agents, cx),
+            self.native.model_client().is_some_and(|client| {
+                client.access_allowed()
+                    && !self
+                        .threads
+                        .handoff_revoked
+                        .as_ref()
+                        .is_some_and(|revoked| std::sync::Arc::ptr_eq(revoked, &client))
+            }),
+        );
+        self.draft_handoff_visibility(visible);
+    }
+}
+
+// BEGIN PURE HANDOFF VISIBILITY
+#[cfg(target_os = "linux")]
+fn native_handoff_visible(
+    surface_visible: bool,
+    agents_enabled: bool,
+    access_allowed: bool,
+) -> bool {
+    surface_visible && agents_enabled && access_allowed
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod handoff_visibility_tests {
+    use super::native_handoff_visible;
+    use ::core::prelude::v1::test;
+    #[test]
+    fn visibility_requires_surface_feature_and_current_access() {
+        assert!(native_handoff_visible(true, true, true));
+        for surface in [false, true] {
+            for agents in [false, true] {
+                for access in [false, true] {
+                    assert_eq!(
+                        native_handoff_visible(surface, agents, access),
+                        surface && agents && access
+                    );
+                }
+            }
+        }
+        assert!(!native_handoff_visible(true, true, false));
+        assert!(!native_handoff_visible(false, true, true));
+    }
+}
+// END PURE HANDOFF VISIBILITY
