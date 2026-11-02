@@ -1347,6 +1347,7 @@ impl HandoffIdentity {
 #[cfg(test)]
 mod handoff_identity_tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[test]
     fn visible_identity_revokes_on_hide_access_and_replacement() {
         let scope = (("origin".into(), "project".into(), "thread".into()), 1);

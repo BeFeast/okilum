@@ -224,6 +224,7 @@ pub(super) fn corrected_message_with_author(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[test]
     fn filters_keep_legacy_chat_and_acknowledged_corrections_discoverable() {
         use okilum_t3::message_types::{Message, MessageKey};
