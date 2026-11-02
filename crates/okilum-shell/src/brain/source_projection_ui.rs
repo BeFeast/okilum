@@ -427,7 +427,8 @@ mod tests {
                 "presentation never protects source"
             );
         });
-        for len in [65536, 65537, 256 * 1024] {
+        let limit = okilum_core::source_classifier::MAX_BYTES;
+        for len in [65536, 65537, 256 * 1024, limit, limit + 1] {
             let value = format!("\u{feff}# {}\r\n", "x".repeat(len - 7));
             assert_eq!(value.len(), len);
             view.update_in(cx, |v, window, cx| {
@@ -435,13 +436,13 @@ mod tests {
                 assert_eq!(v.source.entity_id(), entity);
                 assert!(v.source_editable);
                 assert_eq!(v.source.value(cx).as_bytes(), value.as_bytes());
-                assert_eq!(v.projection_snapshot(cx).is_some(), len <= 65536);
+                assert_eq!(v.projection_snapshot(cx).is_some(), len <= limit);
                 v.toggle_source_projection(window, cx);
                 v.toggle_source_projection(window, cx);
             });
             cx.run_until_parked();
             view.update_in(cx, |v, _, cx| {
-                assert_eq!(v.source_projection.accepted.is_some(), len <= 65536);
+                assert_eq!(v.source_projection.accepted.is_some(), len <= limit);
                 assert_eq!(v.source.value(cx).as_bytes(), value.as_bytes());
                 let request = source_write(
                     v.source_snapshot.as_ref().unwrap(),
