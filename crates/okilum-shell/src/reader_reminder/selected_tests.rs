@@ -125,6 +125,14 @@ async fn added(
     count: usize,
     tasks: usize,
 ) {
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.global::<Harness>().attempts.last(),
+            Some(&true),
+            "actual menu/action reached the writer with current retained source authority"
+        );
+    });
+    eprintln!("Reminder test waiting for {note}: completions={count}, tasks={tasks}");
     visual
         .condition(reader, |reader, cx| {
             completed(cx, root, count)
@@ -252,9 +260,30 @@ fn editor_action(reader: &Entity<Reader>, visual: &mut VisualTestContext) -> Rem
         reader.editing.as_ref().unwrap().input().clone()
     });
     visual.run_until_parked();
-    let bounds = input.read_with(visual, |state, _| state.input_bounds());
+    let at = input.read_with(visual, |state, _| {
+        assert_eq!(
+            state.selected_text().to_string(),
+            "1 November 2027",
+            "actual editor selection before right-click"
+        );
+        state
+            .range_to_bounds(&state.selected_range())
+            .expect("selected date has painted editor geometry")
+            .center()
+    });
+    reader.read_with(visual, |reader, _| {
+        let facts = reader.editing.as_ref().unwrap().menu_facts();
+        assert_eq!(
+            facts.date(),
+            Some(date()),
+            "the observer mirrored the actual selected date"
+        );
+        assert!(
+            facts.3.borrow().is_some(),
+            "captured request exists before menu construction"
+        );
+    });
     let before = MENU_BUILDS.with(|count| count.get());
-    let at = bounds.origin + point(px(40.), px(12.));
     visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
     visual.run_until_parked();
@@ -296,8 +325,9 @@ async fn reminder_724_editor_menu_captures_original_selection_and_unsaved_source
     });
     visual.simulate_input(unsaved);
     visual.run_until_parked();
+    let authored_snapshot = input.read_with(visual, |state, _| state.value().to_string());
     input.update(visual, |state, cx| {
-        let at = unsaved.find("1 November 2027").unwrap();
+        let at = state.value().find("1 November 2027").unwrap();
         state.set_selected_range(at..at + "1 November 2027".len(), cx);
     });
     visual.run_until_parked();
@@ -314,7 +344,7 @@ async fn reminder_724_editor_menu_captures_original_selection_and_unsaved_source
         "reminder never saves the dirty source editor"
     );
     input.read_with(visual, |state, _| {
-        assert_eq!(state.value().as_str(), unsaved)
+        assert_eq!(state.value().as_str(), authored_snapshot)
     });
     assert!(reader.read_with(visual, |reader, cx| reader.source_is_dirty(cx)));
 }
@@ -345,7 +375,9 @@ async fn reminder_724_stale_reader_and_editor_menu_refuse_without_retarget(
     let input = reader.read_with(visual, |reader, _| {
         reader.editing.as_ref().unwrap().input().clone()
     });
-    let at = SOURCE.find("1 November 2027").unwrap();
+    let at = input.read_with(visual, |state, _| {
+        state.value().find("1 November 2027").unwrap()
+    });
     input.update(visual, |state, cx| {
         state.set_selected_range(at..at + "1 November 2027".len(), cx)
     });
@@ -394,7 +426,26 @@ async fn reminder_724_held_worker_and_completion_refuse_rebound_owner(cx: &mut T
         });
         open_menu(&reader, visual);
         click_item(visual);
-        boundary.recv().await.unwrap();
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.global::<Harness>().attempts.last(),
+                Some(&true),
+                "held-boundary action must have reached the current request"
+            )
+        });
+        match futures::future::select(
+            Box::pin(boundary.recv()),
+            Box::pin(visual.executor().timer(Duration::from_secs(3))),
+        )
+        .await
+        {
+            futures::future::Either::Left((result, _)) => {
+                result.expect("owned worker entered the held boundary")
+            }
+            futures::future::Either::Right(_) => panic!(
+                "real {phase}-write boundary was not reached; refusing an unbounded fixture wait"
+            ),
+        }
         if phase == "after" {
             assert_eq!(std::fs::read_to_string(root.join(NOTE)).unwrap(), LINE);
         } else {

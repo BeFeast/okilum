@@ -124,7 +124,9 @@ impl Request {
             && match &self.evidence {
                 Evidence::Read => {
                     reader.editing.is_none()
-                        && reader.content.read(cx).selected_text() == self.selection
+                        // Root clears TextView selection on the menu item's
+                        // left press. The immutable menu packet owns that
+                        // selection; source/view identity remains authoritative.
                         && reader
                             .note_canonical_source
                             .as_deref()
@@ -148,7 +150,17 @@ impl Request {
     }
 
     pub(super) fn apply(&self, reader: &mut Reader, window: &mut Window, cx: &mut Context<Reader>) {
-        if !self.current(reader, cx) {
+        let current = self.current(reader, cx);
+        #[cfg(test)]
+        {
+            if cx.try_global::<test_hooks::Harness>().is_none() {
+                cx.set_global(test_hooks::Harness::default());
+            }
+            cx.global_mut::<test_hooks::Harness>()
+                .attempts
+                .push(current);
+        }
+        if !current {
             reader_toast::error(
                 "Reminder selection changed. Reopen its context menu.",
                 window,
@@ -292,6 +304,7 @@ pub(super) mod test_hooks {
         pub queued: std::collections::HashMap<PathBuf, Hooks>,
         pub completed: std::collections::HashMap<PathBuf, Vec<(bool, bool)>>,
         pub undone: Vec<bool>,
+        pub attempts: Vec<bool>,
     }
     impl Global for Harness {}
     pub(crate) fn take(cx: &mut App, root: &Path) -> Hooks {
