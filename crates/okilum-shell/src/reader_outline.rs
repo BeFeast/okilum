@@ -487,7 +487,11 @@ mod tests {
             &["Existing", "Tail 🎯"],
         );
         let edited = format!("## Draft Ω\r\n\r\n{}", fixture.original);
-        visual.simulate_input("## Draft Ω\r\n\r\n");
+        // One text-input transaction: simulate_input splits its string into
+        // individual keystrokes, whose undo grouping is a separate contract.
+        fixture.input.update_in(visual, |input, window, cx| {
+            input.replace_text_in_range(Some(0..0), "## Draft Ω\r\n\r\n", window, cx);
+        });
         settle(visual);
         assert_draft(
             &fixture,
