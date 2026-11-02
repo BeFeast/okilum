@@ -507,11 +507,13 @@ mod tests {
                     frames.iter().map(|f| f.prepaint_ms).fold(0.0_f32, f32::max));
             }
 
+            // Scroll toward the start: at EOF, scrolling farther down would
+            // hit the extent and could not serve as an off-centre control.
             // Scrolling by hand is free until the caret moves again.
             let bounds = input.read_with(visual, |input, _| input.input_bounds());
             visual.simulate_event(ScrollWheelEvent {
                 position: bounds.center(),
-                delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+                delta: ScrollDelta::Pixels(point(px(0.), px(200.))),
                 ..Default::default()
             });
             visual.run_until_parked();
