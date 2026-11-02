@@ -64,6 +64,30 @@ jobs:
         if: inputs.package == 'okilum-http'
         shell: pwsh
         run: cargo build --locked -p okilum-http --example network_probe
+      - name: Generate isolated Feedback TLS inspection certificates
+        if: inputs.package == 'okilum-http'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/feedback-fixture"
+          cd "$RUNNER_TEMP/feedback-fixture"
+          export MSYS_NO_PATHCONV=1
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout root.key -out root.pem -days 1 -subj '/CN=Okilum hosted Feedback root' -addext 'basicConstraints=critical,CA:TRUE'
+          openssl req -newkey rsa:2048 -nodes -keyout leaf.key -out leaf.csr -subj '/CN=feedback.okilum.test'
+          printf 'subjectAltName=DNS:feedback.okilum.test,DNS:localhost\nextendedKeyUsage=serverAuth\n' > leaf.ext
+          openssl x509 -req -in leaf.csr -CA root.pem -CAkey root.key -CAcreateserial -out leaf.pem -days 1 -extfile leaf.ext
+          openssl x509 -in root.pem -outform DER -out root.cer
+      - name: Feedback OS trust, static proxy, PAC and actionable error controls
+        if: inputs.package == 'okilum-http'
+        shell: pwsh
+        run: ./scripts/qa/windows-network/feedback_controls.ps1 -Fixture "$env:RUNNER_TEMP/feedback-fixture"
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.package == 'okilum-http'
+        with:
+          name: feedback-corporate-network-${{ github.sha }}
+          path: feedback-network-receipt/
+          retention-days: 7
+          if-no-files-found: error
       - name: Upload exact-source network regression companion
         if: inputs.package == 'okilum-http'
         uses: actions/upload-artifact@v4
