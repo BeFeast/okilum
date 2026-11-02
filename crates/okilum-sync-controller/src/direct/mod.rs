@@ -268,7 +268,11 @@ impl Controller {
     }
     pub fn set_configurations(&self, configs: Vec<PathBuf>) -> Result<()> {
         self.check()?;
-        *self.shared.configs.lock().unwrap() = configs;
+        let mut current = self.shared.configs.lock().unwrap();
+        if *current != configs {
+            *current = configs;
+            *self.shared.connection_watch.lock().unwrap() = Default::default();
+        }
         Ok(())
     }
     /// Nonblocking capability revocation. It closes the application listener and
@@ -281,8 +285,11 @@ impl Controller {
     }
     pub fn snapshot(&self) -> Result<Snapshot> {
         self.check()?;
-        let mut snapshot = snapshot(&self.shared.db.lock().unwrap())?;
-        if snapshot.pending.is_none() && snapshot.offer_url.is_none() {
+        let db = self.shared.db.lock().unwrap();
+        let mut snapshot = snapshot(&db)?;
+        let held = db.transfers.iter().any(transfer::Transfer::legacy_hold);
+        drop(db);
+        if !held && snapshot.pending.is_none() && snapshot.offer_url.is_none() {
             if let Some(status) = &self.shared.connection_watch.lock().unwrap().status {
                 snapshot.status = status.clone();
             }

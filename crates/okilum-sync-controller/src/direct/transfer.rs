@@ -244,25 +244,25 @@ impl Controller {
         };
         self.check()?;
         let config = api.config()?;
+        let addresses = if super::addresses::managed(&configs)?.is_some() {
+            let db = self.shared.db.lock().unwrap();
+            let peer = db.peers.get(&peer_id).context("paired computer missing")?;
+            ensure!(
+                peer.syncthing_device
+                    .as_ref()
+                    .is_none_or(|id| id == &connection.device_id),
+                "source transport identity differs"
+            );
+            super::addresses::with_dynamic(&peer.addresses)
+        } else {
+            vec!["dynamic".into()]
+        };
         if !config["devices"]
             .as_array()
             .context("invalid device inventory")?
             .iter()
             .any(|d| d["deviceID"] == connection.device_id)
         {
-            let addresses = if super::addresses::managed(&configs)?.is_some() {
-                let db = self.shared.db.lock().unwrap();
-                let peer = db.peers.get(&peer_id).context("paired computer missing")?;
-                ensure!(
-                    peer.syncthing_device
-                        .as_ref()
-                        .is_none_or(|id| id == &connection.device_id),
-                    "source transport identity differs"
-                );
-                super::addresses::with_dynamic(&peer.addresses)
-            } else {
-                vec!["dynamic".into()]
-            };
             api.add_device(&json!({"deviceID":connection.device_id,"addresses":addresses,"introducer":false,"autoAcceptFolders":false}))?;
         }
         let exists = config["folders"]
