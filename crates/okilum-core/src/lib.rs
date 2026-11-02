@@ -57,6 +57,7 @@ pub mod reminder_dates;
 pub mod reminder_schedule;
 pub mod reminder_task;
 pub mod remote_log;
+pub mod remote_markdown;
 pub mod render;
 pub mod search;
 pub mod search_snippet;

@@ -156,6 +156,7 @@ mod reader_recent;
 #[cfg(any(unix, windows))]
 mod reader_recovery_rows;
 mod reader_reminder;
+mod reader_remote_markdown;
 mod reader_reminder_notify;
 mod reader_reminder_settings;
 #[cfg(test)]
