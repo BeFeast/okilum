@@ -302,10 +302,24 @@ mod tests {
             opts
         });
         cx.run_until_parked();
+        let finished = std::rc::Rc::new(std::cell::Cell::new(None));
         cx.update(|cx| {
-            restore(opts, cx).detach();
+            let finished = finished.clone();
+            let restoring = restore(opts, cx);
+            cx.spawn(async move |_| finished.set(Some(restoring.await)))
+                .detach();
         });
-        cx.run_until_parked();
+        // Normal vault restoration waits on loading timers between windows.
+        // Drain the whole transaction, not just its first runnable batch.
+        for _ in 0..60 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+            if finished.get().is_some() {
+                break;
+            }
+        }
+        assert_eq!(finished.get(), Some(true), "the restore task completed");
         cx.update(|cx| {
             let mut actual = capture(cx);
             // Focus ordering is platform-specific in GPUI's test context.
