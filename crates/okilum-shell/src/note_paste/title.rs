@@ -78,7 +78,7 @@ pub fn anchor_text(html: &str, url: &str) -> Option<String> {
     let close = open_end + lower[open_end..].find("</a>")?;
     let tag = &html[start..open_end];
     let href = attribute(tag, "href")?;
-    if decode_entities(&href).trim_end_matches('/') != url.trim_end_matches('/') {
+    if decode_entities(&href).trim() != url {
         return None;
     }
     let text = super::offer::html_to_text(&html[open_end + 1..close]);
@@ -169,6 +169,11 @@ mod tests {
             Some("The & Page")
         );
         assert_eq!(anchor_text(html, "https://other.org"), None);
+        assert_eq!(
+            anchor_text(html, "https://x.org/p/"),
+            None,
+            "a title must not confirm a different trailing-slash destination"
+        );
         let two = "<a href='https://x.org/p'>a</a> <a href='https://x.org/q'>b</a>";
         assert_eq!(anchor_text(two, "https://x.org/p"), None);
     }

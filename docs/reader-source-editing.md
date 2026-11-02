@@ -95,8 +95,18 @@ updater, state or GUI initialization. Its parent limits the entire request to tw
 seconds and 8 MiB of UTF-8, cancels and reaps the child, and retains the editor's
 source, selection and focus guards. Strict UTF-16 decoding preserves authored
 Unicode, BOM and line endings. Empty text is distinct from unavailable or denied
-clipboard data; changed offers and malformed text are refused. HTML/RTF are not
-parsed as fallback, and no lossy platform reader is substituted.
+clipboard data; changed offers and malformed text are refused. Plain/code files
+and ordinary text fields retain this exact-text path.
+
+Markdown notes in Windows Source and Live Preview additionally read the native
+`HTML Format` flavor through a note-specific asynchronous provider (#2241).
+CF_HTML fragment offsets are UTF-8 byte offsets, and valid HTML reaches the same
+Markdown converter used on macOS and Linux. Labels and destinations remain
+independent, including Unicode labels, destinations differing by a trailing slash,
+and links styled in monospace. Missing or malformed HTML falls back to the same
+clipboard offer's declared plain text. Explicit Paste as Plain Text and fenced
+code skip HTML payloads. The existing request deadline, cancellation, changed-offer,
+source/selection guards and atomic Undo still apply.
 
 Linux reads the clipboard inside the paste command (#1602), so no activation,
 focus or selection change can cancel it. On a named Wayland compositor with
@@ -115,9 +125,12 @@ prefix); files, copied into the attachment folder in the background and
 embedded (vault files are linked in place; above Settings > Editor's threshold a
 Copy / Link to Original / Cancel prompt); image data, saved and embedded; IDE
 code (VS Code editor data, or all-monospace HTML/RTF over several lines) as a
-fence with its language; a selection plus one URL as `[selection](url)`;
-HTML or RTF converted to Markdown by `okilum-paste`, remote images downloaded
-in the background; TSV as a table; plain text. Paste as Plain Text is
+fence with its language; HTML or RTF converted to Markdown by `okilum-paste`,
+remote images downloaded in the background; a selection plus one plain URL as
+`[selection](url)`; TSV as a table; plain text. A copied-link title can still wrap
+the selection when its HTML confirms the exact plain URL. Otherwise rich text
+precedes the selection-link shortcut so a URL-looking Slack label cannot replace
+its actual destination. Paste as Plain Text is
 Option+Shift+Cmd+V (Ctrl+Shift+V elsewhere); Paste as Titled Link is
 Cmd+Alt+V / Ctrl+Alt+V. Files dropped onto the editor take the files path.
 Background results land only in the editing session of the note they were
@@ -136,8 +149,8 @@ own copy (owner process named by the X-Resource extension), servers without
 X-Resource, self-owned Wayland selections and unsupported compositors use
 GPUI's typed clipboard on the UI thread.
 Plain text containing HTML syntax stays literal instead of being guessed as an
-HTML clipboard offer. Windows (#1619) still pastes text as described above. Completed
-local attachment writes publish their exact saved paths to inventory, so a
+HTML clipboard offer. Windows note HTML uses the bounded path described above.
+Completed local attachment writes publish their exact saved paths to inventory, so a
 paste or drop does not wait for filesystem notifications to display its image.
 
 A byte comparison with the opened base guards every changed save. An external

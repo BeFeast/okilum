@@ -8,12 +8,12 @@
 //! 1. File URLs: each file linked (inside the vault) or copied into the
 //!    attachment folder in the background, one embed per line.
 //! 2. Image data: saved as a pasted image, `![[…]]` (an HTML flavor that is
-//!    more than one `<img>` goes to step 5 instead).
+//!    more than one `<img>` goes to step 4 instead).
 //! 3. Code from an IDE: a fenced block with its language (VS Code's
 //!    `vscode-editor-data`, or rich text that is all monospace).
-//! 4. A one-line selection and a single URL: `[selection](url)`.
-//! 5. HTML / RTF: Markdown by the `okilum-paste` converter; `data:` and
+//! 4. HTML / RTF: Markdown by the `okilum-paste` converter; `data:` and
 //!    `file://` images saved first, remote images downloaded afterwards.
+//! 5. A one-line selection and a plain URL: `[selection](url)`.
 //! 6. A TSV grid: a Markdown table.
 //! 7. Plain text as it is (CRLF to LF).
 //!
@@ -377,18 +377,14 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
         }
     }
 
-    // 4. A one-line selection and a single URL: a link around the selection.
-    //    (Checked before the rich flavor is read: a one-line URL is never the
-    //    multi-line code of step 3.)
-    if !sel.is_empty() {
-        let selected = &cx.source[sel.clone()];
-        if !selected.contains('\n') && !selected.trim().is_empty() {
-            if let Some(url) = plain.as_deref().and_then(title::single_url) {
-                let link = title::selection_link(selected, &url);
-                return Ok(Routed::text(Route::SelectionLink, &types, link));
-            }
-        }
-    }
+    let selection_url = if !sel.is_empty()
+        && !cx.source[sel.clone()].contains('\n')
+        && !cx.source[sel.clone()].trim().is_empty()
+    {
+        plain.as_deref().and_then(title::single_url)
+    } else {
+        None
+    };
 
     // Work too large for the UI thread: converted, its images saved, then
     // inserted at the paste position.
@@ -411,7 +407,7 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
         routed
     };
 
-    // 3 (rich text) and 5. HTML, or RTF/RTFD as HTML: code when it is all
+    // 3 (rich text) and 4. HTML, or RTF/RTFD as HTML: code when it is all
     // monospace, otherwise Markdown.
     let mut from_rtf = false;
     let html = if skip_rich {
@@ -435,6 +431,19 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
             text.len() <= BACKGROUND_TSV_BYTES && okilum_paste::tsv_to_table(text).is_some()
         });
     if let Some(html) = html.filter(|html| !rtf_table && !html.trim().is_empty()) {
+        // A browser's copied-link title may accompany its actual URL. Keep
+        // wrapping a selection only when the HTML confirms that exact target;
+        // a URL-looking Slack label with a different href must stay rich.
+        if let Some(url) = selection_url
+            .as_deref()
+            .filter(|url| title::anchor_text(&html, url).is_some())
+        {
+            return Ok(Routed::text(
+                Route::SelectionLink,
+                &types,
+                title::selection_link(&cx.source[sel.clone()], url),
+            ));
+        }
         let base_url = if has(CHROMIUM_SOURCE_URL) {
             board.source_url()
         } else {
@@ -474,6 +483,16 @@ fn route_once(board: &impl Pasteboard, cx: &RouteContext) -> Result<Routed, Offe
                 return Ok(Routed::text(Route::Text, &types, fitted(&text, false)));
             }
         }
+    }
+
+    // A plain URL (including an ordinary same-target HTML URL) wraps the
+    // selection after rich text has had its turn.
+    if let Some(url) = selection_url {
+        return Ok(Routed::text(
+            Route::SelectionLink,
+            &types,
+            title::selection_link(&cx.source[sel.clone()], &url),
+        ));
     }
 
     if let Some(text) = plain {
@@ -1322,21 +1341,27 @@ mod tests {
         std::fs::create_dir_all(&cache).unwrap();
         let cached = cache.join("file-1.png");
         std::fs::write(&cached, PNG).unwrap();
-        let path = cached.to_string_lossy().into_owned();
-        let board = Board::with(&[(offer::UTF8_TEXT, path.as_bytes())]);
-        let routed = smart(&board, &note, "", 0);
-        assert_eq!(routed.route, Route::Files);
-        match routed.follow_up {
-            Some(FollowUp::Files { plan, .. }) => match &plan.items[0].action {
-                FileAction::Copy { file_name } => {
-                    assert_eq!(file_name, "Pasted image 20261023120000.png")
-                }
+        // File URLs are portable; Raycast's literal POSIX path is also
+        // exercised on Unix, where that representation is an absolute path.
+        let url = url::Url::from_file_path(&cached).unwrap().to_string();
+        for path in
+            std::iter::once(url).chain(cfg!(unix).then(|| cached.to_string_lossy().into_owned()))
+        {
+            let board = Board::with(&[(offer::UTF8_TEXT, path.as_bytes())]);
+            let routed = smart(&board, &note, "", 0);
+            assert_eq!(routed.route, Route::Files);
+            match routed.follow_up {
+                Some(FollowUp::Files { plan, .. }) => match &plan.items[0].action {
+                    FileAction::Copy { file_name } => {
+                        assert_eq!(file_name, "Pasted image 20261023120000.png")
+                    }
+                    other => panic!("{other:?}"),
+                },
                 other => panic!("{other:?}"),
-            },
-            other => panic!("{other:?}"),
+            }
+            let routed = route(&board, &note.cx(Mode::Plain, "", 0..0)).unwrap();
+            assert_eq!(routed.insert.as_deref(), Some(path.as_str()));
         }
-        let routed = route(&board, &note.cx(Mode::Plain, "", 0..0)).unwrap();
-        assert_eq!(routed.insert.as_deref(), Some(path.as_str()));
         // Any other path is text.
         let other = outside.path().join("x.png");
         std::fs::write(&other, PNG).unwrap();
@@ -1624,6 +1649,97 @@ mod tests {
             .is_some_and(|text| text.starts_with("\n\n## Title") && text.ends_with(".\n\n")));
     }
 
+    /// The same Slack HTML uses the shared route on macOS, X11 and Wayland;
+    /// Windows strips only its CF_HTML envelope before reaching this route.
+    #[test]
+    fn slack_links_survive_shared_routing_and_plain_code_bypass() {
+        let note = Note::new();
+        let slack = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../okilum-paste/tests/fixtures/slack.html"
+        ));
+        let url = "https://ci.example.com/run/42";
+        let destination = format!("{url}/");
+        let html = slack.replace(
+            &format!("href=\"{url}\""),
+            &format!("href=\"{destination}\""),
+        );
+        let plain = "Slack fallback\r\nraw text";
+        for kind in offer::HTML {
+            let board = Board::with(&[
+                (kind, html.as_bytes()),
+                (offer::UTF8_TEXT, plain.as_bytes()),
+            ]);
+            let rich = smart(&board, &note, "", 0);
+            assert_eq!(rich.route, Route::RichText);
+            assert!(rich
+                .insert
+                .unwrap()
+                .contains(&format!("[{url}]({destination})")));
+            // A URL-looking Slack label is still a label. Replacing a selection
+            // must not let the selection-link shortcut discard the real href.
+            let board_url =
+                Board::with(&[(kind, html.as_bytes()), (offer::UTF8_TEXT, url.as_bytes())]);
+            let rich = smart_selection(&board_url, &note, "replace", 0..7);
+            assert_eq!(rich.route, Route::RichText);
+            assert!(rich
+                .insert
+                .unwrap()
+                .contains(&format!("[{url}]({destination})")));
+            let ordinary = format!("<a href=\"{url}\">{url}</a>");
+            let board_url = Board::with(&[
+                (kind, ordinary.as_bytes()),
+                (offer::UTF8_TEXT, url.as_bytes()),
+            ]);
+            let selected = smart_selection(&board_url, &note, "replace", 0..7);
+            assert_eq!(selected.route, Route::SelectionLink);
+            assert_eq!(
+                selected.insert.as_deref(),
+                Some("[replace](https://ci.example.com/run/42)")
+            );
+
+            for (mode, source, file, expected) in [
+                (Mode::Plain, "", false, Route::PlainText),
+                (Mode::Smart, "```\n", false, Route::CodeBlockText),
+                (Mode::Smart, "", true, Route::FileText),
+            ] {
+                board.reads.borrow_mut().clear();
+                let mut cx = note.cx(mode, source, source.len()..source.len());
+                if file {
+                    cx.note_rel = None;
+                }
+                let routed = route(&board, &cx).unwrap();
+                assert_eq!(routed.route, expected);
+                let expected_text = if mode == Mode::Plain {
+                    "Slack fallback\nraw text"
+                } else {
+                    plain
+                };
+                assert_eq!(routed.insert.as_deref(), Some(expected_text));
+                let reads = board.reads.borrow();
+                assert!(
+                    reads.iter().any(|kind| kind == offer::UTF8_TEXT),
+                    "plain acquisition control"
+                );
+                assert!(
+                    !reads.iter().any(|read| read == kind),
+                    "bypass must not read HTML"
+                );
+            }
+        }
+        let start = slack.find("<a target=").unwrap();
+        let end = start + slack[start..].find("</a>").unwrap() + 4;
+        let anchor = slack[start..end].replace(&format!(">{url}</a>"), ">Deploy details</a>");
+        let html = format!("<span style='font-family: monospace'>{anchor}</span>");
+        let board = Board::with(&[
+            ("public.html", html.as_bytes()),
+            (offer::UTF8_TEXT, b"Deploy details"),
+        ]);
+        let routed = smart(&board, &note, "", 0);
+        assert_eq!(routed.route, Route::RichText);
+        assert!(routed.insert.unwrap().contains(&format!("]({url})")));
+    }
+
     #[test]
     fn html_without_formatting_pastes_the_plain_flavor() {
         let note = Note::new();
@@ -1797,6 +1913,16 @@ mod tests {
         assert_eq!(
             routed.insert.as_deref(),
             Some("[**this**](https://x.org/p)")
+        );
+        let board = Board::with(&[
+            ("public.html", b"<a href=\"https://x.org/q\">The Page</a>"),
+            (offer::UTF8_TEXT, b"https://x.org/p"),
+        ]);
+        let routed = route(&board, &note.cx(Mode::Smart, "see **this** now", 4..12)).unwrap();
+        assert_eq!(routed.route, Route::RichText);
+        assert_eq!(
+            routed.insert.as_deref(),
+            Some("[The Page](https://x.org/q)")
         );
     }
 

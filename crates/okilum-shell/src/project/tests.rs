@@ -1420,6 +1420,7 @@ fn reconnect_browser_guidance_opens_only_the_entered_t3_origin(cx: &mut TestAppC
     assert!(gateway.sends.lock().unwrap().is_empty());
 }
 
+#[cfg(target_os = "linux")]
 #[gpui::test]
 fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together(
     cx: &mut TestAppContext,

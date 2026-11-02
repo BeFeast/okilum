@@ -83,9 +83,10 @@ pub struct Converted {
     /// monospace over two or more lines). `Some("")` when the language is
     /// unknown; `None` when the input was not a single code block.
     pub code_language: Option<String>,
-    /// Additive (#1611): every visible character was monospace (a `<pre>`,
-    /// `<code>`, or a monospace font such as Menlo). With one line the shell
-    /// pastes plain text; with two or more `code_language` is set.
+    /// Additive (#1611): unlinked code whose every visible character was
+    /// monospace (a `<pre>`, `<code>`, or a font such as Menlo). With one line
+    /// the shell pastes plain text; with two or more `code_language` is set.
+    /// Semantic links retain rich-text routing regardless of their font.
     pub monospace: bool,
 }
 

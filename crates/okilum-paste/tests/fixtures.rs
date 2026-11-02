@@ -78,10 +78,12 @@ fn google_docs() {
 fn word_mac() {
     let c = convert("word_mac", None);
     assert_eq!(c.assets.len(), 1);
+    // The fixture spells file:////Users: the resulting path starts with //.
+    // Unix Path equality folds those separators; Windows distinguishes them.
     assert_eq!(
         c.assets[0].source,
         AssetSource::LocalFile(
-            "/Users/oleg/Library/Group Containers/UBF8T346G9.Office/TemporaryItems/msohtmlclip/clip_image002.png".into()
+            "//Users/oleg/Library/Group Containers/UBF8T346G9.Office/TemporaryItems/msohtmlclip/clip_image002.png".into()
         )
     );
     assert_eq!(

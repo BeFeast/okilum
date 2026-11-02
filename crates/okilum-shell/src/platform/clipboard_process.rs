@@ -11,6 +11,10 @@ use std::{
 };
 
 pub(super) const MAX_BYTES: usize = 8 * 1024 * 1024;
+// Windows flavors use base64 plus a sequence number. One bounded DIB may
+// acquire a 14-byte BMP header; plain reads still pass MAX_BYTES below.
+const MAX_FRAME_BYTES: usize =
+    (crate::note_paste::offer::MAX_IMAGE_BYTES + 14).div_ceil(3) * 4 + 32;
 pub(super) const TIMEOUT: Duration = Duration::from_secs(2);
 
 struct Reap(Child);
@@ -85,14 +89,15 @@ pub(super) fn read(
     read_with_limit(command, deadline, cancelled, MAX_BYTES)
 }
 
-/// The note snapshot has two individually bounded UTF-8 flavors plus framing.
+/// Each caller keeps its payload budget. The admission ceiling also fits the
+/// existing bounded Windows image flavor encoded as base64 plus framing.
 pub(super) fn read_with_limit(
     command: &mut Command,
     deadline: Instant,
     cancelled: impl Fn() -> bool,
     max_bytes: usize,
 ) -> Result<Option<String>, Error> {
-    if max_bytes > MAX_BYTES * 2 + 2 {
+    if max_bytes > MAX_FRAME_BYTES {
         return Err(Error::TooLarge);
     }
     if cancelled() {
@@ -284,6 +289,32 @@ mod tests {
         assert_eq!(decode(&[6]), Err(Error::Unavailable));
         assert_eq!(decode(&[1, 0]), Err(Error::Io));
     }
+    #[test]
+    fn note_and_flavor_frame_budgets_reach_the_child_without_widening_plain_reads() {
+        for limit in [MAX_BYTES * 2 + 64 * 1024, MAX_FRAME_BYTES] {
+            assert_eq!(
+                read_with_limit(
+                    &mut shell("printf '\\000frame reached the child'"),
+                    Instant::now() + TIMEOUT,
+                    || false,
+                    limit,
+                ),
+                Ok(Some("frame reached the child".into())),
+                "the old two-text ceiling rejected valid note/flavor budgets before spawn",
+            );
+        }
+        assert_eq!(
+            read_with_limit(
+                &mut Command::new("okilum-clipboard-must-not-spawn"),
+                Instant::now() + TIMEOUT,
+                || false,
+                MAX_FRAME_BYTES + 1,
+            ),
+            Err(Error::TooLarge),
+            "an invalid frame budget is refused before spawning",
+        );
+    }
+
     #[cfg(target_os = "linux")]
     fn child_refusal(script: &str, cancel: bool, expected: Error) {
         let directory = tempfile::tempdir().unwrap();

@@ -1,7 +1,7 @@
 //! Bounded decoding of Windows clipboard representations, independent of Win32.
 use gpui_component::input::clipboard::ClipboardReadError as Error;
 
-pub(crate) const MAX_IMAGE: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_IMAGE: usize = crate::note_paste::offer::MAX_IMAGE_BYTES;
 
 pub(crate) fn unicode(bytes: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
     if bytes.len() % 2 != 0 || bytes.len() > limit * 2 + 64 {

@@ -26,7 +26,9 @@ pub fn html_to_markdown(input: &HtmlInput) -> Converted {
     let mut conv = Conv::new(&root, input.base_url);
     let body = find_body(&root).unwrap_or_else(|| root.clone());
     let mut blocks = conv.blocks_of(&body, &Style::default(), 0);
-    let monospace = conv.text_chars > 0 && conv.text_chars == conv.mono_chars;
+    // Font choice alone must not turn a semantic link into plain code when
+    // the shell applies its one-line code-paste fallback (#2241).
+    let monospace = conv.text_chars > 0 && conv.text_chars == conv.mono_chars && !conv.linked;
 
     let mut code_language = None;
     let content: Vec<&Block> = blocks
@@ -1650,10 +1652,9 @@ fn unwrap_redirect(url: &url::Url) -> Option<String> {
 }
 
 fn same_target(text: &str, href: &str) -> bool {
-    let strip = |s: &str| s.trim_end_matches('/').to_string();
-    let t = strip(text);
-    let h = strip(href);
-    t == h || h.strip_prefix("mailto:").is_some_and(|m| m == t)
+    // A trailing slash can select a different resource, query or fragment.
+    // Only drop an anchor when its visible text retains the exact target.
+    text == href || href.strip_prefix("mailto:").is_some_and(|m| m == text)
 }
 
 fn allowed_scheme(scheme: &str) -> bool {
@@ -2406,5 +2407,72 @@ mod flatten_tests {
             assert!(flat.contains("shown"), "{t}");
             assert!(!flat.contains("hidden"), "{t}: {flat:.200}");
         }
+    }
+}
+
+#[cfg(test)]
+mod slack_link_tests {
+    use super::*;
+
+    // Existing real-app clipboard fixture. Variants change only public link
+    // values/label styling; none is a capture of the #2241 tester's clipboard.
+    const SLACK: &str = include_str!("../tests/fixtures/slack.html");
+    const URL: &str = "https://ci.example.com/run/42";
+
+    #[test]
+    fn slack_clipboard_preserves_labels_and_distinct_trailing_slash_destinations() {
+        for (label, destination) in [
+            ("Deploy details", URL.to_string()),
+            (URL, format!("{URL}/")),
+            ("Привет שלום", format!("{URL}?a=1&b=2")),
+        ] {
+            let html = SLACK
+                .replace(&format!(">{URL}</a>"), &format!(">{label}</a>"))
+                .replace(
+                    &format!("href=\"{URL}\""),
+                    &format!("href=\"{}\"", destination.replace('&', "&amp;")),
+                );
+            assert_ne!(html, SLACK, "fixture variant was applied");
+            let converted = html_to_markdown(&HtmlInput {
+                html: &html,
+                base_url: None,
+            });
+            assert!(
+                converted
+                    .markdown
+                    .contains(&format!("[{label}]({destination})")),
+                "{}",
+                converted.markdown
+            );
+            assert!(!converted.plain);
+            assert!(converted.assets.is_empty(), "Slack emoji stays inline");
+        }
+        let original = html_to_markdown(&HtmlInput {
+            html: SLACK,
+            base_url: None,
+        });
+        assert_eq!(
+            original.markdown,
+            include_str!("../tests/fixtures/slack.md").trim_end_matches('\n')
+        );
+    }
+
+    #[test]
+    fn a_monospace_slack_link_is_rich_text_instead_of_plain_code() {
+        let start = SLACK.find("<a target=").unwrap();
+        let end = start + SLACK[start..].find("</a>").unwrap() + 4;
+        let anchor = SLACK[start..end].replace(&format!(">{URL}</a>"), ">Deploy details</a>");
+        let html = format!("<span style='font-family: monospace'>{anchor}</span>");
+        let converted = html_to_markdown(&HtmlInput {
+            html: &html,
+            base_url: None,
+        });
+        assert!(converted.markdown.contains(&format!("]({URL})")));
+        assert!(
+            !converted.monospace,
+            "a link must bypass the shell's plain-code fallback"
+        );
+        assert!(!converted.plain);
+        assert_eq!(converted.code_language, None);
     }
 }

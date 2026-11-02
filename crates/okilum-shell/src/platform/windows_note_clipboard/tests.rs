@@ -186,9 +186,18 @@ fn no_html_context_and_plain_flavor_limit_remain_supported() {
 /// Only the OS acquisition function is replaced by an immutable public fixture.
 #[gpui::test]
 fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppContext) {
+    slack_editor_paste(cx, false);
+}
+
+#[gpui::test]
+fn slack_paste_live_preview_preserves_links_save_and_undo(cx: &mut gpui::TestAppContext) {
+    slack_editor_paste(cx, true);
+}
+
+fn slack_editor_paste(cx: &mut gpui::TestAppContext, live: bool) {
     use crate::*;
     use gpui_component::input::clipboard::{ClipboardReadRequest, ExactClipboardProvider};
-    use gpui_component::input::{EditorState, Paste, Undo};
+    use gpui_component::input::{EditorState, Paste, Redo, Undo};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -206,6 +215,7 @@ fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppC
     cx.update(|cx| {
         crate::test_init(cx);
         crate::bind_keys(cx);
+        crate::note_paste::install_menu(cx);
     });
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");
@@ -234,11 +244,38 @@ fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppC
     visual.run_until_parked();
     reader.update_in(visual, |r, w, cx| r.toggle_source(w, cx));
     visual.run_until_parked();
+    if live {
+        reader.update_in(visual, |r, w, cx| r.toggle_live_preview(w, cx));
+        visual.run_until_parked();
+    }
+    assert_eq!(
+        reader.read_with(visual, |r, _| r.live_preview_shown()),
+        live
+    );
     let input: gpui::Entity<EditorState> =
         reader.read_with(visual, |r, _| r.source_input().unwrap());
     let reads = Arc::new(AtomicUsize::new(0));
     let counter = reads.clone();
-    let raw = cf_html("<a href='https://example.org/deep'>Docs label</a>");
+    // Keep the real Slack anchor markup; substitute only its public label/URL.
+    let slack = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../okilum-paste/tests/fixtures/slack.html"
+    ));
+    let start = slack.find("<a target=").unwrap();
+    let end = start + slack[start..].find("</a>").unwrap() + 4;
+    let anchor = slack[start..end]
+        .replace(">https://ci.example.com/run/42</a>", ">Docs label</a>")
+        .replace(
+            "href=\"https://ci.example.com/run/42\"",
+            "href=\"https://example.org/deep\"",
+        );
+    let raw = cf_html(&anchor);
+    let payload = Arc::new(Mutex::new(Snapshot {
+        plain: Some("Docs label".into()),
+        html: Some(raw.clone()),
+        native: None,
+    }));
+    let fixture = payload.clone();
     let provider = WindowsNoteClipboard::with_reader(
         Arc::new(Plain),
         root.clone(),
@@ -247,11 +284,7 @@ fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppC
         Arc::new(Mutex::new(Default::default())),
         Arc::new(move |_, _| {
             counter.fetch_add(1, Ordering::SeqCst);
-            Ok(Snapshot {
-                plain: Some("Docs label".into()),
-                html: Some(raw.clone()),
-                native: None,
-            })
+            Ok(fixture.lock().unwrap().clone())
         }),
     );
     input.update(visual, |i, cx| {
@@ -259,31 +292,79 @@ fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppC
         i.set_selected_range(7..13, cx);
     });
     visual.run_until_parked();
-    visual.dispatch_action(Paste);
-    visual.run_until_parked();
+    for menu in [false, true] {
+        let (label, destination) = if menu {
+            ("https://example.org/deep", "https://example.org/deep/")
+        } else {
+            ("Docs label", "https://example.org/deep")
+        };
+        *payload.lock().unwrap() = Snapshot {
+            plain: Some(label.into()),
+            html: Some(cf_html(
+                &anchor
+                    .replace(">Docs label</a>", &format!(">{label}</a>"))
+                    .replace(
+                        "href=\"https://example.org/deep\"",
+                        &format!("href=\"{destination}\""),
+                    ),
+            )),
+            native: None,
+        };
+        input.update(visual, |i, cx| i.set_selected_range(7..13, cx));
+        if menu {
+            visual.dispatch_action(crate::note_paste::PasteFromMenu);
+        } else {
+            visual.dispatch_action(Paste);
+        }
+        visual.run_until_parked();
+        let expected = format!("before [{label}]({destination}) after\n");
+        assert_eq!(
+            input.read_with(visual, |i, _| i.value().to_string()),
+            expected
+        );
+        reader.update(visual, |r, cx| assert!(r.save_source(cx)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            expected
+        );
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        assert_eq!(
+            input.read_with(visual, |i, _| i.value().to_string()),
+            original,
+            "single Undo restores the replaced selection"
+        );
+        visual.dispatch_action(Redo);
+        visual.run_until_parked();
+        assert_eq!(
+            input.read_with(visual, |i, _| i.value().to_string()),
+            expected
+        );
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        reader.update(visual, |r, cx| assert!(r.save_source(cx)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            original
+        );
+    }
     assert_eq!(
         reads.load(Ordering::SeqCst),
-        1,
-        "actual provider acquisition ran"
+        2,
+        "both paste entry points acquired the fixture"
     );
-    assert_eq!(
-        input.read_with(visual, |i, _| i.value().to_string()),
-        "before [Docs label](https://example.org/deep) after\n"
-    );
-    visual.dispatch_action(Undo);
-    visual.run_until_parked();
-    assert_eq!(
-        input.read_with(visual, |i, _| i.value().to_string()),
-        original,
-        "single Undo restores the replaced selection"
-    );
+    *payload.lock().unwrap() = Snapshot {
+        plain: Some("Docs label".into()),
+        html: Some(raw),
+        native: None,
+    };
     input.update(visual, |i, cx| i.set_selected_range(0..0, cx));
     visual.run_until_parked();
     visual.dispatch_action(crate::note_paste::PasteAsPlainText);
     visual.run_until_parked();
     assert_eq!(
         reads.load(Ordering::SeqCst),
-        2,
+        3,
         "plain command acquires metadata; router skips CF_HTML bytes"
     );
     assert_eq!(
@@ -301,7 +382,7 @@ fn cfhtml_provider_preserves_link_selection_and_one_undo(cx: &mut gpui::TestAppC
     visual.run_until_parked();
     assert_eq!(
         reads.load(Ordering::SeqCst),
-        3,
+        4,
         "fenced code acquires metadata; router skips CF_HTML bytes"
     );
     assert_eq!(
@@ -596,7 +677,7 @@ fn windows_without_html_routes_tsv_ide_selection_and_titled_links() {
             "",
             0..0,
             router::Route::Table,
-            "| a | b |",
+            "|   a |   b |\n| --: | --: |\n|   1 |   2 |",
         ),
         (
             "let a = 1;\nlet b = 2;",
@@ -634,10 +715,14 @@ fn windows_without_html_routes_tsv_ide_selection_and_titled_links() {
         }
         let (result, reads) = lazy_paste(&types, flavors, mode, source, selection, vault.path());
         assert_eq!(result.route, route);
-        assert!(
-            result.insert.as_deref().unwrap().contains(expected),
-            "{result:?}"
-        );
+        if route == router::Route::Table {
+            assert_eq!(result.insert.as_deref(), Some(expected));
+        } else {
+            assert!(
+                result.insert.as_deref().unwrap().contains(expected),
+                "{result:?}"
+            );
+        }
         assert!(
             !reads.iter().any(|kind| kind == offer::HTML[0]),
             "{reads:?}"

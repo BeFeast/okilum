@@ -362,3 +362,101 @@ async fn windows_clipboard_native_payload_limit(cx: &mut TestAppContext) {
         }
     }
 }
+
+/// Real Win32 offer -> bounded same-executable helper -> selected note provider
+/// -> shared router. The payload is the existing Slack fixture; public label
+/// and href variants are representative, not the tester's private clipboard.
+#[gpui::test]
+async fn windows_clipboard_slack_html_reaches_note_router(cx: &mut TestAppContext) {
+    use crate::note_paste;
+    use gpui_component::input::clipboard::{PasteContext, PasteMode};
+    let fixture = Fixture::new();
+    let vault = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        cx.set_global(super::ManagedClipboard(managed_clipboard()));
+    });
+    let slack = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../okilum-paste/tests/fixtures/slack.html"
+    ));
+    let label = "https://ci.example.com/run/42";
+    let destination = format!("{label}/");
+    let html = slack.replace(
+        &format!("href=\"{label}\""),
+        &format!("href=\"{destination}\""),
+    );
+    let header = |start, end| {
+        format!("Version:1.0\r\nStartHTML:{start:010}\r\nEndHTML:{end:010}\r\nStartFragment:{start:010}\r\nEndFragment:{end:010}\r\n")
+    };
+    let start = header(0, 0).len();
+    let cf_html = format!("{}{html}\0", header(start, start + html.len()));
+    let plain = label;
+    let words = plain.encode_utf16().chain([0]).collect::<Vec<_>>();
+    fixture.publish(Some(&words), false);
+    {
+        let _open = fixture.open();
+        let name = "HTML Format\0".encode_utf16().collect::<Vec<_>>();
+        let format = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
+        assert_ne!(format, 0);
+        Fixture::put(format, cf_html.as_bytes());
+        let data = unsafe { GetClipboardData(format) };
+        assert!(!data.is_null(), "independent native HTML readback");
+        let pointer = unsafe { GlobalLock(data) };
+        assert!(!pointer.is_null());
+        let actual = unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), cf_html.len()) };
+        assert_eq!(actual, cf_html.as_bytes());
+        unsafe {
+            GlobalUnlock(data);
+        }
+    }
+    assert_eq!(fixture.readback(), Some(words[..words.len() - 1].to_vec()));
+    for (mode, source, selection, note, rich) in [
+        (PasteMode::Smart, "", 0..0, Some("note.md"), true),
+        (PasteMode::Smart, "replace", 0..7, Some("note.md"), true),
+        (PasteMode::Plain, "", 0..0, Some("note.md"), false),
+        (PasteMode::Smart, "```\n", 4..4, Some("note.md"), false),
+        (PasteMode::Smart, "", 0..0, None, false),
+    ] {
+        let result = cx
+            .update(|cx| {
+                let provider = note_paste::provider_for_note(
+                    cx,
+                    vault.path().into(),
+                    note.map(str::to_owned),
+                    Default::default(),
+                    Default::default(),
+                )
+                .expect("startup provider selected");
+                let context = PasteContext {
+                    mode,
+                    source: source.into(),
+                    selection,
+                };
+                assert!(
+                    provider.read_paste_now(&context, cx).is_none(),
+                    "Windows acquisition is asynchronous"
+                );
+                provider.read_text(ClipboardReadRequest::default(), cx)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        if rich {
+            assert!(
+                result.contains(&format!("[{label}]({destination})")),
+                "{result}"
+            );
+            assert!(result.contains("Checklist:"));
+            assert!(result.contains("smoke tests"));
+            assert!(result.contains("🎉"));
+        } else {
+            let expected = if mode != PasteMode::Plain {
+                plain.to_string()
+            } else {
+                plain.replace("\r\n", "\n")
+            };
+            assert_eq!(result, expected);
+        }
+    }
+}
