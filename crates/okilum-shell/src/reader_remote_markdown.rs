@@ -190,6 +190,22 @@ fn destination(url: &str) -> io::Result<(Source, Option<String>)> {
     Ok((source, heading))
 }
 
+enum Location {
+    Folder(okilum_core::remote_markdown::folder::Folder),
+    Document(Source, Option<String>),
+}
+fn location(url: &str) -> io::Result<Location> {
+    let path = url.split('#').next().unwrap();
+    if path.ends_with('/') || !path.to_ascii_lowercase().ends_with(".md") {
+        Ok(Location::Folder(
+            okilum_core::remote_markdown::folder::Folder::parse(url)?,
+        ))
+    } else {
+        let (source, heading) = destination(url)?;
+        Ok(Location::Document(source, heading))
+    }
+}
+
 fn literal_remote_html(body: &str) -> String {
     let html =
         regex::Regex::new(r"(?is)<(?:/?[a-z][a-z0-9-]*(?:[\s/][^>]*)?|![^>]*|\?[^>]*)>").unwrap();
@@ -203,6 +219,8 @@ fn literal_remote_html(body: &str) -> String {
 
 #[path = "reader_remote_markdown/editing.rs"]
 mod editing;
+#[path = "reader_remote_markdown/folders.rs"]
+mod folders;
 pub(crate) use view::show;
 
 // Window-owned GPUI integration. Kept separate from the injectable controller:
@@ -211,7 +229,7 @@ mod view {
     use super::*;
     use crate::*;
 
-    struct Prepared {
+    pub(super) struct Prepared {
         rendered: String,
         headings: okilum_core::document_links::HeadingInventory,
     }
@@ -231,7 +249,7 @@ mod view {
     }
 
     pub(crate) fn show(url: &str, cx: &mut App) -> io::Result<()> {
-        let (source, heading) = destination(url)?;
+        let target = location(url)?;
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(window_state::default_bounds(
                 size(px(900.), px(700.)),
@@ -244,7 +262,10 @@ mod view {
             window.set_window_title("Remote Markdown");
             let panel = cx.new(|cx| {
                 let mut panel = Panel::new();
-                panel.open(source, heading, cx);
+                match target {
+                    Location::Folder(folder) => panel.browse(folder, cx),
+                    Location::Document(source, heading) => panel.open(source, heading, cx),
+                }
                 panel
             });
             let weak = panel.downgrade();
@@ -258,6 +279,14 @@ mod view {
     }
 
     pub(super) struct Panel {
+        pub(super) browser: Option<folders::Browser>,
+        pub(super) folder_serial: u64,
+        pub(super) folder_task: Option<Task<()>>,
+        pub(super) folder_cancel: Option<Arc<AtomicBool>>,
+        pub(super) lister: folders::Lister,
+        #[cfg(test)]
+        fixture_loader:
+            Option<fn(&mut Controller, &str) -> io::Result<async_channel::Receiver<Reply>>>,
         pub(super) controller: Controller,
         pub(super) content: Option<Entity<TextViewState>>,
         pub(super) prepared: Option<Prepared>,
@@ -277,6 +306,13 @@ mod view {
     impl Panel {
         fn new() -> Self {
             Self {
+                browser: None,
+                folder_serial: 0,
+                folder_task: None,
+                folder_cancel: None,
+                lister: folders::default_lister(),
+                #[cfg(test)]
+                fixture_loader: None,
                 controller: Controller::default(),
                 content: None,
                 prepared: None,
@@ -295,7 +331,17 @@ mod view {
             }
         }
 
-        fn open(&mut self, source: Source, heading: Option<String>, cx: &mut Context<Self>) {
+        pub(super) fn open(
+            &mut self,
+            source: Source,
+            heading: Option<String>,
+            cx: &mut Context<Self>,
+        ) {
+            #[cfg(test)]
+            if let Some(loader) = self.fixture_loader {
+                self.open_with(source, heading, loader, cx);
+                return;
+            }
             self.open_with(source, heading, Controller::open, cx);
         }
         // The same window/worker publication path also accepts an offline
@@ -310,6 +356,8 @@ mod view {
             if !self.protect(cx) {
                 return;
             }
+            self.revoke_folder();
+            self.browser = None;
             if let Some(cancel) = self.write_cancel.take() {
                 cancel.store(true, Ordering::Release);
             }
@@ -385,15 +433,24 @@ mod view {
             }));
             cx.notify();
         }
-        fn stop(&mut self, cx: &mut Context<Self>) -> bool {
+        pub(super) fn stop(&mut self, cx: &mut Context<Self>) -> bool {
             if !self.protect(cx) {
                 return false;
             }
+            self.revoke_folder();
             if let Some(cancel) = self.write_cancel.take() {
                 cancel.store(true, Ordering::Release);
             }
             self.save_task = None;
             self.edit_task = None;
+            if let Some(browser) = &mut self.browser {
+                if browser.result.is_none() {
+                    browser.result = Some(Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Remote folder listing cancelled",
+                    )));
+                }
+            }
             self.controller.cancel();
             self.reply_task = None;
             self.landing_serial = self.landing_serial.wrapping_add(1);
@@ -510,15 +567,26 @@ mod view {
             }));
         }
     }
+    impl Drop for Panel {
+        fn drop(&mut self) {
+            if let Some(cancel) = &self.folder_cancel {
+                cancel.store(true, Ordering::Release);
+            }
+            if let Some(cancel) = &self.write_cancel {
+                cancel.store(true, Ordering::Release);
+            }
+        }
+    }
     impl Render for Panel {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let loading = matches!(self.controller.state, State::Loading { .. });
             let mut body = v_flex().size_full().min_h_0()
                 .child(TitleBar::new().child("Remote Markdown"))
                 .child(h_flex().p_3().gap_2()
-                    .child(div().flex_1().child(if self.edit.is_some() { "Editing a protected local draft · explicit Save only".into() } else { self.controller.state.message() }))
+                    .child(div().flex_1().child(if self.browser.is_some(){"Remote folder · read-only listing".into()} else if self.edit.is_some() { "Editing a protected local draft · explicit Save only".into() } else { self.controller.state.message() }))
+                    .child(self.folder_controls(cx))
                     .child(self.edit_controls(cx))
-                    .child(Button::new("remote-markdown-stop").small().label("Stop").disabled(!loading && self.landing.is_none())
+                    .child(Button::new("remote-markdown-stop").debug_selector(||"remote-markdown-stop".into()).small().label("Stop").disabled(!loading && self.landing.is_none() && !self.browser.as_ref().is_some_and(|b|b.result.is_none()))
                         .on_click(cx.listener(|this, _, _, cx| { this.stop(cx); }))))
                 .child(div().px_3().text_sm().text_color(cx.theme().muted_foreground)
                     .child("2 MiB limit · Existing SSH alias and known host key required. Edit keeps a local draft; only Save/Retry writes. Safe saving requires Linux + Python 3. Remote media and HTML are not loaded."));
@@ -532,6 +600,9 @@ mod view {
             }
             if self.landing.is_some() {
                 body = body.child(div().px_3().child("Locating heading…"));
+            }
+            if let Some(folder) = self.folder_view(cx) {
+                return body.child(folder);
             }
             if let Some(editor) = self.editor(cx) {
                 return body.child(editor);
@@ -641,6 +712,7 @@ mod view {
         }
 
         include!("reader_remote_markdown/mounted_tests.rs");
+        include!("reader_remote_markdown/folder_mounted_tests.rs");
 
         #[gpui::test]
         fn remote_window_offline_worker_renders_readonly_payload_and_lands_current_heading(

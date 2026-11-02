@@ -8,6 +8,8 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+pub mod directory;
+
 const CHUNK: usize = 32 * 1024;
 const PACKET_LIMIT: usize = CHUNK + 4096;
 /// Retained continuity proof is bounded; reaching this limit requires a new session.
