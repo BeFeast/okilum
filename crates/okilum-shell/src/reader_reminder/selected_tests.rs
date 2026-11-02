@@ -212,7 +212,7 @@ async fn reminder_724_read_menu_create_append_undo_updates_tasks_and_preserves_s
     }
     assert_eq!(
         std::fs::read_to_string(root.join(NOTE)).unwrap(),
-        format!("{prelude}{}", crlf_line.repeat(2))
+        format!("{prelude}\r\n{crlf_line}\r\n{crlf_line}")
     );
     click_undo(visual);
     visual
@@ -226,7 +226,7 @@ async fn reminder_724_read_menu_create_append_undo_updates_tasks_and_preserves_s
         .await;
     assert_eq!(
         std::fs::read_to_string(root.join(NOTE)).unwrap(),
-        format!("{prelude}{crlf_line}")
+        format!("{prelude}\r\n{crlf_line}")
     );
     reader.update_in(visual, |reader, window, cx| {
         reader.open_note("Dashboard.md", None, window, cx)
