@@ -153,16 +153,35 @@ struct Prepared {
 /// Authenticate a completed, pinned managed preparation without launching a process.
 /// An existing external home has no preparation receipt and cannot be adopted.
 pub fn managed_identity(state: &Path) -> Result<DaemonIdentity> {
-    let saved: Prepared = serde_json::from_slice(&private::read(&state.join("prepared.json"))?)?;
+    let saved = managed_preparation(state)?;
     ensure!(
-        saved.identity.config_file == state.join("syncthing/config.xml").canonicalize()?
-            && saved.binary_version == CLIENT_VERSION
-            && saved.binary_hash == crate::linux_bootstrap::BINARY_SHA
-            && executable_hash(&saved.request.executable)? == saved.binary_hash,
+        executable_hash(&saved.request.executable)? == saved.binary_hash,
         "selected managed runtime preparation changed"
     );
     saved.identity.connect()?;
     Ok(saved.identity)
+}
+
+fn managed_preparation(state: &Path) -> Result<Prepared> {
+    let saved: Prepared = serde_json::from_slice(&private::read(&state.join("prepared.json"))?)?;
+    ensure!(
+        saved.identity.config_file == state.join("syncthing/config.xml").canonicalize()?
+            && saved.binary_version == CLIENT_VERSION
+            && saved.binary_hash == crate::linux_bootstrap::BINARY_SHA,
+        "selected managed runtime preparation changed"
+    );
+    saved.identity.verify_local()?;
+    Ok(saved)
+}
+
+/// Address-only reconciliation of an already selected runtime uses the private
+/// preparation receipt and pinned certificate. Its caller authenticates the live
+/// daemon before REST effects. Package verification remains at preparation,
+/// enable and source enrollment; hashing the entire executable in every paired
+/// RPC can exhaust the channel's three-second response budget in debug builds.
+/// This proof grants no lifecycle, device-trust or folder authority.
+pub(crate) fn managed_transport_identity(state: &Path) -> Result<DaemonIdentity> {
+    Ok(managed_preparation(state)?.identity)
 }
 /// Only call after explicit Enable. The random state directory must be new or
 /// contain this preparation's durable intent; never point it at an external home.

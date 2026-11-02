@@ -80,7 +80,7 @@ pub(super) fn managed(configs: &[PathBuf]) -> Result<Option<DaemonIdentity>> {
     if !state.join("prepared.json").try_exists()? {
         return Ok(None);
     }
-    let identity = crate::daemon::managed_identity(state)?;
+    let identity = crate::daemon::managed_transport_identity(state)?;
     ensure!(
         identity.config_file == config.canonicalize()?,
         "selected managed configuration changed"
