@@ -1417,7 +1417,7 @@ pub(super) struct NativeComposerPort<'a, 'cx> {
 impl ProjectView {
     /// Reader owns physical visibility. Identical render notifications leave
     /// the current lease untouched; explicit lifecycle changes revoke it.
-    pub(super) fn draft_handoff_surface_visible(&mut self, visible: bool, cx: &App) {
+    pub(crate) fn draft_handoff_surface_visible(&mut self, visible: bool, cx: &App) {
         if self.threads.draft.handoff_surface_visible == visible {
             return;
         }

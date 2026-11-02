@@ -24,7 +24,7 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
     )
     .unwrap();
     let mut binding: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
+        "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
     ))
     .unwrap();
     binding["issues"]
