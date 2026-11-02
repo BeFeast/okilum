@@ -17,7 +17,7 @@ results cannot affect another note or a newer generation. Active-block reveal is
 still the native provider's responsibility, including selection and IME changes.
 
 Supported presentation remains S1: headings, strong/emphasis/strike, code, ordinary
-links and wikilinks. Unsupported blocks remain exact Source. The existing 64 KiB
+links and wikilinks. Unsupported blocks remain exact Source. The 1 MiB
 and 4,096-node limits remain; the glyph tooltip explains whole-note Source fallback.
 There is no startup indexing, new dependency, new vendor patch or gpui-core change.
 
@@ -236,3 +236,27 @@ query and MIT attribution live in `assets/highlighting/csharp` in the shell.
 Captures are computed by the background worker; changing a theme or font reuses
 them without a parse. While a new source revision awaits classification, old
 token offsets are omitted. This adds presentation only, not a separate code editor.
+
+## Large notes and incremental layout (#1679)
+
+The classifier, canonical projection and native projected layout/anchor admission
+share an inclusive 1 MiB source limit. Above it, Live Preview keeps exact raw
+Source. Structural, range and parser-depth limits still apply independently.
+
+Projected layout retains the preceding immutable Rope and row-metric SumTree.
+Sparse edits replace only the changed text interval and lay out its dirty rows;
+width, font or scale changes invalidate geometry. The cached index is installed
+only with the exact projection object that prepared it.
+
+Source and display grapheme membership use persistent relative-offset trees.
+Edits segment complete changed lines, retaining the unchanged prefix and suffix.
+LF seams are unconditional grapheme breaks, so CRLF, combining marks, ZWJ and
+regional-indicator sequences keep exact boundaries. Reveal and background refresh
+also reuse the preceding indexes. Full classification remains off the UI thread;
+byte comparison and bounded metadata reconciliation still inspect the document.
+
+Draft #2341 supplies the dirty-boundary layout implementation. Draft #2352's
+local-index approach and painted-renderer regression are incorporated into this
+common Markdown path rather than enabling its restricted prose-only grammar.
+Deterministic renderer tests prove painted 1 MiB admission and bounded shaping;
+they do not establish physical display latency or the weak-Linux/M4 frame budgets.

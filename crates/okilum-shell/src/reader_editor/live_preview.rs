@@ -381,7 +381,9 @@ impl Reader {
 
     pub(crate) fn toggle_live_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.editing.as_ref().is_some_and(|editing| {
-            editing.table_grid.update(cx, |grid, cx| grid.retain_pending_cells(cx))
+            editing
+                .table_grid
+                .update(cx, |grid, cx| grid.retain_pending_cells(cx))
         }) {
             return;
         }
@@ -560,6 +562,7 @@ impl Reader {
             key,
             busy: Rc::new(Cell::new(true)),
         });
+        let previous = state.accepted.clone();
         let guard = FlightGuard(flight.clone());
         state.in_flight = flight.busy.clone();
         state.running = Some(flight.clone());
@@ -574,12 +577,20 @@ impl Reader {
                     #[cfg(test)]
                     {
                         okilum_core::open_diagnostics::capture(|| {
-                            CachedProvider::classify_navigation(request, source)
+                            CachedProvider::classify_navigation_reusing(
+                                request,
+                                source,
+                                previous.as_deref(),
+                            )
                         })
                     }
                     #[cfg(not(test))]
                     {
-                        CachedProvider::classify_navigation(request, source)
+                        CachedProvider::classify_navigation_reusing(
+                            request,
+                            source,
+                            previous.as_deref(),
+                        )
                     }
                 })
                 .await;
@@ -1212,6 +1223,133 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         (reader, visual, directory)
+    }
+
+    /// Same-process renderer evidence. This is not physical display latency or
+    /// acceptance of the weak-Linux/M4 frame budgets.
+    #[gpui::test]
+    fn large_note_native_typing_ime_undo_and_scroll(cx: &mut TestAppContext) {
+        check_large_note(cx, 1024 * 1024);
+    }
+
+    #[gpui::test]
+    fn long_note_native_typing_ime_undo_and_scroll(cx: &mut TestAppContext) {
+        check_large_note(cx, 130 * 1024);
+    }
+
+    fn check_large_note(cx: &mut TestAppContext, bytes: usize) {
+        let block = format!("Paragraph **bold** {}\n\n", "a".repeat(2048));
+        let mut original = block.repeat(bytes / block.len());
+        original.push_str(&"z".repeat(bytes - original.len()));
+        let (reader, visual, directory) = fixture(cx, &original);
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        reader.update_in(visual, |r, window, cx| {
+            input.update(cx, |i, _| i.enable_layout_diagnostics());
+            r.toggle_live_preview(window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            let e = r.editing.as_ref().unwrap();
+            let provider = e
+                .live_preview
+                .accepted
+                .as_ref()
+                .expect("actual worker adopted");
+            let frame = provider
+                .compose(provider.source(), &ActiveSource::default())
+                .unwrap();
+            assert!(!frame.text().contains("**"), "real Markdown concealed");
+            assert_eq!(input.read(cx).value().as_ref(), original);
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        input.read_with(visual, |i, _| {
+            let frames = i.take_layout_frames();
+            assert!(
+                frames.iter().any(|f| !f.raw && f.reshaped_lines > 30),
+                "cold positive control observes whole-note projected layout"
+            );
+            assert!(i.layout_diagnostics().unwrap().projection_composes > 0);
+        });
+        let mutation = Rc::new(Cell::new(None::<std::time::Instant>));
+        let seen = mutation.clone();
+        let _subscription = reader.update_in(visual, |_, window, cx| {
+            cx.subscribe_in(&input, window, move |_, _, _: &SourceMutation, _, _| {
+                seen.set(Some(std::time::Instant::now()));
+            })
+        });
+        reader.update_in(visual, |_, window, cx| {
+            input.update(cx, |i, cx| {
+                i.take_layout_frames();
+                i.set_selected_range(0..0, cx);
+                i.replace_text_in_range(Some(0..1), "x", window, cx);
+            });
+        });
+        let started = mutation.get().expect("SourceMutation positive control");
+        // Draw before allowing deferred reclassification: unchanged paragraphs
+        // must remain projected in the immediate edit frame.
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let elapsed = started.elapsed().as_secs_f64() * 1000.;
+        input.read_with(visual, |i, _| {
+            assert_eq!(i.value().as_ref(), format!("x{}", &original[1..]));
+            let frames = i.take_layout_frames();
+            assert!(frames.iter().any(|f| !f.raw), "actual projected immediate frame");
+            let counts = i.layout_diagnostics().unwrap();
+            assert!(counts.projection_composes > 0);
+            let edit = frames.iter().find(|f| f.edit).expect("edited frame observed");
+            assert!(!edit.raw, "1 MiB must pass the native projection guard");
+            assert!(edit.reshaped_lines <= 4, "bounded edit layout: {}", edit.reshaped_lines);
+            assert!(edit.scroll_delta.abs() < 1., "typing keeps first visible row");
+            assert_eq!(i.selected_range(), 1..1);
+            println!("LARGE_LP_RENDERER source_bytes={} SourceMutation_to_draw_ms={elapsed:.3} raw=false projection_composes={}", original.len(), counts.projection_composes);
+        });
+        visual.run_until_parked();
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-z");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-z");
+        visual.run_until_parked();
+        input.read_with(visual, |i, _| assert_eq!(i.value().as_ref(), original));
+        reader.update_in(visual, |_, window, cx| {
+            input.update(cx, |i, cx| {
+                i.replace_and_mark_text_in_range(Some(0..3), "中", Some(0..1), window, cx);
+                assert_eq!(i.marked_text_range(window, cx), Some(0..1));
+                i.unmark_text(window, cx);
+            });
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |i, _| {
+            assert_eq!(i.value().as_ref(), format!("中{}", &original[3..]))
+        });
+        visual.simulate_keystrokes("ctrl-end");
+        visual.run_until_parked();
+        input.read_with(visual, |i, _| {
+            assert!(
+                i.cursor() > original.len() / 2,
+                "navigation reached distant source"
+            );
+            assert!(i.layout_diagnostics().unwrap().projection_composes > 0);
+        });
+        reader.update_in(visual, |_, window, cx| {
+            input.update(cx, |i, cx| {
+                i.set_value("x".repeat(1024 * 1024 + 1), window, cx);
+                i.take_layout_frames();
+            });
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        input.read_with(visual, |i, _| {
+            assert_eq!(i.value().len(), 1024 * 1024 + 1);
+            assert!(
+                i.take_layout_frames().iter().any(|f| f.raw),
+                "positive control: above 1 MiB uses exact raw fallback"
+            );
+        });
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
+            original
+        );
     }
 
     #[gpui::test]

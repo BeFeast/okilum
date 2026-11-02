@@ -18,7 +18,7 @@ mod retained;
 pub(crate) mod structural;
 pub use retained::{RetainedPresentation, RevealSnapshot};
 
-pub const MAX_BYTES: usize = 64 * 1024;
+pub const MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_NODES: usize = 4096;
 pub const MAX_DEPTH: usize = 32;
 pub const MAX_STYLES_AND_REASONS: usize = 4096;
@@ -156,7 +156,7 @@ impl Classification {
         target: &str,
     ) -> Result<usize, &'static str> {
         if self.snapshot.source().len() > MAX_BYTES {
-            return Err("Heading navigation supports saved target notes up to 64 KiB.");
+            return Err("Heading navigation supports saved target notes up to 1 MiB.");
         }
         if target.starts_with('^') {
             return Err(

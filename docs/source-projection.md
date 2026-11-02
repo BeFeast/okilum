@@ -19,7 +19,7 @@ mapping, source normalization, renderer-to-source reconstruction or canonical wr
 
 ## Hard limits and validation
 
-- Source and projected output: 256 KiB. Document identity: nonempty, at most 4,096 bytes.
+- Source and projected output: 1 MiB. Document identity: nonempty, at most 4,096 bytes.
 - At most 4,096 total block and marker ranges. Input must already be sorted and
   disjoint; overlapping, inverted, empty or out-of-bounds ranges are rejected.
 - At most 2,097,152 deterministic work units. Callers may lower this budget, never

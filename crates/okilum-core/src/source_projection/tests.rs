@@ -450,3 +450,52 @@ fn document_identity_limits_preserve_current_source() {
         assert_eq!(fallback.source(), "authored bytes\r\n");
     }
 }
+
+#[test]
+fn retained_projection_segments_only_edited_lines_at_both_document_sizes() {
+    use super::boundary_index::INDEXED_BYTES;
+    for bytes in [130 * 1024, MAX_BYTES] {
+        let line = format!("**bold** e\u{301} 👩\u{200d}💻 {}\r\n", "a".repeat(2000));
+        let mut text = line.repeat((bytes - 1) / line.len());
+        text.push_str(&"z".repeat(bytes - 1 - text.len()));
+        let old = snapshot(&text);
+        let plan = Plan::new(&old, vec![region(0..line.len(), &[0..2, 6..8])]);
+        INDEXED_BYTES.with(|n| n.set(0));
+        let previous = project(&old, &plan, &Active::default()).unwrap();
+        assert!(
+            INDEXED_BYTES.with(|n| n.get()) > bytes,
+            "positive control: cold source/display indexes are observed"
+        );
+        let mut next = text.clone();
+        let at = text.find("aaaa").unwrap();
+        next.insert(at, 'x');
+        let current = Snapshot::new(old.document(), old.generation() + 1, next);
+        let plan = Plan::new(&current, vec![region(0..line.len() + 1, &[0..2, 6..8])]);
+        INDEXED_BYTES.with(|n| n.set(0));
+        let actual = project_reusing(
+            &current,
+            &plan,
+            &Active::default(),
+            MAX_WORK,
+            Some(&previous),
+        )
+        .unwrap();
+        assert!(
+            INDEXED_BYTES.with(|n| n.get()) < 8192,
+            "no whole-note grapheme index rebuild per edit"
+        );
+        let fresh = project(&current, &plan, &Active::default()).unwrap();
+        assert_eq!(actual.display(), fresh.display());
+        for at in [0, 2, 6, 8, line.len(), current.source().len()] {
+            assert_eq!(
+                actual.source_to_display(&current, at),
+                fresh.source_to_display(&current, at)
+            );
+        }
+        assert!(
+            previous.source_to_display(&current, 0).is_err(),
+            "stale positive control"
+        );
+        assert_roundtrips(&old, &previous);
+    }
+}
