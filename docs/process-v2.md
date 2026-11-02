@@ -8,14 +8,16 @@ describe CI and producer mechanics, not additional merge gates.
 ## Merge admission
 
 `fast / check (pull_request)` is the sole required main protection context.
-It runs the exact PR head on baldr's dedicated `fast-linux` Forgejo host runner (capacity four):
+It runs the exact PR head on baldr's dedicated `fast-linux` Forgejo host runner (capacity two):
 desktop/supervisor build, `cargo check --locked --workspace --tests` (compilation
 only), plus deterministic okilum-paste library unit tests. Test fixture/API drift
 therefore blocks merge without executing the full overnight suites.
-The six-minute job budget includes setup and build. The LAN compiler cache and
-Cargo downloads are reused; four separately locked persistent targets
-allow four simultaneous builds. Each job has three compiler workers (twelve total).
-The runner queues additional jobs before their six-minute execution budget starts.
+The fifteen-minute job budget includes setup and build. The LAN compiler cache and
+Cargo downloads are reused; two separately locked persistent targets
+allow two simultaneous builds. Each job has three compiler workers (six total).
+The runner queues additional jobs before their fifteen-minute execution budget starts.
+The budget includes both desktop code generation and workspace test compilation
+after a base-crate change; see [the measurements](fast-runner.md).
 A timeout or failed build/test fails closed. No GitHub hosted job or bridge participates in PR admission.
 Windows and macOS compilation moves to each post-merge beta producer. This is
 post-merge OS validation, not an OS waiver. The first production timing must be
