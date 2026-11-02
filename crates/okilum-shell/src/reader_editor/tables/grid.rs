@@ -2,6 +2,8 @@
 //! Parent owns the Reader field/render/click hooks. Keep this entity alive for
 //! the lifetime of Editing; do not recreate it in the Reader render function.
 use super::*;
+#[path = "idle.rs"]
+mod idle;
 use crate::source_presentation::{CachedProvider, ProjectionColors};
 use gpui_component::input::projection::{
     ConcealBias, LineIndent, LineScale, ProjectedByte, ProjectionBlock, ProjectionMarker,
@@ -110,6 +112,12 @@ pub(in crate::reader_editor) struct TableGrid {
     cells: Vec<Vec<Entity<TextareaState>>>,
     subscriptions: Vec<Subscription>,
     _source: Subscription,
+    _input_watch: Subscription,
+    idle: Option<Task<()>>,
+    seen_document: gpui_component::Rope,
+    formatted_stamp: Option<SourceStamp>,
+    committed_table_edit: Option<(SourceStamp, Range<usize>)>,
+    pending_silent: Option<(SourceStamp, gpui_component::Rope)>,
     error: Option<&'static str>,
     provider: Option<Arc<CachedProvider>>,
     base: Option<Arc<dyn ProjectionProvider>>,
@@ -126,11 +134,24 @@ impl TableGrid {
     pub(in crate::reader_editor) fn new(
         reader: Entity<Reader>,
         input: Entity<EditorState>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             reader: reader.downgrade(),
-            _source: cx.observe(&input, |_, _, cx| cx.notify()),
+            _input_watch: cx.observe(&input, |_, _, cx| cx.notify()),
+            _source: cx.subscribe_in(
+                &input,
+                window,
+                |this, _, event: &SourceMutation, window, cx| {
+                    this.source_changed(*event, window, cx);
+                },
+            ),
+            idle: None,
+            seen_document: input.read(cx).text().clone(),
+            formatted_stamp: None,
+            committed_table_edit: None,
+            pending_silent: None,
             input,
             binding: None,
             cells: Vec::new(),
@@ -146,6 +167,12 @@ impl TableGrid {
             #[cfg(test)]
             history_dispatches: 0,
         }
+    }
+
+    /// Exact source APIs intentionally emit Silent mutations, just like Undo.
+    /// Attribute an accepted table edit before its deferred source event runs.
+    pub(super) fn mark_source_edit(&mut self, stamp: SourceStamp, range: Range<usize>) {
+        self.committed_table_edit = Some((stamp, range));
     }
 
     /// Open only an exact currently classified top-level table. The caller may
@@ -532,6 +559,8 @@ impl TableGrid {
             let state = self.input.read(cx);
             self.source_history
                 .record(before, state.source_stamp(), typing_cell);
+            self.committed_table_edit =
+                Some((state.source_stamp(), start..start + replacement_len));
             self.binding = Some(Binding {
                 stamp: state.source_stamp(),
                 document: state.value().to_string(),
@@ -651,6 +680,7 @@ impl TableGrid {
             return;
         }
         let range = self.binding.as_ref().unwrap().table.clone();
+        let previous_document = self.binding.as_ref().unwrap().document.clone();
         let selected = self.selected;
         let before = self.input.read(cx).source_stamp();
         let steps = self.source_history.steps(direction, before);
@@ -681,6 +711,7 @@ impl TableGrid {
             // edit, so release them before admitting the restored revision.
             self.close(cx);
             let document = self.input.read(cx).value().to_string();
+            let restored_start = idle::restored_start(&previous_document, &document, range.start);
             let snapshot = Snapshot::new("table-grid-history", 0, document.as_str());
             let classified = source_classifier::classify(&snapshot);
             let restored = classified
@@ -690,7 +721,7 @@ impl TableGrid {
                     markers
                         .iter()
                         .find(|marker| {
-                            marker.kind == Kind::Table && marker.range.start == range.start
+                            marker.kind == Kind::Table && marker.range.start == restored_start
                         })
                         .map(|marker| marker.range.clone())
                 });
@@ -722,6 +753,7 @@ impl Render for TableGrid {
         let palette = brand::palette(cx);
         let mut root = div()
             .id("editable-table-grid")
+            .key_context("TableGrid")
             .debug_selector(|| "editable-table-grid".into())
             .flex()
             .flex_col()
@@ -742,6 +774,24 @@ impl Render for TableGrid {
                     cx.stop_propagation();
                 }),
             );
+        root = root
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, _, window, cx| {
+                    // Capture the clicked cell before the popup takes focus. Its
+                    // action may dispatch while no native cell is focused.
+                    if let Some(selected) = this.cells.iter().enumerate().find_map(|(r, row)| {
+                        row.iter()
+                            .position(|cell| cell.read(cx).focus_handle(cx).is_focused(window))
+                            .map(|c| (r, c))
+                    }) {
+                        this.selected = selected;
+                    }
+                    this.source_history.boundary = true;
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation());
         if self.binding.is_none() {
             return root;
         }
@@ -759,7 +809,14 @@ impl Render for TableGrid {
                     binding.cells.value(r, c).map(model::cell_text).as_deref()
                         != Some(cell.read(cx).value().as_ref())
                 });
-                let input = Textarea::new(cell).disabled(stale);
+                let input = Textarea::new(cell)
+                    .disabled(stale)
+                    .context_menu(|menu, _, _| {
+                        menu.separator().submenu(
+                            "Table",
+                            gpui_component::native_menu::NativeMenu::from(super::menu()),
+                        )
+                    });
                 let input = match alignment.get(c) {
                     Some(Alignment::Center) => input.text_center(),
                     Some(Alignment::Right) => input.text_right(),
@@ -863,6 +920,12 @@ impl Render for TableGrid {
         }))
         .on_action(cx.listener(|this, _: &TableInsertRow, window, cx| {
             this.command(Command::InsertRow, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &TableMoveRowUp, window, cx| {
+            this.command(Command::MoveRowUp, window, cx)
+        }))
+        .on_action(cx.listener(|this, _: &TableMoveRowDown, window, cx| {
+            this.command(Command::MoveRowDown, window, cx)
         }))
         .on_action(cx.listener(|this, _: &TableDeleteRow, window, cx| {
             this.command(Command::DeleteRow, window, cx)

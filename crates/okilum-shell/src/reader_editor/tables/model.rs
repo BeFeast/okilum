@@ -1,6 +1,7 @@
 //! Exact-source table operations. The caller admits only a current classifier
 //! Table range; this parser never decides whether prose or code is a table.
 use std::ops::Range;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Alignment {
@@ -16,6 +17,8 @@ pub(super) enum Command {
     Previous,
     InsertRow,
     DeleteRow,
+    MoveRowUp,
+    MoveRowDown,
     InsertColumn,
     DeleteColumn,
     Align(Alignment),
@@ -162,7 +165,7 @@ impl Table {
         })
     }
 
-    fn locate(&self, selection: &Range<usize>) -> Option<(usize, usize)> {
+    fn locate(&self, source: &str, selection: &Range<usize>) -> Option<(usize, usize)> {
         if selection.start > selection.end {
             return None;
         }
@@ -173,35 +176,74 @@ impl Table {
                 }
             }
         }
+        // A caret in Markdown cell padding still belongs to that cell. Do
+        // not extend this to cross-cell selections or the delimiter row.
+        if selection.is_empty() {
+            for (r, row) in self.ranges.iter().enumerate() {
+                let line = line_range(source, &row[0]);
+                let raw = source[line.clone()].trim_end_matches(['\r', '\n']);
+                if let Some(spans) = cell_spans(raw, line.start, false) {
+                    if let Some(c) = spans.iter().position(|span| {
+                        span.start <= selection.start && selection.start <= span.end
+                    }) {
+                        return Some((r, c));
+                    }
+                }
+            }
+        }
         None
     }
 
-    fn render(&self, row: usize, column: usize) -> Change {
+    fn render(&self, row: usize, column: usize) -> Option<Change> {
+        self.render_cells(row, column).map(|(change, _)| change)
+    }
+
+    fn render_cells(&self, row: usize, column: usize) -> Option<(Change, Vec<Vec<Range<usize>>>)> {
         let widths: Vec<_> = (0..self.alignment.len())
             .map(|col| {
                 self.rows
                     .iter()
-                    .map(|row| row[col].chars().count())
+                    .map(|row| UnicodeWidthStr::width(row[col].as_str()))
                     .max()
                     .unwrap_or(0)
                     .max(3)
             })
             .collect();
+        // Alignment can multiply a long cell's padding across many rows.
+        // Keep the output under the same admission bound before allocating it.
+        let line_width = self.indent.len()
+            + 1
+            + widths.iter().map(|width| width + 3).sum::<usize>()
+            + self.newline.len();
+        let estimate = line_width * (self.rows.len() + 1)
+            + self
+                .rows
+                .iter()
+                .flatten()
+                .map(|cell| cell.len() - UnicodeWidthStr::width(cell.as_str()).min(cell.len()))
+                .sum::<usize>();
+        if estimate > 64 * 1024 {
+            return None;
+        }
         let mut source = String::new();
         let mut selection = 0..0;
+        let mut ranges = Vec::new();
         for (r, cells) in self.rows.iter().enumerate() {
+            let mut row_ranges = Vec::new();
             source.push_str(&self.indent);
             source.push('|');
             for (c, cell) in cells.iter().enumerate() {
                 source.push(' ');
                 let start = source.len();
                 source.push_str(cell);
+                row_ranges.push(start..source.len());
                 if r == row && c == column {
                     selection = start..source.len();
                 }
-                source.push_str(&" ".repeat(widths[c] - cell.chars().count()));
+                source.push_str(&" ".repeat(widths[c] - UnicodeWidthStr::width(cell.as_str())));
                 source.push_str(" |");
             }
+            ranges.push(row_ranges);
             if r == 0 {
                 source.push_str(self.newline);
                 source.push_str(&self.indent);
@@ -225,7 +267,7 @@ impl Table {
                 source.push_str(self.newline);
             }
         }
-        Change { source, selection }
+        Some((Change { source, selection }, ranges))
     }
 }
 
@@ -370,12 +412,73 @@ pub(super) struct CellGrid {
     ranges: Vec<Vec<Range<usize>>>,
 }
 
+fn has_trailing_pipe(line: &str) -> bool {
+    line.trim_end_matches([' ', '\t'])
+        .strip_suffix('|')
+        .is_some_and(|before| {
+            before
+                .bytes()
+                .rev()
+                .take_while(|&byte| byte == b'\\')
+                .count()
+                % 2
+                == 0
+        })
+}
+
+// Cell input is literal with respect to block structure. A leading pipe
+// protects edited bare rows from becoming headings, lists, fences or HTML.
+fn bare_row_needs_pipe(line: &str, header: bool) -> bool {
+    let text = line.trim_start_matches([' ', '\t']);
+    if text.starts_with('|') {
+        return false;
+    }
+    let indent = &line[..line.len() - text.len()];
+    if header || indent.len() > 3 || indent.contains('\t') {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    if matches!(
+        bytes.first(),
+        Some(b'#' | b'>' | b'<' | b'`' | b'~' | b'-' | b'+' | b'*' | b'[')
+    ) {
+        return true;
+    }
+    let digits = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    digits > 0
+        && matches!(bytes.get(digits), Some(b'.' | b')'))
+        && bytes.get(digits + 1).is_some_and(u8::is_ascii_whitespace)
+}
+
 impl CellGrid {
     pub(super) fn new(source: &str) -> Option<Self> {
         Some(Self {
             source: source.to_owned(),
             ranges: Table::parse(source)?.ranges,
         })
+    }
+
+    pub(super) fn format(&self, row: usize, column: usize) -> Option<(Self, Change)> {
+        let mut table = Table::parse(&self.source)?;
+        table.rows = self
+            .ranges
+            .iter()
+            .map(|cells| {
+                cells
+                    .iter()
+                    .map(|range| self.source[range.clone()].to_owned())
+                    .collect()
+            })
+            .collect();
+        let (change, ranges) = table.render_cells(row, column)?;
+        let next = Self {
+            source: change.source.clone(),
+            ranges,
+        };
+        Some((next, change))
     }
 
     pub(super) fn value(&self, row: usize, column: usize) -> Option<&str> {
@@ -415,9 +518,41 @@ impl CellGrid {
             escaped = byte == b'\\' && !escaped;
         }
         let range = self.ranges.get(row)?.get(column)?.clone();
+        let before = Table::parse(current)?;
         let mut next = self.clone();
         next.source.replace_range(range.clone(), value);
-        let before = Table::parse(current)?;
+        let mut prefix = None;
+        let mut suffix = None;
+        if current.get(range.clone()) != Some(value) {
+            let physical = line_range(current, &range);
+            let old_line = current[physical.clone()].trim_end_matches(['\r', '\n']);
+            let start = physical.start;
+            let line = next.source[start..]
+                .split('\n')
+                .next()?
+                .trim_end_matches('\r');
+            if column == 0
+                && !old_line.trim_start_matches([' ', '\t']).starts_with('|')
+                && (bare_row_needs_pipe(line, row == 0)
+                    || line.trim_start_matches([' ', '\t']).starts_with('|'))
+            {
+                let at = start + before.indent.len();
+                next.source.insert(at, '|');
+                prefix = Some(at);
+            }
+            if column + 1 == before.alignment.len()
+                && value.trim_matches([' ', '\t']).is_empty()
+                && !has_trailing_pipe(old_line)
+            {
+                let line = next.source[start..]
+                    .split('\n')
+                    .next()?
+                    .trim_end_matches('\r');
+                let at = start + line.len();
+                next.source.insert(at, '|');
+                suffix = Some(at);
+            }
+        }
         let after = Table::parse(&next.source)?;
         if after.rows.len() != before.rows.len() || after.alignment != before.alignment {
             return None;
@@ -445,9 +580,29 @@ impl CellGrid {
                 }
             }
         }
+        if let Some(at) = prefix {
+            for cells in &mut next.ranges {
+                for cell in cells {
+                    if cell.start >= at {
+                        cell.start += 1;
+                        cell.end += 1;
+                    }
+                }
+            }
+        }
+        if let Some(at) = suffix {
+            for (r, cells) in next.ranges.iter_mut().enumerate() {
+                for (c, cell) in cells.iter_mut().enumerate() {
+                    if cell.start > at || (cell.start == at && (r, c) != (row, column)) {
+                        cell.start += 1;
+                        cell.end += 1;
+                    }
+                }
+            }
+        }
         let change = Change {
             source: next.source.clone(),
-            selection: range.start..end,
+            selection: next.ranges[row][column].clone(),
         };
         Some((next, change))
     }
@@ -461,15 +616,58 @@ fn line_range(source: &str, cell: &Range<usize>) -> Range<usize> {
     start..end
 }
 
+// Physical row/column mapping includes the delimiter row and padding, so an
+// idle format also works after typing an alignment colon or a trailing space.
+fn map_format_position(before: &str, after: &str, at: usize) -> Option<usize> {
+    let mut from = 0;
+    let mut to = 0;
+    for (old, new) in before
+        .split_inclusive('\n')
+        .zip(after.split_inclusive('\n'))
+    {
+        if at < from + old.len() || (at == before.len() && from + old.len() == before.len()) {
+            let old_raw = old.trim_end_matches(['\r', '\n']);
+            let new_raw = new.trim_end_matches(['\r', '\n']);
+            let offset = at.checked_sub(from)?;
+            if offset >= old_raw.len() {
+                return Some(
+                    to + new_raw.len() + (offset - old_raw.len()).min(new.len() - new_raw.len()),
+                );
+            }
+            let spans = cell_spans(old_raw, 0, false)?;
+            if let Some(column) = spans
+                .iter()
+                .position(|span| span.start <= offset && offset <= span.end)
+            {
+                let old_cell = cells(old_raw, 0)?.get(column)?.clone();
+                let new_cell = cells(new_raw, 0)?.get(column)?.clone();
+                return Some(
+                    to + new_cell.start + offset.saturating_sub(old_cell.start).min(new_cell.len()),
+                );
+            }
+            return Some(to + offset.min(new_raw.len()));
+        }
+        from += old.len();
+        to += new.len();
+    }
+    None
+}
+
 pub(super) fn edit(source: &str, selection: Range<usize>, command: Command) -> Option<Change> {
-    if !source.is_char_boundary(selection.start) || !source.is_char_boundary(selection.end) {
+    if selection.start > selection.end
+        || !source.is_char_boundary(selection.start)
+        || !source.is_char_boundary(selection.end)
+    {
         return None;
     }
     let table = Table::parse(source)?;
-    let (mut row, mut col) = table.locate(&selection)?;
     if matches!(command, Command::Format) {
-        return Some(table.render(row, col));
+        let mut change = table.render(0, 0)?;
+        change.selection = map_format_position(source, &change.source, selection.start)?
+            ..map_format_position(source, &change.source, selection.end)?;
+        return Some(change);
     }
+    let (mut row, mut col) = table.locate(source, &selection)?;
     let mut updated = source.to_owned();
     let width = table.alignment.len();
     match command {
@@ -491,11 +689,45 @@ pub(super) fn edit(source: &str, selection: Range<usize>, command: Command) -> O
         Command::InsertRow => {
             row += 1;
         }
+        Command::MoveRowUp | Command::MoveRowDown => {
+            let other = if matches!(command, Command::MoveRowUp) {
+                row.checked_sub(1)?
+            } else {
+                row + 1
+            };
+            // The header and delimiter are structural, never movable data rows.
+            if row == 0 || other == 0 || other >= table.rows.len() {
+                return None;
+            }
+            let a = row.min(other);
+            let b = row.max(other);
+            let first = line_range(source, &table.ranges[a][0]);
+            let second = line_range(source, &table.ranges[b][0]);
+            let body = |range: Range<usize>| source[range].trim_end_matches(['\r', '\n']);
+            let ending = if source[second.clone()].ends_with('\n') {
+                table.newline
+            } else {
+                ""
+            };
+            updated.replace_range(
+                first.start..second.end,
+                &format!("{}{}{}{}", body(second), table.newline, body(first), ending),
+            );
+            row = other;
+        }
         Command::DeleteRow => {
             if row == 0 {
                 return None;
             }
-            updated.replace_range(line_range(source, &table.ranges[row][0]), "");
+            let removed = line_range(source, &table.ranges[row][0]);
+            let at_end = removed.end == source.len();
+            updated.replace_range(removed, "");
+            // The preceding line separator becomes the new table ending.
+            // A classifier range excludes the note's final newline, so do
+            // not leave that separator inside the new grid lease.
+            if at_end && !table.trailing_newline {
+                updated.truncate(updated.len() - table.newline.len());
+            }
             row = row.min(table.rows.len() - 2);
         }
         Command::InsertColumn | Command::DeleteColumn => {
@@ -521,7 +753,16 @@ pub(super) fn edit(source: &str, selection: Range<usize>, command: Command) -> O
                     };
                     edits.push((range.end..range.end, value));
                 } else if col + 1 < width {
-                    edits.push((range.start..ranges[col + 1].start, ""));
+                    // Removing a bare first cell exposes its separator as an
+                    // apparent outer border. Supply a real border so an empty
+                    // next cell or literal block prefix retains its identity.
+                    let border =
+                        if col == 0 && !raw.trim_start_matches([' ', '\t']).starts_with('|') {
+                            "|"
+                        } else {
+                            ""
+                        };
+                    edits.push((range.start..ranges[col + 1].start, border));
                 } else {
                     edits.push((ranges[col - 1].end..range.end, ""));
                 }
@@ -534,6 +775,43 @@ pub(super) fn edit(source: &str, selection: Range<usize>, command: Command) -> O
                 col += 1;
             } else {
                 col = col.min(width - 2);
+                if width == 2 {
+                    // A one-column GFM table requires an outer pipe. Bare
+                    // two-column rows lose their only delimiter on deletion;
+                    // add borders around their exact remaining cell bytes.
+                    let mut bordered = String::new();
+                    for (physical, line) in updated.split_inclusive('\n').enumerate() {
+                        let raw = line.trim_end_matches(['\r', '\n']);
+                        if cells(raw, 0).is_none() {
+                            let (indent, content) = raw.split_at(table.indent.len());
+                            bordered.push_str(indent);
+                            bordered.push('|');
+                            bordered.push_str(content);
+                            // Do not let an authored trailing backslash turn
+                            // the new border into an escaped content pipe.
+                            if content
+                                .bytes()
+                                .rev()
+                                .take_while(|&byte| byte == b'\\')
+                                .count()
+                                % 2
+                                == 1
+                            {
+                                bordered.push(' ');
+                            }
+                            bordered.push('|');
+                        } else if bare_row_needs_pipe(raw, physical == 0) {
+                            let (indent, content) = raw.split_at(table.indent.len());
+                            bordered.push_str(indent);
+                            bordered.push('|');
+                            bordered.push_str(content);
+                        } else {
+                            bordered.push_str(raw);
+                        }
+                        bordered.push_str(&line[raw.len()..]);
+                    }
+                    updated = bordered;
+                }
             }
         }
         Command::Align(alignment) => {
@@ -825,5 +1103,182 @@ mod tests {
             edit(source, 3..3, Command::Next).is_none(),
             "UTF-8 boundary"
         );
+    }
+}
+
+#[cfg(test)]
+mod remaining_scope_tests {
+    use super::*;
+
+    #[test]
+    fn format_aligns_cyrillic_cjk_emoji_sequences_and_retains_the_caret() {
+        let source = "| Имя | 值 |\r\n|:--|--:|\r\n|😀👨‍👩‍👧‍👦|é|\r\n|длинное|東京|";
+        let caret = source.find("👨").unwrap();
+        let change = edit(source, caret..caret, Command::Format).unwrap();
+        assert_ne!(change.source, source, "positive control: formatting ran");
+        assert!(change.source[change.selection.start..].starts_with("👨‍👩‍👧‍👦"));
+        assert!(change.selection.is_empty());
+        let lines: Vec<_> = change.source.split("\r\n").collect();
+        let positions = |line: &str| {
+            cells(line, 0)
+                .unwrap()
+                .iter()
+                .map(|cell| {
+                    let delimiter = line[cell.end..].find('|').unwrap() + cell.end;
+                    UnicodeWidthStr::width(&line[..delimiter])
+                })
+                .collect::<Vec<_>>()
+        };
+        for line in &lines[1..] {
+            assert_eq!(positions(line), positions(lines[0]));
+        }
+        assert!(!change.source.replace("\r\n", "").contains('\n'));
+        let again = edit(&change.source, change.selection, Command::Format).unwrap();
+        assert_eq!(again.source, change.source, "formatting is idempotent");
+    }
+
+    #[test]
+    fn moving_rows_preserves_bytes_escapes_and_newlines_at_eof() {
+        for newline in ["\n", "\r\n"] {
+            for ending in [false, true] {
+                let source = ["Name|値", "---|---:", r"one\|😀 | 東京  ", "two | Привет"]
+                    .join(newline)
+                    + if ending { newline } else { "" };
+                let at = source.find("one").unwrap();
+                let moved = edit(&source, at..at, Command::MoveRowDown).unwrap();
+                assert_ne!(moved.source, source, "positive control: row moved");
+                assert_eq!(&moved.source[moved.selection.clone()], r"one\|😀");
+                let restored = edit(&moved.source, moved.selection, Command::MoveRowUp).unwrap();
+                assert_eq!(restored.source, source);
+                assert!(
+                    edit(&source, at..at, Command::MoveRowUp).is_none(),
+                    "header stays fixed"
+                );
+                let header = source.find("Name").unwrap();
+                assert!(edit(&source, header..header, Command::MoveRowDown).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn idle_cell_format_keeps_typed_spaces_and_escape_spellings() {
+        let source = "|A|B|\n|--|--:|\n|old|a\\|b<BR/>😀|";
+        let grid = CellGrid::new(source).unwrap();
+        let (grid, _) = grid.replace_text(source, 1, 0, "  новый ").unwrap();
+        let (formatted, change) = grid.format(1, 0).unwrap();
+        assert!(change.source.contains("a\\|b<BR/>😀"));
+        assert_eq!(formatted.value(1, 0), Some("  новый "));
+        let (_, change) = formatted
+            .replace_text(&change.source, 1, 0, "  новый !")
+            .unwrap();
+        assert!(change.source.contains("  новый !"));
+    }
+    #[test]
+    fn a_raw_caret_in_padding_formats_and_navigates_in_the_same_cell() {
+        let source = "|A| B |\n|--|--|\n| x    | y |";
+        let at = source.find("x    ").unwrap() + 4;
+        let formatted = edit(source, at..at, Command::Format).unwrap();
+        assert_ne!(
+            formatted.source, source,
+            "positive control: formatter accepted padding"
+        );
+        assert!(formatted.source[..formatted.selection.start].ends_with('x'));
+        let next = edit(source, at..at, Command::Next).unwrap();
+        assert_eq!(&next.source[next.selection], "y");
+    }
+    #[test]
+    fn formatting_maps_delimiter_carets_and_multi_cell_selections() {
+        let source = "| Name | 值 |\r\n|:---------|--:|\r\n| 😀 | 東京 |";
+        let at = source.find(":---------").unwrap() + 2;
+        let changed = edit(source, at..at, Command::Format).unwrap();
+        assert_ne!(
+            changed.source, source,
+            "positive control: delimiter edit formats"
+        );
+        assert!(changed.selection.is_empty());
+        assert_eq!(
+            changed.source[..changed.selection.start]
+                .matches('\n')
+                .count(),
+            1
+        );
+        let from = source.find("Name").unwrap();
+        let to = source.find("東京").unwrap() + "東京".len();
+        let changed = edit(source, from..to, Command::Format).unwrap();
+        assert!(changed.source[changed.selection].starts_with("Name"));
+    }
+    #[test]
+    fn alignment_refuses_pathological_padding_expansion_before_allocation() {
+        let small = "|a|b|\n|--|--|\n|x|y|";
+        assert!(
+            edit(small, 2..2, Command::Format).is_some(),
+            "positive control: ordinary format accepted"
+        );
+        let large = format!(
+            "|{}|b|\n|--|--|\n{}",
+            "x".repeat(60000),
+            "|x|y|\n".repeat(100)
+        );
+        assert!(
+            Table::parse(&large).is_some(),
+            "authored input is within the bound"
+        );
+        assert!(edit(&large, 2..2, Command::Format).is_none());
+        assert!(CellGrid::new(&large).unwrap().format(0, 0).is_none());
+    }
+    #[test]
+    fn deleting_the_last_data_row_keeps_the_original_table_ending() {
+        for newline in ["\n", "\r\n"] {
+            for ending in [false, true] {
+                let head = ["A | B", "--- | ---:"].join(newline);
+                let source = format!(
+                    "{head}{newline}😀 | 東京{}",
+                    if ending { newline } else { "" }
+                );
+                let at = source.find("😀").unwrap();
+                let changed = edit(&source, at..at, Command::DeleteRow).unwrap();
+                assert_ne!(changed.source, source, "positive control: last row deleted");
+                assert_eq!(changed.source, head + if ending { newline } else { "" });
+                assert_eq!(Table::parse(&changed.source).unwrap().rows.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn deleting_from_a_bare_two_column_table_keeps_one_valid_lossless_column() {
+        for newline in ["\n", "\r\n"] {
+            for ending in [false, true] {
+                let source = ["A|B", "---|---:", r"one\|😀|東京", "two|Привет"].join(newline)
+                    + if ending { newline } else { "" };
+                let at = source.find("東京").unwrap();
+                let changed = edit(&source, at..at, Command::DeleteColumn).unwrap();
+                let expected = ["|A|", "|---|", r"|one\|😀|", "|two|"].join(newline)
+                    + if ending { newline } else { "" };
+                assert_eq!(
+                    changed.source, expected,
+                    "the remaining cell source is unchanged"
+                );
+                assert_eq!(Table::parse(&changed.source).unwrap().alignment.len(), 1);
+                assert_eq!(&changed.source[changed.selection.clone()], r"one\|😀");
+                assert!(
+                    edit(&changed.source, changed.selection, Command::Format).is_some(),
+                    "positive control: the result remains formatable"
+                );
+            }
+        }
+    }
+    #[test]
+    fn adding_a_one_column_border_never_reinterprets_trailing_backslashes() {
+        for count in 1..=4 {
+            let raw = format!("trail{}", "\\".repeat(count));
+            let source = format!("A|B\n---|---\nkeep|{raw}");
+            let at = source.find("keep").unwrap();
+            let changed = edit(&source, at..at, Command::DeleteColumn).unwrap();
+            assert_eq!(Table::parse(&changed.source).unwrap().rows[1][0], raw);
+            assert_eq!(
+                &changed.source[changed.selection], raw,
+                "remaining source bytes are exact"
+            );
+        }
     }
 }

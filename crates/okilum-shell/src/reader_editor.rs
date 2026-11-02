@@ -650,6 +650,7 @@ impl Reader {
         });
         // Cmd/Ctrl+/ comments code-block lines; elsewhere it falls through.
         code_comforts::ensure_keys(cx);
+        tables::ensure_keys(cx);
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .document_newlines(true)
@@ -912,6 +913,16 @@ impl Reader {
                 }
                 match event {
                     ClipboardPasteEvent::Applied { bytes, .. } => {
+                        if let Some(editing) = this
+                            .editing
+                            .as_ref()
+                            .filter(|editing| editing.input == *input)
+                        {
+                            let stamp = input.read(cx).source_stamp();
+                            editing
+                                .table_grid
+                                .update(cx, |grid, cx| grid.claim_paste_edit(stamp, window, cx));
+                        }
                         eprintln!("Paste: inserted {bytes} bytes");
                         // A file too large to copy was linked where it is; say so.
                         let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
@@ -950,7 +961,7 @@ impl Reader {
         let reader = cx.entity();
         let math_preview =
             cx.new(|cx| math_preview::MathPreview::new(reader.clone(), input.clone(), cx));
-        let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), cx));
+        let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), window, cx));
         let table_watch = cx.observe(&table_grid, |_, _, cx| cx.notify());
         self.editing = Some(Editing {
             store,

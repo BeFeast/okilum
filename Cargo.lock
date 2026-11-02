@@ -6585,6 +6585,7 @@ dependencies = [
  "unicode-bidi",
  "unicode-linebreak",
  "unicode-segmentation",
+ "unicode-width",
  "url",
  "uuid",
  "velopack",
