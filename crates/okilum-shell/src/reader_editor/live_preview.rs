@@ -1326,7 +1326,14 @@ mod tests {
             work.display_bytes < 64 * 1024,
             "bounded display edits at {bytes}: {work:?}"
         );
-        println!("ROPE_KEY_WORK bytes={bytes} native_flat={native_flat} work={work:?}");
+        {
+            use std::io::Write as _;
+            writeln!(
+                std::io::stdout().lock(),
+                "ROPE_KEY_WORK bytes={bytes} native_flat={native_flat} work={work:?}"
+            )
+            .unwrap();
+        }
         // Old input construction really is visible to the same counter.
         let control = input.read_with(visual, |i, _| i.source_snapshot());
         let _flattened = control.text.as_ref();

@@ -2953,6 +2953,7 @@ mod rope_revision_tests {
         Rope,
     };
     use okilum_core::source_projection::revision::{reset_work, take_work};
+    use std::io::Write as _;
 
     #[test]
     fn native_receipts_bound_compose_and_old_discovery_controls_at_all_sizes() {
@@ -3024,10 +3025,8 @@ mod rope_revision_tests {
                     .compose(&edited, &active)
                     .expect("retained receipt");
                 let work = take_work();
-                println!(
-                    "RECEIPT_KEY_WORK line_bytes={} note_bytes={bytes} work={work:?}",
-                    line_bytes
-                );
+                writeln!(std::io::stdout().lock(),
+                    "RECEIPT_KEY_WORK line_bytes={} note_bytes={bytes} work={work:?}", line_bytes).unwrap();
                 scanned.push(work.scanned_bytes);
                 assert_eq!(work.flattened_bytes, 0, "{bytes}: {work:?}");
                 assert_eq!(work.display_builds, 0, "{bytes}: {work:?}");
@@ -3052,7 +3051,7 @@ mod rope_revision_tests {
                     reset_work();
                     let revealed = provider.compose(&edited, &reveal).unwrap();
                     let reveal_work = take_work();
-                    println!("REVEAL_KEY_WORK note_bytes={bytes} work={reveal_work:?}");
+                    writeln!(std::io::stdout().lock(), "REVEAL_KEY_WORK note_bytes={bytes} work={reveal_work:?}").unwrap();
                     assert_eq!(reveal_work.flattened_bytes, 0);
                     assert_eq!(reveal_work.display_builds, 0);
                     assert!(reveal_work.scanned_bytes < line_bytes * 16 + 4096, "{reveal_work:?}");
@@ -3083,6 +3082,7 @@ mod rope_revision_tests {
                 reset_work();
                 let _old = legacy_provider.compose(&legacy, &active).unwrap();
                 let old = take_work();
+                writeln!(std::io::stdout().lock(), "OLD_PATH_KEY_WORK line_bytes={line_bytes} note_bytes={bytes} work={old:?}").unwrap();
                 assert!(
                     old.scanned_bytes >= bytes,
                     "old-path scan positive control: {old:?}"

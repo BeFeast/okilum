@@ -245,6 +245,7 @@ mod acceptance_tests {
         source_classifier::{classify, RetainedPresentation},
         source_projection::Snapshot,
     };
+    use std::io::Write as _;
     #[test]
     fn marker_proofs_reuse_unchanged_bytes_but_reject_changed_protected_source() {
         use crate::source_projection::{
@@ -346,7 +347,11 @@ mod acceptance_tests {
                 .expect("ordinary inline edit remains retained");
             let work = take_work();
             assert_eq!(next.snapshot(), &current);
-            println!("SINGLE_LINE_KEY_WORK bytes={bytes} work={work:?}");
+            writeln!(
+                std::io::stdout().lock(),
+                "SINGLE_LINE_KEY_WORK bytes={bytes} work={work:?}"
+            )
+            .unwrap();
             assert_eq!(work.flattened_bytes, 0);
             assert_eq!(work.display_builds, 0);
             // Owner decision 44461: segmentation inside a logical line is
