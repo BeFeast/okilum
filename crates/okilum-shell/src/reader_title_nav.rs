@@ -248,6 +248,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if menu == Menu::Recent {
+            self.toggle_recent_gallery(window, cx);
+            return;
+        }
         if self.title_nav.menu == Some(menu) {
             self.close_nav_menu(window, cx);
             return;

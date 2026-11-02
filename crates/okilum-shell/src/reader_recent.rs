@@ -1,6 +1,10 @@
 //! A frozen MRU gesture: highlight is not navigation; Control release commits once.
 use super::*;
 
+pub(super) mod gallery;
+mod thumb_code;
+mod thumb_markdown;
+
 #[derive(Default)]
 pub(super) struct Switcher {
     paths: Vec<String>,
@@ -8,6 +12,8 @@ pub(super) struct Switcher {
     root: PathBuf,
     scroll: ScrollHandle,
     release_generation: u64,
+    gallery_open: bool,
+    gallery: Option<GallerySession>,
 }
 impl Switcher {
     fn begin(
@@ -17,7 +23,7 @@ impl Switcher {
         available: &[okilum_core::vault::Note],
         root: &Path,
     ) {
-        self.invalidate_release();
+        self.cancel();
         let mut paths = vec![];
         for path in std::iter::once(current).chain(recent.iter().rev().map(String::as_str)) {
             if path.to_lowercase().ends_with(".md")
@@ -33,19 +39,18 @@ impl Switcher {
         self.root = root.to_path_buf();
     }
     pub fn open(&self) -> bool {
-        self.paths.len() > 1
+        self.gallery_open || self.paths.len() > 1
     }
     fn step(&mut self, delta: isize) {
         self.invalidate_release();
-        if self.open() {
+        if self.paths.len() > 1 && !self.gallery_open {
             self.selected =
                 (self.selected as isize + delta).rem_euclid(self.paths.len() as isize) as usize;
             self.scroll.scroll_to_item(self.selected);
         }
     }
     fn take(&mut self) -> Option<(PathBuf, String)> {
-        let result = self
-            .open()
+        let result = (self.paths.len() > 1 && !self.gallery_open)
             .then(|| (self.root.clone(), self.paths[self.selected].clone()));
         self.paths.clear();
         result
@@ -53,15 +58,399 @@ impl Switcher {
     pub fn cancel(&mut self) {
         self.invalidate_release();
         self.paths.clear();
+        self.gallery_open = false;
     }
     pub fn invalidate_release(&mut self) {
         self.release_generation = self.release_generation.wrapping_add(1);
     }
 }
 
+/// Window-owned UI/cache only; inventory and files remain owned by Reader.
+struct GallerySession {
+    root: PathBuf,
+    view: Entity<gallery::Gallery>,
+    input: Entity<InputState>,
+    inventory: Option<Arc<Vec<okilum_core::vault::Note>>>,
+    entries: Vec<reader_title_nav::Entry>,
+    appearance: String,
+    focused: bool,
+    navigation: u64,
+    _subscriptions: Vec<Subscription>,
+}
+
+mod lifecycle {
+    use std::sync::Arc;
+    pub(super) fn same_inventory<T>(left: Option<&Arc<T>>, right: Option<&Arc<T>>) -> bool {
+        match (left, right) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    pub(super) fn columns(viewport: f32) -> usize {
+        (((viewport.min(800.) - 32. + 12.) / 252.).floor() as usize).max(1)
+    }
+    pub(super) fn step(key: &str, columns: usize) -> Option<isize> {
+        match key {
+            "left" => Some(-1),
+            "right" => Some(1),
+            "up" => Some(-(columns.max(1) as isize)),
+            "down" => Some(columns.max(1) as isize),
+            _ => None,
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn accepted_inventory_identity_includes_same_path_source_updates() {
+            let first = Arc::new(vec!["a.md"]);
+            let retained = first.clone();
+            let accepted = Arc::new(vec!["a.md"]);
+            assert!(same_inventory(Some(&first), Some(&retained)));
+            assert!(!same_inventory(Some(&first), Some(&accepted)));
+            assert!(!same_inventory(Some(&first), None));
+            assert!(same_inventory::<Vec<&str>>(None, None));
+        }
+        #[test]
+        fn arrows_follow_actual_gallery_columns_without_capturing_text() {
+            assert_eq!((columns(1600.), columns(600.), columns(300.)), (3, 2, 1));
+            assert_eq!(step("down", columns(600.)), Some(2));
+            assert_eq!(step("up", columns(300.)), Some(-1));
+            assert_eq!(step("left", 3), Some(-1));
+            assert_eq!(step("a", 3), None);
+        }
+    }
+}
+
 impl Reader {
+    /// Parent's existing Recent button/menu route calls this instead of the list
+    /// popover. No main field or new inventory is needed; render_recent owns it.
+    pub(super) fn toggle_recent_gallery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recent_switcher.gallery_open {
+            self.close_recent_gallery(window, cx);
+            return;
+        }
+        self.close_quick_open(window, cx);
+        self.close_nav_menu(window, cx);
+        self.close_project_switcher(window, cx);
+        self.recent_switcher.cancel();
+        if self
+            .recent_switcher
+            .gallery
+            .as_ref()
+            .is_some_and(|session| session.root != self.vault_root)
+        {
+            self.recent_switcher.gallery = None;
+        }
+        if self.recent_switcher.gallery.is_none() {
+            let entries = self.recent_gallery_entries();
+            let root = self.vault_root.clone();
+            let view = cx.new(|cx| gallery::Gallery::new(root.clone(), entries.clone(), cx));
+            let input =
+                cx.new(|cx| InputState::new(window, cx).placeholder("Search recent files…"));
+            let input_events = cx.subscribe_in(&input, window, |this, input, event, _, cx| {
+                let Some(view) = this
+                    .recent_switcher
+                    .gallery
+                    .as_ref()
+                    .map(|session| session.view.clone())
+                else {
+                    return;
+                };
+                if !this.recent_switcher.gallery_open {
+                    return;
+                }
+                if matches!(event, InputEvent::Change) {
+                    let query = input.read(cx).value().to_string();
+                    view.update(cx, |view, cx| view.set_query(query, cx));
+                } else if matches!(event, InputEvent::PressEnter { .. }) {
+                    view.update(cx, |view, cx| view.accept(cx));
+                }
+            });
+            let opened = cx.subscribe_in(
+                &view,
+                window,
+                |this, _, target: &gallery::OpenFile, window, cx| {
+                    if !this.recent_switcher.gallery_open || target.root != this.vault_root {
+                        return;
+                    }
+                    // Revalidate against the accepted current scope, not a stale card index.
+                    if !this
+                        .recent_gallery_entries()
+                        .iter()
+                        .any(|entry| entry.path == target.relative)
+                    {
+                        this.link_notice =
+                            Some("This recent file is no longer in the current inventory.".into());
+                        this.refresh_recent_gallery(cx);
+                        cx.notify();
+                        return;
+                    }
+                    this.close_recent_gallery(window, cx);
+                    if this.selected_file() != target.relative {
+                        this.open_note(&target.relative, None, window, cx);
+                    }
+                },
+            );
+            let observed = cx.entity();
+            let lifecycle = cx.observe_in(&observed, window, |this, _, window, cx| {
+                if !this.recent_switcher.gallery_open {
+                    this.finish_recent_gallery_close(window, cx);
+                } else {
+                    this.refresh_recent_gallery(cx);
+                }
+            });
+            let appearance = cx.observe_global_in::<Theme>(window, |this, _, cx| {
+                let appearance = this.recent_gallery_appearance(cx);
+                if let Some(session) = &mut this.recent_switcher.gallery {
+                    session.appearance = appearance;
+                    session
+                        .view
+                        .update(cx, |view, cx| view.appearance_changed(cx));
+                }
+                cx.notify();
+            });
+            self.recent_switcher.gallery = Some(GallerySession {
+                root,
+                view,
+                input,
+                entries,
+                inventory: self.quick_open.inventory.clone(),
+                appearance: self.recent_gallery_appearance(cx),
+                focused: false,
+                navigation: self.navigation.generation,
+                _subscriptions: vec![input_events, opened, lifecycle, appearance],
+            });
+        }
+        self.recent_switcher.gallery_open = true;
+        if let Some(session) = &mut self.recent_switcher.gallery {
+            session.navigation = self.navigation.generation;
+        }
+        self.refresh_recent_gallery(cx);
+        if let Some(session) = &mut self.recent_switcher.gallery {
+            session.focused = true;
+            let view = session.view.clone();
+            view.update(cx, |view, cx| view.set_query(String::new(), cx));
+            // Reopening validates every retained source revision in the same worker.
+            if session.inventory.is_some() {
+                view.update(cx, |view, cx| {
+                    view.refresh(session.entries.clone(), &[], cx)
+                });
+            }
+            session.input.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+                input.focus(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn recent_gallery_entries(&self) -> Vec<reader_title_nav::Entry> {
+        let Some(inventory) = &self.quick_open.inventory else {
+            return Vec::new();
+        };
+        self.nav_entries(reader_title_nav::Menu::Recent, reader_sidebar::now())
+            .into_iter()
+            .filter(|entry| !entry.folder && inventory.iter().any(|file| file.path == entry.path))
+            .take(40)
+            .collect()
+    }
+
+    fn recent_gallery_appearance(&self, cx: &App) -> String {
+        let palette = brand::palette(cx);
+        format!(
+            "{:?}:{:?}:{:?}:{:?}:{}:{:p}:{}:{}:{}",
+            palette.surface,
+            palette.text,
+            palette.selected,
+            palette.border,
+            cx.theme().is_dark(),
+            Arc::as_ptr(&cx.theme().highlight_theme),
+            reader_fonts::note(cx),
+            reader_fonts::code(cx),
+            reader_ui_state::font_size(cx).to_bits()
+        )
+    }
+
+    /// Refresh only accepted inventory publications; no watcher polling or disk I/O.
+    fn refresh_recent_gallery(&mut self, cx: &mut Context<Self>) {
+        if !self.recent_switcher.gallery_open {
+            return;
+        }
+        if self
+            .recent_switcher
+            .gallery
+            .as_ref()
+            .is_some_and(|session| {
+                session.root != self.vault_root || session.navigation != self.navigation.generation
+            })
+        {
+            self.recent_switcher.cancel();
+            cx.notify();
+            return;
+        }
+        let entries = self.recent_gallery_entries();
+        let inventory = self.quick_open.inventory.clone();
+        let appearance = self.recent_gallery_appearance(cx);
+        let Some(session) = self.recent_switcher.gallery.as_mut() else {
+            return;
+        };
+        if session.appearance != appearance {
+            session.appearance = appearance;
+            session
+                .view
+                .update(cx, |view, cx| view.appearance_changed(cx));
+        }
+        // Missing inventory is a preparation state, not evidence of deletion.
+        if inventory.is_none() {
+            if session.inventory.take().is_some() {
+                session.view.update(cx, |view, cx| view.suspend(cx));
+            }
+            return;
+        }
+        if !lifecycle::same_inventory(session.inventory.as_ref(), inventory.as_ref())
+            || session.entries != entries
+        {
+            session.inventory = inventory;
+            session.entries = entries.clone();
+            session
+                .view
+                .update(cx, |view, cx| view.refresh(entries, &[], cx));
+        }
+    }
+
+    /// An accepted rename publication may supply verified final old/new mappings.
+    /// External renames without such evidence remain deletion/addition, never guesses.
+    pub(super) fn refresh_recent_gallery_renames(
+        &mut self,
+        renames: &[(String, String)],
+        cx: &mut Context<Self>,
+    ) {
+        if !self.recent_switcher.gallery_open || self.quick_open.inventory.is_none() {
+            return;
+        }
+        let entries = self.recent_gallery_entries();
+        let inventory = self.quick_open.inventory.clone();
+        if let Some(session) = &mut self.recent_switcher.gallery {
+            if session.root != self.vault_root {
+                return;
+            }
+            session.inventory = inventory;
+            session.entries = entries.clone();
+            session
+                .view
+                .update(cx, |view, cx| view.refresh(entries, renames, cx));
+        }
+    }
+
+    fn finish_recent_gallery_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut restore_focus = false;
+        if let Some(session) = &mut self.recent_switcher.gallery {
+            if session.focused {
+                session.focused = false;
+                restore_focus = session.input.read(cx).focus_handle(cx).is_focused(window);
+                session.view.update(cx, |view, cx| view.suspend(cx));
+            }
+        }
+        if self
+            .recent_switcher
+            .gallery
+            .as_ref()
+            .is_some_and(|session| session.root != self.vault_root)
+        {
+            self.recent_switcher.gallery = None;
+        }
+        if restore_focus {
+            self.restore_document_focus(window, cx);
+        }
+    }
+    fn close_recent_gallery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.recent_switcher.cancel();
+        self.finish_recent_gallery_close(window, cx);
+        cx.notify();
+    }
+
+    fn render_recent_gallery(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(session) = &self.recent_switcher.gallery else {
+            return div().into_any_element();
+        };
+        let palette = brand::palette(cx);
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .justify_center()
+            .items_start()
+            .pt(px(64.))
+            .child(
+                v_flex()
+                    .id("recent-gallery-overlay")
+                    .debug_selector(|| "recent-gallery-overlay".into())
+                    .occlude()
+                    .w(px(800.))
+                    .max_w_full()
+                    .rounded(px(12.))
+                    .shadow_lg()
+                    .bg(palette.surface)
+                    .on_mouse_down_out(
+                        cx.listener(|this, _, window, cx| this.close_recent_gallery(window, cx)),
+                    )
+                    .capture_action(gallery::capture_arrow::<gpui_component::input::MoveLeft>(
+                        session.view.clone(), "left",
+                    ))
+                    .capture_action(gallery::capture_arrow::<gpui_component::input::MoveRight>(
+                        session.view.clone(), "right",
+                    ))
+                    .capture_action(gallery::capture_arrow::<gpui_component::input::MoveUp>(
+                        session.view.clone(), "up",
+                    ))
+                    .capture_action(gallery::capture_arrow::<gpui_component::input::MoveDown>(
+                        session.view.clone(), "down",
+                    ))
+                    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        let key = event.keystroke.key.as_str();
+                        let modifiers = event.keystroke.modifiers;
+                        if modifiers.control || modifiers.alt || modifiers.platform {
+                            return;
+                        }
+                        let Some(view) = this
+                            .recent_switcher
+                            .gallery
+                            .as_ref()
+                            .map(|session| session.view.clone())
+                        else {
+                            return;
+                        };
+                        if let Some(delta) = lifecycle::step(
+                            key,
+                            lifecycle::columns(f32::from(window.viewport_size().width)),
+                        ) {
+                            view.update(cx, |view, cx| view.step(delta, cx));
+                            cx.stop_propagation();
+                        } else if key == "enter" {
+                            view.update(cx, |view, cx| view.accept(cx));
+                            cx.stop_propagation();
+                        } else if key == "escape" {
+                            this.close_recent_gallery(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(div().p_4().child(
+                        Input::new(&session.input).prefix(Icon::new(IconName::Search).small()),
+                    ))
+                    .when(self.quick_open.inventory.is_none(), |view| {
+                        view.child(div().p_4().child("Recent files are loading…"))
+                    })
+                    .when(self.quick_open.inventory.is_some(), |view| {
+                        view.child(session.view.clone())
+                    }),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn cycle_recent(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.quick_open.open || self.shortcut_sheet.open {
+        if self.quick_open.open || self.shortcut_sheet.open || self.recent_switcher.gallery_open {
             return;
         }
         if !self.recent_switcher.open() {
@@ -81,7 +470,7 @@ impl Reader {
     /// A compositor can clear modifiers before reporting keyboard focus loss.
     /// Do not navigate inside that event: allow activation cancellation to win.
     pub(super) fn queue_recent_release(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.recent_switcher.open() {
+        if !self.recent_switcher.open() || self.recent_switcher.gallery_open {
             return;
         }
         self.recent_switcher.invalidate_release();
@@ -110,6 +499,9 @@ impl Reader {
     }
 
     pub(super) fn release_recent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recent_switcher.gallery_open {
+            return;
+        }
         if !window.is_window_active() {
             self.recent_switcher.cancel();
             cx.notify();
@@ -123,7 +515,15 @@ impl Reader {
         }
         cx.notify();
     }
-    pub(super) fn render_recent(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_recent(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.recent_switcher.gallery_open {
+            self.refresh_recent_gallery(cx);
+            return if self.recent_switcher.gallery_open {
+                self.render_recent_gallery(cx)
+            } else {
+                div().into_any_element()
+            };
+        }
         let palette = brand::palette(cx);
         div()
             .absolute()
@@ -263,6 +663,136 @@ mod tests {
         s.cancel();
         assert!(s.take().is_none());
     }
+    #[test]
+    fn gallery_never_commits_through_mru_control_release() {
+        let mut switcher = Switcher::default();
+        switcher.gallery_open = true;
+        assert!(switcher.open());
+        switcher.step(1);
+        assert!(switcher.take().is_none());
+        switcher.cancel();
+        assert!(!switcher.open());
+    }
+
+    #[gpui::test]
+    fn gallery_search_inventory_rename_accept_and_reopen_use_one_cached_view(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("A.md"), "# Root").unwrap();
+        std::fs::write(root.join("nested/A.md"), "# Nested").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("A.md".into()),
+                        index_dir: Some(fixture.path().join("index")),
+                        session_directory: Some(fixture.path().join("state")),
+                        panel_settings_override: Some(fixture.path().join("panels.json")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        let cached = reader.update_in(visual, |reader, window, cx| {
+            reader.sidebar.recent = vec![("A.md".into(), 0), ("nested/A.md".into(), 0)];
+            reader.quick_open.inventory = Some(Arc::new(notes(&["A.md", "nested/A.md"])));
+            reader.toggle_recent_gallery(window, cx);
+            reader
+                .recent_switcher
+                .gallery
+                .as_ref()
+                .unwrap()
+                .view
+                .clone()
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("recent-gallery-overlay").is_some(),
+            "positive control: real overlay is mounted"
+        );
+        visual.simulate_input("A");
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        cached.read_with(visual, |gallery, _| {
+            assert_eq!(gallery.selected_path(), Some("nested/A.md"))
+        });
+        // Control release belongs to MRU only, never to this focused overlay.
+        visual.simulate_event(gpui::ModifiersChangedEvent::default());
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert!(reader.recent_switcher.gallery_open);
+            assert_eq!(reader.current_rel, "A.md");
+        });
+        // Publish an accepted inventory with a deleted neighbour. The Reader's
+        // own notification observer must preserve the selected exact path.
+        reader.update(visual, |reader, cx| {
+            reader.quick_open.inventory = Some(Arc::new(notes(&["nested/A.md"])));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        cached.read_with(visual, |gallery, _| {
+            assert_eq!(gallery.selected_path(), Some("nested/A.md"))
+        });
+        std::fs::rename(root.join("nested/A.md"), root.join("nested/renamed.md")).unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            // Clearing search permits the renamed filename to remain visible.
+            let input = reader
+                .recent_switcher
+                .gallery
+                .as_ref()
+                .unwrap()
+                .input
+                .clone();
+            input.update(cx, |input, cx| input.set_value("", window, cx));
+            cached.update(cx, |gallery, cx| gallery.set_query(String::new(), cx));
+            reader.sidebar.recent = vec![("nested/renamed.md".into(), 0)];
+            reader.quick_open.inventory = Some(Arc::new(notes(&["nested/renamed.md"])));
+            reader.refresh_recent_gallery_renames(
+                &[("nested/A.md".into(), "nested/renamed.md".into())],
+                cx,
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        cached.read_with(visual, |gallery, _| {
+            assert_eq!(gallery.selected_path(), Some("nested/renamed.md"))
+        });
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
+            assert_eq!(reader.current_rel, "nested/renamed.md");
+            assert!(!reader.recent_switcher.gallery_open);
+        });
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_recent_gallery(window, cx);
+            assert_eq!(
+                reader.recent_switcher.gallery.as_ref().unwrap().view,
+                cached
+            );
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| assert!(!reader.recent_switcher.open()));
+        assert!(visual.debug_bounds("recent-gallery-overlay").is_none());
+    }
+
     #[gpui::test]
     fn native_release_and_escape_route_from_reader_and_editor(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
