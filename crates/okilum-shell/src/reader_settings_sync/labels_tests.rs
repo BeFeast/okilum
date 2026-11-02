@@ -303,10 +303,12 @@ fn sync_new_destination_receive_and_existing_empty_control() -> Result<()> {
         // isolated test peers' dial addresses explicitly, as in source_sharing.
         source.identity.connect()?.add_device(&serde_json::json!({
             "deviceID": target.identity.device_id,
+            "name": "Target fixture",
             "addresses": [format!("tcp://{}", target.listen)],
         }))?;
         target.identity.connect()?.add_device(&serde_json::json!({
             "deviceID": source.identity.device_id,
+            "name": "Source fixture",
             "addresses": [format!("tcp://{}", source.listen)],
         }))?;
         let target_before = target.identity.connect()?.config()?;
