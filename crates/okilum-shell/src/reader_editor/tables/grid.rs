@@ -17,6 +17,92 @@ struct Binding {
     cells: model::CellGrid,
 }
 
+#[derive(Clone, Copy)]
+enum HistoryDirection {
+    Undo,
+    Redo,
+}
+
+#[derive(Clone, Copy)]
+struct HistoryGroup {
+    cell: Option<(usize, usize)>,
+    steps: usize,
+}
+
+/// Only transaction counts: the canonical editor retains every preimage,
+/// redo record and source selection. A cell's Textarea owns no edit history.
+/// `replace_source_edits` creates one Atomic source transaction per update;
+/// consecutive committed updates of one cell form one user-facing cell edit.
+#[derive(Default)]
+struct SourceHistory {
+    revision: Option<SourceStamp>,
+    undo: Vec<HistoryGroup>,
+    redo: Vec<HistoryGroup>,
+    boundary: bool,
+}
+
+impl SourceHistory {
+    // Matches the vendored UndoManager bound. Never promise a group containing
+    // transactions the canonical editor may already have evicted.
+    const LIMIT: usize = 1000;
+
+    fn sync(&mut self, revision: SourceStamp) {
+        if self.revision != Some(revision) {
+            self.undo.clear();
+            self.redo.clear();
+            self.revision = Some(revision);
+            self.boundary = true;
+        }
+    }
+
+    fn record(&mut self, before: SourceStamp, after: SourceStamp, cell: Option<(usize, usize)>) {
+        self.sync(before);
+        self.redo.clear();
+        if !self.boundary
+            && cell.is_some()
+            && self
+                .undo
+                .last()
+                .is_some_and(|group| group.cell == cell && group.steps < Self::LIMIT)
+        {
+            self.undo.last_mut().unwrap().steps += 1;
+        } else {
+            self.undo.push(HistoryGroup { cell, steps: 1 });
+        }
+        while self.undo.iter().map(|group| group.steps).sum::<usize>() > Self::LIMIT {
+            self.undo.remove(0);
+        }
+        self.revision = Some(after);
+        self.boundary = cell.is_none();
+    }
+
+    fn steps(&mut self, direction: HistoryDirection, revision: SourceStamp) -> usize {
+        self.sync(revision);
+        let stack = match direction {
+            HistoryDirection::Undo => &self.undo,
+            HistoryDirection::Redo => &self.redo,
+        };
+        stack.last().map_or(1, |group| group.steps)
+    }
+
+    fn completed(&mut self, direction: HistoryDirection, revision: SourceStamp) {
+        let group = match direction {
+            HistoryDirection::Undo => self.undo.pop(),
+            HistoryDirection::Redo => self.redo.pop(),
+        }
+        .unwrap_or(HistoryGroup {
+            cell: None,
+            steps: 1,
+        });
+        match direction {
+            HistoryDirection::Undo => self.redo.push(group),
+            HistoryDirection::Redo => self.undo.push(group),
+        }
+        self.revision = Some(revision);
+        self.boundary = true;
+    }
+}
+
 pub(in crate::reader_editor) struct TableGrid {
     reader: WeakEntity<Reader>,
     input: Entity<EditorState>,
@@ -31,6 +117,9 @@ pub(in crate::reader_editor) struct TableGrid {
     installed_epoch: Option<u64>,
     session: u64,
     selected: (usize, usize),
+    source_history: SourceHistory,
+    #[cfg(test)]
+    history_dispatches: usize,
 }
 
 impl TableGrid {
@@ -53,6 +142,9 @@ impl TableGrid {
             installed_epoch: None,
             session: 0,
             selected: (0, 0),
+            source_history: SourceHistory::default(),
+            #[cfg(test)]
+            history_dispatches: 0,
         }
     }
 
@@ -103,6 +195,8 @@ impl TableGrid {
         let Some(cells) = model::CellGrid::new(&document[range.clone()]) else {
             return false;
         };
+        self.source_history.sync(stamp);
+        self.source_history.boundary = true;
         self.binding = Some(Binding {
             stamp,
             document,
@@ -162,6 +256,7 @@ impl TableGrid {
         let Some(cell) = self.cells.get(row).and_then(|row| row.get(column)) else {
             return false;
         };
+        self.source_history.boundary = true;
         self.selected = (row, column);
         cell.update(cx, |cell, cx| {
             cell.focus(window, cx);
@@ -291,6 +386,12 @@ impl TableGrid {
                                 return;
                             }
                             let value = state.value().to_string();
+                            // Committed cell text is mirrored immediately into
+                            // source. Discard only the nested private history;
+                            // text, caret, selection and IME state stay intact.
+                            cell.update(cx, |state, _| {
+                                drop(state.take_edit_history());
+                            });
                             this.replace(r, c, &value, window, cx);
                         }
                     },
@@ -345,7 +446,7 @@ impl TableGrid {
             cx.notify();
             return;
         };
-        if self.apply(change, window, cx) {
+        if self.apply(change, Some((row, col)), window, cx) {
             self.binding.as_mut().unwrap().cells = cells;
         }
     }
@@ -353,6 +454,7 @@ impl TableGrid {
     fn apply(
         &mut self,
         change: model::Change,
+        typing_cell: Option<(usize, usize)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -361,6 +463,7 @@ impl TableGrid {
         }
         let binding = self.binding.as_ref().unwrap();
         let start = binding.table.start;
+        let before = binding.stamp;
         let range = binding.table.clone();
         let selection = start + change.selection.start..start + change.selection.end;
         let unchanged = binding.document.get(range.clone()) == Some(change.source.as_str());
@@ -391,6 +494,8 @@ impl TableGrid {
         });
         if applied {
             let state = self.input.read(cx);
+            self.source_history
+                .record(before, state.source_stamp(), typing_cell);
             self.binding = Some(Binding {
                 stamp: state.source_stamp(),
                 document: state.value().to_string(),
@@ -407,6 +512,7 @@ impl TableGrid {
     }
 
     fn command(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        self.source_history.boundary = true;
         let focused = self.cells.iter().enumerate().find_map(|(r, row)| {
             row.iter()
                 .enumerate()
@@ -451,7 +557,7 @@ impl TableGrid {
             .unwrap_or((r, c));
         let navigation =
             matches!(command, Command::Next | Command::Previous) && change.source == source;
-        if self.apply(change, window, cx) {
+        if self.apply(change, None, window, cx) {
             if !navigation {
                 self.rebuild(table.rows, window, cx);
             }
@@ -502,47 +608,77 @@ impl TableGrid {
         cx.stop_propagation();
     }
 
-    /// Route Undo/Redo to the source editor, never the cell's private history.
-    /// Source observation invalidates this binding; reopening uses fresh bytes.
-    fn history(&mut self, action: Box<dyn Action>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Capture at the cell boundary and target the source focus node directly.
+    /// Window::dispatch_action defers dispatch; its focus/next-frame interplay
+    /// must not send history back to a replacement cell's private Undo handler.
+    fn history(
+        &mut self,
+        direction: HistoryDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.stop_propagation();
-        if self
-            .cells
-            .iter()
-            .flatten()
-            .any(|cell| cell.read(cx).ime_composing())
+        #[cfg(test)]
+        {
+            self.history_dispatches += 1;
+        }
+        if !self.current(cx)
+            || self
+                .cells
+                .iter()
+                .flatten()
+                .any(|cell| cell.read(cx).ime_composing())
         {
             return;
         }
-        let range = self.binding.as_ref().map(|binding| binding.table.clone());
-        self.close(cx);
-        self.input.update(cx, |state, cx| state.focus(window, cx));
-        window.dispatch_action(action, cx);
-        // Dispatch resolves after this listener. Rebind on the next frame to
-        // the restored revision, keeping the table editable after Undo/Redo.
-        cx.on_next_frame(window, move |this, window, cx| {
-            if let Some(range) = range {
-                let document = this.input.read(cx).value().to_string();
-                let snapshot = Snapshot::new("table-grid-history", 0, document.as_str());
-                let classified = source_classifier::classify(&snapshot);
-                let restored = classified
-                    .decorations_for(&snapshot)
-                    .ok()
-                    .and_then(|markers| {
-                        markers
-                            .iter()
-                            .find(|marker| {
-                                marker.kind == Kind::Table && marker.range.start == range.start
-                            })
-                            .map(|marker| marker.range.clone())
-                    });
-                if let Some(range) = restored {
-                    if this.open(range, window, cx) {
-                        this.cells[0][0].update(cx, |cell, cx| cell.focus(window, cx));
-                    }
+        let range = self.binding.as_ref().unwrap().table.clone();
+        let selected = self.selected;
+        let before = self.input.read(cx).source_stamp();
+        let steps = self.source_history.steps(direction, before);
+        let source_focus = self.input.focus_handle(cx);
+        let mut applied = 0;
+        for _ in 0..steps {
+            let previous = self.input.read(cx).source_stamp();
+            match direction {
+                HistoryDirection::Undo => source_focus.dispatch_action(&Undo, window, cx),
+                HistoryDirection::Redo => source_focus.dispatch_action(&Redo, window, cx),
+            }
+            if self.input.read(cx).source_stamp() == previous {
+                break;
+            }
+            applied += 1;
+        }
+        let stamp = self.input.read(cx).source_stamp();
+        if applied == steps {
+            self.source_history.completed(direction, stamp);
+        } else if applied != 0 {
+            // The canonical history changed outside this ledger. Retain the
+            // real source result; never drain unrelated history to hit a count.
+            self.source_history = SourceHistory::default();
+        }
+        if applied != 0 {
+            let document = self.input.read(cx).value().to_string();
+            let snapshot = Snapshot::new("table-grid-history", 0, document.as_str());
+            let classified = source_classifier::classify(&snapshot);
+            let restored = classified
+                .decorations_for(&snapshot)
+                .ok()
+                .and_then(|markers| {
+                    markers
+                        .iter()
+                        .find(|marker| {
+                            marker.kind == Kind::Table && marker.range.start == range.start
+                        })
+                        .map(|marker| marker.range.clone())
+                });
+            if let Some(restored) = restored {
+                if self.open(restored, window, cx) {
+                    self.focus_cell(selected.0, selected.1, window, cx);
                 }
             }
-        });
+        }
+        // Nested source dispatch resets propagation state; stop the original
+        // cell action again so no Textarea bubble handler can see it.
         cx.stop_propagation();
     }
 }
@@ -575,6 +711,7 @@ impl Render for TableGrid {
                     }) {
                         this.selected = selected;
                     }
+                    this.source_history.boundary = true;
                     cx.stop_propagation();
                 }),
             );
@@ -604,6 +741,12 @@ impl Render for TableGrid {
                         .min_w(px(80.))
                         .border_1()
                         .border_color(palette.border)
+                        .capture_action(cx.listener(|this, _: &Undo, window, cx| {
+                            this.history(HistoryDirection::Undo, window, cx)
+                        }))
+                        .capture_action(cx.listener(|this, _: &Redo, window, cx| {
+                            this.history(HistoryDirection::Redo, window, cx)
+                        }))
                         .child(input),
                 );
             }
@@ -664,12 +807,12 @@ impl Render for TableGrid {
                 this.source_mode(false, window, cx);
             }
         }))
-        .capture_action(
-            cx.listener(|this, _: &Undo, window, cx| this.history(Box::new(Undo), window, cx)),
-        )
-        .capture_action(
-            cx.listener(|this, _: &Redo, window, cx| this.history(Box::new(Redo), window, cx)),
-        )
+        .capture_action(cx.listener(|this, _: &Undo, window, cx| {
+            this.history(HistoryDirection::Undo, window, cx)
+        }))
+        .capture_action(cx.listener(|this, _: &Redo, window, cx| {
+            this.history(HistoryDirection::Redo, window, cx)
+        }))
         .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
             this.command(Command::Next, window, cx);
         }))
@@ -797,6 +940,95 @@ impl SourceProjection for GridProjection {
     }
     fn to_source(&self, projected: ProjectedByte, bias: ConcealBias) -> Option<SourceByte> {
         self.base.to_source(projected, bias)
+    }
+}
+
+#[cfg(test)]
+mod source_history_tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    fn stamp(generation: u64) -> SourceStamp {
+        SourceStamp {
+            document: 1,
+            generation,
+        }
+    }
+
+    #[test]
+    fn a_committed_cell_edit_routes_all_source_transactions_and_redoes_the_same_group() {
+        let mut history = SourceHistory::default();
+        for generation in 0..23 {
+            history.record(stamp(generation), stamp(generation + 1), Some((1, 0)));
+        }
+        assert_eq!(history.steps(HistoryDirection::Undo, stamp(23)), 23);
+        history.completed(HistoryDirection::Undo, stamp(46));
+        assert_eq!(history.steps(HistoryDirection::Redo, stamp(46)), 23);
+        history.completed(HistoryDirection::Redo, stamp(69));
+        assert_eq!(history.steps(HistoryDirection::Undo, stamp(69)), 23);
+    }
+
+    #[test]
+    fn navigation_cell_changes_and_structural_actions_are_distinct_source_boundaries() {
+        let mut history = SourceHistory::default();
+        history.record(stamp(0), stamp(1), Some((1, 0)));
+        history.record(stamp(1), stamp(2), Some((1, 0)));
+        history.boundary = true;
+        history.record(stamp(2), stamp(3), Some((1, 0)));
+        history.record(stamp(3), stamp(4), Some((1, 1)));
+        history.record(stamp(4), stamp(5), None);
+        assert_eq!(
+            history
+                .undo
+                .iter()
+                .map(|group| group.steps)
+                .collect::<Vec<_>>(),
+            [2, 1, 1, 1]
+        );
+    }
+
+    #[test]
+    fn an_external_source_revision_never_reuses_the_old_native_transaction_count() {
+        let mut history = SourceHistory::default();
+        for generation in 0..8 {
+            history.record(stamp(generation), stamp(generation + 1), Some((1, 0)));
+        }
+        assert_eq!(
+            history.steps(HistoryDirection::Undo, stamp(8)),
+            8,
+            "positive control: owned source revision"
+        );
+        assert_eq!(
+            history.steps(HistoryDirection::Undo, stamp(10)),
+            1,
+            "external edit+Undo ABA invalidates the ledger"
+        );
+        assert!(history.undo.is_empty());
+        assert!(history.redo.is_empty());
+    }
+
+    #[test]
+    fn editing_after_undo_discards_only_the_old_group_mapping_for_redo() {
+        let mut history = SourceHistory::default();
+        history.record(stamp(0), stamp(1), Some((1, 0)));
+        history.record(stamp(1), stamp(2), Some((1, 0)));
+        history.completed(HistoryDirection::Undo, stamp(4));
+        assert_eq!(history.redo[0].steps, 2);
+        history.record(stamp(4), stamp(5), Some((1, 0)));
+        assert!(history.redo.is_empty());
+        assert_eq!(history.steps(HistoryDirection::Undo, stamp(5)), 1);
+    }
+
+    #[test]
+    fn groups_never_include_transactions_evicted_by_the_native_history_bound() {
+        let mut history = SourceHistory::default();
+        for generation in 0..1100 {
+            history.record(stamp(generation), stamp(generation + 1), Some((1, 0)));
+        }
+        assert_eq!(history.steps(HistoryDirection::Undo, stamp(1100)), 100);
+        assert!(
+            history.undo.iter().map(|group| group.steps).sum::<usize>() <= SourceHistory::LIMIT
+        );
     }
 }
 
@@ -1018,6 +1250,25 @@ mod tests {
             input.read_with(visual, |state, _| state.value().to_string()),
             source
         );
+        assert_eq!(
+            grid.read_with(visual, |grid, _| grid.history_dispatches),
+            1,
+            "Undo must cross the source-routing capture handler exactly once"
+        );
+        visual.dispatch_action(Redo);
+        visual.run_until_parked();
+        assert_eq!(
+            input.read_with(visual, |state, _| state.value().to_string()),
+            expected,
+            "Redo restores the complete encoded cell edit through source history"
+        );
+        visual.dispatch_action(Undo);
+        visual.run_until_parked();
+        assert_eq!(
+            input.read_with(visual, |state, _| state.value().to_string()),
+            source
+        );
+        assert_eq!(grid.read_with(visual, |grid, _| grid.history_dispatches), 3);
         let range = source.find("| A").unwrap()..source.find("\n\nAfter").unwrap();
         grid.update_in(visual, |grid, window, cx| {
             assert!(
