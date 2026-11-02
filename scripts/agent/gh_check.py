@@ -142,7 +142,8 @@ def main():
             time.sleep(min(5, max(0, deadline - time.monotonic())))
         else:
             return 75
-    run("gh", "run", "watch", run_id, "-R", REPO, "--compact", "--interval", "15",
+    # ~20 concurrent helpers may share one user's hourly API quota.
+    run("gh", "run", "watch", run_id, "-R", REPO, "--compact", "--interval", "60",
         timeout=max(1, deadline - time.monotonic()))
     info = gh_json("run", "view", run_id, "-R", REPO, "--json",
                    "headSha,status,conclusion,jobs,url,attempt,createdAt,updatedAt")
