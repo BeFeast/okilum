@@ -521,6 +521,7 @@ impl Render for Entry {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 let card = card.child(
                     Button::new("startup-sync-pairing")
+                        .debug_selector(|| "startup-sync-pairing".into())
                         .label("Get notes from another computer")
                         .on_click(|_, window, cx| super::reader_settings::show_sync_pairing(window, cx)),
                 );

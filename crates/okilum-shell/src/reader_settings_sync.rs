@@ -64,6 +64,7 @@ struct Output {
     controller: Controller,
     snapshot: Snapshot,
     inspected: Option<ExistingVault>,
+    selected_destination: Option<PathBuf>,
     #[cfg(target_os = "linux")]
     runtimes: Vec<linux_runtime::Choice>,
     #[cfg(target_os = "linux")]
@@ -122,9 +123,6 @@ impl SyncSettings {
             return;
         }
         let refresh = matches!(operation, Operation::Read);
-        if let Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) = &operation {
-            self.awaiting_open = Some(path.clone());
-        }
         if !refresh {
             self.scroll.set_offset(point(px(0.), px(0.)));
         }
@@ -222,6 +220,9 @@ impl SyncSettings {
             self.vaults = output.vaults;
         }
         self.controller = Some(output.controller);
+        if let Some(path) = output.selected_destination {
+            self.awaiting_open = Some(path);
+        }
         if self.selected_peer.is_none()
             && !output.snapshot.catalog.is_empty()
             && output.snapshot.peers.len() == 1
@@ -523,6 +524,17 @@ fn perform_scoped(
             }
             controller.set_configurations(runtime.configs.clone())?;
         }
+        #[cfg(target_os = "macos")]
+        if let Operation::AttachNew(_, _, path) = &operation {
+            guard.check()?;
+            reader_open::create_vault_folder(path)?;
+        }
+        let selected_destination = match &operation {
+            Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) => {
+                Some(path.canonicalize()?)
+            }
+            _ => None,
+        };
         let mut inspected = None;
         let snapshot = match operation {
             Operation::Read | Operation::EnterPairing => controller.refresh()?,
@@ -559,11 +571,6 @@ fn perform_scoped(
                 controller.snapshot()?
             }
             Operation::Attach(peer, vault, path) | Operation::AttachNew(peer, vault, path) => {
-                #[cfg(target_os = "macos")]
-                if !path.exists() {
-                    guard.check()?;
-                    reader_open::create_vault_folder(&path)?;
-                }
                 controller.attach(peer, &vault, &path)?
             }
         };
@@ -572,6 +579,7 @@ fn perform_scoped(
             controller,
             snapshot,
             inspected,
+            selected_destination,
             #[cfg(target_os = "linux")]
             runtimes: runtime.choices,
             #[cfg(target_os = "linux")]

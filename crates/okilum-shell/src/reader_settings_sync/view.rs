@@ -70,6 +70,7 @@ impl Render for SyncSettings {
                                 .gap_2()
                                 .child(
                                     Button::new("sync-copy-url")
+                                        .debug_selector(|| "sync-copy-url".into())
                                         .label("Copy pairing URL")
                                         .on_click(move |_, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
@@ -79,6 +80,7 @@ impl Render for SyncSettings {
                                 )
                                 .child(
                                     Button::new("sync-cancel-pairing")
+                                        .debug_selector(|| "sync-cancel-pairing".into())
                                         .label("Cancel invitation")
                                         .ghost()
                                         .disabled(self.busy)
@@ -105,6 +107,7 @@ impl Render for SyncSettings {
                                     .gap_2()
                                     .child(
                                         Button::new("sync-approve-computer")
+                                            .debug_selector(|| "sync-approve-computer".into())
                                             .label("Confirm computer")
                                             .disabled(self.busy)
                                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -113,6 +116,7 @@ impl Render for SyncSettings {
                                     )
                                     .child(
                                         Button::new("sync-reject-computer")
+                                            .debug_selector(|| "sync-reject-computer".into())
                                             .label("Decline")
                                             .ghost()
                                             .disabled(self.busy)
@@ -129,6 +133,7 @@ impl Render for SyncSettings {
                             .child("Waiting for confirmation on your other computer…")
                             .child(
                                 Button::new("sync-cancel-request")
+                                    .debug_selector(|| "sync-cancel-request".into())
                                     .label("Cancel connection")
                                     .ghost()
                                     .disabled(self.busy)
@@ -260,16 +265,20 @@ impl Render for SyncSettings {
             .child(div().text_sm().text_color(p.text_muted).child("Pair computers once, then choose which vaults to sync. Confirm each new computer on the computer that shared the URL."))
             .child(v_flex().gap_2().child("This computer").child(Input::new(&self.name).disabled(self.busy)))
             .when(!self.receiving, |content| content.child(h_flex().gap_2()
-                .child(Button::new("sync-add-computer").label("Add computer").disabled(self.busy)
+                .child(Button::new("sync-add-computer")
+                                        .debug_selector(|| "sync-add-computer".into()).label("Add computer").disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.start_pairing(false, cx))))
-                .child(Button::new("sync-refresh").label("Refresh").ghost().disabled(self.busy)
+                .child(Button::new("sync-refresh")
+                                        .debug_selector(|| "sync-refresh".into()).label("Refresh").ghost().disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.run(Operation::Read, cx))))))
             .child(v_flex().gap_2().child("Connect to an existing computer")
                 .child(Input::new(&self.invitation).disabled(self.busy))
-                .child(Button::new("sync-connect").label("Connect").disabled(self.busy)
+                .child(Button::new("sync-connect")
+                                        .debug_selector(|| "sync-connect".into()).label("Connect").disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.start_pairing(true, cx)))))
             .when(self.receiving, |content| content.child(
-                Button::new("sync-add-computer").label("Share from this computer instead").ghost().disabled(self.busy)
+                Button::new("sync-add-computer")
+                                        .debug_selector(|| "sync-add-computer".into()).label("Share from this computer instead").ghost().disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| { this.receiving = false; cx.notify(); }))));
         }
         #[cfg(target_os = "linux")]
@@ -384,7 +393,8 @@ impl Render for SyncSettings {
             .child("Already syncing this vault with Syncthing?")
             .child(div().text_sm().text_color(p.text_muted)
                 .child("Choose the existing local vault to inspect its connection, then explicitly allow Okilum to use it."))
-            .child(Button::new("sync-inspect-existing").label("Choose existing synced vault").ghost().disabled(self.busy)
+            .child(Button::new("sync-inspect-existing")
+                                        .debug_selector(|| "sync-inspect-existing".into()).label("Choose existing synced vault").ghost().disabled(self.busy)
                 .on_click(cx.listener(|this, _, _, cx| this.choose_folder(None, cx)))));
         if let Some(vault) = &self.inspected {
             let approved = vault.clone();
@@ -394,12 +404,14 @@ impl Render for SyncSettings {
                 .child(div().text_sm().text_color(p.text_muted)
                     .child("This saves the connection and makes the vault available to computers you approve. The existing daemon keeps control of its lifecycle and configuration."))
                 .child(h_flex().gap_2()
-                    .child(Button::new("sync-consent-existing").label("Use this connection").disabled(self.busy)
+                    .child(Button::new("sync-consent-existing")
+                                        .debug_selector(|| "sync-consent-existing".into()).label("Use this connection").disabled(self.busy)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.inspected = None;
                             this.run(Operation::Consent(approved.clone()), cx);
                         })))
-                    .child(Button::new("sync-dismiss-existing").label("Cancel").ghost().disabled(self.busy)
+                    .child(Button::new("sync-dismiss-existing")
+                                        .debug_selector(|| "sync-dismiss-existing".into()).label("Cancel").ghost().disabled(self.busy)
                         .on_click(cx.listener(|this, _, _, cx| { this.inspected = None; cx.notify(); })))));
         }
         v_flex()

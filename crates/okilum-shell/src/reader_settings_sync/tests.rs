@@ -406,6 +406,12 @@ fn guided_worker(
     cx.update(|cx| {
         cx.set_global(TestWorker(std::sync::Arc::new(move |operation| {
             let _keep_directory = &directory;
+            let selected_destination = match &operation {
+                Operation::Attach(_, _, path) | Operation::AttachNew(_, _, path) => {
+                    Some(path.clone())
+                }
+                _ => None,
+            };
             let tag = match operation {
                 Operation::EnterPairing => "enter",
                 Operation::Read => "read",
@@ -425,6 +431,7 @@ fn guided_worker(
                 controller: controller.clone(),
                 snapshot,
                 inspected: None,
+                selected_destination,
                 #[cfg(target_os = "linux")]
                 runtimes: vec![linux_runtime::Choice {
                     identity: okilum_sync_controller::daemon::DaemonIdentity {
@@ -756,7 +763,7 @@ fn guided_first_run_received_vault_opens_only_after_readiness_and_keeps_owner_al
     });
     visual.executor().advance_clock(Duration::from_secs(2));
     visual.run_until_parked();
-    visual.update(|_, cx| {
+    cx.update(|cx| {
         assert!(
             reader_open::reader_of(&vault, cx).is_some(),
             "ready vault opened automatically"

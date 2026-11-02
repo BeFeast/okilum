@@ -4,7 +4,10 @@ Okilum starts as a Markdown editor/viewer. Settings → Features contains Agents
 (Projects/Board/Manager/T3), Second brain and Sync. A new profile starts with all
 three off, including profiles with old connection records but no feature choices.
 Enabling a module reveals its existing entry points immediately; connection/setup
-stays at first use. Disabling hides those entry points without deleting notes,
+stays at first use. On Linux/macOS, the welcome screen's explicit Get notes from
+another computer action also enables Sync and opens its pairing step (#2368).
+It does not enable other modules; a failed preferences save keeps Sync off.
+Disabling hides those entry points without deleting notes,
 credentials, pairing records, project manifests, retained messages or drafts.
 
 Second brain controls the existing managed Workspace on supported builds. The
