@@ -626,6 +626,7 @@ mod selection {
 #[cfg(test)]
 mod mounted_tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     struct Fixture {
         reader: Entity<Reader>,
@@ -1000,6 +1001,7 @@ mod mounted_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
     #[gpui::test]
     fn retry_recovers_replaced_unreadable_image_without_changing_selection(
         cx: &mut gpui::TestAppContext,
