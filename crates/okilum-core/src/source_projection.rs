@@ -3,11 +3,12 @@
 //! Callers classify blocks and supply approved conceal spans. A rejected plan
 //! returns the current exact Source, never an approximate or stale projection.
 use std::{ops::Range, sync::Arc};
-use unicode_segmentation::UnicodeSegmentation;
+mod boundary_index;
+use boundary_index::Index;
 
-pub const MAX_BYTES: usize = 256 * 1024;
+pub const MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_RANGES: usize = 4096;
-pub const MAX_WORK: usize = 2 * 1024 * 1024;
+pub const MAX_WORK: usize = 8 * 1024 * 1024;
 const MAX_DOCUMENT_ID_BYTES: usize = 4096;
 
 /// Immutable identity and authored bytes. A generation alone is never a lease.
@@ -58,7 +59,7 @@ impl Snapshot {
         if self.source.len() > MAX_BYTES {
             return Err(MapError::SourceLimit);
         }
-        if !valid_range(range, &boundaries(&self.source)) {
+        if !valid_range(range, &Index::new(&self.source)) {
             return Err(MapError::InvalidBoundary);
         }
         Ok(())
@@ -182,8 +183,8 @@ pub struct Projection {
     snapshot: Snapshot,
     display: String,
     anchors: Vec<Anchor>,
-    source_boundaries: Vec<usize>,
-    display_boundaries: Vec<usize>,
+    source_boundaries: Index,
+    display_boundaries: Index,
 }
 impl Projection {
     pub fn display(&self) -> &str {
@@ -281,9 +282,11 @@ impl Projection {
     }
 }
 
+#[cfg(test)]
 fn boundaries(text: &str) -> Vec<usize> {
+    use unicode_segmentation::UnicodeSegmentation;
     text.grapheme_indices(true)
-        .map(|(offset, _)| offset)
+        .map(|(at, _)| at)
         .chain(std::iter::once(text.len()))
         .collect()
 }
@@ -292,7 +295,7 @@ fn boundaries(text: &str) -> Vec<usize> {
 thread_local! {
     pub(crate) static TEST_INDEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
-fn valid_range(range: &Range<usize>, boundaries: &[usize]) -> bool {
+fn valid_range(range: &Range<usize>, boundaries: &Index) -> bool {
     range.start <= range.end
         && boundaries.binary_search(&range.start).is_ok()
         && boundaries.binary_search(&range.end).is_ok()
@@ -326,6 +329,19 @@ pub fn project_with_work_budget(
     active: &Active,
     budget: usize,
 ) -> Result<Projection, SourceFallback> {
+    project_reusing(snapshot, plan, active, budget, None)
+}
+
+/// Reuse only exact preceding indexes. Changed complete lines are segmented;
+/// LF seams retain independent grapheme boundaries, including CRLF and Unicode.
+pub(crate) fn project_reusing(
+    snapshot: &Snapshot,
+    plan: &Plan,
+    active: &Active,
+    budget: usize,
+    previous: Option<&Projection>,
+) -> Result<Projection, SourceFallback> {
+    let previous = previous.filter(|p| p.snapshot.document == snapshot.document);
     let build = || -> Result<Projection, FallbackReason> {
         if snapshot.source.len() > MAX_BYTES || plan.snapshot.source.len() > MAX_BYTES {
             return Err(FallbackReason::SourceLimit);
@@ -359,7 +375,13 @@ pub fn project_with_work_budget(
         work.charge(count * 64 + snapshot.source.len())?;
         #[cfg(test)]
         TEST_INDEX_BUILDS.with(|count| count.set(count.get() + 1));
-        let source_boundaries = boundaries(&snapshot.source);
+        let source_boundaries = previous.map_or_else(
+            || Index::new(&snapshot.source),
+            |p| {
+                p.source_boundaries
+                    .update(p.snapshot.source(), snapshot.source())
+            },
+        );
         for range in [active.selection.as_ref(), active.composition.as_ref()]
             .into_iter()
             .flatten()
@@ -424,7 +446,10 @@ pub fn project_with_work_budget(
             cursor = range.end;
         }
         display.push_str(&snapshot.source[cursor..]);
-        let display_boundaries = boundaries(&display);
+        let display_boundaries = previous.map_or_else(
+            || Index::new(&display),
+            |p| p.display_boundaries.update(p.display(), &display),
+        );
         // Concealment must not join visible graphemes across the removed bytes
         // (for example two regional indicators becoming a single flag).
         if anchors

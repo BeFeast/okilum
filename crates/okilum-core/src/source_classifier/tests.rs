@@ -598,7 +598,7 @@ fn heading_navigation_refuses_duplicates_and_unsupported_targets() {
     assert!(classify(&snapshot(&raw))
         .heading_offset("Huge")
         .unwrap_err()
-        .contains("64 KiB"));
+        .contains("1 MiB"));
 }
 
 #[test]
