@@ -46,12 +46,9 @@ jobs:
           rustc -Vv
           cargo clippy --version
           cargo fmt --version
-      - name: Prepare and verify pinned vendor and comrak
-        run: |
-          bash scripts/vendor-setup.sh
-          bash scripts/vendor-setup.sh --verify
-          python3 scripts/ci/check-vendor-generation.py
       # Separate namespace: worker archives cannot be restored by release lanes.
+      # Cache generated vendor source too: fresh path-dependency mtimes otherwise
+      # invalidate compiled artifacts. Always verify restored trees before use.
       # Include source SHA to refresh immutable caches after each worker change.
       - name: Restore Rust downloads and target cache
         id: cache
@@ -61,9 +58,16 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
-          key: agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-${{ github.sha }}
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-${{ github.sha }}
           restore-keys: |
-            agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
+            agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
+      - name: Prepare and verify pinned vendor and comrak
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          python3 scripts/ci/check-vendor-generation.py
       - name: Fetch locked public dependencies
         run: |
           cargo fetch --locked
@@ -114,4 +118,6 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
           key: ${{ steps.cache.outputs.cache-primary-key }}
