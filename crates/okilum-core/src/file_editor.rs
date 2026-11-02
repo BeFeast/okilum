@@ -1947,6 +1947,84 @@ mod network_save_tests {
         }
     }
     #[test]
+    fn interrupted_actual_capture_keeps_both_versions_and_restores_only_the_source() {
+        for raw in [false, true] {
+            crate::unix_publish::inject(rustix::io::Errno::INVAL, || {
+                let fixture = tempfile::tempdir().unwrap();
+                let root = fixture.path().join("vault");
+                fs::create_dir(&root).unwrap();
+                let note = root.join("note.md");
+                let state = fixture.path().join("state");
+                let before = if raw {
+                    b"base\xff\r\n".as_slice()
+                } else {
+                    b"base\r\n".as_slice()
+                };
+                fs::write(&note, before).unwrap();
+                AFTER_CAPTURE.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(|| {
+                        panic!("simulated process interruption after capture")
+                    }))
+                });
+                let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if raw {
+                        FileEditor::replace_bytes(&note, &state, before, b"mine\r\n").unwrap();
+                    } else {
+                        let mut editor = FileEditor::open(&note, &state).unwrap();
+                        editor.set_text("mine\r\n".into()).unwrap();
+                        editor.save().unwrap();
+                    }
+                }));
+                assert!(interrupted.is_err());
+                assert!(!note.exists()); // positive control: the actual capture ran
+                let inspection = FileEditor::inspect_interrupted_saves(&note, &state)
+                    .unwrap()
+                    .pop()
+                    .unwrap();
+                assert_eq!(inspection.state(), InterruptedSaveState::SourceMissing);
+                assert_eq!(inspection.original_bytes(), before);
+                assert!(fs::read_dir(&root)
+                    .unwrap()
+                    .any(|entry| fs::read(entry.unwrap().path()).unwrap() == b"mine\r\n"));
+                inspection.restore_missing_source().unwrap();
+                assert_eq!(fs::read(&note).unwrap(), before);
+                drop(inspection);
+                FileEditor::inspect_interrupted_saves(&note, &state)
+                    .unwrap()
+                    .pop()
+                    .unwrap()
+                    .keep_current()
+                    .unwrap();
+                assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+                // Both proposals remain in durable state, even after alias cleanup.
+                let history = crate::source_history::list(&state, &root).unwrap();
+                assert!(history.versions.iter().any(|v| v.bytes() == before));
+                if raw {
+                    let record = fs::read_dir(state.join("source-history"))
+                        .unwrap()
+                        .map(|v| v.unwrap().path())
+                        .find(|p| crate::source_history::RawRecord::is_path(p))
+                        .unwrap();
+                    assert_eq!(
+                        crate::source_history::RawRecord::load(&record)
+                            .unwrap()
+                            .after,
+                        b"mine\r\n"
+                    );
+                } else {
+                    let journal = fs::read_dir(&state)
+                        .unwrap()
+                        .map(|v| v.unwrap().path())
+                        .find(|p| p.extension().is_some_and(|ext| ext == "json"))
+                        .unwrap();
+                    let draft: Draft = serde_json::from_slice(&fs::read(journal).unwrap()).unwrap();
+                    assert_eq!(draft.text, "mine\r\n");
+                    assert_ne!(draft.text, draft.base);
+                }
+            });
+        }
+    }
+    #[test]
     fn compatible_save_never_overwrites_a_publication_boundary_replacement() {
         for error in [
             rustix::io::Errno::NOTSUP,
