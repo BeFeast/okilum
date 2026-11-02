@@ -30,7 +30,7 @@ Rust suites called by full Linux acceptance (`scripts/ci/check-linux.sh`); the
 nightly acceptance Python/packaging checks retain their existing scope. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
 
-Rust downloads and `target/` are cached with the toolchain, dependency/manifests,
+Rust downloads, verified generated vendor trees and `target/` are cached with the toolchain, dependency/manifests,
 vendor patches and workflow configuration in the key. Each source SHA can save a
 fresh immutable archive; later commits restore a compatible archive from the same
 branch. This namespace is separate from release caches. GitHub's repository cache
