@@ -22,6 +22,10 @@ mod code_syntax;
 #[path = "source_presentation/punctuation.rs"]
 mod punctuation;
 
+#[cfg(test)]
+#[path = "source_presentation/punctuation_editor_tests.rs"]
+mod punctuation_editor_tests;
+
 #[path = "source_presentation/code_languages.rs"]
 pub(crate) mod code_languages;
 
