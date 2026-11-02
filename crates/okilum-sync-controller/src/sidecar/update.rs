@@ -6,7 +6,7 @@
 use super::{
     authority::StopToken, current_envelope, supervisor::ipc::Scope, Authority, Binding, Intent, Tx,
 };
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
@@ -136,6 +136,12 @@ pub fn advance<A: Authority, H: Host>(
                 // A stale updater (Enable, Disable, a newer operation) has no
                 // authority to select, start or commit its old phase.
                 current.authorize(&token, &scope)?;
+                // The token's scope covers installation/instance/generation,
+                // not the owner, paths or device identity captured before IPC.
+                ensure!(
+                    *current.binding() == binding,
+                    "managed binding changed; recovery required"
+                );
                 env = current.complete_stop(&token, &scope)?;
                 tx.commit(env.clone())?;
                 // UpdateStop already advanced to Select; rollback stays in Rollback.

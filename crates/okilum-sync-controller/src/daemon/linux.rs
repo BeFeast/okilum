@@ -96,7 +96,10 @@ fn process_configs(args: &[&str], env: &[&str], cwd: &Path) -> Result<Vec<PathBu
                 value = Some(PathBuf::from(
                     args.get(i + 1).context("missing daemon path argument")?,
                 ));
-            } else if let Some(v) = arg.strip_prefix(&format!("{long}=")) {
+            } else if let Some(v) = arg
+                .strip_prefix(&format!("{long}="))
+                .or_else(|| arg.strip_prefix(&format!("{short}=")))
+            {
                 value = Some(PathBuf::from(v));
             }
         }
@@ -324,6 +327,42 @@ fn set(parent: &mut Element, name: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn short_equals_paths_override_environment_without_splitting_values() -> Result<()> {
+        let cwd = Path::new("/process cwd");
+        let env = [
+            "STHOMEDIR=/environment/home",
+            "STCONFDIR=/environment/config",
+        ];
+        assert_eq!(
+            process_configs(&["syncthing", "serve", "-C=relative config"], &env, cwd)?,
+            vec![cwd.join("relative config/config.xml")]
+        );
+        assert_eq!(
+            process_configs(
+                &["syncthing", "serve", "-H=/explicit home"],
+                &["STHOMEDIR=/environment/home"],
+                cwd,
+            )?,
+            vec![PathBuf::from("/explicit home/config.xml")]
+        );
+        // Config selection still takes precedence over the home selection.
+        assert_eq!(
+            process_configs(
+                &[
+                    "syncthing",
+                    "serve",
+                    "-H=/explicit home",
+                    "-C=config=directory"
+                ],
+                &env,
+                cwd,
+            )?,
+            vec![cwd.join("config=directory/config.xml")]
+        );
+        Ok(())
+    }
+
     #[test]
     fn each_process_resolves_its_own_paths_or_fails_closed() -> Result<()> {
         let root = tempfile::tempdir()?;

@@ -85,13 +85,9 @@ impl<G: TaskGuard> NativeTasks<G> {
     }
     fn task(&self, name: &str) -> Result<Option<IRegisteredTask>> {
         validate_name(name)?;
-        match unsafe { self.folder.GetTask(&BSTR::from(name)) } {
-            Ok(task) => Ok(Some(task)),
-            Err(e) if e.code() == windows::core::HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => {
-                Ok(None)
-            }
-            Err(e) => Err(e.into()),
-        }
+        Ok(map_task_lookup(unsafe {
+            self.folder.GetTask(&BSTR::from(name))
+        })?)
     }
     fn owned(&mut self, name: &str, definition: &str, owner: &str) -> Result<IRegisteredTask> {
         ensure!(
@@ -114,6 +110,17 @@ impl<G: TaskGuard> NativeTasks<G> {
             "task definition changed"
         );
         Ok(task)
+    }
+}
+// Keep lookup result classification independent of COM so failures can be
+// exercised without connecting to or changing the local scheduler.
+fn map_task_lookup<T>(result: windows::core::Result<T>) -> windows::core::Result<Option<T>> {
+    match result {
+        Ok(task) => Ok(Some(task)),
+        Err(e) if e.code() == windows::core::HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => {
+            Ok(None)
+        }
+        Err(e) => Err(e),
     }
 }
 fn validate_name(name: &str) -> Result<()> {
@@ -208,6 +215,32 @@ impl<G: TaskGuard> TaskApi for NativeTasks<G> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_lookup_maps_only_file_not_found_to_absent() {
+        use windows::core::{Error, HRESULT};
+
+        // A fake value is the positive control: no COM interface is constructed.
+        assert_eq!(
+            map_task_lookup(Ok("fake registered task")).unwrap(),
+            Some("fake registered task")
+        );
+        assert_eq!(
+            map_task_lookup::<()>(Err(Error::from_hresult(HRESULT::from_win32(
+                ERROR_FILE_NOT_FOUND.0,
+            ))))
+            .unwrap(),
+            None
+        );
+        for code in [
+            HRESULT::from_win32(5),        // ERROR_ACCESS_DENIED
+            HRESULT::from_win32(3),        // ERROR_PATH_NOT_FOUND is not task absence
+            HRESULT(0x80004005u32 as i32), // E_FAIL
+        ] {
+            let error = map_task_lookup::<()>(Err(Error::from_hresult(code))).unwrap_err();
+            assert_eq!(error.code(), code);
+        }
+    }
 
     // Registration-only transport test. Execution authentication is deliberately
     // unavailable; this must not be mistaken for supervisor lifecycle acceptance.

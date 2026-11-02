@@ -197,3 +197,20 @@ fn unsupported_or_nonloopback_configs_fail_without_network_or_folder_state() -> 
     assert!(!state.exists(), "an unenabled folder prepared state");
     Ok(())
 }
+
+#[test]
+fn external_217_compatibility_does_not_change_bundled_pin() -> Result<()> {
+    assert_eq!(CLIENT_VERSION, "v2.1.6");
+    let root = tempfile::tempdir()?;
+    let fixture = Fixture::new(root.path(), "external", DEVICE, "v2.1.7")?;
+    fixture.identity().connect()?;
+    assert_eq!(
+        fixture.calls(),
+        5,
+        "authenticated external compatibility control"
+    );
+    assert!(!okilum_sync_controller::daemon::compatible_external_version("v2.1.8"));
+    assert!(!okilum_sync_controller::daemon::compatible_external_version("v2.1.7-rc.1"));
+    assert!(!okilum_sync_controller::daemon::compatible_external_version("v1.29.5"));
+    Ok(())
+}

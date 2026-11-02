@@ -1,6 +1,115 @@
 use super::*;
 use std::{fs, path::Path};
 
+fn inventory_leader(pid: i32, group: i32, started: u64) -> GroupLeader {
+    GroupLeader {
+        pid: Pid::from_raw(pid).unwrap(),
+        group: Pid::from_raw(group).unwrap(),
+        started,
+    }
+}
+
+/// The production attribution decision with a synthetic read-only process table
+/// and a recording signal sink. Neither adapter touches host processes.
+fn signal_from_inventory(
+    owner: Option<GroupLeader>,
+    inventory: &[GroupLeader],
+) -> (Result<()>, Vec<Pid>) {
+    let mut signaled = vec![];
+    let result = signal_owned_group(
+        owner,
+        |pid| {
+            inventory
+                .iter()
+                .find(|entry| entry.pid == pid)
+                .copied()
+                .context("leader absent from inventory")
+        },
+        |group| {
+            signaled.push(group);
+            Ok(())
+        },
+    );
+    (result, signaled)
+}
+
+#[test]
+fn owned_group_attribution_signals_only_the_captured_leader_group() {
+    let owner = inventory_leader(410, 410, 100);
+    let inventory = [
+        inventory_leader(500, 500, 100), // foreign group, even at the same start time
+        inventory_leader(411, 410, 101), // member, not the captured leader
+        owner,
+        inventory_leader(600, 600, 102),
+    ];
+    let (result, signaled) = signal_from_inventory(Some(owner), &inventory);
+    result.unwrap();
+    assert_eq!(signaled, [owner.group]);
+}
+
+#[test]
+fn owned_group_attribution_refuses_foreign_missing_and_reused_identities() {
+    let owner = inventory_leader(410, 410, 100);
+    for inventory in [
+        vec![],
+        vec![inventory_leader(500, 500, 100)],
+        vec![inventory_leader(411, 410, 101)],
+        vec![inventory_leader(410, 410, 101)], // PID/PGID reused by a new generation
+        vec![inventory_leader(410, 410, 99)],  // a different generation in either direction
+        vec![inventory_leader(410, 500, 100)], // captured process left the owned group
+    ] {
+        let (result, signaled) = signal_from_inventory(Some(owner), &inventory);
+        assert!(result.is_err(), "accepted foreign inventory {inventory:?}");
+        assert!(signaled.is_empty(), "foreign identity authorized a signal");
+
+        // Positive control through the same production decision and recording
+        // sink for every refusal, without adopting any row from that inventory.
+        let (result, signaled) = signal_from_inventory(Some(owner), &[owner]);
+        result.unwrap();
+        assert_eq!(signaled, [owner.group]);
+    }
+}
+
+#[test]
+fn owned_group_attribution_requires_retained_ownership_and_readable_inventory() {
+    let owner = inventory_leader(410, 410, 100);
+    for invalid_owner in [None, Some(inventory_leader(411, 410, 100))] {
+        let result = signal_owned_group(
+            invalid_owner,
+            |_| panic!("invalid ownership must be refused before inspection"),
+            |_| panic!("invalid ownership must never authorize a signal"),
+        );
+        assert!(result.is_err());
+    }
+    for error in ["leader no longer waitable", "inventory unreadable"] {
+        let result = signal_owned_group(
+            Some(owner),
+            |_| anyhow::bail!("{error}"),
+            |_| panic!("incomplete inventory must never authorize a signal"),
+        );
+        assert_eq!(result.unwrap_err().to_string(), error);
+    }
+    let (result, signaled) = signal_from_inventory(Some(owner), &[owner]);
+    result.unwrap();
+    assert_eq!(signaled, [owner.group]);
+}
+
+#[test]
+fn owned_group_attribution_preserves_signal_failure_for_incomplete_cleanup() {
+    let owner = inventory_leader(410, 410, 100);
+    let mut attempted = vec![];
+    let result = signal_owned_group(
+        Some(owner),
+        |_| Ok(owner),
+        |group| {
+            attempted.push(group);
+            anyhow::bail!("signal failed")
+        },
+    );
+    assert_eq!(result.unwrap_err().to_string(), "signal failed");
+    assert_eq!(attempted, [owner.group]);
+}
+
 // A disposable real process tree driven by the production argv. The root starts one
 // child (same group) and then waits; marker files in the data directory choose the
 // variant. No shell, no Syncthing, no personal state.

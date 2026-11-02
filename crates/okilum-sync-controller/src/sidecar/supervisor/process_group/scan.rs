@@ -16,19 +16,115 @@ pub fn live_copies(image: &Path, uid: u32, since: u64) -> Result<Vec<u32>> {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use anyhow::{Context, Result};
-    use std::{os::unix::fs::MetadataExt, path::Path};
+    use anyhow::{ensure, Context, Result};
+    use rustix::fs::{openat, readlinkat, Mode, OFlags};
+    use std::{
+        ffi::OsStr,
+        fs::File,
+        io::Read,
+        os::unix::{ffi::OsStrExt, fs::MetadataExt},
+        path::Path,
+    };
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Identity {
+        pid: u32,
+        parent: u32,
+        start: u64,
+    }
+
+    fn parse_stat(stat: &[u8], expected_pid: u32) -> Result<Identity> {
+        // comm is arbitrary bytes and may contain spaces, newlines and ')'.
+        // Only the final ')' ends it; the remaining fields are ASCII numbers.
+        let open = stat
+            .iter()
+            .position(|&b| b == b'(')
+            .context("missing comm")?;
+        let close = stat
+            .iter()
+            .rposition(|&b| b == b')')
+            .context("missing comm end")?;
+        ensure!(
+            open > 0 && close > open && stat[open - 1] == b' ',
+            "malformed stat"
+        );
+        let number = |bytes: &[u8]| -> Result<u64> {
+            ensure!(
+                !bytes.is_empty() && bytes.iter().all(u8::is_ascii_digit),
+                "bad stat number"
+            );
+            Ok(std::str::from_utf8(bytes)?.parse()?)
+        };
+        let pid = number(&stat[..open - 1])?;
+        ensure!(
+            expected_pid > 0 && expected_pid <= i32::MAX as u32 && pid == u64::from(expected_pid),
+            "stat PID mismatch"
+        );
+        ensure!(stat.get(close + 1) == Some(&b' '), "missing stat separator");
+        let fields: Vec<_> = stat[close + 2..]
+            .split(u8::is_ascii_whitespace)
+            .filter(|field| !field.is_empty())
+            .collect();
+        ensure!(fields.len() >= 20, "short stat");
+        ensure!(
+            matches!(
+                fields[0],
+                b"R" | b"S" | b"D" | b"Z" | b"T" | b"t" | b"X" | b"x" | b"K" | b"W" | b"P" | b"I"
+            ),
+            "bad process state"
+        );
+        // Validate every field through starttime, including signed kernel fields.
+        for (index, field) in fields.iter().enumerate().take(20).skip(1) {
+            if matches!(index, 4 | 5 | 13..=16 | 18) {
+                let digits = field.strip_prefix(b"-").unwrap_or(field);
+                number(digits)?;
+                std::str::from_utf8(field)?.parse::<i64>()?;
+            } else {
+                number(field)?;
+            }
+        }
+        let parent = u32::try_from(number(fields[1])?)?;
+        ensure!(
+            parent <= i32::MAX as u32 && parent != expected_pid,
+            "invalid parent PID"
+        );
+        Ok(Identity {
+            pid: expected_pid,
+            parent,
+            start: number(fields[19])?,
+        })
+    }
+
+    fn stat_bytes(directory: &File) -> std::io::Result<Vec<u8>> {
+        let mut file = File::from(openat(
+            directory,
+            "stat",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn matches_copy(
+        before: &Identity,
+        after: &Identity,
+        observed_uid: u32,
+        observed_image: &Path,
+        image: &Path,
+        uid: u32,
+        since: u64,
+    ) -> Result<bool> {
+        // Reparenting is possible without PID reuse, but either change makes this
+        // observation incomplete. Do not turn an ambiguous scan into Stopped.
+        ensure!(before == after, "process identity changed during scan");
+        Ok(observed_uid == uid && observed_image == image && before.start >= since)
+    }
 
     pub fn started(pid: u32) -> Result<u64> {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
-        // Field 22 (clock ticks since boot). comm may contain spaces and ')'.
-        let after = stat.rsplit_once(')').context("malformed stat")?.1;
-        after
-            .split_whitespace()
-            .nth(19)
-            .context("short stat")?
-            .parse()
-            .context("bad start time")
+        let directory = File::open(format!("/proc/{pid}"))?;
+        Ok(parse_stat(&stat_bytes(&directory)?, pid)?.start)
     }
     pub fn live_copies(image: &Path, uid: u32, since: u64) -> Result<Vec<u32>> {
         let mut found = vec![];
@@ -41,23 +137,193 @@ mod imp {
             else {
                 continue;
             };
-            let Ok(meta) = entry.metadata() else { continue };
+            // A proc directory handle stays attached to that process generation;
+            // relative reads cannot follow a newly reused numeric PID path.
+            let Ok(directory) = File::open(entry.path()) else {
+                continue;
+            };
+            let Ok(meta) = directory.metadata() else {
+                continue;
+            };
             if meta.uid() != uid {
                 continue;
             }
-            let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) else {
+            let Ok(bytes) = stat_bytes(&directory) else {
                 continue;
             };
+            let Ok(exe) = readlinkat(&directory, "exe", Vec::new()) else {
+                continue;
+            };
+            let exe = Path::new(OsStr::from_bytes(exe.to_bytes()));
             if exe != image {
                 continue;
             }
+            let before = parse_stat(&bytes, pid)?;
             // Gone between the listing and the read: no longer live.
-            let Ok(start) = started(pid) else { continue };
-            if start >= since {
+            let Ok(bytes) = stat_bytes(&directory) else {
+                continue;
+            };
+            let after = parse_stat(&bytes, pid)?;
+            let Ok(current_meta) = directory.metadata() else {
+                continue;
+            };
+            ensure!(
+                meta.uid() == current_meta.uid(),
+                "process owner changed during scan"
+            );
+            if matches_copy(&before, &after, meta.uid(), exe, image, uid, since)? {
                 found.push(pid);
             }
         }
         Ok(found)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn stat(pid: u32, parent: u32, start: u64) -> Vec<u8> {
+            let mut fields = vec!["0".to_owned(); 20];
+            fields[0] = "S".into();
+            fields[1] = parent.to_string();
+            fields[17] = "1".into();
+            fields[19] = start.to_string();
+            format!("{pid} (runtime (worker)) {}\n", fields.join(" ")).into_bytes()
+        }
+
+        fn observed(pid: u32, parent: u32, start: u64) -> Identity {
+            parse_stat(&stat(pid, parent, start), pid).unwrap()
+        }
+
+        #[test]
+        fn valid_stat_and_exact_owner_are_positive_controls() {
+            let identity = observed(42, 7, 100);
+            assert_eq!(
+                identity,
+                Identity {
+                    pid: 42,
+                    parent: 7,
+                    start: 100
+                }
+            );
+            assert!(matches_copy(
+                &identity,
+                &identity,
+                1000,
+                Path::new("/runtime/syncthing"),
+                Path::new("/runtime/syncthing"),
+                1000,
+                100,
+            )
+            .unwrap());
+
+            // comm is not a UTF-8 string and may itself look like stat fields.
+            let mut bytes = b"42 (worker\xff )\n42 (name)".to_vec();
+            let fixture = stat(42, 7, 100);
+            let close = fixture.iter().rposition(|&b| b == b')').unwrap();
+            bytes.extend_from_slice(&fixture[close..]);
+            assert_eq!(parse_stat(&bytes, 42).unwrap(), identity);
+        }
+
+        #[test]
+        fn malformed_stat_never_becomes_an_identity() {
+            let valid = String::from_utf8(stat(42, 7, 100)).unwrap();
+            for bad in [
+                valid.replacen("42 (", "43 (", 1),
+                valid.replacen("42 (", "+42 (", 1),
+                valid.replacen("42 (", "42(", 1),
+                valid.replacen(") S", ")S", 1),
+                valid.replacen(") S", ") unknown", 1),
+                valid.replacen("S 7", "S -7", 1),
+                valid.replacen("S 7", "S 42", 1),
+                valid.replacen("S 7", "S 4294967296", 1),
+                valid.replacen("S 7 0", "S 7 bad", 1),
+                valid.replacen("100\n", "+100\n", 1),
+                valid.replacen("100\n", "-100\n", 1),
+                valid.replacen("100\n", "18446744073709551616\n", 1),
+                valid.replacen("100\n", "", 1),
+                "42 no-comm S 7".into(),
+                "42 (unterminated S 7".into(),
+            ] {
+                assert!(parse_stat(bad.as_bytes(), 42).is_err(), "accepted {bad:?}");
+            }
+            assert!(parse_stat(&stat(0, 7, 100), 0).is_err());
+            assert!(parse_stat(&stat(u32::MAX, 7, 100), u32::MAX).is_err());
+        }
+
+        #[test]
+        fn reused_pid_or_changed_parent_leaves_scan_incomplete() {
+            let before = observed(42, 7, 100);
+            for after in [
+                observed(42, 7, 101),
+                observed(42, 8, 100),
+                observed(43, 7, 100),
+            ] {
+                assert!(
+                    matches_copy(
+                        &before,
+                        &after,
+                        1000,
+                        Path::new("/runtime/syncthing"),
+                        Path::new("/runtime/syncthing"),
+                        1000,
+                        100,
+                    )
+                    .is_err(),
+                    "accepted changed identity {after:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn similar_foreign_owners_and_older_generations_do_not_match() {
+            let identity = observed(42, 7, 100);
+            for (owner, image, since) in [
+                (100, "/runtime/syncthing", 100),
+                (1001, "/runtime/syncthing", 100),
+                (1000, "/runtime/syncthing-helper", 100),
+                (1000, "/foreign/runtime/syncthing", 100),
+                (1000, "/runtime/Syncthing", 100),
+                (1000, "/runtime/syncthing (deleted)", 100),
+                (1000, "/runtime/syncthing", 101),
+            ] {
+                assert!(
+                    !matches_copy(
+                        &identity,
+                        &identity,
+                        owner,
+                        Path::new(image),
+                        Path::new("/runtime/syncthing"),
+                        1000,
+                        since,
+                    )
+                    .unwrap(),
+                    "matched foreign copy {owner} {image} {since}"
+                );
+            }
+        }
+
+        #[test]
+        fn pinned_inventory_directory_does_not_follow_a_reused_pid_path() {
+            let root = tempfile::tempdir().unwrap();
+            let pid_path = root.path().join("42");
+            std::fs::create_dir(&pid_path).unwrap();
+            std::fs::write(pid_path.join("stat"), stat(42, 7, 100)).unwrap();
+            let directory = File::open(&pid_path).unwrap();
+            // A local fixture only: no /proc access or real processes.
+            std::fs::rename(&pid_path, root.path().join("old-generation")).unwrap();
+            std::fs::create_dir(&pid_path).unwrap();
+            std::fs::write(pid_path.join("stat"), stat(42, 8, 101)).unwrap();
+            assert_eq!(
+                parse_stat(&stat_bytes(&directory).unwrap(), 42).unwrap(),
+                observed(42, 7, 100)
+            );
+            let replacement = File::open(&pid_path).unwrap();
+            assert_eq!(
+                parse_stat(&stat_bytes(&replacement).unwrap(), 42).unwrap(),
+                observed(42, 8, 101)
+            );
+        }
     }
 }
 
