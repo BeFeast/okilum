@@ -42,6 +42,7 @@ impl Index {
         Self(join(root, leaf(&text[start..])))
     }
 
+    #[cfg(test)]
     pub(crate) fn update(&self, old: &str, new: &str) -> Self {
         if old == new {
             return self.clone();

@@ -98,7 +98,8 @@ fn foreign_inputs(original: &Input) -> Vec<Input> {
     let mut generation = original.clone();
     generation.source.stamp.generation += 1;
     let mut bytes = original.clone();
-    bytes.source.text = Arc::from("[changed](other.md)\n");
+    bytes.source.text =
+        gpui_component::input::projection::SourceText::from("[changed](other.md)\n");
     vec![
         entity, reopened, workspace, path, document, generation, bytes,
     ]
@@ -108,7 +109,8 @@ fn foreign_inputs(original: &Input) -> Vec<Input> {
 fn adoption_queries_and_held_views_check_the_complete_live_binding_and_source() {
     let input = input("[a](target.md)\n");
     let mut equal_value = input.clone();
-    equal_value.source.text = Arc::from(input.source.text.to_string());
+    equal_value.source.text =
+        gpui_component::input::projection::SourceText::from(input.source.text.to_string());
     assert!(!equal_value.source.text.same(&input.source.text));
     let mut session = session(&input);
     let request = session.begin(Some(input.clone())).unwrap();
@@ -183,7 +185,9 @@ fn every_attempt_supersedes_before_refusal_and_old_packets_cannot_restore_curren
     let mut session = session(&input);
     let held = publish(&mut session, &input);
     let mut oversize = input.clone();
-    oversize.source.text = Arc::from("x".repeat(source_classifier::MAX_BYTES + 1));
+    oversize.source.text = gpui_component::input::projection::SourceText::from(
+        "x".repeat(source_classifier::MAX_BYTES + 1),
+    );
     let mut foreign_owner = input.clone();
     foreign_owner.binding.owner = Owner::new(EntityId::from(2_u64));
     for refused in [None, Some(oversize), Some(foreign_owner)] {
@@ -217,10 +221,12 @@ fn two_unpainted_revisions_and_retries_never_become_current_by_old_delivery() {
     let held = publish(&mut session, &input);
     let mut second = input.clone();
     second.source.stamp.generation += 1;
-    second.source.text = Arc::from("prefix [two](two.md)\n");
+    second.source.text =
+        gpui_component::input::projection::SourceText::from("prefix [two](two.md)\n");
     let mut third = second.clone();
     third.source.stamp.generation += 1;
-    third.source.text = Arc::from("more prefix [three](three.md)\n");
+    third.source.text =
+        gpui_component::input::projection::SourceText::from("more prefix [three](three.md)\n");
     let second_request = session.begin(Some(second.clone())).unwrap();
     let third_request = session.begin(Some(third.clone())).unwrap();
     let second_done = second_request.compute();
@@ -288,7 +294,7 @@ fn existing_byte_cap_is_preserved_without_changing_authored_input() {
     let inventory = publish(&mut session, &input);
     assert!(!inventory.view(&input).unwrap().parsed_links().is_empty());
     let mut oversize = input.clone();
-    oversize.source.text = Arc::from(format!("{text}x"));
+    oversize.source.text = gpui_component::input::projection::SourceText::from(format!("{text}x"));
     let (_, report) = capture(|| {
         assert!(matches!(
             session.begin(Some(oversize)),
@@ -308,7 +314,8 @@ fn outer_pending_key_check_discards_old_work_without_revoking_the_latest_request
     let old_key = old.key();
     let mut latest = first.clone();
     latest.source.stamp.generation += 1;
-    latest.source.text = Arc::from("[latest](latest.md)\n");
+    latest.source.text =
+        gpui_component::input::projection::SourceText::from("[latest](latest.md)\n");
     let request = session.begin(Some(latest.clone())).unwrap();
     let key = request.key();
     let obsolete = old.compute();

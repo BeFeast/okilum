@@ -982,7 +982,7 @@ trait PresentationMap {
 }
 impl PresentationMap for Projection {
     fn display_slice(&self, range: Range<usize>) -> std::borrow::Cow<'_, str> {
-        self.display_text().slice(range)
+        self.persistent_display().slice(range)
     }
     fn display_line_at(&self, byte: usize) -> usize {
         self.display_line_at(byte)
@@ -1176,7 +1176,7 @@ impl SourceProjection for MappedProjection {
         Some(
             self.math
                 .as_ref()
-                .map_or(self.reveal.projection().display_text(), |m| &m.text)
+                .map_or(self.reveal.projection().persistent_display(), |m| &m.text)
                 .rope(),
         )
     }
@@ -1184,7 +1184,7 @@ impl SourceProjection for MappedProjection {
         Some(
             self.math
                 .as_ref()
-                .map_or(self.reveal.projection().display_text(), |m| &m.text)
+                .map_or(self.reveal.projection().persistent_display(), |m| &m.text)
                 .id(),
         )
     }
@@ -1192,7 +1192,7 @@ impl SourceProjection for MappedProjection {
         let edit = self
             .math
             .as_ref()
-            .map_or(self.reveal.projection().display_text(), |m| &m.text)
+            .map_or(self.reveal.projection().persistent_display(), |m| &m.text)
             .edit_since(previous)?;
         Some(gpui_component::input::projection::EditDelta {
             previous: edit.previous,
@@ -1613,7 +1613,10 @@ mod tests {
         // the previous revision's exact semantic ranges, never its boundary lease.
         for prefix in ["x", "xx"] {
             current.stamp.generation += 1;
-            current.text = Arc::from(format!("{prefix}{}", original.text));
+            current.text = gpui_component::input::projection::SourceText::from(format!(
+                "{prefix}{}",
+                original.text
+            ));
             let fresh = CachedProvider::classify(current.clone());
             let hidden = provider.compose(&current, &inactive(&current)).unwrap();
             let at = current.text.find("e\u{301}").unwrap();
@@ -1724,7 +1727,7 @@ mod tests {
             // Each step is one edit on top of the previous revision.
             let mut current = source.clone();
             current.stamp.generation += 1 + step as u64;
-            current.text = Arc::from(text);
+            current.text = gpui_component::input::projection::SourceText::from(text);
             // An unclassified revision draws the markers a fresh parse would.
             let updated = provider.compose(&current, &inactive(&current)).unwrap();
             let fresh = CachedProvider::classify(current.clone());
@@ -2134,7 +2137,8 @@ mod tests {
             &idle
         ));
         let mut stale = source.clone();
-        stale.text = Arc::from("same stamp but wrong source");
+        stale.text =
+            gpui_component::input::projection::SourceText::from("same stamp but wrong source");
         assert!(pin.marker_scope_is_raw(stamp, &stale, &scope, &idle));
         stale = source.clone();
         stale.stamp.generation += 1;

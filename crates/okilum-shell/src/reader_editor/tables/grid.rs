@@ -246,12 +246,7 @@ impl TableGrid {
         self.installed_epoch = None;
         self.session = self.session.wrapping_add(1);
         let session = self.session;
-        let source = SourceSnapshot {
-            stamp,
-            text: gpui_component::input::projection::SourceText::from(
-                self.binding.as_ref().unwrap().document.as_str(),
-            ),
-        };
+        let source = self.input.read(cx).source_snapshot();
         // Existing LivePreview publication remains untouched. The grid's lease
         // has its own immutable fallback, classified off the foreground thread.
         self.preparing = Some(cx.spawn(async move |this, cx| {
@@ -360,12 +355,7 @@ impl TableGrid {
         let binding = self.binding.as_ref().unwrap();
         let provider = Arc::new(GridProvider {
             base,
-            source: SourceSnapshot {
-                stamp: binding.stamp,
-                text: gpui_component::input::projection::SourceText::from(
-                    binding.document.as_str(),
-                ),
-            },
+            source: self.input.read(cx).source_snapshot(),
             table: binding.table.clone(),
         });
         self.input.update(cx, |input, cx| {
@@ -1253,7 +1243,8 @@ mod projection_tests {
             .blocks()
             .is_empty());
         stale = source.clone();
-        stale.text = Arc::from(source.text.replace("one", "new"));
+        stale.text =
+            gpui_component::input::projection::SourceText::from(source.text.replace("one", "new"));
         assert!(provider
             .compose(&stale, &active)
             .unwrap()

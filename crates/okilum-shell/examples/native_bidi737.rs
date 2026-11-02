@@ -57,12 +57,10 @@ impl Render for Fixture {
                 this.live = !this.live;
                 let provider = if this.live {
                     let editor = this.editor.read(cx);
-                    Some(Arc::new(adapter::CachedProvider::classify(SourceSnapshot {
-                        stamp: editor.source_stamp(),
-                        text: gpui_component::input::projection::SourceText::from(
-                            editor.value().as_ref(),
-                        ),
-                    })) as Arc<dyn ProjectionProvider>)
+                    Some(
+                        Arc::new(adapter::CachedProvider::classify(editor.source_snapshot()))
+                            as Arc<dyn ProjectionProvider>,
+                    )
                 } else {
                     None
                 };
@@ -147,13 +145,9 @@ fn main() {
                         let live = std::env::var_os("OKILUM_BIDI_LIVE").is_some();
                         if live {
                             let state = editor.read(cx);
-                            let provider =
-                                Arc::new(adapter::CachedProvider::classify(SourceSnapshot {
-                                    stamp: state.source_stamp(),
-                                    text: gpui_component::input::projection::SourceText::from(
-                                        state.value().as_ref(),
-                                    ),
-                                }));
+                            let provider = Arc::new(adapter::CachedProvider::classify(
+                                state.source_snapshot(),
+                            ));
                             editor.update(cx, |state, cx| {
                                 state.set_projection_provider(Some(provider), cx);
                             });
@@ -162,13 +156,9 @@ fn main() {
                             let state = this.editor.read(cx);
                             let stamp = state.source_stamp();
                             if this.live && this.classified != Some(stamp) {
-                                let provider =
-                                    Arc::new(adapter::CachedProvider::classify(SourceSnapshot {
-                                        stamp,
-                                        text: gpui_component::input::projection::SourceText::from(
-                                            state.value().as_ref(),
-                                        ),
-                                    }));
+                                let provider = Arc::new(adapter::CachedProvider::classify(
+                                    state.source_snapshot(),
+                                ));
                                 this.classified = Some(stamp);
                                 this.editor.update(cx, |state, cx| {
                                     state.set_projection_provider(Some(provider), cx);

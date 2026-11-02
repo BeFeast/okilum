@@ -1,8 +1,16 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
-index ce7d65ea..f0440449 100644
+index ce7d65ea..cd748dbd 100644
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
-@@ -2033,20 +2033,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -30,6 +30,7 @@ use super::{
+ 
+ /// Map a current source anchor into the last displayed revision. Positions in
+ /// the replacement map to its old start; unchanged suffixes retain exact bytes.
++#[cfg(test)]
+ fn previous_source_anchor(old: &str, new: &str, offset: usize) -> Option<usize> {
+     if !new.is_char_boundary(offset) { return None; }
+     if old == new { return Some(offset); }
+@@ -2033,20 +2034,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
                  && last.presentation_epoch == initial.presentation_epoch() {
                  return None;
              }
@@ -30,7 +38,7 @@ index ce7d65ea..f0440449 100644
                  if let Some(offset) = last.project(start, ConcealBias::Left) {
                      let mut y = last.visible_top;
                      for (line, line_start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
-@@ -2066,7 +2059,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2066,7 +2060,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                  }
              }
              let current_offset = initial.cursor();
@@ -39,7 +47,7 @@ index ce7d65ea..f0440449 100644
              let offset = last.project(old_offset, ConcealBias::Right)?;
              let mut y = last.visible_top;
              for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
-@@ -2094,7 +2087,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2094,7 +2088,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                      let screen_y = y + initial.scroll_handle.offset().y;
                      if screen_y >= px(0.) && screen_y < bounds.size.height {
                          let old = last.source(projected, ConcealBias::Right)?;
@@ -48,7 +56,7 @@ index ce7d65ea..f0440449 100644
                          anchor_kind = "row";
                          return Some((current, y, false));
                      }
-@@ -2312,7 +2305,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2312,7 +2306,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
              .projection
              .current
              .as_ref()
@@ -57,7 +65,7 @@ index ce7d65ea..f0440449 100644
          let display_text = projected_rope.as_ref().unwrap_or(display_text);
          let line_height = window.line_height();
          let rows = frame_rows.unwrap_or_else(|| RowMetrics::uniform(line_height));
-@@ -2672,7 +2665,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+@@ -2672,7 +2666,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
              state.source_stamp(),
              last_layout.text_align == TextAlign::Left,
              &state.marker_source_cache,
@@ -66,7 +74,7 @@ index ce7d65ea..f0440449 100644
          );
          let marker_rows = marker_source.as_ref().map(|source|
              super::marker_paint::prepare(&last_layout, source, &state.projection.active)
-@@ -4102,7 +4095,7 @@ mod projection_run_tests {
+@@ -4102,7 +4096,7 @@ mod projection_run_tests {
                      document: 3,
                      generation: 7,
                  },
@@ -75,7 +83,7 @@ index ce7d65ea..f0440449 100644
              },
              // Unsorted overlaps: original provider order determines overrides.
              styles: vec![
-@@ -4183,7 +4176,7 @@ mod projection_run_tests {
+@@ -4183,7 +4177,7 @@ mod projection_run_tests {
                      document: 5,
                      generation: 2,
                  },
@@ -84,7 +92,7 @@ index ce7d65ea..f0440449 100644
              },
              styles,
          };
-@@ -4233,7 +4226,7 @@ mod projection_run_tests {
+@@ -4233,7 +4227,7 @@ mod projection_run_tests {
                      document: 1,
                      generation: 0,
                  },
@@ -94,10 +102,34 @@ index ce7d65ea..f0440449 100644
              styles: vec![ProjectionStyle {
                  range: ProjectedByte(3)..ProjectedByte(5),
 diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
-index 9abbca2d..13c52a4a 100644
+index 9abbca2d..403b2203 100644
 --- a/crates/base/src/input/base/layout.rs
 +++ b/crates/base/src/input/base/layout.rs
-@@ -456,7 +456,7 @@ impl LastLayout {
+@@ -1,4 +1,6 @@
+-use std::{borrow::Cow, ops::Range, rc::Rc};
++use std::{ops::Range, rc::Rc};
++#[cfg(test)]
++use std::borrow::Cow;
+ 
+ use gpui::{Bounds, Half, Pixels, ShapedLine, TextAlign, px};
+ 
+@@ -399,6 +401,7 @@ pub(super) struct LastLayout {
+     pub(super) projection: Option<PinnedProjection>,
+     // Cheap persistent source clone bound to this exact painted layout. Needed
+     // when projection is absent during conservative Live Preview fallback.
++    #[allow(dead_code)] // Retained by the legacy anchor positive control.
+     pub(super) anchor_source: Option<ropey::Rope>,
+     pub(super) source_stamp: SourceStamp,
+     pub(super) presentation_epoch: u64,
+@@ -431,6 +434,7 @@ impl LastLayout {
+         self.rows.row_height(self.rows.row_at(y))
+     }
+ 
++    #[cfg(test)]
+     pub(super) fn source_for_anchor(&self, current: SourceStamp) -> Option<Cow<'_, str>> {
+         if self.source_stamp.document != current.document {
+             return None;
+@@ -456,7 +460,7 @@ impl LastLayout {
          match &self.projection {
              Some(p) => {
                  let clipped =
@@ -174,9 +206,18 @@ index 69cbfd8d..7f688175 100644
          );
          assert!(
 diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
-index 9db7eb58..ed92d68d 100644
+index 9db7eb58..cf34e706 100644
 --- a/crates/base/src/input/base/movement.rs
 +++ b/crates/base/src/input/base/movement.rs
+@@ -181,7 +181,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx: &mut Context<Self>,
+     ) -> Option<(usize, bool, gpui::Pixels)> {
+         use super::projection::{
+-            LayoutStamp, PinnedProjection, SourceByte, SourceSnapshot, WrapAffinity,
++            LayoutStamp, PinnedProjection, SourceByte, WrapAffinity,
+         };
+         let last = self.last_layout.as_ref()?;
+         let provider = self.projection.provider.as_ref()?;
 @@ -195,10 +195,7 @@ impl<M: InputModeKind> InputBaseState<M> {
          {
              return None;
@@ -465,7 +506,7 @@ index 08df61c4..99b1c322 100644
                      prefix: prefix.len(),
                  })
 diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
-index 11e0b1ce..cace0dfe 100644
+index 11e0b1ce..76d07927 100644
 --- a/crates/base/src/input/projection.rs
 +++ b/crates/base/src/input/projection.rs
 @@ -12,6 +12,10 @@ use std::{
@@ -527,16 +568,16 @@ index 11e0b1ce..cace0dfe 100644
      fn default() -> Self {
          static NEXT_DOCUMENT: AtomicU64 = AtomicU64::new(1);
          Self {
-+            source_text: None,
++            source_text: Some(SourceText::from_rope(ropey::Rope::new())),
              enabled: false,
              stamp: LayoutStamp {
                  source: SourceStamp {
-@@ -414,7 +440,14 @@ impl ProjectionSession {
+@@ -414,7 +440,15 @@ impl ProjectionSession {
              self.presentation_changed();
          }
      }
--    pub(crate) fn compose(&mut self, source: Arc<str>) {
-+    pub(crate) fn compose(&mut self, source: impl Into<SourceText>) {
++    #[cfg(test)]
+     pub(crate) fn compose(&mut self, source: Arc<str>) {
 +        self.compose_text(source.into());
 +    }
 +    pub(crate) fn compose_rope(&mut self, rope: &ropey::Rope) {

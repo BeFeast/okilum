@@ -103,14 +103,11 @@ impl Reader {
             return None;
         }
         let input = editing.input.clone();
-        let (stamp, text) = {
-            let state = input.read(cx);
-            (state.source_stamp(), state.value().to_string())
-        };
-        let blocks = editing.live_preview.rendered_blocks(&SourceSnapshot {
-            stamp,
-            text: gpui_component::input::projection::SourceText::from(text.as_str()),
-        });
+        let state = input.read(cx);
+        let text = state.value().to_string();
+        let blocks = editing
+            .live_preview
+            .rendered_blocks(&state.source_snapshot());
         Some((input, text, blocks))
     }
 

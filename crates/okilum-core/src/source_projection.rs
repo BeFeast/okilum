@@ -96,6 +96,7 @@ impl Snapshot {
             .bytes()
             .rev()
             .zip(new[start..].bytes().rev())
+            .inspect(|_| revision::charge(|w| w.scanned_bytes += 1))
             .take_while(|(a, b)| a == b)
             .count();
         while !old.is_char_boundary(old.len() - tail) || !new.is_char_boundary(new.len() - tail) {
@@ -282,7 +283,7 @@ impl Projection {
     pub fn display(&self) -> &str {
         &self.display
     }
-    pub fn display_text(&self) -> &Text {
+    pub fn persistent_display(&self) -> &Text {
         &self.display
     }
     pub fn snapshot(&self) -> &Snapshot {

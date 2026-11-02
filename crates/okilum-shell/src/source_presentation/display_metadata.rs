@@ -200,7 +200,7 @@ impl Metadata {
         // entering/leaving the last formula cannot force cold native layout.
         let mut last = self.overlay.lock().ok()?;
         let overlay =
-            MathOverlay::new_persistent(projection.display_text(), formulas, last.as_ref());
+            MathOverlay::new_persistent(projection.persistent_display(), formulas, last.as_ref());
         *last = Some(overlay.clone());
         Some(overlay)
     }

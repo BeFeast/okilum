@@ -185,7 +185,11 @@ impl Deref for Text {
 }
 impl PartialEq for Text {
     fn eq(&self, other: &Self) -> bool {
-        self.same(other) || self.0.rope == other.0.rope
+        if self.same(other) {
+            return true;
+        }
+        charge(|w| w.scanned_bytes += self.len().min(other.len()));
+        self.0.rope == other.0.rope
     }
 }
 impl Eq for Text {}
@@ -229,4 +233,56 @@ pub(crate) fn charge(update: impl FnOnce(&mut Work)) {
             w.set(Some(work));
         }
     });
+}
+
+#[cfg(test)]
+mod acceptance_tests {
+    use super::*;
+    use crate::{
+        source_classifier::{classify, RetainedPresentation},
+        source_projection::Snapshot,
+    };
+    #[test]
+    fn issue2403_single_logical_line_key_work_is_bounded() {
+        let mut over_budget = Vec::new();
+        for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
+            let text = Text::from_rope(Rope::from_str(&"a".repeat(bytes)));
+            let original = Snapshot::from_rope("single-line", 1, text.clone(), None);
+            reset_work();
+            let retained = RetainedPresentation::new(&classify(&original));
+            let cold = take_work();
+            assert!(
+                cold.flattened_bytes >= bytes && cold.display_builds > 0,
+                "cold positive controls: {cold:?}"
+            );
+            let at = bytes / 2;
+            let changed = text.replace(at..at + 1, "q");
+            let current = Snapshot::from_rope(
+                "single-line",
+                2,
+                changed,
+                Some(Edit {
+                    previous: text.id(),
+                    old: at..at + 1,
+                    inserted: 1,
+                }),
+            );
+            reset_work();
+            let next = retained
+                .remap(&current)
+                .expect("ordinary inline edit remains retained");
+            let work = take_work();
+            assert_eq!(next.snapshot(), &current);
+            println!("SINGLE_LINE_KEY_WORK bytes={bytes} work={work:?}");
+            assert_eq!(work.flattened_bytes, 0);
+            assert_eq!(work.display_builds, 0);
+            if work.scanned_bytes >= 64 * 1024 {
+                over_budget.push((bytes, work.scanned_bytes));
+            }
+        }
+        assert!(
+            over_budget.is_empty(),
+            "#2403 cannot scan a whole note because it has one logical line: {over_budget:?}"
+        );
+    }
 }
