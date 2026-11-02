@@ -160,11 +160,28 @@ impl CachedProvider {
         request: navigation_inventory::Request,
         input: navigation_inventory::Input,
     ) -> Result<(Self, navigation_inventory::Completion), navigation_inventory::Error> {
+        Self::classify_navigation_reusing(request, input, None)
+    }
+    pub(crate) fn classify_navigation_reusing(
+        request: navigation_inventory::Request,
+        input: navigation_inventory::Input,
+        previous: Option<&Self>,
+    ) -> Result<(Self, navigation_inventory::Completion), navigation_inventory::Error> {
         let completion = request.compute();
         let links = completion.view(&input)?.legacy_links().to_vec();
-        Ok((Self::from_links(input.source, links), completion))
+        Ok((
+            Self::from_links_reusing(input.source, links, previous),
+            completion,
+        ))
     }
     fn from_links(source: SourceSnapshot, links: Vec<source_classifier::NoteLink>) -> Self {
+        Self::from_links_reusing(source, links, None)
+    }
+    fn from_links_reusing(
+        source: SourceSnapshot,
+        links: Vec<source_classifier::NoteLink>,
+        previous: Option<&Self>,
+    ) -> Self {
         let snapshot = core_snapshot(&source);
         let classified = source_classifier::classify(&snapshot);
         let tables = classified
@@ -199,7 +216,10 @@ impl CachedProvider {
             source,
             syntax,
             fenced_blocks,
-            retained: Mutex::new(RetainedPresentation::new(&classified)),
+            retained: Mutex::new(RetainedPresentation::new_reusing(
+                &classified,
+                previous.and_then(|p| p.retained.lock().ok()).as_deref(),
+            )),
             classified,
             links,
             tables,

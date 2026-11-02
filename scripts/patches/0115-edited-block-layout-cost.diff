@@ -1,7 +1,14 @@
 diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
 --- a/crates/base/src/input/editor/display_map/display_map.rs
 +++ b/crates/base/src/input/editor/display_map/display_map.rs
-@@ -427,6 +427,7 @@
+@@ -421,12 +421,13 @@
+                     self.source_wrap_map = Some(self.wrap_map.clone());
+                 }
+                 let lines = self.wrap_map.set_projected(
+-                    pinned.projection.as_ref(),
++                    pinned.projection.clone(),
+                     pinned.stamp.presentation,
+                     self.hang_room,
                      window,
                      &mut self.projected_cache,
                  );
@@ -12,7 +19,7 @@ diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/ba
 diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crates/base/src/input/editor/display_map/projected_cache.rs
 --- a/crates/base/src/input/editor/display_map/projected_cache.rs
 +++ b/crates/base/src/input/editor/display_map/projected_cache.rs
-@@ -1,12 +1,19 @@
+@@ -1,12 +1,28 @@
  //! Derived, editor-local wrapping of exact projected lines. No source identity or
  //! hit map is reused here: callers bind cached relative row ranges to the new
  //! projection. Keep only the previous and current publication's bounded entries.
@@ -21,8 +28,11 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
  use std::sync::Arc;
 
  use gpui::{Font, Pixels, TextRun};
-
+-
 -use super::text_wrapper::LineItem;
++use ropey::Rope;
++use crate::input::RopeExt as _;
++
 +use super::text_wrapper::{BufferRows, LineItem};
 +use crate::input::projection::{ProjectionStyle, SourceProjection};
 +use std::ops::Range;
@@ -30,10 +40,17 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +
 +#[cfg(test)]
 +thread_local! { static KEY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
++
++#[cfg(test)]
++thread_local! {
++    static TEXT_BYTES_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++    static TEXT_COMPARE_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++    static LINE_SCAN_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
 
  const MAX_ENTRIES: usize = 8192;
  const MAX_BYTES: usize = 2 * 1024 * 1024;
-@@ -35,6 +42,8 @@
+@@ -35,6 +51,8 @@
          hang: usize,
          hang_room: Pixels,
      ) -> Self {
@@ -42,7 +59,7 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
          Self {
              text: Arc::from(text),
              // Foreground/strike paint does not change wrap geometry. Retain
-@@ -76,6 +85,12 @@
+@@ -76,6 +94,21 @@
      previous: HashMap<LineKey, LineItem>,
      current: HashMap<LineKey, LineItem>,
      bytes: usize,
@@ -52,10 +69,19 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +    projection: Option<Arc<dyn SourceProjection>>,
 +    layout: Option<LayoutKey>,
 +    rows: usize,
++    text: Option<Rope>,
++    // Installed text/projection remain paired until the exact candidate is adopted.
++    pending: Option<PreparedText>,
++}
++
++struct PreparedText {
++    projection: Arc<dyn SourceProjection>,
++    text: Rope,
++    dirty: Option<DirtyRows>,
  }
 
  impl ProjectedCache {
-@@ -84,10 +99,63 @@
+@@ -84,10 +117,157 @@
              self.previous.clear();
              self.current.clear();
              self.document = Some(document);
@@ -63,15 +89,100 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +            self.projection = None;
 +            self.layout = None;
 +            self.rows = 0;
++            self.text = None;
++            self.pending = None;
          } else {
              self.previous = std::mem::take(&mut self.current);
          }
          self.bytes = 0;
 +    }
 +
++    /// Reuse the previous publication's persistent byte/line index, even when
++    /// a canonical edit temporarily restored Source wrapping. Bind reuse to the
++    /// retained immutable projection, never to that temporary Source rope.
++    /// Providers without a revision-bound dirty receipt still require exact byte
++    /// comparison; only the changed UTF-8 interval is inserted into the rope.
++    pub(super) fn prepare_text(&mut self, next: Arc<dyn SourceProjection>) -> Rope {
++        // Preparing twice without installing must still compare against the
++        // installed immutable projection and its original index.
++        self.pending = None;
++        let next_text = next.text();
++        let mut text_dirty = None;
++        let retained = self.projection.as_ref().zip(self.text.as_ref())
++            .filter(|(old, _)| old.source().stamp.document == next.source().stamp.document);
++        let text = match retained {
++            Some((old, previous)) if std::ptr::addr_eq(old.as_ref(), next.as_ref()) => {
++                let rows = previous.lines_len();
++                text_dirty = Some(DirtyRows { old: rows..rows, new: rows..rows });
++                previous.clone()
++            }
++            Some((old, previous)) => {
++                let old_text = old.text();
++                let mut prefix = old_text.bytes().zip(next_text.bytes()).inspect(|_| {
++                    #[cfg(test)]
++                    TEXT_COMPARE_BYTES.with(|count| count.set(count.get() + 1));
++                }).take_while(|(a, b)| a == b).count();
++                // Byte equality can stop inside a multibyte scalar.
++                while !old_text.is_char_boundary(prefix) || !next_text.is_char_boundary(prefix) {
++                    prefix -= 1;
++                }
++                let mut suffix = old_text.as_bytes()[prefix..].iter().rev()
++                    .zip(next_text.as_bytes()[prefix..].iter().rev()).inspect(|_| {
++                    #[cfg(test)]
++                    TEXT_COMPARE_BYTES.with(|count| count.set(count.get() + 1));
++                }).take_while(|(a, b)| a == b).count();
++                while !old_text.is_char_boundary(old_text.len() - suffix)
++                    || !next_text.is_char_boundary(next_text.len() - suffix) {
++                    suffix -= 1;
++                }
++                let inserted = &next_text[prefix..next_text.len() - suffix];
++                let mut text = previous.clone();
++                if prefix != old_text.len() || !inserted.is_empty() {
++                    text.replace(prefix..old_text.len() - suffix, inserted);
++                    #[cfg(test)]
++                    TEXT_BYTES_BUILT.with(|count| count.set(count.get() + inserted.len()));
++                }
++                let old_rows = previous.lines_len();
++                let new_rows = text.lines_len();
++                let dirty = if prefix == old_text.len() && inserted.is_empty() {
++                    DirtyRows { old: old_rows..old_rows, new: new_rows..new_rows }
++                } else {
++                    let prefix_rows = previous.offset_to_point(prefix).row;
++                    let old_end = previous.offset_to_point(old_text.len() - suffix);
++                    let new_end = text.offset_to_point(next_text.len() - suffix);
++                    let old_suffix_row = old_end.row + usize::from(old_end.column != 0);
++                    let new_suffix_row = new_end.row + usize::from(new_end.column != 0);
++                    let suffix_rows = (old_rows - old_suffix_row).min(new_rows - new_suffix_row)
++                        .min(old_rows.min(new_rows) - prefix_rows);
++                    DirtyRows { old: prefix_rows..old_rows - suffix_rows,
++                        new: prefix_rows..new_rows - suffix_rows }
++                };
++                text_dirty = Some(dirty);
++                text
++            }
++            None => {
++                #[cfg(test)]
++                TEXT_BYTES_BUILT.with(|count| count.set(count.get() + next_text.len()));
++                Rope::from(next_text)
++            }
++        };
++        self.pending = Some(PreparedText { projection: next, text: text.clone(), dirty: text_dirty });
++        text
++    }
++
 +    /// Keep the exact immutable provider, not cloned per-line keys/styles.
 +    /// Called only after its new geometry has been successfully installed.
 +    pub(super) fn remember_projection(&mut self, projection: Arc<dyn SourceProjection>) {
++        // A cancelled or superseded preparation cannot pair one pin's index
++        // with another pin's source mapping, even when their stamps are equal.
++        let installed = self.pending.take().filter(|pending|
++            Arc::ptr_eq(&pending.projection, &projection));
++        self.text = installed.map(|pending| pending.text);
++        if self.text.is_none() {
++            self.lines = None;
++            self.layout = None;
++            self.rows = 0;
++        }
 +        self.projection = Some(projection);
 +    }
 +
@@ -80,7 +191,16 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +    ) -> DirtyRows {
 +        match (&self.projection, &self.lines, &self.layout) {
 +            (Some(old), Some(_), Some(previous)) if previous == layout =>
-+                discover_dirty_rows(old.as_ref(), self.rows, next, rows),
++                {
++                    if std::ptr::addr_eq(old.as_ref(), next) {
++                        return DirtyRows { old: self.rows..self.rows, new: rows..rows };
++                    }
++                    let pending = self.pending.as_ref().filter(|pending|
++                        std::ptr::addr_eq(pending.projection.as_ref(), next));
++                    discover_dirty_rows(old.as_ref(), self.rows, next, rows,
++                        pending.and_then(|pending| pending.dirty.clone()),
++                        self.text.as_ref(), pending.map(|pending| &pending.text))
++                },
 +            _ => DirtyRows { old: 0..self.rows, new: 0..rows },
 +        }
 +    }
@@ -119,7 +239,7 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
      }
 
      pub(super) fn get(&self, key: &LineKey) -> Option<LineItem> {
-@@ -107,6 +175,116 @@
+@@ -107,6 +287,136 @@
              self.current.insert(key, line);
          }
      }
@@ -179,33 +299,53 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +
 +fn row_start(text: &str, row: usize) -> usize {
 +    if row == 0 { return 0; }
-+    text.bytes().enumerate().filter(|(_, b)| *b == b'\n')
++    text.bytes().enumerate().inspect(|_| {
++        #[cfg(test)]
++        LINE_SCAN_BYTES.with(|count| count.set(count.get() + 1));
++    }).filter(|(_, b)| *b == b'\n')
 +        .nth(row - 1).map_or(text.len(), |(i, _)| i + 1)
 +}
 +
-+fn style_rows(text: &str, styles: &[ProjectionStyle], otherwise: Range<usize>) -> Range<usize> {
++fn indexed_row_start(text: &str, index: Option<&Rope>, row: usize) -> usize {
++    match index {
++        Some(index) if row < index.lines_len() => index.line_start_offset(row),
++        Some(_) => text.len(),
++        None => row_start(text, row),
++    }
++}
++
++fn style_rows(text: &str, index: Option<&Rope>, styles: &[ProjectionStyle], otherwise: Range<usize>) -> Range<usize> {
 +    let Some(start) = styles.iter().map(|s| s.range.start.0).min() else { return otherwise; };
 +    let end = styles.iter().map(|s| s.range.end.0).max().unwrap().max(start);
-+    let row = |byte: usize| text.as_bytes()[..byte.min(text.len())].iter().filter(|b| **b == b'\n').count();
++    let row = |byte: usize| {
++        let byte = byte.min(text.len());
++        if let Some(index) = index { return index.offset_to_point(byte).row; }
++        #[cfg(test)]
++        LINE_SCAN_BYTES.with(|count| count.set(count.get() + byte));
++        text.as_bytes()[..byte].iter().filter(|b| **b == b'\n').count()
++    };
 +    row(start)..row(end.saturating_sub(1).max(start)) + 1
 +}
 +
-+/// Cheap exact text/metadata comparison discovers a conservative changed block
-+/// before any font runs, LineKeys, LineItems or shaping are computed. Text-byte
-+/// comparison and inventory comparison remain linear; unchanged row layout work
-+/// is genuinely omitted, not performed inside the discovery pass.
++/// Use the byte edit's indexed row boundaries when available, without a second
++/// whole-document line traversal. Standalone callers retain exact discovery.
++/// Metadata comparison remains conservative and linear; unchanged row layout
++/// is omitted before any font runs, LineKeys, LineItems or shaping are computed.
 +fn discover_dirty_rows(old: &dyn SourceProjection, old_rows: usize,
-+    new: &dyn SourceProjection, new_rows: usize) -> DirtyRows
++    new: &dyn SourceProjection, new_rows: usize, prepared: Option<DirtyRows>,
++    old_index: Option<&Rope>, new_index: Option<&Rope>) -> DirtyRows
 +{
++    let text_dirty = prepared.unwrap_or_else(|| {
 +    let prefix = old.text().split('\n').zip(new.text().split('\n'))
 +        .take_while(|(a, b)| a == b).count();
 +    let suffix = old.text().rsplit('\n').zip(new.text().rsplit('\n'))
 +        .take(old_rows.min(new_rows) - prefix).take_while(|(a, b)| a == b).count();
-+    let text_dirty = DirtyRows { old: prefix..old_rows - suffix, new: prefix..new_rows - suffix };
++    DirtyRows { old: prefix..old_rows - suffix, new: prefix..new_rows - suffix }
++    });
 +    let mut dirty = text_dirty.clone();
-+    let prefix_byte = row_start(old.text(), prefix);
-+    let old_suffix = row_start(old.text(), text_dirty.old.end);
-+    let new_suffix = row_start(new.text(), text_dirty.new.end);
++    let prefix_byte = indexed_row_start(old.text(), old_index, text_dirty.old.start);
++    let old_suffix = indexed_row_start(old.text(), old_index, text_dirty.old.end);
++    let new_suffix = indexed_row_start(new.text(), new_index, text_dirty.new.end);
 +    let map_byte = |byte: usize, start: bool| {
 +        // At a pure insertion boundary, a prefix style's end stays on the
 +        // left while a suffix style's start moves right with its original text.
@@ -222,8 +362,8 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +            && map_byte(a.range.end.0, false) == Some(b.range.end.0)
 +            && a.font_family == b.font_family && a.bold == b.bold && a.italic == b.italic
 +    });
-+    dirty.include(style_rows(old.text(), a, text_dirty.old.clone()),
-+        style_rows(new.text(), b, text_dirty.new.clone()), old_rows, new_rows);
++    dirty.include(style_rows(old.text(), old_index, a, text_dirty.old.clone()),
++        style_rows(new.text(), new_index, b, text_dirty.new.clone()), old_rows, new_rows);
 +    let (a, b) = changed_middle(old.line_scales(), new.line_scales(), |a, b|
 +        text_dirty.map_row(a.line) == Some(b.line) && a.scale == b.scale && a.hang == b.hang);
 +    for item in a { dirty.include(item.line..item.line + 1, text_dirty.new.clone(), old_rows, new_rows); }
@@ -236,7 +376,7 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
  }
 
  #[cfg(test)]
-@@ -133,6 +311,403 @@
+@@ -133,6 +443,570 @@
      fn line() -> LineItem {
          // Construct through the sibling module's test helper.
          LineItem::cached_test_line(8, smallvec::smallvec![0..4, 4..8])
@@ -280,6 +420,7 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +    {
 +        cache.begin(next.source.stamp.document);
 +        KEY_BUILDS.with(|count| count.set(0));
++        cache.prepare_text(next.clone());
 +        let rows: Vec<_> = next.text().split('\n').collect();
 +        let tree = cache.update_projection(next.as_ref(), rows.len(), layout, |row, cache, _| {
 +            // This lookup models the production closure. It is never invoked
@@ -391,6 +532,8 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +            let source = ropey::Rope::from(edited.as_str());
 +            map.on_text_changed(&source, &(at..at), &ropey::Rope::from("X"), cx);
 +            KEY_BUILDS.with(|count| count.set(0));
++            TEXT_BYTES_BUILT.with(|count| count.set(0));
++            LINE_SCAN_BYTES.with(|count| count.set(0));
 +            let reshaped =
 +                map.install_projection(Some(installed_pin(next.clone(), 2)), &source, window, cx);
 +            assert_eq!(
@@ -398,6 +541,10 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +                1,
 +                "no keys built for retained rows"
 +            );
++            assert_eq!(TEXT_BYTES_BUILT.with(|count| count.get()), 1,
++                "production path inserts only the edited byte into the retained index");
++            assert_eq!(LINE_SCAN_BYTES.with(|count| count.get()), 0,
++                "production dirty discovery uses indexed row boundaries");
 +            assert_eq!(
 +                reshaped, 1,
 +                "real production shaping stays on the edited row"
@@ -537,6 +684,166 @@ diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crate
 +    }
 +
 +    #[test]
++    fn projected_rope_reuses_revision_bound_index_and_only_inserts_changed_bytes() {
++        let original = format!("{}é👩\u{200d}💻\r\ntail\n", "unchanged row\r\n".repeat(10000));
++        let mut cache = ProjectedCache::default();
++        let mut previous: Option<Rope> = None;
++        let at = original.find('é').unwrap();
++        let mut edited = original.clone();
++        edited.replace_range(at..at + 'é'.len_utf8(), "ê");
++        let mut inserted = edited.clone();
++        inserted.insert_str(at, "漢\r\n");
++        let variants = [&original, &edited, &inserted, &edited, &original, &original];
++        let expected_work = [original.len(), 2, "漢\r\n".len(), 0, 2, 0];
++        for (generation, (value, bytes)) in variants.into_iter().zip(expected_work).enumerate() {
++            let mut next = snapshot(value);
++            next.source.stamp.generation = generation as u64 + 1;
++            cache.begin(next.source.stamp.document);
++            TEXT_BYTES_BUILT.with(|count| count.set(0));
++            let next = Arc::new(next);
++            let rope = cache.prepare_text(next.clone());
++            assert_eq!(rope.to_string(), *value, "exact authored bytes survive edit/IME/Undo");
++            let cold = Rope::from(value.as_str());
++            assert_eq!(rope.lines_len(), cold.lines_len());
++            for row in [0, 9999, 10000, rope.lines_len() - 1] {
++                assert_eq!(rope.line_start_offset(row), cold.line_start_offset(row));
++            }
++            assert_eq!(TEXT_BYTES_BUILT.with(|count| count.get()), bytes,
++                "cold positive control and incremental UTF-8 work bound");
++            if let Some(old) = previous.take() {
++                assert_eq!(old.to_string(), *variants[generation - 1], "old viewport index is immutable");
++            }
++            previous = Some(rope);
++            cache.remember_projection(next);
++        }
++        // Identical bytes in another document must not inherit the old index.
++        let mut other = snapshot(&original); other.source.stamp.document = 10;
++        cache.begin(10);
++        TEXT_BYTES_BUILT.with(|count| count.set(0));
++        assert_eq!(cache.prepare_text(Arc::new(other)).to_string(), original);
++        assert_eq!(TEXT_BYTES_BUILT.with(|count| count.get()), original.len());
++    }
++
++    #[test]
++    fn exact_immutable_projection_reuses_layout_without_comparison() {
++        let mut cache = ProjectedCache::default();
++        let original = Arc::new(snapshot("first\nאבג e\u{301} 👩\u{200d}💻\r\nlast\n"));
++        publish(&mut cache, original.clone(), layout());
++        TEXT_COMPARE_BYTES.with(|count| count.set(0));
++        LINE_SCAN_BYTES.with(|count| count.set(0));
++        assert_eq!(publish(&mut cache, original.clone(), layout()).1, 0);
++        assert_eq!(TEXT_COMPARE_BYTES.with(|count| count.get()), 0,
++            "same immutable projection skips byte comparison");
++        assert_eq!(LINE_SCAN_BYTES.with(|count| count.get()), 0);
++        // An equal source stamp alone must not grant the immutable-object path:
++        // a different reveal could expose different projected text or fonts.
++        let mut other = snapshot(original.text());
++        other.styles.push(ProjectionStyle {
++            range: crate::input::projection::ProjectedByte(0)..crate::input::projection::ProjectedByte(5),
++            font_family: Some("serif".into()), color: None,
++            bold: true, italic: false, strikethrough: false,
++        });
++        let other = Arc::new(other);
++        cache.prepare_text(other.clone());
++        assert_eq!(cache.dirty_rows(other.as_ref(), 4, &layout()).new, 0..1);
++        assert!(TEXT_COMPARE_BYTES.with(|count| count.get()) > 0,
++            "positive control checks new projection bytes despite an identical source stamp");
++    }
++
++    #[test]
++    fn superseded_preparation_cannot_replace_another_projection_index() {
++        let mut cache = ProjectedCache::default();
++        let original = Arc::new(snapshot("head\nold\ntail\n"));
++        publish(&mut cache, original.clone(), layout());
++        // Same source stamp does not identify a reveal/presentation decision.
++        let abandoned = Arc::new(snapshot("head\npending\nextra\ntail\n"));
++        cache.prepare_text(abandoned.clone());
++        let current = Arc::new(snapshot("head\nnew\ntail\n"));
++        let rope = cache.prepare_text(current.clone());
++        assert_eq!(rope.to_string(), current.text());
++        assert_eq!(cache.text.as_ref().unwrap().to_string(), original.text(),
++            "preparation leaves the installed viewport index immutable");
++        assert_eq!(cache.dirty_rows(current.as_ref(), 4, &layout()),
++            DirtyRows { old: 1..2, new: 1..2 });
++        // A stale candidate's prepared boundaries cannot be used for this pin.
++        let other = snapshot("new head\nold\ntail\n");
++        assert_eq!(cache.dirty_rows(&other, 4, &layout()),
++            DirtyRows { old: 0..1, new: 0..1 });
++        // Installing a candidate different from the prepared one discards its
++        // index instead of pairing old text with the new mapping.
++        cache.remember_projection(abandoned.clone());
++        assert!(cache.text.is_none());
++        assert!(cache.lines.is_none(), "a mismatched adoption invalidates geometry too");
++        TEXT_BYTES_BUILT.with(|count| count.set(0));
++        assert_eq!(cache.prepare_text(abandoned.clone()).to_string(), abandoned.text());
++        assert_eq!(TEXT_BYTES_BUILT.with(|count| count.get()), abandoned.text().len(),
++            "mismatched preparation takes the honest cold path");
++    }
++
++    #[test]
++    fn indexed_metadata_boundaries_match_cold_without_scanning_unchanged_lines() {
++        use crate::input::projection::ProjectedByte;
++        let raw = format!("{}אבג e\u{301} 👩\u{200d}💻\r\nend\n", "retained row\r\n".repeat(10000));
++        let mut cache = ProjectedCache::default();
++        let old = Arc::new(snapshot(&raw));
++        publish(&mut cache, old.clone(), layout());
++        let at = raw.find('א').unwrap();
++        let mut next = snapshot(&raw);
++        // A style ending in a multibyte scalar still covers the exact same
++        // logical row as the cold byte-based oracle.
++        next.styles.push(ProjectionStyle {
++            range: ProjectedByte(at)..ProjectedByte(at + 'א'.len_utf8()),
++            font_family: Some("serif".into()), color: None,
++            bold: true, italic: false, strikethrough: false,
++        });
++        let next = Arc::new(next);
++        cache.begin(9);
++        cache.prepare_text(next.clone());
++        LINE_SCAN_BYTES.with(|count| count.set(0));
++        let indexed = cache.dirty_rows(next.as_ref(), 10003, &layout());
++        assert_eq!(indexed, DirtyRows { old: 10000..10001, new: 10000..10001 });
++        assert_eq!(LINE_SCAN_BYTES.with(|count| count.get()), 0,
++            "metadata boundary lookup must use retained byte/line indexes");
++        let cold = discover_dirty_rows(old.as_ref(), 10003, next.as_ref(), 10003,
++            None, None, None);
++        assert_eq!(indexed, cold);
++        assert!(LINE_SCAN_BYTES.with(|count| count.get()) >= raw.len(),
++            "positive control detects the former full-prefix newline scans");
++    }
++
++    #[test]
++    fn indexed_splices_match_cold_geometry_at_unicode_and_line_boundaries() {
++        // Repeated lines and empty terminal rows exercise ambiguous equal
++        // prefixes/suffixes, including insertion/deletion at EOF and CRLF.
++        for original in ["", "\n", "same\nsame\n", "éê\r\nאבג\n", "e\u{301}👩\u{200d}💻\r\n"] {
++            let boundaries: Vec<_> = original.char_indices().map(|(at, _)| at)
++                .chain(std::iter::once(original.len())).collect();
++            for (index, &start) in boundaries.iter().enumerate() {
++                for &end in &boundaries[index..] {
++                    for inserted in ["", "x", "漢\r\n", "\n"] {
++                        let mut value = original.to_string();
++                        value.replace_range(start..end, inserted);
++                        let mut cache = ProjectedCache::default();
++                        publish(&mut cache, Arc::new(snapshot(original)), layout());
++                        let (tree, _) = publish(&mut cache, Arc::new(snapshot(&value)), layout());
++                        let expected: Vec<_> = value.split('\n').map(|line|
++                            LineItem::cached_test_line(line.len(), smallvec::smallvec![0..line.len()]))
++                            .collect();
++                        assert_eq!(tree.iter().cloned().collect::<Vec<_>>(), expected,
++                            "source {original:?}, edit {start}..{end} -> {inserted:?}");
++                        let (restored, _) = publish(&mut cache, Arc::new(snapshot(original)), layout());
++                        let expected: Vec<_> = original.split('\n').map(|line|
++                            LineItem::cached_test_line(line.len(), smallvec::smallvec![0..line.len()]))
++                            .collect();
++                        assert_eq!(restored.iter().cloned().collect::<Vec<_>>(), expected,
++                            "Undo restores the original row geometry");
++                    }
++                }
++            }
++        }
++    }
++
++    #[test]
 +    fn sparse_edits_skip_real_keys_and_metrics_for_unchanged_rows() {
 +        let original: String = (0..700).map(|n| format!("row{n} e\u{301} אבג 👩\u{200d}💻\r\n")).collect();
 +        let mut cache = ProjectedCache::default();
@@ -652,9 +959,21 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
  pub(crate) struct LineItem {
      /// The byte length of the line, without the end `\n`.
      len: usize,
-@@ -452,11 +452,23 @@
+@@ -441,7 +441,7 @@
+     /// for painting. Existing Source wrapping is unchanged.
+     pub(crate) fn set_projected(
+         &mut self,
+-        projection: &dyn crate::input::projection::SourceProjection,
++        projection: std::sync::Arc<dyn crate::input::projection::SourceProjection>,
+         epoch: u64,
+         hang_room: Pixels,
+         window: &gpui::Window,
+@@ -450,13 +450,25 @@
+         cache.begin(projection.source().stamp.document);
+         let mut reshaped = 0;
          let mut trace = TraceSpan::new("set_projected", TraceIdentity::new(projection.source().stamp, epoch, true));
-         let text = Rope::from(projection.text());
+-        let text = Rope::from(projection.text());
++        let text = cache.prepare_text(projection.clone());
          trace.counts([text.len() as u64, text.lines_len() as u64, projection.styles().len() as u64, 0]);
 -        let mut items = Vec::new();
 +        let layout = super::projected_cache::LayoutKey {
@@ -668,7 +987,7 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
 +        let mut styles = None;
 +        // The shared cache driver invokes this closure only for dirty rows.
 +        // No-op publications do not even build the style cursor.
-+        let lines = cache.update_projection(projection, text.lines_len(), layout, |row, cache, dirty| {
++        let lines = cache.update_projection(projection.as_ref(), text.lines_len(), layout, |row, cache, dirty| {
 +            let styles = styles.get_or_insert_with(|| {
 +                let start = text.line_start_offset(dirty.new.start);
 +                let end = if dirty.new.end < text.lines_len() {
@@ -703,6 +1022,18 @@ diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/b
          self._initialized = true;
          reshaped
      }
+diff --git a/crates/base/src/input/editor/display_map/wrap_map.rs b/crates/base/src/input/editor/display_map/wrap_map.rs
+--- a/crates/base/src/input/editor/display_map/wrap_map.rs
++++ b/crates/base/src/input/editor/display_map/wrap_map.rs
+@@ -139,7 +139,7 @@
+
+     pub(super) fn set_projected(
+         &mut self,
+-        projection: &dyn crate::input::projection::SourceProjection,
++        projection: std::sync::Arc<dyn crate::input::projection::SourceProjection>,
+         epoch: u64,
+         hang_room: gpui::Pixels,
+         window: &gpui::Window,
 diff --git a/crates/base/src/input/projection_layout.rs b/crates/base/src/input/projection_layout.rs
 --- a/crates/base/src/input/projection_layout.rs
 +++ b/crates/base/src/input/projection_layout.rs
