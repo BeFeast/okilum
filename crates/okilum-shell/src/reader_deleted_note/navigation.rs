@@ -61,8 +61,12 @@ impl Reader {
                 match choice {
                     Leave::Cancel => {}
                     Leave::DontSave => {
+                        let had_editor = this.editing.is_some();
                         if !this.release_deleted_editor(cx) {
                             return;
+                        }
+                        if had_editor {
+                            reader_toast::transient("Draft kept in recovery. Use More → Recover notes… to save it later.", window, cx);
                         }
                         this.deleted_note = None;
                         this.continue_deleted_navigation(retry, window, cx);

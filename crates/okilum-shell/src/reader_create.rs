@@ -453,6 +453,14 @@ impl Reader {
         let folder = existing_creation_folder(&root, &create.folder);
         let templates = create.templates.clone();
         let selected_template = create.selected_template.clone();
+        if !directory && self.leaving_deleted_note(None, cx) {
+            self.ask_leaving_deleted_note(
+                Box::new(|this, window, cx| this.commit_creation(window, cx)),
+                window,
+                cx,
+            );
+            return;
+        }
         self.trace_file_operation("create", "start", &name, None, cx);
         let result = (|| -> anyhow::Result<(String, Option<String>)> {
             anyhow::ensure!(
@@ -618,6 +626,16 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    fn confirm_deleted_navigation(visual: &mut VisualTestContext) {
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        visual.run_until_parked();
+        let button = visual
+            .debug_bounds("deleted-note-dont-save")
+            .expect("leaving deleted content requires an explicit choice");
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
     fn deleted_folder_operation(cx: &mut TestAppContext, operation: &str, nested: bool) {
         use gpui_component::WindowExt;
         cx.update(|cx| {
@@ -666,11 +684,7 @@ mod tests {
         std::fs::remove_dir_all(root.join(folder)).unwrap();
         reader.update_in(visual, |r, window, cx| {
             r.refresh_source_from_disk(window, cx);
-            assert!(r
-                .link_notice
-                .as_deref()
-                .unwrap()
-                .contains("moved or deleted"));
+            assert!(r.deleted_current().is_some());
             assert_eq!(
                 r.editing
                     .as_ref()
@@ -716,11 +730,15 @@ mod tests {
                         .as_ref(),
                     "# Unsaved שלום\r\n"
                 );
+            });
+            visual.run_until_parked();
+            confirm_deleted_navigation(visual);
+            reader.update_in(visual, |r, window, cx| {
                 assert!(r
                     .link_notice
                     .as_deref()
                     .unwrap()
-                    .contains("recovery copy couldn’t be saved"));
+                    .contains("Cannot protect this draft"));
                 r.new_note(None, window, cx);
                 r.creation
                     .as_ref()
@@ -728,10 +746,11 @@ mod tests {
                     .input
                     .update(cx, |input, cx| input.set_value("Blocked", window, cx));
                 r.commit_creation(window, cx);
-                assert!(r.creation.as_ref().unwrap().error.is_some());
                 assert!(r.editing.is_some());
             });
             visual.run_until_parked();
+            confirm_deleted_navigation(visual);
+            reader.read_with(visual, |r, _| assert!(r.editing.is_some()));
             assert!(!root.join("Blocked.md").exists());
             visual.update(|window, cx| assert!(!window.notifications(cx).is_empty()));
             return;
@@ -776,6 +795,7 @@ mod tests {
             visual.simulate_keystrokes("enter");
         }
         visual.run_until_parked();
+        confirm_deleted_navigation(visual);
         let destination = if operation == "quick_open" || operation == "sidebar" {
             "start.md"
         } else {

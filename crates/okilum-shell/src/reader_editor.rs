@@ -4222,10 +4222,10 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         reader.update_in(visual, |reader, window, cx| {
             reader.refresh_source_from_disk(window, cx);
-            assert!(reader.editing.as_ref().unwrap().save_failed);
-            let message = reader.link_notice.as_ref().unwrap().to_string();
-            assert!(message.contains("moved or deleted"));
-            assert!(!message.contains("os error"));
+            assert!(
+                reader.deleted_current().is_some(),
+                "persistent deletion notice replaces the generic error"
+            );
             assert_eq!(input.read(cx).value().as_ref(), "unsaved external clean");
         });
         std::fs::remove_dir_all(directory).unwrap();
