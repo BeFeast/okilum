@@ -8,6 +8,7 @@ use gpui_component::{
 use std::io::Read;
 
 mod metadata;
+mod save;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
@@ -16,6 +17,8 @@ enum Command {
     Sidebar,
     CopyPath,
     CopyImage,
+    CopyAddress,
+    SaveAs,
     Download,
 }
 
@@ -28,6 +31,8 @@ pub(super) struct Target {
     local: Option<PathBuf>,
     relative: Option<String>,
     placeholder: bool,
+    /// Exact canonical body paired with the accepted Read render at menu open.
+    accepted_source: Option<SharedString>,
 }
 
 #[derive(Clone, PartialEq, gpui::Action)]
@@ -72,12 +77,22 @@ impl Target {
             local,
             relative,
             placeholder,
+            accepted_source: None,
         }
     }
     fn matches(&self, reader: &Reader) -> bool {
         self.root == reader.vault_root
             && self.note == reader.current_rel
             && self.generation == reader.navigation.preparation_generation
+    }
+    fn matches_accepted(&self, reader: &Reader, cx: &App) -> bool {
+        self.matches(reader)
+            && self.accepted_source.as_ref().is_none_or(|source| {
+                reader.editing.is_none()
+                    && reader.file_preview.is_none()
+                    && !reader.use_html
+                    && reader.content.read(cx).document_source().as_ref() == Some(source)
+            })
     }
     fn entries(&self) -> Vec<(&'static str, Command, bool)> {
         let available = self.url.is_some();
@@ -107,6 +122,15 @@ impl Target {
             Command::CopyImage,
             !available || self.placeholder,
         ));
+        entries.push(("Copy image address", Command::CopyAddress, !available));
+        // Source/Live Preview keep their existing menu and editing authority.
+        if self.accepted_source.is_some() {
+            entries.push((
+                "Save image as…",
+                Command::SaveAs,
+                !available || self.placeholder,
+            ));
+        }
         if self.placeholder {
             entries.push(("Download from iCloud", Command::Download, false));
         }
@@ -202,11 +226,16 @@ impl Reader {
         true
     }
 
-    fn image_menu(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+    fn image_menu(&mut self, mut target: Target, window: &mut Window, cx: &mut Context<Self>) {
         if !target.matches(self) {
             return;
         }
+        if self.editing.is_none() && self.file_preview.is_none() && !self.use_html {
+            target.accepted_source = self.content.read(cx).document_source();
+        }
+        let selection = reader_read_menu::snapshot(self, cx);
         let reader = cx.entity().downgrade();
+        let selection_reader = reader.clone();
         let popup = PopupMenu::build(window, cx, move |mut menu, _, _| {
             if let Some(notice) = target.notice() {
                 menu = menu.label(notice);
@@ -214,8 +243,14 @@ impl Reader {
             for (label, command, disabled) in target.entries() {
                 let target = target.clone();
                 let reader = reader.clone();
-                menu = menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
-                    move |_, window, cx| {
+                menu = menu.item(
+                    PopupMenuItem::element(move |_, _| {
+                        div()
+                            .debug_selector(move || format!("image-menu-{label}"))
+                            .child(label)
+                    })
+                    .disabled(disabled)
+                    .on_click(move |_, window, cx| {
                         let _ = reader.update(cx, |reader, cx| {
                             reader.image_command(
                                 &ImageCommand {
@@ -226,8 +261,12 @@ impl Reader {
                                 cx,
                             )
                         });
-                    },
-                ));
+                    }),
+                );
+            }
+            if selection.is_some() {
+                menu = menu.separator();
+                menu = reader_read_menu::selection(menu, &selection_reader, selection);
             }
             menu
         });
@@ -247,7 +286,7 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !action.target.matches(self) {
+        if !action.target.matches_accepted(self, cx) {
             return;
         }
         let target = action.target.clone();
@@ -264,6 +303,16 @@ impl Reader {
                 window,
                 cx,
             );
+            return;
+        }
+        if command == Command::CopyAddress {
+            if let Some(address) = &target.url {
+                cx.write_to_clipboard(ClipboardItem::new_string(address.clone()));
+            }
+            return;
+        }
+        if command == Command::SaveAs {
+            self.save_image_as(target, window, cx);
             return;
         }
         if command == Command::Sidebar {
@@ -525,6 +574,7 @@ mod tests {
             local: Some(path),
             relative: Some(relative.into()),
             placeholder: false,
+            accepted_source: None,
         }
     }
     fn png() -> Vec<u8> {
@@ -540,7 +590,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let local = target(&root, "attachments/Привет image.png");
-        assert_eq!(local.entries().len(), 5);
+        assert_eq!(local.entries().len(), 6);
         assert!(local.entries().iter().all(|(_, _, disabled)| !disabled));
         let remote = Target {
             url: Some("https://example.invalid/image.png".into()),
@@ -549,7 +599,7 @@ mod tests {
             ..local.clone()
         };
         let entries = remote.entries();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert_eq!(entries[0], ("Open in browser", Command::Open, false));
         assert_eq!(entries[1], ("Copy image", Command::CopyImage, false));
         let missing = Target {
@@ -558,7 +608,7 @@ mod tests {
             relative: None,
             ..local.clone()
         };
-        assert_eq!(missing.entries().len(), 5);
+        assert_eq!(missing.entries().len(), 6);
         assert!(missing.entries().iter().all(|(_, _, disabled)| *disabled));
         assert!(missing.notice().unwrap().contains("not found"));
         let placeholder = Target {
