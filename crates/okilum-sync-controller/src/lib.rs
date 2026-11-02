@@ -1,7 +1,7 @@
 //! Explicit desktop Sync operations. Importing this crate never discovers or starts a daemon.
-pub mod merge_preview;
 #[cfg(target_os = "linux")]
 pub mod lifecycle;
+pub mod merge_preview;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod daemon;

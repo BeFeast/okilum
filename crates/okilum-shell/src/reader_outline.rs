@@ -54,58 +54,56 @@ impl Reader {
             return;
         }
         let mut cache = self.draft_outline.cache.take().unwrap_or_default();
-        self.draft_outline.worker = Some(cx.spawn(async move |this, cx| {
-            loop {
-                let Ok(Some((input, stamp, source))) = this.update(cx, |this, cx| {
-                    let Some(editing) = &this.editing else {
-                        this.draft_outline.worker = None;
-                        return None;
-                    };
-                    let input = editing.input().clone();
-                    let state = input.read(cx);
-                    Some((input.clone(), state.source_stamp(), state.value()))
-                }) else {
-                    return;
-                };
-                let (snapshot, next_cache) = cx
-                    .background_executor()
-                    .spawn(async move {
-                        let snapshot = DraftOutline::with_cache(&source, &mut cache);
-                        (snapshot, cache)
-                    })
-                    .await;
-                #[cfg(test)]
-                hold_outline_publication(&snapshot.source).await;
-                cache = next_cache;
-                let Ok(done) = this.update(cx, |this, cx| {
-                    if this
-                        .editing
-                        .as_ref()
-                        .is_none_or(|editing| editing.input() != &input)
-                        || input.read(cx).source_stamp() != stamp
-                    {
-                        return false;
-                    }
-                    this.draft_outline.cache = Some(std::mem::take(&mut cache));
-                    this.draft_outline.source = snapshot.source;
-                    this.draft_outline.entries = snapshot.entries;
-                    this.draft_outline.lines = snapshot.lines;
-                    this.draft_outline.pending = false;
+        self.draft_outline.worker = Some(cx.spawn(async move |this, cx| loop {
+            let Ok(Some((input, stamp, source))) = this.update(cx, |this, cx| {
+                let Some(editing) = &this.editing else {
                     this.draft_outline.worker = None;
-                    if this.outline_list.item_count() != this.draft_outline.entries.len() {
-                        this.outline_list.reset_with_uniform_height(
-                            this.draft_outline.entries.len(),
-                            px(OUTLINE_ROW_HEIGHT),
-                        );
-                    }
-                    cx.notify();
-                    true
-                }) else {
-                    return;
+                    return None;
                 };
-                if done {
-                    return;
+                let input = editing.input().clone();
+                let state = input.read(cx);
+                Some((input.clone(), state.source_stamp(), state.value()))
+            }) else {
+                return;
+            };
+            let (snapshot, next_cache) = cx
+                .background_executor()
+                .spawn(async move {
+                    let snapshot = DraftOutline::with_cache(&source, &mut cache);
+                    (snapshot, cache)
+                })
+                .await;
+            #[cfg(test)]
+            hold_outline_publication(&snapshot.source).await;
+            cache = next_cache;
+            let Ok(done) = this.update(cx, |this, cx| {
+                if this
+                    .editing
+                    .as_ref()
+                    .is_none_or(|editing| editing.input() != &input)
+                    || input.read(cx).source_stamp() != stamp
+                {
+                    return false;
                 }
+                this.draft_outline.cache = Some(std::mem::take(&mut cache));
+                this.draft_outline.source = snapshot.source;
+                this.draft_outline.entries = snapshot.entries;
+                this.draft_outline.lines = snapshot.lines;
+                this.draft_outline.pending = false;
+                this.draft_outline.worker = None;
+                if this.outline_list.item_count() != this.draft_outline.entries.len() {
+                    this.outline_list.reset_with_uniform_height(
+                        this.draft_outline.entries.len(),
+                        px(OUTLINE_ROW_HEIGHT),
+                    );
+                }
+                cx.notify();
+                true
+            }) else {
+                return;
+            };
+            if done {
+                return;
             }
         }));
     }

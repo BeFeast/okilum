@@ -7,8 +7,8 @@ mod media;
 // but lose permission to start another stage or publish after retirement.
 mod authority {
     use std::sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     };
     #[derive(Clone)]
     pub(super) struct Selection(std::path::PathBuf);

@@ -703,21 +703,22 @@ impl Reader {
                         this.open_project_icon_dialog(project, window, cx)
                     });
                 }),
-            ).item(
-                PopupMenuItem::new("Connect / reconnect existing local T3 project…")
-                    .on_click({
-                        let reader = local_reader.clone();
-                        let project = local_project.clone();
-                        move |_, window, cx| {
-                            let _ = reader.update(cx, |this, cx| {
-                                if this.project_request != local_request
-                                    || !this.local_binding_target_current(&project) {
-                                    return;
-                                }
-                                this.open_local_project_binding(project.clone(), window, cx);
-                            });
-                        }
-                    }),
+            )
+            .item(
+                PopupMenuItem::new("Connect / reconnect existing local T3 project…").on_click({
+                    let reader = local_reader.clone();
+                    let project = local_project.clone();
+                    move |_, window, cx| {
+                        let _ = reader.update(cx, |this, cx| {
+                            if this.project_request != local_request
+                                || !this.local_binding_target_current(&project)
+                            {
+                                return;
+                            }
+                            this.open_local_project_binding(project.clone(), window, cx);
+                        });
+                    }
+                }),
             )
         });
         cx.subscribe(&popup, |this, dismissed, _: &DismissEvent, cx| {
