@@ -444,8 +444,14 @@ mod tests {
             assert_eq!(reader.visible_outline()[index].text, "Tail 🎯");
             (index, reader.draft_outline.lines[index] as u32)
         });
+        let selector = match index {
+            1 => "reader-outline-row-1",
+            2 => "reader-outline-row-2",
+            3 => "reader-outline-row-3",
+            _ => panic!("unexpected fixture heading index {index}"),
+        };
         let row = visual
-            .debug_bounds(&format!("reader-outline-row-{index}"))
+            .debug_bounds(selector)
             .expect("current draft heading row is painted");
         visual.simulate_click(row.center(), Modifiers::default());
         settle(visual);
