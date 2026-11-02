@@ -210,6 +210,11 @@ canonical file; editor recovery drafts remain available. Failed recovery writes
 still prevent navigation. Navigation also checks for deletion before a debounced
 watcher notification arrives.
 
+Read-only recovery discovery also recognizes a dirty journal after its source
+file disappears (#2427). It resolves the existing parent for the saved identity,
+leaves the journal bytes intact and never recreates the source. A returned file
+is compared with the draft before discovery reports it as unsaved.
+
 If the file returns at the same place with the same contents as the retained
 buffer, the notice and marker go away. Different contents remove the Deleted
 marker but keep a notice offering **Reload from disk** or Save As… in every mode.
