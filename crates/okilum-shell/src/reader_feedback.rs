@@ -7,6 +7,7 @@ use gpui_component::{
 };
 mod model;
 pub(crate) mod sprint;
+mod video;
 use model::{Kind, Metadata, Receipt, Report};
 
 gpui::actions!(
@@ -761,14 +762,29 @@ impl FeedbackView {
             return;
         }
         let sender = self.sender.clone();
+        let selected_video = report.video.clone();
         self._send = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { sender(report) })
+                .spawn(async move {
+                    let result = sender(report);
+                    // Validate on the worker after a failed/cancelled provider
+                    // completion. Hashing a recording must not block the UI.
+                    let selection_error = result
+                        .as_ref()
+                        .err()
+                        .and_then(|_| video::recovery_error(selected_video.as_ref()));
+                    (result, selection_error)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.send_abort = None;
                 *this.send_cancel.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let (result, selection_error) = result;
+                if result.is_err() {
+                    this.video_needs_reselect = selection_error.is_some();
+                    this.video_error = selection_error;
+                }
                 this.state = match result {
                     Ok(receipt) => SendState::Sent(receipt),
                     Err(error) => SendState::Failed(error.to_string()),
@@ -867,8 +883,8 @@ impl FeedbackView {
             Some("Attached the pasted image as the screenshot.".into())
         };
     }
-    /// Attaches a video by path. Only metadata is read here; the file is
-    /// streamed on Send. A rejected file keeps any previous video.
+    /// Captures an explicit video selection and its identity. A rejected
+    /// replacement keeps the previous selection; transport verifies it again.
     fn attach_video(&mut self, path: &Path, cx: &mut Context<Self>) {
         if self.busy() {
             return;
