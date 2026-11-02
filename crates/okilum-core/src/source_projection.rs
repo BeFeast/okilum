@@ -178,7 +178,7 @@ impl PartialEq for Snapshot {
 impl Eq for Snapshot {}
 
 /// Regions must be sorted and disjoint; the semantic classifier is out of scope.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Region {
     /// Unsupported or incomplete syntax stays exactly authored in place.
     Source(Range<usize>),

@@ -56,6 +56,8 @@ impl RevealSnapshot {
     }
 }
 
+type RevealCache = Option<(Vec<Region>, Arc<crate::source_projection::Projection>)>;
+
 #[derive(Clone)]
 pub struct RetainedPresentation {
     snapshot: Snapshot,
@@ -74,7 +76,7 @@ pub struct RetainedPresentation {
     // Shared only by remaps of this canonical classification. A fresh root gets
     // a fresh cache, so its immutable reference context cannot leak across roots.
     local_cache: Arc<Mutex<retained_cache::Cache<Classification>>>,
-    last_reveal: Arc<Mutex<Option<Arc<crate::source_projection::Projection>>>>,
+    last_reveal: Arc<Mutex<RevealCache>>,
 }
 
 #[cfg(test)]
@@ -218,7 +220,8 @@ impl RetainedPresentation {
                 .find(|r| r.block().start <= h.start && h.end <= r.block().end)?;
             Some(start.min(marker.start)..end.min(region.block().end).max(marker.end))
         };
-        let regions = self
+        let mut revealed = false;
+        let regions: Vec<_> = self
             .plan
             .regions()
             .iter()
@@ -239,6 +242,7 @@ impl RetainedPresentation {
                                     )
                             });
                             let touched = reveal.touches(&scope);
+                            revealed |= touched;
                             !touched
                         })
                         .cloned()
@@ -247,15 +251,29 @@ impl RetainedPresentation {
             })
             .collect();
         let preceding = self.last_reveal.lock().ok().and_then(|value| value.clone());
+        if let Some((previous_regions, previous)) = &preceding {
+            if previous.snapshot() == &self.snapshot && previous_regions == &regions {
+                reveal.projection = previous.clone();
+                return Ok(reveal);
+            }
+        } else if !revealed {
+            if let Ok(mut value) = self.last_reveal.lock() {
+                *value = Some((regions, reveal.projection.clone()));
+            }
+            return Ok(reveal);
+        }
         reveal.projection = Arc::new(crate::source_projection::project_reusing(
             &self.snapshot,
-            &Plan::new(&self.snapshot, regions),
+            &Plan::new(&self.snapshot, regions.clone()),
             &Active::default(),
             crate::source_projection::MAX_WORK,
-            preceding.as_deref().or(self.base.as_deref().ok()),
+            preceding
+                .as_ref()
+                .map(|(_, p)| p.as_ref())
+                .or(self.base.as_deref().ok()),
         )?);
         if let Ok(mut value) = self.last_reveal.lock() {
-            *value = Some(reveal.projection.clone());
+            *value = Some((regions, reveal.projection.clone()));
         }
         Ok(reveal)
     }
@@ -964,7 +982,7 @@ impl RetainedPresentation {
             .chain(new_edit.chars())
             .all(|c| c.is_alphanumeric() || matches!(c, ' ' | '\t'));
         let line_end = old.line_bounds(start).end;
-        let line_end = if old.byte(line_end.saturating_sub(1)) == Some(b'\n') {
+        let line_end = if line_end > line_start && old.byte(line_end - 1) == Some(b'\n') {
             line_end - 1
         } else {
             line_end
