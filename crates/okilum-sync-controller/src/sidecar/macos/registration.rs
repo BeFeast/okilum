@@ -4,9 +4,10 @@
 //! registration. No enrollment, repair/re-arm, fallback spawn or Stop is exposed.
 use super::{recovery::ManagedStatus, Status};
 use crate::sidecar::{
+    authority::launch::Phase,
     discovery::Discovered,
     store::{StateDir, Store},
-    Binding,
+    Binding, Intent,
 };
 use anyhow::{ensure, Context, Result};
 use std::time::{Duration, Instant};
@@ -74,6 +75,16 @@ impl<D: StateDir, P: RegistrationProof, A: RegistrationPort> RegistrationGuard<D
                 saved.binding() == &self.binding,
                 "recovery pending: binding changed"
             );
+            // An unclaimed generation cannot authenticate as Running. In
+            // particular, user approval may keep a dispatch pending indefinitely;
+            // do not spend each status budget waiting on a socket it cannot own.
+            if saved.intent() != Intent::Enabled
+                || saved.stop().is_some()
+                || saved.update().is_some()
+                || !matches!(saved.launch_registration(), Some(launch) if launch.phase() == Phase::Claimed)
+            {
+                return Ok(ManagedStatus::RecoveryPending);
+            }
             self.proof.verify(&self.binding, deadline)?;
             let peer = self.proof.observe(&self.binding, deadline)?;
             ensure!(Instant::now() < deadline, "registration deadline elapsed");

@@ -4,6 +4,8 @@ pub mod lifecycle;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod daemon;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod direct;
 pub mod pairing;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod private;
@@ -31,3 +33,6 @@ pub mod desktop;
 #[cfg(target_os = "linux")]
 pub mod conflicts;
 pub mod sidecar;
+
+#[cfg(target_os = "linux")]
+pub mod linux_bootstrap;

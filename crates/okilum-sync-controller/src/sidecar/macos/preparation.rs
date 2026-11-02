@@ -35,7 +35,16 @@ pub fn fresh(
     deadline: Instant,
     prepare: impl FnOnce(Uuid, Uuid) -> Result<Binding>,
 ) -> Result<Binding> {
-    ensure!(Instant::now() < deadline, "preparation deadline elapsed");
+    fresh_with_clock(state, deadline, prepare, Instant::now)
+}
+
+fn fresh_with_clock(
+    state: &Path,
+    deadline: Instant,
+    prepare: impl FnOnce(Uuid, Uuid) -> Result<Binding>,
+    mut now: impl FnMut() -> Instant,
+) -> Result<Binding> {
+    ensure!(now() < deadline, "preparation deadline elapsed");
     ensure!(
         state.is_absolute()
             && state
@@ -67,9 +76,9 @@ pub fn fresh(
     intent.sync_all()?;
     root_fd.sync_all()?;
     parent_fd.sync_all()?;
-    ensure!(Instant::now() < deadline, "preparation deadline elapsed");
+    ensure!(now() < deadline, "preparation deadline elapsed");
     let binding = prepare(installation, instance)?;
-    ensure!(Instant::now() < deadline, "preparation deadline elapsed");
+    ensure!(now() < deadline, "preparation deadline elapsed");
     let m = directory_at(state)?.metadata()?;
     ensure!(
         m.dev() == created.dev() && m.ino() == created.ino(),
@@ -96,6 +105,10 @@ pub fn fresh(
         tx.current()?.is_none(),
         "recovery pending: preparation already has authority"
     );
+    // Lock acquisition and journal reads also consume the preparation budget.
+    // Retain the intent for explicit recovery if that budget expired: publishing
+    // launch authority here would turn a timed-out attempt into a prepared one.
+    ensure!(now() < deadline, "preparation deadline elapsed");
     tx.commit(Envelope::first_with_launch(binding.clone()))?;
     Ok(binding)
 }
@@ -170,6 +183,81 @@ mod tests {
         }
         Ok(())
     }
+    #[test]
+    fn cancelled_payload_retains_original_intent_without_authority() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let state = root.path().canonicalize()?.join("cancelled");
+        let mut original = Vec::new();
+        let error = fresh(&state, soon(), |_, _| {
+            original = fs::read(state.join("preparation.json"))?;
+            anyhow::bail!("preparation cancelled")
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "preparation cancelled");
+        let intent: serde_json::Value = serde_json::from_slice(&original)?;
+        assert!(Uuid::parse_str(intent["installation"].as_str().unwrap()).is_ok());
+        assert!(Uuid::parse_str(intent["instance"].as_str().unwrap()).is_ok());
+        assert!(fresh(&state, soon(), |_, _| panic!("must not regenerate")).is_err());
+        assert_eq!(fs::read(state.join("preparation.json"))?, original);
+        let store = UnixStore::open_existing(&state)?;
+        assert!(store.begin(soon())?.current()?.is_none());
+        assert!(!state.join("sidecar.json").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn timeout_at_each_preparation_boundary_never_publishes_authority() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let root = root.path().canonicalize()?;
+        // The final boundary is after acquiring the store lock and reading its
+        // journal. Inject time rather than relying on scheduler or disk latency.
+        for expire_at in 1..=4 {
+            let state = root.join(format!("timeout-{expire_at}"));
+            let before = Instant::now();
+            let deadline = before + Duration::from_secs(60);
+            let checks = Cell::new(0);
+            let called = Cell::new(false);
+            let result = fresh_with_clock(
+                &state,
+                deadline,
+                |installation, instance| {
+                    called.set(true);
+                    Ok(binding(&state, installation, instance))
+                },
+                || {
+                    checks.set(checks.get() + 1);
+                    if checks.get() == expire_at {
+                        deadline
+                    } else {
+                        before
+                    }
+                },
+            );
+            assert!(result.unwrap_err().to_string().contains("deadline elapsed"));
+            assert_eq!(checks.get(), expire_at);
+            assert_eq!(called.get(), expire_at >= 3);
+            assert!(!state.join("sidecar.json").exists());
+            if expire_at == 1 {
+                assert!(!state.exists());
+                // A pre-intent timeout is retryable with a fresh explicit attempt.
+                fresh(&state, soon(), |a, b| Ok(binding(&state, a, b)))?;
+            } else {
+                let intent = fs::read(state.join("preparation.json"))?;
+                assert!(fresh(&state, soon(), |_, _| panic!("must not regenerate")).is_err());
+                assert_eq!(fs::read(state.join("preparation.json"))?, intent);
+                let store = UnixStore::open_existing(&state)?;
+                assert!(store.begin(soon())?.current()?.is_none());
+            }
+        }
+        // Positive control: all boundaries within budget publish Ready authority.
+        let state = root.join("within-budget");
+        let before = Instant::now();
+        fresh_with_clock(&state, soon(), |a, b| Ok(binding(&state, a, b)), || before)?;
+        let store = UnixStore::open_existing(&state)?;
+        assert!(store.begin(soon())?.current()?.is_some());
+        Ok(())
+    }
+
     #[test]
     fn changed_binding_or_replaced_root_never_publishes_launch_authority() -> Result<()> {
         let root = tempfile::tempdir()?;

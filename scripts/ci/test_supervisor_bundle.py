@@ -73,7 +73,9 @@ class TeamId(unittest.TestCase):
                 environment["OKILUM_SIGNING_KEYCHAIN"] = keychain
             script = ('set -Eeuo pipefail\n'
                       'codesign() { printf "arg:%s\\n" "$@"; }\n'
+                      'python3() { printf "python:%s\\n" "$@"; }\n'
                       f'source "{SCRIPT}"\n'
+                      'supervisor_team_id() { echo ABCDE12345; }\n'
                       'supervisor_sign "/tmp/Test App.app" "fake identity" com.example.app --timestamp\n')
             result = subprocess.run(["/bin/bash", "-c", script], env=environment,
                                     capture_output=True, text=True)

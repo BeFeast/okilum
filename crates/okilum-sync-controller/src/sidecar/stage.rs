@@ -11,7 +11,7 @@ use anyhow::{ensure, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, Write},
     path::{Component, Path, PathBuf},
 };
 use uuid::Uuid;
@@ -102,12 +102,23 @@ pub fn stage_supervisor(payload: &Path, root: &Path, version: &str) -> Result<St
     std::fs::create_dir_all(&directory)?;
     let destination = directory.join(name);
 
-    // Hash what is actually copied, from the one open source file.
+    // Pin the source before copying. Hashing only the copied stream would accept
+    // a partial image if the package were truncated or changed during staging.
     let mut source = File::open(payload)?;
     ensure!(
         source.metadata()?.is_file(),
         "the packaged supervisor is not a file"
     );
+    let expected_digest = digest_of(&mut source)?;
+    source.rewind()?;
+    stage_source(&mut source, &destination, &expected_digest)
+}
+
+/// Publish only a complete copy matching the source snapshot, from the same open file.
+fn stage_source(source: &mut File, destination: &Path, expected_digest: &str) -> Result<Staged> {
+    let directory = destination
+        .parent()
+        .context("the staged supervisor has no folder")?;
     let temporary = directory.join(format!(".stage-{}.tmp", Uuid::new_v4()));
     let result = (|| -> Result<String> {
         let mut copy = OpenOptions::new()
@@ -126,24 +137,28 @@ pub fn stage_supervisor(payload: &Path, root: &Path, version: &str) -> Result<St
         }
         copy.sync_all()?;
         drop(copy);
+        let digest = hex(&hasher.finalize());
+        ensure!(
+            digest == expected_digest,
+            "the packaged supervisor changed during staging"
+        );
         // Keep the source's permissions (the executable bit) before locking it down.
         std::fs::set_permissions(&temporary, source.metadata()?.permissions())?;
-        let digest = hex(&hasher.finalize());
         // Publish without replacing: a hard link fails if the name exists, atomically,
         // so two racing stagings of different content cannot overwrite each other.
-        match std::fs::hard_link(&temporary, &destination) {
+        match std::fs::hard_link(&temporary, destination) {
             Ok(()) => {
                 // Drop the temporary name before locking the file down (a read-only file
                 // cannot be removed on Windows), then make the staged one read-only.
                 std::fs::remove_file(&temporary)?;
-                let mut permissions = std::fs::metadata(&destination)?.permissions();
+                let mut permissions = std::fs::metadata(destination)?.permissions();
                 permissions.set_readonly(true);
-                std::fs::set_permissions(&destination, permissions)?;
+                std::fs::set_permissions(destination, permissions)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Already staged: it must be exactly this content, and is left alone (it
                 // may be the running supervisor).
-                let existing = digest_of(&mut File::open(&destination)?)?;
+                let existing = digest_of(&mut File::open(destination)?)?;
                 ensure!(
                     existing == digest,
                     "a different supervisor is already staged under this version"
@@ -152,14 +167,14 @@ pub fn stage_supervisor(payload: &Path, root: &Path, version: &str) -> Result<St
             Err(error) => return Err(error.into()),
         }
         ensure!(
-            digest_of(&mut File::open(&destination)?)? == digest,
+            digest_of(&mut File::open(destination)?)? == digest,
             "the staged supervisor does not match its source"
         );
         Ok(digest)
     })();
     let _ = std::fs::remove_file(&temporary);
     Ok(Staged {
-        path: destination,
+        path: destination.to_path_buf(),
         digest: result?,
     })
 }
