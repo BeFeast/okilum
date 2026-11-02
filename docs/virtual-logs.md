@@ -109,33 +109,45 @@ requires review before retrying and does not claim rollback. Save never rescans 
 replaces the retained source-locked result. Closing before Save does not persist
 unsubmitted form edits; invalid typed fields remain in the open form.
 
-**Follow additions + appends** is an explicit opt-in before Start. The worker keeps
-existing uncompressed LogTail sessions built from the selected handle/snapshot,
-not a pathname reopened to enable Follow. Notifications trigger bounded discovery
-of new matching identities and append reads; retained identities (including
-hard-link/renamed aliases) are excluded from discovery. Criteria and relative time
-bounds freeze at Start. New rows update the same source-locked LogView with stable
-source slots, record selection and marks; parser/source changes stay locked.
-A single large append drains through bounded reads without requiring another
-notification; catch-up does not repeat membership enumeration. No periodic
-membership scan or automatic Start is added.
+**Follow** is an explicit opt-in before Start. The worker keeps uncompressed
+LogTail sessions built from the selected handle/snapshot, not a pathname reopened
+to enable Follow. Notifications trigger bounded discovery and append reads;
+retained physical identities (including hard-link/renamed aliases) are excluded
+from discovery. Criteria and relative time bounds freeze at Start. New rows update
+the same source-locked LogView with stable source slots, record selection, marks
+and filter identity. A single large append drains through bounded reads without
+another notification; catch-up does not repeat membership enumeration. Snapshot
+and Watch changes modes remain separate. No automatic Start or periodic membership
+scan is added.
 
-This first Follow slice deliberately **pauses** on removal, rotation/truncation,
-record-window/reindex changes, incomplete selection/watch coverage, Stop or bounds.
-The last successful snapshot, selection and marks remain available. Watch directory
-coverage is refreshed before discovery and queued events drained afterwards. Stop
-wakes idle waits and suppresses late batches; an active bounded read/selection
-finishes before cleanup. No gap-free rotation claim is made. Existing compressed
-sources stay frozen; a changed compressed source or newly discovered compressed
-rotation requires explicit Rescan rather than guessing whether records are new.
-Retained session limits are 128 identities, 16 MiB per source and 64 MiB total;
-shared process snapshot leases still apply. Snapshot/Watch changes modes remain.
+Observed uncompressed rotation/truncation keeps the earlier logical segment in
+its existing slot, labelled **before rotation** / **before truncation**. New
+content receives a new slot only after satisfying the real frozen query/time
+criteria, rather than inheriting membership from the old file. Removed paths keep
+the open identity and history while waiting for a replacement. Retired rotation
+descriptors also read observed late writes to the old file without following its
+former name; truncated epochs stay frozen because their inode is already live
+again. Old descriptor leases prevent identity reuse from hiding a new source.
 
-Automatic rotation-segment continuation remains open. Full Follow must consume
-reset segments, preserve their history/marks, and avoid duplicating moved or
-compressed copies before it can claim those boundaries. #1382
-remains open for rotation continuation and native acceptance; a usable desktop
-snapshot flow does not establish them.
+A same-family archive whose **entire decoded bytes** equal an observed historical
+segment is explicitly reported as coalesced, including compressed copies. The
+fingerprint is only an accelerator; exact byte equality is required. No prefix or
+fuzzy content deduplication is used. Unknown compressed archives and changed frozen
+archives require Rescan. Stable symlink appends work; retargeted symlinks,
+replacements outside the source root, already tracked/cyclic replacement identities,
+changed record windows/parsers, incomplete coverage and resource bounds pause with
+the last successful snapshot and marks retained. No gap-free continuity claim is
+made: unobserved writes, copy/truncate races and lost filesystem events remain
+possible. Lost coverage never becomes silent success or an automatic retry.
+
+Watch directory coverage is refreshed before discovery and queued events drained
+afterwards. Stop wakes idle waits; all queued/stale batches are discarded until a
+terminal receipt closes the generation. A new Start also fences unpainted batches.
+An in-flight bounded read/selection finishes before cleanup. Retained session limits
+are 128 identities/segments, 16 MiB per source and 64 MiB total observed bytes;
+shared process snapshot leases still apply. Limits pause explicitly rather than
+evicting marked history. #1382 native watcher/rotation acceptance and measured idle
+CPU remain open; synthetic/source evidence does not establish them.
 
 ## Verification boundary
 

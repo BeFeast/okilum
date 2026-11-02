@@ -290,12 +290,24 @@ impl SelectionPlan {
         {
             return Reason::SizeLimit;
         }
-        let window = file.window();
+        let reason = self.snapshot_reason(&file.snapshot());
+        if reason != Reason::Matched {
+            return reason;
+        }
+        result.files.push(file);
+        Reason::Matched
+    }
+    /// Evaluate existing observed bytes without reopening their pathname.
+    pub fn snapshot_reason(&self, snapshot: &super::LogSnapshot) -> Reason {
+        if snapshot.bytes().len() as u64 > MAX_FILE_BYTES {
+            return Reason::SizeLimit;
+        }
+        let window = snapshot.window();
         if window.tail || window.oversized {
             return Reason::IncompleteWindow;
         }
         if let Some((start, end)) = self.range {
-            let mut timestamps = file
+            let mut timestamps = snapshot
                 .index()
                 .entries()
                 .iter()
@@ -311,13 +323,22 @@ impl SelectionPlan {
             }
         }
         if let Some(query) = &self.query {
-            if !file.index().entries().iter().enumerate().any(|(i, entry)| {
-                query.matches_indexed_line(entry, file.raw(i).unwrap_or_default(), file.index())
-            }) {
+            if !snapshot
+                .index()
+                .entries()
+                .iter()
+                .enumerate()
+                .any(|(i, entry)| {
+                    query.matches_indexed_line(
+                        entry,
+                        snapshot.raw(i).unwrap_or_default(),
+                        snapshot.index(),
+                    )
+                })
+            {
                 return Reason::NoMatchingRecord;
             }
         }
-        result.files.push(file);
         Reason::Matched
     }
 }
@@ -328,7 +349,8 @@ fn finish(mut result: Selection) -> Selection {
     result
 }
 
-fn rotation_matches(path: &Path, base: &str) -> bool {
+/// Whether a path belongs to the explicitly named rotation family.
+pub fn rotation_matches(path: &Path, base: &str) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };

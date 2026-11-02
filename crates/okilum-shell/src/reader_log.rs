@@ -450,6 +450,7 @@ impl SourceData {
 
 /// An immutable revision from an externally owned virtual-source session.
 struct HeldSource {
+    label: Option<&'static str>,
     path: PathBuf,
     snapshot: Arc<LogSnapshot>,
 }
@@ -969,10 +970,25 @@ impl LogView {
     }
 
     fn source_name(&self, source: usize) -> String {
-        self.source(source)
+        let name = self
+            .source(source)
             .and_then(|data| data.path().file_name())
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let held = match source {
+            0 => match &self.state {
+                State::Held(source) => Some(source),
+                _ => None,
+            },
+            n => self.extra.get(n - 1).and_then(|extra| match &extra.data {
+                SourceData::Held(source) => Some(source),
+                _ => None,
+            }),
+        };
+        match held.and_then(|source| source.label) {
+            Some(label) => format!("{name} ({label})"),
+            None => name,
+        }
     }
 
     /// Rows of the view before any filter: every record of the shown sources.

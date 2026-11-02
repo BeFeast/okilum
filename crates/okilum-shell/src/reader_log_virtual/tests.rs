@@ -639,6 +639,7 @@ fn membership_follow_keeps_view_record_selection_marks_and_rejects_stale_or_stop
                 sources: update.sources.clone(),
                 candidates: update.candidates.clone(),
                 more: update.more,
+                notice: update.notice.clone(),
             }),
             cx,
         );
@@ -670,5 +671,93 @@ fn membership_follow_keeps_view_record_selection_marks_and_rejects_stale_or_stop
             "new Start fences previous unpainted batches"
         );
         panel.stop(cx);
+    });
+}
+
+#[gpui::test]
+fn observed_rotation_keeps_old_record_marks_and_labels_history_without_replacing_the_view(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    cx.update(crate::test_init);
+    let (_dir, vault, path) = fixture();
+    let definition = model::load(&vault, &path).unwrap().definition;
+    let plan = definition.plan(&vault, &path, 0).unwrap();
+    let selection = plan.select(|_, _| {});
+    let mut session = follow::Session::new(&selection).unwrap();
+    let mut panel = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut panel = Panel::new(vault.clone(), window, cx);
+            panel.configure(model::load(&vault, &path).unwrap(), window, cx);
+            panel.following = true;
+            panel.generation = 1;
+            panel.receive(
+                1,
+                worker::Frame::Ready {
+                    selection,
+                    elapsed: Duration::ZERO,
+                    watching: true,
+                },
+                cx,
+            );
+            panel
+        });
+        panel = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1400.), px(900.)));
+    visual.run_until_parked();
+    let panel = panel.unwrap();
+    let id = panel.update(visual, |panel, cx| {
+        let view = panel.view.as_ref().unwrap();
+        let id = view.entity_id();
+        view.update(cx, |view, _| {
+            view.selected = view.id_of(0, 0);
+            view.anchor = view.selected;
+            view.marks.insert((0, 0));
+        });
+        id
+    });
+    std::fs::rename(vault.join("logs/a.log"), vault.join("logs/a.log.1")).unwrap();
+    std::fs::write(vault.join("logs/a.log"), "replacement\n").unwrap();
+    let update = session
+        .refresh(
+            &plan,
+            &[okilum_core::log::virtual_log::watcher::Change::Changed(
+                vec![vault.join("logs/a.log")],
+            )],
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+    panel.update(visual, |panel, cx| {
+        panel.receive(1, worker::Frame::Updated(update), cx)
+    });
+    visual.run_until_parked();
+    panel.read_with(visual, |panel, cx| {
+        let entity = panel.view.as_ref().unwrap();
+        assert_eq!(entity.entity_id(), id);
+        let view = entity.read(cx);
+        assert_eq!(view.total(), 3);
+        assert_eq!(view.locate(view.selected.unwrap()), Some((0, 0)));
+        assert_eq!(view.locate(view.anchor.unwrap()), Some((0, 0)));
+        assert!(view.marks.contains(&(0, 0)) && view.source_locked);
+        assert_eq!(view.source(0).unwrap().raw(0).unwrap(), b"first");
+        assert_eq!(view.source(2).unwrap().raw(0).unwrap(), b"replacement");
+        assert!(view.source_name(0).contains("before rotation"));
+        assert!(panel.message.contains("unobserved gaps"));
+    });
+    panel.update(visual, |panel, cx| {
+        panel.receive(
+            1,
+            worker::Frame::Failed("watch coverage lost; snapshot retained".into()),
+            cx,
+        )
+    });
+    visual.run_until_parked();
+    panel.read_with(visual, |panel, cx| {
+        assert!(panel.error && !panel.active);
+        assert_eq!(panel.view.as_ref().unwrap().entity_id(), id);
+        assert_eq!(panel.view.as_ref().unwrap().read(cx).total(), 3);
     });
 }
