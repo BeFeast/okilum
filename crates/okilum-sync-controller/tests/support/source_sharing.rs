@@ -45,10 +45,10 @@ impl Pair {
         let peer = approved.peers[0].id;
         // Fixture-only loopback routing replaces LAN discovery, never folder enrollment.
         source.api.add_device(
-            &json!({"deviceID":target.id,"addresses":[format!("tcp://{}",target.listen)]}),
+            &json!({"deviceID":target.id,"name":"Target fixture","addresses":[format!("tcp://{}",target.listen)]}),
         )?;
         target.api.add_device(
-            &json!({"deviceID":source.id,"addresses":[format!("tcp://{}",source.listen)]}),
+            &json!({"deviceID":source.id,"name":"Source fixture","addresses":[format!("tcp://{}",source.listen)]}),
         )?;
         Ok(Self {
             _root: root,

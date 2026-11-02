@@ -48,9 +48,7 @@ impl Controller {
                 "operational state must be outside the vault"
             );
         }
-        use std::os::unix::fs::MetadataExt;
-        let metadata = fs::metadata(&path)?;
-        let identity = (metadata.dev(), metadata.ino());
+        let identity = root.identity()?;
         let mut source = {
             let mut db = self.shared.db.lock().unwrap();
             if let Some(saved) = db.sources.iter().find(|s| s.path == path) {
