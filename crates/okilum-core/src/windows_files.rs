@@ -839,7 +839,8 @@ pub fn checked_identity(path: &Path) -> Result<(u64, u64)> {
     let info = if std::fs::symlink_metadata(&child)?.is_dir() {
         Directory::open(&child)?.information()?
     } else {
-        parent.read(name)?.2
+        // Identity does not need the file's bytes (images may be large).
+        open_regular(&child)?.1
     };
     let (volume, high, low) = identity(&info);
     Ok((u64::from(volume), u64::from(high) << 32 | u64::from(low)))

@@ -6,6 +6,9 @@ use rustix::fs::{open, openat, Mode, OFlags};
 use std::fs::File;
 use std::path::{Component, Path};
 
+mod copy;
+pub use copy::PreparedCopy;
+
 /// Create an empty Markdown note exclusively in an existing real folder.
 /// Walk relative directories through descriptors: symlink substitution cannot
 /// redirect creation, and O_EXCL rejects even dangling destination symlinks.
