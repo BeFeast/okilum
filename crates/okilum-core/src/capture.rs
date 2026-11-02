@@ -4,6 +4,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 
+#[path = "capture_attachments.rs"]
+pub mod attachments;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Receipt {
     pub operation_id: String,
@@ -196,6 +199,9 @@ pub fn recover(root: &Path, records: &Path) -> Result<Vec<Capture>> {
             name == format!("{id}.intent.json") || name == format!("{id}.draft.json"),
             "Capture record identity mismatch"
         );
+        if attachments::owns_operation(&root, records, id)? {
+            continue;
+        }
         if let Some(receipt) =
             read_optional::<Receipt>(&records.join(format!("{id}.receipt.json")))?
         {
@@ -223,6 +229,8 @@ pub struct ComposerDraft {
     pub attempt: Option<Capture>,
     #[serde(default)]
     pub copy_origin: Option<CopyPreview>,
+    #[serde(default)]
+    pub attachment_attempt: Option<String>,
 }
 
 impl Default for ComposerDraft {
@@ -233,6 +241,7 @@ impl Default for ComposerDraft {
             folder: None,
             attempt: None,
             copy_origin: None,
+            attachment_attempt: None,
         }
     }
 }
@@ -241,6 +250,10 @@ impl ComposerDraft {
     /// Checkpoint first, including copy provenance. Every retry after restart
     /// revalidates the reviewed source before any new canonical publication.
     pub fn publish(&self, root: &Path, drafts: &Path, records: &Path) -> Result<Receipt> {
+        anyhow::ensure!(
+            self.attachment_attempt.is_none(),
+            "This capture has pending attachments; use its attachment publisher"
+        );
         if let Some(origin) = &self.copy_origin {
             anyhow::ensure!(
                 root.canonicalize()? == origin.root,
@@ -265,6 +278,10 @@ impl ComposerDraft {
     }
 
     pub fn prepare_save(&mut self) -> Result<()> {
+        anyhow::ensure!(
+            self.attachment_attempt.is_none(),
+            "This capture has pending attachments; retry its attachment publisher"
+        );
         if let Some(attempt) = &self.attempt {
             anyhow::ensure!(
                 attempt.text() == self.text && attempt.path().parent() == self.folder.as_deref(),
@@ -284,6 +301,14 @@ impl ComposerDraft {
             uuid::Uuid::parse_str(&self.id)?.to_string() == self.id,
             "Invalid composer identity"
         );
+        if let Some(operation) = &self.attachment_attempt {
+            anyhow::ensure!(
+                uuid::Uuid::parse_str(operation)?.to_string() == *operation
+                    && self.attempt.is_none()
+                    && self.copy_origin.is_none(),
+                "Invalid attachment capture operation"
+            );
+        }
         if let Some(attempt) = &self.attempt {
             attempt.validate()?;
             anyhow::ensure!(
@@ -306,6 +331,14 @@ impl ComposerDraft {
                 prior.root == record.root && prior.draft.id == self.id,
                 "Composer draft belongs to another vault"
             );
+            if let Some(operation) = &prior.draft.attachment_attempt {
+                anyhow::ensure!(
+                    self.attachment_attempt.as_ref() == Some(operation)
+                        && self.text == prior.draft.text
+                        && self.folder == prior.draft.folder,
+                    "Pending attachment text, folder and operation are immutable"
+                );
+            }
             if let Some(attempt) = prior.draft.attempt {
                 anyhow::ensure!(
                     self.copy_origin == prior.draft.copy_origin,
@@ -355,12 +388,15 @@ pub fn recover_composers(root: &Path, records: &Path) -> Result<Vec<ComposerDraf
             record.root == canonical,
             "Composer recovery directory belongs to another vault"
         );
-        let draft = record.draft;
+        let mut draft = record.draft;
         anyhow::ensure!(
             uuid::Uuid::parse_str(&draft.id)?.to_string() == draft.id
                 && name == format!("{}.composer.json", draft.id),
             "Composer record identity mismatch"
         );
+        if attachments::reconcile_recovered(root, records, &mut draft)? {
+            continue;
+        }
         if let Some(attempt) = &draft.attempt {
             attempt.validate()?;
             anyhow::ensure!(
@@ -378,7 +414,7 @@ pub fn recover_composers(root: &Path, records: &Path) -> Result<Vec<ComposerDraf
                 continue;
             }
         }
-        if !draft.text.is_empty() || draft.attempt.is_some() {
+        if !draft.text.is_empty() || draft.attempt.is_some() || draft.attachment_attempt.is_some() {
             drafts.push(draft);
         }
     }
@@ -388,6 +424,7 @@ pub fn recover_composers(root: &Path, records: &Path) -> Result<Vec<ComposerDraf
         folder: capture.path().parent().map(Path::to_path_buf),
         attempt: Some(capture),
         copy_origin: None,
+        attachment_attempt: None,
     }));
     drafts.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(drafts)
@@ -655,6 +692,10 @@ fn persist_equal<T: Serialize + serde::de::DeserializeOwned + PartialEq>(
 
 /// Descriptor-relative reads refuse symlinks and special files during recovery.
 fn read_destination(root: &Path, relative: &Path) -> Result<Option<Vec<u8>>> {
+    read_destination_bounded(root, relative, usize::MAX - 1)
+}
+
+fn read_destination_bounded(root: &Path, relative: &Path, max: usize) -> Result<Option<Vec<u8>>> {
     #[cfg(unix)]
     {
         use rustix::fs::{open, openat, Mode, OFlags};
@@ -692,7 +733,13 @@ fn read_destination(root: &Path, relative: &Path) -> Result<Option<Vec<u8>>> {
             "Capture destination is not a regular file"
         );
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
+        (&mut file)
+            .take(max.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)?;
+        anyhow::ensure!(
+            bytes.len() <= max,
+            "Capture destination exceeds recovery bounds"
+        );
         file.sync_all()?;
         std::fs::File::from(folder).sync_all()?;
         Ok(Some(bytes))
@@ -703,19 +750,28 @@ fn read_destination(root: &Path, relative: &Path) -> Result<Option<Vec<u8>>> {
         let folder = crate::windows_files::Directory::open(
             &root.join(relative.parent().context("Missing capture folder")?),
         )?;
-        match folder.read(relative.file_name().context("Missing capture filename")?) {
-            Ok((file, bytes, _)) => {
-                file.sync_all()?;
-                Ok(Some(bytes))
-            }
-            Err(e)
-                if e.downcast_ref::<std::io::Error>()
-                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                Ok(None)
-            }
-            Err(e) => Err(e),
-        }
+        use std::io::Read;
+        let mut file =
+            match folder.open_file(relative.file_name().context("Missing capture filename")?) {
+                Ok(file) => file,
+                Err(e)
+                    if e.downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+                {
+                    return Ok(None)
+                }
+                Err(e) => return Err(e),
+            };
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(max.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)?;
+        anyhow::ensure!(
+            bytes.len() <= max,
+            "Capture destination exceeds recovery bounds"
+        );
+        file.sync_all()?;
+        Ok(Some(bytes))
     }
 }
 
