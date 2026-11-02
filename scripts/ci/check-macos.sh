@@ -189,3 +189,6 @@ run_tests okilum-sync-controller --lib sidecar::macos::preparation::
 # #2347: bounded folder watches and stale shallow-listing publication guards.
 run_tests okilum-shell --bins reader_files::single_folder_watch::tests::
 run_tests okilum-shell --bins reader_loading::quick_view_tests::quick_folder_
+
+# #1986: retained deleted/returned notes and navigation choices on native macOS.
+run_tests okilum-shell --bins reader_deleted_note::tests::

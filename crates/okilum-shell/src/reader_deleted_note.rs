@@ -5,14 +5,16 @@
 //! source, or the editor's buffer. Okilum says so without a modal: a
 //! persistent notice over the note offers Restore (write it back at its own
 //! place) and Save as…, and the header strikes the title through. Leaving it
-//! in Read asks first, because nothing could bring the contents back; the
-//! editor keeps its buffer as a recovery draft instead.
+//! asks first in Read, Source and Live Preview. Recovery drafts remain a
+//! fallback, not a substitute for the choice to save, discard or stay.
 //!
 //! When the file returns at the same place (a branch switch back), the notice
 //! goes away. If it returns with different contents, the window keeps showing
 //! what it had and offers to reload the version on disk; it never silently
 //! replaces the only copy of the old contents. In the editor the existing
 //! conflict view already offers Reload / Keep my version for that case.
+mod navigation;
+
 use super::*;
 use gpui_component::{notification::Notification, WindowExt};
 
@@ -124,6 +126,22 @@ fn save_icon() -> Icon {
     Icon::default().path(SharedString::from(okilum_shell::lucide::asset_path("save")))
 }
 
+/// Reuse the guarded, native create-only writer: complete synced bytes, real
+/// directories and no destination replacement, including a raced symlink.
+fn save_new_copy(path: &Path, contents: &str) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Missing destination folder"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Missing destination filename"))?;
+    okilum_core::note_files::create_attachment_with_source(
+        parent,
+        Path::new(name),
+        contents.as_bytes(),
+    )
+}
+
 impl Reader {
     /// The deleted-note state for the note on screen, if any.
     pub(super) fn deleted_current(&self) -> Option<&DeletedNote> {
@@ -160,21 +178,26 @@ impl Reader {
             return false;
         }
         let path = self.vault_root.join(&self.current_rel);
-        let on_disk = match sources.get(&self.current_rel) {
-            Some(raw) => Some(raw.clone()),
-            None => match std::fs::symlink_metadata(&path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                // Unreadable is not deleted; the existing notices apply.
-                Err(_) => return false,
-                // Present and nothing to compare with: no read on this thread.
-                Ok(_) if self.deleted_note.is_none() => return false,
-                Ok(_) => match std::fs::read_to_string(&path) {
+        let on_disk = match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            // An unreadable or redirected return cannot authorize replacing
+            // the retained buffer or dropping its navigation guard.
+            Err(_) => return self.deleted_current().is_some(),
+            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+                return self.deleted_current().is_some();
+            }
+            Ok(_) => match sources.get(&self.current_rel) {
+                Some(raw) => Some(raw.clone()),
+                None if self.deleted_note.is_none() => return false,
+                None => match std::fs::read_to_string(&path) {
                     Ok(text) => Some(text),
-                    Err(_) => return false,
+                    Err(_) => return true,
                 },
             },
         };
         let editing = self.editing.is_some();
+        let retained = self.source_text(cx);
+        let mut returned = false;
         let held = match (on_disk, self.deleted_note.as_mut()) {
             (None, Some(deleted)) => {
                 deleted.disk = Disk::Missing;
@@ -195,16 +218,10 @@ impl Reader {
                 });
                 true
             }
-            (Some(_), Some(_)) if editing => {
-                // The editor's own disk refresh decided: the same text clears,
-                // a different one is a conflict with Reload / Keep my version.
-                self.deleted_note = None;
-                self.source_file_returned(cx);
-                false
-            }
             (Some(text), Some(deleted)) => {
-                if text == deleted.contents {
+                if text == retained.as_deref().unwrap_or(&deleted.contents) {
                     self.deleted_note = None;
+                    returned = true;
                     false
                 } else {
                     deleted.disk = Disk::Different;
@@ -213,8 +230,16 @@ impl Reader {
             }
             (Some(_), None) => false,
         };
+        if returned && editing {
+            self.source_file_returned(cx);
+        }
         if held && editing {
             self.clear_moved_or_deleted_notice();
+        }
+        if held {
+            // A previously prepared refresh must not replace the retained copy.
+            self.navigation.reconciliation_generation =
+                self.navigation.reconciliation_generation.wrapping_add(1);
         }
         cx.notify();
         held
@@ -312,7 +337,7 @@ impl Reader {
                                 )
                                 .into_any_element()
                         })
-                        .placement(Anchor::BottomRight)
+                        .placement(Anchor::TopRight)
                         .py_2()
                         .autohide(false),
                     cx,
@@ -338,30 +363,32 @@ impl Reader {
         }
         let rel = self.current_rel.clone();
         let path = self.vault_root.join(&rel);
-        let result = (|| -> std::io::Result<()> {
-            use std::io::Write as _;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
+        let result = (|| -> anyhow::Result<()> {
+            if let Some(parent) = Path::new(&rel)
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+            {
+                okilum_core::note_files::create_folders(&self.vault_root, parent, false)?;
             }
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)?;
-            file.write_all(contents.as_bytes())?;
-            file.sync_all()
+            okilum_core::note_files::create_attachment_with_source(
+                &self.vault_root,
+                Path::new(&rel),
+                contents.as_bytes(),
+            )
         })();
         match result {
             Ok(()) => {
-                self.deleted_note = None;
                 if self.editing.is_some() && !self.source_restored(window, cx) {
-                    // The editor's folder handle is stale (the folder was
-                    // recreated): reopen the restored note.
-                    self.editing = None;
-                    self.prepare_document_at_place(&rel, None, window, cx);
+                    // A recreated folder or a racing writer must not cause us
+                    // to drop the retained editor and open unrelated bytes.
+                    self.track_deleted_note(&Default::default(), cx);
+                    reader_toast::error("The copy was restored, but the editor could not reconnect. Your buffer is still open; use Save As… to keep another copy.", window, cx);
+                    return;
                 }
+                self.deleted_note = None;
                 reader_toast::transient("Note restored", window, cx);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(_) if std::fs::symlink_metadata(&path).is_ok() => {
                 reader_toast::error(
                     "A file is already back at this place. Nothing was overwritten.",
                     window,
@@ -391,6 +418,10 @@ impl Reader {
     /// The file came back different: show the version on disk.
     pub(super) fn reload_returned_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.deleted_current().map(|deleted| deleted.disk) != Some(Disk::Different) {
+            return;
+        }
+        if self.editing.is_some() {
+            self.resolve_source(true, window, cx);
             return;
         }
         let path = self.vault_root.join(&self.current_rel);
@@ -434,6 +465,7 @@ impl Reader {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Note.md".into());
+        let generation = self.navigation.preparation_generation;
         let picker = cx.prompt_for_new_path(&directory, Some(&name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut path))) = picker.await else {
@@ -443,16 +475,27 @@ impl Reader {
                 path.set_extension("md");
             }
             let _ = this.update_in_own_window(cx, |this, window, cx| {
-                let written = (|| -> std::io::Result<()> {
-                    use std::io::Write as _;
-                    let mut file = std::fs::File::create(&path)?;
-                    file.write_all(contents.as_bytes())?;
-                    file.sync_all()
-                })();
+                // A picker can outlive the document or edits made behind it.
+                // Never mark newer contents saved or replay stale navigation.
+                if this.vault_root != root
+                    || this.current_rel != rel
+                    || this.navigation.preparation_generation != generation
+                {
+                    return;
+                }
+                if this.deleted_contents(cx).as_deref() != Some(contents.as_str()) {
+                    reader_toast::error(
+                        "The note changed while Save As was open. Nothing was saved. Use Save As again to keep the latest contents.",
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                let written = save_new_copy(&path, &contents);
                 if let Err(error) = written {
                     eprintln!("Could not save the deleted note: {error:#}");
                     reader_toast::error(
-                        "The note couldn’t be saved there. Choose another place.",
+                        "The note couldn’t be saved there. Choose a new filename; existing files are never overwritten.",
                         window,
                         cx,
                     );
@@ -464,6 +507,8 @@ impl Reader {
                     // Its contents are saved: the editor of the deleted file
                     // has nothing left to protect.
                     this.source_saved_elsewhere(cx);
+                    this.remember_source_mode();
+                    this.editing = None;
                 }
                 let inside = root.canonicalize().ok().and_then(|root| {
                     let parent = path.parent()?.canonicalize().ok()?;
@@ -488,69 +533,14 @@ impl Reader {
                     .unwrap_or_default();
                 reader_toast::transient(format!("Saved as «{label}»"), window, cx);
                 match then {
-                    Some(then) => then(this, window, cx),
+                    Some(then) => this.continue_deleted_navigation(then, window, cx),
                     None => {
                         if let Some(saved) = inside.filter(|_| same && this.vault_root == root) {
-                            this.open_note(&saved, None, window, cx);
+                            this.continue_deleted_navigation(Box::new(move |this, window, cx| {
+                                this.open_note(&saved, None, window, cx);
+                            }), window, cx);
                         }
                     }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Navigation away from the note on screen (`target`, or another vault
-    /// with `None`). True while the note is deleted and shown in Read: the
-    /// caller stops and hands its navigation to `ask_leaving_deleted_note`.
-    /// The editor does not ask: leaving keeps its buffer as a durable draft
-    /// (More → Recover notes), and navigation must not depend on saving a
-    /// deleted path.
-    pub(super) fn leaving_deleted_note(&mut self, target: Option<&str>) -> bool {
-        if self.deleted_note.is_some() && self.deleted_current().is_none() {
-            self.deleted_note = None;
-        }
-        self.deleted_note.is_some()
-            && self.editing.is_none()
-            && target != Some(self.current_rel.as_str())
-    }
-
-    /// Ask before a deleted note's contents are left behind; `retry` runs the
-    /// navigation once the person has decided to save them or not.
-    pub(super) fn ask_leaving_deleted_note(
-        &mut self,
-        retry: Continue,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.deleted_note_asking {
-            return;
-        }
-        self.deleted_note_asking = true;
-        let disk = self
-            .deleted_current()
-            .map_or(Disk::Missing, |deleted| deleted.disk);
-        let answer = ask_leave(window, cx, self.selected_title(), disk);
-        let root = self.vault_root.clone();
-        let rel = self.current_rel.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let choice = answer.recv().await.unwrap_or(Leave::Cancel);
-            let _ = this.update_in_own_window(cx, |this, window, cx| {
-                this.deleted_note_asking = false;
-                let current = this.vault_root == root && this.current_rel == rel;
-                match choice {
-                    Leave::Cancel => {}
-                    Leave::DontSave => {
-                        if current {
-                            this.deleted_note = None;
-                        }
-                        retry(this, window, cx);
-                    }
-                    Leave::SaveAs if current && this.deleted_note.is_some() => {
-                        this.save_deleted_note_as(Some(retry), window, cx);
-                    }
-                    Leave::SaveAs => retry(this, window, cx),
                 }
                 cx.notify();
             });
@@ -593,6 +583,15 @@ mod tests {
         root: &Path,
         state: &Path,
     ) -> (Entity<Reader>, &'a mut VisualTestContext) {
+        open_kind(cx, root, state, false)
+    }
+
+    fn open_kind<'a>(
+        cx: &'a mut TestAppContext,
+        root: &Path,
+        state: &Path,
+        folder: bool,
+    ) -> (Entity<Reader>, &'a mut VisualTestContext) {
         cx.update(|cx| {
             cx.set_reduce_motion(true);
             gpui_component::init(cx);
@@ -603,9 +602,10 @@ mod tests {
             let reader = cx.new(|cx| {
                 Reader::new(
                     Opts {
-                        vault: Some(root.to_path_buf()),
+                        vault: (!folder).then(|| root.to_path_buf()),
+                        open_path: folder.then(|| root.to_path_buf()),
                         note: Some("Start.md".into()),
-                        index_dir: Some(state.join("index")),
+                        index_dir: (!folder).then(|| state.join("index")),
                         session_directory: Some(state.join("state")),
                         ..Default::default()
                     },
@@ -618,8 +618,15 @@ mod tests {
         });
         visual.run_until_parked();
         let reader = entity.unwrap();
+        if folder {
+            reader.update_in(visual, |r, window, cx| {
+                r.open_note("Start.md", None, window, cx)
+            });
+            visual.run_until_parked();
+        }
         reader.read_with(visual, |r, _| {
             assert!(r.watcher.is_some(), "positive control: a watcher");
+            assert_eq!(r.single_file, folder);
             assert_eq!(r.current_rel, "Start.md", "positive control: opened");
             assert!(
                 r.note_source.contains("only copy"),
@@ -825,14 +832,14 @@ mod tests {
         reader.read_with(visual, |r, _| assert!(r.deleted_note.is_none()));
     }
 
-    #[gpui::test]
-    fn the_editor_buffer_is_what_restore_writes(cx: &mut TestAppContext) {
+    fn restore_editor_buffer(cx: &mut TestAppContext, live: bool) {
         let (temp, root) = vault();
         let (reader, visual) = open(cx, &root, temp.path());
         reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
         visual.run_until_parked();
         let edited = "# Start\n\nonly copy of these words, edited\n";
         reader.update_in(visual, |r, window, cx| {
+            r.set_live_preview(live, window, cx);
             r.editing
                 .as_ref()
                 .expect("editing")
@@ -871,5 +878,501 @@ mod tests {
             std::fs::read_to_string(root.join("Start.md")).unwrap(),
             more
         );
+    }
+
+    #[gpui::test]
+    fn the_editor_buffer_is_what_restore_writes(cx: &mut TestAppContext) {
+        restore_editor_buffer(cx, false);
+    }
+
+    #[gpui::test]
+    fn live_restore_preserves_current_buffer_and_later_save(cx: &mut TestAppContext) {
+        restore_editor_buffer(cx, true);
+    }
+
+    fn editor_leave_confirmation(cx: &mut TestAppContext, live: bool, folder: bool) {
+        let (temp, root) = vault();
+        let (reader, visual) = open_kind(cx, &root, temp.path(), folder);
+        let edited = "# Start\n\nlatest unsaved editor contents\n";
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.set_live_preview(live, window, cx);
+            r.editing.as_ref().unwrap().set_value(edited, window, cx);
+        });
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "editor deletion", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.source_live_preview(), live, "positive control: mode");
+            assert_eq!(r.source_text(cx).as_deref(), Some(edited));
+        });
+
+        // Cancel leaves the editor and latest bytes intact.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
+        click(visual, "deleted-note-cancel");
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.source_text(cx).as_deref(), Some(edited));
+            assert!(r.editing.is_some());
+        });
+
+        // Cancelling the path picker is also Cancel, not permission to leave.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-save-as");
+        assert!(visual.did_prompt_for_new_path());
+        visual.simulate_new_path_selection(|_| None);
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.source_text(cx).as_deref(), Some(edited));
+            assert_eq!(disk(r), Some(Disk::Missing));
+        });
+
+        // A failed write cannot authorize navigation or consume the draft.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-save-as");
+        let invalid = root.join("absent/Kept.md");
+        visual.simulate_new_path_selection(move |_| Some(invalid));
+        visual.run_until_parked();
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.source_text(cx).as_deref(), Some(edited));
+            assert!(r.deleted_current().is_some());
+        });
+
+        // A destination appearing while the picker is open is never clobbered.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-save-as");
+        let existing = root.join("Existing.md");
+        std::fs::write(&existing, "external bytes").unwrap();
+        visual.simulate_new_path_selection(move |_| Some(existing));
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(root.join("Existing.md")).unwrap(),
+            "external bytes"
+        );
+        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "Start.md"));
+
+        // Successful Save As writes the editor buffer, then continues once.
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-save-as");
+        let saved = root.join("Kept.md");
+        visual.simulate_new_path_selection(move |_| Some(saved));
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(root.join("Kept.md")).unwrap(),
+            edited
+        );
+        settle(visual, &reader, "saved editor navigation", |r| {
+            r.current_rel == "Other.md"
+        });
+        assert!(!root.join("Start.md").exists());
+    }
+
+    #[gpui::test]
+    fn source_mode_confirms_and_save_as_preserves_latest_buffer(cx: &mut TestAppContext) {
+        editor_leave_confirmation(cx, false, false);
+    }
+
+    #[gpui::test]
+    fn live_mode_confirms_and_save_as_preserves_latest_buffer(cx: &mut TestAppContext) {
+        editor_leave_confirmation(cx, true, false);
+    }
+
+    fn editor_dont_save_keeps_recovery(cx: &mut TestAppContext, live: bool) {
+        let (temp, root) = vault();
+        let (reader, visual) = open(cx, &root, temp.path());
+        let edited = "# Start\n\nrecover this unsaved text\n";
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.set_live_preview(live, window, cx);
+            r.editing.as_ref().unwrap().set_value(edited, window, cx);
+        });
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "deleted", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-dont-save");
+        settle(visual, &reader, "discard navigation", |r| {
+            r.current_rel == "Other.md"
+        });
+        assert!(!root.join("Start.md").exists());
+        assert!(okilum_core::file_editor::FileEditor::has_unsaved_draft(
+            &root.join("Start.md"),
+            &temp.path().join("state/editor-drafts")
+        )
+        .unwrap());
+    }
+
+    #[gpui::test]
+    fn source_dont_save_keeps_recovery_without_recreating_deleted_source(cx: &mut TestAppContext) {
+        editor_dont_save_keeps_recovery(cx, false);
+    }
+
+    #[gpui::test]
+    fn live_dont_save_keeps_recovery_without_recreating_deleted_source(cx: &mut TestAppContext) {
+        editor_dont_save_keeps_recovery(cx, true);
+    }
+
+    #[gpui::test]
+    fn save_as_rejects_changed_buffer_and_retry_keeps_latest_contents(cx: &mut TestAppContext) {
+        let (temp, root) = vault();
+        let (reader, visual) = open(cx, &root, temp.path());
+        reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "deleted", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-save-as");
+        assert!(
+            visual.did_prompt_for_new_path(),
+            "positive control: picker opened"
+        );
+        let latest = "# Start\n\nchanged behind the path picker\n";
+        reader.update_in(visual, |r, window, cx| {
+            r.editing.as_ref().unwrap().set_value(latest, window, cx);
+        });
+        let stale = root.join("OldBuffer.md");
+        visual.simulate_new_path_selection(move |_| Some(stale));
+        visual.run_until_parked();
+        assert!(
+            !root.join("OldBuffer.md").exists(),
+            "no stale copy published"
+        );
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_rel, "Start.md", "no pending navigation replay");
+            assert_eq!(r.source_text(cx).as_deref(), Some(latest));
+            assert_eq!(disk(r), Some(Disk::Missing));
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-save-as");
+        let latest_path = root.join("Latest.md");
+        visual.simulate_new_path_selection(move |_| Some(latest_path));
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(root.join("Latest.md")).unwrap(),
+            latest
+        );
+        settle(
+            visual,
+            &reader,
+            "latest copy saved and navigation resumed",
+            |r| r.current_rel == "Other.md",
+        );
+        assert!(!root.join("Start.md").exists());
+    }
+
+    #[gpui::test]
+    fn old_dialog_and_picker_cannot_apply_after_same_path_is_reopened(cx: &mut TestAppContext) {
+        let (temp, root) = vault();
+        let (reader, visual) = open(cx, &root, temp.path());
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "deleted", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
+        // Same path/root after a new document request is a different document.
+        reader.update_in(visual, |r, _, _| {
+            r.navigation.preparation_generation += 1;
+        });
+        click(visual, "deleted-note-dont-save");
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(disk(r), Some(Disk::Missing));
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.save_deleted_note_as(None, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(visual.did_prompt_for_new_path());
+        reader.update_in(visual, |r, _, _| {
+            r.navigation.preparation_generation += 1;
+        });
+        let path = root.join("StaleGeneration.md");
+        visual.simulate_new_path_selection(move |_| Some(path));
+        visual.run_until_parked();
+        assert!(!root.join("StaleGeneration.md").exists());
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(disk(r), Some(Disk::Missing));
+        });
+    }
+
+    #[gpui::test]
+    fn stale_dialog_and_picker_cannot_navigate_or_write_for_another_document(
+        cx: &mut TestAppContext,
+    ) {
+        let (temp, root) = vault();
+        let (reader, visual) = open(cx, &root, temp.path());
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "deleted", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, _, _| r.current_rel = "NewIdentity.md".into());
+        click(visual, "deleted-note-dont-save");
+        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "NewIdentity.md"));
+
+        reader.update_in(visual, |r, window, cx| {
+            r.current_rel = "Start.md".into();
+            r.save_deleted_note_as(None, window, cx);
+        });
+        visual.run_until_parked();
+        assert!(visual.did_prompt_for_new_path());
+        reader.update_in(visual, |r, _, _| r.current_rel = "NewIdentity.md".into());
+        let saved = root.join("Stale.md");
+        visual.simulate_new_path_selection(move |_| Some(saved));
+        visual.run_until_parked();
+        assert!(!root.join("Stale.md").exists());
+        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "NewIdentity.md"));
+    }
+
+    #[gpui::test]
+    fn folder_source_confirms_and_save_as_preserves_dirty_contents(cx: &mut TestAppContext) {
+        editor_leave_confirmation(cx, false, true);
+    }
+
+    #[gpui::test]
+    fn folder_live_confirms_and_save_as_preserves_dirty_contents(cx: &mut TestAppContext) {
+        editor_leave_confirmation(cx, true, true);
+    }
+
+    fn returned_editor(cx: &mut TestAppContext, folder: bool, live: bool, dirty: bool) {
+        let (temp, root) = vault();
+        let (reader, visual) = open_kind(cx, &root, temp.path(), folder);
+        let retained = if dirty { "# Unsaved contents\n" } else { START };
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.set_live_preview(live, window, cx);
+            if dirty {
+                r.editing.as_ref().unwrap().set_value(retained, window, cx);
+            }
+        });
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "editor deletion", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        assert!(
+            !visual.update(|window, cx| window.has_active_dialog(cx)),
+            "deletion is nonmodal"
+        );
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.source_text(cx).as_deref(), Some(retained))
+        });
+        std::fs::write(root.join("Start.md"), "# Returned version\n").unwrap();
+        settle(visual, &reader, "returned editor version", |r| {
+            disk(r) == Some(Disk::Different)
+        });
+        // Exercise the shared-publication path as well as the direct refresh,
+        // after the watcher has positively detected both filesystem changes.
+        reader.update_in(visual, |r, window, cx| {
+            r.refresh_source_from_disk(window, cx);
+            r.reconcile_published_document(window, cx);
+            assert_eq!(r.source_text(cx).as_deref(), Some(retained));
+        });
+        visual.run_until_parked();
+        draw(visual);
+        assert!(
+            visual.debug_bounds("reader-document-deleted").is_none(),
+            "returned file is no longer marked deleted"
+        );
+        assert!(visual.debug_bounds("deleted-note-reload").is_some());
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-cancel");
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.source_text(cx).as_deref(), Some(retained))
+        });
+        click(visual, "deleted-note-reload");
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.source_text(cx).as_deref(), Some("# Returned version\n"));
+            assert!(r.deleted_current().is_none());
+        });
+        assert_eq!(
+            std::fs::read_to_string(root.join("Start.md")).unwrap(),
+            "# Returned version\n"
+        );
+    }
+
+    #[gpui::test]
+    fn clean_source_survives_deletion_and_different_return(cx: &mut TestAppContext) {
+        returned_editor(cx, false, false, false);
+    }
+
+    #[gpui::test]
+    fn dirty_live_survives_deletion_and_different_return(cx: &mut TestAppContext) {
+        returned_editor(cx, false, true, true);
+    }
+
+    #[gpui::test]
+    fn folder_clean_live_survives_deletion_and_different_return(cx: &mut TestAppContext) {
+        returned_editor(cx, true, true, false);
+    }
+
+    #[gpui::test]
+    fn folder_dirty_source_survives_deletion_and_different_return(cx: &mut TestAppContext) {
+        returned_editor(cx, true, false, true);
+    }
+
+    #[gpui::test]
+    fn navigation_before_watcher_and_close_both_ask(cx: &mut TestAppContext) {
+        let (temp, root) = vault();
+        let (reader, visual) = open(cx, &root, temp.path());
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        // No watcher tick: the navigation itself must discover the absence.
+        reader.update_in(visual, |r, window, cx| {
+            r.preview_file("asset.txt", window, cx)
+        });
+        visual.run_until_parked();
+        assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
+        click(visual, "deleted-note-cancel");
+        reader.update_in(visual, |r, window, cx| r.close_note(window, cx));
+        visual.run_until_parked();
+        click(visual, "deleted-note-cancel");
+        reader.read_with(visual, |r, _| assert_eq!(r.current_rel, "Start.md"));
+        reader.update_in(visual, |r, window, cx| r.close_note(window, cx));
+        visual.run_until_parked();
+        click(visual, "deleted-note-dont-save");
+        reader.read_with(visual, |r, _| assert!(r.current_rel.is_empty()));
+    }
+
+    #[test]
+    fn copy_publication_never_overwrites_a_returned_file_or_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("copy.md");
+        super::save_new_copy(&path, START).unwrap();
+        assert!(super::save_new_copy(&path, "replacement").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), START);
+        #[cfg(unix)]
+        {
+            let link = temp.path().join("link.md");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(super::save_new_copy(&link, "replacement").is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), START);
+        }
+    }
+
+    #[gpui::test]
+    fn folder_read_return_restore_and_attachment_navigation(cx: &mut TestAppContext) {
+        let (temp, root) = vault();
+        std::fs::write(root.join("asset.txt"), "attachment").unwrap();
+        let (reader, visual) = open_kind(cx, &root, temp.path(), true);
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "folder deletion", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        std::fs::write(root.join("Start.md"), START).unwrap();
+        settle(visual, &reader, "unchanged return", |r| disk(r).is_none());
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "second deletion", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        std::fs::write(root.join("Start.md"), "# Returned version\n").unwrap();
+        settle(visual, &reader, "changed return", |r| {
+            disk(r) == Some(Disk::Different)
+        });
+        reader.read_with(visual, |r, _| assert!(r.note_source.contains("only copy")));
+        click(visual, "deleted-note-reload");
+        settle(visual, &reader, "explicit reload", |r| {
+            r.note_source.contains("Returned version") && disk(r).is_none()
+        });
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "third deletion", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        click(visual, "deleted-note-restore");
+        assert_eq!(
+            std::fs::read_to_string(root.join("Start.md")).unwrap(),
+            "# Returned version\n"
+        );
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "fourth deletion", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.preview_file("asset.txt", window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-cancel");
+        reader.read_with(visual, |r, _| assert!(r.file_preview.is_none()));
+        reader.update_in(visual, |r, window, cx| {
+            r.preview_file("asset.txt", window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-dont-save");
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.file_preview.as_ref().unwrap().rel, "asset.txt")
+        });
+        assert!(!root.join("Start.md").exists());
+    }
+
+    #[gpui::test]
+    fn dont_save_cannot_leave_when_latest_recovery_write_fails(cx: &mut TestAppContext) {
+        let (temp, root) = vault();
+        let (reader, visual) = open(cx, &root, temp.path());
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.editing
+                .as_ref()
+                .unwrap()
+                .set_value("# Unsaved draft\n", window, cx);
+        });
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        settle(visual, &reader, "deleted", |r| {
+            disk(r) == Some(Disk::Missing)
+        });
+        // A file in place of the recovery directory reliably fails even when
+        // the test runner has elevated filesystem permissions.
+        let journal = temp.path().join("state/editor-drafts");
+        std::fs::rename(&journal, temp.path().join("saved-drafts")).unwrap();
+        std::fs::write(&journal, "blocked").unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("Other.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        click(visual, "deleted-note-dont-save");
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.source_text(cx).as_deref(), Some("# Unsaved draft\n"));
+            assert!(r.deleted_current().is_some());
+        });
+        assert!(!root.join("Start.md").exists());
     }
 }
