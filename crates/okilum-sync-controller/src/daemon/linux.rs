@@ -153,19 +153,49 @@ struct Prepared {
 /// Only call after explicit Enable. The random state directory must be new or
 /// contain this preparation's durable intent; never point it at an external home.
 pub fn prepare(state: &Path, request: &Preparation) -> Result<(ManagedInstance, DaemonIdentity)> {
+    prepare_with_policy(state, request, false)
+}
+
+/// Explicit LAN bootstrap only; never selected from empty discovery alone.
+pub fn prepare_lan(
+    state: &Path,
+    request: &Preparation,
+) -> Result<(ManagedInstance, DaemonIdentity)> {
+    prepare_with_policy(state, request, true)
+}
+fn validate_endpoints(rest: SocketAddr, listen: SocketAddr, lan: bool) -> Result<()> {
+    ensure!(
+        rest.ip().is_loopback()
+            && rest.port() != 0
+            && listen.port() != 0
+            && rest != listen
+            && (listen.ip().is_loopback() || lan && listen.ip().is_unspecified()),
+        "invalid isolated endpoint allocation"
+    );
+    Ok(())
+}
+fn prepare_with_policy(
+    state: &Path,
+    request: &Preparation,
+    lan: bool,
+) -> Result<(ManagedInstance, DaemonIdentity)> {
     ensure!(
         state.is_absolute() && request.executable.is_absolute(),
         "absolute preparation paths required"
     );
-    ensure!(
-        request.rest_address.ip().is_loopback()
-            && request.listen_address.ip().is_loopback()
-            && request.rest_address.port() != 0
-            && request.listen_address.port() != 0
-            && request.rest_address != request.listen_address,
-        "invalid isolated endpoint allocation"
-    );
+    validate_endpoints(request.rest_address, request.listen_address, lan)?;
     let _lock = private::lock(state)?;
+    let policy_file = state.join("transport-policy.json");
+    if policy_file.try_exists()? {
+        let saved: bool = serde_json::from_slice(&private::read(&policy_file)?)?;
+        ensure!(saved == lan, "prepared transport policy changed");
+    } else {
+        ensure!(
+            !lan || !state.join("prepare.json").try_exists()?,
+            "legacy preparation needs explicit recovery"
+        );
+        private::write(&policy_file, &serde_json::to_vec(&lan)?)?;
+    }
     let intent = state.join("prepare.json");
     let home = state.join("syncthing");
     if intent.try_exists()? {
@@ -240,7 +270,7 @@ pub fn prepare(state: &Path, request: &Preparation) -> Result<(ManagedInstance, 
     let options = xml.get_mut_child("options").context("options missing")?;
     for (name, value) in [
         ("globalAnnounceEnabled", "false"),
-        ("localAnnounceEnabled", "false"),
+        ("localAnnounceEnabled", if lan { "true" } else { "false" }),
         ("natEnabled", "false"),
         ("relaysEnabled", "false"),
         ("startBrowser", "false"),
@@ -389,5 +419,21 @@ mod tests {
             vec![cwd.join(".local/state/syncthing/config.xml")]
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lan_policy_tests {
+    use super::*;
+    #[test]
+    fn lan_listen_is_explicit_and_rest_stays_loopback() {
+        let rest = "127.0.0.1:12345".parse().unwrap();
+        let lan = "0.0.0.0:23456".parse().unwrap();
+        assert!(validate_endpoints(rest, lan, true).is_ok());
+        assert!(validate_endpoints(rest, lan, false).is_err());
+        assert!(validate_endpoints(lan, rest, true).is_err());
+        assert!(validate_endpoints(rest, "192.0.2.1:23456".parse().unwrap(), true).is_err());
+        assert!(validate_endpoints(rest, "0.0.0.0:0".parse().unwrap(), true).is_err());
+        assert!(validate_endpoints(rest, rest, true).is_err());
     }
 }
