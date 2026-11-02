@@ -136,11 +136,12 @@ impl PreparedCopy {
         {
             // Directory pins every ancestor and retains the ordinary local
             // NTFS gate. Use the same write-through NOREPLACE rename as notes.
-            let file = self.file.take().unwrap();
-            crate::windows_files::move_no_replace(file.path(), &self.parent.join(&self.name))
-                .context(
-                    "Destination already exists or cannot be written; choose a new filename",
-                )?;
+            // keep() removes Windows' temporary-file attribute before the
+            // native write-through rename. Publication errors retain the full
+            // prepared copy and report its location for inspection.
+            let (_file, prepared) = self.file.take().unwrap().keep()?;
+            crate::windows_files::move_no_replace(&prepared, &self.parent.join(&self.name))
+                .with_context(|| format!("Destination already exists or cannot be written; prepared copy retained at {}", prepared.display()))?;
         }
         Ok(())
     }

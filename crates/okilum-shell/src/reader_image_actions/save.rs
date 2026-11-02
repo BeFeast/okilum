@@ -37,7 +37,12 @@ impl Revision {
 }
 #[derive(Clone)]
 enum Original {
-    Local { path: PathBuf, revision: Revision },
+    Local {
+        path: PathBuf,
+        revision: Revision,
+        #[cfg(windows)]
+        identity: (u64, u64),
+    },
     Remote(String),
 }
 impl Original {
@@ -64,6 +69,8 @@ impl Original {
                 "Image exceeds the 64 MB save limit"
             );
             Ok(Self::Local {
+                #[cfg(windows)]
+                identity: okilum_core::windows_files::checked_identity(&path)?,
                 path,
                 revision: Revision::of(&metadata),
             })
@@ -80,7 +87,14 @@ impl Original {
     }
     fn validate(&self, target: &Target) -> Result<()> {
         match self {
-            Self::Local { path, revision } => {
+            Self::Local { path, revision, .. } => {
+                #[cfg(windows)]
+                if let Self::Local { identity, .. } = self {
+                    anyhow::ensure!(
+                        okilum_core::windows_files::checked_identity(path)? == *identity,
+                        "Image identity changed; reopen its menu"
+                    );
+                }
                 let current = reader_files::checked_path(
                     &target.root,
                     target
@@ -103,7 +117,7 @@ impl Original {
     fn bytes(&self, target: &Target) -> Result<Vec<u8>> {
         self.validate(target)?;
         match self {
-            Self::Local { path, revision } => {
+            Self::Local { path, revision, .. } => {
                 let mut file = std::fs::File::open(path)?;
                 anyhow::ensure!(
                     Revision::of(&file.metadata()?) == *revision,
