@@ -156,7 +156,7 @@ fn failed_replacement_retains_sftp_rows_marks_and_source_until_new_snapshot(
         visual.debug_bounds("log-mark-0").is_none(),
         "new session must not inherit old marks"
     );
-    visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("no selection")));
+    visual.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("no selection".into())));
     visual.simulate_keystrokes(copy_key);
     visual.read(|cx| {
         assert_eq!(
