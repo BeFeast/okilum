@@ -11,9 +11,13 @@ struct Selection {
 }
 impl Selection {
     fn current(reader: &Reader) -> Option<Self> {
-        if reader.current_rel.is_empty()
+        if !reader.document_ready()
+            || reader.current_rel.is_empty()
             || reader.file_preview.is_some()
-            || reader.loading.as_ref().is_some_and(|load| load.active)
+            || reader
+                .loading
+                .as_ref()
+                .is_some_and(|load| load.active && !load.published)
         {
             return None;
         }
@@ -99,6 +103,16 @@ fn affects_file(event: &notify::Event, path: &Path) -> bool {
 }
 
 impl Reader {
+    pub(crate) fn has_open_note_watch(&self) -> bool {
+        self.open_note_watch
+            .as_ref()
+            .is_some_and(|(root, rel, navigation)| {
+                *root == self.vault_root
+                    && *rel == self.current_rel
+                    && *navigation == self.navigation.generation
+            })
+    }
+
     pub(crate) fn watch_open_note(&mut self, cx: &mut Context<Self>) {
         let handle = self.reader_window;
         cx.spawn(async move |this, cx| {
@@ -108,7 +122,13 @@ impl Reader {
                     .timer(Duration::from_millis(250))
                     .await;
                 let Ok(Ok(selection)) = handle.update(cx, |_, _, cx| {
-                    this.read_with(cx, |reader, _| Selection::current(reader))
+                    this.update(cx, |reader, _| {
+                        let selected = Selection::current(reader);
+                        if selected.is_none() {
+                            reader.open_note_watch = None;
+                        }
+                        selected
+                    })
                 }) else {
                     break;
                 };
@@ -137,10 +157,20 @@ impl Reader {
                     })
                     .await;
                 watch = next;
-                if changed || error.is_some() {
+                let active = watch.is_some();
+                if changed || error.is_some() || active {
                     let _ = handle.update(cx, |_, window, cx| {
                         let _ = this.update(cx, |reader, cx| {
                             if Selection::current(reader).as_ref() == Some(&selection) {
+                                if active && !reader.has_open_note_watch() {
+                                    reader.open_note_watch = Some((
+                                        selection.root.clone(),
+                                        selection.rel.clone(),
+                                        selection.navigation,
+                                    ));
+                                } else if !active {
+                                    reader.open_note_watch = None;
+                                }
                                 if let Some(error) = error {
                                     if reader.link_notice.as_deref() != Some(error.as_str())
                                         && reader.link_notice.is_none()
@@ -148,7 +178,7 @@ impl Reader {
                                         reader.link_notice = Some(error.into());
                                         cx.notify();
                                     }
-                                } else {
+                                } else if changed {
                                     if reader.link_notice.as_deref().is_some_and(|n| {
                                         n.starts_with("Automatic note updates unavailable:")
                                     }) {
@@ -503,50 +533,89 @@ mod tests {
 
     #[gpui::test]
     fn issue2486_selected_document_does_not_wait_for_indexing(cx: &mut TestAppContext) {
-        for edit in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().join("vault");
-            let (reader, visual) = open(cx, dir.path(), 0);
-            if edit {
-                reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        for full in [false, true] {
+            for edit in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let root = dir.path().join("vault");
+                let (reader, visual) = open(cx, dir.path(), 0);
+                if edit {
+                    reader.update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+                    visual.run_until_parked();
+                }
+                let (send, hold) = async_channel::bounded(1);
+                reader.update_in(visual, |r, window, cx| {
+                    if full {
+                        let mut opts = r.loading.as_ref().unwrap().opts.clone();
+                        opts.validation_hold = Some(hold);
+                        opts.force_source_read = true;
+                        r.start_preparation(opts, Some(okilum_core::Changes { rescan: true, ..Default::default() }), window, cx);
+                        assert!(r.loading.as_ref().unwrap().active && r.loading.as_ref().unwrap().published,
+                            "positive control: full scan is held with its displayed document retained");
+                    } else {
+                        r.incremental_hold = Some(hold);
+                        std::fs::write(root.join("sibling.md"), "changed sibling").unwrap();
+                        r.apply_vault_changes(okilum_core::Changes { changed: ["sibling.md".into()].into(), ..Default::default() }, window, cx);
+                        assert!(r.incremental_active, "positive control: incremental index worker is held");
+                    }
+                });
                 visual.run_until_parked();
-            }
-            let (send, hold) = async_channel::bounded(1);
-            reader.update_in(visual, |r, window, cx| {
-                r.incremental_hold = Some(hold);
-                std::fs::write(root.join("sibling.md"), "changed sibling").unwrap();
-                r.apply_vault_changes(
-                    okilum_core::Changes {
-                        changed: ["sibling.md".into()].into(),
-                        ..Default::default()
-                    },
-                    window,
-                    cx,
-                );
-                assert!(
-                    r.incremental_active,
-                    "positive control: index worker is held"
-                );
-            });
-            visual.run_until_parked();
-            replace(&root, "# Note\n\nremote during indexing\n");
-            settle(
-                visual,
-                &reader,
-                "selected note while index worker is held",
-                |r, cx| {
+                let remote = "# Note\n\nremote during indexing\n";
+                replace(&root, remote);
+                let visible = |r: &Reader, cx: &App| {
                     if edit {
                         input(r).read(cx).value().contains("remote during indexing")
                     } else {
                         r.note_source.contains("remote during indexing")
                     }
-                },
-            );
-            reader.read_with(visual, |r, _| assert!(r.incremental_active));
-            send.try_send(()).unwrap();
-            visual.run_until_parked();
-            visual.update(|window, _| window.remove_window());
-            visual.run_until_parked();
+                };
+                settle(
+                    visual,
+                    &reader,
+                    "selected note while full/incremental index work is held",
+                    visible,
+                );
+                reader.read_with(visual, |r, _| {
+                    assert!(
+                        r.has_open_note_watch(),
+                        "positive control: independent selected source owner"
+                    );
+                    if full {
+                        assert!(r.loading.as_ref().unwrap().active);
+                    } else {
+                        assert!(r.incremental_active);
+                    }
+                });
+                // A late snapshot captured before the Sync delivery must not
+                // roll the displayed note back after its source owner saw it.
+                reader.update_in(visual, |r, window, cx| {
+                    r.reconcile_inventory_document(
+                        &[("note.md".into(), "# Note\n\nolder inventory bytes\n".into())].into(),
+                        window,
+                        cx,
+                    );
+                });
+                visual.run_until_parked();
+                reader.read_with(visual, |r, cx| {
+                    assert!(
+                        visible(r, cx),
+                        "late inventory cannot supersede observed canonical source"
+                    )
+                });
+                assert_eq!(
+                    std::fs::read_to_string(root.join("note.md")).unwrap(),
+                    remote
+                );
+                send.try_send(()).unwrap();
+                visual.run_until_parked();
+                reader.read_with(visual, |r, cx| {
+                    assert!(
+                        visible(r, cx),
+                        "released index work retains the incoming source"
+                    )
+                });
+                visual.update(|window, _| window.remove_window());
+                visual.run_until_parked();
+            }
         }
     }
 }

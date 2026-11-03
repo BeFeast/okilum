@@ -1716,6 +1716,8 @@ struct Reader {
     quick_folders: std::collections::BTreeSet<String>,
     quick_folder_refreshes: std::collections::BTreeMap<String, Arc<()>>,
     watcher_generation: u64,
+    /// The independent selected-document watcher owns current canonical source.
+    open_note_watch: Option<(PathBuf, String, u64)>,
     watcher_poll_active: bool,
     #[cfg(test)]
     watcher_poll_hold: Option<async_channel::Receiver<()>>,
@@ -2021,6 +2023,7 @@ impl Reader {
             quick_folders: Default::default(),
             quick_folder_refreshes: Default::default(),
             watcher_generation: 0,
+            open_note_watch: None,
             watcher_poll_active: false,
             #[cfg(test)]
             watcher_poll_hold: None,

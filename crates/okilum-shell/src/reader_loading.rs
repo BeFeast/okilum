@@ -1748,6 +1748,11 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
+        if self.has_open_note_watch() {
+            self.reconcile_published_document(window, cx);
+            self.refresh_link_preparation(cx);
+            return;
+        }
         if self.editing.is_some() {
             self.refresh_source_in_background(window, cx);
             self.refresh_link_preparation(cx);
@@ -2380,7 +2385,7 @@ impl Reader {
         self.start_preparation(opts, Some(changes), window, cx);
     }
 
-    fn start_preparation(
+    pub(super) fn start_preparation(
         &mut self,
         mut opts: Opts,
         refresh: Option<okilum_core::Changes>,
