@@ -249,6 +249,7 @@ bool okilum_manager_terminal_key(unsigned short code, bool command, bool shift,
         (f & NSEventModifierFlagControl) != 0, (f & NSEventModifierFlagOption) != 0,
         [self.pageContext[@"editable"] isEqual:@NO]);
     if (event.type == NSEventTypeKeyDown && terminal) {
+        KeyNoteUserInput(self, event);
         if (!event.isARepeat && self.focusChanged) self.focusChanged(self.context, 3);
         return YES;
     }

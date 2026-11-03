@@ -235,3 +235,23 @@ fn fixed_shell_wrapper_does_not_evaluate_argv_and_enters_the_literal_checkout() 
         directory.canonicalize().unwrap().to_str().unwrap()
     );
 }
+
+#[test]
+fn windows_crt_argv_encoding_preserves_quotes_spaces_and_trailing_backslashes() {
+    assert_eq!(windows_quote(""), r#""""#);
+    assert_eq!(windows_quote("a b"), r#""a b""#);
+    assert_eq!(windows_quote("a\"b"), r#""a\"b""#);
+    assert_eq!(windows_quote("C:\\a b\\"), r#""C:\a b\\""#);
+    assert_eq!(windows_quote("a\\\"b"), r#""a\\\"b""#);
+    let initial = Initial {
+        argv: vec![
+            "tool.exe".into(),
+            "a\"b".into(),
+            "".into(),
+            "C:\\a b\\".into(),
+        ],
+        directory: None,
+    };
+    let data = decode_windows(&plan("windows", &initial, "wt.exe"));
+    assert_eq!(data["arguments"], r#""a\"b" "" "C:\a b\\""#);
+}

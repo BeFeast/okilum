@@ -160,6 +160,28 @@ fn posix_args(initial: &Initial) -> Vec<String> {
     args
 }
 
+// Windows PowerShell 5's native `&` invocation can strip embedded quotes.
+// ProcessStartInfo uses this explicit CRT argv encoding without another shell.
+fn windows_quote(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    let mut slashes = 0;
+    for ch in value.chars() {
+        if ch == '\\' {
+            slashes += 1;
+        } else {
+            quoted.extend(std::iter::repeat_n(
+                '\\',
+                if ch == '\"' { slashes * 2 + 1 } else { slashes },
+            ));
+            quoted.push(ch);
+            slashes = 0;
+        }
+    }
+    quoted.extend(std::iter::repeat_n('\\', slashes * 2));
+    quoted.push('\"');
+    quoted
+}
+
 pub fn plan(os: &str, initial: &Initial, launcher: &str) -> Plan {
     match os {
         "macos" => {
@@ -176,14 +198,28 @@ pub fn plan(os: &str, initial: &Initial, launcher: &str) -> Plan {
         "windows" => {
             // wt parses semicolons itself and cmd reparses /c arguments. Only
             // fixed flags and base64 cross those parsers. PowerShell decodes a
-            // JSON data object and invokes its argv with &, never Invoke-Expression.
-            let data = serde_json::json!({"argv": initial.argv, "directory": initial.directory});
+            // JSON data object and creates a process directly, never Invoke-Expression.
+            let arguments = initial
+                .argv
+                .iter()
+                .skip(1)
+                .map(|v| windows_quote(v))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let data = serde_json::json!({"argv": initial.argv, "directory": initial.directory, "arguments": arguments});
             let data =
                 STANDARD.encode(serde_json::to_vec(&data).expect("serializable terminal data"));
             let script = format!(
                 r#"$v = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{data}')) | ConvertFrom-Json
 if ($null -ne $v.directory) {{ Set-Location -LiteralPath $v.directory -ErrorAction Stop }}
-else {{ $a = @($v.argv); $exe = $a[0]; $rest = @($a | Select-Object -Skip 1); & $exe @rest }}"#
+else {{
+    $p = New-Object System.Diagnostics.ProcessStartInfo
+    $p.FileName = [string]$v.argv[0]
+    $p.Arguments = [string]$v.arguments
+    $p.UseShellExecute = $false
+    $child = [System.Diagnostics.Process]::Start($p)
+    $child.WaitForExit()
+}}"#
             );
             let encoded = STANDARD.encode(
                 script
