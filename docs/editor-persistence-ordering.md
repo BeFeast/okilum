@@ -1,0 +1,68 @@
+# Editor draft and save ordering
+
+Issue #2404 is the persistence/lifecycle slice of #1621. The input revision is
+canonical. FileEditor retains its immutable Rope together with a shared immutable
+base; copying a draft or a saving handle does not copy either note's bytes.
+Contiguous UTF-8 is materialized at the worker persistence boundary. Recovery JSON
+keeps the existing fields and adds an optional pending-input flag (absent means
+legacy acknowledged semantics), preserving authored BOM and CRLF bytes. A pending
+Undo equal to its old base remains a recovery intent while an older save may
+publish another revision; it is never pruned as an acknowledged journal.
+
+Each input mutation (including native silent Undo/Redo and IME mutations) replaces
+the pending recovery task and assigns a monotonically increasing generation.
+Recovery starts after a 300 ms pause. A writer owns only the generation captured
+with its snapshot; it checks ownership before serialization and again under the
+journal publication lock. Locks remain held while any writer/save copy exists.
+No completion from an older input/session may report the latest draft protected.
+The UI holds a synchronous pending-write ticket until the worker starts; dropping
+an async Task alone is insufficient because its captures can outlive close/move.
+Save, park and close clear that ticket immediately. A clean reset schedules only
+presentation preparation, without holding an unnecessary recovery writer lock.
+Recovery errors retain the editor and are shown to the user; explicit Save retries.
+
+Canonical saves use a separate shared serialization lock. A save first protects
+its captured draft, then uses the existing exact-byte conflict/publication checks.
+The next save adopts only a confirmed own publication's base, under that lock.
+An older save request cannot publish after a newer completed save. Its recovery
+acknowledgement can retire its own generation, using compare-and-exchange, but
+cannot acquire ownership over newer typing. The UI acknowledges a successful save
+by retaining its current draft with the confirmed saved base in a new generation.
+Thus typing during a save survives both the save's initial and final journal writes.
+
+Explicit Save captures the native revision directly, even before deferred mutation
+subscribers run. Close, Keep Draft and Quit synchronously flush the latest revision
+before releasing ownership; a failed flush prevents losing that editor. The
+300 ms debounce is a crash-durability window, not a claim that unflushed keystrokes
+survive power loss. Once the worker acknowledges a generation, restart restores
+that exact text; a changed canonical file remains an explicit conflict.
+
+Typing notifies editor entities. TableGrid no longer forwards every editor
+notification to Reader. Outline workers share native snapshots and notify Reader
+only when outline entries or their click targets change. Repaint signatures and
+retirement of the previous entry set run on workers. Direction exemptions, rendered-block
+reference definitions and footnote context are prepared after the recovery pause
+on a worker, accepted only for the same editor/generation. Pending block context is
+unresolved rather than borrowed from another revision. The initial context shares
+its base revision, and workers retain the last large footnote cache until its
+replacement so a key does not destroy note-wide data on the UI thread.
+Context-menu source facts and captured reminder requests
+are immutable Rope snapshots; full reference/code context is extracted on opening
+the menu, not on every editor notification.
+
+Regression coverage includes reverse recovery completion, canonical save races,
+a late pre-save journal writer, typing during publication, failed recovery/retry,
+close/quit before debounce, crash-style reopen and exact BOM/CRLF bytes. The
+foreground allocator gate scopes actual editor draft retention, menu-observer
+and outline snapshot extraction, before GPUI task scheduling, including the legacy String path, at 25 KB, 130 KB and 1 MiB. It requires a bounded largest allocation
+and total allocated bytes, bounds foreground deallocation calls, and requires a positive control that materializes the
+same native input. The same test is overlaid on the pinned origin/main source for
+a real negative-control run. Core revision counters independently establish no
+flattening/scanning while queuing/copying shared snapshots. These are deterministic
+work bounds, not end-to-end latency measurements or #2405 own-save receipts.
+
+The scoped allocator excludes GPUI test-executor scheduling trace allocations.
+The initial whole-App update probe reported a constant 1.59–1.61 MB per simulated
+update at all three sizes, including a 461448-byte allocation independent of note size. That
+probe included the native input and GPUI executor and did not isolate persistence work; scoped legacy overlays and explicit
+direction-scan counters provide the positive controls for the part-2 boundary.

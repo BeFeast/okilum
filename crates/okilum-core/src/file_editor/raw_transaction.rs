@@ -91,14 +91,17 @@ impl FileEditor {
         let mut editor = Self {
             draft: Draft {
                 path: path.clone(),
-                base: String::from_utf8_lossy(&current).into_owned(),
-                text: String::from_utf8_lossy(proposed).into_owned(),
+                base: String::from_utf8_lossy(&current).into_owned().into(),
+                text: String::from_utf8_lossy(proposed).into_owned().into(),
+                pending_input: false,
             },
             directory,
             on_disk: None,
             journal: state.join(format!("{key}.json")),
             lock: Arc::new(lock),
             writes: Arc::default(),
+            generation: 0,
+            base_generation: 0,
             raw_transaction: Some(transaction),
         };
         let result = editor.save_before_exchange(before_exchange);

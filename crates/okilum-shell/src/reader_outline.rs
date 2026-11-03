@@ -46,7 +46,7 @@ impl Reader {
         }
     }
 
-    pub(super) fn refresh_draft_outline(&mut self, _source: &str, cx: &mut Context<Self>) {
+    pub(super) fn refresh_draft_outline(&mut self, cx: &mut Context<Self>) {
         self.draft_outline.pending = true;
         // One parser in flight, with no queue of intermediate drafts. Every
         // completion either publishes its exact revision or reads the latest.
@@ -56,13 +56,19 @@ impl Reader {
         let mut cache = self.draft_outline.cache.take().unwrap_or_default();
         self.draft_outline.worker = Some(cx.spawn(async move |this, cx| loop {
             let Ok(Some((input, stamp, source))) = this.update(cx, |this, cx| {
+                #[cfg(test)]
+                let _work = crate::reader_editor::work::scope();
                 let Some(editing) = &this.editing else {
                     this.draft_outline.worker = None;
                     return None;
                 };
                 let input = editing.input().clone();
                 let state = input.read(cx);
-                Some((input.clone(), state.source_stamp(), state.value()))
+                Some((
+                    input.clone(),
+                    state.source_stamp(),
+                    state.source_snapshot().text,
+                ))
             }) else {
                 return;
             };
@@ -85,10 +91,19 @@ impl Reader {
                 {
                     return false;
                 }
+                let labels_changed = this.draft_outline.signature != snapshot.signature;
+                this.draft_outline.signature = snapshot.signature;
                 this.draft_outline.cache = Some(std::mem::take(&mut cache));
-                this.draft_outline.source = snapshot.source;
-                this.draft_outline.entries = snapshot.entries;
-                this.draft_outline.lines = snapshot.lines;
+                let retired = (
+                    std::mem::replace(&mut this.draft_outline.source, snapshot.source),
+                    std::mem::replace(&mut this.draft_outline.entries, snapshot.entries),
+                    std::mem::replace(&mut this.draft_outline.lines, snapshot.lines),
+                );
+                cx.background_executor()
+                    .spawn(async move {
+                        drop(retired);
+                    })
+                    .detach();
                 this.draft_outline.pending = false;
                 this.draft_outline.worker = None;
                 if this.outline_list.item_count() != this.draft_outline.entries.len() {
@@ -97,7 +112,9 @@ impl Reader {
                         px(OUTLINE_ROW_HEIGHT),
                     );
                 }
-                cx.notify();
+                if labels_changed {
+                    cx.notify();
+                }
                 true
             }) else {
                 return;

@@ -499,20 +499,29 @@ impl SourceFacts {
         input: &gpui_component::input::EditorState,
         markdown: bool,
     ) {
+        self.refresh_snapshot(reader, &input.source_snapshot(), input.cursor(), markdown);
+    }
+    pub(super) fn refresh_snapshot(
+        &self,
+        reader: &Reader,
+        source: &gpui_component::input::projection::SourceSnapshot,
+        cursor: usize,
+        markdown: bool,
+    ) {
         let mut snapshot = self.0.borrow_mut();
         if !markdown {
             snapshot.selected = None;
             return;
         }
-        let stamp = input.source_stamp();
+        let stamp = source.stamp;
         if snapshot.stamp != Some(stamp)
             || snapshot.root != reader.vault_root
             || snapshot.note != reader.current_rel
             || snapshot.generation != reader.navigation.preparation_generation
         {
-            snapshot.ranges = if input.text().len() <= okilum_core::source_classifier::MAX_BYTES {
+            snapshot.ranges = if source.text.len() <= okilum_core::source_classifier::MAX_BYTES {
                 okilum_core::render::image_reference::references(
-                    &input.text().to_string(),
+                    &source.text,
                     &reader.vault,
                     &reader.current_rel,
                 )
@@ -527,7 +536,7 @@ impl SourceFacts {
         snapshot.selected = snapshot
             .ranges
             .iter()
-            .find(|image| image.range.contains(&input.cursor()))
+            .find(|image| image.range.contains(&cursor))
             .map(|image| Target::captured(reader, image.url.as_deref()));
     }
     pub(super) fn menu(&self, mut menu: NativeMenu) -> NativeMenu {

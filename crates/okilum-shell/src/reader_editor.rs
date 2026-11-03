@@ -11,7 +11,11 @@ mod lists;
 mod live_preview;
 mod math_preview;
 mod paste_jobs;
+mod recovery;
+mod status;
 mod tables;
+#[cfg(test)]
+pub(crate) mod work;
 mod writing_modes;
 use super::*;
 use crate::platform::labels::Os;
@@ -67,8 +71,13 @@ impl ProjectionProvider for ExactSource {
 }
 
 use okilum_core::file_editor::{DiskStamp, FileEditor, Save};
+use okilum_core::source_projection::revision::Text as DraftText;
 
 /// The pause in typing after which an edit is saved (#1353).
+const RECOVERY_PAUSE: std::time::Duration = std::time::Duration::from_millis(300);
+#[cfg(test)]
+thread_local! { static FAIL_AUTOSAVE_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+const AUTOSAVE_START_NOTICE: &str = "Automatic Save couldn’t start. Your edits are still here. Retry Save or keep this window open.";
 const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 /// How every conflict notice starts, so a conflict that went away takes its
 /// notice with it and leaves any other notice alone (#1376).
@@ -112,6 +121,9 @@ pub(super) struct Editing {
     math_preview: Entity<math_preview::MathPreview>,
     /// One persistent cell grid per editor; cell changes use the source Undo path.
     table_grid: Entity<tables::TableGrid>,
+    save_status: Entity<status::SaveStatus>,
+    block_context: BlockContext,
+    block_cache: block_context::WorkerCache,
     input: Entity<EditorState>,
     conflict: Option<String>,
     conflict_detected: bool,
@@ -119,9 +131,12 @@ pub(super) struct Editing {
     save_failed: bool,
     protecting: bool,
     recovery_epoch: u64,
+    draft_stamp: gpui_component::input::projection::SourceStamp,
+    recovery_task: Option<Task<()>>,
+    recovery_pending: Option<recovery::Pending>,
     save_pending: bool,
     /// The text an autosave is writing on a worker (#1353).
-    autosaving: Option<String>,
+    autosaving: Option<DraftText>,
     /// A disk refresh came while that autosave was writing; it runs once the
     /// save is back (#1376).
     refresh_deferred: bool,
@@ -335,6 +350,7 @@ impl Editing {
     // UI subscriptions stay on the foreground executor; only the locked file
     // store crosses to the worker. Reassembly preserves undo/input state.
     fn park(mut self, cx: &mut App) -> (FileEditor, impl FnOnce(FileEditor) -> Self) {
+        self.recovery_pending = None;
         // A second window can still hold its painted input until the next frame.
         // Freeze it synchronously, before moving the store off the UI thread.
         self.live_preview.suspend();
@@ -346,6 +362,9 @@ impl Editing {
             live_preview,
             math_preview,
             table_grid,
+            save_status,
+            block_context,
+            block_cache,
             input,
             conflict,
             conflict_detected,
@@ -353,6 +372,9 @@ impl Editing {
             save_failed,
             protecting,
             recovery_epoch,
+            draft_stamp,
+            recovery_task,
+            recovery_pending,
             save_pending,
             autosaving,
             refresh_deferred,
@@ -376,6 +398,9 @@ impl Editing {
             live_preview,
             math_preview,
             table_grid,
+            save_status,
+            block_context,
+            block_cache,
             input,
             conflict,
             conflict_detected,
@@ -383,6 +408,9 @@ impl Editing {
             save_failed,
             protecting,
             recovery_epoch,
+            draft_stamp,
+            recovery_task,
+            recovery_pending,
             save_pending,
             autosaving,
             refresh_deferred,
@@ -404,7 +432,7 @@ impl Editing {
 
     #[cfg(test)]
     fn status(&self) -> &'static str {
-        self.status_with_dirty(self.store.dirty())
+        self.status_with_dirty(self.store.has_pending_revision())
     }
 
     fn status_with_dirty(&self, store_dirty: bool) -> &'static str {
@@ -676,8 +704,9 @@ impl Reader {
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
         // The note's reference definitions and text, for rendered blocks (#1067).
-        let block_context: BlockContext =
-            Rc::new(std::cell::RefCell::new(BlockNote::new(store.text().into())));
+        let block_context: BlockContext = Rc::new(std::cell::RefCell::new(BlockNote::initial(
+            store.snapshot(),
+        )));
         let blocks = (!plain_file).then(|| {
             (
                 self.vault_root.clone(),
@@ -770,40 +799,98 @@ impl Reader {
                 this.refresh_link_complete(window, cx);
             }
         });
-        let changed = cx.subscribe(&input, move |this, input, _: &SourceMutation, cx| {
-            // Code blocks and tables keep one alignment as they change (S6c).
-            // value() flattens the Rope: share this one immutable snapshot
-            // with the recovery queue instead of materializing it again (#1621).
-            let value = input.update(cx, |state, _| {
-                let value = state.value();
-                state.set_direction_exempt_lines(direction_exempt_lines(&value));
-                // Publish the exact context without scanning for definitions
-                // on the input path; reference-capable blocks request them.
-                *block_context.borrow_mut() = BlockNote::new(value.clone());
-                value
-            });
+        let changed = cx.subscribe(&input, move |this, input, mutation: &SourceMutation, cx| {
+            #[cfg(test)]
+            let _work = work::scope();
             let Some(editing) = &mut this.editing else {
                 return;
             };
             if editing.input.entity_id() != input.entity_id() {
                 return;
             }
-            // Includes Silent mutations emitted by native undo and redo.
-            let write = editing.store.queue_text(value.to_string());
+            let snapshot = input.read(cx).source_snapshot();
+            let source_stamp = snapshot.stamp;
+            let value = okilum_core::source_projection::revision::Text::from_identified_rope(
+                snapshot.text.rope().clone(),
+                snapshot.text.id(),
+            );
+            // Retain the exact native revision, including silent Undo/Redo/IME.
+            editing.draft_stamp = snapshot.stamp;
+            let write = if editing.store.snapshot().same(&value) {
+                editing.store.recovery_write()
+            } else if mutation.reason
+                == gpui_component::input::projection::SourceMutationReason::Reset
+            {
+                editing.store.queue_reset_snapshot(value.clone())
+            } else {
+                editing.store.queue_snapshot(value.clone())
+            };
+            *editing.block_context.borrow_mut() = BlockNote::pending();
             editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
             let epoch = editing.recovery_epoch;
             let input_id = input.entity_id();
-            editing.protecting = true;
-            cx.spawn(async move |this, cx| {
-                let result = cx
+            // A clean reload/reset already has its exact canonical bytes.
+            // Preparing its context must not block a move for 300 ms.
+            editing.protecting = editing.store.has_pending_revision();
+            editing.recovery_pending = if editing.protecting {
+                Some(recovery::Pending::new(write))
+            } else {
+                drop(write);
+                None
+            };
+            let ticket = editing
+                .recovery_pending
+                .as_ref()
+                .map(recovery::Pending::ticket);
+            let context = editing.block_context.clone();
+            let cache = editing.block_cache.clone();
+            #[cfg(test)]
+            drop(_work); // GPUI scheduling traces are outside snapshot/persistence work.
+            editing.recovery_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(RECOVERY_PAUSE).await;
+                let write = ticket.and_then(|ticket| {
+                    let write = ticket.borrow_mut().take();
+                    write
+                });
+                let (result, directions, prepared_context) = cx
                     .background_executor()
-                    .spawn(async move { write.persist() })
+                    .spawn(async move {
+                        // Persist first: presentation preparation must not delay recovery.
+                        let result = write.map_or(Ok(()), |write| write.persist());
+                        let directions = direction_exempt_lines(&value);
+                        let provider =
+                            crate::source_presentation::CachedProvider::classify(snapshot.clone());
+                        let prepared =
+                            BlockNote::prepare(value, provider.rendered_blocks(&snapshot));
+                        // The worker retains the last large derived cache until
+                        // its replacement. A key can drop its UI reference in O(1)
+                        // without destroying a note-wide footnote map on the UI.
+                        let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
+                        // Retain every cache still owned by a UI snapshot. A
+                        // newer worker may finish before its UI adoption; the
+                        // previous painted cache must stay worker-owned too.
+                        cache.retain(|known| Arc::strong_count(known) > 1);
+                        cache.push(prepared.2.clone());
+                        (result, directions, prepared)
+                    })
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     let Some(editing) = &mut this.editing else {
                         return;
                     };
-                    if editing.input.entity_id() != input_id || editing.recovery_epoch != epoch {
+                    if editing.input.entity_id() != input_id
+                        || editing.input.read(cx).source_stamp() != source_stamp
+                    {
+                        return;
+                    }
+                    // Save retires recovery ownership, not same-revision
+                    // presentation preparation. New typing invalidates both.
+                    *context.borrow_mut() = BlockNote::from_prepared(prepared_context);
+                    editing.input.update(cx, |input, cx| {
+                        input.set_direction_exempt_lines(directions);
+                        cx.notify();
+                    });
+                    if editing.recovery_epoch != epoch {
                         return;
                     }
                     editing.protecting = false;
@@ -811,15 +898,17 @@ impl Reader {
                         editing.save_failed = true;
                         eprintln!("Draft recovery could not be saved: {error:#}");
                         this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
+                        cx.notify();
+                    } else if this.link_notice.as_deref() == Some(DRAFT_WRITE_NOTICE) {
+                        editing.save_failed = false;
+                        this.link_notice = None;
+                        cx.notify();
                     }
-                    cx.notify();
                 });
-            })
-            .detach();
-            this.refresh_draft_outline(&value, cx);
+            }));
+            this.refresh_draft_outline(cx);
             this.schedule_autosave(input_id, epoch, cx);
             this.schedule_live_preview(cx);
-            cx.notify();
         });
         let clicked = cx.subscribe_in(
             &input,
@@ -903,7 +992,7 @@ impl Reader {
                 this.save_source(cx);
             }
         });
-        if store.dirty() {
+        if store.has_pending_revision() {
             reader_toast::transient("Unsaved changes restored", window, cx);
         }
         // A click on a Live Preview task checkbox is one source edit and one
@@ -1000,14 +1089,18 @@ impl Reader {
         let reader = cx.entity();
         let math_preview =
             cx.new(|cx| math_preview::MathPreview::new(reader.clone(), input.clone(), cx));
+        let block_cache = block_context::WorkerCache::default();
+        let save_status = cx.new(|cx| status::SaveStatus::new(reader.clone(), &input, cx));
         let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), window, cx));
-        let table_watch = cx.observe(&table_grid, |_, _, cx| cx.notify());
         self.editing = Some(Editing {
             store,
             source_status: Default::default(),
             live_preview,
             math_preview,
             table_grid,
+            save_status,
+            block_context,
+            block_cache,
             input: input.clone(),
             conflict: None,
             conflict_detected: false,
@@ -1015,6 +1108,9 @@ impl Reader {
             save_failed: false,
             protecting: false,
             recovery_epoch: 0,
+            draft_stamp: input.read(cx).source_stamp(),
+            recovery_task: None,
+            recovery_pending: None,
             save_pending: false,
             autosaving: None,
             refresh_deferred: false,
@@ -1037,7 +1133,6 @@ impl Reader {
                 toggled,
                 highlighting,
                 menu_watch,
-                table_watch,
                 pasted,
             ],
         });
@@ -1050,7 +1145,7 @@ impl Reader {
         if let Some(place) = reader_place {
             self.place_editor_at_reader(input.clone(), place, window, cx);
         }
-        self.refresh_draft_outline(&input.read(cx).value(), cx);
+        self.refresh_draft_outline(cx);
         self.set_live_preview(self.ui_state.live_preview, window, cx);
         self.ui_state.source_mode = true;
         self.start_editor_layout_diagnostics(input.clone(), cx);
@@ -1087,7 +1182,13 @@ impl Reader {
         .detach();
     }
 
-    pub(super) fn render_save_status(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_save_status(&self, _cx: &mut Context<Self>) -> AnyElement {
+        self.editing
+            .as_ref()
+            .map(|e| e.save_status.clone().into_any_element())
+            .unwrap_or_else(|| div().into_any_element())
+    }
+    fn save_status_element(&self, cx: &App) -> AnyElement {
         let Some(editing) = &self.editing else {
             return div().into_any_element();
         };
@@ -1358,6 +1459,7 @@ impl Reader {
             return (true, true);
         };
         editing.save_pending = false;
+        editing.recovery_pending = None;
         editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
         editing.protecting = false;
         editing.saves = editing.saves.wrapping_add(1);
@@ -1365,18 +1467,16 @@ impl Reader {
         // not an outside change (#1353).
         // This save checks the disk itself, so a deferred refresh is moot.
         editing.refresh_deferred = false;
-        if let Some(written) = editing.autosaving.take() {
-            if editing
-                .store
-                .current()
-                .is_ok_and(|current| current == written)
-            {
-                let _ = editing.store.saved_as(written);
-            }
-        }
-        let text = editing.input.read(cx).value().to_string();
-        let source_changed = editing.store.dirty() || editing.store.text() != text;
-        let draft = editing.store.set_text(text);
+        editing.autosaving = None;
+        // Lifecycle commands may run before SourceMutation subscribers. Capture
+        // the canonical native revision directly, even in that same UI turn.
+        let snapshot = editing.input.read(cx).source_snapshot();
+        let text =
+            DraftText::from_identified_rope(snapshot.text.rope().clone(), snapshot.text.id());
+        editing.draft_stamp = snapshot.stamp;
+        editing.store.queue_snapshot(text);
+        let source_changed = editing.store.dirty();
+        let draft = editing.store.flush_draft();
         let protected = draft.is_ok();
         let rules_revision = protected
             .then(|| pending_agents_revision(&editing.store, editing.store.dirty()))
@@ -1399,6 +1499,12 @@ impl Reader {
                 editing.conflict_detected = false;
                 editing.save_failed = false;
                 editing.protecting = false;
+                if matches!(
+                    self.link_notice.as_deref(),
+                    Some(DRAFT_WRITE_NOTICE | AUTOSAVE_START_NOTICE)
+                ) {
+                    self.link_notice = None;
+                }
                 if let Some((absolute_path, saved_revision)) = rules_revision {
                     self.agents_rules_saved(&absolute_path, &saved_revision, cx);
                 }
@@ -1489,17 +1595,25 @@ impl Reader {
         {
             return;
         }
-        let text = editing.input.read(cx).value().to_string();
-        if editing.store.text() != text {
-            let _ = editing.store.queue_text(text.clone());
-        }
-        if !editing.store.dirty() {
+        if !editing.store.has_pending_revision() {
             return;
         }
-        let copy = match editing.store.save_copy() {
+        let text = editing.store.snapshot();
+        #[cfg(test)]
+        let copy = if FAIL_AUTOSAVE_COPY.with(|fail| fail.replace(false)) {
+            Err(anyhow::anyhow!("Injected save-copy failure"))
+        } else {
+            editing.store.save_copy()
+        };
+        #[cfg(not(test))]
+        let copy = editing.store.save_copy();
+        let copy = match copy {
             Ok(copy) => copy,
             Err(error) => {
+                editing.save_failed = true;
+                self.link_notice = Some(AUTOSAVE_START_NOTICE.into());
                 eprintln!("Autosave could not start: {error:#}");
+                cx.notify();
                 return;
             }
         };
@@ -1537,7 +1651,7 @@ impl Reader {
         &mut self,
         input_id: EntityId,
         saves: u64,
-        text: String,
+        text: DraftText,
         result: anyhow::Result<Save>,
         stamp: Option<DiskStamp>,
         cx: &mut Context<Self>,
@@ -1562,24 +1676,51 @@ impl Reader {
         match result {
             Ok(Save::Saved) => {
                 // The recovery copy of a large note is written off the UI thread too.
-                let write = editing.store.saved_as_queued_at(text, stamp);
-                cx.background_executor()
-                    .spawn(async move {
-                        if let Err(error) = write.persist() {
-                            eprintln!("Autosaved, but the recovery copy lags: {error:#}");
+                let write = editing.store.saved_snapshot_queued_at(text, stamp);
+                // This journal generation includes the confirmed base and the
+                // latest typing. An obsolete pre-save task cannot acknowledge it.
+                editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
+                editing.protecting = true;
+                let epoch = editing.recovery_epoch;
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { write.persist() })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        let Some(editing) = this.editing.as_mut().filter(|e| {
+                            e.input.entity_id() == input_id && e.recovery_epoch == epoch
+                        }) else {
+                            return;
+                        };
+                        editing.protecting = false;
+                        editing.input.update(cx, |_, cx| cx.notify());
+                        if let Err(error) = result {
+                            editing.save_failed = true;
+                            eprintln!("Autosaved, but recovery acknowledgement failed: {error:#}");
+                            this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
+                            cx.notify();
                         }
-                    })
-                    .detach();
+                    });
+                })
+                .detach();
                 editing.saved_at = Some(
                     time::OffsetDateTime::now_local()
                         .unwrap_or_else(|_| time::OffsetDateTime::now_utc()),
                 );
                 editing.save_failed = false;
+                if matches!(
+                    self.link_notice.as_deref(),
+                    Some(DRAFT_WRITE_NOTICE | AUTOSAVE_START_NOTICE)
+                ) {
+                    self.link_notice = None;
+                }
                 // Typing during the save: its timer found this save running
                 // and skipped, so the rest is saved after its own pause.
                 let editing = self.editing.as_mut().unwrap();
-                if editing.input.read(cx).value().as_ref() != editing.store.text()
-                    || editing.store.dirty()
+                if editing.input.read(cx).source_snapshot().text.id()
+                    != editing.store.snapshot().id()
+                    || editing.store.has_pending_revision()
                 {
                     let epoch = editing.recovery_epoch;
                     self.schedule_autosave(input_id, epoch, cx);
@@ -2168,11 +2309,8 @@ fn live_blocks(
             let block_source = code_source
                 .map(|source| source.to_string())
                 .unwrap_or_else(|| {
-                    okilum_core::obsidian::block_footnotes(
-                        &note.text,
-                        block.source.start.0..block.source.end.0,
-                    )
-                    .unwrap_or_else(|| source.to_owned())
+                    note.block_footnotes(source, block.source.start.0..block.source.end.0)
+                        .unwrap_or_else(|| source.to_owned())
                 });
             let input = note.with_definitions(block_source);
             let entry = prepared.1.entry(block.key).or_default();
@@ -2336,6 +2474,8 @@ fn image_embed_start(source: &str) -> Option<usize> {
 /// fenced code blocks, fences included, and table rows (S6c, #1034). A
 /// right-to-left comment in code or a Hebrew table cell must not move its line.
 fn direction_exempt_lines(source: &str) -> Vec<std::ops::Range<usize>> {
+    #[cfg(test)]
+    work::inspect(source.len());
     let mut lines: Vec<std::ops::Range<usize>> = Vec::new();
     let mut push = |line: std::ops::Range<usize>| match lines.last_mut() {
         Some(last) if last.end >= line.start => last.end = last.end.max(line.end),
@@ -2621,16 +2761,16 @@ impl Reader {
         {
             return Some(status);
         }
-        #[cfg(test)]
-        SOURCE_STATUS_BYTES.with(|bytes| bytes.set(bytes.get() + input.text().len()));
-        let store_dirty = editing.store.dirty();
+        // #2404: shared draft revisions make even a cold status lookup O(1).
+        // Exact content equality belongs to the worker's save acknowledgement.
+        let store_dirty = editing.store.has_pending_revision();
         let status = SourceStatus {
             key,
             store_dirty,
             dirty: store_dirty
                 || key.conflict
                 || key.protecting
-                || input.text().bytes().ne(editing.store.text().bytes()),
+                || input.source_stamp() != editing.draft_stamp,
         };
         editing.source_status.set(Some(status));
         Some(status)
@@ -2643,8 +2783,8 @@ impl Reader {
 
     pub(super) fn source_is_dirty(&self, cx: &App) -> bool {
         self.editing.as_ref().is_some_and(|e| {
-            e.store.dirty()
-                || e.input.read(cx).value().as_ref() != e.store.text()
+            e.store.has_pending_revision()
+                || e.input.read(cx).source_stamp() != e.draft_stamp
                 || e.conflict_detected
                 || e.protecting
         })
@@ -3368,6 +3508,10 @@ mod tests {
                 .set_value("first draft", window, cx);
         });
         visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
+        visual.run_until_parked();
         let journal = std::fs::read_dir(state.join("editor-drafts"))
             .unwrap()
             .flatten()
@@ -3384,6 +3528,10 @@ mod tests {
                 .unwrap()
                 .set_value("latest draft", window, cx);
         });
+        visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(
@@ -3458,6 +3606,10 @@ mod tests {
                 .set_value("first draft", window, cx);
         });
         visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
+        visual.run_until_parked();
         let journal = std::fs::read_dir(state.join("editor-drafts"))
             .unwrap()
             .flatten()
@@ -3474,6 +3626,10 @@ mod tests {
                 .unwrap()
                 .set_value("latest draft", window, cx);
         });
+        visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(
@@ -5118,6 +5274,10 @@ mod tests {
         #[cfg(not(target_os = "macos"))]
         visual.simulate_keystrokes("ctrl-z");
         visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
+        visual.run_until_parked();
         let journal = std::fs::read_dir(directory.join("state/editor-drafts"))
             .unwrap()
             .flatten()
@@ -5619,6 +5779,229 @@ mod autosave_tests {
         assert_ne!(undone, "baedit original", "undo works after an autosave");
         wait(visual, 1200);
         assert_eq!(on_disk(&f), undone);
+    }
+
+    #[gpui::test]
+    fn issue2404_key_has_no_note_sized_foreground_allocation_or_reader_notification(
+        cx: &mut TestAppContext,
+    ) {
+        let mut violations = Vec::new();
+        for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
+            let mut source = "Ordinary prose line.\r\n\r\n".repeat(bytes / 24 + 1);
+            source.truncate(bytes);
+            let (f, visual) = open(cx, &source);
+            let input = input(&f, visual);
+            // Warm drawing/observer registrations before measuring a key.
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            let notified = Rc::new(std::cell::Cell::new(0));
+            let seen = notified.clone();
+            let _watch =
+                visual.update(|_, cx| cx.observe(&f.reader, move |_, _| seen.set(seen.get() + 1)));
+            work::reset();
+            input.update_in(visual, |input, window, cx| {
+                input.replace_text_in_range(Some(0..1), "x", window, cx);
+            });
+            let measured = work::take();
+            if measured.largest >= 16 * 1024
+                || measured.bytes >= 128 * 1024
+                || measured.frees >= 512
+                || measured.inspected >= 16 * 1024
+                || notified.get() != 0
+            {
+                violations.push((bytes, measured, notified.get()));
+            }
+            // Positive control runs the legacy value/String snapshot operation
+            // under the same allocator; it must exceed the key's bound.
+            work::reset();
+            let flat = input.read_with(visual, |i, _| {
+                let _work = work::scope();
+                i.value().to_string()
+            });
+            let control = work::take();
+            assert!(
+                control.largest >= bytes && control.bytes >= 2 * bytes && control.frees > 0,
+                "unfired positive control: {control:?}"
+            );
+            assert!(flat.starts_with('x'));
+            f.reader.read_with(visual, |r, _| {
+                assert_eq!(
+                    r.editing.as_ref().unwrap().store.text(),
+                    flat,
+                    "the measured mutation must reach the real persistence subscription"
+                );
+            });
+            println!("EDITOR_KEY_WORK bytes={bytes} measured={measured:?} control={control:?}");
+        }
+        assert!(
+            violations.is_empty(),
+            "bounded per-key UI work failed: {violations:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn issue2404_recovery_debounces_then_restores_latest_bom_crlf(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "\u{feff}base\r\n");
+        type_at_start(&f, visual, "first");
+        wait(visual, 150);
+        type_at_start(&f, visual, "latest");
+        let path = f.reader.read_with(visual, |r, _| {
+            r.session_directory.as_ref().unwrap().join("editor-drafts")
+        });
+        // No recovery write until the pause after the most recent mutation.
+        assert!(!FileEditor::has_unsaved_draft(&f.file, &path).unwrap());
+        wait(visual, 200);
+        assert!(!FileEditor::has_unsaved_draft(&f.file, &path).unwrap());
+        wait(visual, 150);
+        assert!(FileEditor::has_unsaved_draft(&f.file, &path).unwrap());
+        let text = input(&f, visual).read_with(visual, |i, _| i.value().to_string());
+        f.reader.update_in(visual, |r, _, _| {
+            r.editing = None;
+        });
+        let recovered = FileEditor::open(&f.file, &path).unwrap();
+        assert_eq!(recovered.text(), text);
+        assert!(recovered.text().starts_with('\u{feff}'));
+        assert!(recovered.text().ends_with("\r\n"));
+        drop(recovered);
+    }
+
+    #[gpui::test]
+    fn issue2404_close_and_quit_flush_before_debounce(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "\u{feff}base\r\n");
+        type_at_start(&f, visual, "latest");
+        let text = input(&f, visual).read_with(visual, |i, _| i.value().to_string());
+        let path = f.reader.read_with(visual, |r, _| {
+            r.session_directory.as_ref().unwrap().join("editor-drafts")
+        });
+        // Keep Draft closes immediately, before the recovery timer can run.
+        f.reader
+            .update_in(visual, |r, window, cx| r.park_source(window, cx));
+        let recovered = FileEditor::open(&f.file, &path).unwrap();
+        assert_eq!(recovered.text(), text);
+        assert_eq!(on_disk(&f), "\u{feff}base\r\n");
+        drop(recovered);
+        f.reader
+            .update_in(visual, |r, window, cx| r.toggle_source(window, cx));
+        visual.run_until_parked();
+        type_at_start(&f, visual, "quit");
+        let expected = input(&f, visual).read_with(visual, |i, _| i.value().to_string());
+        visual.update(|_, cx| assert!(protect_all_for_quit(cx)));
+        assert_eq!(on_disk(&f), expected);
+        f.reader.update_in(visual, |r, _, _| {
+            r.editing = None;
+        });
+        assert_eq!(FileEditor::open(&f.file, &path).unwrap().text(), expected);
+    }
+
+    #[gpui::test]
+    fn issue2404_debounced_worker_failure_is_visible_and_latest_draft_retries(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, visual) = open(cx, "base");
+        let state = f.reader.read_with(visual, |r, _| {
+            r.session_directory.as_ref().unwrap().join("editor-drafts")
+        });
+        // The locked state folder exists already. Replacing its journal file
+        // with a directory deterministically refuses the worker's rename.
+        use sha2::{Digest, Sha256};
+        let key = format!(
+            "{:x}",
+            Sha256::digest(
+                f.file
+                    .canonicalize()
+                    .unwrap()
+                    .as_os_str()
+                    .as_encoded_bytes()
+            )
+        );
+        let journal = state.join(format!("{key}.json"));
+        std::fs::create_dir(&journal).unwrap();
+        type_at_start(&f, visual, "latest");
+        wait(visual, 350);
+        f.reader.read_with(visual, |r, _| {
+            assert!(r.editing.as_ref().unwrap().save_failed);
+            assert_eq!(r.link_notice.as_deref(), Some(DRAFT_WRITE_NOTICE));
+        });
+        std::fs::remove_dir(&journal).unwrap();
+        f.reader
+            .update_in(visual, |r, _, cx| assert!(r.save_source(cx)));
+        assert_eq!(on_disk(&f), "latestbase");
+        f.reader
+            .read_with(visual, |r, _| assert!(r.link_notice.is_none()));
+    }
+
+    #[gpui::test]
+    fn issue2404_save_worker_start_failure_is_visible_and_explicit_save_retries(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, visual) = open(cx, "base");
+        type_at_start(&f, visual, "latest");
+        wait(visual, 350);
+        FAIL_AUTOSAVE_COPY.with(|fail| fail.set(true));
+        wait(visual, 800);
+        f.reader.read_with(visual, |r, _| {
+            assert!(r.editing.as_ref().unwrap().save_failed);
+            assert_eq!(r.link_notice.as_deref(), Some(AUTOSAVE_START_NOTICE));
+        });
+        assert_eq!(on_disk(&f), "base", "failed worker never published");
+        f.reader
+            .update_in(visual, |r, _, cx| assert!(r.save_source(cx)));
+        assert_eq!(on_disk(&f), "latestbase");
+        f.reader
+            .read_with(visual, |r, _| assert!(r.link_notice.is_none()));
+    }
+
+    #[gpui::test]
+    fn issue2404_save_does_not_cancel_same_revision_context_preparation(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "[id]: https://example.com/old\r\n");
+        let input = input(&f, visual);
+        input.update_in(visual, |i, window, cx| {
+            i.set_value("[id]: https://example.com/new\r\n", window, cx)
+        });
+        visual.run_until_parked();
+        f.reader
+            .update_in(visual, |r, _, cx| assert!(r.save_source(cx)));
+        wait(visual, 350);
+        f.reader.read_with(visual, |r, _| {
+            let context = r.editing.as_ref().unwrap().block_context.borrow();
+            let source = context.with_definitions("[label][id]".into());
+            assert!(source.contains("https://example.com/new"));
+            assert!(!source.contains("https://example.com/old"));
+        });
+    }
+
+    #[gpui::test]
+    fn issue2404_save_acknowledgement_owns_protection_of_newer_typing(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "base");
+        type_at_start(&f, visual, "a");
+        let saves = autosave_in_flight(&f, visual, "abase");
+        type_at_start(&f, visual, "b");
+        let path = f.reader.read_with(visual, |r, _| {
+            r.session_directory.as_ref().unwrap().join("editor-drafts")
+        });
+        let input_id = input(&f, visual).entity_id();
+        f.reader.update(visual, |r, cx| {
+            let before = r.editing.as_ref().unwrap().recovery_epoch;
+            r.autosaved(input_id, saves, "abase".into(), Ok(Save::Saved), None, cx);
+            let editing = r.editing.as_ref().unwrap();
+            assert!(editing.protecting);
+            assert!(
+                editing.recovery_epoch > before,
+                "the previous journal worker lost acknowledgement ownership"
+            );
+        });
+        visual.run_until_parked();
+        f.reader.read_with(visual, |r, _| {
+            assert!(!r.editing.as_ref().unwrap().protecting)
+        });
+        // Crash-style release without Save/close flush. The acknowledged draft
+        // must contain the typing made after the canonical save's snapshot.
+        f.reader.update(visual, |r, _| {
+            r.editing = None;
+        });
+        visual.run_until_parked();
+        let recovered = FileEditor::open(&f.file, &path).unwrap();
+        assert_eq!(recovered.text(), "babase");
+        assert_eq!(on_disk(&f), "abase");
     }
 
     /// A change made outside Okilum before the autosave is never overwritten:
