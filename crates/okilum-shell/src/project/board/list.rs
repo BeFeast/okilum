@@ -1,6 +1,8 @@
 //! One virtualised, fixed-height stream. Only snapshot publication, filter and
 //! collapse changes rebuild the row index; scrolling never projects all issues.
 use super::*;
+#[cfg(feature = "project-ui-harness")]
+mod fixture;
 mod preferences;
 pub(super) use preferences::Mode;
 use preferences::Preferences;
