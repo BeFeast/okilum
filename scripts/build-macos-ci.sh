@@ -116,7 +116,7 @@ cat >"$APP/Contents/Info.plist" <<PLIST
 <key>SUEnableAutomaticChecks</key><true/>
 <!-- #1603: retain checks; every download/install uses the user-driver freshness hook. -->
 <key>SUAllowsAutomaticUpdates</key><false/>
-<key>SUScheduledCheckInterval</key><integer>3600</integer>
+<key>SUScheduledCheckInterval</key><integer>1800</integer>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST

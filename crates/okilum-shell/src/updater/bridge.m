@@ -17,6 +17,8 @@ static void TSRegisterChannelDefault(void) {
 // kind: 0 up to date, 1 update available (text = version), 2 error (text = reason).
 typedef void (*TSReport)(int kind, const char *text);
 static TSReport TSReporter;
+typedef bool (*TSAutomaticAdmission)(void);
+static TSAutomaticAdmission TSAdmitAutomatic;
 static void TSSend(int kind, NSString *text) {
     if (TSReporter) TSReporter(kind, (text ?: @"").UTF8String);
 }
@@ -196,6 +198,8 @@ static BOOL TSGuardRequested;
 static BOOL TSManualCheck;
 static BOOL TSInstallRequested;
 static BOOL TSCancelledCycle;
+static BOOL TSScheduledCheckSkipped;
+static BOOL TSReplacingUpdate(void);
 static NSSet<NSString *> *TSChannels(void) {
     return [NSUserDefaults.standardUserDefaults boolForKey:TSBetaKey]
         ? [NSSet setWithObjects:@"stable", @"beta", nil] : [NSSet setWithObject:@"stable"];
@@ -241,6 +245,19 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
 @property(nonatomic, copy) NSSet<NSString *> *channels;
 @end
 @implementation TSUpdaterDelegate
+- (BOOL)updater:(SPUUpdater *)updater mayPerformUpdateCheck:(SPUUpdateCheck)check error:(NSError **)error {
+    // Explicit Install and freshness-driven replacements retain their intent.
+    // A native scheduled check shares the focus/timer throttle; probing must
+    // never race a retained installation or the isolated metadata updater.
+    if (check == SPUUpdateCheckUpdatesInBackground && !TSInstallRequested && !TSReplacingUpdate()) {
+        if (TSProbe.completion || TSManualCheck || (TSAdmitAutomatic && !TSAdmitAutomatic())) {
+            TSScheduledCheckSkipped = YES;
+            return NO;
+        }
+        TSSend(9, nil);
+    }
+    return YES;
+}
 // Stable items carry the "stable" channel, so builds that predate this bridge
 // (which only allowed "stable") keep seeing them.
 - (NSSet<NSString *> *)allowedChannelsForUpdater:(SPUUpdater *)updater {
@@ -279,6 +296,7 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     // is ignored. This is cycle completion, never a user-driver reply.
     BOOL restart = TSRestartAfterCycle && !error;
     TSCancelledCycle = NO;
+    TSScheduledCheckSkipped = NO;
     TSRestartAfterCycle = NO;
     if (TSCycleFailure) { TSSend(2, TSCycleFailure); TSCycleFailure = nil; }
     if (restart) {
@@ -290,7 +308,7 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     TSSend(0, nil);
 }
 - (void)updater:(SPUUpdater *)updater didAbortWithError:(NSError *)error {
-    if (TSCancelledCycle) return; // retain the explicit inline cancellation outcome
+    if (TSCancelledCycle || TSScheduledCheckSkipped) return;
     // "No update" can also arrive as an error; it is not a failure.
     if ([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError) {
         TSSend(0, nil);
@@ -337,7 +355,7 @@ static TSTerminationDelegate *TSTermination;
     TSSend(0, nil); acknowledgement();
 }
 - (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
-    if (!TSCancelledCycle) TSSend(2, error.localizedDescription);
+    if (!TSCancelledCycle && !TSScheduledCheckSkipped) TSSend(2, error.localizedDescription);
     acknowledgement();
 }
 - (void)showInstallingUpdateWithApplicationTerminated:(BOOL)terminated retryTerminatingApplication:(void (^)(void))retry {
@@ -545,6 +563,8 @@ static TSTerminationDelegate *TSTermination;
 @end
 static TSUpdaterDelegate *TSDelegate;
 
+static BOOL TSReplacingUpdate(void) { return TSDriver.replacing; }
+
 static void TSStart(NSBundle *bundle, TSUserDriver *driver, TSUpdaterDelegate *delegate) {
     TSTermination = [TSTerminationDelegate new];
     TSTermination.original = NSApp.delegate;
@@ -555,6 +575,10 @@ static void TSStart(NSBundle *bundle, TSUserDriver *driver, TSUpdaterDelegate *d
     TSUpdater = [[SPUUpdater alloc] initWithHostBundle:bundle
                                  applicationBundle:bundle
                                         userDriver:TSDriver delegate:TSDelegate];
+    // Public setting, including existing installs with an older saved value.
+    // Stock Sparkle 2.10 clamps scheduling to >=1 hour. Rust also drives silent
+    // metadata discovery every 28-32 minutes, without patching that minimum.
+    TSUpdater.updateCheckInterval = 28 * 60 + arc4random_uniform(4 * 60 + 1);
     NSError *error = nil;
     if (![TSUpdater startUpdater:&error]) TSSend(2, error.localizedDescription);
 }
@@ -563,16 +587,19 @@ void okilum_updater_start(void) {
     // A bare `cargo run` binary has no bundle feed; Sparkle would only report errors.
     if (TSUpdater || ![NSBundle.mainBundle objectForInfoDictionaryKey:@"SUFeedURL"]) return;
     TSStart(NSBundle.mainBundle, [TSUserDriver new], nil);
+    [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidBecomeActiveNotification
+        object:NSApp queue:nil usingBlock:^(NSNotification *notification) { TSSend(12, nil); }];
 }
 
 bool okilum_updater_available(void) { return TSUpdater != nil; }
 
 void okilum_updater_set_report(TSReport report) { TSReporter = report; }
+void okilum_updater_set_automatic_admission(TSAutomaticAdmission admit) { TSAdmitAutomatic = admit; }
 
 // False while a check or download session is already running: Sparkle would
 // ignore the probe and never call the delegate.
 bool okilum_updater_check(void) {
-    if (TSUpdater.sessionInProgress || TSProbe.completion || TSManualCheck) return false;
+    if (!TSUpdater || TSUpdater.sessionInProgress || TSProbe.completion || TSManualCheck) return false;
     TSManualCheck = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
         [TSProbe check:TSUpdater channels:TSChannels() foreground:NO completion:^(SUAppcastItem *selected, NSError *error) {
