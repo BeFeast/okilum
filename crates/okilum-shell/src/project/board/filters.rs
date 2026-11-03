@@ -157,6 +157,26 @@ pub(super) struct Projection {
     pub labels: BTreeSet<String>,
     pub executors: BTreeSet<String>,
 }
+// Match the source contracts' exact transition instants, rather than extending
+// a Ready claim or recent-merge membership until a periodic cache timeout.
+fn merge_expiry(at: u64, merged: u64) -> Option<u64> {
+    if merged > at {
+        return Some(merged);
+    }
+    let expiry = merged.saturating_add(86400);
+    (expiry > at).then_some(expiry)
+}
+fn freshness_expiry(at: u64, interval: u64, successes: impl Iterator<Item = u64>) -> u64 {
+    successes
+        .map(|last| {
+            last.saturating_add(interval.saturating_mul(2))
+                .saturating_add(1)
+        })
+        .filter(|expiry| *expiry > at)
+        .min()
+        .unwrap_or(u64::MAX)
+}
+
 struct Cached {
     model: Model,
     expires: u64,
@@ -250,8 +270,7 @@ impl Board {
                     .flat_map(|i| &i.live_pulls)
                 {
                     if let Some(merged) = pull.merged_at {
-                        let expiry = merged.saturating_add(86401);
-                        if expiry > at {
+                        if let Some(expiry) = merge_expiry(at, merged) {
                             expires = expires.min(expiry);
                         }
                     }
@@ -259,7 +278,26 @@ impl Board {
             }
             // Delivery evidence has freshness boundaries as well as source updates.
             if self.delivery.enabled() {
-                expires = expires.min(at.saturating_add(15));
+                let successes = self
+                    .delivery
+                    .config
+                    .last_success
+                    .into_iter()
+                    .chain(self.delivery.feeds.values().filter_map(|s| s.last_success))
+                    .chain(
+                        self.delivery
+                            .artifacts
+                            .values()
+                            .filter_map(|s| s.last_success),
+                    )
+                    .chain(self.delivery.ci.values().filter_map(|s| s.last_success))
+                    .chain(
+                        self.delivery
+                            .evidence
+                            .values()
+                            .filter_map(|s| s.last_success),
+                    );
+                expires = expires.min(freshness_expiry(at, binding.refresh_seconds, successes));
             }
             self.filter_cache.0 = Some(Cached {
                 model: self.filter.clone(),

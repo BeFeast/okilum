@@ -37,7 +37,7 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
     });
     (board, visual)
 }
-fn click(visual: &mut VisualTestContext, selector: &str) {
+fn click(visual: &mut VisualTestContext, selector: &'static str) {
     let bounds = visual
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing {selector}"));
@@ -282,4 +282,32 @@ fn issue2532_pending_refresh_is_not_an_empty_search_result(cx: &mut TestAppConte
         visual.debug_bounds("board-filter-empty").is_some(),
         "refresh retains a completed emptiness decision"
     );
+}
+
+#[test]
+fn issue2532_delivery_cache_expires_at_the_exact_source_freshness_boundary() {
+    let source = Source {
+        value: (),
+        last_success: Some(100),
+        error: None,
+    };
+    assert!(okilum_t3::board::delivery::problem(&source, 160, 30).is_none());
+    assert!(okilum_t3::board::delivery::problem(&source, 161, 30).is_some());
+    assert_eq!(freshness_expiry(160, 30, [100, 120].into_iter()), 161);
+    assert_eq!(freshness_expiry(161, 30, [100, 120].into_iter()), 181);
+    assert_eq!(freshness_expiry(181, 30, [100, 120].into_iter()), u64::MAX);
+}
+#[test]
+fn issue2532_merge_cache_preserves_the_exact_recent_window_and_future_boundary() {
+    let pull = okilum_t3::board::live::Pull {
+        number: 1,
+        merged_at: Some(100),
+        checks: String::new(),
+    };
+    assert!(!pull.recent(99));
+    assert_eq!(merge_expiry(99, 100), Some(100));
+    assert!(pull.recent(86499));
+    assert_eq!(merge_expiry(86499, 100), Some(86500));
+    assert!(!pull.recent(86500));
+    assert_eq!(merge_expiry(86500, 100), None);
 }
