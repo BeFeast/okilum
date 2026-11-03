@@ -1,0 +1,313 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index 2094cfa5..79aff499 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -1686,7 +1686,7 @@ impl<M: InputModeKind> TextElement<M> {
+                 .with_background(line_has_background)
+                 .with_whitespaces(whitespace_indicators.clone());
+             // Bidi rows place a marker by their own geometry; they never hang.
+-            let line_layout = if line_layout.has_bidi() { line_layout } else { line_layout.hang(hang) };
++            let line_layout = if line_layout.has_bidi() { line_layout } else { line_layout.hang(hang + line_item.prefix_hang) };
+             lines.push(line_layout);
+ 
+             // +1 for the `\n`
+diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
+index 7f688175..c0ce6186 100644
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -231,9 +231,9 @@ pub(super) fn prepare(
+                             // its end, so every continuation row carries the bar
+                             // (#1641). Only inside the hanging indent: a bar never
+                             // covers body glyphs.
+-                            if line.wrap_indent >= *x + *width {
++                            if line.wrap_indent >= *x + *width + line.line_indent(0) {
+                                 shapes.push(Shape {
+-                                    x: *x - line.wrap_indent,
++                                    x: *x + line.line_indent(0) - line.wrap_indent,
+                                     width: *width,
+                                     kind: kind.clone(),
+                                     source: 0..0,
+diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
+index cf34e706..92f540f5 100644
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -404,7 +404,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             .lines(shaped)
+             .wrap_indent(wrap_indent);
+         // Bidi rows place a marker by their own geometry; they never hang.
+-        let line = if line.has_bidi() { line } else { line.hang(hang) };
++        let line = if line.has_bidi() { line } else { line.hang(hang + item.prefix_hang) };
+         Some((start, line))
+     }
+ 
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index f557f489..526743ce 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -5886,6 +5886,71 @@ mod tests {
+         }
+     }
+ 
++    struct DeepIndentProvider(usize);
++    impl ProjectionProvider for DeepIndentProvider {
++        fn compose(
++            &self,
++            source: &super::super::projection::SourceSnapshot,
++            _: &ActiveSource,
++        ) -> Option<Arc<dyn super::super::projection::SourceProjection>> {
++            Some(Arc::new(IndentProjection {
++                source: source.clone(),
++                indents: vec![super::super::projection::LineIndent { line: 0, prefix: self.0 }],
++                markers: vec![],
++            }))
++        }
++    }
++
++    /// #1641: inspect shaped row widths, not clipped pixels or just row starts.
++    #[gpui::test]
++    fn narrow_deep_projected_gutters_fit_every_shaped_row(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        for spaces in [0, 12, 40, 120] {
++            let prefix = spaces + 2;
++            let words = format!("words café 🧠 {} ", "unbroken".repeat(12)).repeat(5);
++            let text = format!("{}- {words}\nend", " ".repeat(spaces));
++            let view = InputView::build_editor(cx, |state| {
++                state.folding(false).searchable(false).line_number(false)
++                    .wrapping_indent(super::super::WrappingIndent::None)
++            });
++            let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++            v.simulate_resize(gpui::size(px(240.), px(2400.)));
++            v.update(|window, cx| view.input.update(cx, |state, cx| {
++                state.set_value(text, window, cx);
++                state.set_projection_provider(Some(Arc::new(DeepIndentProvider(prefix))), cx);
++            }));
++            v.run_until_parked();
++            v.update(|window, cx| view.input.update(cx, |state, cx| {
++                let layout = state.last_layout.as_ref().expect("painted editor");
++                assert!(layout.projection.is_some(), "positive control: projected layout installed");
++                let width = layout.wrap_width.expect("soft wrap");
++                let line = &layout.lines[0];
++                assert!(line.wrapped_lines.len() > 3, "positive control: content really wraps");
++                let first = line.position_for_index(prefix, layout, false).unwrap();
++                let mut offset = 0;
++                for (row, shaped) in line.wrapped_lines.iter().enumerate() {
++                    let start = line.position_for_index(offset, layout, false).unwrap();
++                    assert!(shaped.width + line.line_indent(row) <= width + px(1.),
++                        "spaces={spaces} row={row}: shaped={:?} offset={:?} width={width:?}",
++                        shaped.width, line.line_indent(row));
++                    if row > 0 {
++                        assert!((start.x - first.x).abs() <= px(1.),
++                            "spaces={spaces}: continuation {start:?} vs body {first:?}");
++                        let height = layout.rows.row_height(row);
++                        let (hit, _) = line.closest_index_for_position(
++                            point(start.x + px(0.1), start.y + height / 2.), layout).unwrap();
++                        assert_eq!(hit, offset, "wrapped-row text remains clickable");
++                    }
++                    offset += shaped.len();
++                }
++                let next = line.wrapped_lines[0].len();
++                state.move_to(prefix, None, cx);
++                state.move_vertical(1, window, cx);
++                assert_eq!(state.cursor(), next, "vertical movement retains the body column");
++            }));
++        }
++    }
++
+     /// Identity projection whose lines 1..4 are one rendered block.
+     struct BlockProvider;
+     struct BlockProjection(super::super::projection::SourceSnapshot, [super::super::projection::ProjectionBlock; 1]);
+diff --git a/crates/base/src/input/editor/display_map/text_wrapper.rs b/crates/base/src/input/editor/display_map/text_wrapper.rs
+index 56009c2a..a49ff019 100644
+--- a/crates/base/src/input/editor/display_map/text_wrapper.rs
++++ b/crates/base/src/input/editor/display_map/text_wrapper.rs
+@@ -37,6 +37,9 @@ pub(crate) struct LineItem {
+     ///
+     /// Zero when [`WrappingIndent::None`] is used or the line is not wrapped.
+     pub(crate) indent: u32,
++    /// Excess projected container indentation drawn left of the text origin.
++    /// Deep prefixes are kept intact in source but cannot consume the viewport.
++    pub(crate) prefix_hang: Pixels,
+     /// The soft wrapped lines relative byte range (0..len) of this line (Include first line).
+     ///
+     /// Not contains the line end `\n`.
+@@ -46,7 +49,7 @@ pub(crate) struct LineItem {
+ impl LineItem {
+     #[cfg(test)]
+     pub(super) fn cached_test_line(len: usize, wrapped_lines: SmallVec<[Range<usize>; 1]>) -> Self {
+-        Self { len, indent: 0, wrapped_lines }
++        Self { len, indent: 0, prefix_hang: px(0.), wrapped_lines }
+     }
+ 
+     /// The x at which continuation rows start: the width of the first row's
+@@ -59,7 +62,7 @@ impl LineItem {
+                     .nth(self.indent as usize)
+                     .map(|(ix, _)| ix)
+                     .unwrap_or(text.len());
+-                first.x_for_index(indent_byte_len)
++                first.x_for_index(indent_byte_len) - self.prefix_hang
+             }
+             _ => px(0.),
+         }
+@@ -416,6 +419,7 @@ impl TextWrapper {
+             new_lines.push(LineItem {
+                 len: line.len(),
+                 indent: indent_chars,
++                prefix_hang: px(0.),
+                 wrapped_lines,
+             });
+         }
+@@ -534,51 +538,52 @@ impl TextWrapper {
+                     }),
+                 ),
+             };
+-            // A list, task or quote line wraps its continuation rows under its
+-            // text, as Source does with leading whitespace (#1641). Only the
+-            // rest of a line that already wraps is shaped again, narrower.
++            // Wrap container content at the space it will actually paint in.
++            // Keep the prefix on the first row even when it is wider than the
++            // viewport. Excess nesting hangs to the left; at least half the
++            // editor remains available for text (#1641). This depends only on
++            // prefix bytes and width, never on the caret/reveal state.
+             let prefix = crate::input::projection::line_indent(indents, row);
+-            let (ranges, indent) = match (shaped.first(), self.wrap_width) {
++            let (ranges, indent, prefix_hang) = match (shaped.first(), self.wrap_width) {
+                 (Some(first), Some(width))
+-                    if hang == 0
+-                        && ranges.len() > 1
+-                        && prefix > 0
+-                        && prefix < ranges[0].end
+-                        && line.is_char_boundary(prefix)
+-                        && !has_rtl(&line) =>
++                    if hang == 0 && prefix > 0 && prefix < line.len()
++                        && line.is_char_boundary(prefix) && !has_rtl(&line) =>
+                 {
+-                    let indent = first.unwrapped_layout.x_for_index(prefix);
+-                    // A gutter wider than half the text would leave too little
+-                    // room for the rows under it: such lines wrap as before.
+-                    if indent > px(0.) && indent * 2. <= width {
+-                        let first_end = ranges[0].end;
+-                        let rest = &line[first_end..];
+-                        let runs = styles.runs(start + first_end..start + line.len(), &self.font, gpui::black());
+-                        let runs = crate::font_presentation::font_runs(rest, &runs).into_owned();
+-                        let shape_start = attribution::now();
+-                        let shaped = window
+-                            .text_system()
+-                            .shape_text(rest.to_string().into(), font_size, &runs, Some(width - indent), None)
+-                            .expect("valid projected text");
+-                        trace.shape_finished(shape_start);
+-                        let rest_ranges = crate::input::projection_layout::projected_wrap_ranges(
+-                            rest,
+-                            shaped.iter().flat_map(|shaped| {
+-                                shaped.wrap_boundaries.iter().map(move |boundary| {
+-                                    shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
+-                                })
+-                            }),
+-                        );
+-                        let mut hung: SmallVec<[Range<usize>; 1]> = smallvec::smallvec![ranges[0].clone()];
+-                        hung.extend(rest_ranges.into_iter().map(|range| first_end + range.start..first_end + range.end));
+-                        (hung, line[..prefix].chars().count() as u32)
+-                    } else {
+-                        (ranges, 0)
++                    let prefix_width = first.unwrapped_layout.x_for_index(prefix);
++                    if ranges.len() == 1 && prefix_width <= width / 2. {
++                        // Ordinary unwrapped items need no second shaping pass.
++                        let item = LineItem { len: line.len(), indent: 0, prefix_hang: px(0.), wrapped_lines: ranges };
++                        cache.retain(key, item.clone());
++                        return item;
++                    }
++                    let indent = prefix_width.min(width / 2.);
++                    let prefix_hang = prefix_width - indent;
++                    let body = &line[prefix..];
++                    let runs = styles.runs(start + prefix..start + line.len(), &self.font, gpui::black());
++                    let runs = crate::font_presentation::font_runs(body, &runs).into_owned();
++                    let shape_start = attribution::now();
++                    let body_lines = window.text_system()
++                        .shape_text(body.to_string().into(), font_size, &runs, Some(width - indent), None)
++                        .expect("valid projected text");
++                    trace.shape_finished(shape_start);
++                    let mut body_ranges = crate::input::projection_layout::projected_wrap_ranges(
++                        body,
++                        body_lines.iter().flat_map(|shaped| {
++                            shaped.wrap_boundaries.iter().map(move |boundary| {
++                                shaped.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
++                            })
++                        }),
++                    );
++                    for range in &mut body_ranges {
++                        range.start += prefix;
++                        range.end += prefix;
+                     }
++                    body_ranges[0].start = 0;
++                    (body_ranges, line[..prefix].chars().count() as u32, prefix_hang)
+                 }
+-                _ => (ranges, 0),
++                _ => (ranges, 0, px(0.)),
+             };
+-            let item = LineItem { len: line.len(), indent, wrapped_lines: ranges };
++            let item = LineItem { len: line.len(), indent, prefix_hang, wrapped_lines: ranges };
+             cache.retain(key, item.clone());
+             item
+         });
+@@ -1563,16 +1568,19 @@ mod tests {
+                 LineItem {
+                     len: 2,
+                     indent: 0,
++                    prefix_hang: px(0.),
+                     wrapped_lines: smallvec::smallvec![0..2],
+                 },
+                 LineItem {
+                     len: 4,
+                     indent: 0,
++                    prefix_hang: px(0.),
+                     wrapped_lines: smallvec::smallvec![0..2, 2..4],
+                 },
+                 LineItem {
+                     len: 1,
+                     indent: 0,
++                    prefix_hang: px(0.),
+                     wrapped_lines: smallvec::smallvec![0..1],
+                 },
+             ],
+@@ -1761,11 +1769,13 @@ mod tests {
+                 LineItem {
+                     len: Rope::from("first line").len(),
+                     indent: 0,
++                    prefix_hang: px(0.),
+                     wrapped_lines: smallvec::smallvec![0..10],
+                 },
+                 LineItem {
+                     len: Rope::from("this one wraps").len(),
+                     indent: 0,
++                    prefix_hang: px(0.),
+                     wrapped_lines: smallvec::smallvec![0..9, 9..14],
+                 },
+             ],
+@@ -1817,24 +1827,28 @@ mod tests {
+                 LineItem {
+                     len: Rope::from("Hello, 世界!\r").len(),
+                     indent: 0,
++                    prefix_hang: px(0.),
+                     wrapped_lines: smallvec::smallvec![0..15],
+                 },
+                 // range: 16..36
+                 LineItem {
+                     len: Rope::from("This is second line.\n").len(),
+                     indent: 0,
++                    prefix_hang: px(0.),
+                     wrapped_lines: smallvec::smallvec![0..10, 10..20],
+                 },
+                 // range: 37..56
+                 LineItem {
+                     len: Rope::from("This is third line.\n").len(),
+                     indent: 0,
++                    prefix_hang: px(0.),
+                     wrapped_lines: smallvec::smallvec![0..9, 9..15, 15..20],
+                 },
+                 // range: 57..79
+                 LineItem {
+                     len: Rope::from("这里是第 4 行。").len(),
+                     indent: 0,
++                    prefix_hang: px(0.),
+                     wrapped_lines: smallvec::smallvec![0..22],
+                 },
+             ],

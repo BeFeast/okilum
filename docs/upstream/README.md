@@ -105,3 +105,9 @@ Carry it in the #1814 vendor update (Okilum #1901).
 0108 changes methods untouched by 0103–0107 and commutes with those patches.
 Its numbering resolves the native-range/projected-indent 0103 collision while
 preserving the cumulative vendor tree and the existing order of later patches.
+
+## Pending 0122 — narrow projected container gutters
+
+[0122](0122.md) refines 0103: bound deep indentation to half the wrapping width,
+keep the prefix on the first row, and use the same hanging geometry for paint,
+caret movement and repeated quote bars. Carry in #1814; GPUI core is unchanged.
