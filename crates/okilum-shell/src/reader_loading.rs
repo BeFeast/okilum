@@ -2207,14 +2207,20 @@ impl Reader {
             );
             return;
         }
-        let preserve_preview = opts.single_file != self.single_file
+        let switching_current_file = opts.single_file != self.single_file
             && opts.vault.as_ref() == Some(&self.vault_root)
-            && opts.note.as_deref() == Some(self.selected_file())
-            && self.editing.is_none();
-        if !self.leave_source(cx) {
+            && opts.open_path.is_none()
+            && opts.note.as_deref() == Some(self.selected_file());
+        if switching_current_file {
+            // Capabilities change, but this editor still owns the same document.
+            // Save first and retain its native buffer, caret and viewport.
+            if !self.save_source_for_navigation(cx) {
+                return;
+            }
+        } else if !self.leave_source(cx) {
             return;
         }
-        if !preserve_preview {
+        if !switching_current_file {
             self.file_preview = None;
         }
         self.file_menu = None;
@@ -8202,7 +8208,9 @@ mod quick_view_tests {
                     r.single_file, single_file,
                     "both transition directions exercised"
                 );
-                r.toggle_source(window, cx);
+                if r.editing.is_none() {
+                    r.toggle_source(window, cx);
+                }
                 r.editing
                     .as_ref()
                     .unwrap()
@@ -8223,6 +8231,7 @@ mod quick_view_tests {
                 std::fs::read_to_string(&path).unwrap(),
                 "# External replacement\n"
             );
+            let editor = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().test_input());
             reader.update_in(visual, |r, window, cx| {
                 r.resolve_source(true, window, cx);
                 r.editing
@@ -8239,7 +8248,11 @@ mod quick_view_tests {
             reader.read_with(visual, |r, _| {
                 assert_eq!(r.single_file, !single_file);
                 assert_eq!(r.current_rel, "nested/start.md");
-                assert!(r.note_source.contains("Safely saved latest buffer"));
+                assert_eq!(
+                    r.editing.as_ref().unwrap().test_input(),
+                    editor,
+                    "the native editor keeps its caret and viewport owner"
+                );
                 if !single_file {
                     assert!(r.index_dir.is_none() && r.searcher.is_none());
                     assert!(r

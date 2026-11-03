@@ -43,8 +43,9 @@ are used in both modes. Both directions save or refuse a dirty document through 
 source transition before starting preparation. A conflict keeps the editor and its
 latest buffer open. Deleted sources ask Save As / Don’t Save / Cancel before editor
 release; Don’t Save requires a durable recovery draft and a failed recovery write
-blocks the switch. Typed file previews retain their viewer entities, including
-viewport and filters. Session targets and modes are read together; explicit update
+blocks the switch. Switching the same document retains its native editor, caret
+and viewport after saving; typed file previews retain their viewer entities,
+including viewport and filters. Session targets and modes are read together; explicit update
 restart targets remain independent of that ordinary saved session.
 
 Linux advertises `text/markdown` with `okilum %f`; macOS advertises both Markdown
