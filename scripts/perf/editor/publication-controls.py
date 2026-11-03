@@ -85,6 +85,9 @@ def main():
                 raise RuntimeError('baseline publication probe boundary changed')
             text = text.replace(marker, '        let _publication_control_work = reader_editor::work::scope();\n' + marker, 1)
             path.write_text(text)
+        # Invalidate path-package outputs on both checkout transitions; Cargo
+        # artifact identities alone do not distinguish these workspaces.
+        run('cargo', 'clean', '--offline', '--locked', '-p', 'okilum-core', '-p', 'okilum-shell', cwd=dest, env=env)
         # Compilation success is mandatory: a compile failure is not a positive control.
         run('cargo', 'test', '--offline', '--locked', '-p', 'okilum-shell', '--bin', 'okilum', '--no-run', cwd=dest, env=env)
         for name in probes:
@@ -104,6 +107,11 @@ def main():
                             raise RuntimeError('baseline did not exercise every publication route and size')
             elif result.returncode and 'bounded per-key UI work failed:' not in result.stdout:
                 raise RuntimeError('baseline key control did not reach its intended assertions')
+    # Cargo can reuse a path package's artifact identity across two checkouts
+    # in one target directory. Main's newer build output must never masquerade
+    # as head's core/shell merely because head's unchanged files are older.
+    # Dependencies stay warm, but these workspace packages must rebuild.
+    run('cargo', 'clean', '--offline', '--locked', '-p', 'okilum-core', '-p', 'okilum-shell', env=env)
     # Exact final-head probes on the same host/session. No cross-run timing claims.
     run('cargo', 'test', '--offline', '--locked', '-p', 'okilum-shell', '--bin', 'okilum', 'issue240', '--', '--nocapture', env=env)
 
