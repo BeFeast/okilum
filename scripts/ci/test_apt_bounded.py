@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name('apt-bounded.sh').resolve()
 # Start the fixture without launching a second Python interpreter under a
@@ -52,8 +53,31 @@ def running(pid):
     """A killed orphan can briefly remain as a zombie until init reaps it."""
     try:
         return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
+
+
+class RunningTests(unittest.TestCase):
+    def test_live_and_zombie_states(self):
+        for state in ('R', 'S', 'D', 'T', 'Z'):
+            with self.subTest(state=state), mock.patch.object(
+                    Path, 'read_text', autospec=True,
+                    return_value=f'12345 (fake apt (child)) {state} 1 2 3') as read:
+                self.assertEqual(running(12345), state != 'Z')
+                read.assert_called_once_with(Path('/proc/12345/stat'))
+
+    def test_process_vanishes_during_stat_read(self):
+        # ENOENT can happen at open; ESRCH can happen after open, during read.
+        for error in (FileNotFoundError, ProcessLookupError):
+            with self.subTest(error=error), mock.patch.object(
+                    Path, 'read_text', autospec=True, side_effect=error) as read:
+                self.assertFalse(running(12345))
+                read.assert_called_once_with(Path('/proc/12345/stat'))
+
+    def test_other_read_errors_propagate(self):
+        with mock.patch.object(Path, 'read_text', side_effect=PermissionError):
+            with self.assertRaises(PermissionError):
+                running(12345)
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'GNU timeout and /proc contract')
