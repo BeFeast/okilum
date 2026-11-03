@@ -43,6 +43,8 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
     let (stop, stopped) = mpsc::channel();
     let subscribed = Arc::new(AtomicBool::new(false));
     let seen = subscribed.clone();
+    let warm_subscribed = Arc::new(AtomicBool::new(false));
+    let warm_seen = warm_subscribed.clone();
     let server = thread::spawn(move || {
         let sockets = RecoverySockets::new(listener);
         let (mut shell, request) = sockets.shells.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -68,9 +70,16 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
             {"sourceThreadId":THREAD,"sourceItemId":"ttfm-message","visibility":"local","item":item}
         ]);
         chunk(&mut manager, json!([value, {"kind":"synchronized"}]));
+        // Accept both warm subscriptions before test cleanup can cancel them.
+        // Withhold snapshots: the second line must come from retained paint.
+        let _warm_manager = socket(&sockets, Some(10));
+        let (mut warm_shell, _) = sockets
+            .shells
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        ping(&mut warm_shell);
+        warm_seen.store(true, Ordering::SeqCst);
         stopped.recv_timeout(Duration::from_secs(10)).unwrap();
-        // Retained history can paint on warm reopen before these new sockets
-        // finish. The fixture deliberately withholds their snapshots too.
     });
     let (view, visual, _temp) = fixture(cx, &origin);
     view.update_in(visual, |view, window, cx| {
@@ -141,9 +150,20 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
         view.set_active(true, window, cx);
     });
     draw(visual);
+    visual
+        .condition(&view, |_, _| warm_subscribed.load(Ordering::SeqCst))
+        .await;
     let warm = wait_events(diagnostics.path(), "manager_ttfm", 2);
     assert_eq!(warm.len(), 2);
     assert_eq!(warm[1]["details"]["reused_connection"], true);
+    assert!(
+        warm[1]["details"]["thread_ms"].is_null(),
+        "no old snapshot timestamp on reopen"
+    );
+    assert!(
+        warm[1]["details"]["shell_ms"].is_null(),
+        "withheld warm shell snapshot"
+    );
     assert!(
         warm[1]["details"]["open_to_first_message_ms"]
             .as_f64()
