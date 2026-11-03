@@ -28,7 +28,7 @@ fn all_hashes(path: &Path) -> Result<BTreeMap<String, String>> {
 #[test]
 #[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
 fn managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes() -> Result<()> {
-    let pair = Pair::loopback()?;
+    let mut pair = Pair::loopback()?;
     let binary: Vec<u8> = (0..300_007).map(|i| (i % 256) as u8).collect();
     for vault in [&pair.source.vault, &pair.target.vault] {
         fs::create_dir(vault.join("nested"))?;
@@ -205,5 +205,11 @@ fn managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes()
     pair.second.validate_remote_preview(&fresh)?;
     pair.first.shutdown();
     pair.second.shutdown();
+    pair.source.stop()?;
+    pair.target.stop()?;
+    assert!(
+        pair.source.child.is_none() && pair.target.child.is_none(),
+        "fixture daemons must be killed and reaped"
+    );
     Ok(())
 }

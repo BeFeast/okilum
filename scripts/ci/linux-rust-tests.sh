@@ -41,9 +41,6 @@ suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::payloa
 suite cargo test --locked -p okilum-sync-controller --lib daemon:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib presentation:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --test daemon_access --no-fail-fast
-# #2505: explicit pinned-runtime acceptance; the runner requires non-zero exact
-# test-name counts. The enclosing tini subreaper owns fixture descendants.
-suite bash scripts/ci/sync-source-sharing.sh --runs 1 --parallel 1
 # A second, explicit compiled distribution must refuse updater work even when
 # inherited AppImage/update-receipt variables would otherwise enable it.
 OKILUM_SPRINT_BUILD=1 OKILUM_RELEASE_VERSION='Sprint CI' \

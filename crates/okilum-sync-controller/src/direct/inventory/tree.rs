@@ -80,12 +80,10 @@ pub(super) fn validate_path(path: &str) -> Result<()> {
 fn excluded(path: &str) -> bool {
     path == "worktrees"
         || path == ".claude/worktrees"
-        || path.split('/').any(|p| {
-            matches!(
-                p,
-                ".stfolder" | ".stversions" | ".stignore" | ".okilum-index"
-            ) || p.starts_with(".okilum-save-")
-        })
+        || matches!(path, ".stfolder" | ".stversions" | ".stignore")
+        || path
+            .split('/')
+            .any(|p| p == ".okilum-index" || p.starts_with(".okilum-save-"))
 }
 /// This slice deliberately refuses custom glob/include/negation policies rather
 /// than approximating Syncthing's matcher and exposing excluded user content.
@@ -190,6 +188,10 @@ impl Scan {
                 format!("{relative}/{name}")
             };
             validate_path(&path)?;
+            ensure!(
+                relative.is_empty() || !matches!(name, ".stfolder" | ".stversions" | ".stignore"),
+                "nested runtime metadata has unsupported canonical semantics"
+            );
             // Never follow excluded entries, including symlinks. .stignore is
             // separately checked no-follow and included in revision metadata.
             if excluded(&path) && path != ".stignore" {

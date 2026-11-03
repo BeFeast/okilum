@@ -191,8 +191,27 @@ print(g.find('apikey').text)
     }
     pub fn start(&mut self) -> Result<()> {
         let log = fs::File::create(self.home.join("fixture.log"))?;
+        let mut command = Command::new(&self.binary);
+        // #2498: ordinary completion/panic uses Drop + kill/wait below. If the
+        // fixture test process is cancelled/killed, kill its daemon as well;
+        // the CI subreaper then waits for the adopted child. Close the race
+        // where the parent dies before pre_exec installs the death signal.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            let parent = libc::getpid();
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if libc::getppid() != parent {
+                    return Err(std::io::Error::other("fixture parent exited"));
+                }
+                Ok(())
+            });
+        }
         self.child = Some(
-            Command::new(&self.binary)
+            command
                 .env_clear()
                 .args([
                     "serve",

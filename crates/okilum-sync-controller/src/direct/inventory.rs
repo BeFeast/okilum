@@ -385,6 +385,25 @@ impl Controller {
             "inspection requires the pinned managed runtime"
         );
         let config = digest(&api.config()?)?;
+        if vault != "local-inspection" {
+            let ignores = api.ignores(vault)?;
+            let lines = ignores["ignore"]
+                .as_array()
+                .context("runtime ignore policy missing")?;
+            let lines = lines
+                .iter()
+                .map(|v| v.as_str().context("invalid runtime ignore policy"))
+                .collect::<Result<Vec<_>>>()?;
+            let lines: Vec<_> = lines
+                .iter()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty() && !s.starts_with("//"))
+                .collect();
+            ensure!(
+                lines == source::IGNORES,
+                "runtime ignore policy differs from canonical inspection policy"
+            );
+        }
         tree::verify_root(root, path)?;
         Ok(Binding {
             pair,
