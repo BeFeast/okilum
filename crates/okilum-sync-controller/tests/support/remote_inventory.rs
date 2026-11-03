@@ -152,6 +152,44 @@ fn managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes()
             .is_err(),
         "non-empty attach must stay refused"
     );
+    // Two independently approved signers can hold complete capabilities at once.
+    // The deterministic slow-boundary unit complements these real successful reads.
+    let third = Controller::open(
+        pair._root.path().join("third-controller"),
+        vec![pair.target.home.join("config.xml")],
+    )?;
+    let offer = pair
+        .first
+        .begin_pairing_at("Source", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
+        .offer_url
+        .context("pairing offer missing")?;
+    third.redeem(&offer, "Third inspector")?;
+    pair.first.approve(
+        pair.first
+            .snapshot()?
+            .pending
+            .context("pending inspector missing")?
+            .request_id,
+    )?;
+    let third_peer = third.refresh()?.peers[0].id;
+    let (left, right) = std::thread::scope(|scope| {
+        let left = scope.spawn(|| {
+            pair.second
+                .preview_remote_vault(pair.peer, &id, &pair.target.vault)
+        });
+        let right = scope.spawn(|| third.preview_remote_vault(third_peer, &id, &pair.target.vault));
+        (left.join().unwrap(), right.join().unwrap())
+    });
+    let left = left?;
+    let right = right?;
+    pair.second.validate_remote_preview(&left)?;
+    third.validate_remote_preview(&right)?;
+    assert_eq!(
+        third.read_remote_preview_file(&right, "remote-only.bin")?,
+        binary
+    );
+    pair.second.validate_remote_preview(&preview)?;
+    third.shutdown();
     fs::write(
         pair.target.vault.join("local-only.md"),
         b"local edit invalidates preview",

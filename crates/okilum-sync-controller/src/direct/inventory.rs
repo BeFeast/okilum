@@ -294,7 +294,7 @@ impl Controller {
         )? {
             Reply::Inspection { response } => Ok(response),
             _ => anyhow::bail!(
-                "inspection unavailable or stale; review authorization, runtime and vault, then refresh"
+                "inspection unavailable or stale; check authorization, unpaused promoted vault, runtime and inventory limits, then refresh"
             ),
         }
     }
