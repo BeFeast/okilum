@@ -184,8 +184,12 @@ mod entities {
         let current = current.unwrap();
         cx.run_until_parked();
         assert_eq!(requests.borrow().len(), 2);
-        old.take();
+        // Entity drops are flushed by an App update, not by driving only the
+        // executor. Exercise the release callback before releasing its decode.
+        let old_weak = old.as_ref().unwrap().downgrade();
+        cx.update(|_| drop(old.take()));
         cx.run_until_parked();
+        assert!(old_weak.upgrade().is_none(), "old entity was released");
         assert!(!authority::Authority::permits(&requests.borrow()[0].ticket));
         // Fresh completion is the positive control for publication.
         requests.borrow()[1]
