@@ -41,7 +41,9 @@ def controls(directory, phase, ranges):
             # First fixture card; exclude unrelated Manager repaint/caret changes.
             changed(kind, rep, (14, 100, 148, 370))
         elif kind == "scroll":
-            changed(kind, rep)
+            # Reference Manager history only: exclude composer caret, Board,
+            # header status and chip/tooltips from the source movement proof.
+            changed(kind, rep, (670, 150, 1180, 600))
 
 
 def analyze(directory, phase):
