@@ -37,6 +37,9 @@ def controls(directory, phase, ranges):
         if kind == "resize":
             if abs(entry["width_after"] - entry["width_before"]) < 80:
                 raise ValueError("Splitter did not change the production panel width")
+            # Prove visible geometry changed, excluding the composer caret and
+            # the pointer's splitter hover. Persisted width alone is insufficient.
+            changed(kind, rep, (400, 46, 800, 120))
         elif kind == "click":
             # First fixture card; exclude unrelated Manager repaint/caret changes.
             changed(kind, rep, (14, 100, 148, 370))
@@ -68,6 +71,10 @@ def analyze(directory, phase):
                 raise ValueError(f"{scenario} {entry['rep']}: no drawn frame in input burst")
             samples.extend(frame["draw_ms"] for frame in samples_in_range)
         result[scenario] = stats(samples)
+        if scenario != "click":
+            seconds = sum(entry["end"] - entry["start"] for entry in selected)
+            result[scenario]["input_seconds"] = seconds
+            result[scenario]["drawn_frames_per_second"] = len(samples) / seconds
         if scenario == "click":
             latencies = []
             for entry in selected:

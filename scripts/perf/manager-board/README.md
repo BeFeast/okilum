@@ -57,7 +57,8 @@ Physical input and positive controls:
   Retain before/after captures for **each** burst and reject an unchanged view.
 - Drag the real splitter through ±100 px in four alternating 2-second bursts,
   120 motion events each. Read the durable Reader panel width on release;
-  each burst must change it by at least 80 px. Restore the initial width before
+  each burst must change it by at least 80 px, with changed splitter/header
+  geometry in the captures (composer caret and hover are excluded). Restore the initial width before
   the following scenario. Retain before/after captures.
 - Click the first Board card 13 times, at least one second apart, with the
   pointer settled before the first activation. Each before/after card crop must
