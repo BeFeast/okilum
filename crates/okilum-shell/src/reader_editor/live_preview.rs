@@ -2951,6 +2951,119 @@ mod tests {
         });
     }
 
+    /// #2484: a successful Source search must keep its actual glyph position
+    /// when the large document returns to projected layout. The caret remains
+    /// elsewhere: Find does not move the editing selection.
+    #[gpui::test]
+    fn issue2484_large_find_close_keeps_match_visible(cx: &mut TestAppContext) {
+        let query = "Concurrent identical first submissions";
+        let block = "## Section\n\nA public **paragraph** with `code` and enough text to wrap. ".to_owned()
+            + &"More documentation text. ".repeat(12)
+            + "\n\n> A quoted explanation.\n\n- First list entry\n- Second list entry\n\n```rust\nfn example() {}\n```\n\n";
+        let note = format!(
+            "# Large public note\n\n{}## Acceptance\n\n1. {query} return one original conversation.\n\n{}",
+            block.repeat(220), block.repeat(90)
+        );
+        assert!(note.len() >= 120 * 1024);
+        let (reader, visual, _directory) = fixture(cx, &note);
+        visual.simulate_resize(size(px(1600.), px(1000.)));
+        reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let at = note.find(query).unwrap();
+        reader.update_in(visual, |r, window, cx| r.open_find(window, cx));
+        visual.run_until_parked();
+        input.update(visual, |i, cx| {
+            i.set_search_query(query, false, cx);
+            assert_eq!(i.next_search_match(cx), Some(at..at + query.len()));
+            assert_eq!(i.search_session().matcher.len(), 1);
+            assert_eq!(i.search_session().matcher.current_match_index(), 0);
+        });
+        visual.run_until_parked();
+        let before = input.read_with(visual, |i, _| {
+            let bounds = i
+                .range_to_bounds(&(at..at + query.len()))
+                .expect("Source match has painted geometry");
+            assert!(
+                i.input_bounds().contains(&bounds.center()),
+                "1/1 match is visible in Source"
+            );
+            eprintln!("ISSUE2484_FIND_POSITIVE_CONTROL=1/1 y={:?}", bounds.top());
+            bounds.top() - i.input_bounds().top()
+        });
+        input.update(visual, |i, cx| i.close_search(cx));
+        visual.run_until_parked();
+        for _ in 0..4 {
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+        }
+        reader.read_with(visual, |r, cx| {
+            assert!(r.live_preview_shown());
+            assert!(
+                r.link_notice.is_none(),
+                "reachable landing: {:?}",
+                r.link_notice
+            );
+            let i = input.read(cx);
+            assert_eq!(i.value().as_ref(), note);
+            let bounds = i
+                .range_to_bounds(&(at..at + query.len()))
+                .expect("#2484: match must remain laid out after Find closes");
+            assert!(
+                i.input_bounds().contains(&bounds.center()),
+                "#2484: match must remain visible"
+            );
+            let after = bounds.top() - i.input_bounds().top();
+            assert!(
+                (after - before).abs() < px(1.),
+                "#2484: matched row moved: {before:?} -> {after:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn issue2484_large_heading_landing_prepares_without_painted_list(cx: &mut TestAppContext) {
+        let note = format!(
+            "# Start\n\n{}## Landing\n\n{}",
+            "A paragraph of public documentation.\n\n".repeat(2600),
+            "Tail.\n\n".repeat(4500)
+        );
+        assert!(note.len() >= 120 * 1024);
+        let (reader, visual, _directory) = fixture(cx, &note);
+        let block = reader.read_with(visual, |r, _| {
+            r.outline
+                .iter()
+                .find(|h| h.text == "Landing")
+                .unwrap()
+                .target
+                .block
+        });
+        reader.update_in(visual, |r, _, cx| {
+            // Session restoration can request the Reader's place after opening
+            // the editor. The hidden TextView will never paint its block list.
+            r.scroll_to_block(block, cx);
+        });
+        for _ in 0..105 {
+            visual.executor().advance_clock(Duration::from_millis(50));
+            visual.run_until_parked();
+        }
+        reader.read_with(visual, |r, cx| {
+            assert!(
+                r.navigation.pending_landing.is_none(),
+                "reachable heading must finish"
+            );
+            assert!(
+                r.link_notice.is_none(),
+                "#2484: hidden Reader landing failed: {:?}",
+                r.link_notice
+            );
+            assert_eq!(
+                r.content.read(cx).list_state().logical_scroll_top().item_ix,
+                block
+            );
+        });
+    }
+
     #[gpui::test]
     fn theme_changes_reuse_classification_without_editing_source(cx: &mut TestAppContext) {
         let (reader, visual, directory) = fixture(cx, ORIGINAL);
