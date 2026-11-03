@@ -8221,7 +8221,12 @@ mod quick_view_tests {
             visual.run_until_parked();
             reader.read_with(visual, |r, cx| {
                 assert_eq!(r.single_file, single_file, "conflict blocks mode switch");
-                assert!(r.editing.as_ref().unwrap().conflict.is_some());
+                assert!(
+                    r.link_notice
+                        .as_ref()
+                        .is_some_and(|notice| notice.contains("Reload")),
+                    "the revision conflict is visible"
+                );
                 assert_eq!(
                     r.source_text(cx).as_deref(),
                     Some("# Latest unsaved buffer\n")
@@ -8457,13 +8462,18 @@ mod quick_view_tests {
             "upgrade persists vault mode even when keeping the rendered document"
         );
         reader.update_in(visual, |reader, window, cx| {
-            reader.quick_open.query = "single file mode".into();
+            reader.open_quick_open(false, window, cx);
+        });
+        visual.run_until_parked();
+        visual.simulate_input("single file mode");
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| {
             assert!(reader
                 .palette_items()
                 .iter()
                 .any(|(_, item)| matches!(item, quick_open::PaletteItem::SwitchWindowMode)));
-            reader.switch_window_mode(window, cx);
         });
+        visual.simulate_keystrokes("enter");
         visual.run_until_parked();
         visual.executor().advance_clock(Duration::from_millis(300));
         visual.run_until_parked();
