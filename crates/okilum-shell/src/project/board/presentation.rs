@@ -9,9 +9,11 @@ pub(super) struct State {
 }
 impl Board {
     pub(super) fn presentation(&mut self) -> Arc<State> {
+        self.presentation_at(now())
+    }
+    fn presentation_at(&mut self, at: u64) -> Arc<State> {
         // Classification also uses second-resolution freshness and PR recency.
         // A resize crossing that boundary must not retain an obsolete column.
-        let at = now();
         if let Some(state) = &self.presentation {
             if state.at == at {
                 return state.clone();
@@ -22,7 +24,7 @@ impl Board {
             okilum_t3::board::live::project(
                 source,
                 &self.snapshot.forgejo.value,
-                self.projection_time(),
+                self.projection_time_at(at),
             )
         } else {
             source.clone()
@@ -46,5 +48,59 @@ impl Board {
         });
         self.presentation = Some(state.clone());
         state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn viewport_reuses_membership_but_source_publication_and_freshness_rebuild_it(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let mut board = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            board = Some(
+                cx.new(|cx| Board::performance_fixture(temp.path().join("board"), window, cx)),
+            );
+            // An unmounted Board isolates source notification delivery from
+            // redraws: the publication control must invalidate the same epoch.
+            Root::new(cx.new(|_| gpui::EmptyView), window, cx)
+        });
+        visual.run_until_parked();
+        let board = board.unwrap();
+        let first = board.update(visual, |board, _| board.presentation_at(100));
+        assert_eq!(first.binding.issues.len(), 240);
+        let again = board.update(visual, |board, _| board.presentation_at(100));
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "viewport work must reuse source projection"
+        );
+        board.update(visual, |board, cx| {
+            board.binding.as_mut().unwrap().issues[0].expected =
+                "Published synthetic context".into();
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let changed = board.update(visual, |board, _| board.presentation_at(100));
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert_eq!(
+            changed.binding.issues[0].expected,
+            "Published synthetic context"
+        );
+        assert_ne!(
+            first.binding.issues[0].expected,
+            changed.binding.issues[0].expected
+        );
+        let next_second = board.update(visual, |board, _| board.presentation_at(101));
+        assert!(
+            !Arc::ptr_eq(&changed, &next_second),
+            "freshness/recency must be reevaluated"
+        );
+        assert_eq!(next_second.counts.iter().sum::<usize>(), 240);
     }
 }

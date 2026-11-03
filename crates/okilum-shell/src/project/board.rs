@@ -488,10 +488,13 @@ impl Board {
         cx.notify();
     }
     fn projection_time(&self) -> u64 {
+        self.projection_time_at(now())
+    }
+    fn projection_time_at(&self, at: u64) -> u64 {
         if self.snapshot.forgejo.error.is_some() {
-            self.snapshot.forgejo.last_success.unwrap_or_else(now)
+            self.snapshot.forgejo.last_success.unwrap_or(at)
         } else {
-            now()
+            at
         }
     }
     fn problem(&self, at: u64) -> Option<String> {
