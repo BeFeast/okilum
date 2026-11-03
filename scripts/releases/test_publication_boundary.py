@@ -148,6 +148,40 @@ class PublicationBoundary(unittest.TestCase):
                 launch.assert_not_called()
                 self.assertEqual(api.call.call_count, 2)
 
+    def test_same_source_race_publishes_once_but_daily_windows_resign_still_publishes(self):
+        import publication
+        import io
+        import zipfile
+        from unittest.mock import Mock
+        source = 'f' * 40
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('payload.zip', b'original signed bytes')
+            archive.writestr('release-source.txt', source)
+        for platform, resign, previous_source, expected in [
+                ('macos', '', source, False), ('windows', '', source, False),
+                ('windows', '5041', source, True),
+                ('macos', '', 'a' * 40, True), ('windows', '', 'a' * 40, True)]:
+            with self.subTest(platform=platform, resign=resign, previous_source=previous_source):
+                run = dict(workflow_id=publication.WORKFLOWS[platform], prettyref='main',
+                    is_fork_pull_request=False, trigger_event='workflow_dispatch', status='success',
+                    commit_sha=source, index_in_repo=42,
+                    event_payload={'inputs': {'resign_build': resign}})
+                names = list(publication.ARTIFACTS[platform])
+                api = Mock()
+                api.call.side_effect = [run, {'commit': {'id': source}},
+                    [dict(id=i, name=name, expired=False, run_id=12) for i, name in enumerate(names)],
+                    *[data.getvalue() for _ in names], {'commit': {'id': source}}]
+                payload = dict(build=5042, source=source, platform=platform, channel='beta',
+                    previous_build=5041, previous_source=previous_source, items=[])
+                with patch.object(publication, 'R2') as store, \
+                        patch.object(publication.release_notes, 'prepare', return_value=payload), \
+                        patch.object(publication.subprocess, 'run') as launch:
+                    store.return_value.call.return_value = None
+                    publication.publish(api, platform, 12)
+                    self.assertEqual(launch.called, expected)
+                    self.assertEqual(store.return_value.put.called, expected)
+
 
 class ExplicitSourcePublication(unittest.TestCase):
     def setUp(self):

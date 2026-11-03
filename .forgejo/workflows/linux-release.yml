@@ -1,9 +1,13 @@
 name: linux-release
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
+      hourly_source:
+        description: 'Internal source-pinned hourly retry; revalidated against green main'
+        required: false
+        default: ''
       appimage_only:
         description: 'Reuse accepted source-pinned AppImage for beta; skip Arch compilation'
         required: false
@@ -14,11 +18,11 @@ on:
         default: ''
 
 concurrency:
-  # No workflow-wide group: an Arch compiler must not delay select/AppImage reuse
-  # for a later main. Builds have isolated containers; protected release-publish
-  # retains feed serialization and monotonic stale-build rejection.
-  # Explicit false without a group lets accepted artifacts finish across pushes.
-  cancel-in-progress: false
+  # Arch and AppImage retain independent admission/publication paths. Only
+  # superseded hourly coordinators cancel each other; manual archive/reuse work
+  # has a separate group and protected publishers keep their existing locks.
+  group: linux-beta-${{ (github.event_name == 'schedule' || inputs.hourly_source != '') && 'hourly' || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   select:
@@ -44,9 +48,12 @@ jobs:
             200) python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["state"] == "frozen" and d["build"] > 0' "$RUNNER_TEMP/pacman-freeze.json"; echo 'arch=false' >> "$GITHUB_OUTPUT" ;;
             *) echo "Cannot inspect pacman freeze marker: HTTP $status" >&2; exit 1 ;;
           esac
-      - name: Select half-hourly or manual build
+      - name: Select hourly or manual build
         id: select
         env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          HOURLY_SOURCE: ${{ inputs.hourly_source }}
           OKILUM_SOURCE: ${{ inputs.source }}
           APPIMAGE_ONLY: ${{ inputs.appimage_only }}
         run: |
@@ -144,13 +151,22 @@ jobs:
       accepted: ${{ steps.reuse.outputs.accepted }}
     needs: select
     # Arch coalescing must not suppress later accepted AppImage bytes on the next tick.
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
     timeout-minutes: 95
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Request urgent source-pinned GitHub AppImage without waiting for cron
+        if: github.event_name == 'workflow_dispatch' && inputs.source == '' && inputs.appimage_only != 'true'
+        env:
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+          SOURCE: ${{ needs.select.outputs.source }}
+        run: python3 scripts/releases/hourly_beta.py dispatch-linux
       - name: Resolve accepted exact-source AppImage without compiling
         id: reuse
         env:

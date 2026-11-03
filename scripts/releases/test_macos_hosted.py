@@ -58,6 +58,14 @@ class ShippingPolicy(unittest.TestCase):
                 m.route(self.env() | changes)
 
     @patch.object(m.subprocess, 'run')
+    def test_hourly_route_accepts_only_the_workflow_source_and_keeps_hosted_only(self, run):
+        with tempfile.TemporaryDirectory() as directory:
+            env = self.env() | {'GITHUB_EVENT_NAME': 'schedule', 'PRODUCT_SOURCE': WORKFLOW,
+                'GITHUB_OUTPUT': str(Path(directory) / 'output')}
+            m.route(env)
+            self.assertEqual(Path(env['GITHUB_OUTPUT']).read_text(), f'lane=hosted\nsource={WORKFLOW}\n')
+
+    @patch.object(m.subprocess, 'run')
     @patch.object(m.subprocess, 'check_output')
     def test_approved_existing_keychain_positive_and_missing_signer_negative(self, output, run):
         listing = '  1) ABCD "Developer ID Application: Test (ABCDEFGHIJ)"\n'
@@ -150,7 +158,7 @@ class ShippingPolicy(unittest.TestCase):
         fj = (root / '.forgejo/workflows/macos-release.yml').read_text()
         gh = (root / '.github/workflows/forgejo-macos-shipping.yml').read_text()
         self.assertIn('if: false # Corporate M4 CI prohibited', fj)
-        self.assertIn("needs.select.outputs.lane == 'hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')", fj)
+        self.assertIn("needs.select.outputs.lane == 'hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')", fj)
         self.assertIn('python3 scripts/releases/macos-hosted.py route', fj)
         self.assertIn('persist-credentials: false', gh)
         self.assertNotIn('secrets.MIRROR_TOKEN', gh)

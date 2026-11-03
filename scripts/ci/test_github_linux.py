@@ -248,9 +248,9 @@ class LinuxBridgeTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/forgejo-linux.yml').read_text()
         for forbidden in ['secrets.', 'actions/cache/save', 'SCCACHE_']:
             self.assertNotIn(forbidden, workflow)
-        self.assertIn("branches: [main, 'forgejo-linux-pr/**']", workflow)
+        self.assertIn("branches: ['forgejo-linux-pr/**']", workflow)
         self.assertIn('actions/cache/restore@v4', workflow)
-        self.assertIn("if: github.ref == 'refs/heads/main' && github.event_name != 'schedule'", workflow)
+        self.assertIn("if: github.ref == 'refs/heads/main' && github.event.schedule != '5 22 * * 2,6'", workflow)
         self.assertIn('persist-credentials: false', workflow)
         self.assertIn('bash scripts/ci/check-linux.sh', workflow)
 

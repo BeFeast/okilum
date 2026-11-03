@@ -11,6 +11,29 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class FastScript(unittest.TestCase):
+    def test_release_and_updater_suites_are_required_on_the_same_check_job(self):
+        workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
+        check = workflow.split('  check:\n', 1)[1].split('\n  shell-full:', 1)[0]
+        for suite in ['releases', 'updater']:
+            step = re.search(r'      - name: Run the full ' + suite + r' Python suite\n(.*?)(?=      - name:)',
+                             check, re.S)[1]
+            self.assertNotIn('if:', step)
+            self.assertNotIn('continue-on-error:', step)
+            command = shlex.split(step.split('        run: ', 1)[1].strip())
+            self.assertEqual(command, ['python3', '-I', '-m', 'unittest', 'discover',
+                                      '-s', 'scripts/' + suite, '-p', 'test_*.py', '-v'])
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                tests = root / 'scripts' / suite
+                tests.mkdir(parents=True)
+                for outcome in ['pass', 'self.fail("positive failure control")',
+                                'raise RuntimeError("positive error control")']:
+                    (tests / 'test_contract.py').write_text('import unittest\nclass Contract(unittest.TestCase):\n'
+                        f'    def test_discovered(self): {outcome}\n')
+                    result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode == 0, outcome == 'pass', result.stderr)
+                    self.assertIn('Ran 1 test', result.stderr)
+
     def test_required_check_runs_full_isolated_python_discovery_and_fails_on_errors(self):
         workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         self.assertIn('on:\n  pull_request:\n', workflow)
