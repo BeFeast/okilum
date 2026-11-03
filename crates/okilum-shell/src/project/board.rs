@@ -822,16 +822,14 @@ impl Board {
                     .child(origin),
             );
         }
-        // Natural vertical flow avoids flex intrinsic-height negotiation.
-        // Per-child margins retain the original 8px inter-item gaps.
-        let mut card = div()
-            .block()
+        let mut card = v_flex()
             .id(("board-card", number as usize))
             .debug_selector(move || format!("board-card-{number}"))
             .w_full()
             .min_w_0()
             .min_h_0()
             .flex_shrink_0()
+            .gap_2()
             .border_1()
             .border_color(if stuck {
                 colors.warning
@@ -941,7 +939,6 @@ impl Board {
                     );
                 }
                 Button::new(("board-agent-link", number as usize))
-                    .mt_2()
                     .debug_selector(move || format!("board-agent-link-{number}"))
                     .small()
                     .ghost()
@@ -966,7 +963,6 @@ impl Board {
                     .into_any_element()
             } else {
                 h_flex()
-                    .mt_2()
                     .min_w_0()
                     .gap_2()
                     .px_3()
@@ -999,12 +995,12 @@ impl Board {
                     )
                     .into_any_element()
             })
-            .child(div().mt_2().h(px(2.)));
+            .child(div().h(px(2.)));
         // A single explicit PR link is a link, not a fabricated CI/merge status.
         if let Some(pr) = scope.pull_requests.first() {
             let url = binding.pull_url(*pr);
             card = card.child(
-                h_flex().mt_2().px_2().pb_2().child(
+                h_flex().px_2().pb_2().child(
                     Button::new(("board-pr-badge", number as usize))
                         .ghost()
                         .small()
@@ -1023,7 +1019,6 @@ impl Board {
             card = card.child(
                 div()
                     .debug_selector(move || format!("board-mapping-{number}"))
-                    .mt_2()
                     .px_3()
                     .pb_2()
                     .text_size(px(12.))
@@ -1033,16 +1028,11 @@ impl Board {
         }
         if self.selected == Some(number) {
             if self.delivery.enabled() {
-                card = card.child(
-                    v_flex()
-                        .mt_2()
-                        .child(self.delivery_details(scope, binding, cx)),
-                );
+                card = card.child(self.delivery_details(scope, binding, cx));
             }
             let url = binding.issue_url(number);
             let context = self.context(scope);
             let mut actions = h_flex()
-                .mt_2()
                 .px_2()
                 .pb_2()
                 .gap_1()
