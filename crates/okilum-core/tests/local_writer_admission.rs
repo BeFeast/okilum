@@ -220,7 +220,7 @@ fn local_writer_admission_core_publishers_and_recovery_copies_refuse_then_resume
     assert_eq!(fs::read(f.root.join("moved.md")).unwrap(), b"original\r\n");
 }
 #[test]
-fn local_writer_admission_task_and_reminder_keep_refused_proposals_as_drafts() {
+fn local_writer_admission_task_and_reminder_refusal_keeps_actions_retryable() {
     let f = Fixture::new();
     let task = "- [ ] Task\n";
     fs::write(f.root.join("task.md"), task).unwrap();
@@ -244,13 +244,37 @@ fn local_writer_admission_task_and_reminder_keep_refused_proposals_as_drafts() {
         fs::read_to_string(f.root.join("reminders.md")).unwrap(),
         "# Reminders\n"
     );
-    let mut task = FileEditor::open(&f.root.join("task.md"), &f.drafts).unwrap();
-    let mut reminder = FileEditor::open(&f.root.join("reminders.md"), &f.drafts).unwrap();
-    assert_eq!(task.text(), "- [x] Task\n");
-    assert!(reminder.text().contains("📅 2026-11-04"));
+    // Hold refusal happens before a temporary mutation draft is generated.
+    // Ordinary user-authored FileEditor drafts remain covered separately.
+    for name in ["task.md", "reminders.md"] {
+        assert!(!FileEditor::has_unsaved_draft(&f.root.join(name), &f.drafts).unwrap());
+    }
     f.release(h);
-    assert_eq!(task.save().unwrap(), Save::Saved);
-    assert_eq!(reminder.save().unwrap(), Save::Saved);
+    let task_receipt = okilum_core::task_edit::write::apply(
+        &f.root,
+        &f.drafts,
+        &target,
+        okilum_core::task_edit::Change::Checked(true),
+    )
+    .unwrap()
+    .unwrap();
+    let reminder_receipt =
+        okilum_core::reminder_append::write::add(&f.root, &f.drafts, "reminders.md", reminder)
+            .unwrap();
+    assert_eq!(
+        fs::read_to_string(f.root.join("task.md")).unwrap(),
+        "- [x] Task\n"
+    );
+    assert!(fs::read_to_string(f.root.join("reminders.md"))
+        .unwrap()
+        .contains("📅 2026-11-04"));
+    task_receipt.undo(&f.root, &f.drafts).unwrap();
+    reminder_receipt.undo(&f.root, &f.drafts).unwrap();
+    assert_eq!(fs::read_to_string(f.root.join("task.md")).unwrap(), task);
+    assert_eq!(
+        fs::read_to_string(f.root.join("reminders.md")).unwrap(),
+        "# Reminders\n"
+    );
 }
 #[test]
 #[ignore = "subprocess fixture, explicitly selected by the production regressions"]
