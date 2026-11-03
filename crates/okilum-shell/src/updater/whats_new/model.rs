@@ -14,7 +14,15 @@ const NOTES_ROOT: &str = "https://updates.befeast.com/okilum/releases";
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_BUILDS: usize = 100;
 const MAX_TOTAL_BYTES: usize = 2 * 1024 * 1024;
+/// One attempt's wall-clock budget; `load` stays bounded at ATTEMPTS × BUDGET.
 const BUDGET: Duration = Duration::from_secs(10);
+/// The first request of each attempt can be slow right after an update or
+/// restart (cold DNS and TLS, #2451), so it gets a cap far above a normal
+/// ~0.1 s notes fetch instead of the ordinary per-request one.
+const FIRST_CONNECT: Duration = Duration::from_secs(8);
+const REQUEST: Duration = Duration::from_secs(3);
+/// The initial attempt plus one automatic retry (#2451).
+const ATTEMPTS: usize = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Build {
@@ -126,6 +134,11 @@ pub(super) struct Notes {
 pub(super) enum Unavailable {
     NotPublished,
     FetchFailed,
+    /// The build's channel has no published notes (Track::current() is None).
+    /// Deterministic: retrying cannot change the answer (#2451).
+    UnknownChannel,
+    /// The HTTP client could not be created. Deterministic like UnknownChannel.
+    NoClient,
 }
 #[derive(Clone, Debug, Default)]
 pub(super) struct Range {
@@ -222,33 +235,91 @@ pub(super) fn collect(
 }
 
 pub(super) fn load(current: &Build, since: Option<u64>) -> Range {
-    let Some(track) = Track::current() else {
+    load_on_track(current, since, Track::current(), &production_profile())
+}
+
+/// Timing and origin knobs, injected so tests bound attempts with a local
+/// fake server instead of real feeds (#2451).
+struct Profile {
+    notes_root: String,
+    first_connect: Duration,
+    request: Duration,
+    budget: Duration,
+    attempts: usize,
+}
+fn production_profile() -> Profile {
+    Profile {
+        notes_root: NOTES_ROOT.to_owned(),
+        first_connect: FIRST_CONNECT,
+        request: REQUEST,
+        budget: BUDGET,
+        attempts: ATTEMPTS,
+    }
+}
+
+fn load_on_track(
+    current: &Build,
+    since: Option<u64>,
+    track: Option<Track>,
+    profile: &Profile,
+) -> Range {
+    let Some(track) = track else {
+        // A missing channel or client is not a network blip: never fetch, never
+        // retry, and let the UI say what is actually wrong (#2451).
         return Range {
-            unavailable: Some(Unavailable::FetchFailed),
+            unavailable: Some(Unavailable::UnknownChannel),
             ..Range::default()
         };
     };
-    let deadline = Instant::now() + BUDGET;
     let Ok(client) = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(3))
+        .connect_timeout(profile.first_connect)
         .redirect(reqwest::redirect::Policy::none())
         .build()
     else {
         return Range {
-            unavailable: Some(Unavailable::FetchFailed),
+            unavailable: Some(Unavailable::NoClient),
             ..Range::default()
         };
     };
-    collect(current, since, track, |source| {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .context("Notes deadline")?;
-        let url = format!(
-            "{NOTES_ROOT}/{source}/{}/{}/notes.json",
-            track.platform, track.channel
-        );
-        fetch_notes(&client, &url, remaining.min(Duration::from_secs(3)))
-    })
+    // One automatic retry keeps a transient blip from hiding notes that exist
+    // (#2451). Each attempt gets a fresh budget, so the total stays bounded at
+    // profile.attempts × profile.budget. A retry that loads less than an
+    // earlier partial attempt must not discard what did load.
+    let mut best: Option<Range> = None;
+    for _ in 0..profile.attempts.max(1) {
+        let deadline = Instant::now() + profile.budget;
+        let mut first_request = true;
+        let outcome = collect(current, since, track, |source| {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .context("Notes deadline")?;
+            let cap = if std::mem::take(&mut first_request) {
+                profile.first_connect
+            } else {
+                profile.request
+            };
+            let url = format!(
+                "{}/{source}/{}/{}/notes.json",
+                profile.notes_root, track.platform, track.channel
+            );
+            fetch_notes(&client, &url, cap.min(remaining))
+        });
+        if outcome.unavailable != Some(Unavailable::FetchFailed) {
+            // Success and NotPublished are deterministic answers; keep the
+            // richest view seen so far when a server flaps between answers.
+            return match best {
+                Some(best) if best.builds.len() > outcome.builds.len() => best,
+                _ => outcome,
+            };
+        }
+        if best
+            .as_ref()
+            .is_none_or(|best| best.builds.len() <= outcome.builds.len())
+        {
+            best = Some(outcome);
+        }
+    }
+    best.unwrap_or_default()
 }
 
 fn fetch_notes(

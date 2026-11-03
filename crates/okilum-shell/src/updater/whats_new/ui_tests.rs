@@ -143,7 +143,7 @@ fn actual_reader_and_about_render_the_sheet_and_offline_fallback(cx: &mut TestAp
 }
 
 #[gpui::test]
-fn unpublished_and_failed_ranges_show_changes_link_and_only_failures_offer_retry(
+fn unpublished_and_failed_ranges_show_changes_link_and_only_total_failures_offer_retry(
     cx: &mut TestAppContext,
 ) {
     cx.update(crate::test_init);
@@ -176,9 +176,11 @@ fn unpublished_and_failed_ranges_show_changes_link_and_only_failures_offer_retry
                 visual.debug_bounds("whats-new-source").is_some(),
                 "useful merged-changes fallback"
             );
+            // A partial chain already survived the automatic retry and shows
+            // the builds that did load, so only a total failure offers Retry.
             assert_eq!(
                 visual.debug_bounds("whats-new-retry").is_some(),
-                reason == model::Unavailable::FetchFailed
+                reason == model::Unavailable::FetchFailed && !partial
             );
             assert_eq!(
                 visual.debug_bounds("whats-new-unpublished").is_some(),
@@ -203,5 +205,43 @@ fn unpublished_and_failed_ranges_show_changes_link_and_only_failures_offer_retry
                 }
             });
         }
+    }
+}
+
+#[gpui::test]
+fn channel_and_client_problems_explain_themselves_without_offering_retry(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let mut view = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let notes = offline_view(cx);
+        view = Some(notes.clone());
+        Root::new(notes, window, cx)
+    });
+    let view = view.unwrap();
+    for (reason, selector) in [
+        (model::Unavailable::UnknownChannel, "whats-new-channel"),
+        (model::Unavailable::NoClient, "whats-new-no-client"),
+    ] {
+        view.update(visual, |view, cx| {
+            view.notes = Some(Range {
+                unavailable: Some(reason),
+                builds: Vec::new(),
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        // The message says what is wrong instead of blaming the network.
+        assert!(visual.debug_bounds(selector).is_some());
+        assert!(visual.debug_bounds("whats-new-offline").is_none());
+        assert!(visual.debug_bounds("whats-new-unpublished").is_none());
+        assert!(
+            visual.debug_bounds("whats-new-retry").is_none(),
+            "retrying a deterministic problem is pointless"
+        );
+        assert!(
+            visual.debug_bounds("whats-new-source").is_some(),
+            "useful merged-changes fallback"
+        );
     }
 }
