@@ -96,9 +96,15 @@ fn replace_clean_source(
     cx: &mut Context<EditorState>,
 ) {
     let selection = input.selected_range();
+    let cursor = input.cursor();
+    let directed = if cursor == selection.start && !selection.is_empty() {
+        selection.end..selection.start
+    } else {
+        selection
+    };
     let scroll = input.scroll_offset();
     input.set_value(text, window, cx);
-    input.set_selected_range_preserving_view(selection.clone(), selection.start, cx);
+    input.set_selected_range_preserving_view(directed, cursor, cx);
     input.set_scroll_offset(scroll, cx);
 }
 
