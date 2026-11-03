@@ -92,7 +92,15 @@ class FixtureStagingTests(unittest.TestCase):
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 descriptors = Path(f'/proc/{process.pid}/fd')
-                if any(os.readlink(fd) == str(legacy) for fd in descriptors.iterdir()):
+                def writing():
+                    for fd in descriptors.iterdir():
+                        try:
+                            if os.readlink(fd) == str(legacy):
+                                return True
+                        except FileNotFoundError:
+                            pass  # tar can close an input descriptor mid-scan.
+                    return False
+                if writing():
                     break
                 time.sleep(.01)
             else:
