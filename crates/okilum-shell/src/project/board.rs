@@ -852,24 +852,18 @@ impl Board {
                     .w_full()
                     .min_w_0()
                     .h_auto()
+                    // The control itself owns the full-width block flow.
+                    .block()
                     .p_3()
+                    .whitespace_normal()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(
-                        // Natural block flow needs one width-constrained pass;
-                        // flex intrinsic-height negotiation is redundant here.
-                        div()
-                            .block()
-                            .w_full()
-                            .min_w_0()
-                            .whitespace_normal()
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(
-                                meta.mb_2()
-                                    .font_weight(FontWeight::NORMAL)
-                                    .whitespace_nowrap(),
-                            )
-                            .child(scope.expected.clone()),
+                        meta.mb_2()
+                            .font_weight(FontWeight::NORMAL)
+                            .whitespace_nowrap(),
                     )
+                    .child(scope.expected.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_local = None;
                         this.selected = (this.selected != Some(number)).then_some(number);
@@ -971,6 +965,8 @@ impl Board {
                     .gap_2()
                     .px_3()
                     .text_size(px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .debug_selector(move || format!("board-agent-{number}"))
                     .text_color(if stuck {
                         colors.warning
                     } else {
@@ -984,15 +980,11 @@ impl Board {
                         },
                         colors.text_muted,
                     ))
-                    .child(
-                        div()
-                            .debug_selector(move || format!("board-agent-{number}"))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(scope.executor.clone()),
-                    )
+                    .child(scope.executor.clone())
                     .child(
                         div()
                             .debug_selector(move || format!("board-state-{number}"))
+                            .font_weight(FontWeight::NORMAL)
                             .min_w_0()
                             .truncate()
                             .child(if stuck { "Blocked" } else { column.label() }),
@@ -1309,6 +1301,8 @@ impl Render for Board {
                 .child(
                     h_flex()
                         .min_w_0()
+                        .text_size(px(12.))
+                        .text_color(colors.text_muted)
                         .gap_2()
                         .flex_wrap()
                         .child(appearance::icon(glyph, color))
@@ -1316,14 +1310,10 @@ impl Render for Board {
                             div()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_size(px(13.))
+                                .text_color(colors.text)
                                 .child(column.label()),
                         )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(colors.text_muted)
-                                .child(count.to_string()),
-                        )
+                        .child(count.to_string())
                         .when(count == 0 && self.columns.known_empty(column), |header| {
                             header.child(self.collapse_empty_column(column, cx))
                         }),
