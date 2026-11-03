@@ -89,12 +89,12 @@ fn matches_reviewed_bytes(
     else {
         return false;
     };
-    let Some(count) = local["numBlocks"].as_u64().filter(|n| *n > 0) else {
-        return false;
-    };
+    // Some metadata-only responses omit the block list/count. The hash is
+    // still exact; no count or timestamp can substitute for matching it.
+    let count = local["numBlocks"].as_u64().filter(|n| *n > 0);
     (17..=24).any(|power| {
         let block_size = 1usize << power;
-        if bytes.len().div_ceil(block_size).max(1) as u64 != count {
+        if count.is_some_and(|count| bytes.len().div_ceil(block_size).max(1) as u64 != count) {
             return false;
         }
         let mut digest = Sha256::new();
@@ -145,6 +145,13 @@ mod tests {
         );
         let two = json!({"size":131073, "numBlocks":2, "blocksHash":"Fj8vzIwO2Pex2hFd7Nm+U/aHGlR9X5DbHjJGkZVd2NY="});
         assert!(matches_reviewed_bytes(&two, &two, &vec![b'a'; 131073]));
+        let mut metadata_only = one.clone();
+        metadata_only["numBlocks"] = json!(0);
+        assert!(matches_reviewed_bytes(
+            &metadata_only,
+            &metadata_only,
+            b"remote line\n"
+        ));
         let mut unknown = one.clone();
         unknown["blocksHash"] = serde_json::Value::Null;
         assert!(!matches_reviewed_bytes(
