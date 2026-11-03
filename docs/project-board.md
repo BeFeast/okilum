@@ -32,9 +32,22 @@ successful read. A recent merge retains its issue and PR link for 24 hours. Can 
 still requires the existing exact-source inclusion, available artifact and scenario
 evidence; merge alone never claims delivery or acceptance.
 
-Reads use no credentials, reject redirects, share a 20-second deadline and cap
-responses at 2 MiB and each list at 1000 entries. A failed/incomplete read retains
-the last complete snapshot and reports its source error. Delivery refresh follows
+Reads reuse the Board's explicitly bound public Forgejo repository client. There
+is no separate tracker token in the existing desktop Board; Manager OAuth belongs
+to its T3 origin and is never forwarded to Forgejo. No host or token is inferred
+from the developer's environment. Reads reject redirects, share a 20-second
+deadline and cap responses at 2 MiB and each list at 1000 entries. A Board-owned
+ETag cache revalidates responses on subsequent reads and survives hide/show;
+changing repository discards cached responses and server backoff. HTTP 429/503
+honours Retry-After (60 seconds when absent), retaining the last complete Board.
+Refresh is clamped to 15–30 seconds to avoid fast-poll configurations flooding the
+API while meeting the one-minute closure target on a healthy source. A failed/incomplete read retains
+the last complete snapshot and reports its source error in one quiet line with
+the last-success time; full details remain in the existing source disclosure.
+Merge expiry also freezes at that last-success time during failure, so an offline
+Board cannot silently empty itself. Generated cards explicitly identify missing
+manual annotations. Invalid or duplicate annotations stay visible and never supply
+an arbitrary owner. Delivery refresh follows
 the issue read so newly discovered PRs reach the existing delivery verifier in the
 same refresh cycle. The earlier selected-scope descriptions below document the
 historical Board slices; this live membership rule supersedes them.
@@ -84,8 +97,8 @@ Build links are explicit destinations, not verified inclusion or installation.
 
 ## Sources and honest states
 
-Forgejo reads use the public API without any credential or GitHub request. Only
-the selected issue endpoints are requested. T3 reads the bound executor project
+Forgejo reads use the configured public repository API without any credential or
+GitHub request. Live discovery supersedes the original selected-issue reads. T3 reads the bound executor project
 through the already connected Manager gateway; it adds no connection, pairing or
 Manager history poller. These requests run independently off the UI thread.
 
@@ -94,15 +107,16 @@ Overlapping requests coalesce. Hiding cancels its timer and invalidates pending
 answers. Each cached Board belongs to one project; replies also carry owner and
 generation identity, and cannot update a switched project. Configuration is
 reread on refresh. A failed source retains its previous snapshot and successful
-read time; partial Forgejo reads retain issues that failed. A different source's
+read time; partial Forgejo reads retain the entire last complete membership. A different source's
 success does not make that failed source fresh. The UI is silent while sources
 are healthy or refreshing. A failed or stale
 source shows one compact line with its last successful read time. Manifest failures show the exact file/parser detail in the problem line and app
 log. Invalid cards show their issue number, field and error beside healthy cards;
 they do not hide the entire Board. Transport counters remain hidden.
 
-Open issues need a verified open PR reference or current-task/active-run evidence
-to enter In progress. Otherwise they stay in Queue. Closed issues stay in Checks:
+Open issues need a verified open PR reference with successful aggregate checks,
+or current-task/active-run evidence to enter In progress. Otherwise they stay in
+Queue or Checks as described above. Retained closed issues stay in Checks:
 merge/closure is neither available delivery nor Oleg acceptance. No delivery
 placeholder or acceptance disclaimer is shown. Verified
 feed/artifact correlation and human acceptance remain later slices; removing
@@ -115,8 +129,10 @@ open-PR/current-task evidence, independent and partial failure, retained snapsho
 coalescing and late answers. Native GPUI fixtures exercise the actual Manager
 composer (append, Unicode, Undo, no send and project mismatch), hidden Board state,
 and real Reader project → note → Board navigation with the retained Manager draft.
-The Forgejo source is injected only in the offline navigation fixture; production
-uses the public client. These tests do not establish Oleg's visual acceptance.
+The Forgejo source is injected only in offline native-navigation fixtures;
+loopback fake-Forgejo tests additionally exercise the real production HTTP client,
+conditional headers, close/merge transitions, Retry-After and incomplete responses.
+Production uses the same bounded public client. These tests do not establish Oleg's visual acceptance.
 
 Linux and Mac Sprint are parallel delivery destinations. Mac webview draft
 integration, delivery feeds and execution mutations remain outside this slice: Board

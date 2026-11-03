@@ -261,3 +261,215 @@ fn discovered_merge_enters_can_try_only_with_existing_exact_build_delivery_proof
         "stale proof cannot promote a card"
     );
 }
+
+#[test]
+fn real_http_client_revalidates_and_projects_close_merge_and_failure_without_manifest_edits() {
+    use crate::testing::{FakeServer, Response};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let phase = Arc::new(AtomicUsize::new(0));
+    let state = phase.clone();
+    let server = FakeServer::start(move |request| {
+        assert_eq!(request.method, "GET");
+        assert!(
+            request.header("authorization").is_none(),
+            "Manager credentials must not reach Forgejo"
+        );
+        let phase = state.load(Ordering::SeqCst);
+        if phase == 3 {
+            return Response::empty(500);
+        }
+        let etag = format!("\"phase-{phase}\"");
+        if request.header("if-none-match") == Some(etag.as_str()) {
+            return Response::empty(304);
+        }
+        let value = match request
+            .target
+            .trim_start_matches("/api/v1/repos/example/project/")
+        {
+            "issues?state=open&type=issues&limit=50&page=1" => {
+                if phase == 0 {
+                    json!([issue(42, "open"), issue(43, "open")])
+                } else {
+                    json!([])
+                }
+            }
+            "pulls?state=open&limit=50&page=1" => {
+                if phase == 0 {
+                    json!([pull(7, "open", "Fixes #42")])
+                } else {
+                    json!([])
+                }
+            }
+            "pulls?state=closed&sort=recentupdate&limit=50&page=1" => {
+                if phase == 2 {
+                    json!([pull(7, "closed", "Fixes #42")])
+                } else {
+                    json!([])
+                }
+            }
+            "issues/42" => issue(42, "closed"),
+            "commits/abc123/status" => json!({"state":"pending"}),
+            other => panic!("unexpected fixture request {other}"),
+        };
+        Response::json(200, value).with_header("etag", &etag)
+    });
+    let mut binding = binding();
+    binding.issues.clear();
+    let original = binding.clone();
+    let repo = repository_url(&binding.repository).unwrap();
+    let base = format!("{}/api/v1/repos/example/project", server.origin);
+    let mut reader = Reader::default();
+    let mut snapshot = Snapshot::new("project".into());
+    for (cycle, at) in [(0, 86500), (0, 86510), (1, 86530), (2, 86560), (3, 86590)] {
+        phase.store(cycle, Ordering::SeqCst);
+        let ticket = snapshot.begin().unwrap();
+        let result = reader
+            .read_at(&binding, &repo, &base, at)
+            .map_err(|e| format!("{e:#}"));
+        snapshot.live_issues(&ticket, result, at);
+        snapshot.threads(&ticket, Ok(Vec::new()), at);
+        let projected = project(&binding, &snapshot.forgejo.value, at);
+        match cycle {
+            0 => {
+                assert_eq!(
+                    projected.issues.len(),
+                    2,
+                    "positive control: real HTTP discovery ran"
+                );
+                assert_eq!(
+                    column(
+                        &projected.issues[0],
+                        Some(&snapshot.forgejo.value[&42]),
+                        &[]
+                    ),
+                    Column::Checks
+                );
+                assert_eq!(
+                    column(
+                        &projected.issues[1],
+                        Some(&snapshot.forgejo.value[&43]),
+                        &[]
+                    ),
+                    Column::Queue
+                );
+            }
+            1 => assert!(
+                projected.issues.is_empty(),
+                "closed Queue and Checks cards leave at next 30 s read"
+            ),
+            2 | 3 => {
+                assert_eq!(projected.issues.len(), 1);
+                assert_eq!(
+                    projected.pull_url(projected.issues[0].pull_requests[0]),
+                    format!("{}/pulls/7", binding.repository)
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+    assert_eq!(snapshot.forgejo.last_success, Some(86560));
+    assert!(snapshot.forgejo.error.as_ref().unwrap().contains("500"));
+    assert!(
+        server
+            .requests()
+            .iter()
+            .any(|r| r.header("if-none-match").is_some()),
+        "positive control: production cache sends conditional headers"
+    );
+    assert_eq!(binding, original, "all discovery and links are derived");
+}
+
+#[test]
+fn real_http_reader_honours_retry_after_and_never_follows_redirects() {
+    use crate::testing::{FakeServer, Response};
+    let server = FakeServer::start(|_| Response::empty(429).with_header("retry-after", "120"));
+    let binding = binding();
+    let repo = repository_url(&binding.repository).unwrap();
+    let mut reader = Reader::default();
+    let error = reader
+        .read_at(&binding, &repo, &server.origin, 86500)
+        .unwrap_err();
+    assert!(error.to_string().contains("retry in 120 s"));
+    let error = reader
+        .read_at(&binding, &repo, &server.origin, 86530)
+        .unwrap_err();
+    assert!(error.to_string().contains("requested a retry"));
+    assert_eq!(server.requests().len(), 1, "backoff must send no requests");
+
+    let destination = FakeServer::start(|_| panic!("redirect destination must never be contacted"));
+    let target = destination.origin.clone();
+    let redirect =
+        FakeServer::start(move |_| Response::empty(302).with_header("location", &target));
+    assert!(reader
+        .read_at(&binding, &repo, &redirect.origin, 86560)
+        .is_err());
+    assert_eq!(
+        redirect.requests().len(),
+        1,
+        "a new origin does not inherit the old origin's backoff"
+    );
+    assert!(destination.requests().is_empty());
+}
+
+#[test]
+fn real_http_partial_or_unprimed_conditional_responses_are_never_empty_successes() {
+    use crate::testing::{FakeServer, Response};
+    let binding = binding();
+    let repo = repository_url(&binding.repository).unwrap();
+    for response in [304, 206, 401] {
+        let server = FakeServer::start(move |_| Response::empty(response));
+        assert!(Reader::default()
+            .read_at(&binding, &repo, &server.origin, 86500)
+            .is_err());
+        assert_eq!(server.requests().len(), 1);
+    }
+    let server = FakeServer::start(|_| {
+        Response::json(200, json!([issue(42, "open")]))
+            .with_header("link", "<https://fixture.invalid/page2>; rel=\"next\"")
+    });
+    let error = Reader::default()
+        .read_at(&binding, &repo, &server.origin, 86500)
+        .unwrap_err();
+    assert!(error.to_string().contains("short page"));
+}
+
+#[test]
+fn missing_or_duplicate_annotations_are_visible_and_never_pick_an_owner() {
+    let mut binding = binding();
+    binding.issues.truncate(1);
+    let mut scope = binding.issues[0].clone();
+    let number = scope.number;
+    scope.executor = "Other owner".into();
+    binding.issues.push(scope);
+    let issues = [
+        (
+            number,
+            serde_json::from_value(issue(number, "open")).unwrap(),
+        ),
+        (42, serde_json::from_value(issue(42, "open")).unwrap()),
+    ]
+    .into();
+    let projected = project(&binding, &issues, 86500);
+    assert!(mapping_problem(&binding, number)
+        .unwrap()
+        .contains("ambiguous"));
+    assert!(mapping_problem(&binding, 42)
+        .unwrap()
+        .contains("No card annotation"));
+    assert!(projected.issues.iter().all(|s| s.executor == "Unassigned"));
+    binding.issues.pop();
+    assert_eq!(mapping_problem(&binding, number), None);
+    assert_eq!(
+        project(&binding, &issues, 86500)
+            .issues
+            .iter()
+            .find(|s| s.number == number)
+            .unwrap()
+            .executor,
+        binding.issues[0].executor,
+        "positive control: one annotation keeps the explicit owner"
+    );
+}

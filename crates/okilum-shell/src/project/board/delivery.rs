@@ -27,8 +27,11 @@ impl Board {
         let Some(binding) = self.binding.clone() else {
             return;
         };
-        let binding =
-            okilum_t3::board::live::project(&binding, &self.snapshot.forgejo.value, now());
+        let binding = okilum_t3::board::live::project(
+            &binding,
+            &self.snapshot.forgejo.value,
+            self.projection_time(),
+        );
         self.delivery_loading = true;
         let area = self.area.clone();
         cx.spawn_in(window, {
