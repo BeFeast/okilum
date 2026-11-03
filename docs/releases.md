@@ -7,10 +7,14 @@ No build/signing credentials are needed on GitHub.
 ## Build cadence and manual builds
 
 All three beta workflows tick at :17 UTC. The Linux coordinator requests at most
-one automatic fast certification per UTC hour. Both required fast suites compile
-and test the requested product checkout, independently of the workflow snapshot
-or subsequent main merges. A successful certification immediately dispatches all
-three source-pinned release workflows; the next tick recovers missed dispatches.
+one automatic fast certification per UTC hour. Both fast suites compile and test
+the requested product checkout, independently of the workflow snapshot or
+subsequent main merges. Beta is gated by `fast / check` alone: its status is
+reported the moment `check` finishes, and a green `check` immediately dispatches
+all three source-pinned release workflows; the next tick recovers missed
+dispatches. `fast / shell-full` is reported separately on the same source for
+Stable; a red, pending or timed-out full suite never holds Beta (03.11: CI never
+gates development).
 
 Each platform selects the newest certified green **first-parent main** commit
 ahead of its own actual beta feed. PR statuses and archive descriptors do not
