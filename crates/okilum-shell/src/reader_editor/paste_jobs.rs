@@ -618,7 +618,9 @@ fn convert_in_background(
                 note_closed("", window, cx);
                 return;
             };
-            if done.failed > 0 {
+            if done.deferred > 0 {
+                reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
+            } else if done.failed > 0 {
                 reader_toast::transient(router::failed_images_text(done.failed), window, cx);
             }
             if !done.remote.is_empty() {

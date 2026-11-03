@@ -81,7 +81,7 @@ impl MovePlan {
         Ok(plan)
     }
     pub fn commit(self) -> Result<Moved> {
-        let _admission = self.authority.admit()?.enter()?;
+        let _admission = self.authority.operation()?;
         // Retain the read handle through publication to exclude in-place writes.
         // DELETE sharing permits publication; replacement races are checked below.
         let (_guard, bytes, info) = self.source.read(&self.source_name)?;
@@ -223,7 +223,7 @@ impl DirectoryMovePlan {
         })
     }
     pub fn commit(self) -> Result<Moved> {
-        let _admission = self.authority.admit()?.enter()?;
+        let _admission = self.authority.operation()?;
         ensure!(
             DirectorySnapshot::at(&self.source, &self.source_name)? == self.expected,
             "Folder changed after preview; nothing was moved"

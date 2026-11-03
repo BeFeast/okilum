@@ -29,6 +29,7 @@ impl Receipt {
             .plan
             .undo_source(editor.text())
             .map_err(anyhow::Error::msg)?;
+        let _admission = okilum_write_authority::operation(&self.root)?;
         editor.set_text(before.to_owned())?;
         save(&mut editor)
     }
@@ -45,6 +46,7 @@ pub fn apply(root: &Path, drafts: &Path, relative: &str, plan: &Plan) -> Result<
     let after = plan
         .apply_source(editor.text())
         .map_err(anyhow::Error::msg)?;
+    let _admission = okilum_write_authority::operation(&root)?;
     editor.set_text(after.to_owned())?;
     save(&mut editor)?;
     Ok(Receipt {
@@ -171,6 +173,26 @@ mod tests {
         let drafts = temp.path().join("state/editor-drafts");
         let plan = Plan::new(source, TASK).unwrap();
         (temp, root, drafts, plan)
+    }
+
+    #[test]
+    fn windows_local_writer_review_reminder_refusal_does_not_block_retry() {
+        let (_temp, root, drafts, plan) = fixture("Original\n");
+        let path = root.join("Reminders.md");
+        let a = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let hold = a.begin_drain("reminder-refusal").unwrap();
+        assert!(apply(&root, &drafts, "Reminders.md", &plan).is_err());
+        assert!(!FileEditor::has_unsaved_draft(&path, &drafts).unwrap());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        let receipt = apply(&root, &drafts, "Reminders.md", &plan).unwrap();
+        let hold = a.begin_drain("reminder-undo-refusal").unwrap();
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert!(!FileEditor::has_unsaved_draft(&path, &drafts).unwrap());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "Original\n");
     }
 
     #[test]

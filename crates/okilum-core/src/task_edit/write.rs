@@ -32,6 +32,7 @@ impl Receipt {
             .plan
             .undo_source(editor.text())
             .map_err(anyhow::Error::msg)?;
+        let _admission = okilum_write_authority::operation(&self.root)?;
         editor.set_text(before.to_owned())?;
         save(&mut editor)
     }
@@ -82,6 +83,7 @@ fn commit_plan(root: PathBuf, editor: &mut FileEditor, plan: Plan) -> Result<Opt
     if plan.before == plan.after {
         return Ok(None);
     }
+    let _admission = okilum_write_authority::operation(&root)?;
     editor.set_text(plan.after.clone())?;
     save(editor)?;
     Ok(Some(Receipt { root, plan }))
@@ -156,6 +158,26 @@ mod tests {
             ))
             .remove(0);
         (index, task)
+    }
+
+    #[test]
+    fn windows_local_writer_review_task_refusal_does_not_block_retry_or_undo() {
+        let (_temp, root, drafts, text) = fixture();
+        let (index, task) = indexed(&text);
+        let a = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let hold = a.begin_drain("task-refusal").unwrap();
+        assert!(apply_indexed(&root, &drafts, &index, &task, Change::Checked(true)).is_err());
+        assert!(!FileEditor::has_unsaved_draft(&root.join("a.md"), &drafts).unwrap());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        let receipt = apply_indexed(&root, &drafts, &index, &task, Change::Checked(true)).unwrap().unwrap();
+        let hold = a.begin_drain("undo-refusal").unwrap();
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert!(!FileEditor::has_unsaved_draft(&root.join("a.md"), &drafts).unwrap());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(root.join("a.md")).unwrap(), text);
     }
 
     // `windows_` runs it on the native Windows CI lane too (#1127).

@@ -303,9 +303,14 @@ impl DraftWrite {
             }
             crate::source_state::persist(&self.journal, &serde_json::to_vec(&self.draft)?)?;
         }
+        #[cfg(test)]
+        JOURNAL_COMMITS.with(|commits| commits.borrow_mut().push(self.draft.base == self.draft.text));
         Ok(())
     }
 }
+
+#[cfg(test)]
+thread_local! { static JOURNAL_COMMITS: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) }; }
 
 pub(crate) fn lock_busy(error: &anyhow::Error) -> bool {
     #[cfg(unix)]
@@ -839,8 +844,6 @@ impl FileEditor {
         Ok(())
     }
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
-        self.persist()?;
-        let _admission = self.authority.admit()?.enter()?;
         let writes = self.writes.clone();
         let mut order = writes
             .save
@@ -861,6 +864,14 @@ impl FileEditor {
             }
         }
         let requested_generation = self.generation;
+        // A clean navigation/close needs no canonical admission. Dirty drafts
+        // are durable before refusal, with one pre-publication journal flush.
+        let _admission = if self.dirty() || self.draft.pending_input {
+            self.persist()?;
+            Some(self.authority.operation()?)
+        } else {
+            None
+        };
         let result = self.save_before_exchange_locked(before_exchange);
         if matches!(result, Ok(Save::Saved)) {
             order.saved = Some((self.draft.base.clone(), self.on_disk, requested_generation));
@@ -886,7 +897,6 @@ impl FileEditor {
             self.draft.base = self.draft.text.clone();
             return Ok(Save::Saved);
         }
-        self.persist()?;
         self.directory.validate(self.draft.path.parent().unwrap())?;
         let (current, metadata) = self
             .directory
@@ -1298,7 +1308,6 @@ impl FileEditor {
             self.draft.base = self.draft.text.clone();
             return Ok(Save::Saved);
         }
-        self.persist()?;
         self.directory.validate(self.draft.path.parent().unwrap())?;
         let (current, _) = self
             .directory
@@ -2960,5 +2969,40 @@ mod local_writer_admission_tests {
                 .unwrap(),
             Save::Saved
         );
+    }
+}
+
+#[cfg(test)]
+mod local_writer_review_tests {
+    use super::*;
+    #[test]
+    fn windows_local_writer_review_clean_save_during_hold_and_single_draft_flush() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, b"original").unwrap();
+        let authority = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let mut editor = FileEditor::open(&path, &temp.path().join("drafts")).unwrap();
+        let hold = authority.begin_drain("clean-navigation").unwrap();
+        JOURNAL_COMMITS.with(|commits| commits.borrow_mut().clear());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        assert!(JOURNAL_COMMITS.with(|commits| commits.borrow().is_empty()));
+        editor.queue_text("held draft".into());
+        assert!(editor.save().is_err());
+        assert_eq!(JOURNAL_COMMITS.with(|commits| commits.borrow().clone()), vec![false]);
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        JOURNAL_COMMITS.with(|commits| commits.borrow_mut().clear());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        // One recovery flush before publication, one clean acknowledgement.
+        // No duplicate pre-publication temp-file/fsync sequence was added.
+        assert_eq!(JOURNAL_COMMITS.with(|commits| commits.borrow().clone()), vec![false, true]);
+        assert_eq!(fs::read(&path).unwrap(), b"held draft");
+        editor.queue_text("ordinary autosave".into());
+        JOURNAL_COMMITS.with(|commits| commits.borrow_mut().clear());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        assert_eq!(JOURNAL_COMMITS.with(|commits| commits.borrow().clone()), vec![false, true]);
     }
 }
