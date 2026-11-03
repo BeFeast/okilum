@@ -301,6 +301,7 @@ fn local_writer_admission_source_store_retains_durable_request_before_refusing_p
     use base64::{engine::general_purpose::STANDARD, Engine};
     use okilum_core::source::{SourceStore, SourceWrite, WriteBoundary, SCHEMA};
     let f = Fixture::new();
+    fs::create_dir(f._temp.path().join("source-state")).unwrap();
     let store = SourceStore::open(
         "01000000-0000-4000-8000-000000000001",
         &f.root,
