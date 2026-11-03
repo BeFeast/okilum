@@ -343,9 +343,8 @@ fn cache_is_peer_vault_revision_scoped_bounded_and_reaps_expired_bytes() -> Resu
     let first = cache.insert(stored(temp.path(), a, "vault")?);
     let second = cache.insert(stored(temp.path(), b, "vault")?);
     cache.busy.clear();
-    let same = stored(temp.path(), a, "vault")?;
     // A stable binding and revision reuses the original capability.
-    let mut same = same;
+    let mut same = stored(temp.path(), a, "vault")?;
     same.local.header.binding = first.binding.clone();
     assert_eq!(cache.insert(same), first);
     assert_eq!(cache.entries.len(), 2);
@@ -479,17 +478,17 @@ fn slow_inspection_does_not_block_second_peer_pairing_or_controller_locks() -> R
         let mut db = server.shared.db.lock().unwrap();
         db.attached
             .push(source(&temp.path().join("unavailable-vault")));
-        for i in 0..2 {
+        for ((id, key), client) in ids.iter().zip(&keys).zip(&clients) {
             db.peers.insert(
-                ids[i],
+                *id,
                 Paired {
                     peer: Peer {
-                        id: ids[i],
-                        name: format!("Client {i}"),
+                        id: *id,
+                        name: format!("Client {id}"),
                         device_id: "fixture".into(),
                     },
-                    public: wire::public(&clients[i].shared.db.lock().unwrap().seed)?,
-                    key: keys[i],
+                    public: wire::public(&client.shared.db.lock().unwrap().seed)?,
+                    key: *key,
                     endpoint,
                     allowed: vec!["vault".into()],
                     syncthing_device: Some("approved".into()),

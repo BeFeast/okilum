@@ -146,6 +146,9 @@ struct Database {
     #[serde(default)]
     sources: Vec<source::Source>,
 }
+#[cfg(all(test, target_os = "linux"))]
+type InspectionHook = Arc<dyn Fn(Uuid) + Send + Sync>;
+
 struct Shared {
     state: PathBuf,
     configs: Mutex<Vec<PathBuf>>,
@@ -161,7 +164,7 @@ struct Shared {
     #[cfg(target_os = "linux")]
     inventory_key: [u8; 32],
     #[cfg(all(test, target_os = "linux"))]
-    inspection_hook: Mutex<Option<Arc<dyn Fn(Uuid) + Send + Sync>>>,
+    inspection_hook: Mutex<Option<InspectionHook>>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
     _lock: std::fs::File,
 }
