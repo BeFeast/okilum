@@ -172,19 +172,19 @@ pub(crate) fn load(directory: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Missing mode entries in older sessions mean vault mode.
-pub(crate) fn load_modes(directory: &Path) -> Vec<bool> {
-    std::fs::read(directory.join(FILE))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Saved>(&bytes).ok())
-        .filter(|saved| saved.version == SCHEMA)
-        .map(|saved| saved.single_file)
-        .unwrap_or_default()
-}
-
 /// The windows to reopen, each with the note it showed. A note that is not
 /// a plain relative path is dropped, and the window opens as its vault would.
+#[cfg(test)]
 pub(crate) fn load_windows(directory: &Path) -> Vec<Window> {
+    load_session_windows(directory)
+        .into_iter()
+        .map(|(window, _)| window)
+        .collect()
+}
+
+/// Read targets and their modes from one snapshot, before restoration rewrites it.
+/// Missing mode entries in older sessions mean vault mode.
+pub(crate) fn load_session_windows(directory: &Path) -> Vec<(Window, bool)> {
     let Some(saved) = std::fs::read(directory.join(FILE))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Saved>(&bytes).ok())
@@ -193,6 +193,7 @@ pub(crate) fn load_windows(directory: &Path) -> Vec<Window> {
         return Vec::new();
     };
     let mut notes = saved.notes.into_iter();
+    let mut modes = saved.single_file.into_iter();
     saved
         .roots
         .into_iter()
@@ -203,7 +204,7 @@ pub(crate) fn load_windows(directory: &Path) -> Vec<Window> {
                         .components()
                         .all(|part| matches!(part, std::path::Component::Normal(_)))
             });
-            (root, note)
+            ((root, note), modes.next().unwrap_or(false))
         })
         .collect()
 }
@@ -222,10 +223,15 @@ mod tests {
         ];
         write_modes(fixture.path(), &windows, &[false, true]).unwrap();
         assert_eq!(load_windows(fixture.path()), windows);
-        assert_eq!(load_modes(fixture.path()), vec![false, true]);
+        assert_eq!(
+            load_session_windows(fixture.path()),
+            vec![(windows[0].clone(), false), (windows[1].clone(), true)]
+        );
         write(fixture.path(), &windows).unwrap();
         assert!(
-            load_modes(fixture.path()).is_empty(),
+            load_session_windows(fixture.path())
+                .iter()
+                .all(|(_, mode)| !mode),
             "legacy sessions default to vault mode"
         );
     }

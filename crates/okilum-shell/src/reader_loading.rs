@@ -265,12 +265,16 @@ fn prepare_first_existing_document(
         .reusable_roots
         .iter()
         .find(|root| canonical_path.starts_with(root));
-    // A log always opens in the quick viewer, even inside an open folder:
-    // the vault path would render it as Markdown.
-    if canonical_path.is_file() && okilum_core::log::is_log_path(&canonical_path) {
+    // Direct file delivery uses quick mode. An explicit vault-mode switch
+    // prepares the vault and mounts the same typed preview after publication.
+    let quick_file = opts.single_file || (root.is_none() && reusable.is_none());
+    if quick_file && canonical_path.is_file() && okilum_core::log::is_log_path(&canonical_path) {
         return prepare_log(&canonical_path, root, cancel);
     }
-    if canonical_path.is_file() && reader_delimited::editable(&canonical_path.to_string_lossy()) {
+    if quick_file
+        && canonical_path.is_file()
+        && reader_delimited::editable(&canonical_path.to_string_lossy())
+    {
         return prepare_plain_file(&canonical_path, root, cancel);
     }
     if opts.single_file || (canonical_path.is_file() && root.is_none() && reusable.is_none()) {
@@ -1561,9 +1565,14 @@ impl Reader {
         // not its document. A cold candidate has no attachment inventory yet;
         // replacing the render would drop images and reset the viewport (#593).
         // Ready reconciles any source edits against the complete inventory.
-        let preserve_document = self.single_file != pending.intent.single_file
-            && self.vault_root == pending.intent.root
-            && self.current_rel == pending.rel
+        let switching_mode = self.single_file != pending.intent.single_file
+            && self.vault_root == pending.intent.root;
+        let preserve_preview = switching_mode
+            && self.file_preview.as_ref().is_some_and(|preview| {
+                pending.intent.note.as_deref() == Some(preview.rel.as_str())
+            });
+        let preserve_document = switching_mode
+            && (self.current_rel == pending.rel || preserve_preview)
             && self.document_ready();
         if self.vault_root != pending.intent.root {
             self.tree_preview.close();
@@ -1663,6 +1672,8 @@ impl Reader {
                 None if edit => self.open_created_note(&note, window, cx),
                 None => self.open_note(&note, None, window, cx),
             }
+        } else if preserve_preview {
+            // Keep the typed viewer entity, including its viewport and filters.
         } else if let Some(log) = pending.log {
             self.mount_log(log, window, cx);
             // More log files from the command line join the view (#1160).
@@ -2188,7 +2199,8 @@ impl Reader {
         // A deleted note asks before its contents are left behind (#1986).
         let other = opts.vault.as_ref() != Some(&self.vault_root)
             || opts.open_path.is_some()
-            || opts.note.as_deref() != Some(self.current_rel.as_str());
+            || opts.note.as_deref() != Some(self.current_rel.as_str())
+            || opts.single_file != self.single_file;
         if other && self.leaving_deleted_note(None, cx) {
             self.ask_leaving_deleted_note(
                 Box::new(move |this, window, cx| this.start_loading(opts, window, cx)),
@@ -2197,10 +2209,16 @@ impl Reader {
             );
             return;
         }
+        let preserve_preview = opts.single_file != self.single_file
+            && opts.vault.as_ref() == Some(&self.vault_root)
+            && opts.note.as_deref() == Some(self.selected_file())
+            && self.editing.is_none();
         if !self.leave_source(cx) {
             return;
         }
-        self.file_preview = None;
+        if !preserve_preview {
+            self.file_preview = None;
+        }
         self.file_menu = None;
         if opts.vault.as_ref() != Some(&self.vault_root)
             || opts.open_path.is_some()
@@ -2418,8 +2436,9 @@ impl Reader {
                             )?;
                         }
                         let mut first = prepare_first_with_ui_notes(&opts, &cancel, &ui_notes)?;
-                        if let Event::First { document, .. } = &first {
-                            opts.note = document.as_ref().map(|(path, _)| path.clone());
+                        if let Event::First { document, intent, .. } = &first {
+                            opts.note = document.as_ref().map(|(path, _)| path.clone())
+                                .filter(|path| !path.is_empty()).or_else(|| intent.note.clone());
                         }
                         let Event::First {
                             ref intent,
@@ -8131,6 +8150,168 @@ mod quick_view_tests {
                 "attachment changes are applied without a full rescan"
             );
         });
+    }
+
+    #[gpui::test]
+    fn window_mode_switch_saves_latest_buffer_and_refuses_conflicts_both_ways(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("notes");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::create_dir_all(root.join("unopened")).unwrap();
+        let path = root.join("nested/start.md");
+        std::fs::write(&path, "# Original\n").unwrap();
+        std::fs::write(root.join("nested/sibling.md"), "# Sibling\n").unwrap();
+        std::fs::write(root.join("unopened/hidden.md"), "# Hidden\n").unwrap();
+        cx.update(crate::test_init);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("nested/start.md".into()),
+                        session_directory: Some(temp.path().join("state")),
+                        cache_base_override: Some(temp.path().join("cache")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        for single_file in [false, true] {
+            reader.update_in(visual, |r, window, cx| {
+                assert_eq!(
+                    r.single_file, single_file,
+                    "both transition directions exercised"
+                );
+                r.toggle_source(window, cx);
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .set_value("# Latest unsaved buffer\n", window, cx);
+            });
+            std::fs::write(&path, "# External replacement\n").unwrap();
+            reader.update_in(visual, |r, window, cx| r.switch_window_mode(window, cx));
+            visual.run_until_parked();
+            reader.read_with(visual, |r, cx| {
+                assert_eq!(r.single_file, single_file, "conflict blocks mode switch");
+                assert!(r.editing.as_ref().unwrap().conflict.is_some());
+                assert_eq!(
+                    r.source_text(cx).as_deref(),
+                    Some("# Latest unsaved buffer\n")
+                );
+            });
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "# External replacement\n"
+            );
+            reader.update_in(visual, |r, window, cx| {
+                r.resolve_source(true, window, cx);
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .set_value("# Safely saved latest buffer\n", window, cx);
+                r.switch_window_mode(window, cx);
+            });
+            visual.run_until_parked();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "# Safely saved latest buffer\n"
+            );
+            reader.read_with(visual, |r, _| {
+                assert_eq!(r.single_file, !single_file);
+                assert_eq!(r.current_rel, "nested/start.md");
+                assert!(r.note_source.contains("Safely saved latest buffer"));
+                if !single_file {
+                    assert!(r.index_dir.is_none() && r.searcher.is_none());
+                    assert!(r
+                        .vault
+                        .entries
+                        .iter()
+                        .any(|entry| entry.path == "nested/sibling.md"));
+                    assert!(!r
+                        .vault
+                        .entries
+                        .iter()
+                        .any(|entry| entry.path == "unopened/hidden.md"));
+                }
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn window_mode_switch_keeps_typed_preview_entities_in_both_directions(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("start.md"), "# Vault positive control\n").unwrap();
+        cx.update(crate::test_init);
+        for (name, text) in [
+            ("plain.txt", "Literal text\n"),
+            ("table.csv", "a,b\n1,2\n"),
+            ("events.log", "2026-01-01T00:00:00Z INFO event\n"),
+        ] {
+            std::fs::write(root.join(name), text).unwrap();
+            let mut entity = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let reader = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            open_path: Some(root.join(name)),
+                            single_file: true,
+                            session_directory: Some(temp.path().join(name)),
+                            cache_base_override: Some(temp.path().join("cache")),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                entity = Some(reader.clone());
+                Root::new(reader, window, cx)
+            });
+            let reader = entity.unwrap();
+            visual.run_until_parked();
+            let preview_ids = |r: &Reader| {
+                let preview = r.file_preview.as_ref().expect("typed file is displayed");
+                (
+                    preview.text.as_ref().map(Entity::entity_id),
+                    preview.table.as_ref().map(Entity::entity_id),
+                    preview.log.as_ref().map(Entity::entity_id),
+                )
+            };
+            let identities = reader.read_with(visual, |r, _| {
+                assert!(r.single_file);
+                assert_eq!(r.selected_file(), name);
+                let identities = preview_ids(r);
+                assert!(
+                    identities.0.is_some() || identities.1.is_some() || identities.2.is_some(),
+                    "positive control: mounted typed viewer"
+                );
+                identities
+            });
+            for single_file in [false, true] {
+                reader.update_in(visual, |r, window, cx| r.switch_window_mode(window, cx));
+                visual.run_until_parked();
+                reader.read_with(visual, |r, _| {
+                    assert_eq!(r.single_file, single_file, "{name}: mode actually switches");
+                    assert_eq!(r.selected_file(), name);
+                    assert_eq!(
+                        preview_ids(r),
+                        identities,
+                        "viewport/filter owners stay alive"
+                    );
+                    assert_eq!(r.searcher.is_some(), !single_file);
+                });
+            }
+        }
     }
 
     #[gpui::test]

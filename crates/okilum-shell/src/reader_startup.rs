@@ -89,7 +89,9 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 let windows = directory
                     .as_deref()
                     .map(|directory| {
-                        restorable_windows(super::reader_open_windows::load_windows(directory))
+                        restorable_windows(super::reader_open_windows::load_session_windows(
+                            directory,
+                        ))
                     })
                     .unwrap_or_default();
                 let history = history(directory);
@@ -130,7 +132,7 @@ pub(crate) fn launch(mut opts: Opts, cx: &mut App) {
                 if let Ok((directory, ..)) = &history {
                     opts.session_directory = Some(directory.clone());
                 }
-                Some(restore_windows(restorable, opts.clone(), cx))
+                Some(restore_session_windows(restorable, opts.clone(), cx))
             });
             let Some(restoring) = restored else {
                 return;
@@ -235,13 +237,14 @@ fn history(
 /// for all of them. The reading position comes back either way, since it is
 /// kept with that note.
 fn restorable_windows(
-    windows: Vec<super::reader_open_windows::Window>,
-) -> Vec<super::reader_open_windows::Window> {
+    windows: Vec<(super::reader_open_windows::Window, bool)>,
+) -> Vec<(super::reader_open_windows::Window, bool)> {
     windows
         .into_iter()
-        .map(|(root, note)| {
-            let note = note.filter(|note| root.join(note).is_file());
-            (root, note)
+        .map(|((root, note), single_file)| {
+            // A missing quick file must fail visibly, never become a vault.
+            let note = note.filter(|note| single_file || root.join(note).is_file());
+            ((root, note), single_file)
         })
         .collect()
 }
@@ -255,16 +258,27 @@ pub(crate) fn restore_windows(
     base: Opts,
     cx: &mut App,
 ) -> Task<bool> {
+    // Explicit update-restart vault targets must ignore ordinary saved modes.
+    restore_session_windows(
+        windows.into_iter().map(|window| (window, false)).collect(),
+        base,
+        cx,
+    )
+}
+
+fn restore_session_windows(
+    windows: Vec<(super::reader_open_windows::Window, bool)>,
+    base: Opts,
+    cx: &mut App,
+) -> Task<bool> {
     cx.spawn(async move |cx| {
         let mut opened = 0;
         let mut skipped = Vec::new();
-        let modes = base
-            .session_directory
-            .as_deref()
-            .map(super::reader_open_windows::load_modes)
-            .unwrap_or_default();
-        for (index, (root, note)) in windows.into_iter().enumerate() {
-            let single_file = modes.get(index).copied().unwrap_or(false);
+        for ((root, note), single_file) in windows {
+            if single_file && note.is_none() {
+                skipped.push(root);
+                continue;
+            }
             // A second window of a vault already back: New Window's path,
             // sharing that window's session, not a second open (#1335).
             if let Some(source) = cx.update(|cx| {
@@ -691,6 +705,7 @@ mod tests {
         cx.update(|cx| {
             crate::test_init(cx);
             reader_open::install(cx);
+            super::super::reader_open_windows::install(state.clone(), cx);
             launch(
                 Opts {
                     session_directory: Some(state.clone()),
