@@ -171,4 +171,4 @@ jobs:
         env:
           CHECKS: ${{ needs.linux-checks.result }}
           APPIMAGE: ${{ needs.appimage.result }}
-        run: python3 scripts/ci/gate-step.py --name 'Run full Linux gate' -- bash -c 'if [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then test "$CHECKS" = skipped; else test "$CHECKS" = success; fi; test "$APPIMAGE" = success'
+        run: python3 scripts/ci/gate-step.py --name 'Run full Linux gate' -- bash -ec 'if [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then test "$CHECKS" = skipped; else test "$CHECKS" = success; fi; test "$APPIMAGE" = success'

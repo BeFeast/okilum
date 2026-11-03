@@ -1,59 +1,53 @@
-"""Ordinary Reader PRs must not occupy native packaging runners."""
-import fnmatch
+"""PR #2079: beta delivery follows every main push; acceptance has its own schedule."""
 from pathlib import Path
 import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS = ['linux-release.yml', 'windows-diagnostic.yml']
 
 
-def patterns(workflow):
+def triggers(workflow):
     text = (ROOT / '.forgejo/workflows' / workflow).read_text()
-    section = text.split('  pull_request:\n', 1)[1]
-    section = re.split(r'\n  [^ ]', section, maxsplit=1)[0]
-    return re.findall(r"      - '([^']+)'", section)
+    return re.search(r'^on:\n(.*?)(?=^\S)', text, re.M | re.S)[1]
 
 
 class ReleasePathsTests(unittest.TestCase):
-    def test_ui_docs_and_other_platform_do_not_build_packages(self):
-        for workflow, unrelated in [
-            ('linux-release.yml', 'scripts/windows/pack.sh'),
-            ('windows-diagnostic.yml', 'scripts/arch/PKGBUILD'),
-        ]:
-            paths = patterns(workflow)
-            self.assertTrue(paths)
-            for path in ['crates/okilum-shell/src/reader_settings.rs',
-                         'docs/releases.md', 'README.md', unrelated]:
-                self.assertFalse(any(fnmatch.fnmatchcase(path, p) for p in paths), path)
+    def test_prs_never_trigger_native_packaging(self):
+        for workflow in WORKFLOWS:
+            with self.subTest(workflow=workflow):
+                self.assertEqual(re.findall(r'^  ([\w_]+):', triggers(workflow), re.M),
+                                 ['push', 'workflow_dispatch'])
 
-    def test_packaging_and_release_logic_still_run(self):
-        for workflow, platform in [
-            ('linux-release.yml', 'scripts/arch/PKGBUILD'),
-            ('windows-diagnostic.yml', 'scripts/windows/pack.sh'),
-        ]:
-            paths = patterns(workflow)
-            for path in [platform, 'packaging/icons/icon.png', 'scripts/releases/coalesce.py',
-                         '.forgejo/workflows/' + workflow]:
-                self.assertTrue(any(fnmatch.fnmatchcase(path, p) for p in paths), path)
+    def test_every_main_change_reaches_delivery_without_path_filters(self):
+        # Includes UI/docs, packaging, release logic and shared dependencies.
+        # PR #2079 deliberately replaced all path-filtered PR builds.
+        for workflow in WORKFLOWS:
+            with self.subTest(workflow=workflow):
+                events = triggers(workflow)
+                self.assertIn('  push:\n    branches: [main]\n', events)
+                self.assertNotRegex(events, r'(?m)^\s+(?:paths|paths-ignore|branches-ignore):')
 
-    def test_shared_dependencies_require_explicit_branch_dispatch(self):
-        for workflow in ['linux-release.yml', 'windows-diagnostic.yml']:
-            paths = patterns(workflow)
-            for path in ['Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml',
-                         'crates/okilum-shell/Cargo.toml', 'crates/okilum-shell/build.rs',
-                         'scripts/vendor-setup.sh', 'scripts/patches/0001-test.diff',
-                         'scripts/ci/release-cache.sh']:
-                self.assertFalse(any(fnmatch.fnmatchcase(path, p) for p in paths), path)
-            text = (ROOT / '.forgejo/workflows' / workflow).read_text()
-            self.assertIn('  workflow_dispatch:', text)
+    def test_explicit_source_dispatch_keeps_branch_validation_available(self):
+        for workflow in WORKFLOWS:
+            with self.subTest(workflow=workflow):
+                events = triggers(workflow)
+                self.assertIn('  workflow_dispatch:\n    inputs:\n', events)
+                self.assertIn('      source:\n', events)
+                self.assertIn("        default: ''", events)
+                text = (ROOT / '.forgejo/workflows' / workflow).read_text()
+                self.assertIn('python3 scripts/releases/coalesce.py ', text)
+                self.assertIn('OKILUM_SOURCE: ${{ inputs.source }}', text)
 
-    def test_main_and_scheduled_delivery_remain_enabled(self):
-        linux = (ROOT / '.forgejo/workflows/linux-release.yml').read_text()
-        windows = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
-        self.assertIn('  schedule:', linux)
-        self.assertIn('  schedule:', windows)
+    def test_full_acceptance_schedule_is_separate_from_main_beta(self):
+        for workflow in WORKFLOWS:
+            self.assertNotIn('  schedule:', triggers(workflow))
+        acceptance = (ROOT / '.forgejo/workflows/ci.yml').read_text()
+        self.assertIn("  schedule:\n    - cron: '5 22 * * 2,6'", acceptance)
+        self.assertIn('  workflow_dispatch:', acceptance)
 
-    def test_windows_cross_build_helpers_still_trigger(self):
-        paths = patterns('windows-diagnostic.yml')
-        for path in ['scripts/build-windows-ci.sh', 'scripts/windows-icons.py']:
-            self.assertTrue(any(fnmatch.fnmatchcase(path, p) for p in paths), path)
+    def test_windows_cross_build_helpers_remain_in_delivery(self):
+        workflow = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
+        self.assertIn('bash scripts/build-windows-ci.sh', workflow)
+        self.assertIn('scripts/vendor-setup.sh --verify', workflow)
+        self.assertIn('name: windows-payload', workflow)

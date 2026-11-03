@@ -53,12 +53,16 @@ class M4Checkout(unittest.TestCase):
             self.git(source, 'merge', '--no-ff', '-qm', 'merge', 'pr-head')
             merge = self.git(source, 'rev-parse', 'HEAD')
             self.assertEqual(len({base, head, merge}), 3)
-            for index, (workflow, job, full) in enumerate(JOBS):
-                with self.subTest(workflow=workflow, job=job):
+            cases = [(workflow, job, full, event) for workflow, job, full in JOBS
+                     for event in (['pull_request', 'workflow_dispatch']
+                                   if job == 'macos-local' else ['workflow_dispatch'])]
+            for index, (workflow, job, full, event) in enumerate(cases):
+                with self.subTest(workflow=workflow, job=job, event=event):
                     block = job_text(workflow, job)
                     script = checkout_script(block)
-                    expected = head if job == 'macos-local' else merge
-                    expression = ('${{ github.event.pull_request.head.sha }}'
+                    expected = head if job == 'macos-local' and event == 'pull_request' else merge
+                    # PR #2079 added manual/nightly runs without a PR head.
+                    expression = ('${{ github.event.pull_request.head.sha || github.sha }}'
                                   if job == 'macos-local' else '${{ github.sha }}')
                     self.assertIn('CHECKOUT_SHA: ' + expression, block)
                     workspace = root / str(index)
@@ -156,12 +160,16 @@ class M4Checkout(unittest.TestCase):
                                             env={**env, 'ACTION_SHA': '0' * 40}, capture_output=True)
                     self.assertNotEqual(result.returncode, 0)
 
-    def test_scoped_jobs_have_no_external_action_fetches(self):
+    def test_scoped_jobs_use_actions_available_on_their_runner(self):
         local = './.forgejo-local-actions/upload-artifact'
         for workflow, job, _ in JOBS:
             with self.subTest(workflow=workflow, job=job):
                 block = job_text(workflow, job)
-                self.assertNotIn('code.forgejo.org', block)
+                # PR #2079 added publication uploads on bridge, which has
+                # external access. M4 jobs still require the pinned local action.
+                hosted = job == 'hosted-artifact'
+                external = 'https://code.forgejo.org/actions/upload-artifact@v3'
+                self.assertNotIn('code.forgejo.org', block.replace(external, '') if hosted else block)
                 self.assertNotIn('git.oklabs.uk', block)
                 self.assertIn('CHECKOUT_SERVER_URL: ${{ github.server_url }}', block)
                 self.assertIn('CHECKOUT_REPOSITORY: ${{ github.repository }}', block)
@@ -169,8 +177,13 @@ class M4Checkout(unittest.TestCase):
                 for run in re.findall(r'        run: \|\n((?:          .*\n|\n)+)', block):
                     self.assertNotIn('${{', run)
                 uses = re.findall(r'uses: (\S+)', block)
-                self.assertEqual(uses, [local] if job in ['macos-local', 'release', 'build'] else [])
-                if uses:
+                self.assertEqual(uses, [external] if hosted else
+                                 [local] if job in ['macos-local', 'release', 'build'] else [])
+                if hosted:
+                    self.assertIn('    runs-on: bridge\n', block)
+                    self.assertIn("if: github.event_name == 'push'", block)
+                    self.assertIn('name: macos-publication', block)
+                if local in uses:
                     self.assertIn('ACTION_SERVER_URL: ${{ github.server_url }}', block)
                     self.assertIn('ACTION_SHA: ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5', block)
                     prepare = block.index('      - name: Prepare the pinned upload action')
