@@ -728,6 +728,14 @@ mod tests {
                         // Exercise the real queued explicit Save entry point.
                         reader.update(visual, |r, cx| r.request_source_save(cx));
                         visual.run_until_parked();
+                        // A lifecycle flush in the next-frame delay must not
+                        // publish a copy or swallow the explicit Save request.
+                        reader.update(visual, |r, cx| {
+                            assert!(!r.save_source(cx));
+                            let e = r.editing.as_ref().unwrap();
+                            assert!(e.conflict_copy.is_none());
+                            assert!(e.save_pending);
+                        });
                         visual.executor().advance_clock(Duration::from_millis(40));
                         visual.run_until_parked();
                     }

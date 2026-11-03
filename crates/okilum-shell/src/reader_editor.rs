@@ -1668,6 +1668,9 @@ impl Reader {
     /// Only a deliberate Save/Keep both may publish a conflict copy. Lifecycle
     /// saves protect the latest recovery draft without adding files to the vault.
     fn save_source_explicit(&mut self, cx: &mut Context<Self>) -> bool {
+        if let Some(editing) = &mut self.editing {
+            editing.save_pending = false;
+        }
         let (saved, protected) = self.save_source_outcome(cx);
         if !saved
             && protected
@@ -1696,7 +1699,7 @@ impl Reader {
         let Some(editing) = &mut self.editing else {
             return (true, true);
         };
-        editing.save_pending = false;
+        let explicit_pending = std::mem::take(&mut editing.save_pending);
         editing.recovery_pending = None;
         editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
         editing.protecting = false;
@@ -1782,6 +1785,12 @@ impl Reader {
                 false
             }
         };
+        if !saved && explicit_pending && self.editing.as_ref().is_some_and(|e| e.conflict_detected)
+        {
+            // A blur/deactivate between the Save request and its next-frame
+            // callback only protected the draft. It must not consume Save.
+            self.editing.as_mut().unwrap().save_pending = true;
+        }
         if !saved {
             self.describe_source_conflict(cx);
         }
