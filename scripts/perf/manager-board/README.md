@@ -45,7 +45,8 @@ The harness enables GPUI's **existing** profiler, with no gpui core patch.
 `PERF` lines contain UTC epoch end time, CPU `Window::draw` milliseconds and
 invalidation count. `PRESENT` records GPU/platform submission separately.
 `WORK` is a 250 ms diagnostic aggregate of Board renders, card builds and
-Manager row builds; it is not an exact per-frame gate. The Rust regression uses
+Manager row builds; it is not an exact per-frame gate. Composer and fixed-header build/request/prepaint/paint counters separate
+residual work from the enclosing Reader stages. The Rust regression uses
 per-render card counts, including each follow-up measurement frame separately.
 
 Physical input and positive controls:

@@ -24,8 +24,14 @@ impl Render for Chrome {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         self.render_calls.set(self.render_calls.get() + 1);
-        self.parent
+        #[cfg(feature = "project-ui-harness")]
+        let _work = super::performance::Work::start(28);
+        let root = self
+            .parent
             .update(cx, |parent, cx| parent.render_chrome(cx))
-            .unwrap_or_else(|_| div().into_any_element())
+            .unwrap_or_else(|_| div().into_any_element());
+        #[cfg(feature = "project-ui-harness")]
+        let root = super::performance::Trace::new(root, 4).into_any_element();
+        root
     }
 }

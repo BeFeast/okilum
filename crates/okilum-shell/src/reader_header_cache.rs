@@ -32,10 +32,16 @@ impl Render for Header {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(test)]
         self.render_calls.set(self.render_calls.get() + 1);
+        #[cfg(feature = "project-ui-harness")]
+        let _work = crate::project::performance::Work::start(29);
         let available = self.available;
-        self.parent
+        let root = self
+            .parent
             .update(cx, |reader, cx| reader.render_header(available, window, cx))
-            .unwrap_or_else(|_| div().into_any_element())
+            .unwrap_or_else(|_| div().into_any_element());
+        #[cfg(feature = "project-ui-harness")]
+        let root = crate::project::performance::Trace::new(root, 5).into_any_element();
+        root
     }
 }
 impl Reader {

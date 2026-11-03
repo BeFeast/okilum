@@ -7609,6 +7609,8 @@ impl Reader {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = project::performance::Work::start(30);
         #[cfg(target_os = "linux")]
         {
             let _ = self.layout_signal.read(cx);

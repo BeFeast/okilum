@@ -45,8 +45,8 @@ pub(super) fn collect(cx: &mut App) {
     cx.spawn(async move |_cx| {
         loop {
             _cx.background_executor().timer(Duration::from_millis(250)).await;
-            let work = std::mem::replace(&mut *WORK.lock().unwrap(), [(0, 0); 15]);
-            eprintln!("WORK {}", json!({"unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),"board":work[0],"card":work[1],"row":work[2],"stages":&work[3..]}));
+            let work = std::mem::replace(&mut *WORK.lock().unwrap(), [(0, 0); 31]);
+            eprintln!("WORK {}", json!({"unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),"board":work[0],"card":work[1],"row":work[2],"stages":&work[3..15],"composer":{"build":work[27],"phases":&work[15..19]},"manager_chrome":{"build":work[28],"phases":&work[19..23]},"reader_header":{"build":work[29],"phases":&work[23..27]},"reader_build":work[30]}));
             for event in collector.collect_unseen() {
                 if let gpui::profiler::FrameEvent::Present(frame) = event {
                     let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64() - frame.present_end.elapsed().as_secs_f64();
@@ -62,12 +62,12 @@ pub(super) fn collect(cx: &mut App) {
 }
 
 #[cfg(feature = "project-ui-harness")]
-static WORK: std::sync::Mutex<[(u64, u64); 15]> = std::sync::Mutex::new([(0, 0); 15]);
+static WORK: std::sync::Mutex<[(u64, u64); 31]> = std::sync::Mutex::new([(0, 0); 31]);
 #[cfg(feature = "project-ui-harness")]
-pub(super) struct Work(usize, std::time::Instant);
+pub(crate) struct Work(usize, std::time::Instant);
 #[cfg(feature = "project-ui-harness")]
 impl Work {
-    pub(super) fn start(kind: usize) -> Self {
+    pub(crate) fn start(kind: usize) -> Self {
         Self(kind, std::time::Instant::now())
     }
 }
@@ -92,6 +92,20 @@ pub(crate) struct Trace {
 impl Trace {
     pub(crate) fn new(child: AnyElement, kind: usize) -> Self {
         Self { child, kind }
+    }
+    fn phase(&self, phase: usize) -> usize {
+        if self.kind < 3 {
+            3 + self.kind * 3 + phase
+        } else {
+            15 + (self.kind - 3) * 4 + phase
+        }
+    }
+    fn layout_phase(&self) -> usize {
+        if self.kind < 3 {
+            12 + self.kind
+        } else {
+            18 + (self.kind - 3) * 4
+        }
     }
 }
 #[cfg(feature = "project-ui-harness")]
@@ -118,7 +132,7 @@ impl gpui::Element for Trace {
         window: &mut Window,
         cx: &mut App,
     ) -> (gpui::LayoutId, Self::RequestLayoutState) {
-        let _work = Work::start(3 + self.kind * 3);
+        let _work = Work::start(self.phase(0));
         (
             self.child.request_layout(window, cx),
             std::time::Instant::now(),
@@ -134,10 +148,10 @@ impl gpui::Element for Trace {
         cx: &mut App,
     ) {
         let mut work = WORK.lock().unwrap();
-        work[12 + self.kind].0 += 1;
-        work[12 + self.kind].1 += layout.elapsed().as_nanos() as u64;
+        work[self.layout_phase()].0 += 1;
+        work[self.layout_phase()].1 += layout.elapsed().as_nanos() as u64;
         drop(work);
-        let _work = Work::start(4 + self.kind * 3);
+        let _work = Work::start(self.phase(1));
         self.child.prepaint(window, cx);
     }
     fn paint(
@@ -150,7 +164,7 @@ impl gpui::Element for Trace {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let _work = Work::start(5 + self.kind * 3);
+        let _work = Work::start(self.phase(2));
         self.child.paint(window, cx);
     }
 }
