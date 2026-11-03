@@ -88,7 +88,8 @@ Acceptance requires scroll and resize CPU draw p95 ≤ 8 ms; report the share of
 frames over 16.7 ms and click latency separately. Keep platform submission costs
 separate so a headless compositor's pacing cannot be mistaken for CPU layout.
 The reference retains natural card heights and actual text reflow throughout a
-splitter drag; it does not freeze content until release.
+splitter drag; it does not freeze content until release. Offscreen lane state
+retains height/focus hints only, with no offscreen interaction tree.
 
 The ordinary Linux Rust suite includes the Reader-mounted reference regression,
 its real wheel/drag/card-tail controls and Reader Escape/focus assertions. It

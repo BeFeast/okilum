@@ -10,8 +10,6 @@ use gpui::{
 pub(super) struct Height {
     value: Pixels,
     focused: Option<FocusHandle>,
-    bounds: Option<Bounds<Pixels>>,
-    scroll: Point<Pixels>,
 }
 #[derive(Clone)]
 enum Source {
@@ -59,12 +57,6 @@ impl Card {
                 Source::Local(card) => board.local_card(card, window, cx),
             })
             .ok()
-    }
-    fn scroll(&self, cx: &App) -> Point<Pixels> {
-        self.board
-            .upgrade()
-            .map(|board| board.read(cx).scroll.offset())
-            .unwrap_or_default()
     }
     pub(super) fn issue(
         board: &Entity<Board>,
@@ -134,7 +126,6 @@ impl Element for Card {
         cx: &mut App,
     ) -> bool {
         let state = self.height.as_ref().expect("lane-owned height hint");
-        let scroll = self.scroll(cx);
         let focused = state
             .read(cx)
             .focused
@@ -142,8 +133,6 @@ impl Element for Card {
             .is_some_and(|focus| focus.contains_focused(window, cx));
         state.update(cx, |height, _| {
             height.value = bounds.size.height;
-            height.bounds = Some(bounds);
-            height.scroll = scroll;
         });
         // Overdraw refines layout without building invisible interaction trees.
         if !self.selected && !focused && !bounds.intersects(&window.content_mask().bounds) {
@@ -292,11 +281,6 @@ impl Element for Lane {
                 point(bounds.left(), y),
                 size(bounds.size.width, height.value),
             );
-            let scroll = card.scroll(cx);
-            state.update(cx, |state, _| {
-                state.bounds = Some(estimated);
-                state.scroll = scroll;
-            });
             if !card.selected && !focused && !estimated.intersects(&viewport) {
                 y += estimated.size.height + px(12.);
                 continue;
