@@ -262,10 +262,10 @@ index 9db7eb58..cf34e706 100644
          let text = displayed.slice_line(row).to_string();
          let item = map.line(row)?;
 diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
-index 15843cf6..90a344bc 100644
+index 15843cf6..664afe6b 100644
 --- a/crates/base/src/input/base/state.rs
 +++ b/crates/base/src/input/base/state.rs
-@@ -1246,6 +1246,14 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -1246,6 +1246,14 @@
          self.projection.stamp.source
      }
 
@@ -280,7 +280,7 @@ index 15843cf6..90a344bc 100644
      pub fn presentation_epoch(&self) -> u64 {
          self.projection.stamp.presentation
      }
-@@ -1338,7 +1346,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -1338,7 +1346,7 @@
          }
          if self.projection.provider.is_some() && self.text.len() <= crate::input::projection::MAX_SOURCE_BYTES {
              self.record_layout_diagnostic(|d| d.projection_composes += 1);
@@ -289,7 +289,7 @@ index 15843cf6..90a344bc 100644
          } else {
              self.projection.current = None;
          }
-@@ -1385,7 +1393,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -1385,7 +1393,7 @@
              self.projection.set_active(active);
              if !prepared && self.text.len() <= crate::input::projection::MAX_SOURCE_BYTES {
                  self.record_layout_diagnostic(|d| d.projection_composes += 1);
@@ -298,7 +298,7 @@ index 15843cf6..90a344bc 100644
              }
          }
      }
-@@ -1393,6 +1401,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+@@ -1393,6 +1401,7 @@
      fn record_source_mutation(&mut self, reason: SourceMutationReason, cx: &mut Context<Self>) {
          self.exact_clipboard.invalidate();
          let event = self.projection.mutation(reason);
@@ -306,7 +306,15 @@ index 15843cf6..90a344bc 100644
          let mut trace = TraceSpan::new("source_mutation", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
          trace.outcome(match reason {
              SourceMutationReason::Edit => "edit",
-@@ -4499,6 +4508,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+@@ -2043,6 +2052,7 @@
+         self.text = Rope::from(self.normalize_input(&text).as_ref());
+         self.exact_clipboard.invalidate();
+         self.projection.mutation(SourceMutationReason::Reset);
++        self.projection.source_text = Some(crate::input::projection::SourceText::from_rope(self.text.clone()));
+         if let Some(diagnostics) = self.mode.diagnostics_mut() {
+             diagnostics.reset(&self.text)
+         }
+@@ -4499,6 +4509,7 @@
              }
          }
 
@@ -314,7 +322,7 @@ index 15843cf6..90a344bc 100644
          self.record_source_mutation(
              if !self.emit_events {
                  SourceMutationReason::Reset
-@@ -4515,7 +4525,12 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+@@ -4515,7 +4526,12 @@
              // the old text no longer point at anything.
              M::reset_annotations(self);
          } else {
@@ -328,7 +336,7 @@ index 15843cf6..90a344bc 100644
          }
          if mask_changed {
              // A segment-based history entry no longer matches the masked
-@@ -4658,7 +4673,13 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
+@@ -4658,7 +4674,13 @@
              }
          }
 
@@ -342,7 +350,42 @@ index 15843cf6..90a344bc 100644
          M::adjust_annotations(self, &range, new_text.len());
          if let Some(diagnostics) = self.mode.diagnostics_mut() {
              diagnostics.reset(&self.text)
-@@ -6626,7 +6647,7 @@ mod tests {
+@@ -5814,7 +5836,7 @@
+                         state.source_stamp(),
+                         true,
+                         &cache,
+-                        |text| state.text == text,
++                        |text| state.text == *text.rope(),
+                     )
+                     .expect("markers");
+                     let active = ActiveSource::default();
+@@ -6060,6 +6082,25 @@
+             v.run_until_parked();
+             v.update(|_, cx| assert_eq!(view.input.read(cx).selected_range(), 0..3));
+         }
++    }
++
++    #[gpui::test]
++    fn default_value_publishes_matching_native_source_and_edit_receipts(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| state.default_value("\u{feff}abc\r\n🧠"));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            let before = state.source_snapshot();
++            assert_eq!(before.text.rope(), state.text(), "builder text must be the native revision");
++            assert!(!before.text.is_empty(), "nonempty constructor positive control");
++            state.replace_text_in_range(Some(1..2), "x", window, cx);
++            let after = state.source_snapshot();
++            assert_eq!(after.text.rope(), state.text());
++            let edit = after.text.edit_since(before.text.id()).expect("constructor edit receipt");
++            assert_eq!(edit.old, 3..4);
++            assert_eq!(edit.inserted, 1);
++            assert_eq!(after.text.as_ref(), "\u{feff}xbc\r\n🧠");
++        }));
+     }
+
+     #[gpui::test]
+@@ -6626,7 +6667,7 @@
                  state.projection.current = Some(Arc::new(StrictGraphemeProjection(
                      super::super::projection::SourceSnapshot {
                          stamp: state.source_stamp(),

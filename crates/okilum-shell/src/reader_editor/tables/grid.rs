@@ -1542,16 +1542,19 @@ mod tests {
         });
         // Structural actions must keep the grid mounted and remain canonical
         // source transactions, rather than switching to a one-shot editor.
-        for action in [
-            TableInsertRow.boxed_clone(),
-            TableInsertColumn.boxed_clone(),
-            TableAlignCenter.boxed_clone(),
-            TableFormat.boxed_clone(),
+        // Undo recreated the focused cell: settle its dispatch tree before a
+        // user action can target that cell, including with retained geometry.
+        visual.run_until_parked();
+        for (name, action) in [
+            ("insert row", TableInsertRow.boxed_clone()),
+            ("insert column", TableInsertColumn.boxed_clone()),
+            ("align center", TableAlignCenter.boxed_clone()),
+            ("format", TableFormat.boxed_clone()),
         ] {
             visual.update(|window, cx| window.dispatch_action(action, cx));
             visual.run_until_parked();
             let changed = input.read_with(visual, |input, _| input.value().to_string());
-            assert_ne!(changed, source);
+            assert_ne!(changed, source, "{name} must reach the restored grid");
             assert!(changed.starts_with("Before\n\n"));
             assert!(changed.ends_with("\n\nAfter\n"));
             assert!(visual.debug_bounds("editable-table-grid").is_some());
