@@ -211,15 +211,18 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         ..Default::default()
     });
     visual.run_until_parked();
-    let (last, bounds) = [238, 239]
-        .into_iter()
-        .find_map(|number| {
-            visual
-                .debug_bounds(&format!("board-expand-{number}"))
-                .filter(|bounds| bounds.intersects(&viewport))
-                .map(|bounds| (number, bounds))
-        })
-        .expect("positive control: physical Board scroll reaches a last card, not an empty spacer");
+    let (discuss, bounds) = [
+        ("board-expand-238", "board-discuss-238"),
+        ("board-expand-239", "board-discuss-239"),
+    ]
+    .into_iter()
+    .find_map(|(expand, discuss)| {
+        visual
+            .debug_bounds(expand)
+            .filter(|bounds| bounds.intersects(&viewport))
+            .map(|bounds| (discuss, bounds))
+    })
+    .expect("positive control: physical Board scroll reaches a last card, not an empty spacer");
     board.read_with(visual, |board, _| {
         assert!(
             board.frame_work.borrow().iter().all(|count| *count <= 64),
@@ -230,9 +233,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     visual.simulate_click(bounds.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(
-        visual
-            .debug_bounds(&format!("board-discuss-{last}"))
-            .is_some(),
+        visual.debug_bounds(discuss).is_some(),
         "offscreen card source and Discuss action remain available after virtualization"
     );
 }
