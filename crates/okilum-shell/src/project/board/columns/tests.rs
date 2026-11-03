@@ -217,3 +217,33 @@ fn unresolved_card_problems_are_not_treated_as_an_empty_board(cx: &mut TestAppCo
     assert!(visual.debug_bounds("board-lane-Queue").is_some());
     assert!(visual.debug_bounds("board-empty-state").is_none());
 }
+
+#[gpui::test]
+fn annotation_free_repository_failure_is_unknown_until_live_discovery_succeeds(
+    cx: &mut TestAppContext,
+) {
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path());
+    board.update(visual, |board, cx| {
+        board.binding.as_mut().unwrap().repository = "https://forgejo.example/team/project".into();
+        board.snapshot.forgejo.error = Some("HTTP 503".into());
+        cx.notify();
+    });
+    loaded(&board, visual);
+    assert!(visual.debug_bounds("board-lane-Queue").is_some());
+    assert!(
+        visual.debug_bounds("board-empty-state").is_none(),
+        "API failure before first discovery must not claim an empty repository"
+    );
+    assert!(visual.debug_bounds("board-expand-empty-Queue").is_none());
+    board.update(visual, |board, cx| {
+        board.snapshot.forgejo.accept(Ok(Default::default()), now());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-empty-state").is_some(),
+        "positive control: successful empty discovery can collapse the Board"
+    );
+    assert!(visual.debug_bounds("board-expand-empty-Queue").is_some());
+}

@@ -1265,3 +1265,79 @@ fn delivery_publications_align_by_platform_at_board_width(cx: &mut TestAppContex
         assert!(visual.debug_bounds(id).is_none(), "Sprint remains absent");
     }
 }
+
+#[gpui::test]
+fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_recovery(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let mut binding = Binding::parse(include_str!(
+        "../../../../okilum-t3/tests/fixtures/board-legacy.yaml"
+    ))
+    .unwrap();
+    binding.issues.clear();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let board = cx.new(|cx| {
+            let mut board = Board::with_reader(
+                area.path().into(),
+                |_| panic!("hidden fixture must not access the network"),
+                window,
+                cx,
+            );
+            board.binding = Some(binding.clone());
+            let mut issue: okilum_t3::board::Issue = serde_json::from_value(serde_json::json!({
+                "number": 42, "title": "Delivered change", "state": "closed"
+            }))
+            .unwrap();
+            issue.live_pulls.push(okilum_t3::board::live::Pull {
+                number: 7,
+                merged_at: Some(1),
+                checks: String::new(),
+            });
+            board.snapshot.forgejo.accept(Ok([(42, issue)].into()), 100);
+            board.snapshot.forgejo.error = Some("HTTP 503; showing last good Board".into());
+            board
+        });
+        Root::new(board, window, cx)
+    });
+    let board = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<Board>().unwrap()
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-expand-42").is_some(),
+        "offline retains the last complete membership even beyond the merge expiry"
+    );
+    assert!(
+        visual.debug_bounds("board-mapping-42").is_some(),
+        "missing manual context is visible on the generated card"
+    );
+    assert!(
+        visual.debug_bounds("board-live-status").is_some(),
+        "source failure has a quiet inline status, not only a popover"
+    );
+    let center = visual.debug_bounds("project-board").unwrap();
+    let status = visual.debug_bounds("board-live-status").unwrap();
+    let columns = visual.debug_bounds("board-columns").unwrap();
+    assert!(
+        columns.top() <= center.top() + px(20.),
+        "source error must not restore a header above the Board"
+    );
+    assert!(
+        status.bottom() <= center.bottom() && status.top() >= center.bottom() - px(32.),
+        "quiet source line remains at the visible lower edge"
+    );
+
+    board.update(visual, |board, cx| {
+        assert_eq!(board.projection_time(), 100);
+        assert!(board.problem(now()).unwrap().contains("HTTP 503"));
+        board.snapshot.forgejo.error = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-expand-42").is_none(),
+        "positive control: a healthy read permits the expired merge to leave"
+    );
+}

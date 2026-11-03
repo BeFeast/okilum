@@ -53,6 +53,11 @@ impl Board {
             && self.local_cards.last_success.is_some()
             && self.local_cards.error.is_none()
             && self.local_cards.value.problems.is_empty()
+            // Even an annotation-free repository Board must finish its first
+            // live read. A failed discovery is not evidence of zero issues.
+            && (binding.repository.is_empty()
+                || (self.snapshot.forgejo.last_success.is_some()
+                    && self.snapshot.forgejo.error.is_none()))
             && (binding.issues.is_empty()
                 || (self.snapshot.forgejo.last_success.is_some()
                     && self.snapshot.forgejo.error.is_none()

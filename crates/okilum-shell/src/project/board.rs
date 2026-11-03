@@ -11,7 +11,8 @@ mod local;
 mod manage;
 mod notes;
 
-type IssueReader = fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String>;
+type IssueReader =
+    Arc<dyn Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String> + Send + Sync>;
 
 pub(crate) struct Board {
     pub(super) area: PathBuf,
@@ -108,7 +109,10 @@ fn problem_line(problems: Vec<(String, Option<u64>)>) -> Option<String> {
 impl Board {
     fn with_reader(
         area: PathBuf,
-        read_issues: IssueReader,
+        read_issues: impl Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String>
+            + Send
+            + Sync
+            + 'static,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -116,7 +120,7 @@ impl Board {
         Self {
             area,
             binding: None,
-            read_issues,
+            read_issues: Arc::new(read_issues),
             binding_error: None,
             binding_read: None,
             binding_loading: false,
@@ -272,7 +276,7 @@ impl Board {
                 let seconds = match this.update(cx, |this, _| {
                     this.binding
                         .as_ref()
-                        .map(|b| b.refresh_seconds.min(30))
+                        .map(|b| b.refresh_seconds.clamp(15, 30))
                         .unwrap_or(30)
                 }) {
                     Ok(seconds) => seconds,
@@ -304,7 +308,7 @@ impl Board {
         }; // Coalesce overlapping refreshes.
         self.refresh_project_notes(ticket.clone(), window, cx);
         let forgejo_ticket = ticket.clone();
-        let read_issues = self.read_issues;
+        let read_issues = self.read_issues.clone();
         let needs_threads = binding
             .issues
             .iter()
@@ -398,6 +402,13 @@ impl Board {
         })
         .detach();
         cx.notify();
+    }
+    fn projection_time(&self) -> u64 {
+        if self.snapshot.forgejo.error.is_some() {
+            self.snapshot.forgejo.last_success.unwrap_or_else(now)
+        } else {
+            now()
+        }
     }
     fn problem(&self, at: u64) -> Option<String> {
         let mut problems = Vec::new();
@@ -888,6 +899,21 @@ impl Board {
                 ),
             );
         }
+        if let Some(problem) = self
+            .binding
+            .as_ref()
+            .and_then(|binding| okilum_t3::board::live::mapping_problem(binding, number))
+        {
+            card = card.child(
+                div()
+                    .debug_selector(move || format!("board-mapping-{number}"))
+                    .px_3()
+                    .pb_2()
+                    .text_size(px(12.))
+                    .text_color(colors.text_muted)
+                    .child(problem),
+            );
+        }
         if self.selected == Some(number) {
             if self.delivery.enabled() {
                 card = card.child(self.delivery_details(scope, binding, cx));
@@ -1064,8 +1090,11 @@ impl Render for Board {
         };
         let projected;
         let binding = if self.snapshot.forgejo.last_success.is_some() {
-            projected =
-                okilum_t3::board::live::project(binding, &self.snapshot.forgejo.value, now());
+            projected = okilum_t3::board::live::project(
+                binding,
+                &self.snapshot.forgejo.value,
+                self.projection_time(),
+            );
             &projected
         } else {
             binding
@@ -1307,7 +1336,26 @@ impl Render for Board {
                 .disabled(self.editor_loading)
                 .on_click(cx.listener(|this, _, window, cx| this.open_management(window, cx))),
         );
-        root.child(columns.child(end.child(self.source_indicator(cx)).child(toggle)))
+        let forgejo_problem = source_problem("Forgejo", &self.snapshot.forgejo, 30, now());
+        let line = problem_line(forgejo_problem.into_iter().collect()).unwrap_or_default();
+        // Keep the quiet source line at the viewport's lower edge. Its reserved
+        // bottom padding preserves card geometry without restoring a header.
+        root.pb_8()
+            .child(columns.child(end.child(self.source_indicator(cx)).child(toggle)))
+            .child(
+                div()
+                    .debug_selector(|| "board-live-status".into())
+                    .absolute()
+                    .bottom_2()
+                    .left_4()
+                    .right_4()
+                    .h(px(16.))
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.))
+                    .text_color(colors.text_muted)
+                    .child(line),
+            )
             .into_any_element()
     }
 }
@@ -1334,12 +1382,15 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.ensure_project_board_using(area, okilum_t3::board::live::read, window, cx);
+        self.ensure_project_board_using(area, okilum_t3::board::live::reader(), window, cx);
     }
     fn ensure_project_board_using(
         &mut self,
         area: PathBuf,
-        read_issues: IssueReader,
+        read_issues: impl Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String>
+            + Send
+            + Sync
+            + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

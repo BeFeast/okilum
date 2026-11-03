@@ -21,43 +21,141 @@ fn timestamp(value: &str) -> Option<u64> {
         .and_then(|date| u64::try_from(date.timestamp()).ok())
 }
 
-/// Read only the explicitly bound repository. A partial page is never a new
-/// membership snapshot. The shared deadline bounds all requests, not just each.
-pub fn read(binding: &Binding) -> Result<Vec<Issue>, String> {
-    if binding.repository.is_empty() {
-        return Ok(Vec::new());
+/// A Board-owned, origin-scoped conditional read cache. It contains only
+/// rebuildable public API responses; Manager credentials never cross origins.
+#[derive(Default)]
+pub struct Reader {
+    repository: String,
+    client: Option<reqwest::blocking::Client>,
+    cache: BTreeMap<String, Cached>,
+    retry_at: Option<Instant>,
+}
+struct Cached {
+    etag: Option<reqwest::header::HeaderValue>,
+    value: serde_json::Value,
+    next: bool,
+    bytes: usize,
+}
+
+/// Keep one reader for the Board session, including hide/show cycles.
+pub fn reader() -> impl Fn(&Binding) -> Result<Vec<Issue>, String> + Send + Sync {
+    let reader = std::sync::Mutex::new(Reader::default());
+    move |binding| {
+        reader
+            .lock()
+            .map_err(|_| "Board reader unavailable".to_owned())?
+            .read(binding)
     }
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let result = (|| -> Result<Vec<Issue>> {
-        let repo = repository_url(&binding.repository)?;
-        let base = format!(
-            "{}/api/v1/repos{}",
-            repo.origin().ascii_serialization(),
-            repo.path().trim_end_matches('/')
-        );
-        let client = reqwest::blocking::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(3))
-            .user_agent("Okilum-Board/1")
-            .build()?;
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut fetch = |path: &str| -> Result<serde_json::Value> {
-            ensure!(
-                crate::NetworkAccess::current().allowed(),
-                "Agents is disabled"
+}
+
+/// Stateless compatibility entry point for callers without a Board session.
+pub fn read(binding: &Binding) -> Result<Vec<Issue>, String> {
+    Reader::default().read(binding)
+}
+impl Reader {
+    /// A failed or partial read never becomes a membership snapshot.
+    pub fn read(&mut self, binding: &Binding) -> Result<Vec<Issue>, String> {
+        if binding.repository.is_empty() {
+            return Ok(Vec::new());
+        }
+        let result = (|| -> Result<Vec<Issue>> {
+            let repo = repository_url(&binding.repository)?;
+            let base = format!(
+                "{}/api/v1/repos{}",
+                repo.origin().ascii_serialization(),
+                repo.path().trim_end_matches('/')
             );
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .context("Board live read deadline exceeded")?;
-            let response = client
-                .get(format!("{base}/{path}"))
-                .timeout(remaining.min(Duration::from_secs(5)))
-                .header("Accept", "application/json")
-                .send()?
-                .error_for_status()?;
+            self.read_at(binding, &repo, &base, crate::unix_now())
+        })();
+        result.map_err(|error| format!("Live Forgejo Board: {error:#}"))
+    }
+    fn read_at(
+        &mut self,
+        binding: &Binding,
+        repo: &url::Url,
+        base: &str,
+        at: u64,
+    ) -> Result<Vec<Issue>> {
+        if self.repository != base {
+            self.repository = base.to_owned();
+            self.cache.clear();
+            self.retry_at = None;
+        }
+        if let Some(remaining) = self
+            .retry_at
+            .and_then(|until| until.checked_duration_since(Instant::now()))
+        {
+            anyhow::bail!(
+                "Forgejo requested a retry in {} s; showing last good Board",
+                remaining.as_secs() + 1
+            );
+        }
+        if self.client.is_none() {
+            self.client = Some(
+                reqwest::blocking::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .connect_timeout(Duration::from_secs(3))
+                    .user_agent("Okilum-Board/1")
+                    .build()?,
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut used = BTreeSet::new();
+        let issues = read_with(binding, repo, at, &mut |path| {
+            used.insert(path.to_owned());
+            self.fetch(base, path, deadline)
+        })?;
+        self.cache.retain(|path, _| used.contains(path));
+        Ok(issues)
+    }
+    fn fetch(&mut self, base: &str, path: &str, deadline: Instant) -> Result<serde_json::Value> {
+        ensure!(
+            crate::NetworkAccess::current().allowed(),
+            "Agents is disabled"
+        );
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .context("Board live read deadline exceeded")?;
+        let mut request = self
+            .client
+            .as_ref()
+            .context("Board client unavailable")?
+            .get(format!("{base}/{path}"))
+            .timeout(remaining.min(Duration::from_secs(5)))
+            .header("Accept", "application/json");
+        if let Some(etag) = self.cache.get(path).and_then(|entry| entry.etag.as_ref()) {
+            request = request.header(reqwest::header::IF_NONE_MATCH, etag.clone());
+        }
+        let response = request.send()?;
+        if matches!(response.status().as_u16(), 429 | 503) {
+            let retry = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| {
+                    v.parse::<u64>().ok().or_else(|| {
+                        chrono::DateTime::parse_from_rfc2822(v)
+                            .ok()
+                            .and_then(|time| u64::try_from(time.timestamp()).ok())
+                            .map(|until| until.saturating_sub(crate::unix_now()))
+                    })
+                })
+                .unwrap_or(60)
+                .clamp(1, 86400);
+            self.retry_at = Some(Instant::now() + Duration::from_secs(retry));
+            anyhow::bail!(
+                "Forgejo HTTP {}; retry in {retry} s; showing last good Board",
+                response.status().as_u16()
+            );
+        }
+        let (value, next) = if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            let cached = self
+                .cache
+                .get(path)
+                .context("Forgejo returned 304 without a cached response")?;
+            (cached.value.clone(), cached.next)
+        } else {
+            let response = response.error_for_status()?;
             ensure!(
                 response.status() == reqwest::StatusCode::OK,
                 "Forgejo did not return a complete response"
@@ -67,6 +165,7 @@ pub fn read(binding: &Binding) -> Result<Vec<Issue>, String> {
                 .get("Link")
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| v.contains("rel=\"next\""));
+            let etag = response.headers().get(reqwest::header::ETAG).cloned();
             use std::io::Read;
             let mut bytes = Vec::new();
             response.take(2 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
@@ -75,15 +174,35 @@ pub fn read(binding: &Binding) -> Result<Vec<Issue>, String> {
                 "Forgejo response exceeds 2 MiB; not truncated"
             );
             let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-            ensure!(
-                !next || value.as_array().is_some_and(|rows| rows.len() == 50),
-                "Forgejo returned a short page with more results; previous Board retained"
+            // Bound retained pages even across repeated incomplete reads.
+            let retained: usize = self
+                .cache
+                .iter()
+                .filter(|(key, _)| key.as_str() != path)
+                .map(|(_, entry)| entry.bytes)
+                .sum();
+            if retained + bytes.len() > 8 * 1024 * 1024
+                || (self.cache.len() >= 256 && !self.cache.contains_key(path))
+            {
+                self.cache.clear();
+            }
+            self.cache.insert(
+                path.to_owned(),
+                Cached {
+                    etag,
+                    value: value.clone(),
+                    next,
+                    bytes: bytes.len(),
+                },
             );
-            Ok(value)
+            (value, next)
         };
-        read_with(binding, &repo, at, &mut fetch)
-    })();
-    result.map_err(|error| format!("Live Forgejo Board: {error:#}"))
+        ensure!(
+            !next || value.as_array().is_some_and(|rows| rows.len() == 50),
+            "Forgejo returned a short page with more results; previous Board retained"
+        );
+        Ok(value)
+    }
 }
 
 fn pages(
@@ -239,11 +358,13 @@ pub fn project(binding: &Binding, issues: &BTreeMap<u64, Issue>, at: u64) -> Bin
                     .any(|s| s.number == issue.number && (s.pinned || s.stage.is_some()))
         })
         .map(|issue| {
-            let mut scope = binding
+            let matching: Vec<_> = binding
                 .issues
                 .iter()
-                .find(|s| s.number == issue.number)
-                .cloned()
+                .filter(|s| s.number == issue.number)
+                .collect();
+            let mut scope = (matching.len() == 1)
+                .then(|| matching[0].clone())
                 .unwrap_or_else(|| Scope {
                     number: issue.number,
                     pinned: false,
@@ -275,6 +396,28 @@ pub fn checks(issue: &Issue) -> bool {
         .live_pulls
         .iter()
         .any(|p| p.merged_at.is_none() && p.checks != "success")
+}
+
+/// Missing annotation is explicit; a generated card never invents ownership or
+/// inherits one of several conflicting manual cards.
+pub fn mapping_problem(binding: &Binding, number: u64) -> Option<&'static str> {
+    let count = binding
+        .issues
+        .iter()
+        .filter(|scope| scope.number == number)
+        .count();
+    if count > 1
+        || binding
+            .card_problems
+            .iter()
+            .any(|p| p.number == Some(number))
+    {
+        Some("Card annotation is invalid or ambiguous; live issue shown without manual context")
+    } else if count == 0 {
+        Some("No card annotation; title and status come from Forgejo")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
