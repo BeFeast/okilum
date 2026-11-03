@@ -78,6 +78,14 @@ impl Fixture<'_> {
             "copy as markdown"
         });
         self.visual.run_until_parked();
+        self.seed_clipboard();
+        self.visual.simulate_keystrokes("secondary-shift-c");
+        self.visual.run_until_parked();
+        assert_eq!(
+            self.clipboard(),
+            "sentinel",
+            "Read shortcut excludes palette input"
+        );
         self.visual.update(|window, cx| window.draw(cx).clear(cx));
         self.pick(if formatted {
             "palette-copy-formatted"
@@ -141,6 +149,59 @@ impl Fixture<'_> {
             })
             .expect("positive control: rendered link hit detected")
     }
+}
+
+#[gpui::test]
+fn markdown_copy_uses_a_partial_rendered_selection_instead_of_the_document(
+    cx: &mut TestAppContext,
+) {
+    let mut f = open(cx);
+    let paragraph = f.reader.read_with(f.visual, |r, cx| {
+        r.content.read(cx).list_state().bounds_for_item(1).unwrap()
+    });
+    let start = point(
+        paragraph.left() + px(2.),
+        paragraph.top() + px(BODY_FONT_SIZE * 0.8),
+    );
+    let end = point(paragraph.right() - px(2.), start.y);
+    let select = |f: &mut Fixture<'_>| {
+        f.visual
+            .simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        f.visual
+            .simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        f.visual
+            .simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+    };
+    select(&mut f);
+    let (plain, markdown) = f.reader.read_with(f.visual, |r, cx| {
+        let content = r.content.read(cx);
+        (
+            content.selected_text_as(SelectionFormat::Plain),
+            content.selected_text_as(SelectionFormat::Source),
+        )
+    });
+    assert!(
+        plain.contains("café 雪") && !plain.contains("Title") && !plain.contains("After"),
+        "positive control: paragraph-only selection: {plain:?}"
+    );
+    assert!(markdown.contains("**café 雪**") && markdown.contains("https://example.test"));
+    assert_ne!(markdown, NOTE);
+    let at = f.background();
+    f.right_click(at);
+    f.pick("read-menu-Copy as Markdown");
+    assert_eq!(f.clipboard(), markdown);
+    select(&mut f);
+    f.seed_clipboard();
+    f.visual.simulate_keystrokes("secondary-shift-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), markdown);
+    f.visual.simulate_keystrokes("secondary-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), plain);
+    select(&mut f);
+    f.palette_copy(false);
+    assert_eq!(f.clipboard(), markdown);
 }
 
 #[gpui::test]

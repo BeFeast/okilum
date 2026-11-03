@@ -501,6 +501,23 @@ mod tests {
     }
 
     #[gpui::test]
+    fn markdown_copy_shortcut_has_no_reader_or_toolkit_collision(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let keymap = reader_keymap(cx);
+        let expected = KeyBinding::new(
+            reader_read_menu::COPY_MARKDOWN_KEY,
+            reader_read_menu::CopyAsMarkdown,
+            None,
+        );
+        let actions: Vec<_> = keymap
+            .bindings()
+            .filter(|binding| binding.keystrokes() == expected.keystrokes())
+            .map(|binding| binding.action().name())
+            .collect();
+        assert_eq!(actions, [reader_read_menu::CopyAsMarkdown::name_for_type()]);
+    }
+
+    #[gpui::test]
     fn every_bound_reader_action_is_listed(cx: &mut TestAppContext) {
         // Bound only in the separate settings window, which has no sheet.
         const NOT_IN_READER: [&str; 1] = ["okilum_settings::CloseSettings"];
