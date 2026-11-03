@@ -13,7 +13,7 @@ pub(super) struct Height {
 }
 #[derive(Clone)]
 enum Source {
-    Issue(okilum_t3::board::Scope, Column, Arc<Binding>),
+    Issue(usize, Column, Arc<Binding>),
     Local(okilum_t3::board::local::Card),
 }
 
@@ -51,8 +51,8 @@ impl Card {
     fn build(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         self.board
             .update(cx, |board, cx| match &self.source {
-                Source::Issue(scope, column, binding) => {
-                    board.card(scope, *column, binding, window, cx)
+                Source::Issue(index, column, binding) => {
+                    board.card(&binding.issues[*index], *column, binding, window, cx)
                 }
                 Source::Local(card) => board.local_card(card, window, cx),
             })
@@ -61,6 +61,7 @@ impl Card {
     pub(super) fn issue(
         board: &Entity<Board>,
         scope: &okilum_t3::board::Scope,
+        index: usize,
         column: Column,
         binding: Arc<Binding>,
         selected: bool,
@@ -68,7 +69,7 @@ impl Card {
         Self {
             id: ("board-virtual-issue", scope.number as usize).into(),
             board: board.downgrade(),
-            source: Source::Issue(scope.clone(), column, binding),
+            source: Source::Issue(index, column, binding),
             selected,
             height: None,
         }
@@ -236,8 +237,6 @@ impl Element for Lane {
                         cx.new(|_| Height {
                             value: px(192.),
                             focused: None,
-                            bounds: None,
-                            scroll: Point::default(),
                         })
                     })
                     .clone()

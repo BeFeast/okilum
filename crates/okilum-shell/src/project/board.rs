@@ -11,6 +11,7 @@ mod live;
 mod local;
 mod manage;
 mod notes;
+mod presentation;
 mod virtual_cards;
 
 type IssueReader =
@@ -36,6 +37,8 @@ pub(crate) struct Board {
     ticker: Option<Task<()>>,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    presentation: Option<Arc<presentation::State>>,
+    _presentation_invalidation: Subscription,
     height_refinement_pending: bool,
     resizing: bool,
     verified_open: bool,
@@ -139,6 +142,9 @@ impl Board {
         cx: &mut Context<Self>,
     ) -> Self {
         let owner = area.to_string_lossy().into_owned();
+        let presentation_invalidation = cx.observe(&cx.entity(), |this, _, _| {
+            this.presentation = None;
+        });
         Self {
             area,
             binding: None,
@@ -159,6 +165,8 @@ impl Board {
             ticker: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
+            presentation: None,
+            _presentation_invalidation: presentation_invalidation,
             height_refinement_pending: false,
             resizing: false,
             verified_open: false,
@@ -1150,7 +1158,7 @@ impl Render for Board {
                     }
                 }
             }));
-        let Some(binding) = self.binding.as_ref() else {
+        let Some(_) = self.binding.as_ref() else {
             root = root.child(
                 div()
                     .absolute()
@@ -1194,17 +1202,8 @@ impl Render for Board {
             }
             return root.into_any_element();
         };
-        let projected;
-        let binding = if self.snapshot.forgejo.last_success.is_some() {
-            projected = okilum_t3::board::live::project(
-                binding,
-                &self.snapshot.forgejo.value,
-                self.projection_time(),
-            );
-            &projected
-        } else {
-            binding
-        };
+        let presentation = self.presentation();
+        let binding = presentation.binding.as_ref();
         if binding.repository.is_empty() {
             root = root.child(div().debug_selector(|| "board-local".into())
                 .text_size(px(12.)).text_color(colors.text_muted)
@@ -1222,8 +1221,8 @@ impl Render for Board {
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
         }
-        let shared_binding = Arc::new(binding.clone());
-        let mut counts = self.column_counts(binding);
+        let shared_binding = presentation.binding.clone();
+        let mut counts = presentation.counts;
         let ready = self.column_sources_ready(binding);
         self.columns.observe(counts, ready);
         let mut compact = h_flex()
@@ -1254,14 +1253,7 @@ impl Render for Board {
             stages.push(Column::Verified);
         }
         for column in stages {
-            let scopes: Vec<_> = binding
-                .issues
-                .iter()
-                .filter(|scope| {
-                    self.filter.as_ref().is_none_or(|f| f == &scope.executor)
-                        && self.delivery_column(scope) == column
-                })
-                .collect();
+            let scopes = &presentation.columns[column as usize];
             let local_cards: Vec<_> = self
                 .local_cards
                 .value
@@ -1326,10 +1318,12 @@ impl Render for Board {
                 );
             }
             let mut cards = Vec::new();
-            for scope in scopes {
+            for &index in scopes {
+                let scope = &binding.issues[index];
                 cards.push(virtual_cards::Card::issue(
                     &cx.entity(),
                     scope,
+                    index,
                     column,
                     shared_binding.clone(),
                     self.selected == Some(scope.number),
