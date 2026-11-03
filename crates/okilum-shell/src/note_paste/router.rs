@@ -967,7 +967,7 @@ fn save_local_image(
             .as_deref()
             .is_some_and(attachments::is_image_extension)
         {
-            own.clone()
+            own.to_string()
         } else {
             format!("{own}.{}", kind?.extension())
         };
