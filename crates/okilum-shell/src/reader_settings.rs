@@ -4,7 +4,7 @@ use gpui_component::{
     button::ButtonGroup,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     switch::Switch,
-    ThemeMode,
+    ThemeMode, WindowExt,
 };
 use okilum_core::log::source_link;
 
