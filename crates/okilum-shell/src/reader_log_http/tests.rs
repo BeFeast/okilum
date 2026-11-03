@@ -151,16 +151,49 @@ fn mounted_start_stream_rows_stop_and_stale_reply_keep_the_visible_session(
         cx.set_reduce_motion(true);
     });
     let calls = Arc::new(AtomicUsize::new(0));
+    let (dropped, released) = mpsc::channel();
     let mock = factory(
-        vec![Ok((b"level=info msg=hello\n".to_vec(), Status::Connected))],
+        vec![Ok((
+            b"level=info msg=hello\n".to_vec(),
+            Status::Disconnected {
+                retry_after: Duration::from_secs(3600),
+            },
+        ))],
         calls.clone(),
-        None,
+        Some(dropped),
+    );
+    // A real OS worker cannot wake GPUI's deterministic test scheduler. Queue
+    // the first receipt before Start registers a local waiter, then hold the
+    // next poll in the worker's interruptible reconnect wait until real Stop.
+    // Pure worker tests above cover connected/chunked/reconnected publication.
+    let (worker, events) = worker::Worker::start(
+        Source {
+            name: "Test".into(),
+            url: "https://example.invalid/log".into(),
+        },
+        mock.clone(),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while events.is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "real worker must queue its first frame"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        events.len(),
+        1,
+        "positive control: a real frame is held for Start"
     );
     let mut panel = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut panel = Panel::new(vault, dir.path().join("state"), window, cx);
             panel.factory = mock;
+            panel.ready_worker = Some((worker, events));
             panel
                 .name
                 .update(cx, |i, cx| i.set_value("Test", window, cx));
@@ -247,6 +280,10 @@ fn mounted_start_stream_rows_stop_and_stale_reply_keep_the_visible_session(
         .expect("Stop control mounted");
     visual.simulate_click(stop.center(), Modifiers::default());
     visual.run_until_parked();
+    released
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Stop releases the real input without waiting for reconnect");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "no poll after Stop");
     panel.update(visual, |p, cx| {
         p.receive(
             generation,
