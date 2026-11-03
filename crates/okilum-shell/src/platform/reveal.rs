@@ -95,7 +95,7 @@ mod linux {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::linux::{fallback_folder, item_uri, show_items};
-    use std::io::{BufRead as _, BufReader};
+    use std::io::{BufRead as _, BufReader, Write as _};
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
 
@@ -121,21 +121,51 @@ mod tests {
         assert_eq!(fallback_folder(Path::new("/")), Path::new("/"));
     }
 
-    /// A private session bus, so the test never reaches the developer's own
-    /// file manager.
+    /// A private session bus with no service directories: `--session` would
+    /// still discover and activate the host's installed file manager (#2458).
     struct Bus(Child, String);
     impl Bus {
         fn start() -> Option<Self> {
-            let mut child = Command::new("dbus-daemon")
-                .args(["--session", "--nofork", "--print-address"])
+            let mut config = tempfile::NamedTempFile::new().unwrap();
+            // Do not include session.conf or standard_session_servicedirs.
+            // An abstract socket needs no filesystem path or socket cleanup.
+            writeln!(
+                config,
+                r#"<busconfig>
+  <type>session</type>
+  <listen>unix:abstract=okilum-reveal-{}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>"#,
+                uuid::Uuid::new_v4()
+            )
+            .unwrap();
+            let child = match Command::new("dbus-daemon")
+                .arg("--config-file")
+                .arg(config.path())
+                .args(["--nofork", "--print-address"])
                 .stdout(Stdio::piped())
                 .spawn()
-                .ok()?;
-            let mut address = String::new();
-            BufReader::new(child.stdout.take()?)
-                .read_line(&mut address)
-                .ok()?;
-            Some(Self(child, address.trim().to_owned()))
+            {
+                Ok(child) => child,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(error) => panic!("could not start private dbus-daemon: {error}"),
+            };
+            // Install the cleanup guard before any fallible startup checks.
+            let mut bus = Self(child, String::new());
+            BufReader::new(bus.0.stdout.take().unwrap())
+                .read_line(&mut bus.1)
+                .unwrap();
+            bus.1 = bus.1.trim().to_owned();
+            assert!(
+                !bus.1.is_empty(),
+                "private dbus-daemon did not print an address"
+            );
+            Some(bus)
         }
         async fn connect(&self) -> zbus::Connection {
             zbus::connection::Builder::address(self.1.as_str())
@@ -168,6 +198,15 @@ mod tests {
         };
         zbus::block_on(async {
             let client = bus.connect().await;
+            let daemon = zbus::fdo::DBusProxy::new(&client).await.unwrap();
+            // A missing-manager error alone could also mean activation failed.
+            // Prove that no host service can be activated in the first place.
+            assert!(daemon
+                .list_activatable_names()
+                .await
+                .unwrap()
+                .iter()
+                .all(|name| name.as_str() == "org.freedesktop.DBus"));
             // Without a FileManager1 owner the call fails, which is what
             // routes Reveal to the xdg-open fallback.
             assert!(show_items(&client, Path::new("/vault/a.md")).await.is_err());
