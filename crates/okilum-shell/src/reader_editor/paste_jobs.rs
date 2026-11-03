@@ -343,6 +343,16 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
     let task = cx.background_executor().spawn(async move {
         // The vault's names before the copies, so a copy's link is its path
         // when its name alone would also match another file.
+        let _admission = match okilum_write_authority::operation(&work_plan.vault_root) {
+            Ok(admission) => admission,
+            Err(error) => {
+                return (
+                    vec![None; work_plan.copies()],
+                    vec![error.to_string()],
+                    vec![],
+                )
+            }
+        };
         let existing = files::vault_names(&work_plan.vault_root);
         let mut copied = Vec::new();
         let mut errors = Vec::new();
