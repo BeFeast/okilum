@@ -92,6 +92,15 @@ LOG_PREFIX = re.compile(r'^\S+Z ', re.M)
 # before 3.11 names only the class in the parentheses; a subTest appends its parameters.
 PYTHON_FAILURE = re.compile(r'^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)', re.M)
 PYTHON_FAILED = re.compile(r'^FAILED \(', re.M)
+# The Linux gate runs `cargo fmt --check` and check_brand.py before the first compile
+# (#1966): their failures are code, not infrastructure. rustfmt reports each file as a
+# `Diff in <path>:<line>:` line; check_brand.py ends with `... brand assets remain:`
+# (matched without the old product name, which must never be spelled here).
+RUSTFMT_DIFF = re.compile(r'^Diff in ', re.M)
+BRAND_FAILURE = re.compile(r'brand assets remain:', re.M)
+# The gate step's first output (test-nofile.sh): once it prints, the step has started,
+# so a log without build or test output is a real failure to blame, not infrastructure.
+GATE_STARTED = re.compile(r'^nofile before: ', re.M)
 
 
 def python_failures(text):
@@ -126,6 +135,9 @@ def classify(log):
         return 'code', tests
     if re.search(r'^error(\[E\d+\])?: ', text, re.M):  # a compiler error
         return 'code', []
+    # Formatting and brand checks run before the first compile and fail deterministically.
+    if RUSTFMT_DIFF.search(text) or BRAND_FAILURE.search(text):
+        return 'code', []
     # A Python unittest suite that failed. Its headers count only with that summary: a passing
     # suite's output may print the same shape.
     if PYTHON_FAILED.search(text):
@@ -138,6 +150,9 @@ def classify(log):
                 hung = unfinished_tests(text) if marker == DEADLINE else []
                 return ('code', hung) if hung else ('infra', marker)
     if not re.search(r'^\s*(Compiling|Checking|Finished|Running) ', text, re.M):
+        if GATE_STARTED.search(text):
+            # The gate step started but produced no build or test output: blame the merges.
+            return 'unknown', []
         return 'infra', 'the job ended before any build or test output'
     return 'unknown', []
 

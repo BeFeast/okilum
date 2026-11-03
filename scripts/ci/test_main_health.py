@@ -347,6 +347,33 @@ class MainHealthTests(unittest.TestCase):
         self.assertEqual(health.classify(log), ('unknown', []))
         self.assert_blamed(*self.red_on_log(log))
 
+    def test_a_fmt_or_brand_failure_is_code_not_infrastructure(self):
+        # check-linux.sh runs `cargo fmt --check` and check_brand.py before the first compile,
+        # so a red main that stops there has no Compiling/Checking/Running line (#1966). The old
+        # product name is spelled in parts so this file passes check_brand.py itself.
+        old_title = 'Tes' + 'era'
+        fmt = ('2026-10-29T10:00:00.0000000Z nofile before: soft=1024 hard=1048576\n'
+               '2026-10-29T10:00:01.0000000Z Diff in /workspace/src/main.rs:6675:\n'
+               '2026-10-29T10:00:01.0000000Z     -foo()\n'
+               '2026-10-29T10:00:01.0000000Z     +bar()\n'
+               "2026-10-29T10:00:02.0000000Z ⚙️ [runner]: exitcode '1': failure\n"
+               '2026-10-29T10:00:03.0000000Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(fmt), ('code', []))
+        brand = (f'2026-10-29T10:00:00.0000000Z nofile before: soft=1024 hard=1048576\n'
+                 f'2026-10-29T10:00:01.0000000Z {old_title} brand assets remain:\n'
+                 '2026-10-29T10:00:01.0000000Z   crates/okilum-shell/assets/brand/symbol-primary.svg: '
+                 'not the approved Okilum asset (deadbeef)\n'
+                 "2026-10-29T10:00:02.0000000Z ⚙️ [runner]: exitcode '1': failure\n"
+                 '2026-10-29T10:00:03.0000000Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(brand), ('code', []))
+        # Positive control: the gate step never started (no nofile before, no build output).
+        self.assertEqual(health.classify('2026Z Run Main checkout\n2026Z Job failed\n'),
+                         ('infra', 'the job ended before any build or test output'))
+        # The gate step started but produced no build output and no fmt/brand marker:
+        # a real failure to blame, not infrastructure.
+        self.assertEqual(health.classify('2026Z nofile before: soft=1024 hard=1048576\n2026Z Job failed\n'),
+                         ('unknown', []))
+
     def test_the_runner_line_names_the_infrastructure(self):
         # Run 10907 (shared lane): out of time while still making progress; every test that
         # cargo called slow finished, so the host was slow.
