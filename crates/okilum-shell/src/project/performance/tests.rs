@@ -60,6 +60,8 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     });
     visual.run_until_parked();
     let feed = project.read_with(visual, |project, _| project.feed.clone());
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
     let history = visual
         .debug_bounds("project-history")
         .expect("real mounted history");
