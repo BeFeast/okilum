@@ -2738,16 +2738,16 @@ impl Reader {
         {
             return Some(status);
         }
-        #[cfg(test)]
-        SOURCE_STATUS_BYTES.with(|bytes| bytes.set(bytes.get() + input.text().len()));
-        let store_dirty = editing.store.dirty();
+        // #2404: shared draft revisions make even a cold status lookup O(1).
+        // Exact content equality belongs to the worker's save acknowledgement.
+        let store_dirty = editing.store.has_pending_revision();
         let status = SourceStatus {
             key,
             store_dirty,
             dirty: store_dirty
                 || key.conflict
                 || key.protecting
-                || input.text().bytes().ne(editing.store.text().bytes()),
+                || input.source_stamp() != editing.draft_stamp,
         };
         editing.source_status.set(Some(status));
         Some(status)
