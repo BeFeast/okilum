@@ -94,6 +94,14 @@ T3 shortcuts, outside-click/Escape return and closing/reopening the panel.
 
 ### App-wide T3 connection in Settings (#1507)
 
+On macOS, Manager first checks regex lookbehind and named capture support in a
+local document in the actual WKWebView (#2381), before loading any T3 modules.
+An unsupported engine shows a native explanation and **Open in T3** / **Open in
+browser** buttons for the bound Manager thread, using the server's actual
+environment identity. Details go to diagnostics, and this state does not retry
+the incompatible bundle. A changed T3 address starts a fresh capability check;
+supported engines retain the embedded page and its existing cookie store.
+
 Settings → T3 owns the address field and app-wide connection. The
 Manager panel retains the native webview without an extra header; when disconnected it shows a
 plain explanation and Open T3 settings button. Pairing stays inside T3.

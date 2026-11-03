@@ -6,6 +6,7 @@ set -Eeuo pipefail
 python3 scripts/ci/test_supervisor_bundle.py
 # Pure page guard units; no GUI/NSApp activation and no production browser data.
 node scripts/ci/test-manager-page-keys.mjs
+node scripts/ci/test-manager-webkit-compatibility.mjs
 bash scripts/ci/check-manager-key-routing.sh
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
@@ -58,6 +59,8 @@ run_tests() {
     grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
     cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --test-threads=1 "$@"
 }
+run_tests okilum-shell --bins reader_manager_compatibility::tests::
+run_tests okilum-shell --bins reader_manager_panel::status_tests::webkit_failure_preserves_thread_actions_without_retries_or_raw_ui_errors --exact
 # APFS rejects invalid UTF-8 filenames even though Unix OsString can represent them.
 run_tests okilum-core --lib link_rewrite::tests::sidecars_stay_excluded_and_invalid_utf8_remains_searchable_without_rewriting --exact
 for name in \
