@@ -216,6 +216,26 @@ impl Authority {
     fn open_in(account: &Path, root: &Path) -> Result<Self> {
         let root = root.canonicalize()?;
         ensure!(root.is_dir(), "Writer authority root is not a directory");
+        ensure!(
+            account.is_absolute()
+                && !account
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir)),
+            "Account authority needs an absolute path without parent traversal"
+        );
+        // Resolve the existing prefix before mkdir: an invalid account location
+        // must not create operational files inside canonical data, even on error.
+        let existing = account
+            .ancestors()
+            .find(|path| path.exists())
+            .context("Account authority has no existing ancestor")?;
+        let planned = existing
+            .canonicalize()?
+            .join(account.strip_prefix(existing)?);
+        ensure!(
+            !planned.starts_with(&root),
+            "Writer authority must be outside the vault"
+        );
         private_dir(account)?;
         let account = account.canonicalize()?;
         ensure!(
@@ -730,5 +750,28 @@ mod root_relocation_tests {
         let fresh = Authority::open_in(&account, &moved).unwrap();
         assert_ne!(fresh.binding.epoch, a.binding.epoch);
         fresh.admit().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod account_location_tests {
+    use super::*;
+    #[test]
+    fn local_writer_admission_rejects_in_vault_state_before_creating_any_directory() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        assert!(Authority::open_in(&root.join("private/account"), &root).is_err());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        #[cfg(unix)]
+        {
+            let alias = t.path().join("alias");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            assert!(Authority::open_in(&alias.join("private/account"), &root).is_err());
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        }
+        let allowed = Authority::open_in(&t.path().join("private/account"), &root).unwrap();
+        allowed.admit().unwrap();
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
     }
 }
