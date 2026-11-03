@@ -1596,6 +1596,15 @@ impl Reader {
         self.panel_preferences_ready = false;
         self.resizing_panel = None;
         self.vault = Arc::new(pending.vault);
+        if self.single_file {
+            // Retire vault-only projections and invalidate any late Inbox result.
+            // The Inbox source otherwise pins the complete predecessor graph.
+            self.inbox.clear();
+            self.inbox_source = None;
+            self.inbox_ready_root = None;
+            self.backlink_titles = Arc::default();
+            self.set_backlinks(Vec::new(), true);
+        }
         self.quick_open.invalidate();
         self.quick_open.recent.clear();
         let warm = self.vault.inventory_scanned;
@@ -8380,6 +8389,7 @@ mod quick_view_tests {
         let root = directory.join("notes");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("img.png"), b"image resolution fixture").unwrap();
+        std::fs::write(root.join("referrer.md"), "# Referrer\n\n[[start]]\n").unwrap();
         std::fs::write(
             root.join("start.md"),
             format!(
@@ -8478,6 +8488,19 @@ mod quick_view_tests {
             None,
             "upgrade persists vault mode even when keeping the rendered document"
         );
+        reader.update(visual, |reader, cx| reader.sync_sidebar(cx));
+        visual.run_until_parked();
+        let previous_vault = reader.read_with(visual, |reader, _| {
+            assert!(
+                !reader.backlinks.is_empty(),
+                "positive control: full-vault backlinks"
+            );
+            assert!(
+                reader.inbox_source.is_some(),
+                "positive control: full graph retained by Inbox"
+            );
+            Arc::downgrade(&reader.vault)
+        });
         reader.update_in(visual, |reader, window, cx| {
             reader.open_quick_open(false, window, cx);
         });
@@ -8498,6 +8521,9 @@ mod quick_view_tests {
             assert!(reader.single_file && reader.vault.single_file);
             assert!(reader.index_dir.is_none() && reader.searcher.is_none());
             assert!(reader.shared_session.is_none() && reader.incremental_state.is_none());
+            assert!(reader.backlinks.is_empty() && reader.backlink_groups.is_empty());
+            assert!(reader.backlink_titles.is_empty());
+            assert!(reader.inbox.is_empty() && reader.inbox_source.is_none());
             assert_eq!(reader.current_rel, "start.md");
             assert!(reader.note_source.contains("img.png"));
             let position = reader.content.read(cx).list_state().logical_scroll_top();
@@ -8515,6 +8541,10 @@ mod quick_view_tests {
                 .as_deref(),
             Some("start.md"),
             "downgrade persists single-file mode"
+        );
+        assert!(
+            previous_vault.upgrade().is_none(),
+            "downgrade releases the complete predecessor vault graph"
         );
         std::fs::remove_dir_all(directory).unwrap();
     }
