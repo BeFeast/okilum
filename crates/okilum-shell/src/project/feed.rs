@@ -80,6 +80,7 @@ pub(super) struct Feed {
     scroller: Entity<MessageScrollerState>,
     enabled: bool,
     busy: bool,
+    first_message_row: std::cell::Cell<Option<std::time::Instant>>,
     typed_revision: u64,
     typed_sources: Option<Arc<Vec<super::message_types::Source>>>,
     typed_source_owner: Option<(String, String, String)>,
@@ -120,6 +121,7 @@ impl Feed {
             scroller,
             enabled: false,
             busy: false,
+            first_message_row: std::cell::Cell::new(None),
             typed_revision: 0,
             typed_sources: None,
             typed_source_owner: None,
@@ -349,6 +351,7 @@ impl Feed {
 
     pub(super) fn reset(&mut self, cx: &mut Context<Self>) {
         self.typed_data_changed();
+        self.first_message_row.set(None);
         self.request_cards.clear();
         self.messages.clear();
         self.ids.clear();
@@ -375,6 +378,21 @@ impl Feed {
         if (self.enabled, self.busy) != (enabled, busy) {
             self.enabled = enabled;
             self.busy = busy;
+            cx.notify();
+        }
+    }
+    /// A new panel open restarts the time-to-first-message measurement (#2518).
+    pub(super) fn ttfm_panel_opened(&self) {
+        self.first_message_row.set(None);
+    }
+    /// When the first message row of the current panel open was built for a
+    /// painted frame, if one was.
+    pub(super) fn ttfm_first_message_row(&self) -> Option<std::time::Instant> {
+        self.first_message_row.get()
+    }
+    fn ttfm_message_row_built(&self, cx: &mut Context<Self>) {
+        if self.first_message_row.get().is_none() {
+            self.first_message_row.set(Some(std::time::Instant::now()));
             cx.notify();
         }
     }
@@ -651,6 +669,7 @@ impl Feed {
             Some(Row::Message(position)) => {
                 #[cfg(test)]
                 self.rendered_positions.borrow_mut().push(*position);
+                self.ttfm_message_row_built(cx);
                 let message = &self.messages[position];
                 let position = *position;
                 if message.kind != MessageKind::Chat {
@@ -725,6 +744,7 @@ impl Feed {
             Some(Row::WorkDetails(key)) => self.work_details(key, cx),
             Some(Row::Fold(key)) => self.fold_summary(key, cx),
             Some(Row::Retained(index)) => {
+                self.ttfm_message_row_built(cx);
                 let record = &self.records[*index];
                 let retry = record.clone();
                 let parent = self.parent.clone();

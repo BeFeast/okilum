@@ -128,6 +128,7 @@ impl ProjectView {
                         .await
                     {
                         Ok(stream) => {
+                            let phases = stream.phases();
                             let cancel = stream.cancellation().ok();
                             let accepted = this
                                 .update(cx, |this, _| {
@@ -139,6 +140,7 @@ impl ProjectView {
                                         return false;
                                     }
                                     this.threads.cancel = cancel;
+                                    this.ttfm.socket_connected(phases);
                                     true
                                 })
                                 .unwrap_or(false);
@@ -214,6 +216,9 @@ impl ProjectView {
                         if terminal_error || !client.access_allowed() {
                             this.threads.handoff_revoked = Some(client.clone());
                             this.draft_handoff_connection_changing();
+                        }
+                        if result.is_ok() {
+                            this.ttfm.shell_replied();
                         }
                         if changed || this.threads.error != message {
                             this.threads.error = message;

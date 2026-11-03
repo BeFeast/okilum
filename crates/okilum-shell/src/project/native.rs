@@ -505,6 +505,7 @@ impl ProjectView {
         let Some(thread) = self.chat.as_ref().map(|chat| chat.thread_id.clone()) else {
             return;
         };
+        self.ttfm.connect_started();
         let epoch = {
             let mut r = retained.lock().unwrap();
             r.epoch += 1;
@@ -552,6 +553,7 @@ impl ProjectView {
                     .await
                     {
                         Ok(stream) => {
+                            let phases = stream.phases();
                             let cancel = stream.cancellation().ok();
                             if !this
                                 .update_in(cx, |this, _, cx| {
@@ -559,6 +561,7 @@ impl ProjectView {
                                         return false;
                                     }
                                     this.native.cancel = cancel;
+                                    this.ttfm.socket_connected(phases);
                                     // The ticket/upgrade authenticated this native
                                     // connection. Warm config alongside history.
                                     this.ensure_native_catalog(cx);
@@ -647,6 +650,9 @@ impl ProjectView {
                         // authority only from that same retained model, never a
                         // synthetic ready state while the socket is reconnecting.
                         let ready = result.is_ok() && synchronized;
+                        if ready {
+                            this.ttfm.thread_synchronized();
+                        }
                         if ready && !this.native.stream_ready && changes.actions.is_none() {
                             changes.actions = Some(r.model.action_state());
                         }

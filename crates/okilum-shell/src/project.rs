@@ -45,6 +45,8 @@ mod rules_reread;
 mod setup;
 #[cfg(target_os = "linux")]
 mod threads;
+#[cfg(target_os = "linux")]
+mod ttfm;
 
 pub(super) fn save_browser_environment(
     state: &Path,
@@ -173,6 +175,8 @@ pub(crate) struct ProjectView {
     native: native::Native,
     #[cfg(target_os = "linux")]
     threads: threads::Directory,
+    #[cfg(target_os = "linux")]
+    ttfm: ttfm::Ttfm,
 }
 
 pub(super) struct ManagerStarted;
@@ -383,8 +387,13 @@ impl ProjectView {
                 },
             )
             .detach();
-            cx.observe(&feed, |this, _, cx| this.typed_sync(cx))
-                .detach();
+            cx.observe(&feed, |this, feed, cx| {
+                if let Some(rendered) = feed.read(cx).ttfm_first_message_row() {
+                    this.ttfm.first_message_rendered(rendered, cx);
+                }
+                this.typed_sync(cx);
+            })
+            .detach();
         }
         #[cfg(target_os = "linux")]
         cx.subscribe_in(
@@ -512,6 +521,8 @@ impl ProjectView {
             native,
             #[cfg(target_os = "linux")]
             threads: threads::Directory::default(),
+            #[cfg(target_os = "linux")]
+            ttfm: ttfm::Ttfm::open(false),
         }
     }
 
@@ -918,6 +929,8 @@ impl ProjectView {
         self.set_threads_active(active, window, cx);
         #[cfg(target_os = "linux")]
         if active {
+            self.ttfm = ttfm::Ttfm::open(self.native.active());
+            self.feed.update(cx, |feed, _| feed.ttfm_panel_opened());
             self.draft_restore(window, cx);
             self.native_start(window, cx);
             if self.threads.enabled && !self.native.active() && self.environment.is_some() {

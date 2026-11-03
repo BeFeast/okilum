@@ -131,3 +131,32 @@ commands return their saved receipt without network dispatch. Resolved request
 and stale Stop retries are disabled. Message retries retain their original target
 even when the active run changes, allowing server idempotency readback without
 turning an old Steer into a new message. Missing or malformed receipts fail closed.
+
+## Time-to-first-message diagnostics (#2518)
+
+Every native Manager panel open writes exactly one `manager_ttfm` event to
+`reader-diagnostic.log`, at the moment the first message row of that open is
+painted in the feed. The event's `details` carry durations in milliseconds;
+no secrets, thread content or per-frame data are recorded, and no extra RPCs
+are sent — phases are first-wins timestamps of work that already happens:
+
+- `open_to_first_message_ms`: panel open → first message row painted.
+- `connect_start_ms`: panel open → start of the native connect attempt
+  (credential/descriptor reuse and pairing happen before this mark).
+- `auth_ms`: connect start → first `websocket-ticket` request completed.
+- `connect_ms`: connect start → first WebSocket upgrade completed.
+- `shell_ms`: connect start → first `orchestration.subscribeShell` reply
+  (thread directory snapshot).
+- `thread_ms`: connect start → first `orchestration.subscribeThread` snapshot
+  (manager thread synchronized).
+- `render_ms`: connect start → first message row painted.
+- `reused_connection`: `true` when the panel open reused the already-paired
+  native client instead of reading or pairing credentials again.
+
+A panel open that reuses a warm paired client logs `reused_connection=true`
+with its own timing; retained messages can paint before any socket reopens,
+so the socket-dependent fields may be absent on such a line. A panel open
+whose thread snapshot never arrives never paints a message row and logs no
+`manager_ttfm` event at all — the absence of `open_to_first_message_ms`
+is the observable outcome, and the panel's recovery surfaces remain the
+user-facing signal.
