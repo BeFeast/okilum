@@ -89,7 +89,7 @@ fn issue2532_active_chip_requires_unique_current_task_and_active_run() {
     scope.agent_thread_id = Some("agent".into());
     let mut thread: okilum_t3::ThreadSummary = serde_json::from_value(serde_json::json!({
         "threadId":"agent","title":"Fixture","status":"running","activeRunId":"run",
-        "providerInstanceId":"codex","model":"model","runtimeMode":"full-access"
+        "providerInstanceId":"codex","model":"model","runtimeMode":"full-access", "updatedAt":"2026-11-03T20:00:00Z"
     }))
     .unwrap();
     assert!(!active(&scope, &[thread.clone()]));
@@ -219,4 +219,33 @@ fn issue2532_projection_reuses_counts_and_filters_before_grouping(cx: &mut TestA
         assert_eq!(searched.counts.iter().sum::<usize>(), 1);
         assert_eq!(searched.chip_counts, [1, 1, 1, 0, 0]);
     });
+}
+
+#[test]
+fn issue2532_local_tasks_do_not_invent_issue_labels_or_agents() {
+    let card = okilum_t3::board::local::Card {
+        id: "00000000-0000-4000-8000-000000000123".into(),
+        title: "Проверить ПОИСК".into(),
+        details: String::new(),
+        state: Default::default(),
+    };
+    let mut model = Model {
+        search: "поиск".into(),
+        ..Default::default()
+    };
+    assert!(model.matches_local(&card));
+    model.chip = Chip::Oleg;
+    assert!(!model.matches_local(&card));
+    model.chip = Chip::All;
+    model.labels.insert("bug".into());
+    assert!(!model.matches_local(&card));
+    model.labels.clear();
+    model.executor = Some("Editing".into());
+    assert!(!model.matches_local(&card));
+    model.executor = None;
+    model.search = "#123".into();
+    assert!(
+        !model.matches_local(&card),
+        "local identity is not an issue number"
+    );
 }

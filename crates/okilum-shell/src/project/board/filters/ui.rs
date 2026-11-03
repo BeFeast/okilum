@@ -87,7 +87,9 @@ impl Board {
             .is_focused(window);
         if event.keystroke.key == "/"
             && !focused
-            && event.keystroke.modifiers == Modifiers::default()
+            && !event.keystroke.modifiers.control
+            && !event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.alt
         {
             self.filter_ui
                 .search
@@ -269,5 +271,14 @@ impl Board {
                     .on_click(cx.listener(|board, _, window, cx| board.reset_filters(window, cx))),
             )
             .into_any_element()
+    }
+}
+
+impl Drop for Ui {
+    fn drop(&mut self) {
+        // Closing the window must not cancel the final queued preference write.
+        if let Some(save) = self.save.take() {
+            save.detach();
+        }
     }
 }
