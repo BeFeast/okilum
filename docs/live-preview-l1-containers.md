@@ -123,10 +123,13 @@ first character of its text instead of under the marker.
   gutter width are identical with the caret on the line and off it: entering
   or leaving a list, task or quote line moves neither its text nor its wrapped
   rows (0 px; the acceptance bound is 1 px).
-- The wrapper shapes the rest of a line that already wraps at the width left
-  of the gutter, so each continuation row fits; caret movement, clicks and
-  paint use the same `wrap_indent`. A gutter wider than half the text width,
-  a right-to-left line and a hanging heading keep the previous wrapping.
+- The wrapper shapes the body at the width left of the gutter. The complete
+  prefix stays on the first row; caret movement, clicks and paint use the same
+  `wrap_indent`. A deep prefix may occupy at most half the editor width; its
+  excess hangs to the left and clips at the editor edge. First-row text and
+  continuation rows share this bounded column, leaving room for text even
+  when the original prefix is wider than the editor (vendor patch 0122).
+  Right-to-left lines and hanging headings keep their previous wrapping.
 - Every continuation row of a quoted line repeats its bars inside the gutter.
 - Headings inside a list keep `- ` as their gutter; a revealed `##` after it
   stays inline as before.
@@ -135,5 +138,9 @@ Evidence: `okilum-shell` source presentation tests cover the prefix grammar and
 caret reveal on every byte of list, ordered, task, nested and quote lines with a
 positive control that markers really revealed; the vendor GPUI test checks wrap
 indent, row widths, hit-testing, vertical movement and repeated quote bars,
-against a no-indent control. Native Live Preview acceptance on macOS and Linux
-is not claimed by this change.
+against a no-indent control. The shell's `gutter_tests` also measure narrow
+editors at multiple nesting depths, inspect actual painted quote-bar quads on
+every wrapped row, and exercise the real Reader Live Preview worker on a note
+above 64 KiB. Caret entry/exit reveals inline source as a positive control and
+must move the item text by at most 1 px. These are headless GPUI checks, not
+physical-display latency or macOS acceptance.

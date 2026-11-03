@@ -1189,7 +1189,7 @@ mod tests {
     const ORIGINAL: &str =
         "\u{feff}# Привет 🧠\r\n\r\n**Жирный** e\u{301} и `code` [[target|ссылка]]\r\n\r\nTail\r\n";
 
-    fn fixture<'a>(
+    pub(super) fn fixture<'a>(
         cx: &'a mut TestAppContext,
         text: &str,
     ) -> (Entity<Reader>, &'a mut VisualTestContext, tempfile::TempDir) {
@@ -3818,3 +3818,7 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "gutter_tests.rs"]
+mod gutter_tests;
