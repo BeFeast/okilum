@@ -452,6 +452,11 @@ impl Staged {
     #[allow(clippy::zombie_processes)] // Helper deliberately outlives the quitting GUI.
     pub fn arm(self, args: &[std::ffi::OsString]) -> Result<PathBuf> {
         self.target.unchanged()?;
+        // An older external launcher copy must not replace these bytes between
+        // apply and the new process's startup confirmation (#2455).
+        if let Err(error) = installation::note_incoming(&self.target.path, self.release.build) {
+            eprintln!("AppImage installation record: {error:#}");
+        }
         let dir = self.directory.path();
         ensure!(
             sha(&dir.join("new.AppImage"))? == self.release.sha256,

@@ -48,6 +48,20 @@ fn write_build(image: &Path, build: u64) -> Result<()> {
     Ok(())
 }
 
+/// Before an update helper replaces `image`, record the incoming build when
+/// `image` is our managed install. If the apply fails, the record overstates
+/// the bytes, which only stops an older external copy from replacing them
+/// (never a downgrade); the next managed launch records the real build.
+pub(crate) fn note_incoming(image: &Path, build: u64) -> Result<()> {
+    if image.file_name() != Some(std::ffi::OsStr::new("Okilum.AppImage")) || owned(image).is_err() {
+        return Ok(());
+    }
+    if recorded_build(image).is_none_or(|current| build > current) {
+        write_build(image, build)?;
+    }
+    Ok(())
+}
+
 /// Record the build now running from `running` when it is our managed image
 /// (an applied update, or an ordinary managed launch). Anything else is ignored.
 pub fn record_running(home: &Path, running: &Path, build: u64) -> Result<()> {
@@ -122,7 +136,20 @@ pub fn install(home: &Path, source: &Path, build: u64) -> Result<PathBuf> {
     } else {
         None
     };
-    let replace = source != image && current.is_none_or(|installed| build > installed);
+    let mut replace = source != image && current.is_none_or(|installed| build > installed);
+    // Exclude the self-updater: from download through the apply helper it
+    // holds this lock, and the installed bytes may be newer than the record.
+    let _update = if replace && image.symlink_metadata().is_ok() {
+        match crate::update_lock(&image) {
+            Ok(lock) => Some(lock),
+            Err(_) => {
+                replace = false;
+                None
+            }
+        }
+    } else {
+        None
+    };
     if replace {
         let mut input = fs::File::open(source)?;
         let mut staged = tempfile::NamedTempFile::new_in(image.parent().unwrap())?;
@@ -303,5 +330,27 @@ mod tests {
         let image = install(home.path(), &external, 7464).unwrap();
         record_running(home.path(), &external, 9999).unwrap();
         assert_eq!(recorded_build(&image), Some(7464));
+    }
+
+    #[test]
+    fn active_self_update_blocks_external_replacement() {
+        let home = tempfile::tempdir().unwrap();
+        let external = home.path().join("AppImages/okilum.appimage");
+        executable(&external, b"7538");
+        let image = install(home.path(), &external, 7538).unwrap();
+        // The updater holds its transaction lock while staging/applying 7540.
+        let lock = crate::update_lock(&image).unwrap();
+        note_incoming(&image, 7540).unwrap();
+        executable(&external, b"7539");
+        assert_eq!(install(home.path(), &external, 7539).unwrap(), image);
+        assert_eq!(fs::read(&image).unwrap(), b"7538");
+        drop(lock);
+        // Applied 7540 before startup confirmation: 7539 still must not win.
+        executable(&image, b"7540");
+        install(home.path(), &external, 7539).unwrap();
+        assert_eq!(fs::read(&image).unwrap(), b"7540");
+        // Not our managed install: nothing recorded.
+        note_incoming(&external, 9999).unwrap();
+        assert!(!build_record(&external).exists());
     }
 }
