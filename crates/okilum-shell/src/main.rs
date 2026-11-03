@@ -1324,7 +1324,7 @@ fn reader_plugins_at(
             }
         }),
         Arc::new(move |url| {
-            if url == okilum_core::render::UNAVAILABLE_IMAGE {
+            if url.starts_with(okilum_core::render::UNAVAILABLE_IMAGE) {
                 return Some(MarkdownImage::Unavailable);
             }
             if let Some(payload) = url.strip_prefix("okilum-drawing-unavailable:") {
@@ -1457,8 +1457,11 @@ fn markdown_plugins_at(
                 drawing_size,
             },
         );
+        let missing =
+            okilum_core::render::unavailable_target(&node.data::<LocalImage>().unwrap().url)
+                .unwrap_or_default();
         Some(if unavailable {
-            node.plain_part("status", "Image unavailable")
+            node.plain_part("status", format!("File not found or ambiguous: {missing}"))
         } else {
             node.markdown_part("caption", caption.trim().to_string())
         })
@@ -1475,26 +1478,37 @@ fn markdown_plugins_at(
                     }
                     _ => {}
                 }
+                if let Some(reader) = &image_actions {
+                    if let Some(element) =
+                        reader_image_actions::attachment(reader.clone(), &data.url, live, cx)
+                    {
+                        return element;
+                    }
+                }
                 let Some(MarkdownImage::Source(image)) = render_image(&data.url) else {
                     let element = node.render_part("status", |style| style, _window, cx);
                     return match &image_actions {
-                        Some(reader) => {
-                            reader_image_actions::decorate(reader.clone(), &data.url, element, cx)
-                        }
+                        Some(reader) => reader_image_actions::decorate(
+                            reader.clone(),
+                            &data.url,
+                            element,
+                            live,
+                            cx,
+                        ),
                         None => element,
                     };
                 };
-                let mut el = v_flex()
-                    .py_2()
-                    .gap_1()
-                    .child(reader_image::ReaderImage::new(image));
+                let mut el = v_flex().py_2().gap_1().child(
+                    reader_image::ReaderImage::new(image)
+                        .with_error_message("File not found or unreadable"),
+                );
                 if !data.caption.is_empty() {
                     el = el.child(node.render_part("caption", |style| style, _window, cx));
                 }
                 let element = el.into_any_element();
                 match &image_actions {
                     Some(reader) => {
-                        reader_image_actions::decorate(reader.clone(), &data.url, element, cx)
+                        reader_image_actions::decorate(reader.clone(), &data.url, element, live, cx)
                     }
                     None => element,
                 }
