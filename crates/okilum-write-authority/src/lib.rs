@@ -279,7 +279,7 @@ impl Authority {
                     ensure!(a.state()?.phase == Phase::Open,
                         "Physical vault identity has an unfinished hold at another root; explicit recovery required");
                 }
-                if b.root.starts_with(&root) && b.root != root && b.root.exists() {
+                if b.root.starts_with(&root) && b.root != root {
                     let child = Self {
                         account: account.clone(),
                         binding_path: p.clone(),
@@ -288,7 +288,14 @@ impl Authority {
                     };
                     let admission = file(&child.directory.join("admission.lock"), false)?;
                     admission.lock()?;
-                    child.validate()?;
+                    // A temporarily moved/deleted child root still owns its
+                    // durable hold and outstanding leases. Missing paths never
+                    // authorize an enclosing scope to bypass those fences.
+                    if child.root().try_exists()? {
+                        child.validate()?;
+                    } else {
+                        child.validate_binding()?;
+                    }
                     ensure!(child.state()?.phase == Phase::Open,
                         "Enclosed folder has an unfinished writer hold; release or recover it before opening the enclosing vault");
                     let writers = file(&child.directory.join("writers.lock"), false)?;
@@ -373,13 +380,16 @@ impl Authority {
         #[cfg(test)]
         VALIDATIONS.with(|count| count.set(count.get() + 1));
         ensure!(
-            self.binding.schema == 1,
-            "Unsupported local writer authority"
-        );
-        ensure!(
             self.binding.root.canonicalize()? == self.binding.root
                 && identity(&self.binding.root)? == self.binding.root_identity,
             "Vault root replaced; local writer admission refused"
+        );
+        self.validate_binding()
+    }
+    fn validate_binding(&self) -> Result<()> {
+        ensure!(
+            self.binding.schema == 1,
+            "Unsupported local writer authority"
         );
         ensure!(
             read::<Binding>(&self.binding_path)? == self.binding,
@@ -451,7 +461,7 @@ impl Authority {
     fn save(&self, s: &Snapshot) -> Result<()> {
         persist(&self.directory.join("state.json"), s, false)
     }
-    /// No waiting. Dropped/crashed holders leave admission closed. A fresh reader
+    /// Never waits for writers. Dropped/crashed holders leave admission closed. A fresh reader
     /// additionally records RecoveryPending when the owner lock has disappeared.
     pub fn snapshot(&self) -> Result<Snapshot> {
         let (authority, _l) = self.locked()?;
@@ -766,12 +776,26 @@ mod tests {
             Authority::open_in(&account, &root).is_err(),
             "live lease fences promotion"
         );
+        let moved_sub = t.path().join("moved-sub");
+        fs::rename(&sub, &moved_sub).unwrap();
+        assert!(
+            Authority::open_in(&account, &root).is_err(),
+            "a moved root's live lease also fences promotion"
+        );
+        fs::rename(&moved_sub, &sub).unwrap();
         drop(lease);
         let hold = other.begin_drain("subfolder-hold").unwrap();
         assert!(
             Authority::open_in(&account, &root).is_err(),
             "hold cannot be bypassed by promotion"
         );
+        let moved_other = t.path().join("moved-other");
+        fs::rename(&sibling, &moved_other).unwrap();
+        assert!(
+            Authority::open_in(&account, &root).is_err(),
+            "a missing child path cannot bypass its durable hold"
+        );
+        fs::rename(&moved_other, &sibling).unwrap();
         let token = hold.token().clone();
         hold.release(&token).unwrap();
         let vault = Authority::open_in(&account, &root).unwrap();
