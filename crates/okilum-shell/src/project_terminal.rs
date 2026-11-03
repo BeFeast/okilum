@@ -70,6 +70,8 @@ fn initial_for_project(
     state: &Path,
 ) -> anyhow::Result<command::Initial> {
     use anyhow::Context as _;
+    // Re-read settings: the selected project may predate a connection/checkout edit.
+    let project = okilum_t3::projects::Project::read(&project.folder)?;
     let document = okilum_t3::area_files::read(&project.folder, "project")?;
     let manifest = document.as_ref().map(|d| &d.value);
     for field in ["terminal_command", "terminal_host"] {
@@ -91,15 +93,18 @@ fn initial_for_project(
         });
     let host = manifest.and_then(|d| d["execution"]["terminal_host"].as_str());
     // An explicit override does not depend on a working T3 registry.
-    let origin = if custom.as_ref().is_some_and(|v| !v.trim().is_empty()) || host.is_some() {
-        None
-    } else {
-        project::prefill_browser_origin(
-            &project.folder,
-            project.environment.as_deref().unwrap_or("project"),
-            Some(state),
-        )?
-    };
+    let has_t3 = project.environment.is_some()
+        || manifest.is_some_and(|d| d["t3"]["origin"].as_str().is_some());
+    let origin =
+        if !has_t3 || custom.as_ref().is_some_and(|v| !v.trim().is_empty()) || host.is_some() {
+            None
+        } else {
+            project::prefill_browser_origin(
+                &project.folder,
+                project.environment.as_deref().unwrap_or("project"),
+                Some(state),
+            )?
+        };
     let checkout = project
         .appearance
         .source_checkout
