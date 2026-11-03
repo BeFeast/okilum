@@ -62,6 +62,39 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         (project, board)
     });
     visual.run_until_parked();
+    // This must be Reader-mounted: its Dismiss action consumes Escape before
+    // low-level key listeners, which a standalone ProjectView cannot reproduce.
+    let draft = "Keep the mounted Manager draft.";
+    project.update_in(visual, |project, window, cx| {
+        project
+            .compose
+            .update(cx, |input, cx| input.set_value(draft, window, cx));
+        let target = project.manager_model_target().unwrap();
+        project.open_models(target, window, cx);
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-model-panel").is_some(),
+        "positive control: mounted deferred picker"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    project.update_in(visual, |project, window, cx| {
+        assert!(
+            !project.model_open,
+            "Reader Escape must close the model picker"
+        );
+        assert!(project.compose.read(cx).focus_handle(cx).is_focused(window));
+        assert_eq!(project.compose.read(cx).value().as_str(), draft);
+        assert!(project.model_candidate.is_none());
+    });
+    reader.read_with(visual, |reader, _| {
+        assert!(reader.panels.backlinks && reader.project_navigation.board_visible);
+        assert!(
+            !reader.panels.notes,
+            "picker Escape must not toggle background panels"
+        );
+    });
     let renders = board.read_with(visual, |board, _| board.render_calls.get());
     project.update(visual, |_, cx| cx.notify());
     visual.run_until_parked();
