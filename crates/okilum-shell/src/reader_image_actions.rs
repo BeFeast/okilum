@@ -254,12 +254,7 @@ pub(super) fn decorate(
 }
 
 /// Non-image attachments share the same captured identity and platform actions.
-pub(super) fn attachment(
-    reader: WeakEntity<Reader>,
-    url: &str,
-    live: bool,
-    cx: &App,
-) -> Option<AnyElement> {
+pub(super) fn attachment(reader: WeakEntity<Reader>, url: &str, cx: &App) -> Option<AnyElement> {
     let entity = reader.upgrade()?;
     let target = Target::captured(entity.read(cx), Some(url));
     if target.is_image() {
@@ -272,7 +267,7 @@ pub(super) fn attachment(
         .child(Icon::new(IconName::File).small())
         .child(label)
         .into_any_element();
-    Some(decorate(reader, url, element, live, cx))
+    Some(decorate(reader, url, element, false, cx))
 }
 
 impl Reader {
