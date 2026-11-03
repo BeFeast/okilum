@@ -8,9 +8,14 @@
 //! timing) is deliberately gone: it measured a decision that has been made.
 
 // Keep transient native frame allocations local to the rendering thread.
+// The test allocation meter wraps this same backend instead of replacing it.
 #[cfg(target_os = "linux")]
+pub(crate) const NATIVE_ALLOCATION: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[cfg(all(test, not(target_os = "linux")))]
+pub(crate) const NATIVE_ALLOCATION: std::alloc::System = std::alloc::System;
+#[cfg(all(target_os = "linux", not(test)))]
 #[global_allocator]
-static NATIVE_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static NATIVE_ALLOCATOR: mimalloc::MiMalloc = NATIVE_ALLOCATION;
 
 mod about;
 mod app_footprint;
