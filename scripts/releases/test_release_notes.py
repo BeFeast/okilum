@@ -172,6 +172,59 @@ class MergedRange(unittest.TestCase):
         notes.record(store, payload)
         self.assertEqual(store.writes, [notes.key(self.future, 'macos', 'stable')])
 
+    def test_two_hourly_betas_span_multiple_merges_and_chain_actual_feeds(self):
+        # All platform feeds begin at the same old beta, while three merges land
+        # before the next hour. The second hour contains two more visible merges
+        # and an internal CI merge. No synthetic intermediate beta may appear.
+        second = self.commit('Merge another feature')
+        newest = self.commit('Merge another fix')
+        internal = self.commit('Merge CI maintenance')
+        self.client.call.return_value += [
+            pr(6, 'feat: Search notes', merged=True, merge_commit_sha=second),
+            pr(7, 'fix: Preserve tabs', merged=True, merge_commit_sha=newest),
+            pr(8, 'ci: Hourly beta', merged=True, merge_commit_sha=internal)]
+        execute = subprocess.run
+        for platform in ['linux-appimage', 'macos', 'windows']:
+            with self.subTest(platform=platform):
+                store = Store()
+                def advance(build, source):
+                    if platform == 'macos':
+                        store.data['okilum/appcast.xml'] = feed((build, source, 'beta'))
+                    elif platform == 'linux-appimage':
+                        store.data['okilum/linux/beta/latest.json'] = json.dumps(dict(
+                            build=build, source=source, platform=platform, channel='beta')).encode()
+                    else:
+                        store.data['okilum/windows/beta/releases.beta.json'] = json.dumps(
+                            {'Assets': [{'Version': f'0.1.{build}'}]}).encode()
+                        store.data[f'okilum/windows/builds/{build}/release.json'] = json.dumps(
+                            dict(build=build, source=source)).encode()
+                advance(600, self.old)
+                with patch.object(notes.subprocess, 'run',
+                                  side_effect=lambda *a, **k: execute(*a, cwd=self.root, **k)):
+                    first = notes.prepare(store, self.client, platform, 700, self.future)
+                    notes.record(store, first)
+                    advance(700, self.future)
+                    last = notes.prepare(store, self.client, platform, 800, internal)
+                    notes.record(store, last)
+                    advance(800, internal)
+                self.assertEqual([item['pr'] for item in first['items']], [3, 2, 1])
+                self.assertEqual([item['pr'] for item in last['items']], [7, 6])
+                self.assertEqual((first['previous_build'], first['previous_source']), (600, self.old))
+                self.assertEqual((last['previous_build'], last['previous_source']), (700, self.future))
+                previous = json.loads(store.data[notes.key(last['previous_source'], platform, 'beta')])
+                self.assertEqual(previous, first)
+                self.assertEqual(notes.predecessor(store, platform), {'build': 800, 'source': internal})
+                body = notes.forgejo_body(last, 'Signing and channel footer')
+                self.assertIn('Search notes', body)
+                self.assertIn('Preserve tabs', body)
+                self.assertNotIn('Hourly beta', body)
+                self.assertEqual(body.count('Signing and channel footer'), 1)
+                # Positive controls: narrowing the range to the latest merge
+                # loses both visible changes; a never-fired range cannot pass.
+                self.assertEqual(self.select(newest, internal), [])
+                self.assertEqual(store.writes, [notes.key(self.future, platform, 'beta'),
+                                                 notes.key(internal, platform, 'beta')])
+
     def test_stable_empty_range_uses_maintenance(self):
         store = Store({'okilum/appcast.xml': feed((700, self.source, 'stable'))})
         execute = subprocess.run

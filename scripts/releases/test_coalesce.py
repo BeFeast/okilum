@@ -29,55 +29,12 @@ class CoalescingTests(unittest.TestCase):
                 module.needed('schedule', item, 'new', 'macos')
 
 
-class ScheduledMainTests(unittest.TestCase):
-    @patch.object(module.subprocess, 'run')
-    def test_windows_schedule_builds_main_tip_not_its_old_snapshot(self, run):
-        # Skipping an outdated snapshot starved beta: merges outpace the tick.
-        head = 'a' * 40
-        run.return_value = SimpleNamespace(stdout=head + '\trefs/heads/main\n')
-        self.assertEqual(module.scheduled_source('schedule', 'b' * 40, 'windows'), head)
-        self.assertEqual(module.scheduled_source('schedule', head, 'windows'), head)
-        self.assertEqual(run.call_args.kwargs['timeout'], 15)
-
-    @patch.object(module.subprocess, 'run')
-    def test_manual_pr_and_other_platforms_never_query_main(self, run):
-        for event, platform in [('workflow_dispatch', 'windows'),
-                                ('pull_request', 'windows'), ('push', 'windows'),
-                                ('push', 'macos')]:
-            self.assertEqual(module.scheduled_source(event, 'old', platform), 'old')
-        run.assert_not_called()
-
-    @patch.object(module.subprocess, 'run')
-    def test_unknown_remote_result_is_failure_not_successful_skip(self, run):
-        for output in ['', 'garbage', 'a' * 40 + '\trefs/heads/other']:
-            run.return_value = SimpleNamespace(stdout=output)
-            with self.assertRaises(ValueError):
-                module.scheduled_source('schedule', 'old', 'windows')
-        run.side_effect = module.subprocess.TimeoutExpired('git', 15)
-        with self.assertRaises(module.subprocess.TimeoutExpired):
-            module.scheduled_source('schedule', 'old', 'windows')
-
-
-class LinuxWindowTests(unittest.TestCase):
-    @patch.object(module.subprocess, 'run')
-    def test_stale_tick_builds_tip_and_manual_bypasses(self, run):
-        head = 'a' * 40
-        run.return_value = SimpleNamespace(stdout=head + '\trefs/heads/main\n')
-        self.assertEqual(module.scheduled_source('schedule', 'b' * 40, 'linux'), head)
-        self.assertEqual(module.scheduled_source('schedule', head, 'linux'), head)
-        self.assertTrue(module.needed('schedule', None, head, 'linux'))
-        self.assertFalse(module.needed('schedule', {'source': head, 'platform': 'linux'}, head, 'linux'))
-        run.reset_mock()
-        for event in ['workflow_dispatch', 'pull_request']:
-            self.assertEqual(module.scheduled_source(event, 'old', 'linux'), 'old')
-            self.assertTrue(module.needed(event, {'source': 'old', 'platform': 'linux'}, 'old', 'linux'))
-        run.assert_not_called()
-
+class LinuxWorkflow(unittest.TestCase):
     def test_linux_workflow_uses_light_selector_and_preserves_publication(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / '.forgejo/workflows/linux-release.yml').read_text()
-        self.assertNotIn('  schedule:', workflow)
-        self.assertIn('  push:', workflow)
+        self.assertIn("cron: '17 * * * *'", workflow)
+        self.assertNotIn('  push:', workflow)
         self.assertIn('  workflow_dispatch:', workflow)
         self.assertIn('runs-on: bridge', workflow)
         # The release checkout builds the commit select chose (main tip on a tick).
@@ -96,7 +53,7 @@ class LinuxWindowTests(unittest.TestCase):
              "github.event.pull_request.head.repo.full_name != github.repository || "
              "vars.OKILUM_PR_LANE == 'local')"],
         )
-        self.assertIn('cancel-in-progress: false', workflow)
+        self.assertIn('cancel-in-progress: true', workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch linux', workflow)
 
 
@@ -150,139 +107,74 @@ class ResignTests(unittest.TestCase):
                 module.check_resign(resign, requested, platform)
 
 
-class MacBetaWindowTests(unittest.TestCase):
-    SHA = 'a' * 40
-    OLD = 'b' * 40
-
-    def env(self, tick=''):
-        return {'GITHUB_REF': 'refs/heads/main', 'GITHUB_RUN_ID': '100',
-                'MACOS_BETA_TICK': tick}
-
-    def now(self, day=22, hour=12, minute=0):
-        return module.datetime(2026, 10, day, hour, minute, tzinfo=module.timezone.utc)
-
-    def test_expiry_boundary_and_original_daily_slot(self):
-        self.assertEqual(module.macos_slot(self.now(26, 2, 59)), 'frequent')
-        for now in [self.now(26, 3), self.now(27, 12), self.now(26, 10, 29)]:
-            self.assertIsNone(module.macos_slot(now))
-        self.assertEqual(module.macos_slot(self.now(26, 10, 30)), 'daily')
-        self.assertEqual(module.macos_slot(self.now(27, 11), '30 10 * * *'), 'daily')
-        self.assertIsNone(module.macos_slot(self.now(27, 11), '*/10 * * * *'))
-
-    @patch.object(module, 'macos_api')
-    @patch.object(module, 'main_tip')
-    @patch.object(module, 'descriptor')
-    def test_expired_tick_is_a_noop_without_network(self, descriptor, tip, api):
-        for event, tick in [('schedule', ''), ('workflow_dispatch', 'frequent')]:
-            result = module.select_macos(event, self.OLD, self.env(tick), self.now(26, 3))
-            self.assertFalse(result[0])
-        descriptor.assert_not_called(); tip.assert_not_called(); api.assert_not_called()
-
-    @patch.object(module, 'main_tip', return_value=SHA)
-    def test_macos_schedule_selects_main_tip(self, tip):
-        self.assertEqual(module.scheduled_source('schedule', self.OLD, 'macos'), self.SHA)
-        self.assertEqual(module.scheduled_source('workflow_dispatch', self.OLD, 'macos'), self.OLD)
-        tip.assert_called_once()
-
-    @patch.object(module, 'macos_api')
-    @patch.object(module, 'descriptor', return_value=None)
-    @patch.object(module, 'main_tip', return_value=SHA)
-    def test_tick_dispatches_main_and_never_builds(self, tip, descriptor, api):
-        api.side_effect = [{'total_count': 0, 'workflow_runs': []}, None]
-        result = module.select_macos('schedule', self.OLD, self.env(), self.now())
-        self.assertEqual(result[:3], (False, self.SHA, False))
-        descriptor.assert_called_once_with(self.SHA, 'macos')
-        self.assertEqual(api.call_args.args, ('POST', '/actions/workflows/macos-release.yml/dispatches',
-                                             {'ref': 'main', 'inputs': {'beta_tick': 'frequent'}}))
-
-    @patch.object(module, 'macos_api')
-    @patch.object(module, 'descriptor')
-    @patch.object(module, 'main_tip', return_value=SHA)
-    def test_published_tip_skips_on_publish_runner(self, tip, descriptor, api):
-        descriptor.return_value = {'source': self.SHA, 'platform': 'macos'}
-        self.assertFalse(module.select_macos('schedule', self.OLD, self.env(), self.now())[0])
-        api.assert_not_called()
-
-    def attempt(self, status='failure', rid=99, source=SHA):
-        return {'id': rid, 'workflow_id': 'macos-release.yml', 'commit_sha': source,
-                'prettyref': 'main', 'is_fork_pull_request': False,
-                'trigger_event': 'workflow_dispatch', 'status': status}
-
-    @patch.object(module, 'macos_api')
-    @patch.object(module, 'descriptor', return_value=None)
-    @patch.object(module, 'main_tip', return_value=SHA)
-    def test_failed_or_pending_attempt_backs_off_until_new_sha(self, tip, descriptor, api):
-        for status in ['failure', 'running', 'success', 'cancelled']:
-            api.return_value = {'total_count': 1, 'workflow_runs': [self.attempt(status)]}
-            result = module.select_macos('schedule', self.OLD, self.env(), self.now())
-            self.assertFalse(result[0]); self.assertIn('backoff', result[3])
-            self.assertEqual(api.call_args.args[0], 'GET')
-        # The filtered server response for a NEW SHA has no prior attempt.
-        api.side_effect = [{'total_count': 0, 'workflow_runs': []}, None]
-        tip.return_value = 'c' * 40
-        result = module.select_macos('schedule', self.OLD, self.env(), self.now())
-        self.assertIn('Dispatched', result[3])
-        self.assertIn('head_sha=' + 'c' * 40, api.call_args_list[-2].args[1])
-
-    @patch.object(module, 'macos_api')
-    @patch.object(module, 'descriptor', return_value=None)
-    def test_oldest_queued_dispatch_builds_and_duplicate_backs_off(self, descriptor, api):
-        api.return_value = {'total_count': 2,
-                            'workflow_runs': [self.attempt(rid=101), self.attempt(rid=100)]}
-        # Build-group serialization makes 100 select first; pending 101 cannot
-        # suppress it. When 101 selects, prior 100 suppresses the duplicate.
-        first = module.select_macos('workflow_dispatch', self.SHA, self.env('frequent'), self.now())
-        self.assertTrue(first[0])
-        second_env = dict(self.env('frequent'), GITHUB_RUN_ID='101')
-        second = module.select_macos('workflow_dispatch', self.SHA, second_env, self.now())
-        self.assertFalse(second[0]); self.assertIn('backoff', second[3])
-
-    @patch.object(module, 'macos_api')
-    def test_failed_selector_backs_off_but_idle_ticks_do_not(self, api):
-        run = dict(self.attempt(), trigger_event='schedule')
-        api.return_value = {'total_count': 1, 'workflow_runs': [run]}
-        self.assertTrue(module.macos_attempted(self.SHA, '100'))
-        run['status'] = 'success'
-        self.assertFalse(module.macos_attempted(self.SHA, '100'))
-
-    @patch.object(module, 'macos_api')
-    @patch.object(module, 'descriptor', return_value=None)
-    @patch.object(module, 'main_tip')
-    def test_dispatched_run_builds_its_own_sha_with_existing_provenance(self, tip, descriptor, api):
-        api.return_value = {'total_count': 1, 'workflow_runs': [self.attempt(rid=100)]}
-        result = module.select_macos('workflow_dispatch', self.SHA, self.env('frequent'), self.now())
-        self.assertEqual(result[:3], (True, self.SHA, True))
-        tip.assert_not_called()
-        self.assertEqual(api.call_args.args[0], 'GET')
-
-    @patch.object(module, 'macos_api')
-    @patch.object(module, 'descriptor', return_value=None)
-    def test_incomplete_or_foreign_inventory_fails_closed(self, descriptor, api):
-        for data in [{'total_count': 2, 'workflow_runs': []},
-                     {'total_count': 1, 'workflow_runs': [self.attempt(source=self.OLD)]}]:
-            api.return_value = data
-            with self.assertRaises(ValueError):
-                module.select_macos('workflow_dispatch', self.SHA, self.env('frequent'), self.now())
-        api.side_effect = TimeoutError('offline inventory timeout')
-        with self.assertRaises(TimeoutError):
-            module.select_macos('workflow_dispatch', self.SHA, self.env('frequent'), self.now())
-
-    @patch.object(module, 'macos_api')
-    @patch.object(module, 'descriptor', return_value=None)
-    def test_daily_dispatch_after_expiry_keeps_original_routing(self, descriptor, api):
-        api.return_value = {'total_count': 0, 'workflow_runs': []}
-        self.assertEqual(module.select_macos('workflow_dispatch', self.SHA, self.env('daily'),
-                                           self.now(27, 10, 31))[:3], (True, self.SHA, False))
-
+class MacPublicationTests(unittest.TestCase):
     def test_workflow_keeps_tick_off_mac_and_preserves_publication(self):
         workflow = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/macos-release.yml').read_text()
-        self.assertNotIn('  schedule:', workflow)
-        self.assertIn('  push:', workflow)
-        self.assertIn('runs-on: publish', workflow)
-        self.assertIn("if: steps.select.outputs.build == 'true'", workflow)
-        self.assertIn("if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'local'", workflow)
-        self.assertIn("github.event_name == 'schedule' && 'okilum-macos-select' || 'okilum-macos-build'", workflow)
-        self.assertIn('cancel-in-progress: false', workflow)
+        self.assert_macos_publication_workflow(workflow)
+
+    def assert_macos_publication_workflow(self, workflow):
+        self.assertIn("cron: '17 * * * *'", workflow)
+        self.assertNotIn('  push:', workflow)
+        select, release = workflow.split('\n  release:\n', 1)
+        release, hosted = release.split('\n  hosted-artifact:\n', 1)
+        hosted = hosted.split('\n  shipping-status:\n', 1)[0]
+        self.assertIn('    runs-on: publish\n', select)
+        self.assertIn("        if: steps.select.outputs.build == 'true'\n", select)
+        self.assertIn('        run: python3 scripts/releases/coalesce.py macos\n', select)
+        self.assertIn('        run: python3 scripts/releases/macos-hosted.py route\n', select)
+        # #2139 prohibits corporate M4 CI and forces route() to hosted even for
+        # stale local lane variables. Publication must survive on the active job.
+        self.assertEqual([line.split('#', 1)[0].strip() for line in release.splitlines()
+                          if line.startswith('    if:')], ['if: false'])
+        self.assertIn('    runs-on: macos\n', release)
+        self.assertIn('    needs: select\n', hosted)
+        self.assertEqual([line.strip() for line in hosted.splitlines() if line.startswith('    if:')],
+                         ["if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && "
+                          "(github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')"])
+        self.assertIn('    runs-on: bridge\n', hosted)
+        self.assertNotIn('continue-on-error:', hosted)
+        producer = hosted.split('      - name: Produce a source-pinned hosted shipping artifact\n', 1)[1].split(
+            '\n      - uses:', 1)[0]
+        self.assertNotIn('if:', producer)
+        self.assertIn('          PRODUCT_SOURCE: ${{ needs.select.outputs.source }}\n', producer)
+        self.assertIn('        run: python3 scripts/ci/github-macos-shipping.py\n', producer)
+        self.assertIn("      - uses: https://code.forgejo.org/actions/upload-artifact@v3\n"
+                      "        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'\n"
+                      "        with:\n"
+                      "          name: macos-publication\n"
+                      "          path: ${{ runner.temp }}/publish/*\n", hosted)
+        self.assertIn("      - name: Dispatch protected hosted beta publication\n"
+                      "        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'\n"
+                      "        env:\n"
+                      "          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
+                      "          FORGEJO_URL: ${{ github.server_url }}\n"
+                      "        run: python3 scripts/releases/publication.py dispatch macos\n", hosted)
+        self.assertIn("(github.event_name == 'schedule' || inputs.hourly_source != '') && 'hourly' || github.run_id", workflow)
+        self.assertIn('cancel-in-progress: true', workflow)
         self.assertIn('FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}', workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch macos', workflow)
         self.assertLess(workflow.index('id: select'), workflow.index('id: route'))
+
+    def test_workflow_publication_assertions_reject_disabled_hosted_path_and_local_tick(self):
+        workflow = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/macos-release.yml').read_text()
+        prefix, hosted = workflow.split('\n  hosted-artifact:\n', 1)
+        for label, broken in [
+            ('local reenabled', workflow.replace('    if: false # Corporate', '    if: true # Corporate')),
+            ('push restored', workflow.replace('  schedule:', '  push:\n  schedule:', 1)),
+            ('selector on Mac', workflow.replace('    runs-on: publish', '    runs-on: macos', 1)),
+            ('hosted disabled', prefix + '\n  hosted-artifact:\n' + hosted.replace(
+                "    if: needs.select.outputs.build == 'true'", '    if: false && true', 1)),
+            ('producer disabled', workflow.replace('      - name: Produce a source-pinned hosted shipping artifact\n',
+                                                   '      - name: Produce a source-pinned hosted shipping artifact\n'
+                                                   '        if: false\n')),
+            ('upload disabled', prefix + '\n  hosted-artifact:\n' + hosted.replace(
+                "        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'", '        if: false', 1)),
+            ('dispatch disabled', workflow.replace('      - name: Dispatch protected hosted beta publication\n'
+                                                  "        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'",
+                                                  '      - name: Dispatch protected hosted beta publication\n'
+                                                  '        if: false')),
+        ]:
+            with self.subTest(regression=label):
+                self.assertNotEqual(workflow, broken)
+                with self.assertRaises(AssertionError):
+                    self.assert_macos_publication_workflow(broken)

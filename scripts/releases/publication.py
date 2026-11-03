@@ -211,6 +211,15 @@ def publish(client, platform, run_id):
         # Sidecars never alter descriptor, artifact, signing or promotion contracts.
         notes = (release_notes.prepare_preview(R2(), preview, build, source) if preview
                  else release_notes.prepare(R2(), client, platform, build, source))
+        # Selection and publication are separated by compilation/notarization.
+        # A racing hourly/manual producer may have published this source in that
+        # interval. The existing publication lock makes this final check atomic
+        # with feed writes. Daily Windows re-sign deliberately replaces the build
+        # for the same source and must retain its existing path.
+        if (not archive_only and not preview and not preview_inputs(run).get('resign_build')
+                and notes['previous_source'] == source and notes['previous_build'] != build):
+            print(f'{platform} beta source already published: no duplicate beta')
+            return
         if platform == 'macos':
             notes_file = root / 'notes.json'
             notes_file.write_text(json.dumps(notes))

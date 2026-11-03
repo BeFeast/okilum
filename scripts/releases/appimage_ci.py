@@ -55,7 +55,7 @@ def handoff(root, directory):
         run = api.request('actions/runs/' + str(run_id))
         jobs = api.request(f'actions/runs/{run_id}/jobs?per_page=100')['jobs']
         artifact.accepted(run, jobs, source)
-        if run.get('head_branch') != 'main' or run['event'] != 'push':
+        if run.get('head_branch') != 'main' or run['event'] not in ('push', 'schedule', 'workflow_dispatch'):
             raise ValueError('Nightly acceptance requires the original main beta producer')
     else:
         run = api.request('actions/runs/' + os.environ['GITHUB_RUN_ID'])
@@ -80,6 +80,7 @@ def handoff(root, directory):
              'status': 'completed', 'conclusion': 'success',
              'steps': [{'name': step, 'conclusion': 'success'}]}
             for name, step in [('appimage', artifact.SMOKE), ('linux', 'Run full Linux gate')]]
+    jobs[0]['steps'].append({'name': 'Build exact-source AppImage once', 'conclusion': 'success'})
     receipt = {'run': run, 'jobs': jobs, 'artifact': item}
     stage = root / 'handoff'; stage.mkdir()
     (stage / 'acceptance.json').write_text(json.dumps(receipt))

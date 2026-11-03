@@ -3,11 +3,16 @@
 import argparse
 import json
 import os
+import runpy
+import signal
 from pathlib import Path
 import subprocess
 import tempfile
 import time
 
+
+lifecycle = runpy.run_path(str(Path(__file__).with_name("sync-fixture-lifecycle.py")))
+check = lifecycle["check"]
 
 TESTS = {
     "managed_source_share_empty_receive_and_bidirectional_hashes",
@@ -27,8 +32,27 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.parallel <= args.runs <= 100:
         parser.error("require 1 <= parallel <= runs <= 100")
-    evidence = Path(tempfile.mkdtemp(prefix="sync-source-sharing-", dir=os.environ["RUNNER_TEMP"]))
+    evidence = Path(tempfile.mkdtemp(prefix="sync-source-sharing-", dir=os.environ["TMPDIR"]))
     print(f"Fixture evidence: {evidence}", flush=True)
+    lifecycle["subreaper"]()
+    def interrupted(signum, _frame):
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, interrupted)
+    processes = []
+    try:
+        return run_trials(args, evidence, processes)
+    finally:
+        # Cancellation must not leave sibling trials or their fixture daemons.
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+        for process in processes:
+            process.wait()
+        check(evidence, cleanup=True)
+        lifecycle["reap"]()
+
+
+def run_trials(args, evidence, processes):
     trials = []
     failed = False
     for start in range(0, args.runs, args.parallel):
@@ -41,9 +65,12 @@ def main():
             with log.open("w") as output:
                 process = subprocess.Popen(
                     [str(args.executable.resolve()), "source_sharing::", "--ignored",
-                     "--nocapture", "--test-threads=1"],
+                     "--nocapture", "--test-threads=1",
+                     "--skip", "source_sharing::fixture_lifecycle_control"],
                     env=env, stdout=output, stderr=subprocess.STDOUT,
+                    preexec_fn=lifecycle["parent_death_signal"](),
                 )
+            processes.append(process)
             trial = {"run": number, "pid": process.pid, "started": time.time(), "log": str(log)}
             batch.append((process, trial))
         # Launch the entire batch before waiting: no shared Cargo build lock can
@@ -61,6 +88,8 @@ def main():
             if not trial["ok"]:
                 print(output, flush=True)
     (evidence / "results.json").write_text(json.dumps(trials, indent=2) + "\n")
+    failed |= bool(check(evidence))
+    lifecycle["reap"]()
     print(f"Completed {args.runs} runs, parallel={args.parallel}: {'FAIL' if failed else 'PASS'}", flush=True)
     return int(failed)
 

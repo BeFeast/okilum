@@ -598,3 +598,32 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
 
 #[path = "remote_inventory.rs"]
 mod remote_inventory;
+
+/// Driven in separate processes by CI: observe two live daemons before release,
+/// then exercise success, assertion unwinding, and SIGKILL without Drop.
+#[test]
+#[ignore = "requires pinned Syncthing and the fixture lifecycle driver"]
+fn fixture_lifecycle_control() -> Result<()> {
+    let ready = PathBuf::from(
+        std::env::var_os("OKILUM_SYNC_FIXTURE_READY").context("lifecycle driver required")?,
+    );
+    let pair = Pair::loopback()?;
+    fs::write(
+        ready.with_extension("pending"),
+        format!(
+            "{} {}",
+            pair.source.child.as_ref().unwrap().id(),
+            pair.target.child.as_ref().unwrap().id()
+        ),
+    )?;
+    fs::rename(ready.with_extension("pending"), &ready)?;
+    wait("lifecycle control release", || {
+        Ok(ready.with_extension("release").exists())
+    })?;
+    assert_ne!(
+        std::env::var("OKILUM_SYNC_FIXTURE_CONTROL").as_deref(),
+        Ok("panic"),
+        "forced fixture lifecycle failure (#2498)"
+    );
+    Ok(())
+}

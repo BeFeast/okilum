@@ -2951,6 +2951,321 @@ mod tests {
         });
     }
 
+    /// #2484: a successful Source search must keep its actual glyph position
+    /// when the large document returns to projected layout. The caret remains
+    /// elsewhere: Find does not move the editing selection.
+    #[gpui::test]
+    fn issue2484_large_find_close_keeps_match_visible(cx: &mut TestAppContext) {
+        use gpui_component::WindowExt as _;
+        let query = "Concurrent identical first submissions";
+        let block = "## Section\n\nA public **paragraph** with `code` and enough text to wrap. ".to_owned()
+            + &"More documentation text. ".repeat(12)
+            + "\n\n> A quoted explanation.\n\n- First list entry\n- Second list entry\n\n```rust\nfn example() {}\n```\n\n";
+        let note = format!(
+            "# Large public note\n\n{}## Acceptance\n\n1. {query} return one original conversation.\n\n{}",
+            block.repeat(220), block.repeat(90)
+        );
+        assert!(note.len() >= 120 * 1024);
+        let (reader, visual, _directory) = fixture(cx, &note);
+        visual.simulate_resize(size(px(1600.), px(1000.)));
+        reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let untouched = input.read_with(visual, |i, _| (i.source_stamp(), i.selected_range()));
+        let at = note.find(query).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            // A cold heading/Back handoff can finish after Find is opened.
+            // Search leaves the editing selection unchanged, so revision and
+            // selection alone cannot cancel that earlier placement.
+            r.place_editor_at_reader(
+                input.clone(),
+                (
+                    2,
+                    r.note_canonical_source.clone().unwrap(),
+                    r.note_source.clone(),
+                ),
+                window,
+                cx,
+            );
+            r.open_find(window, cx);
+        });
+        visual.run_until_parked();
+        input.update(visual, |i, cx| {
+            i.set_search_query(query, false, cx);
+            assert_eq!(i.next_search_match(cx), Some(at..at + query.len()));
+            assert_eq!(i.search_session().matcher.len(), 1);
+            assert_eq!(i.search_session().matcher.current_match_index(), 0);
+        });
+        visual.run_until_parked();
+        let before = input.read_with(visual, |i, _| {
+            let bounds = i
+                .range_to_bounds(&(at..at + query.len()))
+                .expect("Source match has painted geometry");
+            assert!(
+                i.input_bounds().contains(&bounds.center()),
+                "1/1 match is visible in Source"
+            );
+            eprintln!("ISSUE2484_FIND_POSITIVE_CONTROL=1/1 y={:?}", bounds.top());
+            bounds.top() - i.input_bounds().top()
+        });
+        input.update(visual, |i, cx| i.close_search(cx));
+        visual.run_until_parked();
+        for _ in 0..4 {
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+        }
+        reader.read_with(visual, |r, cx| {
+            assert!(r.live_preview_shown());
+            assert!(
+                r.link_notice.is_none(),
+                "reachable landing: {:?}",
+                r.link_notice
+            );
+            let i = input.read(cx);
+            assert_eq!(i.value().as_ref(), note);
+            assert_eq!(
+                (i.source_stamp(), i.selected_range()),
+                untouched,
+                "Find and projection do not edit or move the editing caret"
+            );
+            let bounds = i
+                .range_to_bounds(&(at..at + query.len()))
+                .expect("#2484: match must remain laid out after Find closes");
+            assert!(
+                i.input_bounds().contains(&bounds.center()),
+                "#2484: match must remain visible"
+            );
+            let after = bounds.top() - i.input_bounds().top();
+            assert!(
+                (after - before).abs() < px(1.),
+                "#2484: matched row moved: {before:?} -> {after:?}"
+            );
+        });
+        reader.update(visual, |r, cx| {
+            r.link_notice = Some("The document did not finish rendering at the requested position. Heading/Back landing failed; try again.".into());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(
+                window.notifications(cx).len(),
+                1,
+                "positive control: the stale landing error is actually displayed"
+            )
+        });
+        input.update_in(visual, |i, window, cx| {
+            i.set_selected_range(at..at, cx);
+            i.replace_text_in_range(None, "x", window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.link_notice.is_none(),
+                "an obsolete landing error must not remain while editing"
+            )
+        });
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.displayed_notice.is_none(),
+                "typing immediately retires the presented landing notice"
+            );
+        });
+        // The existing notification lifecycle keeps an exiting toast mounted
+        // for 200 ms, ticking every 50 ms. No further edit or autosave (300 ms)
+        // is needed to finish its normal dismissal.
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert!(
+                window.notifications(cx).is_empty(),
+                "editing must retire the displayed toast, not just its backing field"
+            )
+        });
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-z"
+        } else {
+            "ctrl-z"
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |i, _| {
+            assert_eq!(i.value().as_ref(), note, "Undo after returning from Find")
+        });
+    }
+
+    #[gpui::test]
+    fn issue2484_large_heading_landing_prepares_without_painted_list(cx: &mut TestAppContext) {
+        let note = format!(
+            "# Start\n\n{}## Landing\n\n{}",
+            "A paragraph of public documentation.\n\n".repeat(2600),
+            "Tail.\n\n".repeat(4500)
+        );
+        assert!(note.len() >= 120 * 1024);
+        let (reader, visual, _directory) = fixture(cx, &note);
+        let block = reader.read_with(visual, |r, _| {
+            r.outline
+                .iter()
+                .find(|h| h.text == "Landing")
+                .unwrap()
+                .target
+                .block
+        });
+        reader.update_in(visual, |r, _, cx| {
+            // Session restoration can publish a prepared replacement while the
+            // editor is already visible. This new list has never been painted.
+            r.content = cx.new(|cx| TextViewState::markdown(&note, cx).scrollable(true));
+            assert_eq!(r.content.read(cx).list_state().item_count(), 0);
+            r.scroll_to_block(block, cx);
+        });
+        for _ in 0..105 {
+            visual.executor().advance_clock(Duration::from_millis(50));
+            visual.run_until_parked();
+        }
+        reader.read_with(visual, |r, cx| {
+            assert!(
+                r.navigation.pending_landing.is_none(),
+                "reachable heading must finish"
+            );
+            assert!(
+                r.link_notice.is_none(),
+                "#2484: hidden Reader landing failed: {:?}",
+                r.link_notice
+            );
+            assert_eq!(
+                r.content.read(cx).list_state().logical_scroll_top().item_ix,
+                block
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn issue2484_large_live_heading_and_back_land_on_visible_editor(cx: &mut TestAppContext) {
+        let note = format!(
+            "# Start\n\n{}## Landing\n\n{}",
+            "Public **documentation** paragraph.\n\n".repeat(3200),
+            "Following paragraph.\n\n".repeat(900)
+        );
+        assert!(note.len() >= 120 * 1024);
+        let line = note[..note.find("## Landing").unwrap()]
+            .bytes()
+            .filter(|b| *b == b'\n')
+            .count();
+        let (reader, visual, _directory) = fixture(cx, &note);
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_live_preview(window, cx);
+            r.open_note_at("note.md", None, Some("Landing"), window, cx);
+        });
+        for _ in 0..8 {
+            visual.run_until_parked();
+            visual.executor().advance_clock(Duration::from_millis(50));
+        }
+        reader.read_with(visual, |r, cx| {
+            assert!(r.live_preview_shown(), "heading keeps Live Preview");
+            let i = r.editing.as_ref().unwrap().input.read(cx);
+            assert_eq!(i.top_visible_line(), Some(line), "large heading is visible");
+            assert_eq!(i.cursor_position().line as usize, line);
+            assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("target.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "target.md", "navigation positive control")
+        });
+        reader.update_in(visual, |r, window, cx| r.history_move(-1, window, cx));
+        for _ in 0..110 {
+            visual.run_until_parked();
+            visual.executor().advance_clock(Duration::from_millis(50));
+        }
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_rel, "note.md");
+            assert!(r.live_preview_shown(), "Back keeps Live Preview");
+            assert_eq!(
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .top_visible_line(),
+                Some(line),
+                "Back restores the large-note heading"
+            );
+            assert!(r.navigation.pending_landing.is_none());
+            assert!(
+                r.link_notice.is_none(),
+                "Back must not time out: {:?}",
+                r.link_notice
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn issue2484_closed_find_supersedes_pending_editor_handoff(cx: &mut TestAppContext) {
+        let (reader, visual, _directory) = fixture(cx, ORIGINAL);
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let untouched = input.read_with(visual, |i, _| (i.source_stamp(), i.selected_range()));
+        reader.update_in(visual, |r, window, cx| {
+            r.place_editor_at_reader(
+                input.clone(),
+                (
+                    1,
+                    r.note_canonical_source.clone().unwrap(),
+                    r.note_source.clone(),
+                ),
+                window,
+                cx,
+            );
+            let activation = input.read(cx).search_activation_revision();
+            r.open_find(window, cx);
+            assert!(
+                input.read(cx).search_activation_revision() > activation,
+                "positive control: Find really opened"
+            );
+            input.update(cx, |i, cx| i.close_search(cx));
+            assert!(
+                !input.read(cx).search_session().open,
+                "Find closed before the old placement can complete"
+            );
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |i, _| {
+            assert_eq!((i.source_stamp(), i.selected_range()), untouched, "a completed Find supersedes the old Reader position even without an edit or caret move");
+            assert_eq!(i.value().as_ref(), ORIGINAL);
+        });
+    }
+
+    #[gpui::test]
+    fn issue2484_editor_handoff_preserves_later_sidebar_focus(cx: &mut TestAppContext) {
+        let (reader, visual, _directory) = fixture(cx, ORIGINAL);
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        reader.update_in(visual, |r, window, cx| {
+            r.place_editor_at_reader(
+                input.clone(),
+                (
+                    1,
+                    r.note_canonical_source.clone().unwrap(),
+                    r.note_source.clone(),
+                ),
+                window,
+                cx,
+            );
+            r.focus_sidebar_search(window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(
+                input.read(cx).cursor_position().line,
+                2,
+                "positive control: the Reader-to-editor placement completed"
+            );
+            assert!(
+                r.sidebar_search_focus.is_focused(window),
+                "a late landing must not steal focus from the next action"
+            );
+            assert_eq!(input.read(cx).value().as_ref(), ORIGINAL);
+        });
+    }
+
     #[gpui::test]
     fn theme_changes_reuse_classification_without_editing_source(cx: &mut TestAppContext) {
         let (reader, visual, directory) = fixture(cx, ORIGINAL);

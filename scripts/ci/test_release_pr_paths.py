@@ -1,10 +1,10 @@
-"""PR #2079: beta delivery follows every main push; acceptance has its own schedule."""
+"""Hourly beta delivery has no PR/main push trigger; acceptance keeps its own schedule."""
 from pathlib import Path
 import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS = ['linux-release.yml', 'windows-diagnostic.yml']
+WORKFLOWS = ['linux-release.yml', 'windows-diagnostic.yml', 'macos-release.yml']
 
 
 def triggers(workflow):
@@ -17,15 +17,16 @@ class ReleasePathsTests(unittest.TestCase):
         for workflow in WORKFLOWS:
             with self.subTest(workflow=workflow):
                 self.assertEqual(re.findall(r'^  ([\w_]+):', triggers(workflow), re.M),
-                                 ['push', 'workflow_dispatch'])
+                                 ['schedule', 'workflow_dispatch'])
 
-    def test_every_main_change_reaches_delivery_without_path_filters(self):
+    def test_hourly_delivery_has_no_path_filters(self):
         # Includes UI/docs, packaging, release logic and shared dependencies.
         # PR #2079 deliberately replaced all path-filtered PR builds.
         for workflow in WORKFLOWS:
             with self.subTest(workflow=workflow):
                 events = triggers(workflow)
-                self.assertIn('  push:\n    branches: [main]\n', events)
+                self.assertIn("  schedule:\n    - cron: '17 * * * *'\n", events)
+                self.assertNotIn('  push:', events)
                 self.assertNotRegex(events, r'(?m)^\s+(?:paths|paths-ignore|branches-ignore):')
 
     def test_explicit_source_dispatch_keeps_branch_validation_available(self):
@@ -41,7 +42,7 @@ class ReleasePathsTests(unittest.TestCase):
 
     def test_full_acceptance_schedule_is_separate_from_main_beta(self):
         for workflow in WORKFLOWS:
-            self.assertNotIn('  schedule:', triggers(workflow))
+            self.assertIn("cron: '17 * * * *'", triggers(workflow))
         acceptance = (ROOT / '.forgejo/workflows/ci.yml').read_text()
         self.assertIn("  schedule:\n    - cron: '5 22 * * 2,6'", acceptance)
         self.assertIn('  workflow_dispatch:', acceptance)

@@ -8,6 +8,177 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+#[derive(Debug, PartialEq, Eq)]
+struct WarmCatalogBaseline {
+    requests: usize,
+    catalog: gpui::EntityId,
+    epoch: u64,
+    providers: usize,
+}
+
+fn serve_catalog_snapshot(listener: &TcpListener, counted: &AtomicUsize) {
+    let (mut http, _) = listener.accept().unwrap();
+    http.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(&mut http);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    assert!(line.starts_with("POST /api/auth/websocket-ticket "));
+    loop {
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        if line == "\r\n" {
+            break;
+        }
+    }
+    drop(reader);
+    let body = r#"{"ticket":"catalog-test-ticket"}"#;
+    write!(
+        http,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    drop(http);
+    let (tcp, _) = listener.accept().unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut socket = tungstenite::accept(tcp).unwrap();
+    let request: Value = serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+    assert_eq!(request["tag"], "subscribeServerConfig");
+    counted.fetch_add(1, Ordering::SeqCst);
+    let models: Vec<_> = (0..292)
+        .map(|n| json!({"slug":format!("model-{n}"),"name":format!("Model {n}")}))
+        .collect();
+    socket
+        .send(tungstenite::Message::Text(
+            json!({
+                "_tag":"Chunk",
+                "requestId":"1",
+                "values":[{
+                    "version":1,
+                    "type":"snapshot",
+                    "config":{
+                        "environment":{"environmentId":"qa-a","label":"QA"},
+                        "providers":[{
+                            "enabled":true,
+                            "instanceId":"account-a",
+                            "driver":"codex",
+                            "displayName":"Work",
+                            "models":models
+                        }]
+                    }
+                }]
+            })
+            .to_string()
+            .into(),
+        ))
+        .unwrap();
+    loop {
+        let Ok(message) = socket.read() else {
+            break;
+        };
+        let Some(text) = message.to_text().ok() else {
+            continue;
+        };
+        let value: Value = serde_json::from_str(text).unwrap();
+        match value["_tag"].as_str() {
+            Some("Ping") => {
+                if socket
+                    .send(tungstenite::Message::Text(r#"{"_tag":"Pong"}"#.into()))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Some("Ack") => {}
+            _ => panic!("catalog warmup must never dispatch a thread mutation"),
+        }
+    }
+}
+
+fn warm_catalog_baseline(
+    view: &Entity<ProjectView>,
+    visual: &mut VisualTestContext,
+    requests: &AtomicUsize,
+) -> WarmCatalogBaseline {
+    view.read_with(visual, |view, cx| {
+        let catalog = view
+            .native
+            .catalog
+            .as_ref()
+            .expect("warm picker retains shared catalog");
+        let state = catalog.read(cx);
+        assert!(
+            !state.loading && state.data.is_some() && !view.model_busy,
+            "warmup settled before repeated opens"
+        );
+        WarmCatalogBaseline {
+            requests: requests.load(Ordering::SeqCst),
+            catalog: catalog.entity_id(),
+            epoch: state.epoch,
+            providers: state.data.as_ref().unwrap().providers.as_ptr() as usize,
+        }
+    })
+}
+
+fn check_warm_picker_open(
+    view: &Entity<ProjectView>,
+    visual: &mut VisualTestContext,
+    requests: &AtomicUsize,
+    baseline: &WarmCatalogBaseline,
+) -> Result<(), String> {
+    if visual.debug_bounds("project-model-choice-1").is_none() {
+        return Err("usable model rows, not just a spinner, are painted".into());
+    }
+    let actual_requests = requests.load(Ordering::SeqCst);
+    if actual_requests != baseline.requests {
+        return Err(format!(
+            "warm picker open sent extra server request: expected {}, got {actual_requests}",
+            baseline.requests
+        ));
+    }
+    let (catalog_id, epoch, loading, model_busy, providers) = view.read_with(visual, |view, cx| {
+        let catalog = view
+            .native
+            .catalog
+            .as_ref()
+            .expect("warm picker retains shared catalog");
+        let state = catalog.read(cx);
+        let providers = state
+            .data
+            .as_ref()
+            .map(|snapshot| snapshot.providers.as_ptr() as usize)
+            .unwrap_or(0);
+        (
+            catalog.entity_id(),
+            state.epoch,
+            state.loading,
+            view.model_busy,
+            providers,
+        )
+    });
+    if catalog_id != baseline.catalog {
+        return Err("warm picker replaced shared catalog entity".into());
+    }
+    if epoch != baseline.epoch || loading || model_busy || providers != baseline.providers {
+        return Err(format!(
+            "warm picker refetched or rebuilt catalog: epoch={epoch} (expected {}), loading={loading}, model_busy={model_busy}",
+            baseline.epoch
+        ));
+    }
+    Ok(())
+}
+
+fn assert_warm_picker_open(
+    view: &Entity<ProjectView>,
+    visual: &mut VisualTestContext,
+    requests: &AtomicUsize,
+    baseline: &WarmCatalogBaseline,
+) {
+    if let Err(error) = check_warm_picker_open(view, visual, requests, baseline) {
+        panic!("{error}");
+    }
+}
+
 #[gpui::test]
 async fn authenticated_warmup_is_shared_and_repeated_picker_opens_read_only_memory(
     cx: &mut TestAppContext,
@@ -19,63 +190,13 @@ async fn authenticated_warmup_is_shared_and_repeated_picker_opens_read_only_memo
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();
     let server = std::thread::spawn(move || {
-        let (mut http, _) = listener.accept().unwrap();
-        http.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut reader = BufReader::new(&mut http);
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        assert!(line.starts_with("POST /api/auth/websocket-ticket "));
-        loop {
-            line.clear();
-            reader.read_line(&mut line).unwrap();
-            if line == "\r\n" {
-                break;
-            }
-        }
-        drop(reader);
-        let body = r#"{"ticket":"catalog-test-ticket"}"#;
-        write!(http,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
-        drop(http);
-        let (tcp, _) = listener.accept().unwrap();
-        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut socket = tungstenite::accept(tcp).unwrap();
-        let request: Value =
-            serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
-        assert_eq!(request["tag"], "subscribeServerConfig");
-        counted.fetch_add(1, Ordering::SeqCst);
-        let models: Vec<_> = (0..292)
-            .map(|n| json!({"slug":format!("model-{n}"),"name":format!("Model {n}")}))
-            .collect();
-        socket.send(tungstenite::Message::Text(json!({"_tag":"Chunk","requestId":"1","values":[{
-            "version":1,"type":"snapshot","config":{"environment":{"environmentId":"qa-a","label":"QA"},
-            "providers":[{"enabled":true,"instanceId":"account-a","driver":"codex","displayName":"Work","models":models}]}
-        }]}).to_string().into())).unwrap();
-        loop {
-            let Ok(message) = socket.read() else {
-                break;
-            };
-            let Some(text) = message.to_text().ok() else {
-                continue;
-            };
-            let value: Value = serde_json::from_str(text).unwrap();
-            match value["_tag"].as_str() {
-                Some("Ping") => {
-                    if socket
-                        .send(tungstenite::Message::Text(r#"{"_tag":"Pong"}"#.into()))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Some("Ack") => {}
-                _ => panic!("catalog warmup must never dispatch a thread mutation"),
-            }
-        }
+        serve_catalog_snapshot(&listener, &counted);
         listener.set_nonblocking(true).unwrap();
         assert!(
             listener.accept().is_err(),
             "open/close sent another transport request"
         );
+        listener
     });
     let temp = tempfile::tempdir().unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
@@ -117,6 +238,8 @@ async fn authenticated_warmup_is_shared_and_repeated_picker_opens_read_only_memo
         1,
         "positive control: authenticated warmup reached the server"
     );
+    let baseline = warm_catalog_baseline(&view, visual, &requests);
+    assert_eq!(baseline.epoch, 1, "warmup completed in one catalog epoch");
     let mut timings = Vec::new();
     for _ in 0..10 {
         let trigger = visual.debug_bounds("project-manager-model").unwrap();
@@ -127,12 +250,8 @@ async fn authenticated_warmup_is_shared_and_repeated_picker_opens_read_only_memo
             visual.debug_bounds("project-model-choice-1").is_some(),
             "usable model rows, not just a spinner, are painted"
         );
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed < Duration::from_millis(300),
-            "warm rendered picker readiness: {elapsed:?}"
-        );
-        timings.push(elapsed.as_millis());
+        assert_warm_picker_open(&view, visual, &requests, &baseline);
+        timings.push(start.elapsed().as_millis());
         view.update(visual, |view, cx| {
             view.model_open = false;
             cx.notify();
@@ -145,9 +264,65 @@ async fn authenticated_warmup_is_shared_and_repeated_picker_opens_read_only_memo
         1,
         "ten open/close interactions sent zero RPC"
     );
+    view.update(visual, |view, cx| {
+        view.native
+            .catalog
+            .as_ref()
+            .unwrap()
+            .update(cx, |catalog, _| {
+                catalog.worker.take();
+                catalog.cancel.take().unwrap().cancel();
+            });
+    });
+    let listener = server.join().unwrap();
+    listener.set_nonblocking(false).unwrap();
+    let refetch_counted = requests.clone();
+    let refetch_server = std::thread::spawn(move || {
+        serve_catalog_snapshot(&listener, &refetch_counted);
+    });
+    let trigger = visual.debug_bounds("project-manager-model").unwrap();
+    visual.simulate_click(trigger.center(), Modifiers::default());
+    view.update_in(visual, |view, window, cx| {
+        view.model_request(None, window, cx);
+    });
+    visual.run_until_parked();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_warm_picker_open(&view, visual, &requests, &baseline);
+    }))
+    .expect_err("positive control: forcing a catalog refetch on open must fail the warm-open work assertion");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("warm picker"),
+        "unexpected panic message: {message}"
+    );
+    visual
+        .condition(&view, |view, cx| {
+            let state = view.native.catalog.as_ref().unwrap().read(cx);
+            state.epoch == 2 && !state.loading && requests.load(Ordering::SeqCst) == 2
+        })
+        .await;
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_warm_picker_open(&view, visual, &requests, &baseline);
+    }))
+    .expect_err(
+        "positive control: completed refetch on open still fails request/epoch/rebuild assertion",
+    );
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("extra server request"),
+        "unexpected panic message: {message}"
+    );
     view.update(visual, |view, _| view.native.clear());
     visual.run_until_parked();
-    server.join().unwrap();
+    refetch_server.join().unwrap();
 }
 
 #[gpui::test]
