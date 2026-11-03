@@ -66,7 +66,8 @@ impl Fixture<'_> {
     }
     fn focus_text(&mut self) {
         self.reader.update_in(self.visual, |r, window, cx| {
-            r.content.read(cx).focus_handle().focus(window, cx);
+            let focus = r.content.read(cx).focus_handle().clone();
+            focus.focus(window, cx);
         });
     }
     fn palette_copy(&mut self, formatted: bool) {
