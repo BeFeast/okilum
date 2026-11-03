@@ -293,12 +293,15 @@ mod tests {
 
     /// A 1 MiB note of sections: headings, paragraphs, nested lists and code.
     fn large_note() -> String {
+        // Long prose keeps this realistic large note within the classifier's
+        // independent node budget; size alone must not silently imply raw mode.
         let section = |i: usize| {
             format!(
                 "## Section {i}\n\nA paragraph of plain words that wraps in a narrow view, \
-                 number {i}, with **bold** and `code` in it.\nIts second line.\n\n\
+                 number {i}, with **bold** and `code` in it. {}\nIts second line.\n\n\
                  - item {i}\n  - nested {i}\n    - deeper {i}\n\n\
-                 ```rust\nfn f{i}() {{}}\n\nfn g{i}() {{}}\n```\n\n"
+                 ```rust\nfn f{i}() {{}}\n\nfn g{i}() {{}}\n```\n\n",
+                "words ".repeat(1400)
             )
         };
         let mut note = String::from("# Large note\n\n");
@@ -553,6 +556,18 @@ mod tests {
             assert!(
                 frames.iter().all(|frame| !frame.raw),
                 "raw fallback is not projected Live"
+            );
+            assert!(
+                frames.iter().any(|f| !f.edit && f.anchor == "typewriter"),
+                "presentation publications use typewriter with no source edit"
+            );
+            assert!(
+                input.read_with(visual, |i, _| i
+                    .layout_diagnostics()
+                    .unwrap()
+                    .provider_applies
+                    > 1),
+                "the real Reader published replacement classification"
             );
             eprintln!(
                 "WRITING_PROJECTED bytes={} frames={} projection_composes={} max_prepaint_ms={:.3}",
