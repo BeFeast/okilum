@@ -302,17 +302,44 @@ pub(super) fn render_line(
         let body = match expansion(current.imports.tree(), &link).map(|node| &node.result) {
             Some(Ok(imported)) => match current.imported_documents.get(&imported.path) {
                 Some(markdown) => {
-                    let view = reader_plugins(
-                        this.vault_root.clone(),
+                    // Imported documents have navigation and rendering authority,
+                    // never the host Reader's task-editing/query actions.
+                    let link_reader = reader.clone();
+                    let root = this.vault_root.clone();
+                    let view = markdown_plugins(
                         TextView::markdown(
                             SharedString::from(format!("import-body-{id}")),
                             markdown.clone(),
                         ),
-                        reader.clone(),
+                        Arc::new(move |url, _, window, cx| {
+                            handle_link(&link_reader, url, window, cx)
+                        }),
+                        Arc::new(move |url| {
+                            if url == okilum_core::render::UNAVAILABLE_IMAGE {
+                                return Some(MarkdownImage::Unavailable);
+                            }
+                            if let Some(payload) = url.strip_prefix("okilum-drawing-unavailable:") {
+                                return Some(MarkdownImage::DrawingUnavailable(payload.to_owned()));
+                            }
+                            if let Some(path) = url::Url::parse(url)
+                                .ok()
+                                .and_then(|url| url.to_file_path().ok())
+                            {
+                                if okilum_core::excalidraw::is_drawing(&path.to_string_lossy()) {
+                                    Some(MarkdownImage::Drawing(root.clone(), path))
+                                } else {
+                                    Some(MarkdownImage::Source(reader_files::image_source(path)))
+                                }
+                            } else if url.starts_with("https://")
+                                || url.starts_with("http://")
+                                || url.starts_with("data:")
+                            {
+                                Some(MarkdownImage::Source(ImageSource::from(url)))
+                            } else {
+                                None
+                            }
+                        }),
                         SelectionFormat::default(),
-                        this.link_presentations.clone(),
-                        &this.link_identities,
-                        false,
                     );
                     install(view, reader, Some(imported.path.clone()))
                         .style(reader_text_zoom::document_style(cx))
