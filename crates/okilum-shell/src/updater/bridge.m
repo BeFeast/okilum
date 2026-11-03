@@ -568,7 +568,9 @@ static TSTerminationDelegate *TSTermination;
     if ([self.original respondsToSelector:_cmd]) [self.original applicationWillTerminate:notification];
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
-    if (self.verifiedQuit || (!TSDriver.restartReply && !TSDriver.retryTermination && !TSDriver.preparing)) {
+    // Repeated Quit cannot bypass helper cleanup already in progress.
+    if (TSQuitAfterCycle) return NSTerminateCancel;
+    if (self.verifiedQuit || (!TSDriver.restartReply && !TSDriver.retryTermination && !TSDriver.preparing && !TSCancelledCycle)) {
         // Consume approval once, even if the original delegate refuses Quit.
         // Its own NSTerminateLater/reply contract remains its responsibility.
         self.verifiedQuit = NO;

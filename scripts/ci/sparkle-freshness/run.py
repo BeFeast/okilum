@@ -242,7 +242,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             'standard-main': 'EXPECTED observer-incomplete/defaults-missing: Foundation refuses the main bundle id as a suite; never reproduction or CF-readback substitution',
             'explicit-suite-background': 'Regression must install admitted version 4 after observed group0->6 on the unchanged signed feed',
         }
-        ordinary_scenarios = ('mode-background', 'mode-ask', 'mode-off', 'termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
+        ordinary_scenarios = ('mode-background', 'mode-ask', 'mode-off', 'termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'cancel-ready-immediate', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
                          'eligibility-phase-background', 'eligibility-phase-foreground',
                          'eligibility-skip-background', 'eligibility-skip-foreground',
                          'eligibility-major-background', 'eligibility-major-foreground',
@@ -299,7 +299,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
                 'TSTerminationRetry': 'delay' if scenario == 'termination-delayed-retry' else 'refuse' if scenario.startswith('termination-') else '',
                 'TSRetryGuardRefuse': scenario == 'termination-retry-guard-refusal',
-                'TSCancel': scenario.removeprefix('cancel-') if scenario.startswith('cancel-') else '',
+                'TSCancel': 'ready' if scenario == 'cancel-ready-immediate' else scenario.removeprefix('cancel-') if scenario.startswith('cancel-') else '',
+                'TSImmediateQuit': scenario == 'cancel-ready-immediate',
                 'TSTrace': str(trace), 'TSReceipt': str(receipt),
                 'TSPendingFeed': str(case / 'pending.xml'), 'TSFeedPath': str(case / 'appcast.xml'),
                 'TSBeta': scenario != 'stable', 'TSRefuse': scenario in ('guard-refusal', 'quit-guard-refusal'),

@@ -115,6 +115,13 @@ static void Report(int kind, const char *text) {
     if (kind == 7 && (TSDownloadedAdmission || TSPendingAdmission || TSDriver.retryTermination || okilum_updater_ready()
         || okilum_updater_guard_requested() || TSTermination.verifiedQuit)) exit(50);
     Trace([NSString stringWithFormat:@"report %d %s", kind, text ?: ""]);
+    if (kind == 7 && [[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSImmediateQuit"] boolValue]) {
+        // Quit twice before the cancellation callback can return to Sparkle.
+        // This must wait for cycle/helper cleanup, not install the cancelled N.
+        Trace(@"ordinary quit after cancellation");
+        [NSApp terminate:nil]; [NSApp terminate:nil];
+        return;
+    }
     if (kind == 7) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         Trace(@"ordinary quit after cancellation");
         [NSApp terminate:nil];
