@@ -7,32 +7,21 @@ fn settle(visual: &mut VisualTestContext) {
     visual.update(|window, cx| window.draw(cx).clear(cx));
     visual.run_until_parked();
 }
-fn wait_for(
+async fn wait_for(
     visual: &mut VisualTestContext,
     panel: &Entity<Panel>,
     predicate: impl Fn(&Panel) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        settle(visual);
-        // HTTP completion publishes a window before its asynchronous table
-        // filter finishes. Assert labels/rows only after both phases settle.
-        if panel.read_with(visual, |panel, cx| {
-            predicate(panel)
-                && panel
-                    .view
-                    .as_ref()
-                    .is_none_or(|view| !view.read(cx).filtering)
-        }) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "remote worker or table filter did not finish: {}",
-            panel.read_with(visual, |panel, _| panel.message.clone())
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    settle(visual);
+    // Panel notifications acknowledge the real worker reply (and catalog).
+    // The table publishes its result independently: observe that entity too,
+    // rather than polling the panel or treating HTTP completion as row readiness.
+    visual.condition(panel, |panel, _| predicate(panel)).await;
+    // The first worker reply creates the table on the next render.
+    settle(visual);
+    let view = panel.read_with(visual, |panel, _| panel.view.clone().unwrap());
+    visual.condition(&view, |view, _| !view.filtering).await;
+    settle(visual);
 }
 fn click(visual: &mut VisualTestContext, selector: &'static str) {
     settle(visual);
@@ -49,7 +38,7 @@ fn click(visual: &mut VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
-fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigation(
+async fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigation(
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
@@ -94,9 +83,10 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
     });
     wait_for(visual, &panel, |panel| {
         !panel.busy
-            && panel.view.is_some()
+            && panel.data.is_some()
             && panel.guided.catalog.as_ref().is_some_and(Result::is_ok)
-    });
+    })
+    .await;
     let view = panel.read_with(visual, |panel, _| panel.view.clone().unwrap());
     let initial = panel.read_with(visual, |panel, _| panel.data.clone().unwrap());
     assert_eq!(
@@ -130,7 +120,8 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
     settle(visual);
     wait_for(visual, &panel, |panel| {
         !panel.busy && panel.guided.catalog.as_ref().is_some_and(Result::is_ok)
-    });
+    })
+    .await;
     let initial = panel.read_with(visual, |panel, _| panel.data.clone().unwrap());
     let parent_chips = view.read_with(visual, |view, _| view.filter_chips().to_vec());
     click(visual, "log-show-request");
@@ -140,7 +131,8 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
                 .applied
                 .as_ref()
                 .is_some_and(|s| s.discover.filters.len() == 2)
-    });
+    })
+    .await;
     panel.read_with(visual, |panel, cx| {
         let applied = panel.applied.as_ref().unwrap();
         assert_eq!(applied.discover.time, source.discover.time);
@@ -162,7 +154,8 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
                 .applied
                 .as_ref()
                 .is_some_and(|s| s.discover.sort[0].order == "desc")
-    });
+    })
+    .await;
     assert!(panel.read_with(visual, |panel, _| Arc::ptr_eq(
         panel.data.as_ref().unwrap(),
         &initial
@@ -180,7 +173,8 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
                 .applied
                 .as_ref()
                 .is_some_and(|s| s.discover.filters.len() == 2)
-    });
+    })
+    .await;
     // Live keeps a newly added chip and layout, and deduplicates document identities.
     view.update_in(visual, |view, window, cx| {
         view.add_chip(
@@ -198,7 +192,8 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
     });
     wait_for(visual, &panel, |panel| {
         !panel.busy && panel.guided.catalog.as_ref().is_some_and(Result::is_ok)
-    });
+    })
+    .await;
     let chips = view.read_with(visual, |view, _| view.filter_chips().to_vec());
     assert_eq!(
         chips.len(),
@@ -213,7 +208,8 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
     click(visual, "remote-confirm-fixed");
     wait_for(visual, &panel, |panel| {
         !panel.busy && panel.following && panel.data.as_ref().is_some_and(|d| d.events.len() == 102)
-    });
+    })
+    .await;
     panel.read_with(visual, |panel, _| {
         assert_eq!(
             panel
@@ -268,7 +264,7 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
         view.choose_field(None, true, cx);
         view.apply_saved("Request view", window, cx);
     });
-    wait_for(visual, &panel, |panel| !panel.busy);
+    wait_for(visual, &panel, |panel| !panel.busy).await;
     panel.read_with(visual, |panel, cx| {
         assert!(
             panel.error.is_none(),
@@ -278,6 +274,92 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
         assert_eq!(view.read(cx).message_field(cx).as_deref(), Some("details"));
         assert_eq!(view.read(cx).filter_chips(), chips);
         assert_eq!(panel.data.as_ref().unwrap().events.len(), 102);
+    });
+    cx.quit();
+}
+
+// Force the worker/table race without relying on OS scheduling or HTTP timing.
+#[gpui::test]
+async fn remote_replacement_restarts_an_inflight_investigation_filter(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let dir = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_ui_state::install(dir.path(), cx);
+    });
+    let source =
+        Source::direct("Synthetic", "https://logs.example", "events", "@timestamp").unwrap();
+    let initial = Arc::new(
+        EventWindow::new(
+            (0..200)
+                .map(|i| Arc::new(investigation_record(i)))
+                .collect(),
+            &source,
+        )
+        .unwrap(),
+    );
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| reader_log::LogView::remote(initial.clone(), window, cx));
+        entity = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let view = entity.unwrap();
+    settle(visual);
+    let mut source = source;
+    source.discover.filters.push(serde_json::json!({"query":
+        okilum_core::log::correlation::server_query("request-0", "flow")
+    }));
+    let loaded = Arc::new(remote_log::live::Loaded {
+        range: source.discover.time.clone(),
+        window: Arc::new(
+            EventWindow::new(
+                (0..603)
+                    .step_by(6)
+                    .map(|i| Arc::new(investigation_record(i)))
+                    .collect(),
+                &source,
+            )
+            .unwrap(),
+        ),
+        source,
+        more: false,
+        quality: Default::default(),
+    });
+    view.update_in(visual, |view, window, cx| {
+        view.follow_request(
+            okilum_core::log::correlation::RequestId {
+                key: "flow".into(),
+                value: "request-0".into(),
+            },
+            window,
+            cx,
+        );
+        assert!(
+            view.filtering && view.filter_running.is_some(),
+            "positive control: the parent-window filter is still in flight"
+        );
+        let previous = view.filter_running.unwrap();
+        // Deliver the completed remote result before that filter can publish.
+        view.remote_context(loaded.clone(), false, false, cx);
+        view.replace_remote(loaded.window.clone(), cx);
+        assert!(
+            view.filtering && view.filter_running.is_some() && !view.filter_again,
+            "replacement must own a runnable filter, not wait on its cancelled predecessor"
+        );
+        assert_ne!(view.filter_running, Some(previous));
+        assert!(view
+            .investigation_label()
+            .unwrap()
+            .starts_with("Filtering loaded rows"));
+    });
+    visual.condition(&view, |view, _| !view.filtering).await;
+    view.read_with(visual, |view, _| {
+        assert_eq!(view.visible_len(), 101);
+        assert!(view
+            .investigation_label()
+            .unwrap()
+            .starts_with("Kibana: 101 events for id request-0 in "));
     });
     cx.quit();
 }
