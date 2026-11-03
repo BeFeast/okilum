@@ -92,6 +92,18 @@ fn issue1588_line_click_and_inline_nested_expansion(cx: &mut TestAppContext) {
         .visual
         .debug_bounds("agent-line-not-an-import.md")
         .is_none());
+    let label = f
+        .visual
+        .debug_bounds("agent-line-imports/rules.md")
+        .unwrap();
+    let disclosure = f
+        .visual
+        .debug_bounds("agent-disclosure-imports/rules.md")
+        .unwrap();
+    assert!(
+        (label.center().y - disclosure.center().y).abs() <= px(4.),
+        "the disclosure and @path are on the same document line"
+    );
     f.click("agent-disclosure-imports/rules.md");
     let line = f
         .visual
