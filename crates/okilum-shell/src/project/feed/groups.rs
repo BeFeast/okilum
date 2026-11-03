@@ -343,7 +343,7 @@ impl Feed {
     }
 
     pub(super) fn grouped_rows(&mut self, fallback: Vec<Row>, cx: &mut Context<Self>) -> Vec<Row> {
-        if self.native_order.is_none() || self.groups.facts.is_empty() {
+        if self.native_order.is_none() {
             return fallback;
         }
         let facts: Vec<_> = self
@@ -351,6 +351,18 @@ impl Feed {
             .iter()
             .filter_map(|position| self.groups.facts.get(position).cloned())
             .collect();
+        // Visibility is not ownership: folded, collapsed and temporarily hidden
+        // groups keep their reading position while their canonical anchor exists.
+        let identities: HashSet<_> = facts
+            .iter()
+            .filter(|row| matches!(row.kind, plan::RowKind::Work(_)))
+            .map(plan::GroupKey::for_row)
+            .collect();
+        self.groups.nested.retain(|key, _| identities.contains(key));
+        self.groups
+            .expansion
+            .groups
+            .retain(|key| identities.contains(key));
         #[cfg(test)]
         {
             self.groups.replans += 1;
@@ -960,6 +972,104 @@ mod tests {
     }
 
     #[gpui::test]
+    fn canonical_removal_retires_nested_entities_but_folds_retain_them(cx: &mut TestAppContext) {
+        let (feed, visual) = fixture(cx, vec![row("initial", 0, "command_execution")], "running");
+        let mut replaced: Option<WeakEntity<WorkList>> = None;
+        for iteration in 0..12 {
+            let source = row(&format!("replacement-{iteration}"), 0, "command_execution");
+            let key = plan::GroupKey::for_row(&plan::SourceRow {
+                key: source.key.clone(),
+                run: Some(plan::RunKey {
+                    thread: "thread".into(),
+                    id: "run".into(),
+                }),
+                kind: classify(&source.item),
+                streaming: false,
+                started_at: None,
+                ended_at: None,
+            });
+            feed.update(visual, |feed, cx| {
+                feed.groups.expansion.groups.insert(key.clone());
+                feed.apply_native(
+                    Changes {
+                        reset: true,
+                        order: Some(vec![source.key.clone()]),
+                        rows: vec![source.clone()],
+                        ..Default::default()
+                    },
+                    &[],
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            if let Some(previous) = replaced.take() {
+                assert!(
+                    previous.upgrade().is_none(),
+                    "replacement releases the old WorkList"
+                );
+            }
+            let weak = feed.read_with(visual, |feed, _| {
+                assert_eq!(
+                    feed.groups.nested.len(),
+                    1,
+                    "replacement cannot accumulate entities"
+                );
+                feed.groups.nested[&key].downgrade()
+            });
+            feed.update(visual, |feed, cx| {
+                feed.groups.expansion.groups.remove(&key);
+                feed.replan_groups(cx);
+                assert!(
+                    feed.groups.nested.contains_key(&key),
+                    "collapse retains the entity"
+                );
+                feed.set_timeline_runs("thread", &[run("completed", 1)], None, cx);
+                feed.apply_native(Changes::default(), &[], cx);
+                assert!(
+                    feed.groups.nested.contains_key(&key),
+                    "fold retains the entity"
+                );
+                feed.set_timeline_runs("thread", &[run("running", 1)], Some("run".into()), cx);
+                feed.groups.expansion.groups.insert(key.clone());
+                feed.apply_native(Changes::default(), &[], cx);
+            });
+            assert!(
+                weak.upgrade().is_some(),
+                "positive control: retained entity is alive"
+            );
+            if iteration % 3 == 0 {
+                replaced = Some(weak);
+                continue;
+            }
+            feed.update(visual, |feed, cx| {
+                if iteration % 2 == 0 {
+                    feed.apply_native(
+                        Changes {
+                            removed: vec![source.key.clone()],
+                            order: Some(vec![]),
+                            ..Default::default()
+                        },
+                        &[],
+                        cx,
+                    );
+                } else {
+                    feed.reset(cx);
+                }
+                assert!(feed.groups.nested.is_empty());
+                assert!(feed.groups.expansion.groups.is_empty());
+            });
+            visual.run_until_parked();
+            assert!(
+                weak.upgrade().is_none(),
+                "removal/reset releases the old WorkList"
+            );
+            feed.update(visual, |feed, cx| {
+                feed.set_timeline_runs("thread", &[run("running", 1)], Some("run".into()), cx);
+            });
+        }
+    }
+
+    #[gpui::test]
     fn interrupted_reload_folds_stale_in_progress_tool_rows(cx: &mut TestAppContext) {
         let mut tool = row("stale-tool", 0, "command_execution").as_ref().clone();
         Arc::make_mut(&mut tool.item)["status"] = json!("running");
@@ -1074,9 +1184,10 @@ mod tests {
         server.join().unwrap();
         draw(visual);
         feed.read_with(visual, |feed, _| {
-            assert!(feed
-                .detail_text(1, &feed.messages[&1].text)
-                .contains("NESTED_FULL_END"))
+            assert!(
+                feed.detail_text(1, &feed.messages[&1].text)
+                    .contains("NESTED_FULL_END")
+            )
         });
         nested.read_with(visual,|list,_| {
             assert!(list.remeasures>=2,"member disclosure and actual RPC completion both invalidate nested height");
