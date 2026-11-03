@@ -87,6 +87,17 @@ jobs:
         run: |
           cargo fmt --check
           cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
+      - name: Compare old and fixed concurrent checkpoint GC under parallel load
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: |
+          bash .agent-2449/compare.sh "$PWD/.agent-2449" "$RUNNER_TEMP/issue-2449"
+      - name: Upload issue 2449 stress evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-2449-stress
+          path: ${{ runner.temp }}/issue-2449/
       - name: Run complete okilum-core suite offline
         env:
           CARGO_NET_OFFLINE: 'true'
