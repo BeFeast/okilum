@@ -74,6 +74,9 @@ use okilum_core::source_projection::revision::Text as DraftText;
 
 /// The pause in typing after which an edit is saved (#1353).
 const RECOVERY_PAUSE: std::time::Duration = std::time::Duration::from_millis(300);
+#[cfg(test)]
+thread_local! { static FAIL_AUTOSAVE_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+const AUTOSAVE_START_NOTICE: &str = "Automatic Save couldn’t start. Your edits are still here. Retry Save or keep this window open.";
 const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 /// How every conflict notice starts, so a conflict that went away takes its
 /// notice with it and leaves any other notice alone (#1376).
@@ -1514,10 +1517,21 @@ impl Reader {
             return;
         }
         let text = editing.store.snapshot();
-        let copy = match editing.store.save_copy() {
+        #[cfg(test)]
+        let copy = if FAIL_AUTOSAVE_COPY.with(|fail| fail.replace(false)) {
+            Err(anyhow::anyhow!("Injected save-copy failure"))
+        } else {
+            editing.store.save_copy()
+        };
+        #[cfg(not(test))]
+        let copy = editing.store.save_copy();
+        let copy = match copy {
             Ok(copy) => copy,
             Err(error) => {
+                editing.save_failed = true;
+                self.link_notice = Some(AUTOSAVE_START_NOTICE.into());
                 eprintln!("Autosave could not start: {error:#}");
+                cx.notify();
                 return;
             }
         };
@@ -5776,6 +5790,25 @@ mod autosave_tests {
             assert_eq!(r.link_notice.as_deref(), Some(DRAFT_WRITE_NOTICE));
         });
         std::fs::remove_dir(&journal).unwrap();
+        f.reader
+            .update_in(visual, |r, _, cx| assert!(r.save_source(cx)));
+        assert_eq!(on_disk(&f), "latestbase");
+    }
+
+    #[gpui::test]
+    fn issue2404_save_worker_start_failure_is_visible_and_explicit_save_retries(
+        cx: &mut TestAppContext,
+    ) {
+        let (f, visual) = open(cx, "base");
+        type_at_start(&f, visual, "latest");
+        wait(visual, 350);
+        FAIL_AUTOSAVE_COPY.with(|fail| fail.set(true));
+        wait(visual, 800);
+        f.reader.read_with(visual, |r, _| {
+            assert!(r.editing.as_ref().unwrap().save_failed);
+            assert_eq!(r.link_notice.as_deref(), Some(AUTOSAVE_START_NOTICE));
+        });
+        assert_eq!(on_disk(&f), "base", "failed worker never published");
         f.reader
             .update_in(visual, |r, _, cx| assert!(r.save_source(cx)));
         assert_eq!(on_disk(&f), "latestbase");
