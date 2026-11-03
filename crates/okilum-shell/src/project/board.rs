@@ -54,6 +54,8 @@ pub(crate) struct Board {
     pub(in crate::project) render_calls: std::cell::Cell<usize>,
     #[cfg(test)]
     pub(in crate::project) frame_work: std::cell::RefCell<Vec<usize>>,
+    #[cfg(test)]
+    pub(in crate::project) frame_layout_work: std::cell::RefCell<Vec<usize>>,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -165,6 +167,8 @@ impl Board {
             render_calls: std::cell::Cell::new(0),
             #[cfg(test)]
             frame_work: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
+            frame_layout_work: std::cell::RefCell::new(Vec::new()),
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1051,6 +1055,7 @@ impl Render for Board {
         {
             self.render_calls.set(self.render_calls.get() + 1);
             self.frame_work.borrow_mut().push(0);
+            self.frame_layout_work.borrow_mut().push(0);
         }
         if self.local_editor.is_some() {
             return self.render_local_management(window, cx);
@@ -1252,8 +1257,9 @@ impl Render for Board {
                         .child("No cards"),
                 );
             }
+            let mut cards = Vec::new();
             for scope in scopes {
-                lane = lane.child(virtual_cards::Card::issue(
+                cards.push(virtual_cards::Card::issue(
                     &cx.entity(),
                     scope,
                     column,
@@ -1262,11 +1268,14 @@ impl Render for Board {
                 ));
             }
             for card in local_cards {
-                lane = lane.child(virtual_cards::Card::local(
+                cards.push(virtual_cards::Card::local(
                     &cx.entity(),
                     card,
                     self.selected_local.as_ref() == Some(&card.id),
                 ));
+            }
+            if !cards.is_empty() {
+                lane = lane.child(virtual_cards::Lane::new(column, cards));
             }
             if column == Column::Queue {
                 lane = lane.child(self.add_card_button(cx));

@@ -667,6 +667,9 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             draft_before
         );
     });
+    // Composer Undo retains the cached Board scene; collect fresh selectors.
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
     let note = visual.debug_bounds("board-note-open-0").unwrap();
     visual.simulate_click(note.center(), Modifiers::default());
     visual.run_until_parked();

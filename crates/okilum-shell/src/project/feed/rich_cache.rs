@@ -37,7 +37,7 @@ mod tests {
         changed.update(cx, |state, cx| state.select_all(cx));
         assert_eq!(
             changed.read_with(cx, |state, _| state.selected_text()),
-            "Revised source"
+            "Revised source\n"
         );
         for i in 0..CAPACITY * 3 {
             cx.update(|cx| cache.prepare(("other", i).into(), format!("Message {i}").into(), cx));

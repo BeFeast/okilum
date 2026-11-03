@@ -122,6 +122,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         board.read_with(visual, |board, _| {
             board.card_calls.set(0);
             board.frame_work.borrow_mut().clear();
+            board.frame_layout_work.borrow_mut().clear();
         });
         feed.read_with(visual, |feed, _| feed.row_calls.set(0));
         visual.simulate_event(gpui::ScrollWheelEvent {
@@ -161,6 +162,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         board.read_with(visual, |board, _| {
             board.card_calls.set(0);
             board.frame_work.borrow_mut().clear();
+            board.frame_layout_work.borrow_mut().clear();
         });
         feed.read_with(visual, |feed, _| feed.row_calls.set(0));
         visual.simulate_mouse_move(
@@ -175,7 +177,16 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
                     && board.frame_work.borrow().iter().all(|count| *count <= 64),
                 "each splitter frame must rebuild a viewport, not all 240 cards: {:?}",
                 board.frame_work.borrow()
-            )
+            );
+            assert!(
+                board
+                    .frame_layout_work
+                    .borrow()
+                    .iter()
+                    .all(|count| *count <= 64),
+                "offscreen cards must share spacers rather than one layout node per card: {:?}",
+                board.frame_layout_work.borrow()
+            );
         });
         feed.read_with(visual, |feed, _| {
             assert!(
