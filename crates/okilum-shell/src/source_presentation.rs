@@ -1378,6 +1378,58 @@ mod tests {
     }
 
     #[test]
+    fn issue1588_import_blocks_are_opt_in_revision_bound_and_editable_at_caret() {
+        let original = source("@rules.md\n\n```text\n@excluded.md\n```\n\nend");
+        let provider = CachedProvider::classify(original.clone());
+        let compose = |snapshot: &SourceSnapshot, active: &ActiveSource, enabled| {
+            provider
+                .compose_with_syntax(snapshot, active, None, CODE_FONT, None, enabled)
+                .unwrap()
+        };
+        let has_import = |projection: &Arc<dyn SourceProjection>| {
+            projection
+                .blocks()
+                .iter()
+                .any(|block| block.source == (SourceByte(0)..SourceByte(9)))
+        };
+        let decorated = compose(&original, &inactive(&original), true);
+        assert!(
+            has_import(&decorated),
+            "positive control: directive is a rendered document block"
+        );
+        assert!(
+            !decorated
+                .blocks()
+                .iter()
+                .any(|block| block.source.start.0 == 19),
+            "fenced examples are not imports"
+        );
+        assert!(
+            !has_import(&compose(&original, &inactive(&original), false)),
+            "ordinary documents retain stock projection"
+        );
+        assert!(
+            !has_import(&compose(&original, &ActiveSource::default(), true)),
+            "caret exposes exact editable source"
+        );
+        let changed = SourceSnapshot {
+            stamp: SourceStamp {
+                generation: original.stamp.generation + 1,
+                ..original.stamp
+            },
+            text: original
+                .text
+                .as_ref()
+                .replace("@rules.md", "@other.md")
+                .into(),
+        };
+        assert!(
+            !has_import(&compose(&changed, &inactive(&changed), true)),
+            "unclassified same-length edits cannot reuse directive ranges"
+        );
+    }
+
+    #[test]
     fn large_prose_punctuation_uses_retained_canonical_boundaries() {
         for bytes in [130 * 1024, source_classifier::MAX_BYTES] {
             let line = format!(
