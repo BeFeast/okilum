@@ -1717,7 +1717,7 @@ struct Reader {
     quick_folder_refreshes: std::collections::BTreeMap<String, Arc<()>>,
     watcher_generation: u64,
     /// The independent selected-document watcher owns current canonical source.
-    open_note_watch: Option<(PathBuf, String, u64)>,
+    open_note_watch: Option<(PathBuf, String)>,
     watcher_poll_active: bool,
     #[cfg(test)]
     watcher_poll_hold: Option<async_channel::Receiver<()>>,

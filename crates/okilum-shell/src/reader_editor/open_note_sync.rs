@@ -104,13 +104,12 @@ fn affects_file(event: &notify::Event, path: &Path) -> bool {
 
 impl Reader {
     pub(crate) fn has_open_note_watch(&self) -> bool {
+        // Navigation guards each callback; the OS subscription owns a path.
+        // A same-document render advances navigation too, without replacing
+        // that subscription or revoking its authority to reread current bytes.
         self.open_note_watch
             .as_ref()
-            .is_some_and(|(root, rel, navigation)| {
-                *root == self.vault_root
-                    && *rel == self.current_rel
-                    && *navigation == self.navigation.generation
-            })
+            .is_some_and(|(root, rel)| *root == self.vault_root && *rel == self.current_rel)
     }
 
     pub(crate) fn watch_open_note(&mut self, cx: &mut Context<Self>) {
@@ -163,11 +162,8 @@ impl Reader {
                         let _ = this.update(cx, |reader, cx| {
                             if Selection::current(reader).as_ref() == Some(&selection) {
                                 if active && !reader.has_open_note_watch() {
-                                    reader.open_note_watch = Some((
-                                        selection.root.clone(),
-                                        selection.rel.clone(),
-                                        selection.navigation,
-                                    ));
+                                    reader.open_note_watch =
+                                        Some((selection.root.clone(), selection.rel.clone()));
                                 } else if !active {
                                     reader.open_note_watch = None;
                                 }
