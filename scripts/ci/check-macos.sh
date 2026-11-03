@@ -41,12 +41,12 @@ cargo_args=(test --release --locked --target aarch64-apple-darwin)
 # Compile the production binary too: cargo test alone only builds the shell
 # with cfg(test), because this crate has no integration-test targets.
 cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
-# Compile test-only cfg branches and integration tests.
+# Compile every workspace test target, including test-only cfg branches and integration tests.
 # Core and shell tests below select exactly this package pair: the same selection
 # unifies the same features (and dev-dependencies), so they reuse these binaries.
 # Selecting one package at a time rebuilt core and shell, about 7 minutes per PR.
 SHARED=(-p okilum-core -p okilum-shell)
-cargo "${cargo_args[@]}" "${SHARED[@]}" --no-run
+cargo "${cargo_args[@]}" --workspace --no-run
 
 run_tests() {
     local package="$1" target="$2" filter="$3"
@@ -201,3 +201,8 @@ run_tests okilum-shell --bins reader_deleted_note::tests::
 run_tests okilum-shell --bins reader_update_restart::tests::
 run_tests okilum-shell --bins reader_editor::tests::update_install_post_verification_protects_latest_edits_and_refuses_failure --exact
 run_tests okilum-shell --bins reader_editor::tests::update_restart_refuses_unprotected_single_file_then_preserves_latest_draft --exact
+
+# #2442: release-profile dependency fixtures and Sync macro imports must also run.
+run_tests okilum-shell --bins reader_log_remote::
+run_tests okilum-shell --bins reader_settings_sync::
+run_tests okilum-core --lib capture_attachments::tests::receipt_lookup_bounds_and_exact_ledger_binding_fail_closed --exact

@@ -49,6 +49,12 @@ jobs:
         name: windows-icon
         path: target/windows-dist
     - run: bash scripts/vendor-setup.sh
+    - name: Compile all Windows workspace test targets
+      shell: pwsh
+      run: |
+        $env:OKILUM_WINDOWS_ICON = Join-Path $env:GITHUB_WORKSPACE 'target/windows-dist/okilum.ico'
+        cargo test --locked --workspace --no-run
+        exit $LASTEXITCODE
     - name: Run Windows clipboard provider regression
       shell: pwsh
       run: |

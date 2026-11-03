@@ -2306,12 +2306,10 @@ mod tests {
             .contains("exceeds bounds"));
         std::fs::write(&plan_path, &saved_plan).unwrap();
         std::fs::remove_file(&aggregate).unwrap();
-        rustix::fs::mknodat(
+        rustix::fs::mkfifoat(
             rustix::fs::CWD,
             &aggregate,
-            rustix::fs::FileType::Fifo,
             rustix::fs::Mode::from_raw_mode(0o600),
-            0,
         )
         .unwrap();
         assert!(recover_receipt(&root, &records, &draft.id)

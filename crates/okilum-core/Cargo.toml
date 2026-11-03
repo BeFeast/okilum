@@ -7,6 +7,8 @@ license = "MIT"
 [features]
 default = ["brain"]
 brain = ["dep:tar"]
+# Synthetic loopback fixtures for dependent crates, including release-profile tests.
+test-support = []
 
 [dependencies]
 anyhow.workspace = true

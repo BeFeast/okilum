@@ -3,7 +3,7 @@
 //! from event timestamps, bounded compatibility checks, or history pagination.
 pub mod chips;
 pub mod discover;
-#[cfg(any(test, debug_assertions))]
+#[cfg(any(test, debug_assertions, feature = "test-support"))]
 #[doc(hidden)]
 pub mod fake;
 pub mod link;
@@ -153,10 +153,10 @@ impl Source {
 fn default_time_field() -> String {
     "@timestamp".into()
 }
-/// Release builds require HTTPS. Debug/test HTTP is restricted to literal loopback IPs.
+/// Production release builds require HTTPS. Test/debug HTTP requires literal loopback IPs.
 pub(crate) fn valid_endpoint_scheme(url: &url::Url) -> bool {
     url.scheme() == "https"
-        || (cfg!(any(test, debug_assertions))
+        || (cfg!(any(test, debug_assertions, feature = "test-support"))
             && url.scheme() == "http"
             && url
                 .host_str()

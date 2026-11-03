@@ -1,5 +1,6 @@
 //! Synthetic loopback Kibana for protocol tests and debug-build GUI QA.
-//! This module is excluded from release builds. It never reads external files.
+//! Shipping release builds exclude it; dependent tests opt in with `test-support`.
+//! It never reads external files.
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
