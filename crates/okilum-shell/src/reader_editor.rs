@@ -2291,7 +2291,7 @@ impl Reader {
         match result {
             Ok(()) => {
                 editing.conflict_copy = Some((stamp, rel.clone()));
-                self.link_notice = Some(format!("{CONFLICT_NOTICE} Both versions are kept. Your version was saved as {rel}. The incoming file is unchanged; compare or reload to continue.").into());
+                self.link_notice = Some(format!("{CONFLICT_NOTICE} Both versions are kept. Your version was saved as {rel}. The incoming file is unchanged. Compare versions or Reload to continue.").into());
                 self.queue_vault_mutation(
                     okilum_core::Changes {
                         changed: [rel].into(),
