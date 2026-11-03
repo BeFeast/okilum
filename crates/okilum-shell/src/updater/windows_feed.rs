@@ -134,6 +134,19 @@ mod tests {
             may_apply_at_start(Some(&hash), Some(&verified), false),
             "positive control: staged package is channel-verified"
         );
+        assert!(
+            !crate::updater::apply_pending_at_start(),
+            "a verified pending package needs Restart now even without a live primary"
+        );
+        velopack::VelopackApp::build()
+            .set_locator(locator.clone())
+            .set_auto_apply_on_startup(crate::updater::apply_pending_at_start())
+            .run();
+        assert_eq!(
+            std::fs::read_to_string(&manifest_path).unwrap(),
+            manifest("1.0.0")
+        );
+        assert!(manager.get_update_pending_restart().is_some());
         let first = StartupReservation::reserve(state.clone()).unwrap();
         assert!(first.allows_auto_apply());
         std::fs::write(state.join("windows-update-verified"), &verified).unwrap();

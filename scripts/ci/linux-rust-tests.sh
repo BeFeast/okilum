@@ -10,6 +10,7 @@ suite() {
     "$@" || failed=1
 }
 suite cargo test -p okilum-appimage --all-features --no-fail-fast
+suite cargo test --locked -p okilum-http --features updates --no-fail-fast
 # Run the source/input acceptance groups independently, so an unrelated native
 # task abort cannot hide their verdict behind an unfinished full shell binary.
 suite cargo test --locked -p okilum-shell --bin okilum source_presentation:: -- --nocapture

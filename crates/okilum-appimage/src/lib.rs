@@ -280,6 +280,56 @@ fn client() -> Result<reqwest::blocking::Client> {
         .build()?)
 }
 fn download(key: &str, path: &Path, limit: u64) -> Result<()> {
+    download_controlled(
+        key,
+        path,
+        limit,
+        &std::sync::atomic::AtomicBool::new(false),
+        |_| {},
+    )
+}
+fn copy_download(
+    mut input: impl std::io::Read,
+    mut output: impl std::io::Write,
+    limit: u64,
+    cancelled: &std::sync::atomic::AtomicBool,
+    progress: impl Fn(u8),
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    let mut count = 0u64;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        ensure!(
+            !cancelled.load(Ordering::Acquire),
+            "Update download cancelled"
+        );
+        let n = input.read(&mut buffer)?;
+        ensure!(
+            !cancelled.load(Ordering::Acquire),
+            "Update download cancelled"
+        );
+        if n == 0 {
+            break;
+        }
+        count += n as u64;
+        ensure!(count <= limit, "Download exceeds size limit");
+        output.write_all(&buffer[..n])?;
+        progress(((u128::from(count) * 100 / u128::from(limit.max(1))).min(100)) as u8);
+    }
+    output.flush()?;
+    Ok(())
+}
+fn download_controlled(
+    key: &str,
+    path: &Path,
+    limit: u64,
+    cancelled: &std::sync::atomic::AtomicBool,
+    progress: impl Fn(u8),
+) -> Result<()> {
+    ensure!(
+        !cancelled.load(std::sync::atomic::Ordering::Acquire),
+        "Update download cancelled"
+    );
     let response = client()?
         .get(format!("{ORIGIN}{key}"))
         .send()?
@@ -293,8 +343,7 @@ fn download(key: &str, path: &Path, limit: u64) -> Result<()> {
         .write(true)
         .mode(0o600)
         .open(path)?;
-    let copied = std::io::copy(&mut response.take(limit + 1), &mut output)?;
-    ensure!(copied <= limit, "Download exceeds size limit");
+    copy_download(response, &mut output, limit, cancelled, progress)?;
     output.sync_all()?;
     Ok(())
 }
@@ -390,6 +439,33 @@ impl Staged {
     pub fn prepare(target: Target, release: Release, beta: bool, gpgv: &Path) -> Result<Self> {
         release.validate(if beta { "beta" } else { "stable" })?;
         Self::prepare_with(target, release, gpgv, KEY, FINGERPRINT, download)
+    }
+    /// Cancellation removes the private unarmed stage and releases its lock.
+    /// Nothing is applied until the separate explicit `arm` operation.
+    pub fn prepare_cancellable(
+        target: Target,
+        release: Release,
+        beta: bool,
+        gpgv: &Path,
+        cancelled: &std::sync::atomic::AtomicBool,
+        progress: impl Fn(u8),
+    ) -> Result<Self> {
+        release.validate(if beta { "beta" } else { "stable" })?;
+        let image_key = release.key.clone();
+        Self::prepare_with(
+            target,
+            release,
+            gpgv,
+            KEY,
+            FINGERPRINT,
+            |key, path, limit| {
+                download_controlled(key, path, limit, cancelled, |percent| {
+                    if key == image_key {
+                        progress(percent);
+                    }
+                })
+            },
+        )
     }
     fn prepare_with(
         target: Target,
@@ -791,6 +867,53 @@ mod tests {
             "fingerprint":FINGERPRINT,"provenance_sha256":"c".repeat(64)
         }))
         .unwrap()
+    }
+    #[test]
+    fn cancelled_stream_drops_unarmed_stage_releases_lock_and_can_retry() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("Okilum.AppImage");
+        fs::write(&original, b"original executable").unwrap();
+        fs::set_permissions(&original, fs::Permissions::from_mode(0o700)).unwrap();
+        let token = AtomicBool::new(false);
+        let calls = std::cell::Cell::new(0);
+        let stage = Staged::prepare_with(
+            Target::open(&original).unwrap(),
+            release(),
+            Path::new("unused-gpgv"),
+            KEY,
+            FINGERPRINT,
+            |_, path, limit| {
+                calls.set(calls.get() + 1);
+                let output = File::create(path)?;
+                copy_download(
+                    std::io::Cursor::new(vec![42; 200_000]),
+                    output,
+                    limit.max(200_000),
+                    &token,
+                    |_| token.store(true, Ordering::Release),
+                )
+            },
+        );
+        assert!(stage.is_err());
+        assert_eq!(calls.get(), 1, "positive control: the payload transfer ran");
+        assert!(
+            private_stages(dir.path()).unwrap().is_empty(),
+            "partial stage removed"
+        );
+        assert_eq!(fs::read(&original).unwrap(), b"original executable");
+        drop(update_lock(&original).expect("cancel releases the installation lock"));
+        token.store(false, Ordering::Release);
+        let mut output = Vec::new();
+        copy_download(
+            std::io::Cursor::new(b"retry"),
+            &mut output,
+            5,
+            &token,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(output, b"retry");
     }
     #[test]
     fn channel_switch_never_replaces_an_equal_or_newer_install() {

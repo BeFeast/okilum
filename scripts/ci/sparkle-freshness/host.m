@@ -100,8 +100,18 @@ extern void fixture_record_report(int kind);
 extern bool fixture_about_retry_enabled(void);
 static BOOL TSFirstTerminationResolved;
 static BOOL TSRetryClicked;
+static BOOL TSModeOfferSeen;
 static void Report(int kind, const char *text) {
     fixture_record_report(kind);
+    NSNumber *mode = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSMode"];
+    if (kind == 1 && mode && mode.intValue != 0 && !TSModeOfferSeen) {
+        TSModeOfferSeen = YES;
+        Trace(@"mode available without download");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            if (TSDriver.preparing || TSDriver.restartReply || TSGuardRequested) exit(70);
+            [NSApp terminate:nil];
+        });
+    }
     if (kind == 7 && (TSDownloadedAdmission || TSPendingAdmission || TSDriver.retryTermination || okilum_updater_ready()
         || okilum_updater_guard_requested() || TSTermination.verifiedQuit)) exit(50);
     Trace([NSString stringWithFormat:@"report %d %s", kind, text ?: ""]);
@@ -354,6 +364,15 @@ static void FinishComparison(void) {
         Trace(@"published while ready");
     }
     if (TSCompare) return;
+    if ([NSBundle.mainBundle objectForInfoDictionaryKey:@"TSMode"]) {
+        Trace(@"mode ready awaiting explicit restart");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            if (TSGuardRequested || ![NSBundle.mainBundle.infoDictionary[@"CFBundleVersion"] isEqualToString:@"1"]) exit(71);
+            Trace(@"mode explicit restart clicked");
+            if (!okilum_updater_restart()) exit(72);
+        });
+        return;
+    }
     if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSCancel"] isEqualToString:@"ready"]) {
         okilum_updater_cancel();
         return;
@@ -474,11 +493,17 @@ int main(void) {
             }
         }
         ArmWindowProbe(bundle);
+        NSNumber *mode = [bundle objectForInfoDictionaryKey:@"TSMode"];
+        if (mode) okilum_updater_set_mode(mode.intValue);
         TSStart(bundle, [TestDriver new], [TestUpdaterDelegate new]);
         if (RotatesGroup()) TSProbe = [TestFreshnessProbe new];
-        if (TSUpdater.automaticallyDownloadsUpdates || !TSUpdater.automaticallyChecksForUpdates) return 32;
-        TSInstallRequested = !TSCompare && ![[bundle objectForInfoDictionaryKey:@"TSDiscovery"] boolValue]; // explicit About Install intent
-        if (TSCompare && !TSComparisonForeground) [TSUpdater checkForUpdateInformation];
+        if (TSUpdater.automaticallyDownloadsUpdates || (TSUpdater.automaticallyChecksForUpdates != (!mode || mode.intValue != 2))) return 32;
+        TSInstallRequested = !mode && !TSCompare && ![[bundle objectForInfoDictionaryKey:@"TSDiscovery"] boolValue]; // explicit About Install intent
+        if (mode) {
+            Trace(mode.intValue == 2 ? @"mode off manual check" : @"mode scheduled discovery");
+            if (!okilum_updater_check(mode.intValue == 0)) return 73;
+        }
+        else if (TSCompare && !TSComparisonForeground) [TSUpdater checkForUpdateInformation];
         else if ([[bundle objectForInfoDictionaryKey:@"TSBackgroundInstall"] boolValue]) [TSUpdater checkForUpdatesInBackground];
         else [TSUpdater checkForUpdates];
         [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer *timer) {

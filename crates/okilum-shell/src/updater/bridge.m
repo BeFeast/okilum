@@ -197,6 +197,8 @@ static NSString *TSCycleFailure;
 static BOOL TSGuardRequested;
 static BOOL TSManualCheck;
 static BOOL TSInstallRequested;
+static BOOL TSBackgroundDownloads;
+static BOOL TSAutomaticChecks = YES;
 static BOOL TSCancelledCycle;
 static BOOL TSScheduledCheckSkipped;
 static BOOL TSReplacingUpdate(void);
@@ -394,8 +396,9 @@ static TSTerminationDelegate *TSTermination;
     [self presentUpdate:item state:state reply:reply];
 }
 - (void)presentUpdate:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
-    // An explicit Install intent survives supersession, not a user cancellation.
-    if ((self.replacing || TSInstallRequested) && !item.informationOnlyUpdate && !item.majorUpgrade
+    // Background mode uses this same silent download/Ready path as an explicit
+    // Download click. The Ready continuation is never consumed automatically.
+    if ((self.replacing || TSInstallRequested || TSBackgroundDownloads) && !item.informationOnlyUpdate && !item.majorUpgrade
         && item.signingValidationStatus != SPUAppcastSigningValidationStatusFailed) {
         self.replacing = NO;
         TSInstallRequested = NO;
@@ -442,6 +445,12 @@ static TSTerminationDelegate *TSTermination;
 }
 - (void)showReadyToInstallAndRelaunch:(void (^)(SPUUserUpdateChoice))reply {
     self.restartReply = reply;
+    if (self.quitReply) {
+        // Quit during extraction waits for Sparkle's cancellable Ready boundary.
+        // Skip removes the prepared installer before ordinary shutdown.
+        void (^quit)(BOOL) = self.quitReply; self.quitReply = nil;
+        [self cancel]; quit(YES); return;
+    }
     self.verifying = YES;
     NSUInteger generation = self.generation;
     TSSend(4, nil);
@@ -503,10 +512,13 @@ static TSTerminationDelegate *TSTermination;
     });
 }
 - (void)verifyQuit:(void (^)(BOOL))reply {
-    self.quitReply = reply;
-    // A check already running after download/restart also covers this quit.
-    // Its completion must reply to AppKit, never install ahead of verification.
-    if ((self.restartReply || self.retryTermination) && !self.verifying) [self requestRestart];
+    // Ordinary Quit is never installation consent. Cancel download/Ready using
+    // public continuations; extraction completes into the same Skip boundary.
+    if (self.cancellation || self.restartReply) {
+        [self cancel]; reply(YES);
+    } else {
+        self.quitReply = reply;
+    }
 }
 - (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void (^)(void))acknowledgement {
     [self dismissUpdateInstallation];
@@ -530,10 +542,8 @@ static TSTerminationDelegate *TSTermination;
     [super dismissUpdateInstallation];
 }
 @end
-// Sparkle also installs prepared interactive updates on ordinary Quit.
-// Cancel the first Quit while verification runs, then reissue it after the
-// editor guard. NSTerminateLater enters AppKit's modal run loop, which cannot
-// complete verification queued on the main dispatch queue that requested Quit.
+// Sparkle can install a prepared interactive update on ordinary Quit. Cancel
+// that session first, then forward shutdown to GPUI without installation.
 // Forward every other delegate callback unchanged; no GPUI/source patch.
 @implementation TSTerminationDelegate
 - (BOOL)respondsToSelector:(SEL)selector {
@@ -582,6 +592,8 @@ static void TSStart(NSBundle *bundle, TSUserDriver *driver, TSUpdaterDelegate *d
     // Public setting, including existing installs with an older saved value.
     // Stock Sparkle 2.10 clamps scheduling to >=1 hour. Rust also drives silent
     // metadata discovery every 28-32 minutes, without patching that minimum.
+    TSUpdater.automaticallyChecksForUpdates = TSAutomaticChecks;
+    TSUpdater.automaticallyDownloadsUpdates = NO; // use the guarded silent driver
     TSUpdater.updateCheckInterval = 28 * 60 + arc4random_uniform(4 * 60 + 1);
     NSError *error = nil;
     if (![TSUpdater startUpdater:&error]) TSSend(2, error.localizedDescription);
@@ -602,7 +614,7 @@ void okilum_updater_set_automatic_admission(TSAutomaticAdmission admit) { TSAdmi
 
 // False while a check or download session is already running: Sparkle would
 // ignore the probe and never call the delegate.
-bool okilum_updater_check(void) {
+bool okilum_updater_check(bool download) {
     if (!TSUpdater || TSUpdater.sessionInProgress || TSProbe.completion || TSManualCheck) return false;
     TSManualCheck = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -610,18 +622,26 @@ bool okilum_updater_check(void) {
             TSManualCheck = NO;
             if (error && !([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError))
                 TSSend(2, error.localizedDescription);
-            else if (selected) TSSend(1, selected.displayVersionString);
+            else if (selected) {
+                TSSend(1, selected.displayVersionString);
+                if (download) {
+                    TSInstallRequested = YES;
+                    [TSUpdater checkForUpdates];
+                }
+            }
             else TSSend(0, nil);
         }];
     });
     return true;
 }
 
-// Only the explicit About Install action authorizes an initial download.
-void okilum_updater_install(void) {
-    if (TSUpdater.sessionInProgress || TSProbe.completion || TSManualCheck) return;
-    TSInstallRequested = YES;
-    [TSUpdater checkForUpdates];
+// Native scheduling obeys the same durable Rust preference. Sparkle's own
+// automatic installer stays disabled: our silent driver stops at Ready.
+void okilum_updater_set_mode(int mode) {
+    TSBackgroundDownloads = mode == 0;
+    TSAutomaticChecks = mode != 2;
+    TSUpdater.automaticallyChecksForUpdates = TSAutomaticChecks;
+    TSUpdater.automaticallyDownloadsUpdates = NO;
 }
 bool okilum_updater_can_cancel(void) { return TSDriver.cancellation != nil || TSDriver.restartReply != nil; }
 void okilum_updater_cancel(void) { [TSDriver cancel]; }

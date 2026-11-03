@@ -8,8 +8,8 @@ extern "C" {
     fn okilum_updater_set_report(report: extern "C" fn(c_int, *const c_char));
     fn okilum_updater_set_automatic_admission(admit: extern "C" fn(bool) -> bool);
     fn okilum_updater_available() -> bool;
-    fn okilum_updater_check() -> bool;
-    fn okilum_updater_install();
+    fn okilum_updater_check(download: bool) -> bool;
+    fn okilum_updater_set_mode(mode: c_int);
     fn okilum_updater_can_cancel() -> bool;
     fn okilum_updater_cancel();
     fn okilum_updater_restart() -> bool;
@@ -67,23 +67,30 @@ pub(super) fn start() {
     unsafe {
         okilum_updater_set_report(report);
         okilum_updater_set_automatic_admission(admit_automatic);
+        configure_mode();
         okilum_updater_start()
     }
 }
 pub(super) fn available() -> bool {
     unsafe { okilum_updater_available() }
 }
-pub(super) fn check() -> bool {
+pub(super) fn check(download: bool) -> bool {
     // A repeated check must not replace download progress or a ready action.
-    if unsafe { okilum_updater_check() } {
+    if unsafe { okilum_updater_check(download) } {
         status::set(CheckStatus::Checking);
         true
     } else {
         false
     }
 }
-pub(super) fn install() {
-    unsafe { okilum_updater_install() }
+pub(super) fn configure_mode() {
+    unsafe {
+        okilum_updater_set_mode(match super::mode() {
+            super::Mode::Background => 0,
+            super::Mode::Ask => 1,
+            super::Mode::Off => 2,
+        })
+    }
 }
 pub(super) fn beta() -> bool {
     unsafe { okilum_updater_beta() }

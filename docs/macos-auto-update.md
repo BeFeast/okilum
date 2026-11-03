@@ -4,17 +4,25 @@ Okilum updates itself with stock [Sparkle 2](https://sparkle-project.org) (2.10.
 pinned by `scripts/updater/sparkle-lock.json`). The app uses
 `SPUUpdater` with a public custom `SPUUserDriver`; About owns progress, errors,
 Cancel update and Restart now. The metadata/freshness driver is also custom
-and creates no windows. Automatic checks report availability; only an explicit
-About Install action starts downloading. Automatic downloads remain disabled
-so every prepared installation passes [signed freshness and the final Rust editor
-guard](macos-update-freshness.md). The application menu has
-**About Okilum**, **Check for Updates…** and **Receive Beta Builds**. Sparkle also
-uses the public thirty-minute scheduled-check setting with two minutes of
-jitter. Stock Sparkle 2.10 clamps its timer to a minimum of one hour, so the
-shared scheduler also runs its silent metadata probe every 28–32 minutes.
-Window focus and application activation trigger discovery immediately, with a
-shared five-minute automatic-check throttle. These checks preserve the explicit
-Install action and never create Sparkle windows.
+and creates no windows. Settings → Updates offers three persisted modes:
+background download (default), ask before downloading, and Off (manual only).
+The background mode drives the existing silent metadata probe into the custom
+download driver, which stops at Ready. Ask/Off show the available version and a
+Download update button. Sparkle's own automatic installer remains disabled;
+every prepared installation still passes [signed freshness and the final Rust
+editor guard](macos-update-freshness.md) after an explicit Restart now click.
+Ordinary Quit cancels the prepared installation through Sparkle's public Skip
+continuation; quitting during extraction waits for that cancellable boundary.
+
+The application menu has **About Okilum**, **Check for Updates…** and
+**Receive Beta Builds**. Sparkle uses the public thirty-minute scheduled-check
+setting with two minutes of jitter. Stock Sparkle 2.10 clamps its timer to a
+minimum of one hour, so the shared scheduler also runs its silent metadata probe
+every 28–32 minutes. Window focus and application activation trigger discovery
+immediately, with a shared five-minute automatic-check throttle. Off disables
+both native scheduling and the shared automatic gate; explicit checks still
+work. No checks create Sparkle windows. See [update modes](update-modes.md).
+
 
 ## How a build is released
 
