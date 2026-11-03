@@ -145,6 +145,9 @@ class HelperFlowTests(unittest.TestCase):
             for name in ('linux-rust-tests.sh', 'test-nofile.sh'):
                 shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
             (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
+            # Validation-branch-only dependency: preserve this shell-flow mock's
+            # isolation from the real Rust removal-control program.
+            (scripts / 'issue-2427-controls.py').write_text('print("mock removal controls")\n')
             fake = root / 'bin'
             fake.mkdir()
             cargo = fake / 'cargo'
