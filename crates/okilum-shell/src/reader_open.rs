@@ -3487,7 +3487,7 @@ mod entry_tests {
             .unwrap();
         });
         cx.run_until_parked();
-        let source = cx.update(|cx| reader_of(&root, cx).unwrap());
+        let source = cx.update(|cx| reader_of(&root, cx).unwrap().upgrade().unwrap());
         let weak_source = source.downgrade();
         cx.update(|cx| duplicate_window(weak_source, Some("note.md".into()), cx).detach());
         cx.run_until_parked();

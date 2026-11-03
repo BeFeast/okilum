@@ -1672,9 +1672,7 @@ impl Reader {
                 None if edit => self.open_created_note(&note, window, cx),
                 None => self.open_note(&note, None, window, cx),
             }
-        } else if preserve_preview {
-            // Keep the typed viewer entity, including its viewport and filters.
-        } else if let Some(log) = pending.log {
+        } else if let Some(log) = pending.log.filter(|_| !preserve_preview) {
             self.mount_log(log, window, cx);
             // More log files from the command line join the view (#1160).
             let extra = self
@@ -1690,7 +1688,7 @@ impl Reader {
             ) {
                 view.update(cx, |view, cx| view.add_file_paths(extra, cx));
             }
-        } else if let Some(rel) = plain_file {
+        } else if let Some(rel) = plain_file.filter(|_| !preserve_preview) {
             self.preview_file(&rel, window, cx);
         } else if let Some(position) = first_link {
             self.open_first_link(position, window, cx);
@@ -7488,6 +7486,19 @@ impl Reader {
                 note: Some(self.selected_file().to_owned()),
                 single_file: !self.single_file,
                 use_html: self.use_html,
+                index_dir: self
+                    .loading
+                    .as_ref()
+                    .and_then(|load| load.opts.index_dir.clone()),
+                diagnostics: self
+                    .loading
+                    .as_ref()
+                    .and_then(|load| load.opts.diagnostics.clone()),
+                #[cfg(test)]
+                cache_base_override: self
+                    .loading
+                    .as_ref()
+                    .and_then(|load| load.opts.cache_base_override.clone()),
                 ..Default::default()
             },
             window,
