@@ -58,6 +58,61 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           bash scripts/ci/fast-local.sh
 
+  shell-full:
+    # Keep the full runtime suite outside check's unchanged fifteen-minute budget.
+    # Queue after this PR's check and reuse the same independently locked targets.
+    needs: [check]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: fast-linux
+    # Run 20932: test compilation 335s + >394s execution before check timed out.
+    # Give this job the runner's full 20m ceiling; record two loaded runs before
+    # adding its reporting context to main protection (docs/fast-runner.md).
+    timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
+      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+      SCCACHE_S3_USE_SSL: "false"
+      SCCACHE_S3_KEY_PREFIX: rust
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Prepare local Linux toolchain
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          packages=(build-essential cmake pkg-config curl git mold zstd
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
+            libfontconfig-dev libfreetype-dev libxcb1-dev)
+          if ! dpkg-query -W -f='${Status}\n' "${packages[@]}" 2>/dev/null | grep -vFx 'install ok installed' | grep -q . &&
+             dpkg-query -W "${packages[@]}" >/dev/null 2>&1; then
+            echo 'Local build dependencies already installed'
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends "${packages[@]}"
+          fi
+          test -x "$HOME/.cargo/bin/cargo"
+          # Resolve/install the pinned toolchain before the bounded sccache probe.
+          cargo --version
+          rustc --version
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Run the complete Linux shell binary suite
+        env:
+          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          bash scripts/ci/fast-local.sh shell-full
+
   sync-source-sharing:
     # Keep this additional compiler/daemon load outside the bounded desktop gate.
     needs: [check]

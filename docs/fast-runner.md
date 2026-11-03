@@ -129,3 +129,26 @@ config.yml, then start only that service. No daemon-reload is required because
 the unit file is unchanged. Revert this repository change to restore the old
 six-minute workflow budget. Reverting the host ceiling alone while the new
 workflow remains would restore the earlier effective ten-minute ceiling.
+
+## Independent full shell suite (#2415 / #2434)
+
+Run [20932](https://git.oklabs.uk/BeFeast/okilum/actions/runs/20932/jobs/0)
+compiled the shell test binary in 335s after desktop build=88s and workspace
+check=75s. The suite then ran for more than 394s with all reported tests passing
+before the fifteen-minute `check` deadline killed it. The hosted 258.19s runtime
+is from different hardware and cannot size this runner's budget.
+
+`check` retains every pre-#2434 command and its fifteen-minute timeout. The new
+`shell-full` job queues after `check`, owns a separate twenty-minute execution
+budget, and uses the existing fast runner, slot locks, stable sources, compiler
+flags and three compiler workers. Its locked inventory command resolves test
+dependencies even if it gets a different slot; the unfiltered offline test run
+uses four test workers and rejects an empty inventory. Failures propagate to its
+own status. No host setting or nightly/native suite changes.
+
+The initial budget uses the existing twenty-minute runner ceiling, leaving
+471s beyond the observed 335s compilation + 394s incomplete execution. This is
+provisional until two complete normal-load measurements establish the runtime
+and margin. Keep the new status non-required until those successful PR runs;
+record the final measurements and branch-protection decision in PR #2434 and
+issue #2415 before re-enabling auto-merge.

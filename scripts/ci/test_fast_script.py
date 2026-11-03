@@ -45,5 +45,40 @@ class FastScript(unittest.TestCase):
         self.assertNotIn('build_args[@]', (ROOT / 'scripts/ci/fast.sh').read_text())
 
 
+class ShellFullScript(unittest.TestCase):
+    def test_unfiltered_suite_inventory_and_failures(self):
+        for list_status, test_status, empty in [(0, 0, False), (23, 0, False), (0, 41, False), (0, 0, True)]:
+            with self.subTest(list_status=list_status, test_status=test_status, empty=empty), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                (root / 'scripts/ci').mkdir(parents=True)
+                (root / 'bin').mkdir()
+                for name in ['shell-full.sh', 'test-nofile.sh']:
+                    (root / 'scripts/ci' / name).write_text((ROOT / 'scripts/ci' / name).read_text())
+                vendor = root / 'scripts/vendor-setup.sh'
+                vendor.write_text('#!/bin/sh\nexit 0\n')
+                vendor.chmod(0o755)
+                cargo = root / 'bin/cargo'
+                cargo.write_text('''#!/bin/sh
+printf '%s\\n' "$*" >> "$COMMANDS"
+case "$*" in
+    *--list*)
+        if [ "$EMPTY" = 0 ]; then echo 'shell_positive: test'; fi
+        exit "$LIST_STATUS" ;;
+    *) exit "$TEST_STATUS" ;;
+esac
+''')
+                cargo.chmod(0o755)
+                commands = root / 'commands'
+                env = dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
+                           GITHUB_SHA='a' * 40, RUNNER_TEMP=str(root), COMMANDS=str(commands),
+                           LIST_STATUS=str(list_status), TEST_STATUS=str(test_status), EMPTY=str(int(empty)))
+                result = subprocess.run(['bash', 'scripts/ci/shell-full.sh'], cwd=root, env=env, capture_output=True)
+                self.assertEqual(result.returncode, list_status or test_status or int(empty), result.stderr)
+                expected = ['test --locked -p okilum-shell --bin okilum -- --list']
+                if not list_status and not empty:
+                    expected.append('test --offline --locked -p okilum-shell --bin okilum -- --test-threads=4')
+                self.assertEqual(commands.read_text().splitlines(), expected)
+
+
 if __name__ == '__main__':
     unittest.main()

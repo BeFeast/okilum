@@ -68,6 +68,10 @@ struct Panel {
     data: Option<Arc<okilum_core::log::stream::Snapshot>>,
     view: Option<Entity<reader_log::LogView>>,
     factory: worker::Factory,
+    // A mounted scheduler test can hand Start a real worker whose first frame
+    // is already queued, with subsequent polling held until Stop.
+    #[cfg(test)]
+    ready_worker: Option<(worker::Worker, async_channel::Receiver<worker::Frame>)>,
     worker: Option<worker::Worker>,
     events: Option<Task<()>>,
     _load: Task<()>,
@@ -112,6 +116,8 @@ impl Panel {
             data: None,
             view: None,
             factory: worker::factory(),
+            #[cfg(test)]
+            ready_worker: None,
             worker: None,
             events: None,
             _load: load,
@@ -146,7 +152,15 @@ impl Panel {
         self.data = None;
         self.view = None;
         self.active_source = Some(source.clone());
-        let (worker, events) = match worker::Worker::start(source, self.factory.clone()) {
+        #[cfg(test)]
+        let started = self
+            .ready_worker
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| worker::Worker::start(source, self.factory.clone()));
+        #[cfg(not(test))]
+        let started = worker::Worker::start(source, self.factory.clone());
+        let (worker, events) = match started {
             Ok(pair) => pair,
             Err(error) => {
                 self.message = format!("Cannot start: {error}");
