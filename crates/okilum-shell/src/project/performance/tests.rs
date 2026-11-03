@@ -103,6 +103,11 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         "positive control: cached Board retains Manager status/progress publications"
     );
     let feed = project.read_with(visual, |project, _| project.feed.clone());
+    // Native probes settle the pointer before timing. Match that here: GPUI
+    // deliberately refreshes every cached view when keyboard modality changes
+    // back to mouse after the Escape check above.
+    visual.simulate_mouse_move(point(px(1100.), px(400.)), None, Modifiers::default());
+    visual.run_until_parked();
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();
     let history = visual
