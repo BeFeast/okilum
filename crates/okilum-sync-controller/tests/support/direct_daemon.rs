@@ -1,4 +1,6 @@
 //! Disposable Syncthing daemons only; no user inventory, config or lifecycle.
+#[path = "fixture_process.rs"]
+mod fixture_process;
 use anyhow::{ensure, Context, Result};
 use okilum_sync::Syncthing;
 use serde_json::json;
@@ -190,8 +192,9 @@ print(g.find('apikey').text)
         Ok(())
     }
     pub fn start(&mut self) -> Result<()> {
+        self.stop()?;
         let log = fs::File::create(self.home.join("fixture.log"))?;
-        self.child = Some(
+        self.child = Some(fixture_process::spawn(
             Command::new(&self.binary)
                 .env_clear()
                 .args([
@@ -206,17 +209,13 @@ print(g.find('apikey').text)
                 .env("GOMAXPROCS", "2")
                 .env("STMONITORED", "1")
                 .stdout(log.try_clone()?)
-                .stderr(log)
-                .spawn()?,
-        );
+                .stderr(log),
+        )?);
         wait("REST ready", || Ok(self.api.identity().is_ok()))
     }
     pub fn stop(&mut self) -> Result<()> {
         if let Some(mut child) = self.child.take() {
-            if child.try_wait()?.is_none() {
-                child.kill()?;
-            }
-            child.wait()?;
+            fixture_process::stop(&mut child)?;
         }
         Ok(())
     }

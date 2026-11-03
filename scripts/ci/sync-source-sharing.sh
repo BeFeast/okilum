@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Real pinned managed-runtime source sharing; never a system service/user daemon.
 set -euo pipefail
+python3 -m unittest discover -s scripts/ci -p test_sync_fixture_processes.py
+export TMPDIR="${TMPDIR:-${RUNNER_TEMP:?}}"
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/okilum-sync-fixture"
 mkdir -p "$cache"
 archive=syncthing-linux-amd64-v2.1.6.tar.gz
@@ -24,4 +26,5 @@ assert len(matches) == 1, matches
 print(matches[0])
 PYTHON
 )
+python3 scripts/ci/sync-fixture-lifecycle.py "$executable"
 python3 scripts/ci/sync-source-sharing-runs.py "$executable" "$@"
