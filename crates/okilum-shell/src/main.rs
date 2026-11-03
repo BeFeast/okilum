@@ -992,8 +992,12 @@ struct Opts {
 #[derive(Clone)]
 struct LocalImage {
     url: String,
-    caption: String,
     drawing_size: Option<(f32, Option<f32>)>,
+}
+#[derive(Clone)]
+struct LocalImages {
+    images: Vec<LocalImage>,
+    caption: String,
 }
 
 fn mdast_text(node: &markdown_ast::Node, out: &mut String) {
@@ -1432,89 +1436,98 @@ fn markdown_plugins_at(
         let markdown_ast::Node::Paragraph(p) = node else {
             return None;
         };
-        let mut url = None;
-        let mut unavailable = false;
+        let mut images = Vec::new();
         let mut caption = String::new();
-        let mut drawing_size = None;
         for child in &p.children {
             match child {
-                markdown_ast::Node::Image(image) if url.is_none() => {
-                    drawing_size = image.title.as_deref().and_then(reader_drawing::parse_size);
-                    if let Some(image_source) = parse_image(&image.url) {
-                        unavailable = matches!(image_source, MarkdownImage::Unavailable);
-                        url = Some(image.url.clone());
-                    }
+                markdown_ast::Node::Image(image) if parse_image(&image.url).is_some() => {
+                    images.push(LocalImage {
+                        url: image.url.clone(),
+                        drawing_size: image.title.as_deref().and_then(reader_drawing::parse_size),
+                    });
                 }
                 other => caption.push_str(cx.node_source(other)?),
             }
         }
-        let url = url?;
-        let node = MarkdownNode::new(
+        if images.is_empty() {
+            return None;
+        }
+        let mut node = MarkdownNode::new(
             "local-image",
-            LocalImage {
-                url,
-                caption: caption.trim().to_string(),
-                drawing_size,
+            LocalImages {
+                images: images.clone(),
+                caption: caption.trim().to_owned(),
             },
-        );
-        let missing =
-            okilum_core::render::unavailable_target(&node.data::<LocalImage>().unwrap().url)
-                .unwrap_or_default();
-        Some(if unavailable {
-            node.plain_part("status", format!("File not found or ambiguous: {missing}"))
-        } else {
-            node.markdown_part("caption", caption.trim().to_string())
-        })
+        )
+        .markdown_part("caption", caption.trim().to_owned());
+        for (index, image) in images.iter().enumerate() {
+            if matches!(parse_image(&image.url), Some(MarkdownImage::Unavailable)) {
+                let missing =
+                    okilum_core::render::unavailable_target(&image.url).unwrap_or_default();
+                node = node.plain_part(
+                    format!("status-{index}"),
+                    format!("File not found or ambiguous: {missing}"),
+                );
+            }
+        }
+        Some(node)
     })
-    .markdown_block_renderer("local-image", move |node, _window, cx| {
-        match node.data::<LocalImage>() {
-            Some(data) => {
-                match render_image(&data.url) {
-                    Some(MarkdownImage::Drawing(root, path)) => {
-                        return reader_drawing::render(&root, &path, data.drawing_size, _window, cx)
-                    }
-                    Some(MarkdownImage::DrawingUnavailable(payload)) => {
-                        return reader_drawing::unavailable(&payload, cx);
-                    }
-                    _ => {}
+    .markdown_block_renderer("local-image", move |node, window, cx| {
+        let Some(data) = node.data::<LocalImages>() else {
+            return div().into_any_element();
+        };
+        let mut column = v_flex().py_2().gap_1();
+        for (index, image) in data.images.iter().enumerate() {
+            let element = match render_image(&image.url) {
+                Some(MarkdownImage::Drawing(root, path)) => {
+                    reader_drawing::render(&root, &path, image.drawing_size, window, cx)
                 }
-                if let Some(reader) = &image_actions {
-                    if let Some(element) =
-                        reader_image_actions::attachment(reader.clone(), &data.url, live, cx)
-                    {
-                        return element;
-                    }
+                Some(MarkdownImage::DrawingUnavailable(payload)) => {
+                    reader_drawing::unavailable(&payload, cx)
                 }
-                let Some(MarkdownImage::Source(image)) = render_image(&data.url) else {
-                    let element = node.render_part("status", |style| style, _window, cx);
-                    return match &image_actions {
+                _ => {
+                    if let Some(reader) = &image_actions {
+                        if let Some(element) =
+                            reader_image_actions::attachment(reader.clone(), &image.url, live, cx)
+                        {
+                            column = column.child(element);
+                            continue;
+                        }
+                    }
+                    let element = match render_image(&image.url) {
+                        Some(MarkdownImage::Source(source)) => {
+                            reader_image::ReaderImage::new(source)
+                                .with_error_message("File not found or unreadable")
+                                .into_any_element()
+                        }
+                        _ => div()
+                            .debug_selector(|| "live-image-unavailable".into())
+                            .child(node.render_part(
+                                &format!("status-{index}"),
+                                |style| style,
+                                window,
+                                cx,
+                            ))
+                            .into_any_element(),
+                    };
+                    match &image_actions {
                         Some(reader) => reader_image_actions::decorate(
                             reader.clone(),
-                            &data.url,
+                            &image.url,
                             element,
                             live,
                             cx,
                         ),
                         None => element,
-                    };
-                };
-                let mut el = v_flex().py_2().gap_1().child(
-                    reader_image::ReaderImage::new(image)
-                        .with_error_message("File not found or unreadable"),
-                );
-                if !data.caption.is_empty() {
-                    el = el.child(node.render_part("caption", |style| style, _window, cx));
-                }
-                let element = el.into_any_element();
-                match &image_actions {
-                    Some(reader) => {
-                        reader_image_actions::decorate(reader.clone(), &data.url, element, live, cx)
                     }
-                    None => element,
                 }
-            }
-            None => div().into_any_element(),
+            };
+            column = column.child(element);
         }
+        if !data.caption.is_empty() {
+            column = column.child(node.render_part("caption", |style| style, window, cx));
+        }
+        column.into_any_element()
     })
     .markdown_block_parser(move |node, cx| parse_callout(node, cx, fold_base))
     .markdown_block_renderer("callout", move |node, _window, cx| {

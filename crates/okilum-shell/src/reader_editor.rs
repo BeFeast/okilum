@@ -1025,11 +1025,10 @@ impl Reader {
                         .is_none_or(|editing| editing.input.entity_id() != input.entity_id())
                     || input.read(cx).source_stamp() != click.stamp
                     || click.event.button != MouseButton::Left
-                    || !(if cfg!(target_os = "macos") {
-                        click.event.modifiers.platform
-                    } else {
-                        click.event.modifiers.control || click.event.modifiers.platform
-                    })
+                    || !reader_image_actions::open_modifier(
+                        platform::labels::Os::CURRENT,
+                        click.event.modifiers,
+                    )
                 {
                     return;
                 }

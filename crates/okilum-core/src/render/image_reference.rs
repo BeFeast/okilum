@@ -86,7 +86,9 @@ pub fn references(source: &str, vault: &Vault, from: &str) -> Vec<ImageReference
                 .next()
                 .unwrap_or("")
                 .trim();
-            let prepared = preprocess(authored);
+            let prepared = preprocess_with_files(authored, |base| {
+                resolver.resolve(base, true, from).status == "attachment"
+            });
             // Notes and drawings keep their existing, separate interactions.
             if !prepared.starts_with("![](") || crate::excalidraw::is_drawing(base) {
                 continue;
