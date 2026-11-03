@@ -6041,15 +6041,17 @@ mod autosave_tests {
                     other_visual.run_until_parked();
                     sibling_same = other.read_with(other_visual, |r, _| {
                         assert_eq!(
-                            r.note_canonical_source.as_deref().unwrap().len(),
-                            bytes,
-                            "duplicate reader receives the actual edited source"
+                            r.note_canonical_source.as_deref(),
+                            Some(format!("x{}", &source[1..]).as_str()),
+                            "duplicate reader receives the actual edited source, not just its unchanged length"
                         );
                         Arc::ptr_eq(&r.vault, &original)
                     });
+                    other_visual.update(|window, _| window.remove_window());
+                    other_visual.run_until_parked();
                 }
                 let same = f.reader.read_with(visual, |r, cx| {
-                    assert_eq!(on_disk(&f).len(), source.len());
+                    assert_eq!(on_disk(&f), format!("x{}", &source[1..]));
                     assert!(!r.source_is_dirty(cx));
                     assert!(!r.editing.as_ref().unwrap().conflict_detected);
                     Arc::ptr_eq(&original, &r.vault) && sibling_same
@@ -6084,6 +6086,10 @@ mod autosave_tests {
                     "unfired refresh control {control:?}"
                 );
                 println!("EDITOR_SAVE_CONTROL bytes={bytes} shared={shared} measured={control:?}");
+                // Each size owns its windows. Old watcher timers must not join
+                // the next fixture's measured autosave after its vault is gone.
+                visual.update(|window, _| window.remove_window());
+                visual.run_until_parked();
             }
         }
         assert!(
