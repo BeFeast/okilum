@@ -437,6 +437,7 @@ fn opaque_binding_frames_hide_local_paths_usernames_and_raw_identity() -> Result
 fn destination_overlap_is_refused_in_both_directions_before_runtime_access() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let state = temp.path().join("state");
+    let controller = Controller::open(state.clone(), vec![])?;
     fs::create_dir_all(state.join("nested"))?;
     let ordinary = temp.path().join("ordinary");
     fs::create_dir(&ordinary)?;
@@ -444,7 +445,6 @@ fn destination_overlap_is_refused_in_both_directions_before_runtime_access() -> 
     for path in [&state, &state.join("nested"), &temp.path().to_owned()] {
         assert!(disjoint(path, &state).is_err());
     }
-    let controller = Controller::open(state.clone(), vec![])?;
     for path in [&state, &state.join("nested"), &temp.path().to_owned()] {
         let error = controller
             .preview_remote_vault(Uuid::new_v4(), "vault", path)
