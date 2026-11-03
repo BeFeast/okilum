@@ -41,8 +41,16 @@ def stress(binary, name):
     # Pinned GPUI 0.3.3 runs the explicit SEED once, then SEED..SEED+ITERATIONS.
     # Thus each worker proves 51 executions (200 distinct seeds overall).
     # Four independent test processes compete for the hosted runner's four CPUs.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        return list(pool.map(lambda i: run(binary, NAME, f'{name}-{i}', i * 50, 50), range(4)))
+    burners = [subprocess.Popen(['python3', '-c', 'while True: pass']) for _ in range(2)]
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            return list(pool.map(lambda i: run(binary, NAME, f'{name}-{i}', i * 50, 50), range(4)))
+    finally:
+        for process in burners:
+            process.terminate()
+        for process in burners:
+            process.wait()
+
 
 fixed = {p: p.read_bytes() for p in (TESTS, PRODUCT)}
 # Preserve the new deterministic regression, but restore the old end-to-end
@@ -65,7 +73,7 @@ old_results = stress(old, 'old')
 new = build('fixed')
 green = run(new, REGRESSION, 'regression-green', iterations=200)
 new_results = stress(new, 'fixed')
-summary = dict(base=BASE, head=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(), regression_red=red, regression_green=green, old=old_results, fixed=new_results)
+summary = dict(cpu_load_workers=2, parallel_test_workers=4, base=BASE, head=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(), regression_red=red, regression_green=green, old=old_results, fixed=new_results)
 (OUT / 'summary.json').write_text(json.dumps(summary, indent=2))
 print(json.dumps(summary, indent=2), flush=True)
 assert green['code'] == 0 and green['started'] == 201
