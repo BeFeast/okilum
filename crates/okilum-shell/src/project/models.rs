@@ -176,6 +176,16 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Dismissal is local UI state. A send, lost connection or unavailable
+        // catalog must never trap an already-open popup or dispatch a request.
+        if self.model_open
+            && event.keystroke.key == "escape"
+            && event.keystroke.modifiers == gpui::Modifiers::default()
+        {
+            self.close_models(window, cx);
+            cx.stop_propagation();
+            return true;
+        }
         if !self.active || self.busy || !self.can_read_models() {
             return false;
         }
