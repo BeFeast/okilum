@@ -701,11 +701,11 @@ impl Feed {
                 // One reading column and quiet role chrome carry the hierarchy.
                 // The user prompt has a distinct accent surface; assistant prose
                 // stays directly on the shared conversation surface.
-                let body = div()
-                    .block()
+                let body = v_flex()
                     .w_full()
                     .min_w_0()
                     .max_w(px(if message.user { 640. } else { 720. }))
+                    .gap(px(design::GAP * 0.5))
                     .debug_selector(move || format!("project-message-surface-{position}"))
                     .text_color(colors.text)
                     .when(message.user, |row| {
@@ -714,15 +714,12 @@ impl Feed {
                             .bg(colors.accent.opacity(0.08))
                     })
                     .when(!message.user, |row| row.py(px(design::GAP)))
-                    .child(heading.mb(px(design::GAP * 0.5)))
-                    .child(
-                        self.markdown(
-                            ("project-message", position as usize),
-                            message.text.clone(),
-                            cx,
-                        )
-                        .mb(px(design::GAP * 0.5)),
-                    )
+                    .child(heading)
+                    .child(self.markdown(
+                        ("project-message", position as usize),
+                        message.text.clone(),
+                        cx,
+                    ))
                     .child(self.render_attachments(position, cx));
                 v_flex()
                     .id(SharedString::from(format!("project-message-{position}")))

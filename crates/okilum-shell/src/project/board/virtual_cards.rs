@@ -107,10 +107,7 @@ impl Element for Card {
     type RequestLayoutState = AnyElement;
     type PrepaintState = bool;
     fn id(&self) -> Option<ElementId> {
-        // The production card and containing Board lane already own stable
-        // identities. Keep the height-map key without another ancestor in
-        // every descendant's interaction/state lookup path.
-        None
+        Some(self.id.clone())
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
@@ -218,10 +215,7 @@ impl Element for Lane {
     type RequestLayoutState = ();
     type PrepaintState = Vec<AnyElement>;
     fn id(&self) -> Option<ElementId> {
-        // The production card and containing Board lane already own stable
-        // identities. Keep the height-map key without another ancestor in
-        // every descendant's interaction/state lookup path.
-        None
+        Some(self.id.clone())
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
