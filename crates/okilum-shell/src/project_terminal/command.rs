@@ -1,83 +1,227 @@
-//! OS launcher argv. Defaults are data; only an explicit override is shell code.
+//! Pure command derivation and launcher selection. No process is started here.
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Initial {
+    pub argv: Vec<String>,
+    pub directory: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Plan {
     pub program: String,
     pub args: Vec<String>,
 }
-pub fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-pub fn initial(host: Option<&str>, checkout: &str, custom: Option<&str>) -> Result<String, String> {
-    if let Some(custom) = custom.filter(|v| !v.trim().is_empty()) {
-        if custom.contains(['\0', '\n', '\r']) {
-            return Err("Terminal command must be one line".into());
-        }
-        return Ok(custom.to_owned());
+
+/// Overrides use shell-style word quoting, not shell evaluation. In particular,
+/// `$()`, redirects, pipes and semicolons cannot become shell instructions.
+pub fn override_argv(value: &str) -> Result<Vec<String>, String> {
+    if value.contains(['\0', '\n', '\r']) {
+        return Err("Terminal command must be one line".into());
     }
-    if let Some(host) = host {
-        if host.is_empty()
-            || host.starts_with('-')
-            || !host
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || ".:-_".contains(c))
+    let argv = shell_words::split(value).map_err(|_| "Terminal command has unmatched quotes")?;
+    if argv
+        .first()
+        .is_none_or(|v| v.trim().is_empty() || v.starts_with('-'))
+    {
+        return Err("Terminal command needs an executable (for example ssh maestro)".into());
+    }
+    Ok(argv)
+}
+
+fn valid_host(host: &str) -> bool {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        })
+}
+
+pub fn initial(
+    origin: Option<&str>,
+    needs_connection: bool,
+    host_setting: Option<&str>,
+    checkout: &str,
+    custom: Option<&str>,
+) -> Result<Initial, String> {
+    if let Some(custom) = custom.filter(|v| !v.trim().is_empty()) {
+        return Ok(Initial {
+            argv: override_argv(custom)?,
+            directory: None,
+        });
+    }
+    let host = if let Some(host) = host_setting {
+        Some(host.to_owned())
+    } else if let Some(origin) = origin {
+        let url = url::Url::parse(origin).map_err(|_| "T3 address is invalid")?;
+        if !matches!(url.scheme(), "http" | "https")
+            || !url.username().is_empty()
+            || url.password().is_some()
         {
+            return Err("T3 address must be an HTTP(S) origin without credentials".into());
+        }
+        match url.host().ok_or("T3 address has no host")? {
+            url::Host::Domain(host) if host.eq_ignore_ascii_case("localhost") => None,
+            url::Host::Ipv4(ip) if ip.is_loopback() => None,
+            url::Host::Ipv6(ip) if ip.is_loopback() => None,
+            host => Some(host.to_string().trim_matches(['[', ']']).to_owned()),
+        }
+    } else {
+        if needs_connection {
+            return Err(
+                "Connect this project's T3 server or set its terminal command first".into(),
+            );
+        }
+        None
+    };
+    if let Some(host) = host {
+        if !valid_host(&host) {
             return Err("T3 host is not a valid SSH destination".into());
         }
-        Ok(format!("ssh {}", quote(host)))
+        Ok(Initial {
+            argv: vec!["ssh".into(), "--".into(), host],
+            directory: None,
+        })
     } else {
-        Ok(format!("cd -- {}", quote(checkout)))
+        if checkout.is_empty() || checkout.contains('\0') {
+            return Err("Project checkout is missing or invalid".into());
+        }
+        Ok(Initial {
+            argv: vec![],
+            directory: Some(checkout.into()),
+        })
     }
 }
-pub fn plan(os: &str, command: &str, launcher: &str) -> Plan {
+
+/// Executable lookup is injected, including on non-native platforms in tests.
+/// TERMINAL names one executable, so a path containing spaces stays one word.
+pub fn launcher(
+    os: &str,
+    terminal: Option<&str>,
+    available: impl Fn(&str) -> bool,
+) -> Result<String, String> {
+    let candidates: Vec<&str> = match os {
+        "macos" => vec!["osascript"],
+        "windows" => vec!["wt.exe", "cmd.exe"],
+        _ => vec![
+            "xdg-terminal-exec",
+            terminal.unwrap_or(""),
+            "x-terminal-emulator",
+        ],
+    };
+    for program in candidates.into_iter().filter(|v| !v.is_empty()) {
+        if available(program) {
+            return Ok(program.into());
+        }
+    }
+    Err(match os {
+        "macos" => "Terminal could not open: osascript is unavailable",
+        "windows" => "No system terminal found: install Windows Terminal or restore cmd.exe",
+        _ => "No system terminal found: install xdg-terminal-exec or x-terminal-emulator, or set TERMINAL to an executable",
+    }.into())
+}
+
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+// The POSIX shell receives data exclusively as positional arguments. It stays
+// interactive after SSH/custom command exit; failed cd never runs in another cwd.
+const POSIX: &str = r#"if [ "$1" = cd ]; then
+    cd -- "$2" || exit
+else
+    shift
+    "$@"
+fi
+exec "${SHELL:-/bin/sh}""#;
+
+fn posix_args(initial: &Initial) -> Vec<String> {
+    let mut args = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        POSIX.into(),
+        "okilum-terminal".into(),
+    ];
+    if let Some(directory) = &initial.directory {
+        args.extend(["cd".into(), directory.clone()]);
+    } else {
+        args.push("run".into());
+        args.extend(initial.argv.clone());
+    }
+    args
+}
+
+pub fn plan(os: &str, initial: &Initial, launcher: &str) -> Plan {
     match os {
-        "macos" => Plan { program: "osascript".into(), args: vec!["-e".into(),
-            "on run argv\ntell application \"Terminal\"\nactivate\ndo script (item 1 of argv)\nend tell\nend run".into(), "--".into(), command.into()] },
+        "macos" => {
+            // Terminal.app accepts shell text only. Serialize each argv word,
+            // including the fixed wrapper, then pass it as AppleScript argv.
+            let command = posix_args(initial)
+                .iter()
+                .map(|v| quote(v))
+                .collect::<Vec<_>>()
+                .join(" ");
+            Plan { program: launcher.into(), args: vec!["-e".into(),
+                "on run argv\ntell application \"Terminal\"\nactivate\ndo script (item 1 of argv)\nend tell\nend run".into(), "--".into(), command] }
+        }
         "windows" => {
-            let mut args = if launcher == "wt.exe" { vec!["new-tab".into()] } else { vec![] };
-            // PowerShell quoting is deliberately separate from POSIX defaults.
-            args.extend(["powershell.exe".into(), "-NoExit".into(), "-Command".into(), command.into()]);
-            if launcher == "cmd.exe" { args.splice(..0,["/c".into(),"start".into(),"".into()]); }
-            Plan { program: launcher.into(), args }
+            // wt parses semicolons itself and cmd reparses /c arguments. Only
+            // fixed flags and base64 cross those parsers. PowerShell decodes a
+            // JSON data object and invokes its argv with &, never Invoke-Expression.
+            let data = serde_json::json!({"argv": initial.argv, "directory": initial.directory});
+            let data =
+                STANDARD.encode(serde_json::to_vec(&data).expect("serializable terminal data"));
+            let script = format!(
+                r#"$v = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{data}')) | ConvertFrom-Json
+if ($null -ne $v.directory) {{ Set-Location -LiteralPath $v.directory -ErrorAction Stop }}
+else {{ $a = @($v.argv); $exe = $a[0]; $rest = @($a | Select-Object -Skip 1); & $exe @rest }}"#
+            );
+            let encoded = STANDARD.encode(
+                script
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            );
+            let mut args = if launcher == "wt.exe" {
+                vec!["new-tab".into()]
+            } else {
+                vec!["/d".into(), "/c".into(), "start".into(), "".into()]
+            };
+            args.extend([
+                "powershell.exe".into(),
+                "-NoLogo".into(),
+                "-NoExit".into(),
+                "-EncodedCommand".into(),
+                encoded,
+            ]);
+            Plan {
+                program: launcher.into(),
+                args,
+            }
         }
         _ => {
-            let mut args = if launcher == "xdg-terminal-exec" { vec![] } else { vec!["-e".into()] };
-            args.extend(["/bin/sh".into(),"-lc".into(),format!("{command}; exec \"${{SHELL:-/bin/sh}}\"")]);
-            Plan { program: launcher.into(), args }
+            let mut args = if launcher == "xdg-terminal-exec" {
+                vec![]
+            } else {
+                vec!["-e".into()]
+            };
+            args.extend(posix_args(initial));
+            Plan {
+                program: launcher.into(),
+                args,
+            }
         }
     }
 }
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn defaults_and_overrides_preserve_command_boundaries() {
-        assert_eq!(
-            initial(Some("maestro"), "unused", None).unwrap(),
-            "ssh 'maestro'"
-        );
-        assert_eq!(
-            initial(None, "/tmp/a ' $x", None).unwrap(),
-            "cd -- '/tmp/a '\\'' $x'"
-        );
-        assert!(initial(Some("-oProxyCommand=evil"), "", None).is_err());
-        assert_eq!(
-            initial(None, "", Some("ssh maestro")).unwrap(),
-            "ssh maestro"
-        );
-        assert!(initial(None, "", Some("a\nb")).is_err());
-    }
-    #[test]
-    fn platform_argv_does_not_interpolate_apple_script_or_split_commands() {
-        let command = "ssh host; echo \"literal\"";
-        let mac = plan("macos", command, "");
-        assert_eq!(mac.args.last().unwrap(), command);
-        let linux = plan("linux", command, "xdg-terminal-exec");
-        assert_eq!(linux.args[0], "/bin/sh");
-        assert!(!linux.args.contains(&"-e".to_owned()));
-        assert_eq!(plan("linux", command, "alacritty").args[0], "-e");
-        assert_eq!(
-            plan("windows", command, "wt.exe").args.last().unwrap(),
-            command
-        );
-    }
-}
+mod tests;

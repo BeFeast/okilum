@@ -230,11 +230,28 @@ static void KeyRemoveRouter(id object) {
     [KeyRouters removeObject:router];
 }
 
+// Native events alone can request a terminal; page IPC cannot launch processes.
+// Unknown document focus fails closed. Keep text fields and T3's composer keys.
+bool okilum_manager_terminal_key(unsigned short code, bool command, bool shift,
+    bool control, bool option, bool knownNonEditable) {
+    return knownNonEditable && !shift && !option
+        && ((code == 38 && command && !control) || (code == 50 && control && !command));
+}
+
 @implementation OkilumManagerFocus (Keys)
 - (BOOL)handleFocusedKeyEvent:(NSEvent *)event {
     if (self.nativeRouting || !self.focused || event.window != self.webview.window) return NO;
     if (event.type != NSEventTypeKeyDown && event.type != NSEventTypeKeyUp
         && event.type != NSEventTypeFlagsChanged) return NO;
+    NSEventModifierFlags f = event.modifierFlags;
+    BOOL terminal = okilum_manager_terminal_key(event.keyCode,
+        (f & NSEventModifierFlagCommand) != 0, (f & NSEventModifierFlagShift) != 0,
+        (f & NSEventModifierFlagControl) != 0, (f & NSEventModifierFlagOption) != 0,
+        [self.pageContext[@"editable"] isEqual:@NO]);
+    if (event.type == NSEventTypeKeyDown && terminal) {
+        if (!event.isARepeat && self.focusChanged) self.focusChanged(self.context, 3);
+        return YES;
+    }
     // AppKit tries window/menu key equivalents before local event monitors.
     // Own the entire keyboard path here, including Cmd+Shift+V, Cmd+arrows
     // and T3 shortcuts that share a binding with Okilum (for example Cmd+K).

@@ -179,3 +179,14 @@ console.log('PASS: shipped button focus guard preserves composer and respects ot
     assert.equal(p.state.context().doc, restored.doc, 'ordinary pageshow does not invalidate a live page');
 }
 console.log('PASS: cached restoration renews context and rejects pre-navigation commands');
+
+{
+    const p = page();
+    p.field.closest = () => p.field;
+    assert.equal(p.state.context().editable, true, 'terminal shortcuts preserve editable controls');
+    p.document.activeElement = {closest: () => null};
+    assert.equal(p.state.context().editable, false, 'positive control: non-editable Manager content permits native terminal keys');
+    p.document.activeElement = {shadowRoot: {activeElement: p.field}};
+    assert.equal(p.state.context().editable, true, 'shadow-root editors retain their shortcuts');
+}
+console.log('PASS: Manager terminal editability guard includes shadow-root fields');
