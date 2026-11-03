@@ -307,6 +307,7 @@ impl Tree {
                 if !(index && self.scope.is_empty() && !path.contains('/')) {
                     rows.push(Row {
                         hidden: (self.agent_file(&path)
+                            || self.agent_folder(&path)
                             || hidden(&path) && !self.template_branch(&path))
                             && !self.shown_index(&path),
                         index,
@@ -374,6 +375,19 @@ impl Tree {
         }
     }
 
+    /// Agent configuration directories stay hidden even inside the configured
+    /// templates branch, whose ordinary dot/underscore notes remain visible.
+    fn agent_folder(&self, path: &str) -> bool {
+        std::iter::once(path)
+            .chain(path.rmatch_indices('/').map(|(at, _)| &path[..at]))
+            .any(|ancestor| {
+                matches!(
+                    ancestor.rsplit('/').next(),
+                    Some(".claude" | ".agents" | ".codex")
+                ) && self.kinds.get(ancestor) == Some(&EntryKind::Directory)
+            })
+    }
+
     fn agent_file(&self, path: &str) -> bool {
         self.kinds.get(path) != Some(&EntryKind::Directory)
             && okilum_core::quick_open::is_agent_file(path)
@@ -424,7 +438,10 @@ impl Tree {
     /// Inbox use this so they list what the tree lists (#635); a navigation
     /// reveal and a folder's index row (#1512) apply to the tree only.
     pub fn hidden_by_preference(&self, path: &str) -> bool {
-        !self.show_hidden && (self.agent_file(path) || hidden(path) && !self.template_branch(path))
+        !self.show_hidden
+            && (self.agent_file(path)
+                || self.agent_folder(path)
+                || hidden(path) && !self.template_branch(path))
     }
 
     pub fn set_show_hidden(&mut self, show: bool) {
@@ -758,6 +775,7 @@ mod tests {
         }
         let mut tree = Tree::default();
         tree.refresh(Path::new("/vault"), &entries);
+        tree.set_templates_folder("Project".into());
         tree.set_subtree("Project", true);
         tree.set_agent_shims(BTreeSet::from(["Project/CLAUDE.md".into()]));
         assert_eq!(tree.rules_of("Project"), Some("Project/AGENTS.md".into()));
@@ -778,6 +796,7 @@ mod tests {
         );
         assert!(!tree.rows.iter().any(|r| r.path.starts_with("Project/")));
         tree.set_show_hidden(true);
+        tree.set_subtree("Project", true);
         for entry in entries.iter().filter(|e| e.path.starts_with("Project/")) {
             assert!(
                 tree.rows.iter().any(|r| r.path == entry.path),
