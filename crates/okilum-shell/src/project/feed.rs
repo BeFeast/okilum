@@ -645,6 +645,8 @@ impl Feed {
         }
     }
     fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(feature = "project-ui-harness")]
+        let _work = super::performance::Work::start(2);
         #[cfg(test)]
         self.row_calls.set(self.row_calls.get() + 1);
         match self.rows.get(index) {

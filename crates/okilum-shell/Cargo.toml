@@ -20,7 +20,7 @@ appimage-acceptance-harness = ["okilum-appimage/acceptance-harness"]
 # Non-publishing downloaded-update visual fixture; never starts an updater.
 updater-ui-harness = []
 # Non-publishing Project UI fixture; never registers OAuth clients or threads.
-project-ui-harness = []
+project-ui-harness = ["gpui/profiler"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "net", "time", "fs", "io-util"] }

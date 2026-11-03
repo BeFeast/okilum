@@ -676,6 +676,8 @@ impl Board {
         binding: &Binding,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = super::performance::Work::start(1);
         let colors = brand::palette(cx);
         let number = scope.number;
         let issue = self.snapshot.forgejo.value.get(&number);
@@ -1014,6 +1016,8 @@ impl Board {
 }
 impl Render for Board {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = super::performance::Work::start(0);
         if self.local_editor.is_some() {
             return self.render_local_management(window, cx);
         }
@@ -1538,3 +1542,68 @@ mod tests;
 
 #[cfg(all(test, target_os = "linux"))]
 mod discuss_tests;
+
+#[cfg(all(target_os = "linux", any(test, feature = "project-ui-harness")))]
+impl Board {
+    pub(in crate::project) fn performance_fixture(
+        area: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut board = Self::with_reader(
+            area,
+            |_| panic!("synthetic Board must never read a server"),
+            window,
+            cx,
+        );
+        let mut source: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../okilum-t3/tests/fixtures/board-legacy.yaml"
+        ))
+        .unwrap();
+        source["issues"] = serde_json::json!([]);
+        source["attention"] = serde_json::json!([]);
+        let mut binding = Binding::parse(&source.to_string()).unwrap();
+        for number in 1..=240 {
+            binding.issues.push(serde_json::from_value(serde_json::json!({
+                "number":number,"expected":format!("Synthetic task {number}: retain source identity and verify the next delivery with a realistic wrapping title"),
+                "executor":"Fixture", "notes":["home.md"],"pull_requests":[],
+                "stage": if number % 4 == 0 { serde_json::json!("ready") } else { serde_json::Value::Null }
+            })).unwrap());
+            board.snapshot.forgejo.value.insert(
+                number,
+                okilum_t3::board::Issue {
+                    number,
+                    title: format!("Synthetic task {number}"),
+                    state: "open".into(),
+                    body: String::new(),
+                    labels: vec![],
+                    open_pull_requests: if number % 4 == 2 {
+                        vec![1000 + number]
+                    } else {
+                        vec![]
+                    },
+                    live_pulls: if matches!(number % 4, 2 | 3) {
+                        vec![okilum_t3::board::live::Pull {
+                            number: 1000 + number,
+                            merged_at: None,
+                            checks: if number % 4 == 2 {
+                                "success"
+                            } else {
+                                "pending"
+                            }
+                            .into(),
+                        }]
+                    } else {
+                        vec![]
+                    },
+                },
+            );
+        }
+        board.snapshot.forgejo.last_success = Some(now());
+        board.snapshot.t3.last_success = Some(now());
+        board.local_cards.last_success = Some(now());
+        board.binding = Some(binding);
+        board.active = true;
+        board
+    }
+}
