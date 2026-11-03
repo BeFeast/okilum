@@ -151,6 +151,8 @@ mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
 mod reader_agent_imports;
+#[cfg(test)]
+mod reader_agent_imports_tests;
 mod reader_agent_language;
 mod reader_agent_search;
 mod reader_agents_context;
