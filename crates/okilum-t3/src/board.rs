@@ -1,4 +1,4 @@
-//! Explicit stage membership and independent read-only Board source snapshots (#1767).
+//! Project Board bindings and independent read-only live source snapshots (#1767, #2161).
 use crate::ThreadSummary;
 use anyhow::{ensure, Context, Result};
 use serde::Deserialize;
