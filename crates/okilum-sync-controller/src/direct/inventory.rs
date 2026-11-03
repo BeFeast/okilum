@@ -187,7 +187,7 @@ impl Cache {
         }
         self.entries
             .retain(|(p, v, _), _| *p != key.0 || *v != key.1);
-        let header = h.clone();
+        let header = stored.local.header.clone();
         self.entries.insert(key, Arc::new(stored));
         header
     }
