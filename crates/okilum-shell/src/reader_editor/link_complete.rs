@@ -53,6 +53,17 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
     let line_start = text[..caret].rfind('\n').map_or(0, |at| at + 1);
     let before = &text[line_start..caret];
     let query = line_query(before, line_start, caret)?;
+    if matches!(query.kind, Kind::Note | Kind::Heading(_))
+        && text[..query.start - 2]
+            .chars()
+            .rev()
+            .take_while(|c| *c == '\\')
+            .count()
+            % 2
+            == 1
+    {
+        return None;
+    }
     if before.starts_with("    ") || before.starts_with('\t') {
         return None;
     }
@@ -84,19 +95,11 @@ pub(super) fn link_query(text: &str, caret: usize) -> Option<LinkQuery> {
     Some(query)
 }
 
-/// The UI only copies the bounded prefix of the caret's line. Full Markdown
+/// The UI only copies the bounded tail of the caret's line. Full Markdown
 /// context is validated on the worker before any rows can be published.
 fn line_query(before: &str, line_start: usize, caret: usize) -> Option<LinkQuery> {
     let (kind, offset, query) = providers::trigger(before, true)?;
     let start = line_start + offset;
-    let delimiter = if matches!(kind, Kind::Note | Kind::Heading(_)) {
-        offset - 2
-    } else {
-        offset
-    };
-    if !matches!(kind, Kind::Language) && providers::in_inline_code(&before[..delimiter]) {
-        return None;
-    }
     Some(LinkQuery {
         start,
         caret,
@@ -827,13 +830,17 @@ impl Reader {
         .then(|| {
             let row = input.cursor_position().line as usize;
             let start = input.text().line_start_offset(row);
-            let len = selection.start.checked_sub(start)?;
-            // Even a pathological single-line note cannot allocate on the key path.
-            if len > 1024 {
-                return None;
+            // Only the bounded lookbehind is copied, even beyond column 1024.
+            // Move a byte cut to a UTF-8 boundary; the worker owns full context.
+            let mut window_start = selection.start.saturating_sub(1024).max(start);
+            while !input.text().is_char_boundary(window_start) {
+                window_start += 1;
             }
-            let line = input.text().slice(start..selection.start).to_string();
-            line_query(&line, start, selection.start)
+            let line = input
+                .text()
+                .slice(window_start..selection.start)
+                .to_string();
+            line_query(&line, window_start, selection.start)
                 .filter(|query| emoji || !matches!(query.kind, Kind::Emoji))
         })
         .flatten();
@@ -1744,6 +1751,12 @@ mod tests {
         assert_eq!(query("Plan|"), None, "no brackets");
         assert_eq!(query("[Plan|"), None, "one bracket");
         assert_eq!(query("`[[Pla|`"), None, "inline code");
+        assert_eq!(query(r"\[[Pla|"), None, "escaped opener");
+        assert_eq!(
+            query("``x\nx`` [[Pla|").as_deref(),
+            Some("Pla"),
+            "after multiline inline code"
+        );
         assert_eq!(query("``` \n[[Pla|\n```"), None, "fenced code");
         assert_eq!(query("---\na: [[Pla|\n---\n"), None, "front matter");
         assert_eq!(
@@ -2735,8 +2748,13 @@ mod tests {
     #[gpui::test]
     fn large_source_pending_worker_keeps_ui_refresh_bounded(cx: &mut TestAppContext) {
         let (note, visual) = open(cx);
-        let mut source = "paragraph\n\n".repeat((1 << 20) / 11);
-        source.push_str("[[rec|");
+        let mut source = "paragraph\n\n".repeat(((1 << 20) - 8192 - 6) / 11);
+        source.push_str(&"x".repeat((1 << 20) - 8192 - 6 - source.len()));
+        source.push_str(&"🙂".repeat(2048));
+        source.push_str(" [[rec|");
+        assert_eq!(source.len() - 1, 1 << 20);
+        // The 1 KiB lookbehind starts inside an emoji, far past column 1024.
+        assert!(!source.is_char_boundary((1 << 20) - 1024));
         let (mut reached, release) = hold_notes();
         REFRESH_TIMES.with(|times| times.borrow_mut().clear());
         set(&note, visual, &source);

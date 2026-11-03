@@ -81,20 +81,10 @@ impl<'a> Matcher<'a> {
     }
 }
 
-/// (provider, replacement start relative to the line, query).
+/// Syntactic trigger (provider, replacement start, query). The host validates
+/// complete Markdown context before publishing rows, including for a line tail.
 pub(super) fn trigger(line: &str, emoji: bool) -> Option<(Kind, usize, String)> {
     if let Some(open) = line.rfind("[[") {
-        if in_inline_code(&line[..open])
-            || line[..open]
-                .chars()
-                .rev()
-                .take_while(|c| *c == '\\')
-                .count()
-                % 2
-                == 1
-        {
-            return None;
-        }
         let query = &line[open + 2..];
         if !query.contains(['[', ']', '|', '^']) && query.chars().count() <= 120 {
             if let Some((note, heading)) = query.split_once('#') {

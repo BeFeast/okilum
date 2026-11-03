@@ -37,8 +37,8 @@ Enter/Tab or a row click inserts the target once. Escape leaves the authored
 text unchanged. The shared `HeadingInventory` excludes ambiguous or unsupported
 heading destinations; completion does not guess between duplicate note names.
 
-Completion refresh copies at most 1 KiB of the caret's current line and shares
-an immutable Rope snapshot. Ranking and full Markdown-context checks run on the
+Completion refresh copies at most 1 KiB before the caret on its current line,
+clips the window to UTF-8 boundaries, and shares an immutable Rope snapshot. Ranking and full Markdown-context checks run on the
 background executor; code spans, code blocks and frontmatter publish no rows.
 A paste ending in a trigger leaves the popup closed; subsequent typing can open
 it normally. Enter/Tab during a pending note query remembers that exact query
