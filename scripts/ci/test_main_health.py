@@ -417,6 +417,51 @@ class MainHealthTests(unittest.TestCase):
         self.assert_blamed(api, body)
         self.assertIn(''.join(f'\n- `{name}`' for name in names), body)
 
+    # The gate's own prelude (#1966): test-nofile.sh prints 'nofile before:' before the first
+    # command, so the line says the gate step started. The old name is spelled in two parts so
+    # this file passes check_brand.py, like scripts/rebrand/check_brand.py itself.
+    GATE_PRELUDE = ('2026-10-29T10:18:47.1000000Z nofile before: soft=1024 hard=1048576\n'
+                    '2026-10-29T10:18:47.2000000Z nofile for tests: soft=1048576 hard=1048576\n')
+    OLD_TITLE = 'Tes' + 'sera'
+
+    def test_a_fmt_diff_before_any_compile_blames_the_merges(self):
+        # Run 15255 (#1966): `cargo fmt --check` failed before the first compile, and the red was
+        # misread as infrastructure, so no merge was blamed.
+        log = (self.GATE_PRELUDE +
+               '2026-10-29T10:18:48.4324503Z Diff in /work/okilum/crates/app/src/main.rs at 6675:\n'
+               + self.PY_RUNNER_END)
+        self.assertEqual(health.classify(log), ('code', []))
+        api, body = self.red_on_log(log)
+        self.assert_blamed(api, body)
+        self.assertNotIn('Failing tests:', body)
+        # Control: the same log without the diff line is neither code nor infrastructure.
+        self.assertEqual(health.classify(self.GATE_PRELUDE + self.PY_RUNNER_END), ('unknown', []))
+
+    def test_a_brand_check_failure_before_any_compile_blames_the_merges(self):
+        # check-linux.sh runs check_brand.py before the first compile; the summary line is the
+        # verdict (#1966).
+        log = (self.GATE_PRELUDE +
+               f'2026-10-29T10:18:48.4324503Z {self.OLD_TITLE} brand assets remain:\n'
+               '2026-10-29T10:18:48.5000000Z   web/inbox/icon.svg: not the approved Okilum asset (abcdef)\n'
+               + self.PY_RUNNER_END)
+        self.assertEqual(health.classify(log), ('code', []))
+        api, body = self.red_on_log(log)
+        self.assert_blamed(api, body)
+        self.assertNotIn('Failing tests:', body)
+        # Control: the check passing prints a success summary, which stays not code.
+        passing = (self.GATE_PRELUDE +
+                   '2026-10-29T10:18:48.4324503Z Okilum brand check: 6 icons match the approved masters\n'
+                   + self.PY_RUNNER_END)
+        self.assertEqual(health.classify(passing), ('unknown', []))
+
+    def test_a_started_gate_without_output_blames_and_a_never_started_one_is_infra(self):
+        # The no-output fallback is infrastructure only when the gate step never started (#1966):
+        # 'nofile before:' (test-nofile.sh, before the first command) is that sign.
+        setup_only = '2026-10-29T10:18:45.0000000Z Restored 1.9 GB cargo cache\n' + self.PY_RUNNER_END
+        self.assertEqual(health.classify(setup_only),
+                         ('infra', 'the job ended before any build or test output'))
+        self.assert_blamed(*self.red_on_log(self.GATE_PRELUDE + self.PY_RUNNER_END))
+
 
 if __name__ == '__main__':
     unittest.main()
