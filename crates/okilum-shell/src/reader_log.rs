@@ -1941,6 +1941,8 @@ impl LogView {
                 );
                 self.filter_ui.chips = chips;
                 self.filter_ui.advanced = advanced;
+                let query = self.local_chip_query();
+                self.emit_chip_change(cx);
                 self.update_filter(
                     |filter| filter.query = (!query.is_empty()).then_some(query),
                     cx,
@@ -2008,13 +2010,19 @@ impl LogView {
         self.filter_ui.advanced.clear();
         self.query_error = None;
         self.update_filter(|filter| *filter = LogFilter::default(), cx);
-        if let Some(request) = self.investigation.request.clone() {
+        if let Some(request) = self
+            .investigation
+            .request
+            .clone()
+            .filter(|_| !self.filter_ui.server)
+        {
             self.replace_query(
                 correlation::query_with_field(&request.value, Some(&request.key)).to_string(),
                 window,
                 cx,
             );
         }
+        self.emit_chip_change(cx);
         cx.notify();
     }
 
@@ -4125,7 +4133,7 @@ impl LogView {
         let Some(saved) = reader_ui_state::saved_log_filters(cx).get(name).cloned() else {
             return;
         };
-        let filter = match saved.to_filter() {
+        let mut filter = match saved.to_filter() {
             Ok(filter) => filter,
             Err(error) => {
                 reader_toast::error(
@@ -4142,6 +4150,7 @@ impl LogView {
         if !self.restore_saved_source(&saved, window, cx) {
             return;
         }
+        self.filter_ui.navigating = saved.remote_source.is_some();
         self.restore_investigation(&saved, cx);
         let (parsed_chips, advanced) = filter
             .query
@@ -4170,7 +4179,13 @@ impl LogView {
         });
         self.query_text = query_text;
         self.query_error = None;
+        if self.filter_ui.server {
+            let local = self.local_chip_query();
+            filter.query = (!local.is_empty()).then_some(local);
+            self.emit_chip_change(cx);
+        }
         self.update_filter(|current| *current = filter, cx);
+        self.filter_ui.navigating = false;
         self.remember_query(cx);
         cx.notify();
     }

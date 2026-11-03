@@ -57,6 +57,27 @@ impl ResultStatus {
             ),
             None => format!("Loaded {loaded} · total unknown"),
         }];
+        self.append_quality(&mut parts);
+        parts.join(" · ")
+    }
+    /// Aggregations cover a window; they do not download event rows.
+    pub fn window_label(&self) -> String {
+        let total = self.total.as_ref().map_or("unknown".into(), |total| {
+            format!(
+                "{}{}",
+                if total.relation == TotalRelation::Gte {
+                    "≥ "
+                } else {
+                    ""
+                },
+                total.value
+            )
+        });
+        let mut parts = vec![format!("Window total {total}")];
+        self.append_quality(&mut parts);
+        parts.join(" · ")
+    }
+    fn append_quality(&self, parts: &mut Vec<String>) {
         if self.partial {
             parts.push("Partial results".into());
         }
@@ -89,7 +110,6 @@ impl ResultStatus {
         if let Some(version) = &self.version {
             parts.push(format!("Kibana {version}"));
         }
-        parts.join(" · ")
     }
     pub(crate) fn parse(response: &Value, track: &Value, cross_cluster: bool) -> Result<Self> {
         let raw = response
@@ -238,6 +258,15 @@ pub enum FieldType {
     Array,
     Null,
 }
+/// A scalar field advertised as aggregatable by Kibana's field catalog.
+/// Text fields are represented by their keyword multifield, never guessed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AggregatableField {
+    pub name: String,
+    pub field_type: FieldType,
+    pub source_path: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FieldInfo {
     pub path: String,
@@ -307,7 +336,7 @@ pub fn describe_fields(events: &[Arc<Value>]) -> Vec<FieldInfo> {
         .collect()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FieldValue {
     String(String),
     Number(Number),

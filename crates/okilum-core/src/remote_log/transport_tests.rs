@@ -654,3 +654,34 @@ fn source_bound_clients_reject_another_identity_or_endpoint_before_sending_any_k
     let mut legacy = History::open(client, selected.discover.clone()).unwrap();
     assert!(!legacy.page().unwrap().events.is_empty());
 }
+
+#[test]
+fn field_catalog_uses_advertised_scalar_mappings_and_keyword_multifields() {
+    let server = server(12, Scenario::default());
+    let fields = client(&server)
+        .aggregatable_fields(&source(&server))
+        .unwrap();
+    assert!(fields
+        .iter()
+        .any(|f| f.name == "service.keyword" && f.field_type == FieldType::String));
+    assert!(fields
+        .iter()
+        .any(|f| f.name == "active" && f.field_type == FieldType::Boolean));
+    assert!(fields
+        .iter()
+        .any(|f| f.name == "duration" && f.field_type == FieldType::Number));
+    assert!(
+        !fields.iter().any(|f| f.name == "details"),
+        "analyzed text is not an exact-value picker"
+    );
+    assert!(fields
+        .iter()
+        .any(|f| f.name == "details.keyword" && f.source_path == "details"));
+    assert!(
+        server.state.lock().unwrap().calls.iter().any(|c| c
+            .path
+            .starts_with("/internal/data_views/_fields_for_wildcard?pattern=remote-")),
+        "positive control: queried the server catalog for the selected pattern"
+    );
+    assert_eq!(server.state.lock().unwrap().rejected_headers, 0);
+}

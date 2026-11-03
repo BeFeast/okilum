@@ -111,7 +111,8 @@ impl Kibana {
             cancelled,
         })
     }
-    pub(super) fn with_cancellation(&self, cancelled: Arc<AtomicBool>) -> Self {
+    /// Reuse this source-bound client with a fresh cancellation lifetime.
+    pub fn with_cancellation(&self, cancelled: Arc<AtomicBool>) -> Self {
         Self {
             cancelled,
             ..self.clone()
@@ -353,6 +354,100 @@ impl Kibana {
             }
         }
     }
+    /// Kibana's field catalog distinguishes keyword multifields from analyzed text.
+    /// A denied catalog is an explicit picker error, never a guessed `.keyword` suffix.
+    pub fn aggregatable_fields(
+        &self,
+        source: &Source,
+    ) -> Result<Vec<super::result::AggregatableField>> {
+        let source = self.resolve_source(source)?;
+        let pattern = source
+            .index_pattern
+            .as_deref()
+            .context("Index pattern required")?;
+        let response = self.request(
+            Method::GET,
+            "/internal/data_views/_fields_for_wildcard",
+            &[("pattern", pattern)],
+            None,
+            false,
+        )?;
+        let fields = response["fields"]
+            .as_array()
+            .context("Malformed Kibana field catalog")?;
+        ensure!(
+            fields.len() <= 20_000,
+            "Kibana field catalog exceeds 20,000 fields"
+        );
+        let mut found = Vec::new();
+        for field in fields {
+            if field["aggregatable"] != true
+                || field["searchable"] != true
+                || field.pointer("/subType/nested").is_some()
+            {
+                continue;
+            }
+            let Some(name) = field["name"]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.len() <= 256)
+            else {
+                continue;
+            };
+            let kinds = field["esTypes"]
+                .as_array()
+                .context("Kibana field catalog lacks Elasticsearch types")?;
+            let field_type = if kinds.iter().all(|v| {
+                matches!(
+                    v.as_str(),
+                    Some("keyword" | "constant_keyword" | "wildcard")
+                )
+            }) && !kinds.is_empty()
+            {
+                FieldType::String
+            } else if kinds.iter().all(|v| {
+                matches!(
+                    v.as_str(),
+                    Some(
+                        "byte"
+                            | "short"
+                            | "integer"
+                            | "long"
+                            | "unsigned_long"
+                            | "half_float"
+                            | "float"
+                            | "double"
+                            | "scaled_float"
+                    )
+                )
+            }) && !kinds.is_empty()
+            {
+                FieldType::Number
+            } else if kinds.as_slice() == [Value::String("boolean".into())] {
+                FieldType::Boolean
+            } else {
+                continue;
+            };
+            let source_path = field
+                .pointer("/subType/multi/parent")
+                .and_then(Value::as_str)
+                .unwrap_or(name)
+                .to_owned();
+            found.push(super::result::AggregatableField {
+                name: name.into(),
+                field_type,
+                source_path,
+            });
+        }
+        found.sort_by(|a, b| a.name.cmp(&b.name));
+        ensure!(
+            found
+                .windows(2)
+                .all(|pair| pair[0].name != pair[1].name || pair[0] == pair[1]),
+            "Conflicting Kibana field catalog entries; no mapping was selected"
+        );
+        found.dedup_by(|a, b| a.name == b.name);
+        Ok(found)
+    }
     /// Top-N server aggregation over the same source, absolute time and server
     /// filters as history. Missing is a separate aggregation, never a sentinel key.
     pub fn field_values(
@@ -487,6 +582,7 @@ impl History {
             discover: state,
             index_pattern: None,
             time_field: "@timestamp".into(),
+            scope_fields: Vec::new(),
         };
         Self::for_source(kibana, &source)
     }

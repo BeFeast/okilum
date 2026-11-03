@@ -5,6 +5,11 @@ mod investigation;
 use anyhow::Context as _;
 use okilum_core::remote_log::live::{Mode, Status, Update, Worker};
 use okilum_core::remote_log::{self, discover::TimeRange, transport::ApiKey, EventWindow, Source};
+#[path = "reader_log_remote/guided.rs"]
+mod guided;
+#[path = "reader_log_remote/server_filters.rs"]
+mod server_filters;
+use guided::Guided;
 #[derive(Default)]
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
 impl Global for Windows {}
@@ -80,6 +85,8 @@ fn show_inner(vault: PathBuf, link: Option<remote_log::link::RemoteLink>, cx: &m
 }
 
 struct Panel {
+    guided: Guided,
+    _chips: Option<Subscription>,
     pending_link: Option<remote_log::link::RemoteLink>,
     generation: u64,
     following: bool,
@@ -93,6 +100,8 @@ struct Panel {
     pattern: Entity<InputState>,
     time_field: Entity<InputState>,
     requested: Option<Source>,
+    requested_definition: Option<Source>,
+    applied_definition: Option<Source>,
     auth_error: bool,
     quality: Option<remote_log::result::ResultStatus>,
     key: Entity<InputState>,
@@ -163,10 +172,27 @@ impl Panel {
                 cx.notify();
             });
         });
-        Self{_navigation:None,generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
+        let guided = Guided::new(window, cx);
+        Self{_navigation:None,guided,_chips:None,generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,requested_definition:None,applied_definition:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
     }
     fn choose(&mut self, source: Source, window: &mut Window, cx: &mut Context<Self>) {
         self.stop();
+        if self
+            .draft
+            .as_ref()
+            .is_none_or(|old| old.id != source.id || old.endpoint != source.endpoint)
+        {
+            self.guided.scope.clear();
+            self.guided.chips.clear();
+            if let Some(view) = &self.view {
+                view.update(cx, |view, cx| view.reset_remote_filters(window, cx));
+            }
+        }
+        self.guided.open_scope = None;
+        self.guided.custom = false;
+        self.guided.key_needed = false;
+        self.guided.invalidate_counts();
+        self.configure_server_counts(cx);
         self.key = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Encoded API key → OS credential storage")
@@ -217,13 +243,17 @@ impl Panel {
         if self.busy || self.credential_pending {
             return;
         }
-        let Some(source) = self.applied.clone() else {
+        let Some(source) = self
+            .applied_definition
+            .clone()
+            .or_else(|| self.applied.clone())
+        else {
             return;
         };
         self.choose(source, window, cx);
         self.url
             .update(cx, |input, cx| input.set_value("", window, cx));
-        self.message = "Last applied inputs restored. Loaded snapshot and its absolute range are unchanged; Apply explicitly to re-query, or Start the applied query.".into();
+        self.message = "Last applied advanced inputs restored; scope and chips remain selected. Loaded snapshot and its absolute range are unchanged; Apply explicitly to re-query, or Start the applied query.".into();
         cx.notify();
     }
     fn import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -275,6 +305,7 @@ impl Panel {
             from: self.from.read(cx).value().to_string(),
             to: self.to.read(cx).value().to_string(),
         };
+        self.guided_candidate(&mut source, cx)?;
         source.validate()?;
         Ok(source)
     }
@@ -321,9 +352,26 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         self.requested = Some(source.clone());
+        let definition = if replacement {
+            None
+        } else {
+            let mut definition = source.clone();
+            definition.discover.filters = serde_json::from_str(&self.filters.read(cx).value())
+                .expect("candidate validated the base filter array");
+            self.requested_definition = Some(definition.clone());
+            Some(definition)
+        };
         if !replacement {
             self.auth_error = false;
         }
+        self.guided.invalidate_counts();
+        self.configure_server_counts(cx);
+        self.guided.open_scope = None;
+        self.guided.custom = false;
+        self.guided.connection = "Connecting…".into();
+        let count_cancel = self.guided.cancel.clone();
+        #[cfg(test)]
+        let test_key = self.guided.test_key.clone();
         let mut secret = self.key.read(cx).value().as_bytes().to_vec();
         // Drop the entire input/undo history after handing bytes to the keychain task.
         self.key = cx.new(|cx| {
@@ -346,7 +394,23 @@ impl Panel {
         self.message =
             "Loading history… previous applied rows are retained until the request succeeds".into();
         self._credential = Some(cx.spawn(async move |this, cx| {
-            let result: Result<ApiKey> = async {
+            let result: Result<(ApiKey, remote_log::transport::Kibana)> = async {
+                #[cfg(test)]
+                if let Some(bytes) = test_key {
+                    let key = ApiKey::new(bytes.clone())?;
+                    let selected = source.clone();
+                    let client = cx
+                        .background_executor()
+                        .spawn(async move {
+                            remote_log::transport::Kibana::new(
+                                &selected,
+                                ApiKey::new(bytes)?,
+                                count_cancel,
+                            )
+                        })
+                        .await?;
+                    return Ok((key, client));
+                }
                 if let Some(store) = store {
                     store.await.context(
                         "OS credential storage could not save the key; no file fallback is used",
@@ -357,17 +421,33 @@ impl Panel {
                     .await
                     .context("OS credential storage is unavailable")?
                     .context("No OS-stored key for this vault/source; enter an encoded API key")?;
-                ApiKey::new(bytes)
+                let key = ApiKey::new(bytes.clone())?;
+                let selected = source.clone();
+                let client = cx
+                    .background_executor()
+                    .spawn(async move {
+                        remote_log::transport::Kibana::new(
+                            &selected,
+                            ApiKey::new(bytes)?,
+                            count_cancel,
+                        )
+                    })
+                    .await?;
+                Ok((key, client))
             }
             .await;
             let result = match result {
                 Ok(key) => {
-                    let saved = source.clone();
-                    let stored = cx
-                        .background_executor()
-                        .spawn(async move { remote_log::save_source(&directory, &root, &saved) })
-                        .await;
-                    stored.map(|_| key)
+                    if let Some(saved) = definition.clone() {
+                        cx.background_executor()
+                            .spawn(
+                                async move { remote_log::save_source(&directory, &root, &saved) },
+                            )
+                            .await
+                            .map(|_| key)
+                    } else {
+                        Ok(key)
+                    }
                 }
                 Err(error) => Err(error),
             };
@@ -377,14 +457,23 @@ impl Panel {
                 }
                 this.credential_pending = false;
                 match result {
-                    Ok(key) => {
-                        if let Some(old) = this.sources.iter_mut().find(|s| s.id == source.id) {
-                            *old = source.clone();
-                        } else {
-                            this.sources.push(source.clone());
-                        }
-                        if !replacement {
-                            this.draft = Some(source.clone());
+                    Ok((key, client)) => {
+                        this.guided.key_needed = false;
+                        this.guided.count_client = Some(client.clone());
+                        this.load_catalog(client, source.clone(), cx);
+                        if let Some(definition) = definition {
+                            if let Some(old) = this
+                                .sources
+                                .iter_mut()
+                                .find(|saved| saved.id == definition.id)
+                            {
+                                *old = definition.clone();
+                            } else {
+                                this.sources.push(definition.clone());
+                            }
+                            if !replacement {
+                                this.draft = Some(definition);
+                            }
                         }
                         this.generation = if replacement {
                             this.worker.replace_key(key)
@@ -394,6 +483,8 @@ impl Panel {
                     }
                     Err(error) => {
                         this.busy = false;
+                        this.guided.key_needed = true;
+                        this.guided.connection = "Connection failed".into();
                         this.message =
                             "History request failed; previous applied results are retained.".into();
                         this.error = Some(format!("{error:#}"));
@@ -467,6 +558,7 @@ impl Panel {
             return;
         };
         self.requested = Some(applied.clone());
+        self.requested_definition = self.applied_definition.clone();
         self.auth_error = false;
         self.generation = self.worker.start_live(mode, applied);
         self.following = true;
@@ -504,6 +596,10 @@ impl Panel {
                 .as_ref()
                 .is_none_or(|old| !Arc::ptr_eq(old, &loaded.window));
             if changed {
+                // A new displayed window invalidates scope-count results, even
+                // when following a fixed range in changing server data.
+                self.guided.counts.clear();
+                self.guided.open_scope = None;
                 if self.applied.as_ref().is_none_or(|previous| {
                     previous.id != loaded.source.id
                         || previous.discover.data_view != loaded.source.discover.data_view
@@ -514,6 +610,18 @@ impl Panel {
                         cx,
                     );
                 }
+                let mut definition = loaded.source.clone();
+                if self.requested.as_ref().is_some_and(|requested| {
+                    requested.id == loaded.source.id
+                        && requested.endpoint == loaded.source.endpoint
+                        && requested.discover.filters == loaded.source.discover.filters
+                }) {
+                    if let Some(base) = &self.requested_definition {
+                        definition.discover.filters = base.discover.filters.clone();
+                        definition.discover.time = base.discover.time.clone();
+                    }
+                }
+                self.applied_definition = Some(definition);
                 self.applied = Some(loaded.source.clone());
                 self.range = Some(loaded.range.clone());
                 self.data = Some(loaded.window.clone());
@@ -522,6 +630,10 @@ impl Panel {
                         view.replace_remote(loaded.window.clone(), cx)
                     });
                 }
+            }
+            if let Some(view) = &self.view {
+                let guided = self.guided_context();
+                view.update(cx, |view, _| view.investigation.guided = guided);
             }
             if matches!(update.status, Status::History { .. }) {
                 self.more = loaded.more;
@@ -534,7 +646,15 @@ impl Panel {
                 warning,
                 quality,
             } => {
-                self.auth_error = false;
+                self.auth_error = self.guided.auxiliary_auth_error;
+                self.guided.adding = false;
+                self.guided.connection = quality
+                    .version
+                    .as_ref()
+                    .map_or("Connected".into(), |v| format!("Connected · Kibana {v}"));
+                if self.auth_error {
+                    self.guided.connection = "Auth failed → Replace key".into();
+                }
                 self.quality = Some(quality);
                 self.error = warning;
                 self.message = format!(
@@ -562,7 +682,14 @@ impl Panel {
                 pages,
                 quality,
             } => {
-                self.auth_error = false;
+                self.auth_error = self.guided.auxiliary_auth_error;
+                self.guided.connection = quality
+                    .version
+                    .as_ref()
+                    .map_or("Connected".into(), |v| format!("Connected · Kibana {v}"));
+                if self.auth_error {
+                    self.guided.connection = "Auth failed → Replace key".into();
+                }
                 self.quality = Some(quality);
                 self.error = None;
                 self.message = format!("Window traversal complete · {pages} pages in {seconds:.2}s · cycle began {began} · {} → {}. Later searchable arrivals await a new cycle; no five-second guarantee.", range.from, range.to);
@@ -584,11 +711,13 @@ impl Panel {
                 self.message = format!("Incomplete · {scanned} scanned · Following stopped; previous snapshot retained{}", range.map(|r|format!(" · {} → {}",r.from,r.to)).unwrap_or_default());
             }
             Status::TimedOut => {
+                self.guided.connection = "Search timeout".into();
                 self.error = Some(remote_log::result::SearchTimeout.to_string());
                 self.message = "Search timeout · previous query and rows retained".into();
             }
             Status::AuthError(error) => {
                 self.auth_error = true;
+                self.guided.connection = "Auth failed → Replace key".into();
                 self.error = Some(error.to_string());
                 self.message = "Enter a replacement API key, then Replace API key to re-run the same query. Loaded rows and settings are retained.".into();
             }
@@ -597,6 +726,7 @@ impl Panel {
                 self.message = "Enter the index pattern above and Apply again.".into();
             }
             Status::Error(error) => {
+                self.guided.connection = "Unreachable or request failed".into();
                 self.error = Some(error);
                 self.message = "Request failed; previous applied query and rows retained. Correct the source/query and Apply.".into();
             }
@@ -607,6 +737,7 @@ impl Panel {
                 self.message = "Stopped · loaded rows retained; Apply to page a new history snapshot, or Start explicitly.".into();
             }
         }
+        self.configure_server_counts(cx);
         cx.notify();
     }
     fn export(&mut self, cx: &mut Context<Self>) {
@@ -666,9 +797,289 @@ impl Panel {
     }
 }
 
+impl Panel {
+    // Bound debug stack use by materializing one native section at a time.
+    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut header = v_flex()
+            .p_3()
+            .gap_2()
+            .flex_none()
+            .child(self.render_guided(cx));
+        if self.guided.adding {
+            header = header.child(self.render_source_form(cx));
+        }
+        if self.auth_error
+            || self.guided.key_needed
+            || self.draft.as_ref().is_some_and(|draft| {
+                self.applied.as_ref().is_none_or(|applied| {
+                    applied.id != draft.id || applied.endpoint != draft.endpoint
+                })
+            })
+        {
+            header = header.child(self.render_key_controls(cx));
+        }
+        header = header.child(self.render_actions(cx));
+        if self.guided.advanced {
+            header = header.child(self.render_advanced_controls(cx));
+        }
+        if self.proposal.is_some() {
+            header = header.child(self.render_start_confirmation(cx));
+        }
+        header.child(self.render_status(cx)).into_any_element()
+    }
+    fn render_source_form(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut header = v_flex().gap_2();
+        if self.guided.adding {
+            header = header
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().w(px(180.)).child(Input::new(&self.name).small()))
+                        .child(div().flex_1().child(Input::new(&self.url).small()))
+                        .child(
+                            Button::new("remote-import")
+                                .debug_selector(|| "remote-import".into())
+                                .small()
+                                .label("Add source / import")
+                                .disabled(self.busy)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.import(window, cx)),
+                                ),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().flex_1().child(Input::new(&self.pattern).small()))
+                        .child(
+                            div()
+                                .w(px(240.))
+                                .child(Input::new(&self.time_field).small()),
+                        ),
+                );
+        }
+        header.into_any_element()
+    }
+    fn render_key_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut header = v_flex().gap_2();
+        if self.auth_error
+            || self.guided.key_needed
+            || self.draft.as_ref().is_some_and(|draft| {
+                self.applied.as_ref().is_none_or(|applied| {
+                    applied.id != draft.id || applied.endpoint != draft.endpoint
+                })
+            })
+        {
+            header = header.child(
+                h_flex()
+                    .gap_2()
+                    .child(div().flex_1().child(Input::new(&self.key).small()))
+                    .when(self.auth_error, |row| {
+                        row.child(
+                            Button::new("remote-replace-key")
+                                .debug_selector(|| "remote-replace-key".into())
+                                .small()
+                                .label("Replace API key")
+                                .disabled(self.busy || self.credential_pending)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.replace_key(window, cx)),
+                                ),
+                        )
+                    }),
+            );
+        }
+        header.into_any_element()
+    }
+    fn render_actions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut header = v_flex().gap_2();
+        header = header.child(
+            h_flex()
+                .gap_2()
+                .flex_wrap()
+                .child(
+                    Button::new("remote-refresh")
+                        .debug_selector(|| "remote-refresh".into())
+                        .small()
+                        .label("Refresh")
+                        .disabled(self.draft.is_none() || self.busy)
+                        .on_click(cx.listener(|this, _, window, cx| this.apply(window, cx))),
+                )
+                .child(
+                    Button::new("remote-restore-applied")
+                        .debug_selector(|| "remote-restore-applied".into())
+                        .small()
+                        .ghost()
+                        .label("Restore applied advanced inputs")
+                        .disabled(self.applied.is_none() || self.busy || self.credential_pending)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.restore_applied(window, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("remote-more")
+                        .small()
+                        .label(
+                            if self
+                                .applied
+                                .as_ref()
+                                .is_some_and(|s| s.discover.sort[0].order == "asc")
+                            {
+                                "Load later"
+                            } else {
+                                "Load older"
+                            },
+                        )
+                        .disabled(self.busy || !self.more)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.busy = true;
+                            this.generation = this.worker.more();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("remote-start")
+                        .debug_selector(|| "remote-start".into())
+                        .small()
+                        .label("Start applied query")
+                        .disabled(
+                            self.applied.is_none()
+                                || self.following
+                                || self.busy
+                                || self.credential_pending
+                                || self.proposal.is_some(),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.propose_start(cx))),
+                )
+                .child(
+                    Button::new("remote-stop")
+                        .debug_selector(|| "remote-stop".into())
+                        .small()
+                        .label("Stop")
+                        .disabled(!self.following && !self.busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.stop();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("remote-advanced")
+                        .debug_selector(|| "remote-advanced".into())
+                        .small()
+                        .ghost()
+                        .label("Advanced")
+                        .selected(self.guided.advanced)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.guided.advanced = !this.guided.advanced;
+                            cx.notify();
+                        })),
+                ),
+        );
+        header.into_any_element()
+    }
+    fn render_advanced_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut header = v_flex().gap_2();
+        if self.guided.advanced {
+            header=header
+                .child(div().text_xs().child("Advanced · Discover import, server KQL, complete filter objects and exact timestamps"))
+                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.url).small()))
+                    .child(Button::new("remote-advanced-import").small().label("Import Discover").on_click(cx.listener(|this,_,window,cx|this.import(window,cx)))))
+                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.pattern).small())).child(div().flex_1().child(Input::new(&self.time_field).small())))
+                .child(Input::new(&self.kql).small())
+                .child(Input::new(&self.filters).small())
+                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.from).small())).child(div().flex_1().child(Input::new(&self.to).small()))
+                    .child(Button::new("remote-apply").small().label("Apply query and filters").on_click(cx.listener(|this,_,window,cx|this.apply(window,cx)))))
+                .child(h_flex().gap_2()
+                    .child(Button::new("remote-reverse").small().label("Reverse sort (Apply)").disabled(self.busy).on_click(cx.listener(|this,_,_,cx|{if let Some(draft)=this.draft.as_mut(){for sort in &mut draft.discover.sort{sort.order=if sort.order=="asc"{"desc"}else{"asc"}.into();}cx.notify();}})))
+                    .child(Button::new("remote-export").small().label("Export loaded JSONL").disabled(self.data.is_none()||self.exporting).on_click(cx.listener(|this,_,_,cx|this.export(cx)))))
+                .child(div().text_xs().child(remote_log::LIVE_LIMITATION))
+                .child(div().text_xs().child(remote_log::KQL_LIMITATION));
+        }
+        header.into_any_element()
+    }
+    fn render_start_confirmation(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut header = v_flex().gap_2();
+        if self.proposal.is_some() {
+            header=header.child(h_flex().gap_2()
+                .child(div().flex_1().text_sm().child("Choose a rolling window of the same duration or keep this fixed historical range. Following starts only after you choose."))
+                .child(Button::new("remote-confirm-rolling").debug_selector(||"remote-confirm-rolling".into()).small().label("Follow rolling window").disabled(self.following||self.busy||self.credential_pending).on_click(cx.listener(|this,_,_,cx|this.confirm_start(true,cx))))
+                .child(Button::new("remote-confirm-fixed").debug_selector(||"remote-confirm-fixed".into()).small().label("Follow fixed range").disabled(self.following||self.busy||self.credential_pending).on_click(cx.listener(|this,_,_,cx|this.confirm_start(false,cx))))
+                .child(Button::new("remote-cancel-start").debug_selector(||"remote-cancel-start".into()).small().ghost().label("Cancel").on_click(cx.listener(|this,_,_,cx|this.cancel_start(cx)))));
+        }
+        header.into_any_element()
+    }
+    fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut header = v_flex().gap_2();
+        let environment = self
+            .applied
+            .as_ref()
+            .map_or("No environment", |source| source.name.as_str());
+        let scope = self
+            .applied
+            .as_ref()
+            .map(|source| {
+                source
+                    .discover
+                    .filters
+                    .iter()
+                    .filter(|filter| {
+                        filter
+                            .pointer("/meta/type")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("scope")
+                    })
+                    .filter_map(|filter| {
+                        Some(format!(
+                            "{} = {}",
+                            filter.pointer("/meta/key")?.as_str()?,
+                            filter.pointer("/meta/value")?.as_str()?
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        header = header
+            .child(
+                div()
+                    .debug_selector(|| "remote-status".into())
+                    .text_sm()
+                    .child(format!(
+                        "{environment} · {} · Scope: {}",
+                        self.guided.connection,
+                        if scope.is_empty() {
+                            "All values"
+                        } else {
+                            &scope
+                        }
+                    )),
+            )
+            .children(self.range.as_ref().map(|range| {
+                div().text_xs().child(format!(
+                    "Applied window · {} → {} · UTC · bounded changing data",
+                    guided::utc_label(&range.from), guided::utc_label(&range.to)
+                ))
+            }))
+            .children(self.quality.as_ref().map(|quality| {
+                div()
+                    .text_sm()
+                    .child(quality.label(self.data.as_ref().map_or(0, |data| data.events.len())))
+                    .when(quality.incomplete(),|line|line.child(div().text_xs().child(
+                        "Incomplete window: partial responses, failed shards/clusters or a deadline can omit events. A cap stops at 10,000 rows / 16 MiB; narrow the range and Refresh. Unknown metadata cannot certify completion."
+                    )))
+            }))
+            .children(self.error.as_ref().map(|error| {
+                div()
+                    .text_sm()
+                    .text_color(brand::palette(cx).danger)
+                    .child(error.clone())
+            }))
+            .child(div().text_xs().child(self.message.clone()));
+        header.into_any_element()
+    }
+}
+
 impl Render for Panel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
         if self.sources_loaded && !self.busy {
             if let Some(link) = self.pending_link.take() {
                 let result = link.validate().and_then(|_| {
@@ -689,6 +1100,11 @@ impl Render for Panel {
                 });
                 match result {
                     Ok(source) => {
+                        self.guided.scope.clear();
+                        self.guided.chips.clear();
+                        if let Some(view) = &self.view {
+                            view.update(cx, |view, cx| view.reset_remote_filters(window, cx));
+                        }
                         self.choose(source, window, cx);
                         self.message="Linked query and fixed time range loaded. Apply re-queries the server; this is not an immutable snapshot.".into();
                     }
@@ -699,59 +1115,34 @@ impl Render for Panel {
         if self.view.is_none() {
             if let Some(data) = self.data.clone() {
                 let view = cx.new(|cx| reader_log::LogView::remote(data, window, cx));
+                view.update(cx, |view, cx| {
+                    view.enable_server_filters(cx);
+                    view.set_count_provider(
+                        Arc::new(server_filters::CountsUnavailable(
+                            "Kibana field catalog is loading; reopen this picker after connecting"
+                                .into(),
+                        )),
+                        cx,
+                    );
+                });
+                self._chips = Some(cx.subscribe_in(
+                    &view,
+                    window,
+                    |this, _, event: &reader_log::filters::FilterChipsChanged, window, cx| {
+                        this.chips_changed(&event.0, window, cx);
+                    },
+                ));
                 self.install_investigation(&view, window, cx);
                 self.view = Some(view);
+                self.configure_server_counts(cx);
             }
         }
-        let sources = self.sources.clone();
-        let weak = cx.entity().downgrade();
-        let saved = Button::new("remote-saved")
-            .small()
-            .label("Saved sources")
-            .disabled(self.busy)
-            .dropdown_menu(move |mut menu, _, _| {
-                for source in &sources {
-                    let weak = weak.clone();
-                    let source = source.clone();
-                    menu = menu.item(PopupMenuItem::new(source.name.clone()).on_click(
-                        move |_, window, cx| {
-                            let _ =
-                                weak.update(cx, |this, cx| this.choose(source.clone(), window, cx));
-                        },
-                    ));
-                }
-                menu
-            });
-        let mut body=v_flex().size_full().min_h_0().child(TitleBar::new().child("Kibana logs"))
-            .child(v_flex().p_3().gap_2().flex_none()
-                .child(h_flex().gap_2().child(div().w(px(180.)).child(Input::new(&self.name).small())).child(div().flex_1().child(Input::new(&self.url).small())).child(Button::new("remote-import").small().label("Add source / import").disabled(self.busy).on_click(cx.listener(|this,_,window,cx|this.import(window,cx)))).child(saved))
-                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.pattern).small())).child(div().w(px(240.)).child(Input::new(&self.time_field).small())))
-                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.key).small()))
-                    .when(self.auth_error, |row| row.child(Button::new("remote-replace-key").debug_selector(|| "remote-replace-key".into()).small().label("Replace API key").disabled(self.busy || self.credential_pending).on_click(cx.listener(|this,_,window,cx|this.replace_key(window,cx))))))
-                .child(h_flex().gap_2()
-                    .child(div().flex_1().min_w_0().child(Input::new(&self.kql).small()))
-                    .child(Button::new("remote-apply").small().label("Apply query and filters").on_click(cx.listener(|this,_,window,cx|this.apply(window,cx))))
-                    .child(Button::new("remote-restore-applied").debug_selector(|| "remote-restore-applied".into()).small().ghost().label("Restore applied settings").disabled(self.applied.is_none() || self.busy || self.credential_pending).tooltip("Restore the last successful source/query/filter/time/sort/column inputs as a draft. Stop existing following; retain the loaded snapshot, absolute range, selection and marks. Re-query only with Apply; no keychain access.").on_click(cx.listener(|this,_,window,cx|this.restore_applied(window,cx)))))
-                .child(div().text_xs().child("Filters JSON — includes disabled, negated and pinned filters; edits apply together with KQL"))
-                .child(Input::new(&self.filters).small())
-                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.from).small())).child(div().flex_1().child(Input::new(&self.to).small()))
-                    .child(Button::new("remote-reverse").small().label("Reverse sort (Apply)").disabled(self.busy).on_click(cx.listener(|this,_,_,cx|{if let Some(draft)=this.draft.as_mut(){for sort in &mut draft.discover.sort{sort.order=if sort.order=="asc"{"desc"}else{"asc"}.into();}cx.notify();}}))))
-                .child(h_flex().gap_2().child(Button::new("remote-more").small().label(if self.applied.as_ref().is_some_and(|s|s.discover.sort[0].order=="asc"){ "Load later" }else{"Load older"}).disabled(self.busy||!self.more).on_click(cx.listener(|this,_,_,cx|{this.busy=true;this.generation=this.worker.more();cx.notify();})))
-                    .child(Button::new("remote-export").small().label("Export loaded JSONL").disabled(self.data.is_none()||self.exporting).on_click(cx.listener(|this,_,_,cx|this.export(cx))))
-                    .child(Button::new("remote-start").debug_selector(|| "remote-start".into()).small().label("Start applied query").disabled(self.applied.is_none()||self.following||self.busy||self.credential_pending||self.proposal.is_some()).on_click(cx.listener(|this,_,_,cx|this.propose_start(cx))))
-                    .child(Button::new("remote-stop").debug_selector(|| "remote-stop".into()).small().label("Stop").disabled(!self.following&&!self.busy).on_click(cx.listener(|this,_,_,cx|{this.stop();cx.notify();}))))
-                .when(self.proposal.is_some(),|body|body.child(h_flex().gap_2()
-                    .child(div().flex_1().text_sm().child("Choose a rolling window of the same duration or keep this fixed historical range. Following starts only after you choose."))
-                    .child(Button::new("remote-confirm-rolling").debug_selector(|| "remote-confirm-rolling".into()).small().label("Follow rolling window").disabled(self.following||self.busy||self.credential_pending).on_click(cx.listener(|this,_,_,cx|this.confirm_start(true,cx))))
-                    .child(Button::new("remote-confirm-fixed").debug_selector(|| "remote-confirm-fixed".into()).small().label("Follow fixed range").disabled(self.following||self.busy||self.credential_pending).on_click(cx.listener(|this,_,_,cx|this.confirm_start(false,cx))))
-                    .child(Button::new("remote-cancel-start").debug_selector(|| "remote-cancel-start".into()).small().ghost().label("Cancel").tooltip("Keep loaded history and draft settings without starting following").on_click(cx.listener(|this,_,_,cx|this.cancel_start(cx))))))
-                .child(div().text_xs().child(remote_log::LIVE_LIMITATION))
-                .child(div().text_xs().child(remote_log::KQL_LIMITATION))
-                .child(div().text_sm().child(self.message.clone()))
-                .children(self.quality.as_ref().map(|q| div().text_sm().child(q.label(self.data.as_ref().map_or(0, |d| d.events.len())))))
-                .children(self.applied.as_ref().map(|source|div().text_xs().child(format!("Applied source: {} · Start follows the applied query; draft edits require Apply",source.name))))
-                .children(self.range.as_ref().map(|range|div().text_xs().child(format!("Applied absolute range: {} → {} · Limit 10,000 events / 16 MiB original JSON; loaded-only export",range.from,range.to))))
-                .children(self.error.as_ref().map(|error|div().text_sm().text_color(brand::palette(cx).danger).child(error.clone()))));
+        let header = self.render_header(cx);
+        let mut body = v_flex()
+            .size_full()
+            .min_h_0()
+            .child(TitleBar::new().child("Kibana logs"))
+            .child(header);
         body = if let Some(view) = &self.view {
             body.child(div().flex_1().min_h_0().child(view.clone()))
         } else {
@@ -956,3 +1347,7 @@ mod protocol_tests;
 #[cfg(test)]
 #[path = "reader_log_remote/investigation_tests.rs"]
 mod investigation_tests;
+
+#[cfg(test)]
+#[path = "reader_log_remote/guided_tests.rs"]
+mod guided_tests;

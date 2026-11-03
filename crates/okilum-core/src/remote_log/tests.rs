@@ -158,3 +158,44 @@ fn ambiguous_enabled_filters_and_unproven_time_rounding_refuse_execution() {
 pub(super) fn state() -> Discover {
     discover::import(&sample()).unwrap().1
 }
+
+#[test]
+fn pinned_scope_fields_roundtrip_without_changing_legacy_sources() {
+    let root = tempfile::tempdir().unwrap();
+    let mut source = Source::direct("Synthetic", "https://logs.example", "events", "").unwrap();
+    let mut legacy = serde_json::to_value(&source).unwrap();
+    legacy.as_object_mut().unwrap().remove("scope_fields");
+    assert!(serde_json::from_value::<Source>(legacy)
+        .unwrap()
+        .scope_fields
+        .is_empty());
+    source.scope_fields = vec!["service".into(), "context.operation".into()];
+    save_source(root.path(), root.path(), &source).unwrap();
+    assert_eq!(
+        load_sources(root.path(), root.path()).unwrap()[0].scope_fields,
+        source.scope_fields
+    );
+    source.scope_fields.push("service".into());
+    assert!(source.validate().is_err(), "duplicate pins are rejected");
+}
+
+#[test]
+fn role_field_identity_is_exhaustive_and_never_chooses_a_winner() {
+    let source = Source::direct("Synthetic", "https://logs.example", "events", "").unwrap();
+    let first = Arc::new(json!({"_index":"events","_id":"1","_source":{"level":"INFO"}}));
+    let one = EventWindow::new(vec![first.clone()], &source).unwrap();
+    assert_eq!(one.role_field(crate::log::Role::Level), Some("level"));
+    let mixed = EventWindow::new(
+        vec![
+            first,
+            Arc::new(json!({"_index":"events","_id":"2","_source":{"severity":"WARN"}})),
+        ],
+        &source,
+    )
+    .unwrap();
+    assert_eq!(
+        mixed.role_field(crate::log::Role::Level),
+        None,
+        "different underlying keys cannot be silently treated as one server field"
+    );
+}

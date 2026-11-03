@@ -50,6 +50,13 @@ pub struct FieldChoices {
     pub correlation: Option<String>,
 }
 
+/// Rebuildable guided selection, separate from the compiled query in a loaded snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteGuided {
+    pub source: crate::remote_log::Source,
+    pub scope: std::collections::BTreeMap<String, crate::remote_log::result::FieldValue>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedQuery {
@@ -57,6 +64,7 @@ pub struct SavedQuery {
     pub file: Option<String>,
     pub remote_source: Option<crate::remote_log::Source>,
     pub remote_range: Option<crate::remote_log::discover::TimeRange>,
+    pub remote_guided: Option<RemoteGuided>,
     pub message_field: Option<String>,
     pub correlation_field: Option<String>,
     pub request: Option<super::correlation::RequestId>,
@@ -84,6 +92,7 @@ impl Default for SavedQuery {
             file: None,
             remote_source: None,
             remote_range: None,
+            remote_guided: None,
             message_field: None,
             correlation_field: None,
             request: None,
@@ -136,6 +145,7 @@ impl SavedQuery {
             file: None,
             remote_source: None,
             remote_range: None,
+            remote_guided: None,
             message_field: None,
             correlation_field: None,
             request: None,
@@ -332,6 +342,38 @@ mod tests {
         let mut saved = SavedQuery::capture("Request investigation", &filter()).unwrap();
         saved.remote_source = Some(source.clone());
         saved.remote_range = Some(source.discover.time.clone());
+        source.scope_fields = vec![
+            "scope".into(),
+            "duration".into(),
+            "active".into(),
+            "optional".into(),
+        ];
+        source.discover.time.from = "now-24h".into();
+        source.discover.time.to = "now".into();
+        saved.remote_guided = Some(RemoteGuided {
+            source: source.clone(),
+            scope: [
+                (
+                    "scope".into(),
+                    crate::remote_log::result::FieldValue::String("a\"b\\c".into()),
+                ),
+                (
+                    "duration".into(),
+                    crate::remote_log::result::FieldValue::Number(serde_json::Number::from(
+                        9007199254740993u64,
+                    )),
+                ),
+                (
+                    "active".into(),
+                    crate::remote_log::result::FieldValue::Boolean(false),
+                ),
+                (
+                    "optional".into(),
+                    crate::remote_log::result::FieldValue::Missing,
+                ),
+            ]
+            .into(),
+        });
         saved.message_field = Some("details".into());
         saved.correlation_field = Some("flow".into());
         saved.columns = Some(vec!["flow".into(), "duration".into()]);
@@ -359,6 +401,7 @@ mod tests {
         assert!(
             legacy.file.is_none()
                 && legacy.remote_source.is_none()
+                && legacy.remote_guided.is_none()
                 && legacy.message_field.is_none()
         );
         assert!(legacy.to_filter().unwrap().query.is_some());

@@ -1,12 +1,12 @@
 //! Investigation navigation, source-scoped field choices and saved-view context.
 use super::*;
-use okilum_core::log::saved_query::FieldChoices;
+use okilum_core::log::saved_query::{FieldChoices, RemoteGuided};
 use okilum_core::remote_log::live::Loaded;
 
 #[derive(Clone)]
 pub(crate) enum Navigation {
     Follow(correlation::RequestId),
-    Back(Arc<Loaded>),
+    Back(Arc<Loaded>, Option<RemoteGuided>),
     Saved(Box<SavedQuery>),
 }
 impl EventEmitter<Navigation> for LogView {}
@@ -16,6 +16,7 @@ pub(crate) struct Investigation {
     pub(super) frames: Vec<ViewFrame>,
     pub request: Option<correlation::RequestId>,
     pub remote: Option<Arc<Loaded>>,
+    pub guided: Option<RemoteGuided>,
     pub live: bool,
     pub last_update: Option<String>,
     restore: Option<Viewport>,
@@ -29,6 +30,7 @@ pub(super) struct ViewFrame {
     viewport: Viewport,
     request: Option<correlation::RequestId>,
     remote: Option<Arc<Loaded>>,
+    guided: Option<RemoteGuided>,
 }
 struct Viewport {
     selected: Option<usize>,
@@ -180,6 +182,7 @@ impl LogView {
             },
             request: self.investigation.request.clone(),
             remote: self.investigation.remote.clone(),
+            guided: self.investigation.guided.clone(),
         });
         self.investigation.request = Some(request.clone());
         self.selected = None;
@@ -197,11 +200,17 @@ impl LogView {
         self.filter_ui.advanced.clear();
         self.text_input
             .update(cx, |input, cx| input.set_value("", window, cx));
+        self.filter_ui.navigating = true;
         self.replace_query(
-            correlation::query_with_field(&request.value, Some(&request.key)).to_string(),
+            if matches!(self.state, State::Remote(_)) {
+                String::new()
+            } else {
+                correlation::query_with_field(&request.value, Some(&request.key)).to_string()
+            },
             window,
             cx,
         );
+        self.filter_ui.navigating = false;
         if matches!(self.state, State::Remote(_)) {
             cx.emit(Navigation::Follow(request));
         }
@@ -212,11 +221,12 @@ impl LogView {
             return;
         };
         self.investigation.request = frame.request;
+        self.investigation.guided = frame.guided;
         if let Some(remote) = frame.remote {
             self.state = State::Remote(remote.window.clone());
             self.investigation.remote = Some(remote.clone());
             self.investigation.live = false;
-            cx.emit(Navigation::Back(remote));
+            cx.emit(Navigation::Back(remote, self.investigation.guided.clone()));
         }
         if let Some(key) = self.history_key() {
             reader_ui_state::set_log_columns(&key, frame.columns, cx);
@@ -232,7 +242,9 @@ impl LogView {
         self.filter_running = None;
         self.filter_again = false;
         self.investigation.restore = Some(frame.viewport);
+        self.filter_ui.navigating = true;
         self.restore_filter_view(frame.filters, window, cx);
+        self.filter_ui.navigating = false;
         self.focus.focus(window, cx);
     }
     pub(super) fn restore_viewport(&mut self) {
@@ -260,6 +272,15 @@ impl LogView {
     pub(super) fn investigation_filter(&self) -> LogFilter {
         let mut filter = self.filter.clone();
         if let Some(request) = &self.investigation.request {
+            let confirmed_server_scope = self.investigation.remote.as_ref().is_some_and(|remote| {
+                remote.source.discover.filters.iter().any(|filter| {
+                    filter.get("query")
+                        == Some(&correlation::server_query(&request.value, &request.key))
+                })
+            });
+            if confirmed_server_scope {
+                return filter;
+            }
             let scope = correlation::query_with_field(&request.value, Some(&request.key));
             let mut terms: Vec<_> = filter
                 .query
@@ -482,6 +503,7 @@ impl LogView {
         if let Some(remote) = &self.investigation.remote {
             query.remote_source = Some(remote.source.clone());
             query.remote_range = Some(remote.range.clone());
+            query.remote_guided = self.investigation.guided.clone();
         } else if !self.source_locked && !matches!(self.state, State::Remote(_) | State::Stream(_))
         {
             query.file = self.history_key();
@@ -490,7 +512,12 @@ impl LogView {
     pub(super) fn restore_investigation(&mut self, saved: &SavedQuery, cx: &mut Context<Self>) {
         self.investigation.frames.clear();
         self.investigation.request = saved.request.clone();
-        if let Some(key) = self.history_key() {
+        let fields_key = saved
+            .remote_source
+            .as_ref()
+            .map(|source| format!("kibana-{}.jsonl", source.id))
+            .or_else(|| self.history_key());
+        if let Some(key) = fields_key {
             reader_ui_state::set_log_fields(
                 &key,
                 FieldChoices {

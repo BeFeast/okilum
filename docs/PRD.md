@@ -39,6 +39,13 @@ reconciliation without PIT. Totals, partial results, timeout and truncation rema
 visible beside loaded rows; paging does not imply an immutable server snapshot. Corporate/native live acceptance
 and the visibility target remain unproven and cannot be silently substituted.
 
+**Guided Kibana investigation (#2390):** [source, time and scope pickers](kibana-guided-investigation.md)
+adds a Logs entry journey, per-source pinned scope fields, typed server/local
+chips, independently selectable server/loaded-row counts, honest result status
+and credential replacement. Advanced retains the explicit query/import form.
+The reader remains read-only; synthetic GPUI tests do not certify native keychain
+or corporate deployment compatibility.
+
 **Note aliases (2026-10-23, #1562):** [reserved frontmatter aliases](note-aliases.md)
 adds vault-wide wiki resolution and Quick Open matching; declarations are plain
 property chips, with existing canonical-path precedence and explicit ambiguity.

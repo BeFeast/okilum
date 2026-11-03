@@ -220,6 +220,12 @@ pub struct ColumnCounts {
 /// Invoked off the UI thread. A server adapter can ignore loaded sources and
 /// return its own counts and scope label. Errors remain visible in the picker.
 pub trait ColumnCountProvider: Send + Sync {
+    /// Bind a display role to an underlying field before recording a chip.
+    /// Providers that cannot resolve it keep the original reference; they must
+    /// surface ambiguity rather than inventing a field name.
+    fn canonical_field(&self, field: &FieldRef) -> FieldRef {
+        field.clone()
+    }
     fn count(&self, field: &FieldRef, sources: &[CountSource<'_>]) -> Result<ColumnCounts, String>;
 }
 #[derive(Default)]

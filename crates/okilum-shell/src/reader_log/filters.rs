@@ -7,14 +7,16 @@ use gpui_component::{
     popover::Popover,
 };
 use okilum_core::log::chips::{
-    self, ColumnCountProvider, ColumnCounts, CountSource, FilterChip, FilterMode, FilterValue,
-    LoadedRowCountProvider,
+    self, ColumnCountProvider, ColumnCounts, CountSource, FilterChip, FilterExecution, FilterMode,
+    FilterValue, LoadedRowCountProvider,
 };
 
 pub(super) struct FilterUi {
     pub chips: Vec<FilterChip>,
     pub advanced: Vec<Expr>,
     pub provider: Arc<dyn ColumnCountProvider>,
+    pub server: bool,
+    pub(super) navigating: bool,
     picker: Rc<std::cell::RefCell<Option<Entity<ValuePicker>>>>,
     subscription: Option<Subscription>,
     cell_menu: Option<CellMenu>,
@@ -25,6 +27,8 @@ impl Default for FilterUi {
             chips: vec![],
             advanced: vec![],
             provider: Arc::new(LoadedRowCountProvider),
+            server: false,
+            navigating: false,
             picker: Rc::default(),
             subscription: None,
             cell_menu: None,
@@ -45,7 +49,7 @@ struct ApplyChip {
     index: Option<usize>,
     chip: FilterChip,
 }
-struct ValuePicker {
+pub(super) struct ValuePicker {
     index: Option<usize>,
     chip: FilterChip,
     counts: Option<Result<Arc<ColumnCounts>, String>>,
@@ -54,13 +58,19 @@ struct ValuePicker {
     search: Entity<InputState>,
     needle: String,
     _search: Subscription,
-    _count: Task<()>,
+    _count: Option<Task<()>>,
+    allow_server: bool,
+    count_server: bool,
+    provider: Arc<dyn ColumnCountProvider>,
+    snapshots: Arc<Vec<(Snapshot, String)>>,
 }
 impl EventEmitter<ApplyChip> for ValuePicker {}
 impl Render for ValuePicker {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = self.chip.mode;
         let enabled = self.chip.enabled;
+        let execution = self.chip.execution;
+        let count_server = self.count_server;
         let rows = uniform_list(
             "log-filter-values",
             self.visible.len(),
@@ -131,6 +141,34 @@ impl Render for ValuePicker {
                         Some(Err(error)) => format!("Could not count values: {error}"),
                     }),
             )
+            .when(self.allow_server, |body| {
+                body.child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("log-count-server")
+                                .debug_selector(|| "log-count-server".into())
+                                .small()
+                                .label("Kibana counts")
+                                .selected(count_server)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.count_server = true;
+                                    this.reload_counts(cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("log-count-loaded")
+                                .debug_selector(|| "log-count-loaded".into())
+                                .small()
+                                .label("Loaded row counts")
+                                .selected(!count_server)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.count_server = false;
+                                    this.reload_counts(cx);
+                                })),
+                        ),
+                )
+            })
             .child(
                 div()
                     .debug_selector(|| "log-value-search".into())
@@ -166,6 +204,34 @@ impl Render for ValuePicker {
             .when(self.counts.is_some() && self.visible.is_empty(), |view| {
                 view.child("No matching values")
             })
+            .when(self.allow_server, |body| {
+                body.child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("log-execution-server")
+                                .debug_selector(|| "log-execution-server".into())
+                                .small()
+                                .label("Apply in Kibana")
+                                .selected(execution == FilterExecution::Server)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.chip.execution = FilterExecution::Server;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("log-execution-local")
+                                .debug_selector(|| "log-execution-local".into())
+                                .small()
+                                .label("Apply to loaded rows")
+                                .selected(execution == FilterExecution::Local)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.chip.execution = FilterExecution::Local;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .child(
                 Checkbox::new("log-chip-enabled")
                     .debug_selector(|| "log-chip-enabled".into())
@@ -193,6 +259,51 @@ impl Render for ValuePicker {
 }
 
 impl ValuePicker {
+    fn reload_counts(&mut self, cx: &mut Context<Self>) {
+        self.counts = None;
+        self.visible = Arc::default();
+        self._searching = None;
+        let field = self.chip.field.clone();
+        let selections = self.chip.values.clone();
+        let snapshots = self.snapshots.clone();
+        let provider: Arc<dyn ColumnCountProvider> = if self.allow_server && !self.count_server {
+            Arc::new(LoadedRowCountProvider)
+        } else {
+            self.provider.clone()
+        };
+        self._count = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let sources: Vec<_> = snapshots
+                        .iter()
+                        .map(|(snapshot, name)| {
+                            let (index, bytes) = snapshot.parts();
+                            CountSource { index, bytes, name }
+                        })
+                        .collect();
+                    provider.count(&field, &sources).map(|mut counts| {
+                        for value in selections
+                            .into_iter()
+                            .chain(std::iter::once(FilterValue::Missing))
+                        {
+                            if !counts.values.iter().any(|item| item.value == value) {
+                                counts.values.push(chips::ValueCount { value, count: 0 });
+                            }
+                        }
+                        Arc::new(counts)
+                    })
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.counts = Some(result);
+                this.search_values(cx);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     fn search_values(&mut self, cx: &mut Context<Self>) {
         let Some(Ok(counts)) = &self.counts else {
             return;
@@ -225,7 +336,40 @@ impl ValuePicker {
 }
 
 impl LogView {
-    /// Future remote sources install their server-count adapter here.
+    pub(crate) fn enable_server_filters(&mut self, cx: &mut Context<Self>) {
+        if self.filter_ui.server {
+            return;
+        }
+        self.filter_ui.server = true;
+        let query = self.local_chip_query();
+        self.update_filter(
+            |filter| filter.query = (!query.is_empty()).then_some(query),
+            cx,
+        );
+    }
+    pub(super) fn local_chip_query(&self) -> Query {
+        let chips = self
+            .filter_ui
+            .chips
+            .iter()
+            .filter(|chip| !self.filter_ui.server || chip.execution == FilterExecution::Local)
+            .cloned()
+            .collect::<Vec<_>>();
+        chips::combined_query(&chips, &self.filter_ui.advanced)
+    }
+    pub(super) fn emit_chip_change(&self, cx: &mut Context<Self>) {
+        if self.filter_ui.server && !self.filter_ui.navigating {
+            cx.emit(FilterChipsChanged(self.filter_ui.chips.clone()));
+        }
+    }
+    pub(crate) fn reset_remote_filters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let server = self.filter_ui.server;
+        self.filter_ui.server = false;
+        self.investigation = Default::default();
+        self.clear_filters(window, cx);
+        self.filter_ui.server = server;
+    }
+    /// Source adapters install their server-count adapter here.
     #[allow(dead_code)]
     pub(crate) fn set_count_provider(
         &mut self,
@@ -244,25 +388,37 @@ impl LogView {
         filter
     }
     pub(super) fn sync_chips(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.filter_ui.server {
+            for chip in &mut self.filter_ui.chips {
+                if chip.execution == FilterExecution::Server {
+                    chip.field = self.filter_ui.provider.canonical_field(&chip.field);
+                }
+            }
+        }
         let query = chips::combined_query(&self.filter_ui.chips, &self.filter_ui.advanced);
         let text = query.to_string();
         self.query_input
             .update(cx, |input, cx| input.set_value(text.clone(), window, cx));
         self.query_text = text;
         self.query_error = None;
+        let local = self.local_chip_query();
         self.update_filter(
-            |filter| filter.query = (!query.is_empty()).then_some(query),
+            |filter| filter.query = (!local.is_empty()).then_some(local),
             cx,
         );
+        self.emit_chip_change(cx);
         self.remember_query(cx);
         cx.notify();
     }
     pub(super) fn add_chip(
         &mut self,
-        chip: FilterChip,
+        mut chip: FilterChip,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.filter_ui.server {
+            chip.execution = FilterExecution::Server;
+        }
         if !self.filter_ui.chips.contains(&chip) {
             self.filter_ui.chips.push(chip);
         }
@@ -275,9 +431,21 @@ impl LogView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let allow_server = self.filter_ui.server;
+        let field = if allow_server {
+            self.filter_ui.provider.canonical_field(&field)
+        } else {
+            field
+        };
         let chip = index
             .and_then(|i| self.filter_ui.chips.get(i).cloned())
-            .unwrap_or_else(|| FilterChip::new(field.clone(), vec![], FilterMode::Include));
+            .unwrap_or_else(|| {
+                let mut chip = FilterChip::new(field.clone(), vec![], FilterMode::Include);
+                if allow_server {
+                    chip.execution = FilterExecution::Server;
+                }
+                chip
+            });
         let snapshots: Vec<_> = self
             .enabled_sources()
             .into_iter()
@@ -293,38 +461,7 @@ impl LogView {
                     cx.notify();
                 }
             });
-            let selections = chip.values.clone();
-            let task = cx.spawn(async move |this, cx| {
-                let result = cx
-                    .background_executor()
-                    .spawn(async move {
-                        let sources: Vec<_> = snapshots
-                            .iter()
-                            .map(|(snapshot, name)| {
-                                let (index, bytes) = snapshot.parts();
-                                CountSource { index, bytes, name }
-                            })
-                            .collect();
-                        provider.count(&field, &sources).map(|mut counts| {
-                            for value in selections
-                                .into_iter()
-                                .chain(std::iter::once(FilterValue::Missing))
-                            {
-                                if !counts.values.iter().any(|item| item.value == value) {
-                                    counts.values.push(chips::ValueCount { value, count: 0 });
-                                }
-                            }
-                            Arc::new(counts)
-                        })
-                    })
-                    .await;
-                let _ = this.update(cx, |this, cx| {
-                    this.counts = Some(result);
-                    this.search_values(cx);
-                    cx.notify();
-                });
-            });
-            ValuePicker {
+            let mut picker = ValuePicker {
                 index,
                 chip,
                 counts: None,
@@ -333,8 +470,14 @@ impl LogView {
                 search,
                 needle: String::new(),
                 _search: subscription,
-                _count: task,
-            }
+                _count: None,
+                allow_server,
+                count_server: allow_server,
+                provider,
+                snapshots: Arc::new(snapshots),
+            };
+            picker.reload_counts(cx);
+            picker
         });
         self.filter_ui.subscription =
             Some(
@@ -397,6 +540,31 @@ impl LogView {
                     h_flex()
                         .gap_1()
                         .when(!chip.enabled, |chip| chip.opacity(0.5))
+                        .when(self.filter_ui.server, |row| {
+                            row.child(
+                                Button::new(("log-chip-execution", at))
+                                    .debug_selector(move || format!("log-chip-execution-{at}"))
+                                    .small()
+                                    .label(if chip.execution == FilterExecution::Server {
+                                        "Kibana"
+                                    } else {
+                                        "Loaded rows"
+                                    })
+                                    .selected(chip.execution == FilterExecution::Server)
+                                    .tooltip("Switch where this chip runs")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if let Some(chip) = this.filter_ui.chips.get_mut(at) {
+                                            chip.execution =
+                                                if chip.execution == FilterExecution::Server {
+                                                    FilterExecution::Local
+                                                } else {
+                                                    FilterExecution::Server
+                                                };
+                                            this.sync_chips(window, cx);
+                                        }
+                                    })),
+                            )
+                        })
                         .child(self.filter_popover(
                             format!("log-chip-{at}").into(),
                             chip.label(),
@@ -694,6 +862,11 @@ impl LogView {
             input.set_value(self.query_text.clone(), window, cx)
         });
         self.filter = state.filter;
+        if self.filter_ui.server {
+            let local = self.local_chip_query();
+            self.filter.query = (!local.is_empty()).then_some(local);
+            self.emit_chip_change(cx);
+        }
         self.refilter(cx);
         cx.notify();
     }
@@ -701,9 +874,27 @@ impl LogView {
 
 impl LogView {
     /// Source adapters can inspect the typed chip contract without reading UI
-    /// controls. Execution describes ownership; it does not alter matching yet.
+    /// controls. An enabled remote adapter owns Server execution; those chips
+    /// are excluded from the local matcher.
     #[allow(dead_code)]
     pub(crate) fn filter_chips(&self) -> &[FilterChip] {
         &self.filter_ui.chips
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct FilterChipsChanged(pub Vec<FilterChip>);
+impl EventEmitter<FilterChipsChanged> for LogView {}
+
+#[cfg(test)]
+impl LogView {
+    pub(super) fn filter_picker_for_test(&self) -> Option<Entity<ValuePicker>> {
+        self.filter_ui.picker.borrow().clone()
+    }
+}
+#[cfg(test)]
+impl ValuePicker {
+    pub(super) fn counts_for_test(&self) -> Option<Result<Arc<ColumnCounts>, String>> {
+        self.counts.clone()
     }
 }

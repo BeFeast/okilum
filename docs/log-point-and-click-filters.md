@@ -12,9 +12,11 @@ parse error. Clear all also clears disabled chips, free text, level and time.
 Public types live in okilum_core::log::chips:
 
 - FilterChip carries a FieldRef, typed FilterValue list, FilterMode, enabled and
-  FilterExecution. Execution defaults to Local; Server is reserved for source
-  adapters to mark where a filter is executed. This change evaluates every chip
-  through the existing local query engine.
+  FilterExecution. Execution defaults to Local. Generic views evaluate chips
+  through the existing local engine. A remote adapter opts into server ownership
+  with LogView::enable_server_filters; Server chips then leave the local matcher
+  and FilterChipsChanged carries the complete typed state to the adapter. The
+  advanced query box continues to display the combined chip expressions.
 - FilterValue distinguishes Missing from String, Number, Bool, Null, Array and
   Object. Strings use decoded field text. Other values preserve their canonical
   source text. Empty strings and the words null/false remain strings.
@@ -25,7 +27,13 @@ Public types live in okilum_core::log::chips:
   CountSource slices and returns Result<ColumnCounts, String>. ColumnCounts
   includes its scope label and ValueCount list. LoadedRowCountProvider labels its
   results "in loaded rows" and counts each record once per distinct typed value.
-  A future server provider can return its own scope label and error.
+  The Kibana provider returns window counts, bounds and quality with its own
+  scope label. Its picker can independently switch to loaded-row counts.
+- ColumnCountProvider::canonical_field defaults to identity. Remote providers
+  bind display roles to a unique underlying field before recording a chip. This
+  preserves editability after a server query returns zero rows; ambiguous roles
+  remain explicit. Kibana role identities are derived with EventWindow off the
+  UI thread.
 - LogView::set_count_provider installs an Arc of the provider. Calls execute on
   the background executor when a picker opens. Reopening takes a fresh snapshot;
   an already open picker shows the snapshot it counted. Counting and value search
@@ -37,7 +45,9 @@ coexists with the legacy coercing operators, whose behavior is unchanged. @time
 and @source refer to the displayed role/source inside typed conditions; quoted
 keys with those names remain raw fields. Source expressions are bound per file
 before the ordinary engine evaluates it. No source-specific matching engine is
-introduced.
+introduced. The guided Kibana adapter compiles supported scalar chips to server
+DSL; unsupported semantics remain errors or explicitly local chips. See
+[guided investigation](kibana-guided-investigation.md).
 
 SavedQuery keeps filter_chips (including disabled state and execution location)
 and optional columns alongside the existing canonical query. Old saved queries
@@ -52,4 +62,6 @@ multiselect, exclusion, disabling, clearing, appended records, source binding,
 row-count deduplication and saved-state compatibility. GPUI tests deliver mouse
 press and release in separate frames for cell context actions, header multiselect,
 chip editing, disabling, removal, clearing, follow, same-source reload and saved
-views. Run the entire okilum-shell crate as well as core log tests on a build slot.
+views. For the guided Kibana gate, run filtered reader_log and shortcut shell
+targets (two test threads), plus core log/remote_log tests, in a build slot. An
+unrelated full-suite abort before the target tests is not evidence for them.

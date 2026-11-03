@@ -1,9 +1,6 @@
 use super::*;
 use ::core::prelude::v1::test;
-use okilum_core::remote_log::{
-    fake::{investigation_record, FakeKibana, Scenario},
-    transport::ApiKey,
-};
+use okilum_core::remote_log::fake::{investigation_record, FakeKibana, Scenario};
 
 fn settle(visual: &mut VisualTestContext) {
     visual.run_until_parked();
@@ -81,15 +78,17 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
     visual.simulate_resize(size(px(1600.), px(1600.)));
     let panel = entity.unwrap();
     settle(visual);
-    panel.update(visual, |panel, _| {
+    panel.update_in(visual, |panel, window, cx| {
         panel.sources = vec![source.clone()];
-        panel.busy = true;
-        panel.generation = panel.worker.apply(
-            source.clone(),
-            ApiKey::new(b"test-secret".to_vec()).unwrap(),
-        );
+        panel.guided.test_key = Some(b"test-secret".to_vec());
+        panel.choose(source.clone(), window, cx);
+        panel.apply(window, cx);
     });
-    wait_for(visual, &panel, |panel| !panel.busy && panel.view.is_some());
+    wait_for(visual, &panel, |panel| {
+        !panel.busy
+            && panel.view.is_some()
+            && panel.guided.catalog.as_ref().is_some_and(Result::is_ok)
+    });
     let view = panel.read_with(visual, |panel, _| panel.view.clone().unwrap());
     let initial = panel.read_with(visual, |panel, _| panel.data.clone().unwrap());
     assert_eq!(
@@ -121,6 +120,10 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
         view.select(selected, true, window, cx);
     });
     settle(visual);
+    wait_for(visual, &panel, |panel| {
+        !panel.busy && panel.guided.catalog.as_ref().is_some_and(Result::is_ok)
+    });
+    let initial = panel.read_with(visual, |panel, _| panel.data.clone().unwrap());
     let parent_chips = view.read_with(visual, |view, _| view.filter_chips().to_vec());
     click(visual, "log-show-request");
     wait_for(visual, &panel, |panel| {
@@ -184,6 +187,9 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
             cx,
         );
     });
+    wait_for(visual, &panel, |panel| {
+        !panel.busy && panel.guided.catalog.as_ref().is_some_and(Result::is_ok)
+    });
     let chips = view.read_with(visual, |view, _| view.filter_chips().to_vec());
     assert_eq!(
         chips.len(),
@@ -237,7 +243,7 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
     });
     assert_eq!(
         saved.remote_source.as_ref().unwrap().discover.filters.len(),
-        2
+        3
     );
     assert_eq!(saved.remote_range.as_ref(), Some(&source.discover.time));
     assert_eq!(saved.message_field.as_deref(), Some("details"));
@@ -259,7 +265,7 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
             panel.error.is_none(),
             "same-source saved views reuse the scoped worker credential"
         );
-        assert_eq!(panel.requested.as_ref().unwrap().discover.filters.len(), 2);
+        assert_eq!(panel.requested.as_ref().unwrap().discover.filters.len(), 3);
         assert_eq!(view.read(cx).message_field(cx).as_deref(), Some("details"));
         assert_eq!(view.read(cx).filter_chips(), chips);
         assert_eq!(panel.data.as_ref().unwrap().events.len(), 102);

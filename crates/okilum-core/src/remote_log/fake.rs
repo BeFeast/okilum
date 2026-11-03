@@ -25,6 +25,7 @@ pub struct Scenario {
     pub lower_bound: bool,
     pub status_denied: bool,
     pub data_view_denied: bool,
+    pub catalog_status: Option<u16>,
     pub reject: bool,
     pub malformed: bool,
     pub unavailable: bool,
@@ -222,6 +223,23 @@ fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<(
                 (403, json!({"error":"status unavailable"}))
             } else {
                 (200, json!({"version":{"number":"10.1.2"}}))
+            }
+        } else if path.starts_with("/internal/data_views/_fields_for_wildcard?") {
+            let fields = vec![
+                json!({"name":"service","type":"string","esTypes":["text"],"aggregatable":false,"searchable":true}),
+                json!({"name":"service.keyword","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true,"subType":{"multi":{"parent":"service"}}}),
+                json!({"name":"level","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true}),
+                json!({"name":"request_id","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true}),
+                json!({"name":"flow","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true}),
+                json!({"name":"duration","type":"number","esTypes":["long"],"aggregatable":true,"searchable":true}),
+                json!({"name":"active","type":"boolean","esTypes":["boolean"],"aggregatable":true,"searchable":true}),
+                json!({"name":"details","type":"string","esTypes":["text"],"aggregatable":false,"searchable":true}),
+                json!({"name":"details.keyword","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true,"subType":{"multi":{"parent":"details"}}}),
+            ];
+            if let Some(status) = s.scenario.catalog_status {
+                (status, json!({"error":"synthetic catalog unavailable"}))
+            } else {
+                (200, json!({"fields":fields}))
             }
         } else if path.contains("/api/data_views/data_view/") {
             if s.scenario.data_view_denied {

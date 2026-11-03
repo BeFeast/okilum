@@ -1,6 +1,7 @@
 //! Vault-scoped Kibana sources and bounded, session-only history (#1441).
 //! Source definitions contain no credentials. Live completeness is not inferred
 //! from event timestamps, bounded compatibility checks, or history pagination.
+pub mod chips;
 pub mod discover;
 #[cfg(any(test, debug_assertions))]
 #[doc(hidden)]
@@ -37,6 +38,9 @@ pub struct Source {
     pub index_pattern: Option<String>,
     #[serde(default = "default_time_field")]
     pub time_field: String,
+    /// User-pinned scope fields. Keys are discovered, never dataset-specific.
+    #[serde(default)]
+    pub scope_fields: Vec<String>,
 }
 impl Source {
     pub fn import(name: &str, input: &str) -> Result<Self> {
@@ -52,6 +56,7 @@ impl Source {
             discover,
             index_pattern: None,
             time_field: default_time_field(),
+            scope_fields: Vec::new(),
         })
     }
     pub fn direct(name: &str, endpoint: &str, pattern: &str, time_field: &str) -> Result<Self> {
@@ -66,6 +71,7 @@ impl Source {
             endpoint: endpoint.trim().trim_end_matches('/').into(),
             index_pattern: Some(pattern.trim().into()),
             time_field: time_field.clone(),
+            scope_fields: Vec::new(),
             discover: discover::Discover {
                 data_view: pattern.trim().into(),
                 query: discover::Query {
@@ -87,6 +93,16 @@ impl Source {
         };
         source.validate()?;
         Ok(source)
+    }
+    /// The dataset context of a query, independent of filters and presentation.
+    pub fn identity_scope(&self) -> Result<String> {
+        Ok(serde_json::to_string(&(
+            self.id,
+            &self.endpoint,
+            &self.discover.data_view,
+            &self.index_pattern,
+            &self.time_field,
+        ))?)
     }
     /// Include the endpoint to prevent an edited source redirecting an existing key.
     pub fn credential_url(&self, vault: &Path) -> String {
@@ -116,6 +132,20 @@ impl Source {
         if let Some(pattern) = &self.index_pattern {
             validate_pattern(pattern)?;
         }
+        ensure!(
+            self.scope_fields.len() <= 16
+                && self
+                    .scope_fields
+                    .iter()
+                    .all(|f| !f.is_empty() && f.len() <= 256)
+                && self
+                    .scope_fields
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == self.scope_fields.len(),
+            "Pin at most 16 distinct scope fields of 1–256 bytes"
+        );
         self.discover.validate()
     }
 }
@@ -215,6 +245,8 @@ pub struct EventWindow {
     pub identity_scope: String,
     /// Observed source paths; counts describe loaded documents, not the whole index.
     pub fields: Vec<result::FieldInfo>,
+    /// Exhaustive role identities, derived off the UI thread with the window.
+    role_fields: Vec<(crate::log::Role, Option<String>)>,
 }
 impl EventWindow {
     pub fn new(events: Vec<Arc<serde_json::Value>>, source: &Source) -> Result<Self> {
@@ -245,20 +277,46 @@ impl EventWindow {
         }
         let index = crate::log::LogIndex::build(&bytes);
         let fields = result::describe_fields(&events);
+        use crate::log::Role;
+        let mut roles = [Role::Time, Role::Level, Role::Message, Role::Logger]
+            .map(|role| (role, std::collections::BTreeSet::new()));
+        for at in 0..index.len() {
+            if let Some(record) = index.raw(&bytes, at).and_then(|raw| index.record(raw)) {
+                for (role, keys) in &mut roles {
+                    if let Some(field) = record.role(*role) {
+                        keys.insert(field.key.clone());
+                    }
+                }
+            }
+        }
+        let role_fields = roles
+            .into_iter()
+            .map(|(role, keys)| {
+                let key = if keys.len() == 1 {
+                    keys.into_iter().next()
+                } else {
+                    None
+                };
+                (role, key)
+            })
+            .collect();
         Ok(Self {
             fields,
+            role_fields,
             events,
             bytes,
             index,
             path: std::path::PathBuf::from(format!("kibana-{}.jsonl", source.id)),
-            identity_scope: serde_json::to_string(&(
-                source.id,
-                &source.endpoint,
-                &source.discover.data_view,
-                &source.index_pattern,
-                &source.time_field,
-            ))?,
+            identity_scope: source.identity_scope()?,
         })
+    }
+    /// None means absent or ambiguous, never a guessed first row's field.
+    pub fn role_field(&self, role: crate::log::Role) -> Option<&str> {
+        self.role_fields
+            .iter()
+            .find(|(kind, _)| *kind == role)?
+            .1
+            .as_deref()
     }
     pub fn export(&self, out: &mut dyn std::io::Write) -> Result<()> {
         for event in &self.events {
