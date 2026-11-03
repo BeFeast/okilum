@@ -107,6 +107,8 @@ impl Board {
             .debug_selector(move || namespace.into())
             .items_start()
             .min_w_0()
+            // Expanded cards and narrow centers contain the intrinsic table.
+            .overflow_x_scroll()
             .gap_1()
             .text_size(px(12.));
         let line_id = format!("{namespace}-line");
