@@ -2204,6 +2204,15 @@ fn live_blocks(
                             )
                         });
                         if opened {
+                            if let Some(at) = crate::source_presentation::table_cell_offset(
+                                &source,
+                                cell.row,
+                                cell.column,
+                            ) {
+                                grid.update(cx, |grid, _| {
+                                    grid.remember_source_press(*stamp, event.position, base + at)
+                                });
+                            }
                             cx.stop_propagation();
                             return;
                         }

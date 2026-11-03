@@ -1,0 +1,200 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -427,10 +427,9 @@
+         std::cell::RefCell<Option<(SourceStamp, Vec<(std::ops::Range<usize>, Bounds<Pixels>)>)>>,
+     /// Where the block element under the current press asks it to land.
+     block_press: crate::input::projection::BlockPressSlot,
+-    /// The source range of the rendered block the last press revealed, for
+-    /// the revision it revealed: the next press of a double-click selects the
+-    /// whole block's source (#1642).
+-    revealed_block: Option<(SourceStamp, std::ops::Range<usize>)>,
++    /// Exact hit from the first press, retained across its reveal/repaint so
++    /// the second press uses rendered geometry rather than the new raw rows.
++    revealed_block: Option<(SourceStamp, Point<Pixels>, usize)>,
+     /// Last measured height of each block, by block key. One entry per block:
+     /// while the width changes (resize), rows keep the last height and the
+     /// next measurement corrects it, so nothing flashes or drifts.
+@@ -2729,6 +2728,7 @@
+         // geometry under the pointer is not the source's (#1067).
+         let revealed = self.revealed_block.take();
+         if let Some((target, block)) = self.block_press_target(event, offset) {
++            self.preserve_source_anchor(block.start);
+             self.selecting = false;
+             self.projection_mouse_hold = false;
+             cx.emit(crate::input::projection::SourceClick {
+@@ -2736,32 +2736,27 @@
+                 offset: crate::input::projection::SourceByte(target),
+                 event: event.clone(),
+             });
+-            if event.click_count >= 2 {
+-                // Both presses of the double-click landed before a repaint.
+-                self.select_block_source(block, cx);
+-            } else {
+-                self.revealed_block = Some((self.source_stamp(), block));
+-                self.move_to(target, None, cx);
+-            }
++            self.revealed_block = Some((self.source_stamp(), event.position, target));
++            self.move_to(target, None, cx);
+             self.projection.presentation_changed();
+             self.refresh_projection();
+             cx.notify();
+             return;
+         }
+-        // The second press of a double-click on a rendered block selects the
+-        // source the first press revealed, not a word of it (#1642).
+-        if let Some((_, block)) = revealed.filter(|(stamp, block)| {
++        // Revealing the block can move its raw rows under the pointer. A
++        // double-click retains the first press's exact rendered hit (#1642).
++        if let Some((_, _, target)) = revealed.filter(|(stamp, position, _)| {
+             *stamp == self.source_stamp()
+                 && self.projection.enabled
+                 && event.button == MouseButton::Left
+                 && event.click_count == 2
+                 && !event.modifiers.shift
+-                && block.start <= offset
+-                && offset <= block.end
++                && (event.position.x - position.x).abs() <= px(5.)
++                && (event.position.y - position.y).abs() <= px(5.)
+         }) {
+             self.selecting = false;
+             self.projection_mouse_hold = false;
+-            self.select_block_source(block, cx);
++            self.move_to(target, None, cx);
+             cx.notify();
+             return;
+         }
+@@ -2851,20 +2846,6 @@
+         } else {
+             self.move_to_with_affinity(offset, None, line_end_affinity, cx)
+         }
+-    }
+-
+-    /// Select a rendered block's whole source, caret at its start so the view
+-    /// stays where the block begins.
+-    fn select_block_source(&mut self, block: std::ops::Range<usize>, cx: &mut Context<Self>) {
+-        self.selected_range = (block.start..block.end).into();
+-        self.selection_reversed = true;
+-        self.selected_word_range = None;
+-        self.cursor_line_end_affinity = false;
+-        self.cursor_bidi_affinity = Affinity::Before;
+-        self.preferred_column = None;
+-        self.sync_projection_active();
+-        self.refresh_projection();
+-        cx.notify();
+     }
+
+     /// The source offset a plain left press inside a painted block lands on,
+@@ -3452,6 +3433,42 @@
+             }
+             y += line.size(&last.rows).height;
+         }
++    }
++
++    /// Retain a visible authored-source row during an explicit presentation
++    /// change. This uses painted geometry, without materializing source bytes.
++    pub fn preserve_source_anchor(&mut self, source: usize) {
++        let Some(last) = self.last_layout.as_ref().filter(|last| last.source_stamp == self.source_stamp()) else { return; };
++        if source > self.text.len() { return; }
++        // Prefer an unchanged visible row above the transitioning block. Its
++        // metrics cannot depend on the block's rendered content or grid lease.
++        let source = last.visible_line_byte_offsets.iter()
++            .filter_map(|&at| last.source(at, ConcealBias::Right))
++            .filter(|&at| at <= source)
++            .find(|&at| {
++                let row = self.display_map.offset_to_wrap_display_point_with_affinity(at, false).row;
++                last.rows.row_top(row) + self.scroll_handle.offset().y >= px(0.)
++            }).unwrap_or(source);
++        let row = self.display_map.offset_to_wrap_display_point_with_affinity(source, false).row;
++        // Anchor row tops. The glyph inside a rendered block is vertically
++        // centered in its measured row; retaining that glyph's inset introduces
++        // a jump when prepaint restores the raw row's top.
++        let y = last.rows.row_top(row);
++        let screen_y = y + self.scroll_handle.offset().y;
++        if screen_y >= px(0.) && screen_y < self.input_bounds.size.height {
++            self.zoom_anchor = Some((source, y, false));
++        }
++    }
++
++    /// Change a presentation-only source selection while retaining its visible
++    /// anchor. In particular, closing a tall block must not follow the logical
++    /// return caret below it and scroll the block out of view.
++    pub fn set_selected_range_preserving_view(&mut self, range: Range<usize>, anchor: usize, cx: &mut Context<Self>) {
++        let scroll = self.scroll_handle.offset();
++        self.preserve_source_anchor(anchor);
++        self.set_selected_range(range, cx);
++        self.deferred_scroll_offset = Some(scroll);
++        self.last_selected_range = Some(self.selected_range);
+     }
+
+     /// Set scroll offset of the editor viewport.
+@@ -5981,12 +5998,10 @@
+         }
+     }
+
+-    /// #1642: a double-click on a rendered block opens its source with the
+-    /// whole block selected, whether or not the first press's reveal was
+-    /// painted before the second press. A plain double-click on text still
+-    /// selects a word.
++    /// #1642: both presses keep the exact rendered hit, whether or not the
++    /// reveal repaints between presses. Plain text still selects a word.
+     #[gpui::test]
+-    fn double_click_on_a_rendered_block_selects_its_whole_source(cx: &mut TestAppContext) {
++    fn double_click_on_a_rendered_block_keeps_its_exact_source_hit(cx: &mut TestAppContext) {
+         const TEXT: &str = "top word\n| a |\n|---|\n| b |\nbottom";
+         let block = TEXT.find('|').unwrap()..TEXT.rfind('|').unwrap() + 1;
+         for repaint_between in [true, false] {
+@@ -6038,6 +6053,8 @@
+                 });
+             };
+             press(&mut v, inside, 1);
++            let target = v.update(|_, cx| view.input.read(cx).cursor());
++            assert!(block.contains(&target), "positive control: the first press hit the block");
+             if repaint_between {
+                 v.run_until_parked();
+                 v.update(|_, cx| {
+@@ -6051,8 +6068,8 @@
+             v.run_until_parked();
+             v.update(|_, cx| {
+                 let state = view.input.read(cx);
+-                assert_eq!(state.selected_range(), block, "repaint between presses: {repaint_between}");
+-                assert_eq!(state.cursor(), block.start, "the caret stays at the block start");
++                assert_eq!(state.selected_range(), target..target, "repaint between presses: {repaint_between}");
++                assert_eq!(state.value().as_ref(), TEXT);
+             });
+             // Positive control: a double-click on plain text selects a word.
+             press(&mut v, word, 1);
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -2066,6 +2066,7 @@
+     /// The string is materialized on each call. See [`Self::text`] for the
+     /// [`Rope`] the state owns, which is borrowed and costs nothing to read.
+     pub fn value(&self) -> SharedString {
++        crate::input::projection::record_flattened_bytes(self.text.len());
+         SharedString::new(self.text.to_string())
+     }
+
+diff --git a/crates/base/src/input/source_text.rs b/crates/base/src/input/source_text.rs
+--- a/crates/base/src/input/source_text.rs
++++ b/crates/base/src/input/source_text.rs
+@@ -74,6 +74,8 @@
+
+ thread_local! { static FLATTENED: std::cell::Cell<usize> = const {std::cell::Cell::new(0)}; }
+ pub fn take_flattened_bytes() -> usize { FLATTENED.with(|n|n.replace(0)) }
++// Include the legacy native value() escape hatch in source-work diagnostics.
++pub(crate) fn record_flattened_bytes(bytes: usize) { FLATTENED.with(|n|n.set(n.get()+bytes)); }
+
+ #[cfg(test)]
+ mod tests {
+diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -15,6 +15,7 @@
+ #[path = "source_text.rs"]
+ mod source_text;
+ pub use source_text::{SourceText, EditDelta, take_flattened_bytes};
++pub(crate) use source_text::record_flattened_bytes;
+
+ /// Maximum canonical bytes admitted to native projected layout and anchoring.
+ pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
