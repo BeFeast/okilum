@@ -1,4 +1,6 @@
 //! Disposable Syncthing daemons only; no user inventory, config or lifecycle.
+#[path = "fixture_process.rs"]
+mod fixture_process;
 use anyhow::{ensure, Context, Result};
 use okilum_sync::Syncthing;
 use serde_json::json;
@@ -190,28 +192,10 @@ print(g.find('apikey').text)
         Ok(())
     }
     pub fn start(&mut self) -> Result<()> {
+        self.stop()?;
         let log = fs::File::create(self.home.join("fixture.log"))?;
-        let mut command = Command::new(&self.binary);
-        // #2498: ordinary completion/panic uses Drop + kill/wait below. If the
-        // fixture test process is cancelled/killed, kill its daemon as well;
-        // the CI subreaper then waits for the adopted child. Close the race
-        // where the parent dies before pre_exec installs the death signal.
-        #[cfg(target_os = "linux")]
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            let parent = libc::getpid();
-            command.pre_exec(move || {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::getppid() != parent {
-                    return Err(std::io::Error::from_raw_os_error(libc::ECHILD));
-                }
-                Ok(())
-            });
-        }
-        self.child = Some(
-            command
+        self.child = Some(fixture_process::spawn(
+            Command::new(&self.binary)
                 .env_clear()
                 .args([
                     "serve",
@@ -225,17 +209,13 @@ print(g.find('apikey').text)
                 .env("GOMAXPROCS", "2")
                 .env("STMONITORED", "1")
                 .stdout(log.try_clone()?)
-                .stderr(log)
-                .spawn()?,
-        );
+                .stderr(log),
+        )?);
         wait("REST ready", || Ok(self.api.identity().is_ok()))
     }
     pub fn stop(&mut self) -> Result<()> {
         if let Some(mut child) = self.child.take() {
-            if child.try_wait()?.is_none() {
-                child.kill()?;
-            }
-            child.wait()?;
+            fixture_process::stop(&mut child)?;
         }
         Ok(())
     }

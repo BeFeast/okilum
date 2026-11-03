@@ -10,6 +10,7 @@ mod link_complete;
 mod lists;
 mod live_preview;
 mod math_preview;
+mod open_note_sync;
 mod paste_jobs;
 mod recovery;
 mod status;
@@ -85,6 +86,50 @@ const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 /// notice with it and leaves any other notice alone (#1376).
 const CONFLICT_NOTICE: &str = "This file changed outside Okilum.";
 
+fn conflict_copy_rel(current_rel: &str) -> String {
+    let path = Path::new(current_rel);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let extension = path.extension().unwrap_or_default().to_string_lossy();
+    let id = uuid::Uuid::new_v4();
+    // This random discriminator is not a claim about a device identity.
+    let suffix: String = id
+        .as_bytes()
+        .iter()
+        .take(7)
+        .map(|b| b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[(b & 31) as usize] as char)
+        .collect();
+    let name = format!(
+        "{stem}.okilum-conflict-{}-{suffix}.{extension}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    );
+    // Syncthing prunes *.sync-conflict-*. Even an original named by Syncthing
+    // must not pass its retention marker on to an Okilum-owned copy.
+    let name = name.replace(".sync-conflict-", ".syncthing-conflict-");
+    okilum_core::vault::note_path(&path.with_file_name(name))
+}
+
+/// A disk reload keeps the native editor entity, focus, cursor and viewport.
+/// set_value deliberately clears undo: the old base must not be undoable over
+/// a newly arrived remote version without another revision-checked save.
+fn replace_clean_source(
+    input: &mut EditorState,
+    text: String,
+    window: &mut Window,
+    cx: &mut Context<EditorState>,
+) {
+    let selection = input.selected_range();
+    let cursor = input.cursor();
+    let directed = if cursor == selection.start && !selection.is_empty() {
+        selection.end..selection.start
+    } else {
+        selection
+    };
+    let scroll = input.scroll_offset();
+    input.set_value(text, window, cx);
+    input.set_selected_range_preserving_view(directed, cursor, cx);
+    input.set_scroll_offset(scroll, cx);
+}
+
 /// Paint-only status. Destructive actions keep using source_is_dirty, which
 /// reads the current native buffer directly rather than trusting this cache.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -129,6 +174,7 @@ pub(super) struct Editing {
     input: Entity<EditorState>,
     conflict: Option<String>,
     conflict_detected: bool,
+    conflict_copy: Option<(SourceStamp, String)>,
     compare: bool,
     save_failed: bool,
     protecting: bool,
@@ -186,8 +232,7 @@ fn edit_error_text(error: &anyhow::Error) -> String {
 
 /// The editor's notice for a note that went away (the deleted-note notice of
 /// #1986 says more and replaces it).
-pub(super) const MOVED_OR_DELETED_NOTICE: &str =
-    "This file was moved or deleted. Your edits are still here. Copy them or close, keeping a draft.";
+pub(super) const MOVED_OR_DELETED_NOTICE: &str = "This file was moved or deleted. Your edits are still here. Copy them or close, keeping a draft.";
 
 const DRAFT_WRITE_NOTICE: &str =
     "The recovery copy couldn’t be saved. Keep this window open and retry Save or copy your draft.";
@@ -347,6 +392,27 @@ pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
 }
 
 impl Editing {
+    fn replace_clean_source(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Reader>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            replace_clean_source(input, text, window, cx)
+        });
+        let snapshot = self.input.read(cx).source_snapshot();
+        self.draft_stamp = snapshot.stamp;
+        // The worker has already persisted this exact clean source. Bind the
+        // native reset to it now, so its new Rope identity is not queued later
+        // as unsaved typing. Genuine pending input keeps its recovery semantics.
+        self.store
+            .queue_reset_snapshot(DraftText::from_identified_rope(
+                snapshot.text.rope().clone(),
+                snapshot.text.id(),
+            ));
+    }
+
     pub(super) fn input(&self) -> &Entity<EditorState> {
         &self.input
     }
@@ -388,6 +454,7 @@ impl Editing {
             input,
             conflict,
             conflict_detected,
+            conflict_copy,
             compare,
             save_failed,
             protecting,
@@ -424,6 +491,7 @@ impl Editing {
             input,
             conflict,
             conflict_detected,
+            conflict_copy,
             compare,
             save_failed,
             protecting,
@@ -688,10 +756,9 @@ impl Reader {
         let reader_place = (!plain_file)
             .then(|| {
                 let top = self
-                    .content
-                    .read(cx)
-                    .list_state()
-                    .logical_scroll_top()
+                    .navigation
+                    .pending_landing
+                    .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top())
                     .item_ix;
                 Some((
                     top,
@@ -702,6 +769,7 @@ impl Reader {
             .flatten()
             .filter(|(top, _, _)| *top > 0);
         self.close_find(window, cx);
+        self.clear_landing_notice();
         // Cancel a pending navigation before exposing an editable snapshot.
         self.navigation.preparation_generation =
             self.navigation.preparation_generation.wrapping_add(1);
@@ -828,8 +896,24 @@ impl Reader {
             if editing.input.entity_id() != input.entity_id() {
                 return;
             }
+            if this.clear_landing_notice() {
+                // Typing normally avoids a Reader render. Retiring a visible
+                // landing toast must explicitly synchronize its presentation.
+                cx.notify();
+            }
+            let Some(editing) = &mut this.editing else {
+                return;
+            };
             let snapshot = input.read(cx).source_snapshot();
             let source_stamp = snapshot.stamp;
+            if editing.conflict_detected
+                && editing
+                    .conflict_copy
+                    .as_ref()
+                    .is_some_and(|(stamp, _)| *stamp != source_stamp)
+            {
+                this.link_notice = Some(format!("{CONFLICT_NOTICE} Your latest edits are not in the saved copy. Save or Keep both versions to save another copy. Reload will keep your latest edits in a new copy first.").into());
+            }
             let value = okilum_core::source_projection::revision::Text::from_identified_rope(
                 snapshot.text.rope().clone(),
                 snapshot.text.id(),
@@ -1124,6 +1208,7 @@ impl Reader {
             input: input.clone(),
             conflict: None,
             conflict_detected: false,
+            conflict_copy: None,
             compare: false,
             save_failed: false,
             protecting: false,
@@ -1195,7 +1280,7 @@ impl Reader {
                     .as_ref()
                     .is_some_and(|e| e.input.entity_id() == input_id && e.save_pending)
                 {
-                    this.save_source(cx);
+                    this.save_source_explicit(cx);
                 }
             });
         })
@@ -1341,6 +1426,7 @@ impl Reader {
                         editing.conflict_detected = result == Save::Conflict;
                         if result == Save::Conflict {
                             this.link_notice = Some(format!("{CONFLICT_NOTICE} Your edits are still here. Reload, keep your version, or compare before saving.").into());
+                            this.describe_source_conflict(cx);
                         } else {
                             editing.save_failed = false;
                             editing.compare = false;
@@ -1349,7 +1435,7 @@ impl Reader {
                             }
                             if this.link_notice.as_deref().is_some_and(|n| n.starts_with(CONFLICT_NOTICE)) { this.link_notice = None; }
                             if let Some(updated) = replacement {
-                                editing.input.update(cx, |input, cx| input.set_value(updated, window, cx));
+                                editing.replace_clean_source(updated, window, cx);
                                 editing.saved_at = None;
                             }
                         }
@@ -1456,9 +1542,7 @@ impl Reader {
                 } else if editing.store.text() != text {
                     outcome = "replaced";
                     let updated = editing.store.text().to_owned();
-                    editing
-                        .input
-                        .update(cx, |input, cx| input.set_value(updated, window, cx));
+                    editing.replace_clean_source(updated, window, cx);
                     editing.conflict = None;
                     editing.conflict_detected = false;
                     editing.save_failed = false;
@@ -1589,6 +1673,26 @@ impl Reader {
         self.save_source_outcome(cx).0
     }
 
+    /// Only a deliberate Save/Keep both may publish a conflict copy. Lifecycle
+    /// saves protect the latest recovery draft without adding files to the vault.
+    fn save_source_explicit(&mut self, cx: &mut Context<Self>) -> bool {
+        if let Some(editing) = &mut self.editing {
+            editing.save_pending = false;
+        }
+        let (saved, protected) = self.save_source_outcome(cx);
+        if !saved
+            && protected
+            && self.deleted_note.is_none()
+            && self
+                .editing
+                .as_ref()
+                .is_some_and(|e| e.conflict_detected && e.conflict.is_some())
+        {
+            self.keep_both_source(cx);
+        }
+        saved
+    }
+
     fn save_source_outcome(&mut self, cx: &mut Context<Self>) -> (bool, bool) {
         if self.editing.as_ref().is_some_and(|editing| {
             editing
@@ -1603,7 +1707,7 @@ impl Reader {
         let Some(editing) = &mut self.editing else {
             return (true, true);
         };
-        editing.save_pending = false;
+        let explicit_pending = std::mem::take(&mut editing.save_pending);
         editing.recovery_pending = None;
         editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
         editing.protecting = false;
@@ -1689,6 +1793,15 @@ impl Reader {
                 false
             }
         };
+        if !saved && explicit_pending && self.editing.as_ref().is_some_and(|e| e.conflict_detected)
+        {
+            // A blur/deactivate between the Save request and its next-frame
+            // callback only protected the draft. It must not consume Save.
+            self.editing.as_mut().unwrap().save_pending = true;
+        }
+        if !saved {
+            self.describe_source_conflict(cx);
+        }
         (saved, protected)
     }
     /// Autosave (#1353): one second after the last edit, save on a worker so
@@ -1906,6 +2019,7 @@ impl Reader {
                 self.link_notice = Some(file_access_notice(&error).into());
             }
         }
+        self.describe_source_conflict(cx);
         cx.notify();
     }
 
@@ -2045,6 +2159,20 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Keep both promises preservation. A later Reload must not throw away
+        // typing since that copy (even before mutation subscribers have run).
+        // Revalidate the copy's bytes too: it may have been changed or removed.
+        if reload
+            && self
+                .editing
+                .as_ref()
+                .is_some_and(|e| e.conflict_detected && e.conflict_copy.is_some())
+        {
+            let (_, protected) = self.save_source_outcome(cx);
+            if !protected || !self.keep_both_source(cx) {
+                return;
+            }
+        }
         let Some(mut editing) = self.editing.take() else {
             return;
         };
@@ -2106,6 +2234,133 @@ impl Reader {
         }
         cx.notify();
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn describe_source_conflict(&self, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_ref().filter(|e| e.conflict_detected) else {
+            return;
+        };
+        let Some(reviewed) = editing.conflict.clone() else {
+            return;
+        };
+        let Some(controller) = reader_settings_sync::active_controller(cx) else {
+            return;
+        };
+        let input = editing.input.entity_id();
+        let root = self.vault_root.clone();
+        let rel = self.current_rel.clone();
+        let target_root = root.clone();
+        let target_rel = rel.clone();
+        cx.spawn(async move |this, cx| {
+            let text = reviewed.clone();
+            let name = cx
+                .background_executor()
+                .spawn(async move {
+                    controller
+                        .file_change_origin(&target_root, &target_rel, &text)
+                        .ok()
+                        .flatten()
+                })
+                .await;
+            let Some(name) = name else {
+                return;
+            };
+            let _ = this.update(cx, |reader, cx| {
+                if reader.vault_root != root || reader.current_rel != rel {
+                    return;
+                }
+                if reader.editing.as_ref().is_some_and(|e| {
+                    e.input.entity_id() == input
+                        && e.conflict_detected
+                        && e.conflict.as_ref() == Some(&reviewed)
+                }) {
+                    if let Some(notice) = reader
+                        .link_notice
+                        .as_deref()
+                        .filter(|n| n.starts_with(CONFLICT_NOTICE))
+                    {
+                        reader.link_notice = Some(
+                            notice
+                                .replacen(
+                                    CONFLICT_NOTICE,
+                                    &format!(
+                                        "{CONFLICT_NOTICE} A newer version arrived from {name}."
+                                    ),
+                                    1,
+                                )
+                                .into(),
+                        );
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn describe_source_conflict(&self, _cx: &mut Context<Self>) {}
+
+    /// Explicit Save/Keep both publishes the latest local buffer as a new
+    /// conflict note. The incoming canonical note is never replaced. Keep the
+    /// conflict open until the person chooses which document to continue with.
+    fn keep_both_source(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(editing) = self.editing.as_mut().filter(|e| e.conflict_detected) else {
+            return false;
+        };
+        let stamp = editing.input.read(cx).source_stamp();
+        let text = editing.input.read(cx).value().to_string();
+        let previous = editing
+            .conflict_copy
+            .as_ref()
+            .filter(|(revision, rel)| {
+                *revision == stamp
+                    && std::fs::read_to_string(self.vault_root.join(rel))
+                        .ok()
+                        .as_deref()
+                        == Some(text.as_str())
+            })
+            .map(|(_, rel)| rel.clone());
+        let rel = previous.unwrap_or_else(|| conflict_copy_rel(&self.current_rel));
+        let saved = editing
+            .conflict_copy
+            .as_ref()
+            .is_some_and(|(revision, old)| *revision == stamp && *old == rel)
+            && std::fs::read_to_string(self.vault_root.join(&rel))
+                .ok()
+                .as_deref()
+                == Some(text.as_str());
+        let result = if saved {
+            Ok(())
+        } else {
+            okilum_core::note_files::create_attachment_with_source(
+                &self.vault_root,
+                Path::new(&rel),
+                text.as_bytes(),
+            )
+        };
+        let kept = result.is_ok();
+        match result {
+            Ok(()) => {
+                editing.conflict_copy = Some((stamp, rel.clone()));
+                editing.save_failed = false;
+                self.link_notice = Some(format!("{CONFLICT_NOTICE} Both versions are kept. A local snapshot was saved as {rel}. The incoming file is unchanged. Reload keeps any later edits in another copy before loading the incoming file.").into());
+                self.queue_vault_mutation(
+                    okilum_core::Changes {
+                        changed: [rel].into(),
+                        ..Default::default()
+                    },
+                    cx,
+                );
+            }
+            Err(error) => {
+                editing.save_failed = true;
+                self.link_notice = Some(format!("{CONFLICT_NOTICE} Could not save both versions: {error:#}. Your draft is still protected; the incoming file is unchanged.").into());
+            }
+        }
+        cx.notify();
+        kept
+    }
+
     fn park_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editing) = &mut self.editing else {
             return;
@@ -2134,7 +2389,7 @@ impl Reader {
     /// #1296: scroll the new editor to the Reader's top block and start the
     /// caret there, so typing stays in view; a restored selection (#1095)
     /// elsewhere would be off screen. Undo still scrolls to its own edit
-    /// (#945). Skipped when the user typed or moved the caret meanwhile.
+    /// (#945). Skipped when the user typed, moved the caret or opened Find.
     fn place_editor_at_reader(
         &mut self,
         input: Entity<EditorState>,
@@ -2144,7 +2399,11 @@ impl Reader {
     ) {
         let untouched = {
             let input = input.read(cx);
-            (input.source_stamp(), input.selected_range())
+            (
+                input.source_stamp(),
+                input.selected_range(),
+                input.search_activation_revision(),
+            )
         };
         cx.spawn_in(window, async move |this, cx| {
             let line = cx
@@ -2157,7 +2416,7 @@ impl Reader {
             let Some(line) = line else {
                 return;
             };
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _window, cx| {
                 if this
                     .editing
                     .as_ref()
@@ -2166,17 +2425,28 @@ impl Reader {
                     return;
                 }
                 input.update(cx, |input, cx| {
-                    if (input.source_stamp(), input.selected_range()) != untouched {
+                    // Find does not move the editing selection. Its activation
+                    // still supersedes an older Reader-to-editor handoff, even
+                    // if Find has already closed when this parse completes.
+                    if (
+                        input.source_stamp(),
+                        input.selected_range(),
+                        input.search_activation_revision(),
+                    ) != untouched
+                    {
                         return;
                     }
-                    input.set_cursor_position(
-                        gpui_component::input::Position {
-                            line: line - 1,
-                            character: 0,
-                        },
-                        window,
-                        cx,
-                    );
+                    // Place the source selection without changing keyboard
+                    // focus (including an IME in a later sidebar action).
+                    use gpui_component::input::RopeExt as _;
+                    let offset =
+                        input
+                            .text()
+                            .position_to_offset(&gpui_component::input::Position {
+                                line: line - 1,
+                                character: 0,
+                            });
+                    input.set_selected_range(offset..offset, cx);
                     input.scroll_line_to_top(line as usize - 1, cx);
                 });
             });
@@ -2314,6 +2584,22 @@ impl Reader {
                                     |this, _, window, cx| this.resolve_source(false, window, cx),
                                 )),
                             )
+                            .when(self.deleted_note.is_none(), |row| {
+                                row.child(
+                                    reader_icon_button(
+                                        "source-keep-both",
+                                        IconName::Copy,
+                                        "Keep both versions",
+                                        cx,
+                                    )
+                                    .debug_selector(|| "source-keep-both".into())
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.save_source_explicit(cx);
+                                        },
+                                    )),
+                                )
+                            })
                             .child(
                                 reader_icon_button(
                                     "source-compare",
@@ -6065,7 +6351,9 @@ mod autosave_tests {
                     assert_eq!(frame.presentation_epoch, i.presentation_epoch());
                 });
                 let cache_kept = LIVE_PREPARES.with(|n| n.get()) == prepared;
-                println!("EDITOR_SAVE_WORK bytes={bytes} shared={shared} measured={measured:?} same_vault={same} cache_kept={cache_kept}");
+                println!(
+                    "EDITOR_SAVE_WORK bytes={bytes} shared={shared} measured={measured:?} same_vault={same} cache_kept={cache_kept}"
+                );
                 if !same
                     || !cache_kept
                     || measured.largest >= 16 * 1024

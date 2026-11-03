@@ -1,5 +1,7 @@
 #![cfg(target_os = "linux")]
 //! Isolated controller fixture; no user daemon, config or production endpoint.
+#[path = "support/fixture_process.rs"]
+mod fixture_process;
 use anyhow::{ensure, Context, Result};
 use okilum_sync::{Syncthing, FIXTURE_IGNORES};
 use okilum_sync_controller::{
@@ -106,8 +108,9 @@ print(g.find('apikey').text)
         Ok(())
     }
     fn start(&mut self) -> Result<()> {
+        self.stop()?;
         let log = fs::File::create(self.home.join("fixture.log"))?;
-        self.child = Some(
+        self.child = Some(fixture_process::spawn(
             Command::new(&self.binary)
                 .env_clear()
                 .args([
@@ -122,17 +125,13 @@ print(g.find('apikey').text)
                 .env("GOMAXPROCS", "2")
                 .env("STMONITORED", "1")
                 .stdout(log.try_clone()?)
-                .stderr(log)
-                .spawn()?,
-        );
+                .stderr(log),
+        )?);
         wait("REST ready", || Ok(self.api.identity().is_ok()))
     }
     fn stop(&mut self) -> Result<()> {
         if let Some(mut child) = self.child.take() {
-            if child.try_wait()?.is_none() {
-                child.kill()?;
-            }
-            child.wait()?;
+            fixture_process::stop(&mut child)?;
         }
         Ok(())
     }

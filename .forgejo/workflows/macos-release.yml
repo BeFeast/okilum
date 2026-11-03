@@ -1,19 +1,19 @@
-# Process v2: coalesced main beta, hosted by day and existing M4 lane at night.
+# Hourly green-main beta; hosted shipping only, corporate M4 CI stays disabled.
 name: macos-release
 
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
+      hourly_source:
+        description: 'Internal source-pinned hourly retry; revalidated against green main'
+        required: false
+        default: ''
       full_acceptance:
         description: 'Explicit manual full native regressions; automatic beta only builds'
         type: boolean
         default: false
-      beta_tick:
-        description: 'Internal automatic selector: frequent or daily; empty keeps manual behavior'
-        required: false
-        default: ''
       preview_pr:
         description: 'Internal PR preview: trusted open PR number'
         required: false
@@ -27,10 +27,10 @@ on:
         required: false
         default: ''
 
-# Finish the selected daily/manual snapshot even when main advances.
+# Cancel superseded hourly runs; explicit signing/archive runs remain isolated.
 concurrency:
-  group: ${{ github.event_name == 'schedule' && 'okilum-macos-select' || 'okilum-macos-build' }}
-  cancel-in-progress: false
+  group: macos-beta-${{ (github.event_name == 'schedule' || inputs.hourly_source != '') && 'hourly' || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   select:
@@ -73,11 +73,11 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
-          MACOS_BETA_TICK: ${{ inputs.beta_tick }}
+          OKILUM_SOURCE: ${{ inputs.source }}
+          HOURLY_SOURCE: ${{ inputs.hourly_source }}
           MACOS_PR_PREVIEWS_ENABLED: ${{ vars.OKILUM_MACOS_PR_PREVIEWS }}
           MACOS_PREVIEW_PR: ${{ inputs.preview_pr }}
           MACOS_PREVIEW_HEAD: ${{ inputs.preview_head }}
-          RELEASE_SCHEDULE: ${{ github.event.schedule }}
         run: python3 scripts/releases/coalesce.py macos
       - name: Select delivery route without a local fallback
         id: route
@@ -224,7 +224,7 @@ jobs:
 
   hosted-artifact:
     needs: select
-    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     runs-on: bridge
     timeout-minutes: 105
     steps:
@@ -267,14 +267,32 @@ jobs:
         run: python3 scripts/ci/github-macos-shipping.py
 
       - uses: https://code.forgejo.org/actions/upload-artifact@v3
-        if: github.event_name == 'push'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
           name: macos-publication
           path: ${{ runner.temp }}/publish/*
           retention-days: 7
       - name: Dispatch protected hosted beta publication
-        if: github.event_name == 'push'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}
         run: python3 scripts/releases/publication.py dispatch macos
+
+  shipping-status:
+    needs: [select, release, hosted-artifact]
+    if: always() && needs.select.outputs.build == 'true' && needs.select.outputs.source == github.sha && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: bridge
+    timeout-minutes: 2
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Keep Stable selector contexts on the beta source commit
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          SOURCE: ${{ needs.select.outputs.source }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python3 scripts/releases/hourly_beta.py shipping-status macos
