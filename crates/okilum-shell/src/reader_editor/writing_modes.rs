@@ -385,223 +385,238 @@ mod tests {
     }
 
     #[gpui::test]
+    fn typewriter_keeps_source_frames_centred_in_a_1_mib_note(cx: &mut TestAppContext) {
+        writing_geometry(cx, large_note(), false);
+    }
+
+    #[gpui::test]
     fn typewriter_keeps_actual_projected_frames_centred(cx: &mut TestAppContext) {
         let large = large_note();
         let end = large[..48 * 1024].rfind("## Section").unwrap();
         writing_geometry(cx, large[..end].to_owned(), true);
     }
 
-    fn writing_geometry(cx: &mut TestAppContext, note: String, require_projection: bool) {
-        for live in [false, true] {
-            let (reader, visual, _directory) = fixture(cx, &note);
-            reader.update_in(visual, |r, window, cx| {
-                r.editing.as_ref().unwrap().input.update(cx, |input, _| {
-                    input.enable_layout_diagnostics();
-                });
-                if r.editing.as_ref().unwrap().live_preview.enabled != live {
-                    r.toggle_live_preview(window, cx);
-                }
+    fn writing_geometry(cx: &mut TestAppContext, note: String, live: bool) {
+        let (reader, visual, _directory) = fixture(cx, &note);
+        reader.update_in(visual, |r, window, cx| {
+            r.editing.as_ref().unwrap().input.update(cx, |input, _| {
+                input.enable_layout_diagnostics();
             });
-            visual.run_until_parked();
-            let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
-            // Mid-note, at the start of a paragraph line.
-            let middle = note[note.len() / 2..].find("A paragraph").unwrap() + note.len() / 2;
-            input.update(visual, |input, cx| {
-                input.set_selected_range(middle..middle, cx)
+            if r.editing.as_ref().unwrap().live_preview.enabled != live {
+                r.toggle_live_preview(window, cx);
+            }
+        });
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        // Mid-note, at the start of a paragraph line.
+        let middle = note[note.len() / 2..].find("A paragraph").unwrap() + note.len() / 2;
+        input.update(visual, |input, cx| {
+            input.set_selected_range(middle..middle, cx)
+        });
+        off_centre(&input, visual);
+        visual.run_until_parked();
+        // Positive control: without the mode the caret is not centred.
+        let before = off_centre(&input, visual);
+        assert!(
+            before.is_none_or(|off| off.abs() > 2.),
+            "live={live}: control, the caret is {before:?} rows off without the mode"
+        );
+        visual.update(|_, cx| reader_ui_state::set_typewriter_mode(true, cx));
+        assert!(visual.update(|_, cx| reader_ui_state::typewriter_mode(cx)));
+        visual.run_until_parked();
+        assert!(input.read_with(visual, |input, _| input.is_typewriter()));
+        if live {
+            reader.read_with(visual, |r, _| {
+                let concealed = r.editing.as_ref().unwrap().live_preview.concealed_text();
+                assert!(
+                    concealed.is_some_and(|display| display.len() < note.len()),
+                    "the fixture must conceal Markdown, not merely enable Live"
+                );
             });
-            off_centre(&input, visual);
+            assert!(input.read_with(visual, |input, _| input
+                .layout_diagnostics()
+                .unwrap()
+                .projection_composes
+                > 0));
+        }
+        input.read_with(visual, |input, _| {
+            input.take_layout_frames();
+        });
+        visual.update(|_, cx| reader_ui_state::set_focus_mode(true, cx));
+        visual.run_until_parked();
+        assert!(!input.read_with(visual, |input, _| input.focus_lines().is_empty()));
+        // Enabling either mode is presentation-only.
+        assert_eq!(
+            input.read_with(visual, |input, _| input.value().to_string()),
+            note
+        );
+        assert_centred(&input, visual, &format!("live={live}: turned on"));
+
+        for (step, key) in ["x", "y", "z", "enter", "enter", "w"].iter().enumerate() {
+            visual.update(|window, cx| {
+                window.dispatch_keystroke(gpui::Keystroke::parse(key).unwrap(), cx);
+            });
+            assert_centred(&input, visual, &format!("live={live}: key {step} `{key}`"));
             visual.run_until_parked();
-            // Positive control: without the mode the caret is not centred.
-            let before = off_centre(&input, visual);
+            assert_centred(&input, visual, &format!("live={live}: key {step} settled"));
+        }
+        assert_ne!(
+            input.read_with(visual, |input, _| input.value().len()),
+            note.len()
+        );
+        for step in 0..6 {
+            visual.dispatch_action(gpui_component::input::Undo);
+            assert_centred(&input, visual, &format!("live={live}: Undo {step}"));
+            visual.run_until_parked();
+            assert_centred(&input, visual, &format!("live={live}: Undo {step} settled"));
+        }
+        assert_eq!(
+            input.read_with(visual, |input, _| input.value().to_string()),
+            note,
+            "live={live}: every edit undone without source mutation"
+        );
+
+        // IME uses the marked range's end as the caret and keeps exact Undo.
+        reader.update_in(visual, |_, window, cx| {
+            input.update(cx, |i, cx| {
+                let at = i.text().byte_to_utf16_idx(i.cursor());
+                i.replace_and_mark_text_in_range(Some(at..at), "中", Some(1..1), window, cx);
+                assert!(i.marked_text_range(window, cx).is_some());
+            });
+        });
+        assert_centred(&input, visual, "IME marked caret");
+        reader.update_in(visual, |_, window, cx| {
+            input.update(cx, |i, cx| i.unmark_text(window, cx));
+        });
+        visual.run_until_parked();
+        assert_centred(&input, visual, "IME committed");
+        visual.dispatch_action(gpui_component::input::Undo);
+        visual.run_until_parked();
+        assert_centred(&input, visual, "IME Undo");
+        assert_eq!(input.read_with(visual, |i, _| i.value().to_string()), note);
+
+        // Rewrapping changes the caret's visual row without a selection
+        // change. Typewriter must use the newly published row metrics.
+        visual.simulate_resize(size(px(720.), px(640.)));
+        visual.run_until_parked();
+        assert_centred(&input, visual, "rewrapped without moving the caret");
+
+        visual.simulate_resize(size(px(720.), px(700.)));
+        visual.run_until_parked();
+        assert_centred(
+            &input,
+            visual,
+            "viewport height changed without moving the caret",
+        );
+
+        // Focus must follow the canonical block after a distant caret move,
+        // rather than treating projected display rows as source rows.
+        for needle in ["- deeper", "fn g", "A paragraph"] {
+            let at = note[middle..].find(needle).unwrap() + middle;
+            input.update(visual, |i, cx| i.set_selected_range(at..at, cx));
+            visual.run_until_parked();
+            assert_centred(&input, visual, needle);
+            input.read_with(visual, |i, _| {
+                let expected = focus_lines(i.text(), i.cursor());
+                assert_eq!(i.focus_lines(), expected);
+                assert!(
+                    !expected.is_empty() && expected.iter().map(|r| r.len()).sum::<usize>() < 10
+                );
+                assert!(i.focus_wash().is_some());
+            });
+        }
+
+        // End-of-note typing and Undo must retain geometry too.
+        input.update(visual, |input, cx| {
+            input.set_selected_range(note.len()..note.len(), cx)
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.dispatch_keystroke(gpui::Keystroke::parse("x").unwrap(), cx);
+        });
+        assert_centred(&input, visual, "end of note typed");
+        visual.run_until_parked();
+        visual.dispatch_action(gpui_component::input::Undo);
+        assert_centred(&input, visual, "end of note Undo");
+        visual.run_until_parked();
+        assert_eq!(
+            input.read_with(visual, |input, _| input.value().to_string()),
+            note
+        );
+
+        if live {
+            let frames = input.read_with(visual, |input, _| input.take_layout_frames());
             assert!(
-                before.is_none_or(|off| off.abs() > 2.),
-                "live={live}: control, the caret is {before:?} rows off without the mode"
+                !frames.is_empty(),
+                "positive control: observed painted frames"
             );
-            visual.update(|_, cx| reader_ui_state::set_typewriter_mode(true, cx));
-            assert!(visual.update(|_, cx| reader_ui_state::typewriter_mode(cx)));
-            visual.run_until_parked();
-            assert!(input.read_with(visual, |input, _| input.is_typewriter()));
-            if live && require_projection {
-                reader.read_with(visual, |r, _| {
-                    let concealed = r.editing.as_ref().unwrap().live_preview.concealed_text();
-                    assert!(
-                        concealed.is_some_and(|display| display.len() < note.len()),
-                        "the fixture must conceal Markdown, not merely enable Live"
-                    );
-                });
-                assert!(input.read_with(visual, |input, _| input
+            assert!(
+                frames.iter().all(|frame| !frame.raw),
+                "raw fallback is not projected Live"
+            );
+            eprintln!(
+                "WRITING_PROJECTED bytes={} frames={} projection_composes={} max_prepaint_ms={:.3}",
+                note.len(),
+                frames.len(),
+                input.read_with(visual, |input, _| input
                     .layout_diagnostics()
                     .unwrap()
-                    .projection_composes
-                    > 0));
-            }
-            input.read_with(visual, |input, _| {
-                input.take_layout_frames();
-            });
-            visual.update(|_, cx| reader_ui_state::set_focus_mode(true, cx));
-            visual.run_until_parked();
-            assert!(!input.read_with(visual, |input, _| input.focus_lines().is_empty()));
-            // Enabling either mode is presentation-only.
-            assert_eq!(
-                input.read_with(visual, |input, _| input.value().to_string()),
-                note
+                    .projection_composes),
+                frames.iter().map(|f| f.prepaint_ms).fold(0.0_f32, f32::max)
             );
-            assert_centred(&input, visual, &format!("live={live}: turned on"));
+        }
 
-            for (step, key) in ["x", "y", "z", "enter", "enter", "w"].iter().enumerate() {
-                visual.update(|window, cx| {
-                    window.dispatch_keystroke(gpui::Keystroke::parse(key).unwrap(), cx);
-                });
-                assert_centred(&input, visual, &format!("live={live}: key {step} `{key}`"));
-                visual.run_until_parked();
-                assert_centred(&input, visual, &format!("live={live}: key {step} settled"));
-            }
-            assert_ne!(
-                input.read_with(visual, |input, _| input.value().len()),
-                note.len()
-            );
-            for step in 0..6 {
-                visual.dispatch_action(gpui_component::input::Undo);
-                assert_centred(&input, visual, &format!("live={live}: Undo {step}"));
-                visual.run_until_parked();
-                assert_centred(&input, visual, &format!("live={live}: Undo {step} settled"));
-            }
-            assert_eq!(
-                input.read_with(visual, |input, _| input.value().to_string()),
-                note,
-                "live={live}: every edit undone without source mutation"
-            );
-
-            // IME uses the marked range's end as the caret and keeps exact Undo.
-            reader.update_in(visual, |_, window, cx| {
-                input.update(cx, |i, cx| {
-                    let at = i.text().byte_to_utf16_idx(i.cursor());
-                    i.replace_and_mark_text_in_range(Some(at..at), "中", Some(1..1), window, cx);
-                    assert!(i.marked_text_range(window, cx).is_some());
-                });
+        // Scroll toward the start: at EOF, scrolling farther down would
+        // hit the extent and could not serve as an off-centre control.
+        // Scrolling by hand is free until the caret moves again.
+        let bounds = input.read_with(visual, |input, _| input.input_bounds());
+        visual.simulate_event(ScrollWheelEvent {
+            position: bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(200.))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        let scrolled = off_centre(&input, visual);
+        assert!(
+            scrolled.is_none_or(|off| off.abs() > 2.),
+            "live={live}: the wheel scrolled, caret {scrolled:?} rows off"
+        );
+        // Idle frames, projection publications and a rewrap must not steal
+        // the viewport back from a user who has scrolled away.
+        if live {
+            let provider = reader.read_with(visual, |r, _| {
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .live_preview
+                    .accepted_provider()
+                    .unwrap()
             });
-            assert_centred(&input, visual, "IME marked caret");
-            reader.update_in(visual, |_, window, cx| {
-                input.update(cx, |i, cx| i.unmark_text(window, cx));
-            });
-            visual.run_until_parked();
-            assert_centred(&input, visual, "IME committed");
-            visual.dispatch_action(gpui_component::input::Undo);
-            visual.run_until_parked();
-            assert_centred(&input, visual, "IME Undo");
-            assert_eq!(input.read_with(visual, |i, _| i.value().to_string()), note);
-
-            // Rewrapping changes the caret's visual row without a selection
-            // change. Typewriter must use the newly published row metrics.
-            visual.simulate_resize(size(px(720.), px(640.)));
-            visual.run_until_parked();
-            assert_centred(&input, visual, "rewrapped without moving the caret");
-
-            // Focus must follow the canonical block after a distant caret move,
-            // rather than treating projected display rows as source rows.
-            for needle in ["- deeper", "fn g", "A paragraph"] {
-                let at = note[middle..].find(needle).unwrap() + middle;
-                input.update(visual, |i, cx| i.set_selected_range(at..at, cx));
-                visual.run_until_parked();
-                assert_centred(&input, visual, needle);
-                input.read_with(visual, |i, _| {
-                    let expected = focus_lines(i.text(), i.cursor());
-                    assert_eq!(i.focus_lines(), expected);
-                    assert!(
-                        !expected.is_empty()
-                            && expected.iter().map(|r| r.len()).sum::<usize>() < 10
-                    );
-                    assert!(i.focus_wash().is_some());
-                });
-            }
-
-            // End-of-note typing and Undo must retain geometry too.
-            input.update(visual, |input, cx| {
-                input.set_selected_range(note.len()..note.len(), cx)
-            });
-            visual.run_until_parked();
-            visual.update(|window, cx| {
-                window.dispatch_keystroke(gpui::Keystroke::parse("x").unwrap(), cx);
-            });
-            assert_centred(&input, visual, "end of note typed");
-            visual.run_until_parked();
-            visual.dispatch_action(gpui_component::input::Undo);
-            assert_centred(&input, visual, "end of note Undo");
-            visual.run_until_parked();
-            assert_eq!(
-                input.read_with(visual, |input, _| input.value().to_string()),
-                note
-            );
-
-            if live && require_projection {
-                let frames = input.read_with(visual, |input, _| input.take_layout_frames());
-                assert!(
-                    !frames.is_empty(),
-                    "positive control: observed painted frames"
-                );
-                assert!(
-                    frames.iter().all(|frame| !frame.raw),
-                    "raw fallback is not projected Live"
-                );
-                eprintln!("WRITING_PROJECTED bytes={} frames={} projection_composes={} max_prepaint_ms={:.3}",
-                    note.len(), frames.len(),
-                    input.read_with(visual, |input, _| input.layout_diagnostics().unwrap().projection_composes),
-                    frames.iter().map(|f| f.prepaint_ms).fold(0.0_f32, f32::max));
-            }
-
-            // Scroll toward the start: at EOF, scrolling farther down would
-            // hit the extent and could not serve as an off-centre control.
-            // Scrolling by hand is free until the caret moves again.
-            let bounds = input.read_with(visual, |input, _| input.input_bounds());
-            visual.simulate_event(ScrollWheelEvent {
-                position: bounds.center(),
-                delta: ScrollDelta::Pixels(point(px(0.), px(200.))),
-                ..Default::default()
-            });
-            visual.run_until_parked();
-            let scrolled = off_centre(&input, visual);
-            assert!(
-                scrolled.is_none_or(|off| off.abs() > 2.),
-                "live={live}: the wheel scrolled, caret {scrolled:?} rows off"
-            );
-            // Idle frames, projection publications and a rewrap must not steal
-            // the viewport back from a user who has scrolled away.
-            if live {
-                let provider = reader.read_with(visual, |r, _| {
-                    r.editing
-                        .as_ref()
-                        .unwrap()
-                        .live_preview
-                        .accepted
-                        .clone()
-                        .unwrap()
-                });
-                input.update(visual, |i, cx| {
-                    i.set_projection_provider(Some(provider), cx)
-                });
-                visual.run_until_parked();
-            }
-            visual.simulate_resize(size(px(760.), px(620.)));
-            visual.run_until_parked();
-            let paused = off_centre(&input, visual);
-            assert!(
-                paused.is_none_or(|off| off.abs() > 2.),
-                "manual scroll survives publication/rewrap: {paused:?}"
-            );
-            visual.update(|window, cx| {
-                window.dispatch_keystroke(gpui::Keystroke::parse("v").unwrap(), cx);
-            });
-            assert_centred(
-                &input,
-                visual,
-                &format!("live={live}: typed after a scroll"),
-            );
-            visual.update(|_, cx| {
-                reader_ui_state::set_typewriter_mode(false, cx);
-                reader_ui_state::set_focus_mode(false, cx);
+            input.update(visual, |i, cx| {
+                i.set_projection_provider(Some(provider), cx)
             });
             visual.run_until_parked();
         }
+        visual.simulate_resize(size(px(760.), px(620.)));
+        visual.run_until_parked();
+        let paused = off_centre(&input, visual);
+        assert!(
+            paused.is_none_or(|off| off.abs() > 2.),
+            "manual scroll survives publication/rewrap: {paused:?}"
+        );
+        visual.update(|window, cx| {
+            window.dispatch_keystroke(gpui::Keystroke::parse("v").unwrap(), cx);
+        });
+        assert_centred(
+            &input,
+            visual,
+            &format!("live={live}: typed after a scroll"),
+        );
+        visual.update(|_, cx| {
+            reader_ui_state::set_typewriter_mode(false, cx);
+            reader_ui_state::set_focus_mode(false, cx);
+        });
+        visual.run_until_parked();
     }
 
     /// The last line of a note comes to the middle too: typewriter adds
