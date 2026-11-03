@@ -59,6 +59,10 @@ Physical input and positive controls:
 - Open the actual model control, send native Escape and type a slow focus-proof
   string. The popup must disappear, the composer must receive that text and the
   selected Board card/model must remain unchanged. Never press Send.
+  With `wtype`, use `-s 300` before the first key in **each invocation**: the
+  virtual keyboard/keymap needs to settle, otherwise the first key can be lost.
+  Prove Escape delivery separately by opening Quick Open with Ctrl+K and closing
+  it with the same delayed Escape. Typed letters alone do not prove Escape fired.
 
 Store ranges as `<phase>-ranges.json`, an array of objects with `scenario`,
 `rep`, `start`, `end` (epoch seconds). Resize entries also have `width_before`
@@ -79,6 +83,7 @@ separate so a headless compositor's pacing cannot be mistaken for CPU layout.
 The ordinary Linux Rust suite includes the Reader-mounted reference regression,
 its real wheel/drag/card-tail controls and Reader Escape/focus assertions. It
 rejects Board card builds during Manager scrolling, >64 card builds in any
-splitter frame, >96 Manager row builds per settled scroll/resize step, and an
+splitter frame, >64 card/spacer layout nodes per frame, >96 Manager row builds
+per settled scroll/resize step, and an
 unreachable last card. The standalone blocked-picker regression covers sending,
 offline, inactive and model-loading state without sends/model writes/draft loss.
