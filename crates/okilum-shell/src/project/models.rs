@@ -756,6 +756,17 @@ impl ProjectView {
                 .occlude()
                 .on_prepaint(gpui_base::GlobalState::record_native_overlay)
                 .tab_group()
+                .key_context("ManagerModels")
+                .on_action(
+                    cx.listener(|this, _: &crate::DismissManagerModel, window, cx| {
+                        if this.model_open {
+                            this.close_models(window, cx);
+                            cx.stop_propagation();
+                        } else {
+                            cx.propagate();
+                        }
+                    }),
+                )
                 // Reader's Escape binding dispatches Dismiss before low-level
                 // key listeners. Own it inside this deferred popup so it cannot
                 // dismiss background Reader UI or trap focus in model search.
