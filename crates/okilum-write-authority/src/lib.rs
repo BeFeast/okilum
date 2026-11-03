@@ -304,9 +304,13 @@ impl Authority {
         private_dir(&directory)?;
         let state_path = directory.join("state.json");
         if state_path.try_exists()? {
+            let initial: Snapshot = read(&state_path)?;
             ensure!(
-                read::<Snapshot>(&state_path)?.phase == Phase::Open,
-                "Unbound authority has an unfinished hold; recovery required"
+                initial.phase == Phase::Open
+                    && initial.revision == 0
+                    && initial.operation_id.is_none()
+                    && !initial.epoch.is_empty(),
+                "Unbound authority is not an interrupted initial Open state; recovery required"
             );
         }
         for name in ["admission.lock", "writers.lock", "owner.lock"] {
@@ -810,6 +814,18 @@ mod tests {
         assert_ne!(recovered.binding.epoch, a.binding.epoch);
         recovered.operation().unwrap();
         assert!(a.admit().is_err(), "the interrupted epoch cannot publish");
+        // A binding lost after a real hold is operational damage, not initial
+        // setup. Never erase its fencing revisions as initialization recovery.
+        let hold = recovered.begin_drain("completed-hold").unwrap();
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        fs::remove_file(&recovered.binding_path).unwrap();
+        let before = fs::read(recovered.directory.join("state.json")).unwrap();
+        assert!(Authority::open_in(&account, &root).is_err());
+        assert_eq!(
+            fs::read(recovered.directory.join("state.json")).unwrap(),
+            before
+        );
     }
     #[test]
     fn local_writer_admission_drain_closes_before_existing_lease_and_nested_rollback() {
