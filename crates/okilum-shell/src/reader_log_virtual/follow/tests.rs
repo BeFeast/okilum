@@ -453,7 +453,7 @@ fn follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias() {
         .unwrap()
         .iter()
         .any(|c| c.path == archive && c.reason == Reason::DuplicateSource));
-    // A byte-distinct archive must be admitted, not coalesced by name alone.
+    // A byte-distinct archive cannot establish continuity by its name alone.
     let different = f.vault.join("logs/a.log.2.gz");
     // Valid gzip containing "second\n", with a different decoded prefix.
     fs::write(
@@ -464,6 +464,10 @@ fn follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias() {
         ],
     )
     .unwrap();
+    assert_eq!(
+        LogFile::open(&different).unwrap().raw(0).unwrap(),
+        b"second"
+    );
     // Consume the global pool with real retained snapshots. Membership must
     // fail closed under pressure, leaving the last accepted rows/aliases intact.
     let mut pressure = Vec::new();
@@ -492,8 +496,21 @@ fn follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias() {
     assert_eq!(session.aliases.len(), 1);
     assert_eq!(session.published[&0].snapshot.raw(0).unwrap(), b"first");
     drop(pressure);
-    let update = session
+    let error = session
         .refresh(&plan, &f.change("logs/a.log.2.gz"), &AtomicBool::new(false))
+        .err()
+        .expect("byte-distinct compressed archive has unproven continuity");
+    assert!(error
+        .to_string()
+        .contains("New compressed archive continuity is unproven"));
+    assert_eq!(session.published.len(), 2);
+    assert_eq!(session.aliases.len(), 1);
+    // Successful ordinary membership remains the positive control after both
+    // refusals; the ambiguous archive requires an explicit Rescan.
+    fs::remove_file(&different).unwrap();
+    fs::write(f.vault.join("logs/b.log"), "second\n").unwrap();
+    let update = session
+        .refresh(&plan, &f.change("logs/b.log"), &AtomicBool::new(false))
         .unwrap();
     assert_eq!(update.sources.len(), 1);
     assert_eq!(update.sources[0].snapshot.raw(0).unwrap(), b"second");
