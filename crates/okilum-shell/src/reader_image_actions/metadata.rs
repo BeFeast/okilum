@@ -500,7 +500,14 @@ pub(super) mod tests {
                 assert_eq!(hover.state, None, "{note}");
                 assert_eq!(
                     hover.lines(),
-                    ["Image file not found, outside this vault, or ambiguous."]
+                    [
+                        if note == "ambiguous.md" {
+                            "same.png"
+                        } else {
+                            "missing.png"
+                        },
+                        "File not found, outside this vault, or ambiguous."
+                    ]
                 );
             });
         }
