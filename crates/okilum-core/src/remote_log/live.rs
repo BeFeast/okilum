@@ -58,6 +58,7 @@ impl Mode {
     }
 }
 
+#[derive(Clone)]
 pub struct Loaded {
     pub window: Arc<EventWindow>,
     pub source: Source,
@@ -114,6 +115,8 @@ pub struct Update {
 enum Command {
     Apply(Box<Source>, ApiKey),
     ReplaceKey(ApiKey),
+    Navigate(Box<Source>),
+    Restore(Arc<Loaded>),
     More,
     Start(Mode, Box<Source>),
     Stop,
@@ -178,6 +181,14 @@ impl Worker {
     }
     pub fn apply(&self, source: Source, key: ApiKey) -> u64 {
         self.submit(Command::Apply(Box::new(source), key))
+    }
+    /// Query a drill-down with the current credential, without overwriting a saved source.
+    pub fn navigate(&self, source: Source) -> u64 {
+        self.submit(Command::Navigate(Box::new(source)))
+    }
+    /// Restore a retained investigation snapshot without a network request.
+    pub fn restore(&self, loaded: Arc<Loaded>) -> u64 {
+        self.submit(Command::Restore(loaded))
     }
     pub fn replace_key(&self, key: ApiKey) -> u64 {
         self.submit(Command::ReplaceKey(key))
@@ -302,6 +313,19 @@ impl Engine {
                     self.apply(*source, key, cancel.clone(), &shared, generation, false)
                         .unwrap_or_else(Self::error)
                 }
+                Some(Command::Navigate(source)) => {
+                    self.mode = None;
+                    self.close_history();
+                    self.navigate(*source, cancel.clone(), &shared, generation)
+                        .unwrap_or_else(Self::error)
+                }
+                Some(Command::Restore(loaded)) => {
+                    self.mode = None;
+                    self.close_history();
+                    self.restore(loaded)
+                        .map(|_| Status::Stopped { warning: None })
+                        .unwrap_or_else(Self::error)
+                }
                 Some(Command::ReplaceKey(key)) => {
                     self.mode = None;
                     self.close_history();
@@ -409,6 +433,72 @@ impl Engine {
             source: source.clone(),
             range: page.range,
             more: history.can_page(),
+            quality: page.status.clone(),
+        }));
+        self.applied = Some(Applied {
+            source,
+            client,
+            history: Some(history),
+            events,
+        });
+        Ok(Status::History {
+            complete: page.complete,
+            limited: page.limited,
+            warning: page.cleanup_warning,
+            quality: page.status,
+        })
+    }
+    fn scoped_client(&self, source: &Source) -> Result<Kibana> {
+        let previous = self
+            .applied
+            .as_ref()
+            .context("Apply a source before navigating")?;
+        ensure!(
+            previous.source.id == source.id && previous.source.endpoint == source.endpoint,
+            "Navigation cannot change the credential scope; Apply the saved source first"
+        );
+        source.validate()?;
+        Ok(previous.client.clone())
+    }
+    fn restore(&mut self, loaded: Arc<Loaded>) -> Result<()> {
+        let client = self.scoped_client(&loaded.source)?;
+        self.retry_source = Some(loaded.source.clone());
+        self.applied = Some(Applied {
+            source: loaded.source.clone(),
+            client,
+            history: None,
+            events: loaded.window.events.clone(),
+        });
+        self.loaded = Some(loaded);
+        Ok(())
+    }
+    fn navigate(
+        &mut self,
+        source: Source,
+        cancel: Arc<AtomicBool>,
+        shared: &Shared,
+        generation: u64,
+    ) -> Result<Status> {
+        let client = self.scoped_client(&source)?.with_cancellation(cancel);
+        self.retry_source = Some(source.clone());
+        let mut history = History::for_source(client.clone(), &source)?;
+        let mut page = history.page()?;
+        let mut events: Vec<_> = page.events.drain(..).map(Arc::new).collect();
+        while history.can_page() {
+            page = history.page()?;
+            events.extend(page.events.drain(..).map(Arc::new));
+        }
+        let window = Arc::new(EventWindow::new(events.clone(), &source)?);
+        let current = shared.0.lock().unwrap();
+        ensure!(
+            current.generation == generation && !current.closing,
+            "Log request cancelled"
+        );
+        self.loaded = Some(Arc::new(Loaded {
+            window,
+            source: source.clone(),
+            range: page.range,
+            more: false,
             quality: page.status.clone(),
         }));
         self.applied = Some(Applied {

@@ -82,7 +82,7 @@ fn point_filters_cell_include_exclude_and_copy_use_real_events(cx: &mut TestAppC
     );
     assert_eq!(shown(&view, visual).len(), 6);
     filter_click(visual, "log-message-cell-0-actions");
-    visual.simulate_keystrokes("down down down down enter");
+    visual.simulate_keystrokes("down down down down down down enter");
     filter_frame(visual);
     view.read_with(visual, |view, cx| {
         assert!(

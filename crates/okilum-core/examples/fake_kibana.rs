@@ -8,8 +8,9 @@ fn main() -> anyhow::Result<()> {
         address.parse::<std::net::SocketAddr>()?.ip().is_loopback(),
         "Bind only to loopback"
     );
-    let scenario = match args.next().as_deref().unwrap_or("sync") {
-        "sync" => Scenario::default(),
+    let mode = args.next().unwrap_or_else(|| "sync".into());
+    let scenario = match mode.as_str() {
+        "sync" | "investigation" => Scenario::default(),
         "async" => Scenario {
             async_polls: 3,
             ..Default::default()
@@ -36,22 +37,34 @@ fn main() -> anyhow::Result<()> {
             ..Default::default()
         },
         _ => anyhow::bail!(
-            "Scenario: sync | async | partial-id | partial | timeout | legacy | lower-bound"
+            "Scenario: sync | investigation | async | partial-id | partial | timeout | legacy | lower-bound"
         ),
     };
     let server = FakeKibana::start(&address, 603, scenario)?;
     println!("Endpoint: {}\nIndex: remote-*:events\nTime: 2026-11-01T00:00:00Z to 2026-11-05T00:00:00Z\nAPI key: test-secret\nSynthetic only; adds one current and one late event every two seconds", server.endpoint);
+    if mode == "investigation" {
+        server.state.lock().unwrap().records = (0..603)
+            .map(okilum_core::remote_log::fake::investigation_record)
+            .collect();
+    }
     let mut next = 603;
     loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        let mut current = record(next);
+        let make = |id| {
+            if mode == "investigation" {
+                okilum_core::remote_log::fake::investigation_record(id)
+            } else {
+                record(id)
+            }
+        };
+        let mut current = make(next);
         let now = time::OffsetDateTime::now_utc();
         current["_source"]["@timestamp"] =
             serde_json::json!(now.format(&time::format_description::well_known::Rfc3339)?);
         current["sort"][0] = serde_json::json!(i64::try_from(now.unix_timestamp_nanos())?);
         server.add(current);
         next += 1;
-        server.add(record(next));
+        server.add(make(next));
         next += 1;
     }
 }

@@ -25,7 +25,7 @@ pub const MAX_EVENT_BYTES: usize = 16 * 1024 * 1024;
 pub const LIVE_LIMITATION: &str = "Live re-reads every page of the selected window, including late arrivals. Paging is not an immutable snapshot. Limits and partial results stop following explicitly; large windows have no five-second guarantee.";
 pub const KQL_LIMITATION: &str = "Server-side KQL; general parity with Discover has not been established. Unsupported queries leave the previous results intact.";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub id: uuid::Uuid,
@@ -233,11 +233,6 @@ impl EventWindow {
                             .filter(|a| a.len() == 1)
                             .map_or_else(|| value.clone(), |a| a[0].clone())
                     });
-                }
-            }
-            if !display.contains_key("message") {
-                if let Some(description) = display.get("description").cloned() {
-                    display.insert("message".into(), description);
                 }
             }
             display.insert("_event".into(), event.as_ref().clone());

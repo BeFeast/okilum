@@ -115,6 +115,7 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_log::ToggleMark>("Mark log row", Notes),
         entry::<reader_log::NextMark>("Next marked log row", Navigation),
         entry::<reader_log::PreviousMark>("Previous marked log row", Navigation),
+        entry::<reader_log::InvestigationBack>("Back in log investigation", Navigation),
         entry::<reader_delimited::CopyCells>("Copy selected table cells", Notes),
         entry::<QuickLookFile>("Quick Look", Notes),
         entry::<reader_open::OpenFile>("Open file", Notes),

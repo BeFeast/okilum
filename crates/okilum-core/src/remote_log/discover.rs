@@ -21,7 +21,7 @@ pub struct Sort {
     pub field: String,
     pub order: String,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Discover {
     pub data_view: String,

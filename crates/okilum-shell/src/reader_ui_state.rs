@@ -181,6 +181,7 @@ struct Saved {
     log_queries: BTreeMap<String, Vec<String>>,
     /// Field columns per log file (#1167).
     log_columns: BTreeMap<String, Vec<String>>,
+    log_fields: BTreeMap<String, okilum_core::log::saved_query::FieldChoices>,
     /// Widths the user dragged, per log file and column (#1167).
     log_column_widths: BTreeMap<String, BTreeMap<String, f32>>,
     /// Saved log filters, for every log (#1169).
@@ -238,6 +239,7 @@ impl Default for Saved {
             split_sizes: Default::default(),
             log_queries: Default::default(),
             log_columns: Default::default(),
+            log_fields: Default::default(),
             log_column_widths: Default::default(),
             log_saved: Default::default(),
             log_regex: Default::default(),
@@ -760,6 +762,14 @@ impl WriteJob {
             }
         }
         for key in &self.log_columns_changed {
+            match self.saved.log_fields.get(key) {
+                Some(fields) => {
+                    latest.log_fields.insert(key.clone(), fields.clone());
+                }
+                None => {
+                    latest.log_fields.remove(key);
+                }
+            }
             match self.saved.log_columns.get(key) {
                 Some(columns) => latest.log_columns.insert(key.clone(), columns.clone()),
                 None => latest.log_columns.remove(key),
@@ -1709,6 +1719,40 @@ pub(crate) fn set_split_size(key: &str, size: f32, cx: &mut App) {
     state.saved.split_sizes.insert(key.into(), size);
     state.splits_changed.insert(key.into());
     schedule(cx);
+}
+
+pub(crate) fn log_fields(path: &str, cx: &App) -> okilum_core::log::saved_query::FieldChoices {
+    cx.try_global::<Store>()
+        .and_then(|state| state.saved.log_fields.get(path).cloned())
+        .unwrap_or_default()
+}
+
+pub(crate) fn set_log_fields(
+    path: &str,
+    fields: okilum_core::log::saved_query::FieldChoices,
+    cx: &mut App,
+) {
+    if !installed(cx) || log_fields(path, cx) == fields {
+        return;
+    }
+    let state = cx.global_mut::<Store>();
+    state.saved.log_fields.insert(path.into(), fields);
+    state.log_columns_changed.insert(path.into());
+    while state.saved.log_fields.len() > LOG_QUERY_FILES {
+        let Some(other) = state
+            .saved
+            .log_fields
+            .keys()
+            .find(|key| *key != path)
+            .cloned()
+        else {
+            break;
+        };
+        state.saved.log_fields.remove(&other);
+        state.log_columns_changed.insert(other);
+    }
+    schedule(cx);
+    cx.refresh_windows();
 }
 
 /// Field columns of the log at `path` (#1167).

@@ -27,7 +27,7 @@ pub const KEYS: &[&str] = &[
 const TRACEPARENT: &str = "traceparent";
 
 /// One id of a record: the key it was found under and the value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RequestId {
     pub key: String,
     pub value: String,
@@ -62,6 +62,67 @@ pub fn ids(record: &Record) -> Vec<RequestId> {
         }
     }
     found
+}
+
+/// Resolve a user-selected field before the built-in aliases.
+pub fn ids_with_field(record: &Record, field: Option<&str>) -> Vec<RequestId> {
+    let mut found = ids(record);
+    if let Some(field) = field {
+        if let Some(value) = record.fields.iter().find(|f| f.key == field) {
+            if !value.value.trim().is_empty() {
+                found.retain(|id| id.key != field);
+                found.insert(
+                    0,
+                    RequestId {
+                        key: field.into(),
+                        value: value.value.clone(),
+                    },
+                );
+            }
+        }
+    }
+    found
+}
+
+/// Keep cross-logger correlation and include a source's explicit field.
+pub fn query_with_field(id: &str, field: Option<&str>) -> Expr {
+    let mut expr = query(id);
+    if let (Expr::Or(terms), Some(field)) = (&mut expr, field) {
+        terms.push(Expr::Field {
+            field: FieldRef::Key(field.into()),
+            test: Test::Eq(Literal {
+                text: id.into(),
+                number: None,
+            }),
+            include_absent: false,
+        });
+    }
+    expr
+}
+
+/// Server correlation uses phrase matching for text and keyword-compatible fields.
+/// The selected field and the standard aliases are explicit; scope is added by the caller.
+pub fn server_query(id: &str, field: &str) -> serde_json::Value {
+    let mut keys: Vec<&str> = KEYS.to_vec();
+    if !keys.contains(&field) {
+        keys.push(field);
+    }
+    let mut terms: Vec<_> = keys
+        .into_iter()
+        .map(|key| serde_json::json!({"match_phrase": {key: id}}))
+        .collect();
+    let escaped: String = id
+        .chars()
+        .flat_map(|ch| {
+            if matches!(ch, '*' | '?' | '\\') {
+                vec!['\\', ch]
+            } else {
+                vec![ch]
+            }
+        })
+        .collect();
+    terms.push(serde_json::json!({"wildcard": {"traceparent": format!("*-{escaped}-*")}}));
+    serde_json::json!({"bool": {"should": terms, "minimum_should_match": 1}})
 }
 
 /// `00-<32 hex trace id>-<16 hex span id>-<flags>` → the trace id.

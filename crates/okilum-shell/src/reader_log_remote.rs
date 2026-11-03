@@ -1,5 +1,7 @@
 //! Kibana controls around the existing LogView, not a second event renderer.
 use crate::*;
+#[path = "reader_log_remote/investigation.rs"]
+mod investigation;
 use anyhow::Context as _;
 use okilum_core::remote_log::live::{Mode, Status, Update, Worker};
 use okilum_core::remote_log::{self, discover::TimeRange, transport::ApiKey, EventWindow, Source};
@@ -113,6 +115,7 @@ struct Panel {
     _events: Task<()>,
     _load: Task<()>,
     _credential: Option<Task<()>>,
+    _navigation: Option<Subscription>,
 }
 impl Panel {
     fn new(vault: PathBuf, state: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -160,7 +163,7 @@ impl Panel {
                 cx.notify();
             });
         });
-        Self{generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
+        Self{_navigation:None,generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
     }
     fn choose(&mut self, source: Source, window: &mut Window, cx: &mut Context<Self>) {
         self.stop();
@@ -476,9 +479,25 @@ impl Panel {
             return;
         }
         self.following = update.following;
+        if let Some(view) = &self.view {
+            view.update(cx, |view, cx| {
+                view.investigation.live = update.following;
+                cx.notify();
+            });
+        }
         self.more = false;
         self.busy = matches!(update.status, Status::CatchingUp { .. });
         if let Some(loaded) = update.loaded {
+            if let Some(view) = &self.view {
+                view.update(cx, |view, cx| {
+                    view.remote_context(
+                        loaded.clone(),
+                        update.following,
+                        matches!(update.status, Status::Complete { .. }),
+                        cx,
+                    )
+                });
+            }
             self.quality = Some(loaded.quality.clone());
             let changed = self
                 .data
@@ -487,7 +506,7 @@ impl Panel {
             if changed {
                 if self.applied.as_ref().is_none_or(|previous| {
                     previous.id != loaded.source.id
-                        || previous.discover.columns != loaded.source.discover.columns
+                        || previous.discover.data_view != loaded.source.discover.data_view
                 }) {
                     reader_ui_state::set_log_columns(
                         &loaded.window.path.to_string_lossy(),
@@ -679,7 +698,9 @@ impl Render for Panel {
         }
         if self.view.is_none() {
             if let Some(data) = self.data.clone() {
-                self.view = Some(cx.new(|cx| reader_log::LogView::remote(data, window, cx)));
+                let view = cx.new(|cx| reader_log::LogView::remote(data, window, cx));
+                self.install_investigation(&view, window, cx);
+                self.view = Some(view);
             }
         }
         let sources = self.sources.clone();
@@ -718,7 +739,7 @@ impl Render for Panel {
                 .child(h_flex().gap_2().child(Button::new("remote-more").small().label(if self.applied.as_ref().is_some_and(|s|s.discover.sort[0].order=="asc"){ "Load later" }else{"Load older"}).disabled(self.busy||!self.more).on_click(cx.listener(|this,_,_,cx|{this.busy=true;this.generation=this.worker.more();cx.notify();})))
                     .child(Button::new("remote-export").small().label("Export loaded JSONL").disabled(self.data.is_none()||self.exporting).on_click(cx.listener(|this,_,_,cx|this.export(cx))))
                     .child(Button::new("remote-start").debug_selector(|| "remote-start".into()).small().label("Start applied query").disabled(self.applied.is_none()||self.following||self.busy||self.credential_pending||self.proposal.is_some()).on_click(cx.listener(|this,_,_,cx|this.propose_start(cx))))
-                    .child(Button::new("remote-stop").small().label("Stop").disabled(!self.following&&!self.busy).on_click(cx.listener(|this,_,_,cx|{this.stop();cx.notify();}))))
+                    .child(Button::new("remote-stop").debug_selector(|| "remote-stop".into()).small().label("Stop").disabled(!self.following&&!self.busy).on_click(cx.listener(|this,_,_,cx|{this.stop();cx.notify();}))))
                 .when(self.proposal.is_some(),|body|body.child(h_flex().gap_2()
                     .child(div().flex_1().text_sm().child("Choose a rolling window of the same duration or keep this fixed historical range. Following starts only after you choose."))
                     .child(Button::new("remote-confirm-rolling").debug_selector(|| "remote-confirm-rolling".into()).small().label("Follow rolling window").disabled(self.following||self.busy||self.credential_pending).on_click(cx.listener(|this,_,_,cx|this.confirm_start(true,cx))))
@@ -931,3 +952,7 @@ mod start_tests;
 #[cfg(test)]
 #[path = "reader_log_remote/protocol_tests.rs"]
 mod protocol_tests;
+
+#[cfg(test)]
+#[path = "reader_log_remote/investigation_tests.rs"]
+mod investigation_tests;

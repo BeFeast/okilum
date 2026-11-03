@@ -347,3 +347,159 @@ fn replacing_key_preserves_the_loaded_extent_of_a_multi_page_investigation() {
         .collect();
     assert_eq!(ids.len(), 603);
 }
+
+#[test]
+fn navigate_reads_every_request_page_and_back_restores_without_http_then_live_keeps_the_request() {
+    let server = FakeKibana::start("127.0.0.1:0", 1503, Scenario::default()).unwrap();
+    {
+        let mut state = server.state.lock().unwrap();
+        state.records = (0..1503)
+            .map(crate::remote_log::fake::investigation_record)
+            .collect();
+    }
+    let mut source = make_source(&server);
+    source.discover.sort[0].order = "desc".into();
+    source
+        .discover
+        .filters
+        .push(json!({"query":{"term":{"service":"Checkout"}}}));
+    let (worker, rx) = Worker::spawn(timing(), None);
+    let generation = worker.apply(source.clone(), key());
+    let previous = receive(&rx, |u| {
+        u.generation == generation && matches!(u.status, Status::History { .. })
+    })
+    .loaded
+    .unwrap();
+    assert_eq!(
+        previous.window.events.len(),
+        200,
+        "positive control: parent is one history page"
+    );
+    let mut request = source.clone();
+    request.discover.sort[0].order = "asc".into();
+    request
+        .discover
+        .filters
+        .push(json!({"query":crate::log::correlation::server_query("request-0", "flow")}));
+    let generation = worker.navigate(request.clone());
+    let loaded = receive(&rx, |u| {
+        u.generation == generation && matches!(u.status, Status::History { .. })
+    })
+    .loaded
+    .unwrap();
+    assert_eq!(
+        loaded.window.events.len(),
+        251,
+        "all pages, including events absent from the parent's first page"
+    );
+    assert!(loaded
+        .window
+        .events
+        .iter()
+        .all(|event| event["_source"]["flow"] == "request-0"
+            && event["_source"]["service"] == "Checkout"));
+    assert!(!loaded.more && !loaded.quality.incomplete());
+    assert!(loaded
+        .window
+        .events
+        .windows(2)
+        .all(|pair| pair[0]["sort"][0].as_i64() <= pair[1]["sort"][0].as_i64()));
+    let searches = server.state.lock().unwrap().searches;
+    let generation = worker.restore(previous.clone());
+    let restored = receive(&rx, |u| {
+        u.generation == generation && matches!(u.status, Status::Stopped { .. })
+    })
+    .loaded
+    .unwrap();
+    assert!(Arc::ptr_eq(&previous.window, &restored.window));
+    assert_eq!(restored.source.discover, source.discover);
+    assert_eq!(
+        server.state.lock().unwrap().searches,
+        searches,
+        "Back performs no HTTP after the positive query control"
+    );
+    // A restored query is usable by Start, including its original sort/scope.
+    let generation = worker.start_live(Mode::Fixed(source.discover.time.clone()), &source);
+    let parent_live = receive(&rx, |u| {
+        u.generation == generation && matches!(u.status, Status::Complete { .. })
+    })
+    .loaded
+    .unwrap();
+    assert_eq!(parent_live.window.events.len(), 752);
+    let generation = worker.navigate(request.clone());
+    receive(&rx, |u| {
+        u.generation == generation && matches!(u.status, Status::History { .. })
+    });
+    let mut fresh = crate::remote_log::fake::investigation_record(1506);
+    fresh["_id"] = json!("new-request-event");
+    server.add(fresh.clone());
+    server.add(fresh); // Same identity is emitted twice by the server.
+    let generation = worker.start_live(Mode::Fixed(request.discover.time.clone()), &request);
+    let live = receive(&rx, |u| {
+        u.generation == generation && matches!(u.status, Status::Complete { .. })
+    })
+    .loaded
+    .unwrap();
+    assert_eq!(live.window.events.len(), 252);
+    assert_eq!(
+        live.window
+            .events
+            .iter()
+            .filter(|event| event["_id"] == "new-request-event")
+            .count(),
+        1
+    );
+    let mut other = request;
+    other.endpoint = "https://other.example".into();
+    let generation = worker.navigate(other);
+    let denied = receive(&rx, |u| {
+        u.generation == generation && matches!(u.status, Status::Error(_))
+    });
+    assert!(
+        matches!(denied.status, Status::Error(ref error) if error.contains("credential scope"))
+    );
+    assert!(Arc::ptr_eq(&denied.loaded.unwrap().window, &live.window));
+}
+
+#[test]
+fn request_drill_down_retains_partial_and_truncated_quality() {
+    for scenario in [
+        Scenario {
+            partial: true,
+            ..Default::default()
+        },
+        Scenario {
+            lower_bound: true,
+            ..Default::default()
+        },
+    ] {
+        let server = FakeKibana::start("127.0.0.1:0", 7, scenario).unwrap();
+        let source = make_source(&server);
+        let (worker, rx) = Worker::spawn(timing(), None);
+        let generation = worker.apply(source.clone(), key());
+        receive(&rx, |u| {
+            u.generation == generation && matches!(u.status, Status::History { .. })
+        });
+        let mut request = source;
+        request.discover.filters.push(
+            json!({"query":crate::log::correlation::server_query("request-0", "request_id")}),
+        );
+        let generation = worker.navigate(request);
+        let loaded = receive(&rx, |u| {
+            u.generation == generation && matches!(u.status, Status::History { .. })
+        })
+        .loaded
+        .unwrap();
+        assert_eq!(
+            loaded.window.events.len(),
+            1,
+            "positive control: request query reached the fake server"
+        );
+        assert!(
+            loaded.quality.partial
+                || loaded.quality.total.as_ref().unwrap().relation
+                    == crate::remote_log::result::TotalRelation::Gte
+        );
+        assert!(!loaded.quality.label(1).is_empty());
+    }
+}

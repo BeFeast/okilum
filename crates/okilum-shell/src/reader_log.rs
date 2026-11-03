@@ -9,6 +9,7 @@
 //! be hidden without indexing anything again.
 use super::*;
 mod filters;
+pub(crate) mod view_stack;
 use filters::FilterUi;
 use gpui_component::scroll::ScrollableElement as _;
 use okilum_core::log::chips::{self, FilterChip, FilterMode, FilterValue};
@@ -105,7 +106,8 @@ actions!(
         FocusLogFilter,
         ToggleMark,
         NextMark,
-        PreviousMark
+        PreviousMark,
+        InvestigationBack
     ]
 );
 
@@ -113,6 +115,14 @@ actions!(
 const MARK_KEY: &str = "secondary-f2";
 
 pub(crate) fn bind_keys(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([KeyBinding::new("cmd-[", InvestigationBack, Some(CONTEXT))]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([KeyBinding::new(
+        "alt-left",
+        InvestigationBack,
+        Some(CONTEXT),
+    )]);
     cx.bind_keys([
         KeyBinding::new("up", SelectPreviousRecord, Some(CONTEXT)),
         KeyBinding::new("down", SelectNextRecord, Some(CONTEXT)),
@@ -580,7 +590,7 @@ pub(crate) struct LogView {
     /// The time order of the shown sources, when there is more than one.
     merge: Option<Merge>,
     /// Showing one request (#1166): the query text to go back to.
-    request_back: Option<String>,
+    investigation: view_stack::Investigation,
     /// Records per level over time for the shown rows (#1168), the rows it
     /// was counted for, and where the bars were last drawn.
     histogram: Option<Arc<Histogram>>,
@@ -792,7 +802,7 @@ impl LogView {
             primary_enabled: true,
             source_locked: false,
             merge: None,
-            request_back: None,
+            investigation: Default::default(),
             histogram: None,
             histogram_for: None,
             histogram_running: None,
@@ -1283,21 +1293,6 @@ impl LogView {
             .into_any_element()
     }
 
-    /// Every record of the request `id`, across all files of the view
-    /// (#1166). The previous query comes back with `request_back`.
-    fn show_request(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.request_back.is_none() {
-            self.request_back = Some(self.query_text.clone());
-        }
-        self.replace_query(correlation::query(id).to_string(), window, cx);
-    }
-
-    fn request_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(previous) = self.request_back.take() {
-            self.replace_query(previous, window, cx);
-        }
-    }
-
     /// Field columns of this view (#1167), remembered per file.
     fn columns(&self, cx: &App) -> Vec<String> {
         self.history_key()
@@ -1742,6 +1737,9 @@ impl LogView {
     /// The list position of entry `index`, if it is listed.
     fn row_of(&self, index: usize) -> Option<usize> {
         match &self.rows {
+            Some(rows) if self.investigation.request.is_some() => {
+                rows.iter().position(|&row| row as usize == index)
+            }
             Some(rows) => rows.binary_search(&(index as u32)).ok(),
             None => (index < self.visible_len()).then_some(index),
         }
@@ -2009,8 +2007,14 @@ impl LogView {
         self.filter_ui.chips.clear();
         self.filter_ui.advanced.clear();
         self.query_error = None;
-        self.request_back = None;
         self.update_filter(|filter| *filter = LogFilter::default(), cx);
+        if let Some(request) = self.investigation.request.clone() {
+            self.replace_query(
+                correlation::query_with_field(&request.value, Some(&request.key)).to_string(),
+                window,
+                cx,
+            );
+        }
         cx.notify();
     }
 
@@ -2040,7 +2044,7 @@ impl LogView {
             return;
         };
         self.filtered_upto = snapshot.parts().0.len();
-        if !self.filter.is_active() {
+        if !self.filter.is_active() && self.investigation.request.is_none() {
             self.rows = None;
             self.filtering = false;
             self._filtering = None;
@@ -2096,7 +2100,7 @@ impl LogView {
     /// its matches are placed at their rows of the merged view.
     fn refilter_merged(&mut self, cx: &mut Context<Self>) {
         let ticket = self.generations.next();
-        if !self.filter.is_active() {
+        if !self.filter.is_active() && self.investigation.request.is_none() {
             self.rows = None;
             self.filtering = false;
             self._filtering = None;
@@ -2120,7 +2124,7 @@ impl LogView {
         let positions = merge.positions.clone();
         self.filtering = true;
         self.filter_running = Some(ticket.generation());
-        let filter = self.filter.clone();
+        let filter = self.investigation_filter();
         self._filtering = Some(cx.spawn(async move |this, cx| {
             let generation = ticket.generation();
             let rows = cx
@@ -2425,9 +2429,11 @@ impl LogView {
         reads: Vec<(usize, anyhow::Result<okilum_core::log::tail::PollRead>)>,
         cx: &mut Context<Self>,
     ) {
+        self.investigation.last_update = Some(timestamp::clock_utc(unix_now()));
         for (source, read) in reads {
             self.apply_poll(source, read, cx);
         }
+        self.sort_request_rows();
         self.keep_pinned();
         cx.notify();
     }
@@ -2759,6 +2765,7 @@ impl LogView {
     /// Keeps a selection the new rows still list, in view; otherwise drops
     /// it and returns to the top.
     fn after_rows_changed(&mut self) {
+        self.sort_request_rows();
         self.window_revision = self.window_revision.wrapping_add(1);
         self.histogram_for = None;
         if self
@@ -2777,6 +2784,7 @@ impl LogView {
                 }
             }
         }
+        self.restore_viewport();
     }
 
     fn reveal_tail(&self) {
@@ -2903,6 +2911,7 @@ impl LogView {
         let this = &*self;
         let merged = this.merge.is_some();
         let columns = this.columns(cx);
+        let message_field = this.message_field(cx);
         let widths: Vec<f32> = columns.iter().map(|key| this.width_of(key, cx)).collect();
         let palette = brand::palette(cx);
         let faint = brand::reader_palette(cx).text_faint;
@@ -2975,7 +2984,7 @@ impl LogView {
                             })
                             .collect()
                     };
-                let row = row_text_record(file, local, record.as_ref());
+                let row = row_text_message(file, local, record.as_ref(), message_field.as_deref());
                 let lines = row.lines;
                 let selected = chosen.as_ref().is_some_and(|rows| rows.contains(&position));
                 let marked = this.marks.contains(&(source, local));
@@ -3151,8 +3160,16 @@ impl LogView {
                                         )
                                         .into_any_element(),
                                     format!("log-message-cell-{index}"),
-                                    cell_field(FieldRef::Message),
-                                    cell_value(&FieldRef::Message),
+                                    cell_field(
+                                        message_field.as_ref().map_or(FieldRef::Message, |key| {
+                                            FieldRef::Key(key.clone())
+                                        }),
+                                    ),
+                                    cell_value(
+                                        &message_field.as_ref().map_or(FieldRef::Message, |key| {
+                                            FieldRef::Key(key.clone())
+                                        }),
+                                    ),
                                     index,
                                     cx,
                                 ),
@@ -3315,17 +3332,24 @@ impl LogView {
             .children(
                 file.record(index)
                     .as_ref()
-                    .and_then(|record| correlation::ids(record).into_iter().next())
+                    .and_then(|record| self.request_id(record, cx))
                     .map(|id| {
                         let value = id.value.clone();
                         Button::new("log-show-request")
                             .debug_selector(|| "log-show-request".into())
                             .ghost()
                             .small()
-                            .label("Show this request")
+                            .label("Follow this request")
                             .tooltip(format!("Every record with {} {}", id.key, id.value))
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.show_request(&value, window, cx)
+                                this.follow_request(
+                                    correlation::RequestId {
+                                        key: id.key.clone(),
+                                        value: value.clone(),
+                                    },
+                                    window,
+                                    cx,
+                                )
                             }))
                     }),
             )
@@ -3357,6 +3381,22 @@ impl LogView {
             .as_ref()
             .map(source_link::in_record)
             .unwrap_or_default();
+        let body = body.children(record.as_ref().and_then(|record| {
+            let key = self.message_field(cx)?;
+            let field = record.fields.iter().find(|field| field.key == key)?;
+            Some(
+                v_flex()
+                    .py_2()
+                    .gap_2()
+                    .child(div().text_color(muted).child(format!("Message · {key}")))
+                    .child(
+                        div()
+                            .debug_selector(|| "log-full-message".into())
+                            .whitespace_normal()
+                            .child(field.value.clone()),
+                    ),
+            )
+        }));
         let body = match record {
             Some(record) => body.children(
                 detail_rows(&record, entry.timestamp())
@@ -3446,6 +3486,35 @@ impl LogView {
                                                 )
                                             })),
                                     )
+                                    .child({
+                                        use gpui_component::menu::DropdownMenu as _;
+                                        let owner = cx.entity().downgrade();
+                                        let key = field.key.clone();
+                                        let value = FilterValue::from_field(field);
+                                        let request = correlation::ids_with_field(
+                                            &record,
+                                            self.field_choices(cx).correlation.as_deref(),
+                                        )
+                                        .into_iter()
+                                        .find(|id| id.key == key);
+                                        Button::new(("log-detail-field-actions", position))
+                                            .debug_selector(move || {
+                                                format!("log-detail-field-actions-{position}")
+                                            })
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::Ellipsis)
+                                            .tooltip("Field actions")
+                                            .dropdown_menu(move |menu, _, _| {
+                                                Self::field_actions(
+                                                    menu,
+                                                    owner.clone(),
+                                                    key.clone(),
+                                                    value.clone(),
+                                                    request.clone(),
+                                                )
+                                            })
+                                    })
                                     .child({
                                         let key = field.key.clone();
                                         let shown = columns.contains(&field.key);
@@ -3696,7 +3765,7 @@ impl LogView {
             .child(level_button)
             .children(time_button)
             .child(query)
-            .children(self.request_back.as_ref().map(|_| {
+            .children((!self.investigation.frames.is_empty()).then(|| {
                 bar_button("log-request-back", true)
                     .label("Back")
                     .icon(IconName::ArrowLeft)
@@ -3957,7 +4026,7 @@ impl LogView {
 
     /// Starts naming the shown filter to save it (#1169).
     fn begin_saving(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Name this filter"));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Name this view"));
         let subscription =
             cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
                 InputEvent::PressEnter { .. } => this.commit_saving(window, cx),
@@ -4011,6 +4080,7 @@ impl LogView {
         };
         query.filter_chips = self.filter_ui.chips.clone();
         query.columns = Some(self.columns(cx));
+        self.capture_investigation(&mut query, cx);
         if !reader_ui_state::installed(cx) {
             return fail(
                 self,
@@ -4069,7 +4139,10 @@ impl LogView {
                 return;
             }
         };
-        self.request_back = None;
+        if !self.restore_saved_source(&saved, window, cx) {
+            return;
+        }
+        self.restore_investigation(&saved, cx);
         let (parsed_chips, advanced) = filter
             .query
             .as_ref()
@@ -4178,10 +4251,10 @@ impl LogView {
             .iter()
             .map(|query| query.name.clone())
             .collect();
-        let can_save = self.filter.is_active() || !self.filter_ui.chips.is_empty();
+        let can_save = self.data().is_some();
         bar_button("log-saved", false)
             .icon(IconName::Star)
-            .tooltip("Saved filters")
+            .tooltip("Saved views")
             .debug_selector(|| "log-saved".into())
             .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, window, cx| {
                 let mut menu = menu;
@@ -4194,11 +4267,11 @@ impl LogView {
                     ));
                 }
                 if names.is_empty() {
-                    menu = menu.item(PopupMenuItem::new("No saved filters yet").disabled(true));
+                    menu = menu.item(PopupMenuItem::new("No saved views yet").disabled(true));
                 }
                 let save_view = view.clone();
                 menu = menu.separator().item(
-                    PopupMenuItem::new("Save the shown filter…")
+                    PopupMenuItem::new("Save current view…")
                         .disabled(!can_save)
                         .on_click(move |_, window, cx| {
                             let _ = save_view.update(cx, |this, cx| this.begin_saving(window, cx));
@@ -4642,7 +4715,12 @@ impl LogView {
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let text = self.status();
+        let mut text = self.status();
+        if self.following() || self.investigation.live {
+            if let Some(last) = &self.investigation.last_update {
+                text.push_str(&format!(" · Live · last update {last}"));
+            }
+        }
         h_flex()
             .flex_none()
             .h(px(28.))
@@ -4845,13 +4923,18 @@ impl Render for LogView {
                                         }),
                                 )
                         }))
-                        .child(div().flex_1().child(self.filter_popover(
-                            "log-message-filter".into(),
-                            "Message".into(),
-                            FieldRef::Message,
-                            None,
-                            cx,
-                        )))
+                        .child(
+                            div().flex_1().child(
+                                self.filter_popover(
+                                    "log-message-filter".into(),
+                                    "Message".into(),
+                                    self.message_field(cx)
+                                        .map_or(FieldRef::Message, FieldRef::Key),
+                                    None,
+                                    cx,
+                                ),
+                            ),
+                        )
                         .on_drag_move(cx.listener(
                             |this, event: &DragMoveEvent<ColumnDrag>, _, cx| {
                                 let at = event.drag(cx).0;
@@ -4887,6 +4970,11 @@ impl Render for LogView {
             .on_action(
                 cx.listener(|this, _: &FocusLogFilter, window, cx| this.focus_filter(window, cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &InvestigationBack, window, cx| {
+                    this.request_back(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &ToggleMark, _, cx| this.toggle_mark(cx)))
             .on_action(
                 cx.listener(|this, _: &NextMark, window, cx| this.step_mark(true, window, cx)),
@@ -4921,6 +5009,35 @@ impl Render for LogView {
                     .text_color(brand::palette(cx).danger)
                     .child(error)
             }))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .px_3()
+                    .gap_2()
+                    .min_w_0()
+                    .child(self.message_button(cx))
+                    .children(
+                        self.history_key()
+                            .filter(|_| !matches!(self.state, State::Remote(_) | State::Stream(_)))
+                            .map(|path| {
+                                let text = format!("Log source: {path}");
+                                div()
+                                    .id("log-view-source")
+                                    .debug_selector(|| "log-view-source".into())
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(text.clone())
+                                    .tooltip(move |window, cx| {
+                                        gpui_component::tooltip::Tooltip::new(text.clone())
+                                            .build(window, cx)
+                                    })
+                            }),
+                    ),
+            )
+            .children(self.render_investigation(cx))
             .children(self.render_chip_bar(cx))
             .children(self.render_saving(cx))
             .children(self.render_histogram(cx))
@@ -5157,6 +5274,26 @@ fn row_text_record(file: &dyn LogData, index: usize, record: Option<&Record>) ->
     }
 }
 
+fn row_text_message(
+    file: &dyn LogData,
+    index: usize,
+    record: Option<&Record>,
+    message: Option<&str>,
+) -> RowText {
+    let mut row = row_text_record(file, index, record);
+    if let Some(key) = message {
+        let mut text = RowBuilder::default();
+        if let Some(field) =
+            record.and_then(|record| record.fields.iter().find(|field| field.key == key))
+        {
+            text.push(&field.value, false);
+        }
+        row.text = text.text;
+        row.muted.clear();
+    }
+    row
+}
+
 #[derive(Default)]
 struct RowBuilder {
     text: String,
@@ -5380,6 +5517,7 @@ impl Reader {
 mod tests {
     use super::*;
     include!("reader_log/filter_tests.rs");
+    include!("reader_log/investigation_tests.rs");
     use ::core::prelude::v1::test;
 
     // GPUI's TestPlatform::quit is a no-op. Explicit shutdown also runs the
@@ -7136,7 +7274,7 @@ mod tests {
             "only that request, from both files, in time order"
         );
         view.read_with(visual, |view, _| {
-            assert_eq!(view.request_back.as_deref(), Some("level>=info"));
+            assert_eq!(view.investigation.frames.len(), 1);
         });
         // Back returns to the previous filter.
         visual.update(|window, cx| window.draw(cx).clear(cx));
@@ -7147,7 +7285,7 @@ mod tests {
         visual.run_until_parked();
         assert_eq!(messages(visual), before);
         view.read_with(visual, |view, cx| {
-            assert!(view.request_back.is_none());
+            assert!(view.investigation.frames.is_empty());
             assert_eq!(view.query_input.read(cx).value().as_ref(), "level>=info");
         });
     }
@@ -7919,6 +8057,13 @@ mod tests {
                 .expect("saved under the typed name");
             assert_eq!(saved.min_level, "warn");
             assert_eq!(saved.name, "Server errors");
+            assert!(saved.file.is_some(), "new saved views retain their source");
+            // Older portable filters remain applicable to any currently open file.
+            let mut legacy = saved.clone();
+            legacy.file = None;
+            visual.update(|_, cx| {
+                assert!(reader_ui_state::save_log_filter(legacy, cx));
+            });
         }
         // Another log: the filter is listed there and applies to its rows.
         let (_directory, reader, visual) = open_named("other.jsonl", second.as_bytes(), cx);

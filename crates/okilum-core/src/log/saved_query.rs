@@ -1,7 +1,10 @@
 //! Saved log queries (#1169): a query with its level and time filter under a
-//! name, kept globally so that it applies to any log.
+//! name, kept globally. Legacy entries without a source apply to any log.
 //!
-//! What is saved is what the filter bar holds apart from where it was set: the
+//! New saved views also retain their canonical source, field choices and columns.
+//! Kibana definitions retain query, scope, sort and time preset; an absolute remote
+//! window is stored separately. Credentials are never included.
+//! The filter itself keeps the
 //! query text, the free text, the lowest level and the choice about lines
 //! without a level, the time preset and the field chips. An absolute time
 //! range (the histogram brush, #1168) is not saved: it names a stretch of one
@@ -39,9 +42,24 @@ const PRESETS: [(&str, TimeWindow); 4] = [
     ("24h", TimeWindow::Last24Hours),
 ];
 
+/// Display and correlation choices scoped to a canonical source identity.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FieldChoices {
+    pub message: Option<String>,
+    pub correlation: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedQuery {
+    /// Canonical source definitions contain no credentials.
+    pub file: Option<String>,
+    pub remote_source: Option<crate::remote_log::Source>,
+    pub remote_range: Option<crate::remote_log::discover::TimeRange>,
+    pub message_field: Option<String>,
+    pub correlation_field: Option<String>,
+    pub request: Option<super::correlation::RequestId>,
     pub name: String,
     /// Point-and-click state, including disabled chips and execution location.
     pub filter_chips: Vec<super::chips::FilterChip>,
@@ -63,6 +81,12 @@ pub struct SavedQuery {
 impl Default for SavedQuery {
     fn default() -> Self {
         Self {
+            file: None,
+            remote_source: None,
+            remote_range: None,
+            message_field: None,
+            correlation_field: None,
+            request: None,
             name: String::new(),
             filter_chips: Vec::new(),
             columns: None,
@@ -109,6 +133,12 @@ impl SavedQuery {
     /// spelling, which parses back to the same query. A time range is saved as `all`.
     pub fn capture(name: &str, filter: &LogFilter) -> Result<Self, NameError> {
         Ok(Self {
+            file: None,
+            remote_source: None,
+            remote_range: None,
+            message_field: None,
+            correlation_field: None,
+            request: None,
             name: clean_name(name)?,
             filter_chips: Vec::new(),
             columns: None,
@@ -284,6 +314,54 @@ mod tests {
             query: Some(Query::parse("level>=warn and status>=500").unwrap()),
             window_end: Some(5),
         }
+    }
+
+    #[test]
+    fn investigation_context_round_trips_without_changing_legacy_filters() {
+        let mut source = crate::remote_log::Source::direct(
+            "Synthetic",
+            "https://logs.example",
+            "remote-*:events",
+            "event.time",
+        )
+        .unwrap();
+        source
+            .discover
+            .filters
+            .push(serde_json::json!({"query":{"term":{"scope":"demo"}}}));
+        let mut saved = SavedQuery::capture("Request investigation", &filter()).unwrap();
+        saved.remote_source = Some(source.clone());
+        saved.remote_range = Some(source.discover.time.clone());
+        saved.message_field = Some("details".into());
+        saved.correlation_field = Some("flow".into());
+        saved.columns = Some(vec!["flow".into(), "duration".into()]);
+        saved.request = Some(super::super::correlation::RequestId {
+            key: "flow".into(),
+            value: "a\"b\\c".into(),
+        });
+        saved.filter_chips = vec![super::super::chips::FilterChip::new(
+            super::super::query::FieldRef::Key("active".into()),
+            vec![super::super::chips::FilterValue::Value {
+                kind: super::super::ValueKind::Bool,
+                text: "true".into(),
+            }],
+            super::super::chips::FilterMode::Include,
+        )];
+        saved.filter_chips[0].enabled = false;
+        saved.filter_chips[0].execution = super::super::chips::FilterExecution::Server;
+        let mut views = SavedQueries::new();
+        assert!(views.upsert(saved.clone()));
+        let restored = SavedQueries::from_json(&views.to_json()).unwrap();
+        assert_eq!(restored.get(&saved.name), Some(&saved));
+        assert_eq!(saved.to_filter().unwrap().time, TimeWindow::LastHour);
+        let legacy: SavedQuery =
+            serde_json::from_str(r#"{"name":"Legacy","query":"level>=warn"}"#).unwrap();
+        assert!(
+            legacy.file.is_none()
+                && legacy.remote_source.is_none()
+                && legacy.message_field.is_none()
+        );
+        assert!(legacy.to_filter().unwrap().query.is_some());
     }
 
     #[test]

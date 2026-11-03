@@ -129,6 +129,38 @@ pub fn record(id: usize) -> Value {
     }
     json!({"_index":if id % 2 == 0 {"remote-a:events"} else {"remote-b:events"},"_id":id.to_string(),"_source":source,"sort":[nanos,id % 37]})
 }
+/// Investigation fixture: repeated ids across hours, aliases and long text without message.
+pub fn investigation_record(id: usize) -> Value {
+    let mut event = record(id);
+    let nanos = 1_793_491_200_000_000_000i64 + (id % 72) as i64 * 3_600_000_000_000;
+    let stamp = time::OffsetDateTime::from_unix_timestamp_nanos(nanos as i128)
+        .unwrap()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let source = event["_source"].as_object_mut().unwrap();
+    source.remove("request_id");
+    source.insert(
+        if id % 4 == 0 {
+            "request_id"
+        } else {
+            "trace_id"
+        }
+        .into(),
+        json!(format!("request-{}", id % 3)),
+    );
+    source.insert("flow".into(), json!(format!("request-{}", id % 3)));
+    source.insert(
+        "details".into(),
+        json!(format!(
+            "Synthetic event {id}\n{}",
+            "A read operation completed with structured investigation context. ".repeat(24)
+        )),
+    );
+    source.insert("@timestamp".into(), json!(stamp));
+    event["sort"][0] = json!(nanos);
+    event
+}
+
 fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut reader = BufReader::new(stream.try_clone()?);

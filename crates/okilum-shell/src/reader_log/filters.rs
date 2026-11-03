@@ -236,7 +236,7 @@ impl LogView {
         cx.notify();
     }
     pub(super) fn filter_for_source(&self, source: usize) -> LogFilter {
-        let mut filter = self.filter.clone();
+        let mut filter = self.investigation_filter();
         filter.query = filter
             .query
             .as_ref()
@@ -436,6 +436,7 @@ impl LogView {
         target: (FieldRef, Option<String>),
         value: Arc<FilterValue>,
         row: (usize, bool, bool),
+        request: Option<correlation::RequestId>,
     ) -> PopupMenu {
         let (field, column) = target;
         let include_owner = owner.clone();
@@ -480,6 +481,13 @@ impl LogView {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
             }));
         if let Some(key) = column {
+            menu = Self::field_actions(
+                menu,
+                owner.clone(),
+                key.clone(),
+                value.as_ref().clone(),
+                request,
+            );
             let column_owner = owner.clone();
             menu = menu.item(
                 PopupMenuItem::new("Show as a column").on_click(move |_, _, cx| {
@@ -522,10 +530,18 @@ impl LogView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let request = self
+            .locate(row.0)
+            .and_then(|(source, index)| self.source(source)?.record(index))
+            .and_then(|record| {
+                correlation::ids_with_field(&record, self.field_choices(cx).correlation.as_deref())
+                    .into_iter()
+                    .find(|id| Some(&id.key) == target.1.as_ref())
+            });
         let owner = cx.entity().downgrade();
         let previous_focus = window.focused(cx);
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            Self::cell_menu(menu, owner, target, value, row)
+            Self::cell_menu(menu, owner, target, value, row, request)
         });
         let menu_focus = menu.focus_handle(cx);
         menu_focus.focus(window, cx);
