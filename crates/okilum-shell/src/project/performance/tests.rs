@@ -109,6 +109,13 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     // Reader-mounted typing must keep the existing inner Feed cache (#2410).
     // Wrapping all of Manager in another cached view forces a subtree refresh
     // and silently defeats that boundary, unlike a standalone ProjectView test.
+    project.update_in(visual, |project, window, cx| {
+        project.compose.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.focus(window, cx);
+        });
+    });
+    visual.run_until_parked();
     visual.simulate_keystrokes("x");
     visual.run_until_parked();
     feed.read_with(visual, |feed, _| feed.row_calls.set(0));
@@ -121,7 +128,8 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
             .read(cx)
             .value()
             .ends_with("xy")),
-        "positive control: real composer typing"
+        "positive control: real composer typing: {:?}",
+        project.read_with(visual, |project, cx| project.compose.read(cx).value())
     );
     assert_eq!(
         feed.read_with(visual, |feed, _| feed.row_calls.get()),
