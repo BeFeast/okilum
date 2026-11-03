@@ -1454,8 +1454,7 @@ impl ProjectView {
     }
 
     pub(in crate::project) fn native_actions_pinned(&self) -> bool {
-        cfg!(target_os = "linux")
-            && self.local_setup.is_none()
+        self.local_setup.is_none()
             && self.binding.is_some()
             && self.native.active()
             && !self.executors_open

@@ -341,10 +341,10 @@ mod tests {
         let open = visual.debug_bounds("project-connection-menu").unwrap();
         visual.simulate_click(open.center(), Modifiers::default());
         visual.run_until_parked();
-        // Linux also has Rotation policy and Express session before Diagnostics.
-        #[cfg(target_os = "linux")]
+        // The native Manager also has Rotation policy and Express session before Diagnostics.
+        #[cfg(native_manager)]
         visual.simulate_keystrokes("down down down down down down enter");
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         visual.simulate_keystrokes("down down down down enter");
         visual.run_until_parked();
         view.read_with(visual, |view, _| assert!(view.launch.open));

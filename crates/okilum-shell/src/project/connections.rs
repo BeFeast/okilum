@@ -288,7 +288,7 @@ mod origin_tests {
 /// UI lifecycle only: changing a connection invalidates outstanding composer
 /// requests before any credential, gateway or stream task may complete. Durable
 /// drafts remain owned by their original writer and are not cleared here.
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 impl super::ProjectView {
     pub(super) fn draft_handoff_connection_changing(&mut self) {
         self.revoke_rotation();
@@ -319,7 +319,7 @@ impl super::ProjectView {
 }
 
 // BEGIN PURE HANDOFF VISIBILITY
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 fn native_handoff_visible(
     surface_visible: bool,
     agents_enabled: bool,
@@ -328,7 +328,7 @@ fn native_handoff_visible(
     surface_visible && agents_enabled && access_allowed
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, native_manager))]
 mod handoff_visibility_tests {
     use super::native_handoff_visible;
     use ::core::prelude::v1::test;
