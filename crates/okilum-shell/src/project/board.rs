@@ -1071,7 +1071,12 @@ impl Render for Board {
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
         }
-        if self.filter.is_active() && projection.counts.iter().all(|n| *n == 0) {
+        if self.filter.is_active()
+            && (!self.binding_loading || self.binding_read.is_some())
+            && (!self.local_loading || self.local_cards.last_success.is_some())
+            && (!self.snapshot.busy() || self.snapshot.forgejo.last_success.is_some())
+            && projection.counts.iter().all(|n| *n == 0)
+        {
             return root.child(self.filter_empty(cx)).into_any_element();
         }
         let counts = projection.counts;

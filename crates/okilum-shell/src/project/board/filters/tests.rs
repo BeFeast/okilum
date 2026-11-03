@@ -251,3 +251,35 @@ fn issue2532_local_tasks_do_not_invent_issue_labels_or_agents() {
         "local identity is not an issue number"
     );
 }
+
+#[gpui::test]
+fn issue2532_pending_refresh_is_not_an_empty_search_result(cx: &mut TestAppContext) {
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path());
+    board.update(visual, |board, cx| {
+        board.filter.search = "#999".into();
+        assert!(board.snapshot.begin().is_some());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-filter-empty").is_none());
+    board.update(visual, |board, cx| {
+        board.snapshot.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-filter-empty").is_some(),
+        "completed zero matches have the reset action"
+    );
+    board.update(visual, |board, cx| {
+        board.snapshot.forgejo.last_success = Some(now());
+        assert!(board.snapshot.begin().is_some());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-filter-empty").is_some(),
+        "refresh retains a completed emptiness decision"
+    );
+}
