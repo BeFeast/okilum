@@ -211,3 +211,20 @@ fn issue1588_source_command_click_and_live_preview_disclosure(cx: &mut TestAppCo
         .debug_bounds("agent-expanded-imports/rules.md")
         .is_some());
 }
+
+#[gpui::test]
+fn issue1588_imported_task_queries_have_no_editing_authority(cx: &mut TestAppContext) {
+    let mut f = open(cx, "project/AGENTS.md");
+    let imported = "```tasks\nnot done\n```\n";
+    let path = f.root.join("project/imports/rules.md");
+    std::fs::write(&path, imported).unwrap();
+    f.draw();
+    f.click("agent-disclosure-imports/rules.md");
+    assert!(
+        f.visual.debug_bounds("reader-code-language-0").is_some(),
+        "positive control: imported task query is visible as a read-only code block"
+    );
+    assert!(f.visual.debug_bounds("tasks-empty").is_none());
+    assert!(f.visual.debug_bounds("tasks-unavailable").is_none());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), imported);
+}
