@@ -13,6 +13,8 @@ pub(super) fn kind(issue: Option<&okilum_t3::board::Issue>) -> (&'static str, &'
         ("bug", "bug")
     } else if issue.is_some_and(|i| i.has_label("fr")) {
         ("fr", "sparkles")
+    } else if issue.is_some_and(|i| i.has_label("ci")) {
+        ("CI", "circle-check")
     } else if issue.is_some_and(|i| i.has_label("task")) {
         ("task", "check")
     } else {
@@ -34,6 +36,7 @@ pub(super) fn type_color(kind: &str, cx: &App) -> Hsla {
     let p = brand::palette(cx);
     match kind {
         "bug" => p.danger,
+        "CI" => p.info,
         "fr" => brand::reader_palette(cx).callout_important,
         _ => p.text_muted,
     }
