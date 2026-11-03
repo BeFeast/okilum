@@ -2735,6 +2735,7 @@ fn live_blocks(
                 this.read(cx),
                 link,
                 reader.clone(),
+                None,
                 cx,
             );
         }

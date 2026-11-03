@@ -142,6 +142,15 @@ fn issue1588_entered_project_note_and_contract_keep_document_features(cx: &mut T
     assert!(!okilum_core::quick_open::FileFilter::AgentFiles.admits("_AgentContract.md"));
     f.reader.update(f.visual, |r, cx| {
         r.project_open = true;
+        r.project_navigation.active = Some(okilum_t3::projects::Project {
+            folder: r.vault_root.clone(),
+            name: "Fixture project".into(),
+            kind: okilum_t3::projects::Kind::Code,
+            environment: None,
+            manager_project: None,
+            manager: okilum_t3::projects::Manager::NotStarted,
+            appearance: Default::default(),
+        });
         cx.notify();
     });
     f.draw();
