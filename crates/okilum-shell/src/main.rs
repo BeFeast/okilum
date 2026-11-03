@@ -363,6 +363,7 @@ actions!(
         FindNext,
         FindPrev,
         Dismiss,
+        DismissManagerModel,
         QuickOpen,
         FullTextSearch,
         SwitchWindowMode,
@@ -660,6 +661,8 @@ fn bind_keys(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, Some("Reader > Input")),
         KeyBinding::new("ctrl-k", QuickOpen, Some("Reader > Input")),
+        KeyBinding::new("escape", DismissManagerModel, Some("ManagerModels > Input")),
+        KeyBinding::new("escape", DismissManagerModel, Some("ManagerModels")),
         KeyBinding::new("escape", Dismiss, ctx),
         KeyBinding::new("ctrl-k", QuickOpen, ctx),
         #[cfg(target_os = "macos")]

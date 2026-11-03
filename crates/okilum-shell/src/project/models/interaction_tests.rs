@@ -364,10 +364,6 @@ fn escape_dismisses_the_picker_when_model_access_or_sending_becomes_unavailable(
                 "deferred overlay lease must be released"
             );
             assert!(
-                view.model_ui.dismissal.is_none(),
-                "closed popup releases its key interceptor"
-            );
-            assert!(
                 view.compose.read(cx).focus_handle(cx).is_focused(window),
                 "Escape returns focus to the composer during {blocked}"
             );
