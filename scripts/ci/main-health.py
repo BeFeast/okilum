@@ -11,8 +11,11 @@ comment per red episode, addressed to its author, and a single "main is red"
 issue carries the current state for the manager. A green main closes that issue.
 
 A failure that never reached the build or tests (runner, Docker, network, disk) is
-reported as likely infrastructure and blames no merge. Its error markers count only on
-the runner's own lines, never in test or script output. A job that hit its time limit
+reported as likely infrastructure and blames no merge; the gate's pre-compile checks
+(rustfmt, the brand check) are code, and the no-output fallback is infrastructure only
+when the gate step never started (its 'nofile before:' line is missing). Its error markers
+count only on the runner's own lines, never in test or script output. A job that hit its
+time limit
 with a test still running hung in that test, which is code. Forgejo has no API to re-run a job,
 so a human re-runs it or the next merge retests. For real failures the failing
 tests are listed. A lane log that cannot be read proves nothing: the merges are blamed
@@ -92,6 +95,16 @@ LOG_PREFIX = re.compile(r'^\S+Z ', re.M)
 # before 3.11 names only the class in the parentheses; a subTest appends its parameters.
 PYTHON_FAILURE = re.compile(r'^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)', re.M)
 PYTHON_FAILED = re.compile(r'^FAILED \(', re.M)
+# check-linux.sh runs `cargo fmt --check` and check_brand.py before the first compile, so their
+# failures are code even with no Compiling line (#1966). rustfmt prints 'Diff in <path> at <line>:';
+# the brand script's failure summary is '<old title> brand assets remain:'. Its tail is matched
+# here because this tracked file must not carry the old name (check_brand.py spells it in parts).
+FMT_DIFF = re.compile(r'^Diff in ', re.M)
+BRAND_FAILED = 'brand assets remain:'
+# test-nofile.sh prints 'nofile before:' as the gate step's first output (ci.yml prints it too):
+# the marker says the gate started, and without it a failed log has no build output because the
+# job never got that far (#1966).
+GATE_STARTED = re.compile(r'^nofile before: ', re.M)
 
 
 def python_failures(text):
@@ -130,6 +143,10 @@ def classify(log):
     # suite's output may print the same shape.
     if PYTHON_FAILED.search(text):
         return 'code', python_failures(text)
+    # The gate's pre-compile checks failed (#1966): rustfmt's diff or the brand check's summary.
+    # Both are code whatever the runner printed after them, so they outrank the infra markers.
+    if FMT_DIFF.search(text) or BRAND_FAILED in text:
+        return 'code', []
     for line in RUNNER_LINE.findall(text):
         for marker in INFRA_MARKERS:
             if marker in line:
@@ -138,7 +155,10 @@ def classify(log):
                 hung = unfinished_tests(text) if marker == DEADLINE else []
                 return ('code', hung) if hung else ('infra', marker)
     if not re.search(r'^\s*(Compiling|Checking|Finished|Running) ', text, re.M):
-        return 'infra', 'the job ended before any build or test output'
+        # Infra only when the gate step never started (#1966): a started gate that printed
+        # nothing readable says nothing about why, so it stays unknown.
+        if not GATE_STARTED.search(text):
+            return 'infra', 'the job ended before any build or test output'
     return 'unknown', []
 
 
