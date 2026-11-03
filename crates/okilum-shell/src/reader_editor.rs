@@ -842,7 +842,10 @@ impl Reader {
                         // The worker retains the last large derived cache until
                         // its replacement. A key can drop its UI reference in O(1)
                         // without destroying a note-wide footnote map on the UI.
-                        *cache.lock().unwrap_or_else(|p| p.into_inner()) = Some(prepared.2.clone());
+                        let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
+                        if cache.as_ref().is_none_or(|(known, _)| *known <= epoch) {
+                            *cache = Some((epoch, prepared.2.clone()));
+                        }
                         (result, directions, prepared)
                     })
                     .await;
