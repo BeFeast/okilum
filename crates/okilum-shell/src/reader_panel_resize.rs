@@ -4,20 +4,25 @@ use gpui::{
     Element, GlobalElementId, Hitbox, HitboxBehavior, HitboxId, InspectorElementId, LayoutId,
 };
 
+pub(super) type Capture = std::rc::Rc<std::cell::Cell<Option<HitboxId>>>;
+
 type Begin = std::rc::Rc<dyn Fn(&MouseDownEvent, &mut Window, &mut App)>;
 pub(super) struct Handle {
     id: ElementId,
     active: bool,
+    capture: Capture,
     begin: Begin,
 }
 pub(super) fn handle(
     id: &'static str,
     active: bool,
+    capture: Capture,
     begin: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Handle {
     Handle {
         id: id.into(),
         active,
+        capture,
         begin: std::rc::Rc::new(begin),
     }
 }
@@ -67,7 +72,7 @@ impl Element for Handle {
     }
     fn prepaint(
         &mut self,
-        id: Option<&GlobalElementId>,
+        _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         line: &mut AnyElement,
@@ -76,14 +81,10 @@ impl Element for Handle {
     ) -> Hitbox {
         line.prepaint(window, cx);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::BlockMouse);
-        window.with_element_state(id.unwrap(), |previous: Option<HitboxId>, window| {
-            if self.active {
-                window.capture_pointer(hitbox.id);
-            } else if previous.is_some() && previous == window.captured_hitbox() {
-                window.release_pointer();
-            }
-            ((), hitbox.id)
-        });
+        if self.active {
+            window.capture_pointer(hitbox.id);
+            self.capture.set(Some(hitbox.id));
+        }
         hitbox
     }
     fn paint(
@@ -100,14 +101,26 @@ impl Element for Handle {
         window.set_cursor_style(gpui::CursorStyle::ResizeLeftRight, hitbox);
         let hitbox = hitbox.id;
         let begin = self.begin.clone();
+        let capture = self.capture.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase.bubble() && event.button == MouseButton::Left && hitbox.is_hovered(window) {
                 window.capture_pointer(hitbox);
+                capture.set(Some(hitbox));
                 window.prevent_default();
                 gpui_base::GlobalState::suppress_text_selection(cx);
                 begin(event, window, cx);
                 cx.stop_propagation();
             }
         });
+    }
+}
+
+impl Reader {
+    pub(super) fn release_panel_pointer(&mut self, window: &mut Window) {
+        if let Some(id) = self.panel_capture.take() {
+            if window.captured_hitbox() == Some(id) {
+                window.release_pointer();
+            }
+        }
     }
 }

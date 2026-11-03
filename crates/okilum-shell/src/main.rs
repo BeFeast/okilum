@@ -1630,6 +1630,8 @@ struct Reader {
     header_cache: Entity<reader_header_cache::Header>,
     #[cfg(target_os = "linux")]
     layout_signal: Entity<()>,
+    #[cfg(target_os = "linux")]
+    panel_capture: reader_panel_resize::Capture,
     navigation: reader_navigation::State,
     ui_state: reader_ui_state::Session,
     single_file: bool,
@@ -2014,6 +2016,8 @@ impl Reader {
             header_cache,
             #[cfg(target_os = "linux")]
             layout_signal,
+            #[cfg(target_os = "linux")]
+            panel_capture: Default::default(),
             navigation: Default::default(),
             ui_state: Default::default(),
             loading: None,
@@ -2263,7 +2267,7 @@ impl Reader {
             this.recent_switcher.cancel();
             #[cfg(target_os = "linux")]
             if !window.is_window_active() && this.resizing_panel.take().is_some() {
-                window.release_pointer();
+                this.release_panel_pointer(window);
             }
             cx.notify();
             this.record_ui_state(window.is_window_active(), cx);
@@ -7606,7 +7610,12 @@ impl Reader {
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(target_os = "linux")]
-        let _ = self.layout_signal.read(cx);
+        {
+            let _ = self.layout_signal.read(cx);
+            if self.resizing_panel.is_none() {
+                self.release_panel_pointer(window);
+            }
+        }
         let _render_timing =
             platform::text_diagnostics::time(platform::text_diagnostics::Work::UiRender);
         platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
@@ -7831,6 +7840,7 @@ impl Render for Reader {
                                 let handle = reader_panel_resize::handle(
                                     id,
                                     self.resizing_panel == Some(panel),
+                                    self.panel_capture.clone(),
                                     move |_, _, cx| {
                                         let _ = resize_view.update(cx, |this, cx| {
                                             this.resizing_panel = Some(panel);
@@ -8265,7 +8275,7 @@ impl Render for Reader {
                                                 this.resizing_panel = None;
                                                 #[cfg(target_os = "linux")]
                                                 {
-                                                    window.release_pointer();
+                                                    this.release_panel_pointer(window);
                                                     cx.notify();
                                                 }
                                                 return;
@@ -8306,7 +8316,7 @@ impl Render for Reader {
                                             if phase.capture() {
                                                 let _ = exit_view.update(cx, |this, cx| {
                                                     if this.resizing_panel.take().is_some() {
-                                                        window.release_pointer();
+                                                        this.release_panel_pointer(window);
                                                         cx.notify();
                                                     }
                                                 });
@@ -12614,6 +12624,11 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
             assert!(v.resizing_panel.is_some(), "active drag positive control");
+            #[cfg(target_os = "linux")]
+            assert!(
+                window.captured_hitbox().is_some(),
+                "native capture positive control"
+            );
             v.close_panel(reader_layout::Panel::Notes, window, cx);
             assert!(v.resizing_panel.is_none());
             v.toggle_panel(reader_layout::Panel::Backlinks, window, cx);
@@ -12624,6 +12639,11 @@ mod document_link_landing_tests {
         view.update_in(visual, |v, window, cx| {
             assert_eq!(v.panel_widths.backlinks, reader_layout::DEFAULT_PANEL_WIDTH);
             assert!(v.resizing_panel.is_none());
+            #[cfg(target_os = "linux")]
+            assert!(
+                window.captured_hitbox().is_none(),
+                "closing a panel releases its pointer"
+            );
             cx.stop_active_drag(window);
             v.toggle_panel(reader_layout::Panel::Notes, window, cx);
         });
