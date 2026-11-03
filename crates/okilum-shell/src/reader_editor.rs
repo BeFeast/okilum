@@ -1724,7 +1724,12 @@ impl Reader {
         let text =
             DraftText::from_identified_rope(snapshot.text.rope().clone(), snapshot.text.id());
         editing.draft_stamp = snapshot.stamp;
-        editing.store.queue_snapshot(text);
+        // Lifecycle capture is a bulk equality check, not a new input edit.
+        // Retain a clean native revision as clean instead of manufacturing
+        // pending input that would require canonical admission during a hold.
+        if !editing.store.snapshot().same(&text) {
+            editing.store.queue_reset_snapshot(text);
+        }
         let source_changed = editing.store.dirty();
         let draft = editing.store.flush_draft();
         let protected = draft.is_ok();
