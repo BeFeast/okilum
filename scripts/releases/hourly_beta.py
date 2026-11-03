@@ -267,12 +267,24 @@ def github_main(platform, env, descriptor):
         return False, 'Pinned hourly ref does not match its source'
     if env['GITHUB_REF'] not in ('refs/heads/main', pinned_ref):
         return True, 'Trusted PR proxy retains its existing push contract'
-    tip = api('/branches/main')['commit']['id']
     expected = env.get('HOURLY_SOURCE', '') or source
     if expected != source:
         return False, 'GitHub dispatch captured a different source; no build'
-    if candidate(tip, platform, descriptor, expected) != source:
-        return False, 'Source is uncertified or already published; no compiler work'
+    if env['GITHUB_REF'] == pinned_ref:
+        # Forgejo is LAN-only: GitHub-hosted runners cannot read its API. Only
+        # Forgejo's dispatch_linux creates or dispatches this write-once ref, and
+        # it does so after main_source() and green() on the exact source. The
+        # Forgejo publisher re-admits the bytes against the feed under its lock.
+        published = descriptor(source, 'linux-appimage' if platform == 'linux' else platform)
+        if published is not None and published.get('source') == source:
+            return False, 'Pinned source is already the beta head; no compiler work'
+    else:
+        try:
+            tip = api('/branches/main')['commit']['id']
+        except OSError as error:
+            return False, f'Forgejo admission is unreachable from GitHub ({error}); no build'
+        if candidate(tip, platform, descriptor, expected) != source:
+            return False, 'Source is uncertified or already published; no compiler work'
     if github_produced(platform, source, env):
         return False, 'Exact-source GitHub producer already completed; reuse its bytes'
     return True, 'Build certified mirror source'

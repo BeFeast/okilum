@@ -8,6 +8,7 @@ import runpy
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import MagicMock, Mock, patch
 
 import yaml
@@ -160,9 +161,21 @@ class Admission(unittest.TestCase):
         with patch.object(hourly, 'github_produced', return_value=False):
             self.assertTrue(hourly.github_main('linux', env, self.descriptor)[0])
             pinned = dict(env, GITHUB_REF='refs/heads/forgejo-linux-pr/hourly-' + SOURCE)
+            # Forgejo is LAN-only: the pinned ref is admitted without its API.
+            # Forgejo verified the source before it created/dispatched the ref.
+            self.calls.clear()
             self.assertTrue(hourly.github_main('linux', pinned, self.descriptor)[0])
-            self.statuses[SOURCE][0]['status'] = 'failure'
+            self.assertTrue(hourly.github_main('linux', dict(pinned, HOURLY_SOURCE=SOURCE), self.descriptor)[0])
+            self.assertFalse(self.calls)
+            self.assertFalse(hourly.github_main('linux', dict(pinned, HOURLY_SOURCE=OLD), self.descriptor)[0])
+            self.descriptor.return_value = dict(source=SOURCE, platform='linux-appimage')
             self.assertFalse(hourly.github_main('linux', pinned, self.descriptor)[0])
+            self.descriptor.return_value = None
+            self.statuses[SOURCE][0]['status'] = 'failure'
+            self.assertFalse(hourly.github_main('linux', env, self.descriptor)[0])
+            # An unreachable Forgejo never authorizes, and never crashes, a main build.
+            with patch.object(hourly, 'api', side_effect=urllib.error.URLError('timed out')):
+                self.assertFalse(hourly.github_main('linux', env, self.descriptor)[0])
         self.assertTrue(hourly.github_main('linux', dict(env, GITHUB_REF='refs/heads/forgejo-linux-pr/1'),
                                           self.descriptor)[0])
 
