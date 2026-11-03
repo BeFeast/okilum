@@ -1,6 +1,18 @@
 # macOS update freshness (#1603)
 
-## Behavior and approved lifecycle
+## Current policy (#2467)
+
+[Update modes](update-modes.md) supersedes the download-consent and ordinary-Quit
+policy described in the historical lifecycle below. Background mode now downloads
+through the same custom silent driver and stops at Ready; Ask/Off require an
+explicit Download. An unconsumed Ready continuation is cancelled on ordinary Quit,
+including after extraction, rather than consumed for installation. Restart remains
+explicit and retains all signed freshness, replacement, editor/save and window
+restore guards. A refused termination after an already clicked Restart retains
+its existing guarded retry/Quit path (#1651); it already has installation consent.
+Sparkle's automatic installer remains disabled, because it bypasses Ready replies.
+
+## Historical behavior and approved lifecycle
 
 Automatic checks stay enabled. Downloads and installations use Sparkle's standard
 user-driven flow. The manager explicitly approved this choice on 2026-10-23:
