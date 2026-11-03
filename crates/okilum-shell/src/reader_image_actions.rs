@@ -45,6 +45,13 @@ pub(super) struct ImageCommand {
     command: Command,
 }
 
+/// Opt-in native QA diagnostics; never include paths or source text.
+fn diagnostics(message: impl std::fmt::Display) {
+    if std::env::var_os("OKILUM_EMBED_DIAGNOSTICS").is_some() {
+        eprintln!("embed-actions: {message}");
+    }
+}
+
 pub(super) fn open_modifier(os: platform::labels::Os, modifiers: Modifiers) -> bool {
     match os {
         platform::labels::Os::Mac => modifiers.platform,
@@ -237,7 +244,9 @@ pub(super) fn decorate(
         .on_mouse_down(MouseButton::Right, move |_, window, cx| {
             cx.stop_propagation();
             let target = target.clone();
-            let _ = menu_reader.update(cx, |reader, cx| reader.image_menu(target, window, cx));
+            diagnostics("image right press");
+            let result = menu_reader.update(cx, |reader, cx| reader.image_menu(target, window, cx));
+            diagnostics(format_args!("image right dispatched={}", result.is_ok()));
         })
         .on_mouse_down(MouseButton::Left, move |event, window, cx| {
             if open_modifier(platform::labels::Os::CURRENT, event.modifiers) {
@@ -303,6 +312,7 @@ impl Reader {
     }
 
     fn image_menu(&mut self, mut target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        diagnostics(format_args!("image menu current={}", target.matches(self)));
         if !target.matches(self) {
             return;
         }
@@ -347,12 +357,14 @@ impl Reader {
             menu
         });
         cx.subscribe(&popup, |reader, _, _: &DismissEvent, cx| {
+            diagnostics("image menu dismissed");
             reader.file_menu = None;
             cx.notify();
         })
         .detach();
         popup.focus_handle(cx).focus(window, cx);
         self.file_menu = Some((popup, window.mouse_position()));
+        diagnostics("image menu opened");
         cx.notify();
     }
 
