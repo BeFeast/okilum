@@ -7786,7 +7786,11 @@ impl Render for Reader {
                 && !self.quick_open.open
                 && !self.shortcut_sheet.open
             {
-                "Reader ReaderHistory"
+                if self.read_copy_available() {
+                    "Reader ReaderHistory ReaderRead"
+                } else {
+                    "Reader ReaderHistory"
+                }
             } else if self.read_copy_available() {
                 "Reader ReaderRead"
             } else {

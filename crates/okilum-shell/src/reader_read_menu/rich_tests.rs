@@ -282,6 +282,27 @@ fn markdown_shortcut_and_palette_without_selection_match_document_menu(cx: &mut 
         .read(cx)
         .selected_text()
         .is_empty()));
+
+    // History can be open beside the current Read document without a version
+    // preview. Its keyboard context must retain the Read copy shortcut.
+    f.reader
+        .update_in(f.visual, |r, window, cx| r.open_timeline(window, cx));
+    f.visual.run_until_parked();
+    f.reader.read_with(f.visual, |r, _| {
+        assert!(r
+            .active_timeline()
+            .is_some_and(|timeline| timeline.selected.is_none()));
+        assert!(r.read_copy_available());
+    });
+    assert!(
+        f.visual.debug_bounds("reader-column").is_some(),
+        "current Read document remains visible"
+    );
+    f.focus_text();
+    f.seed_clipboard();
+    f.visual.simulate_keystrokes("secondary-shift-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), markdown);
 }
 #[gpui::test]
 fn rich_read_menu_publishes_html_and_plain_without_changing_other_copy_formats(
