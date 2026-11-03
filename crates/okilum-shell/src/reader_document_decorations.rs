@@ -44,12 +44,16 @@ pub(super) fn install(
                 .collect();
             let mut column = v_flex().w_full();
             for (index, link) in links.into_iter().enumerate() {
-                column =
-                    column.child(node.render_part(&format!("part-{index}"), |s| s, window, cx));
+                column = column.child(node.render_part(
+                    &format!("part-{index}"),
+                    fragment_style,
+                    window,
+                    cx,
+                ));
                 let link_color = brand::palette(cx).link;
                 let label = node.render_part(
                     &format!("directive-{index}"),
-                    |s| s.with_foreground(link_color),
+                    |s| fragment_style(s).with_foreground(link_color),
                     window,
                     cx,
                 );
@@ -68,13 +72,19 @@ pub(super) fn install(
             column
                 .child(node.render_part(
                     &format!("part-{}", data.directives.len()),
-                    |s| s,
+                    fragment_style,
                     window,
                     cx,
                 ))
                 .into_any_element()
         },
     )
+}
+
+// A part inherits its document's style. Document edge padding must appear
+// only once around the whole note, never around every inline decoration.
+fn fragment_style(style: TextViewStyle) -> TextViewStyle {
+    style.with_top_padding(px(0.)).with_bottom_padding(px(0.))
 }
 
 fn parse(
