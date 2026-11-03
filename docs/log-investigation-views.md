@@ -71,3 +71,10 @@ file follow, server query scope and all pages, partial/truncated quality, live
 deduplication, and saved-view round trips. TestPlatform's absent credentials are
 not used to claim that a real authenticated query succeeded; server tests use the
 synthetic key through the existing worker transport.
+
+Remote-result readiness (#2446) has two completion points: the panel receives the
+worker's result, then the table publishes its filtered rows. Tests observe each
+entity's notifications separately. Replacing a remote window cancels its previous
+filter and clears the running flag before starting the new one; otherwise the
+replacement can queue forever behind a cancelled task. A regression forces this
+ordering before either filter can run, independently of fake-server timing.

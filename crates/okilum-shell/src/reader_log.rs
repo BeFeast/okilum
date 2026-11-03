@@ -719,6 +719,9 @@ impl LogView {
             .collect();
         self.generations.next();
         self._filtering = None;
+        // The old task can no longer clear this flag. Start a filter for the
+        // replacement now, rather than queueing behind its cancelled task.
+        self.filtering = false;
         self.filter_running = None;
         self.filter_again = false;
         self.histogram = None;
