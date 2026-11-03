@@ -3,7 +3,6 @@ use super::{fingerprint, DaemonIdentity, CLIENT_VERSION};
 use crate::{lifecycle::ManagedInstance, private};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs,
@@ -380,7 +379,10 @@ fn executable_hash(path: &Path) -> Result<String> {
         file.metadata()?.is_file(),
         "package executable must be a regular file"
     );
-    let mut digest = Sha256::new();
+    // Keep full package verification on inspection admission. ring's compiled
+    // SHA-256 implementation also stays fast on CPUs without SHA extensions in
+    // unoptimized builds, where hashing this executable can exhaust an RPC.
+    let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
     let mut block = [0u8; 8192];
     loop {
         let read = file.read(&mut block)?;
@@ -389,7 +391,12 @@ fn executable_hash(path: &Path) -> Result<String> {
         }
         digest.update(&block[..read]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(digest
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 fn set(parent: &mut Element, name: &str, value: &str) {
     if parent.get_child(name).is_none() {
@@ -402,6 +409,39 @@ fn set(parent: &mut Element, name: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn package_hash_matches_sha256_vectors_across_streaming_blocks() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let file = temp.path().join("package");
+        // FIPS SHA-256 vectors include empty input, a partial block and many
+        // 8192-byte reads followed by a partial read. No host timing assumption.
+        for (bytes, expected) in [
+            (
+                vec![],
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                b"abc".to_vec(),
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+            (
+                vec![b'a'; 1_000_000],
+                "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+            ),
+        ] {
+            fs::write(&file, bytes)?;
+            assert_eq!(executable_hash(&file)?, expected);
+        }
+        fs::write(&file, b"abd")?;
+        assert_ne!(
+            executable_hash(&file)?,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(executable_hash(temp.path()).is_err());
+        assert!(executable_hash(&temp.path().join("missing")).is_err());
+        Ok(())
+    }
+
     #[test]
     fn short_equals_paths_override_environment_without_splitting_values() -> Result<()> {
         let cwd = Path::new("/process cwd");

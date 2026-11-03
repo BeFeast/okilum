@@ -37,6 +37,11 @@ cannot PATCH a device, change a folder, save the pairing database or create a
 destination marker/ignore file. Runtime operations are authenticated GETs only.
 Admission verifies the managed preparation and pinned binary; subsequent reads
 verify its selected configuration, certificate, device and live start time.
+Every admission still streams the complete executable through SHA-256. The
+shared package verifier uses `ring`'s compiled backend: unoptimized software
+hashing on CPUs without SHA extensions can exceed the channel's three-second
+receive timeout before the opening response is ready. Package pins, admission
+checks and channel limits remain unchanged.
 
 ## Revisions, completeness and bounds
 
