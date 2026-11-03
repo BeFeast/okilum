@@ -848,6 +848,8 @@ fn process_source_collect(
         std::borrow::Cow::Borrowed(body)
     };
     let resolver = crate::document_links::IndexedResolver::new(vault);
+    // Resolve wiki file identity before lowering to Markdown image syntax:
+    // wiki root-exact lookup must not acquire Markdown's source-relative bias.
     let body = replace_in_prose(&body, |prose| {
         embed_regex()
             .replace_all(prose, |cap: &regex::Captures| {
@@ -857,14 +859,23 @@ fn process_source_collect(
                     .next()
                     .unwrap_or("")
                     .trim();
-                if !file_embed_target(base)
-                    && resolver.resolve(base, true, from).status == "attachment"
-                    && !crate::excalidraw::is_drawing(base)
-                {
-                    format!("![]({})", crate::document_links::encode(base))
-                } else {
-                    cap[0].to_owned()
+                if crate::excalidraw::is_drawing(base) {
+                    return cap[0].to_owned();
                 }
+                let resolved = resolver.resolve(base, true, from);
+                if resolved.status == "attachment" {
+                    if let Some(url) = resolved
+                        .candidates
+                        .first()
+                        .and_then(|path| url::Url::from_file_path(vault.root.join(path)).ok())
+                    {
+                        return format!("![]({url})");
+                    }
+                }
+                if file_embed_target(base) && vault.paths_complete() {
+                    return format!("![]({})", unavailable_file(base));
+                }
+                cap[0].to_owned()
             })
             .into_owned()
     });
