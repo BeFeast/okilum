@@ -233,12 +233,19 @@ impl Authority {
                 if ancestor_identities.contains(&b.root_identity) {
                     let a = Self {
                         account: account.clone(),
-                        binding_path: p,
+                        binding_path: p.clone(),
                         directory: account.join(key(&b.root)),
-                        binding: b,
+                        binding: b.clone(),
                     };
-                    a.validate()?;
-                    return Ok(a);
+                    if identity(&b.root).ok().as_ref() == Some(&b.root_identity) {
+                        a.validate()?;
+                        return Ok(a);
+                    }
+                    // A removed inactive vault's inode may be reused for an
+                    // unrelated new folder. An unfinished hold still fences a
+                    // moved physical root even after its old path disappears.
+                    ensure!(a.state()?.phase == Phase::Open,
+                        "Physical vault identity has an unfinished hold at another root; explicit recovery required");
                 }
                 if b.root.starts_with(&root) && b.root != root && b.root.exists() {
                     bail!("An enclosed folder already has writer authority; reopen that folder or explicitly reconcile vault scopes");
@@ -689,4 +696,28 @@ pub fn admit_directory(directory: &Path) -> Result<WriterLease> {
         .find(|p| p.is_dir())
         .context("Destination has no existing parent")?;
     Authority::for_root(existing)?.admit()
+}
+
+#[cfg(test)]
+mod root_relocation_tests {
+    use super::*;
+    #[test]
+    fn local_writer_admission_moved_held_root_cannot_mint_new_authority() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let account = t.path().join("account");
+        let a = Authority::open_in(&account, &root).unwrap();
+        let h = a.begin_drain("move-held-root").unwrap();
+        let moved = t.path().join("moved");
+        fs::rename(&root, &moved).unwrap();
+        assert!(Authority::open_in(&account, &moved).is_err());
+        fs::rename(&moved, &root).unwrap();
+        let token = h.token().clone();
+        h.release(&token).unwrap();
+        fs::rename(&root, &moved).unwrap();
+        let fresh = Authority::open_in(&account, &moved).unwrap();
+        assert_ne!(fresh.binding.epoch, a.binding.epoch);
+        fresh.admit().unwrap();
+    }
 }

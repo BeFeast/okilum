@@ -6,7 +6,7 @@ run_group() {
     local evidence
     evidence=$(mktemp)
     "$@" | tee "$evidence"
-    if ! rg -q 'test result: ok\. [1-9][0-9]* passed;' "$evidence"; then
+    if ! grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$evidence"; then
         echo "No non-zero passing test count for local-writer group: $*" >&2
         exit 1
     fi
