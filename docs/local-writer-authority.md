@@ -18,7 +18,7 @@ require account ownership and mode 0700; final symlinks are refused. Windows use
 the account LocalAppData ACL boundary and native file identities.
 
 A root's canonical native path selects its immutable binding. That binding records
-its filesystem identity, a random epoch, and the identities of the authority
+its filesystem identity (including creation time when available), a random epoch, and the identities of the authority
 directory and all three lock files. Directory replacement, a substituted root,
 a missing/corrupt state, or a changed epoch refuses writes rather than creating
 fresh authority. Durable state is operational data: deleting an index does not

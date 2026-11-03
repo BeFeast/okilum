@@ -14,7 +14,7 @@ use std::{
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct Identity(u64, u64);
+struct Identity(u64, u64, #[serde(default)] Option<u64>);
 fn identity(path: &Path) -> Result<Identity> {
     let meta = fs::symlink_metadata(path)?;
     ensure!(
@@ -24,7 +24,14 @@ fn identity(path: &Path) -> Result<Identity> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        Ok(Identity(meta.dev(), meta.ino()))
+        Ok(Identity(
+            meta.dev(),
+            meta.ino(),
+            meta.created()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|time| u64::try_from(time.as_nanos()).ok()),
+        ))
     }
     #[cfg(windows)]
     {
@@ -49,6 +56,10 @@ fn identity(path: &Path) -> Result<Identity> {
         Ok(Identity(
             info.dwVolumeSerialNumber as u64,
             ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
+            Some(
+                ((info.ftCreationTime.dwHighDateTime as u64) << 32)
+                    | info.ftCreationTime.dwLowDateTime as u64,
+            ),
         ))
     }
 }
