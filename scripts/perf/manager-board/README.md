@@ -109,7 +109,8 @@ Measured lane extents invalidate a rendered geometry leaf, preserving the
 canonical projection cache while still updating the real scroll extent.
 Height/focus hints are window-local cells inside one retained lane map. They do
 not register an entity dependency for every offscreen card on each resize step.
-Linux uses bundled mimalloc for the short-lived layout and interaction nodes;
+Linux uses bundled mimalloc for Rust and native C allocations, including the
+short-lived layout and interaction nodes;
 its effect is checked in the actual release artifact on the same reference rig.
 The compact pull badge uses the same Base Ghost/focus/keyboard contract as card
 disclosures and retains its original source-bound URL and natural spacing.
