@@ -50,20 +50,21 @@ def run_contained(command, env, watchdog):
 
 
 def running(pid):
-    """A killed orphan can briefly remain as a zombie until init reaps it."""
+    """A killed orphan can remain as a zombie (Z), then dead (X), during reaping."""
     try:
-        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
+        state = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0]
+        return state not in ('Z', 'X')
     except (FileNotFoundError, ProcessLookupError):
         return False
 
 
 class RunningTests(unittest.TestCase):
-    def test_live_and_zombie_states(self):
-        for state in ('R', 'S', 'D', 'T', 'Z'):
+    def test_live_and_exited_states(self):
+        for state in ('R', 'S', 'D', 'T', 'Z', 'X'):
             with self.subTest(state=state), mock.patch.object(
                     Path, 'read_text', autospec=True,
                     return_value=f'12345 (fake apt (child)) {state} 1 2 3') as read:
-                self.assertEqual(running(12345), state != 'Z')
+                self.assertEqual(running(12345), state not in ('Z', 'X'))
                 read.assert_called_once_with(Path('/proc/12345/stat'))
 
     def test_process_vanishes_during_stat_read(self):
