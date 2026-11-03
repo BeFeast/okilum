@@ -286,6 +286,11 @@ pub struct PreparedImports {
     view: LiveImportView,
     result: Result<(), Failure>,
 }
+impl PreparedImports {
+    pub fn tree(&self) -> &[Expansion] {
+        self.view.tree()
+    }
+}
 impl ImportPreparation {
     pub fn run(mut self, store: &impl Source) -> PreparedImports {
         let result = self.view.refresh(store);
