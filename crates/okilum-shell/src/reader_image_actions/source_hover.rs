@@ -215,6 +215,31 @@ mod tests {
             assert!(content.value.contains(path), "{}", content.value);
             assert!(content.value.contains(expected), "{}", content.value);
         }
+        let hover_point = input.read_with(visual, |input, _| {
+            let at = source.find("attachments/photo.png").unwrap();
+            input
+                .range_to_bounds(&(at..at + 5))
+                .expect("source embed has native bounds")
+                .center()
+        });
+        visual.simulate_mouse_move(hover_point, None, Modifiers::default());
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(500));
+        visual.run_until_parked();
+        for _ in 0..3 {
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            visual.run_until_parked();
+        }
+        input.read_with(visual, |input, _| {
+            assert!(
+                input.hover_popover().is_some(),
+                "native mouse hover reaches the provider"
+            )
+        });
+        assert!(
+            visual.debug_bounds("hover-popover-content").is_some(),
+            "Source hover paints visible content"
+        );
         // Copy path acts on the clicked attachment, and never changes the note.
         reader.update_in(visual, |reader, window, cx| {
             let reference = okilum_core::render::image_reference::references(
