@@ -3040,8 +3040,17 @@ mod tests {
                 "#2484: matched row moved: {before:?} -> {after:?}"
             );
         });
-        reader.update(visual, |r, _| {
+        reader.update(visual, |r, cx| {
             r.link_notice = Some("The document did not finish rendering at the requested position. Heading/Back landing failed; try again.".into());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(
+                window.notifications(cx).len(),
+                1,
+                "positive control: the stale landing error is actually displayed"
+            )
         });
         input.update_in(visual, |i, window, cx| {
             i.set_selected_range(at..at, cx);
@@ -3052,6 +3061,12 @@ mod tests {
             assert!(
                 r.link_notice.is_none(),
                 "an obsolete landing error must not remain while editing"
+            )
+        });
+        visual.update(|window, cx| {
+            assert!(
+                window.notifications(cx).is_empty(),
+                "editing must retire the displayed toast, not just its backing field"
             )
         });
         visual.simulate_keystrokes(if cfg!(target_os = "macos") {

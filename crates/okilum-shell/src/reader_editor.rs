@@ -828,7 +828,11 @@ impl Reader {
             if editing.input.entity_id() != input.entity_id() {
                 return;
             }
-            this.clear_landing_notice();
+            if this.clear_landing_notice() {
+                // Typing normally avoids a Reader render. Retiring a visible
+                // landing toast must explicitly synchronize its presentation.
+                cx.notify();
+            }
             let Some(editing) = &mut this.editing else {
                 return;
             };

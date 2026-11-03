@@ -2793,12 +2793,15 @@ impl Reader {
             cx,
         );
     }
-    fn clear_landing_notice(&mut self) {
+    fn clear_landing_notice(&mut self) -> bool {
         if self.link_notice.as_deref().is_some_and(|notice| {
             notice.starts_with("The document did not finish rendering at the requested position.")
                 || notice.starts_with("Could not render the requested position:")
         }) {
             self.link_notice = None;
+            true
+        } else {
+            false
         }
     }
 
