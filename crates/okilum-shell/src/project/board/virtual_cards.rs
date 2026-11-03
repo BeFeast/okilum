@@ -20,6 +20,11 @@ pub(super) struct Height {
     value: Pixels,
     focused: Option<FocusHandle>,
 }
+// Hints never publish: Lane explicitly schedules the shared geometry leaf.
+// Plain window-local cells avoid registering 240 reactive dependencies during
+// every splitter step, including cards that are not rendered.
+type HeightHint = std::rc::Rc<std::cell::RefCell<Height>>;
+
 #[derive(Clone)]
 enum Source {
     Issue(usize, Column, Arc<Binding>),
@@ -32,7 +37,7 @@ pub(super) struct Card {
     board: WeakEntity<Board>,
     source: Source,
     selected: bool,
-    height: Option<Entity<Height>>,
+    height: Option<HeightHint>,
 }
 impl Card {
     fn overdraw(&self, cx: &App) -> Pixels {
@@ -137,19 +142,17 @@ impl Element for Card {
     ) -> bool {
         let state = self.height.as_ref().expect("lane-owned height hint");
         let focused = state
-            .read(cx)
+            .borrow()
             .focused
             .as_ref()
             .is_some_and(|focus| focus.contains_focused(window, cx));
-        state.update(cx, |height, _| {
-            height.value = bounds.size.height;
-        });
+        state.borrow_mut().value = bounds.size.height;
         // Overdraw refines layout without building invisible interaction trees.
         if !self.selected && !focused && !bounds.intersects(&window.content_mask().bounds) {
             return false;
         }
         let focused = child.prepaint(window, cx);
-        state.update(cx, |height, _| height.focused = focused);
+        state.borrow_mut().focused = focused;
         true
     }
     fn paint(
@@ -232,27 +235,28 @@ impl Element for Lane {
             card.count_layout(cx);
         }
         let states = window.use_keyed_state((self.id.clone(), "heights"), cx, |_, _| {
-            std::collections::HashMap::<ElementId, Entity<Height>>::new()
+            std::collections::HashMap::<ElementId, HeightHint>::new()
         });
         let ids: std::collections::HashSet<_> =
             self.cards.iter().map(|card| card.id.clone()).collect();
-        states.update(cx, |states, _| states.retain(|id, _| ids.contains(id)));
-        let mut height = px(0.);
-        for card in &mut self.cards {
-            let state = states.update(cx, |states, cx| {
-                states
+        let mut height = states.update(cx, |states, _| {
+            states.retain(|id, _| ids.contains(id));
+            let mut height = px(0.);
+            for card in &mut self.cards {
+                let state = states
                     .entry(card.id.clone())
                     .or_insert_with(|| {
-                        cx.new(|_| Height {
+                        std::rc::Rc::new(std::cell::RefCell::new(Height {
                             value: px(192.),
                             focused: None,
-                        })
+                        }))
                     })
-                    .clone()
-            });
-            height += state.read(cx).value;
-            card.height = Some(state);
-        }
+                    .clone();
+                height += state.borrow().value;
+                card.height = Some(state);
+            }
+            height
+        });
         height += px(12. * self.cards.len().saturating_sub(1) as f32);
         let mut style = Style::default();
         style.size.width = gpui::relative(1.).into();
@@ -280,15 +284,16 @@ impl Element for Lane {
         let mut painted = Vec::new();
         for card in &self.cards {
             let state = card.height.as_ref().unwrap();
-            let height = state.read(cx);
-            let focused = height
-                .focused
-                .as_ref()
-                .is_some_and(|focus| focus.contains_focused(window, cx));
-            let estimated = Bounds::new(
-                point(bounds.left(), y),
-                size(bounds.size.width, height.value),
-            );
+            let (height, focused) = {
+                let hint = state.borrow();
+                (
+                    hint.value,
+                    hint.focused
+                        .as_ref()
+                        .is_some_and(|focus| focus.contains_focused(window, cx)),
+                )
+            };
+            let estimated = Bounds::new(point(bounds.left(), y), size(bounds.size.width, height));
             if !card.selected && !focused && !estimated.intersects(&viewport) {
                 y += estimated.size.height + px(12.);
                 continue;
