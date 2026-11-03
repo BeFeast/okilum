@@ -86,6 +86,10 @@ jobs:
           cargo fetch --manifest-path vendor/gpui-component/Cargo.toml
       - name: Verify agent helper controls
         run: python3 -m unittest discover -s scripts/ci -p test_agent_checks.py
+      - name: Lint every workspace target offline
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Verify pinned Sync fixture lifecycle and source sharing
         run: bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
       - name: Reject and reap surviving agent fixture daemons
