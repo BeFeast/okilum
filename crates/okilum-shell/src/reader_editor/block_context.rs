@@ -10,7 +10,7 @@ use std::{
 };
 
 type Footnotes = std::collections::HashMap<(usize, usize), String>;
-pub(super) type WorkerCache = Arc<Mutex<Option<(u64, Arc<Footnotes>)>>>;
+pub(super) type WorkerCache = Arc<Mutex<Vec<Arc<Footnotes>>>>;
 
 #[derive(Clone, Default)]
 pub(super) struct BlockNote {

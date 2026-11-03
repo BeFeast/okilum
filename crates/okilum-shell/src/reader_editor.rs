@@ -845,9 +845,11 @@ impl Reader {
                         // its replacement. A key can drop its UI reference in O(1)
                         // without destroying a note-wide footnote map on the UI.
                         let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
-                        if cache.as_ref().is_none_or(|(known, _)| *known <= epoch) {
-                            *cache = Some((epoch, prepared.2.clone()));
-                        }
+                        // Retain every cache still owned by a UI snapshot. A
+                        // newer worker may finish before its UI adoption; the
+                        // previous painted cache must stay worker-owned too.
+                        cache.retain(|known| Arc::strong_count(known) > 1);
+                        cache.push(prepared.2.clone());
                         (result, directions, prepared)
                     })
                     .await;
@@ -5845,6 +5847,7 @@ mod autosave_tests {
         f.reader.update_in(visual, |r, _, _| {
             r.editing = None;
         });
+        visual.run_until_parked();
         assert_eq!(FileEditor::open(&f.file, &path).unwrap().text(), expected);
     }
 
