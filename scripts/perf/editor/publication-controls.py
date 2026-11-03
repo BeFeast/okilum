@@ -6,6 +6,7 @@ only the synthetic probe and instrumentation are overlaid on archived main.
 """
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -43,14 +44,22 @@ def main():
         if 'pub(crate) mod work;' not in old:
             old = old.replace('mod block_context;', 'mod block_context;\n#[cfg(test)]\npub(crate) mod work;')
         shutil.copy(root / editor.parent / 'reader_editor/work.rs', dest / editor.parent / 'reader_editor/work.rs')
-        # Both native callbacks use this exact subscription boundary.
+        # Keep existing key scopes, including their deliberate early drop before
+        # GPUI scheduling. A duplicate outer scope would measure a wider callback
+        # on main than on head. Add scopes only where main has none.
+        acknowledgement = re.search(r'    fn autosaved\([\s\S]*?\n    \) \{', old)
+        if acknowledgement is None:
+            raise RuntimeError('baseline autosave acknowledgement boundary changed')
         for marker in [
             'let changed = cx.subscribe(&input, move |this, input, mutation: &SourceMutation, cx| {',
             'pub(super) fn refresh_source_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {',
+            acknowledgement.group(0),
         ]:
             if marker not in old:
                 raise RuntimeError('baseline probe boundary changed: ' + marker)
-            old = old.replace(marker, marker + '\n            let _publication_control_work = work::scope();', 1)
+            boundary = old.index(marker) + len(marker)
+            if not re.match(r'\s*#\[cfg\(test\)\]\s*let _work = work::scope\(\);', old[boundary:]):
+                old = old[:boundary] + '\n            let _publication_control_work = work::scope();' + old[boundary:]
         if 'static LIVE_PREPARES:' not in old:
             old = old.replace('mod block_context;', 'thread_local! { static LIVE_PREPARES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }\nmod block_context;', 1)
             marker = '                *entry = (\n                    input,'
