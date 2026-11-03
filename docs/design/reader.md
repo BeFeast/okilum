@@ -340,6 +340,23 @@ exceptions; this is a shared visibility switch, not a filename rename or deletio
 Scanner-excluded generated service directories remain separate from browsable
 hidden files and are not added back by this switch.
 
+**Folder agent rules (#1587).** A folder containing an exact direct-child
+`AGENTS.md` Markdown file has a compact `@` badge, including while collapsed.
+The tree header supplies the badge for its root (vault or project scope).
+Clicking opens that file in Notes without activating the folder. The badge
+remains available with Show hidden files off. This uses the existing single
+View → Show hidden files preference, which also reveals `.claude`, `.agents`
+and `.codex` with their contents. Service-directory exclusions remain in force.
+
+The existing exact-name visibility rule is a superset of shim hiding: real
+`CLAUDE.md` / `GEMINI.md` rules retain that existing hidden-by-default behavior.
+Only files whose entire trimmed content is `@AGENTS.md` or `@./AGENTS.md`
+(allowing BOM, whitespace and CRLF) receive the import-shim tooltip annotation.
+This classification is performed by one coalescing background worker per reader,
+with a 4 KiB small-file limit and a 4097-byte read ceiling even if a file grows.
+Rendering and badge discovery read only the published inventory, never disk.
+
+
 **Tree scroll context (Oleg, 2026-11-01).** The permanent Tree header opens
 the real index as `Vault Index`, with the existing Contents icon and a left-aligned
 title. New note, New folder, Collapse all and Show/Hide hidden remain compact

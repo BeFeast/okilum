@@ -212,6 +212,7 @@ mod reader_tree;
 mod reader_tree_breadcrumbs;
 mod reader_tree_follow;
 mod reader_tree_preview;
+mod reader_tree_rules;
 mod reader_typed_view;
 mod reader_ui_state;
 mod reader_update_restart;
@@ -1844,6 +1845,8 @@ struct Reader {
     /// vault Arc or the current document changes.
     tree: reader_tree::Tree,
     tree_source: Option<Arc<Vault>>,
+    tree_rules_source: Option<Arc<Vault>>,
+    tree_rules_running: bool,
     tree_revealed: String,
     /// Settings «Show the open note in the file tree» (#1762), read from
     /// the app preference on every render.
@@ -2175,6 +2178,8 @@ impl Reader {
             draft_outline: Default::default(),
             tree: reader_tree::Tree::default(),
             tree_source: None,
+            tree_rules_source: None,
+            tree_rules_running: false,
             tree_revealed: String::new(),
             tree_auto_reveal: false,
             tree_wheel_at: None,
@@ -3313,6 +3318,7 @@ impl Reader {
         }
         self.load_sidebar_state();
         self.refresh_agents_offer(cx);
+        self.refresh_tree_rules(cx);
         if self.tree.show_hidden() != self.sidebar.show_hidden {
             self.tree.set_show_hidden(self.sidebar.show_hidden);
             self.tree_revealed.clear();
@@ -4790,6 +4796,7 @@ impl Reader {
         let cursor = tree.cursor.clone();
         let published_root = self.vault_root.clone();
         let published_generation = self.watcher_generation;
+        let rules_root = self.vault_root.clone();
         // Every row action is bound to the inventory it was rendered from.
         let act =
             move |entity: &WeakEntity<Reader>,
@@ -5139,7 +5146,11 @@ impl Reader {
                         .group(group.clone())
                         .pl(px(4. + row.depth as f32 * 14.))
                         .tooltip({
-                            let path = row.path.clone();
+                            let path = if row.agent_shim {
+                                format!("{}\nAGENTS.md import shim", row.path)
+                            } else {
+                                row.path.clone()
+                            };
                             move |window, cx| {
                                 gpui_component::tooltip::Tooltip::new(path.clone())
                                     .build(window, cx)
@@ -5211,6 +5222,14 @@ impl Reader {
                                 .text_ellipsis()
                                 .child(label),
                         )
+                        .when_some(row.agent_rules.clone(), |d, rules| {
+                            d.child(reader_tree_rules::badge(
+                                rules,
+                                entity.clone(),
+                                rules_root.clone(),
+                                published_generation,
+                            ))
+                        })
                         .when(pinnable, |d| d.child(pin(path, group.clone(), on)))
                         .on_click({
                             let entity = entity.clone();
