@@ -1121,6 +1121,9 @@ mod tests {
             "crates/okilum-shell/src/reader_settings_sync/linux_runtime.rs",
             2,
         ),
+        // Records the managed AppImage build beside
+        // ~/.local/share/okilum/Okilum.AppImage, removed by installation::remove.
+        ("crates/okilum-shell/src/updater/appimage.rs", 1),
         // Moves notes to the system trash; not an app-owned location.
         ("crates/okilum-shell/src/reader_trash_fs.rs", 2),
         ("crates/okilum-shell/src/workspace.rs", 3),
