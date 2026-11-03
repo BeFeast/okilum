@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import unittest
@@ -105,14 +106,41 @@ class TransportTests(unittest.TestCase):
             ('forgejo-shared.yml', STEP, 'tini -s -- bash scripts/ci/check-shared.sh'),
             ('forgejo-macos.yml', bridge.BUILD_STEP, 'bash scripts/ci/check-macos.sh'),
             ('forgejo-macos-depot.yml', bridge.BUILD_STEP, 'bash scripts/ci/check-macos.sh'),
-            ('forgejo-linux.yml', 'Run full Linux gate', 'bash -c'),
+            ('forgejo-linux.yml', 'Run full Linux gate', 'bash -ec'),
             ('forgejo-windows-release.yml', 'Build and validate Windows package', 'pwsh -NoProfile -File scripts/ci/build-windows-native.ps1'),
         ]:
             text = (root / file).read_text()
             self.assertIn(f"scripts/ci/gate-step.py --name '{step}' -- {command}", text)
         aggregate = (root / 'forgejo-linux.yml').read_text().split('  linux:', 1)[1]
         self.assertIn('uses: actions/checkout@v4', aggregate)
-        self.assertIn('test "$CHECKS" = success && test "$APPIMAGE" = success', aggregate)
+        self.assertIn('test "$CHECKS" = skipped', aggregate)
+        self.assertIn('test "$CHECKS" = success', aggregate)
+        self.assertIn('test "$APPIMAGE" = success', aggregate)
+
+    def test_linux_aggregate_requires_both_results_before_emitting_success_evidence(self):
+        workflow = (HERE.parents[1] / '.github/workflows/forgejo-linux.yml').read_text()
+        aggregate = workflow.split('  linux:\n', 1)[1]
+        command = shlex.split(aggregate.split('        run: ', 1)[1].strip())
+        step = 'Run full Linux gate'
+        identity = dict(IDENTITY, job='linux', step=step)
+        # PR #2079 skips the full checks on automatic main builds, while
+        # branch/manual acceptance must execute them. Exercise the real wrapper
+        # and shell, including a positive control for every event/ref pair.
+        for ref in ['refs/heads/main', 'refs/heads/forgejo-linux-pr/2473']:
+            for event in ['push', 'schedule', 'workflow_dispatch']:
+                expected = 'skipped' if ref == 'refs/heads/main' and event != 'workflow_dispatch' else 'success'
+                for checks in ['success', 'failure', 'skipped', 'cancelled', 'timed_out', '']:
+                    for appimage in ['success', 'failure', 'skipped', 'cancelled', 'timed_out', '']:
+                        with self.subTest(ref=ref, event=event, checks=checks, appimage=appimage):
+                            env = dict(os.environ, GITHUB_SHA=SHA, GITHUB_RUN_ID='71',
+                                       GITHUB_RUN_ATTEMPT='1', GITHUB_JOB='linux',
+                                       GITHUB_REF=ref, GITHUB_EVENT_NAME=event,
+                                       CHECKS=checks, APPIMAGE=appimage)
+                            result = subprocess.run(command, cwd=HERE.parents[1], env=env,
+                                                    capture_output=True, timeout=5)
+                            passed = checks == expected and appimage == 'success'
+                            self.assertEqual(result.returncode == 0, passed, result.stdout + result.stderr)
+                            self.assertEqual(evidence.executed(result.stdout, **identity), passed)
 
     def test_log_rate_limit_prevents_followup_api_calls(self):
         import io

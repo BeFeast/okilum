@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          packages=(build-essential cmake pkg-config curl git mold zstd
+          packages=(build-essential cmake pkg-config curl git mold zstd python3 gnupg
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
             libfontconfig-dev libfreetype-dev libxcb1-dev)
           if ! dpkg-query -W -f='${Status}\n' "${packages[@]}" 2>/dev/null | grep -vFx 'install ok installed' | grep -q . &&
@@ -50,6 +50,9 @@ jobs:
           cargo --version
           rustc --version
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Run the full CI tooling Python suite
+        timeout-minutes: 2
+        run: python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - name: Build Linux desktop and run fast unit tests
         env:
           GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

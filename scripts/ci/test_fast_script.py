@@ -1,6 +1,8 @@
 """Exercise fast orchestration without compiling or altering any host limit."""
 import os
 from pathlib import Path
+import re
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +11,32 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class FastScript(unittest.TestCase):
+    def test_required_check_runs_full_isolated_python_discovery_and_fails_on_errors(self):
+        workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
+        self.assertIn('on:\n  pull_request:\n', workflow)
+        check = workflow.split('  check:\n', 1)[1].split('\n  shell-full:', 1)[0]
+        step = re.search(r'      - name: Run the full CI tooling Python suite\n(.*?)(?=      - name:)',
+                         check, re.S)[1]
+        self.assertNotIn('if:', step)
+        self.assertNotIn('continue-on-error:', step)
+        command = shlex.split(step.split('        run: ', 1)[1].strip())
+        self.assertEqual(command, ['python3', '-I', '-m', 'unittest', 'discover',
+                                   '-s', 'scripts/ci', '-p', 'test_*.py', '-v'])
+        self.assertLess(check.index('Run the full CI tooling Python suite'),
+                        check.index('Build Linux desktop and run fast unit tests'))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            suite = root / 'scripts/ci'
+            suite.mkdir(parents=True)
+            for outcome in ['pass', 'self.fail("positive failure control")',
+                            'raise RuntimeError("positive error control")']:
+                (suite / 'test_discovery.py').write_text(
+                    'import unittest\nclass Discovery(unittest.TestCase):\n'
+                    f'    def test_discovered(self): {outcome}\n')
+                result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode == 0, outcome == 'pass', result.stderr)
+                self.assertIn('Ran 1 test', result.stderr)
+
     def test_platform_arguments_are_nonempty_without_bash32_optional_arrays(self):
         for platform, check_status in [('Linux', 0), ('macOS', 0), ('Windows', 0), ('Linux', 23)]:
             with self.subTest(platform=platform, check_status=check_status), tempfile.TemporaryDirectory() as temp:
