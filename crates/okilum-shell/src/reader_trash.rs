@@ -462,7 +462,7 @@ impl Reader {
                     return;
                 }
             }
-            let held_editor = match this.update_in_own_window(cx, |this, window, cx| {
+            let held = this.update_in_own_window(cx, |this, window, cx| {
                 let dirty_creation = creation.is_some() && this.source_is_dirty(cx);
                 if this.vault_root != root || dirty_creation || !this.save_source(cx) {
                     window.remove_notification::<TrashToast>(cx);
@@ -493,13 +493,22 @@ impl Reader {
                     cx,
                 );
                 this.trace_trash("trash_system_start", &relative, None, cx);
+                this.track_deleted_note(&Default::default(), cx);
+                // An already retained external version is still the only copy
+                // of that displayed text. Explicit Trash must not discard it.
+                let clear_document = (this.deleted_current().is_none()
+                    && this.file_preview.is_none()
+                    && !this.current_rel.is_empty()
+                    && under(&this.current_rel, &relative))
+                .then(|| (this.current_rel.clone(), this.navigation.generation));
                 let editor = if own_path.as_ref() == Some(&root.join(this.selected_file())) {
                     this.editing.take()
                 } else {
                     None
                 };
-                Some(editor)
-            }) {
+                Some((editor, clear_document))
+            });
+            let (held_editor, clear_document) = match held {
                 Ok(Some(editor)) => editor,
                 _ => return,
             };
@@ -551,7 +560,22 @@ impl Reader {
                         }
                         if this.vault_root == root && under(this.selected_file(), &relative) {
                             this.editing = None;
-                            this.show_empty_vault(window, cx);
+                            if clear_document.as_ref().is_some_and(|(rel, generation)| {
+                                rel == &this.current_rel
+                                    && *generation == this.navigation.generation
+                            }) {
+                                // The confirmed move has a successful Trash
+                                // receipt. Authorize only this document's close;
+                                // its contents are recoverable through Undo.
+                                this.deleted_note = None;
+                                this.continue_deleted_navigation(
+                                    Box::new(|this, window, cx| this.show_empty_vault(window, cx)),
+                                    window,
+                                    cx,
+                                );
+                            } else {
+                                this.show_empty_vault(window, cx);
+                            }
                         }
                         if !redo {
                             this.trash_undo.redo.clear();
@@ -1013,12 +1037,26 @@ mod tests {
                 .is_empty());
         });
         visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("deleted-note-dont-save").is_none(),
+            "our own successful Trash move must not open an external-deletion dialog"
+        );
+        reader.read_with(visual, |v, _| {
+            assert!(v.current_rel.is_empty());
+            assert!(v.deleted_current().is_none());
+            assert_eq!(v.trash_undo.items.len(), 1);
+        });
         let undo = visual
             .debug_bounds("undo-trash")
             .expect("actual Trash Undo action");
         visual.simulate_click(undo.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
+            assert!(
+                v.trash_undo.items.is_empty(),
+                "positive control: Undo dispatched and restored at {undo:?}, pending={}, notice={:?}",
+                v.trash_pending, v.link_notice
+            );
             assert_eq!(v.loading.as_ref().unwrap().generation, generation);
             assert!(v.vault.notes.iter().any(|note| note.path == "New.md"));
             assert_eq!(v.vault.backlinks("New.md").len(), 1);
@@ -1036,6 +1074,58 @@ mod tests {
             std::fs::read_to_string(root.join("New.md")).unwrap(),
             "uniquetrashword"
         );
+    }
+
+    #[gpui::test]
+    fn trash_of_returned_source_keeps_the_earlier_displayed_copy(cx: &mut TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        let old = "# Home\n\nonly copy of the earlier displayed version\n";
+        let returned = "# Home\n\nexternal returned version\n";
+        std::fs::write(root.join("Home.md"), old).unwrap();
+        let (reader, visual) = open_reader(cx, &root, temp.path());
+        std::fs::remove_file(root.join("Home.md")).unwrap();
+        reader.update_in(visual, |r, _, cx| {
+            assert!(r.track_deleted_note(&Default::default(), cx));
+        });
+        std::fs::write(root.join("Home.md"), returned).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            assert!(r.track_deleted_note(&Default::default(), cx));
+            assert_eq!(r.note_source, old);
+            r.delete_path("Home.md".into(), window, cx);
+        });
+        visual.run_until_parked();
+        assert!(!root.join("Home.md").exists());
+        reader.read_with(visual, |r, _| {
+            assert_eq!(
+                r.trash_undo.items.len(),
+                1,
+                "returned version reached Trash"
+            );
+            assert_eq!(r.current_rel, "Home.md");
+            assert_eq!(r.note_source, old, "earlier display is still the only copy");
+            assert!(r.deleted_current().is_some());
+        });
+        assert!(
+            visual.debug_bounds("deleted-note-dont-save").is_some(),
+            "a retained external version still requires the explicit leave decision"
+        );
+        click(visual, "deleted-note-cancel");
+        reader.update_in(visual, |r, window, cx| r.undo_last_trash(window, cx));
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read_to_string(root.join("Home.md")).unwrap(),
+            returned
+        );
+        reader.update_in(visual, |r, _, cx| {
+            assert!(r.track_deleted_note(&Default::default(), cx));
+            assert_eq!(
+                r.note_source, old,
+                "Undo cannot replace the retained display"
+            );
+            assert_eq!(r.current_rel, "Home.md");
+        });
     }
 
     #[gpui::test]

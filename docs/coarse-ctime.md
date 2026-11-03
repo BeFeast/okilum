@@ -25,6 +25,19 @@ verify after the source read, and only retain a stamp matching the bytes actuall
 read. Old caches without fingerprints revalidate naturally. This is derived data;
 no new canonical files or operational state are introduced.
 
+The fingerprint is verification evidence, not part of the file's identity. When
+an unchanged local revision ages out of the vulnerable tick, its native metadata
+can reuse a saved fingerprinted source without decoding it again. In the other
+direction, a current content check still requires an identical saved fingerprint;
+an old cache without one must revalidate. Changed metadata or a changed fingerprint
+always prevents reuse. Fresh-process startup tests cover this transition as well
+as changed-source and topology-delta relaunches (#2427).
+
+A source replaced during fingerprint verification returns a transient
+`WouldBlock` revision error. Generation collection defers that run just as it does
+when its explicit hint recheck changes; it never treats an unstable hint as an
+empty reference set. Invalid/unreadable hints still fail closed.
+
 There is no periodic vault-wide hash scan. Startup/full reconciliation and link
 preview/validation do bounded work over their existing inventories; incremental
 watcher updates keep their existing path scope. Editor refresh fingerprints only

@@ -223,6 +223,19 @@ canonical file; editor recovery drafts remain available. Failed recovery writes
 still prevent navigation. Navigation also checks for deletion before a debounced
 watcher notification arrives.
 
+Read-only recovery discovery also recognizes a dirty journal after its source
+file disappears (#2427). It resolves the existing parent for the saved identity,
+leaves the journal bytes intact and never recreates the source. A returned file
+is compared with the draft before discovery reports it as unsaved.
+
+An explicit Move to Trash that completes successfully closes its unchanged
+document without asking the external-deletion question again (#2427). That
+authorization follows the confirmed document identity and navigation generation,
+and is used only after the Trash receipt. If an earlier external version was
+already retained on screen, its leave confirmation remains: the item in Trash
+may be a different, returned version. Undo restores that disk version without
+replacing the retained display.
+
 If the file returns at the same place with the same contents as the retained
 buffer, the notice and marker go away. Different contents remove the Deleted
 marker but keep a notice offering **Reload from disk** or Save As… in every mode.

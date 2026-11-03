@@ -607,7 +607,10 @@ mod tests {
                 Reader::new(
                     Opts {
                         vault: (!folder).then(|| root.to_path_buf()),
-                        open_path: folder.then(|| root.to_path_buf()),
+                        open_path: folder.then(|| root.join("Start.md")),
+                        // #2066 makes a folder open a vault. Keep testing the
+                        // explicit quick viewer's lazy folder/recovery path.
+                        single_file: folder,
                         note: Some("Start.md".into()),
                         index_dir: (!folder).then(|| state.join("index")),
                         session_directory: Some(state.join("state")),

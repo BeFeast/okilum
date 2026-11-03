@@ -84,7 +84,7 @@ impl Reader {
 
     /// The dialog's explicit choice authorizes exactly this continuation. A
     /// missing path must not immediately ask the same question again.
-    pub(super) fn continue_deleted_navigation(
+    pub(crate) fn continue_deleted_navigation(
         &mut self,
         retry: Continue,
         window: &mut Window,

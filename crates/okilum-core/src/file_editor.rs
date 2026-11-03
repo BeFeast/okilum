@@ -274,7 +274,15 @@ pub enum Save {
 impl FileEditor {
     /// Read-only recovery discovery: never acquire an editor or rewrite a draft.
     pub fn has_unsaved_draft(path: &Path, state: &Path) -> Result<bool> {
-        let path = path.canonicalize()?;
+        let path = match path.canonicalize() {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => path
+                .parent()
+                .context("Source has no folder")?
+                .canonicalize()?
+                .join(path.file_name().context("Source has no filename")?),
+            Err(error) => return Err(error.into()),
+        };
         let key = format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
         let bytes = match fs::read(state.join(format!("{key}.json"))) {
             Ok(bytes) => bytes,
@@ -282,9 +290,14 @@ impl FileEditor {
             Err(error) => return Err(error.into()),
         };
         let draft: Draft = serde_json::from_slice(&bytes)?;
-        Ok(draft.path == path
-            && draft.text != draft.base
-            && draft.text != fs::read_to_string(path)?)
+        if draft.path != path || draft.text == draft.base {
+            return Ok(false);
+        }
+        match fs::read_to_string(path) {
+            Ok(current) => Ok(draft.text != current),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Reserve a not-yet-existing destination without adopting an old draft.
@@ -1674,6 +1687,39 @@ mod tests {
             assert_eq!(editor.keep_mine("NEW text").unwrap(), Save::Conflict);
             assert_eq!(fs::read_to_string(&path).unwrap(), "last one");
         });
+    }
+
+    #[test]
+    fn recovery_discovery_keeps_deleted_source_drafts_and_checks_returned_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        let state = dir.path().join("drafts");
+        fs::write(&path, "original").unwrap();
+        let mut editor = FileEditor::open(&path, &state).unwrap();
+        editor
+            .set_text("only unsaved copy שלום\r\n".into())
+            .unwrap();
+        drop(editor);
+        let before = fs::read_dir(&state)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect::<Vec<_>>();
+        fs::remove_file(&path).unwrap();
+        assert!(FileEditor::has_unsaved_draft(&path, &state).unwrap());
+        assert!(!path.exists(), "discovery never recreates the source");
+        for (path, bytes) in &before {
+            assert_eq!(&fs::read(path).unwrap(), bytes, "discovery is read-only");
+        }
+        fs::write(&path, "external return").unwrap();
+        assert!(FileEditor::has_unsaved_draft(&path, &state).unwrap());
+        fs::write(&path, "only unsaved copy שלום\r\n").unwrap();
+        assert!(!FileEditor::has_unsaved_draft(&path, &state).unwrap());
+        fs::remove_file(&path).unwrap();
+        assert!(!FileEditor::has_unsaved_draft(&dir.path().join("other.md"), &state).unwrap());
     }
 
     #[test]

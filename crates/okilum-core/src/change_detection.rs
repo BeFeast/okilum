@@ -45,7 +45,10 @@ pub(crate) fn hash_reader(file: impl Read, size: u64) -> std::io::Result<[u8; 32
         hash.update(&buffer[..n]);
     }
     if count != size {
-        return Err(std::io::Error::other("File changed during revision check"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "File changed during revision check",
+        ));
     }
     Ok(hash.finalize().into())
 }
