@@ -234,6 +234,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
                     labels: Vec::new(),
                     open_pull_requests: Vec::new(),
                     live_pulls: Vec::new(),
+                    report: Default::default(),
                 }),
             )],
             1,
@@ -355,6 +356,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                         labels: Vec::new(),
                         open_pull_requests: Vec::new(),
                         live_pulls: Vec::new(),
+                        report: Default::default(),
                     })
                     .collect())
             },
@@ -1136,6 +1138,8 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
                 .project_notes
                 .accept(okilum_t3::board::context::refresh(area.path()), now());
             board.binding = Some(binding);
+            board.notes_expanded = true;
+            board.refresh_waiting();
             board
         });
         Root::new(board, window, cx)

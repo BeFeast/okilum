@@ -50,6 +50,7 @@ impl Board {
                         }
                         let old = this.delivery.problems(now(), binding_refresh(this));
                         this.delivery.accept(update, now());
+                        this.refresh_waiting();
                         this.delivery_loading = false;
                         let current = this.delivery.problems(now(), binding_refresh(this));
                         if current != old {

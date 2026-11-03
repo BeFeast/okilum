@@ -10,6 +10,7 @@ mod live;
 mod local;
 mod manage;
 mod notes;
+pub(super) mod waiting;
 
 type IssueReader =
     Arc<dyn Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String> + Send + Sync>;
@@ -45,6 +46,8 @@ pub(crate) struct Board {
     notes_expanded: bool,
     next_stage_open: bool,
     columns: columns::State,
+    waiting: okilum_t3::board::waiting::Projection,
+    waiting_expanded: bool,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -148,6 +151,8 @@ impl Board {
             notes_expanded: false,
             next_stage_open: false,
             columns: columns::State::default(),
+            waiting: Default::default(),
+            waiting_expanded: false,
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -213,6 +218,7 @@ impl Board {
                                     }
                                 }
                                 this.binding = binding;
+                                this.refresh_waiting();
                                 this.binding_read = Some(now());
                                 this.binding_error = None;
                                 if this.active {
@@ -326,6 +332,7 @@ impl Board {
                         .await;
                     let _ = this.update_in(cx, |this, window, cx| {
                         this.snapshot.live_issues(&forgejo_ticket, result, now());
+                        this.refresh_waiting();
                         if this.snapshot.matches(&forgejo_ticket) {
                             this.refresh_delivery(forgejo_ticket.clone(), window, cx);
                         }
@@ -1103,6 +1110,9 @@ impl Render for Board {
             root = root.child(div().debug_selector(|| "board-local".into())
                 .text_size(px(12.)).text_color(colors.text_muted)
                 .child("Local Board · PR and CI links are inactive. Add Repository in Manage board → Board details when needed."));
+        }
+        if let Some(waiting) = self.render_waiting(cx) {
+            root = root.child(waiting);
         }
         if let Some(attention) = self.attention(binding, cx) {
             root = root.child(attention);
