@@ -79,6 +79,13 @@ class FastBudgets(unittest.TestCase):
     def test_every_nested_group_and_job_has_additive_headroom(self):
         validate(self.workflow, self.scripts)
 
+    def test_hourly_beta_five_minute_python_steps_preserve_headroom(self):
+        workflow = copy.deepcopy(self.workflow)
+        for step in workflow['jobs']['check']['steps']:
+            if '-python ' in step.get('run', ''):
+                step['timeout-minutes'] = 5
+        validate(workflow, self.scripts)
+
     def test_original_aggregate_limits_are_rejected(self):
         for gate, old in [('fast', 660), ('shell-full', 1110)]:
             with self.subTest(gate=gate):

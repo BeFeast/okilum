@@ -18,8 +18,8 @@ jobs:
     # Dedicated warm runner for main certification only.
     # Workers validate their own exact HEAD through GitHub agent checks.
     runs-on: fast-linux
-    # Additive phase budgets, Python steps, setup and descendant cleanup.
-    timeout-minutes: 45
+    # Additive phases plus three 5m Python step ceilings (#2536), setup/cleanup.
+    timeout-minutes: 55
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only

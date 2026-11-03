@@ -136,7 +136,7 @@ class TestGroup(unittest.TestCase):
             'sync-local 1440 bash scripts/ci/sync-source-sharing-fast.sh',
         ]:
             self.assertIn('bash scripts/ci/test-group.sh ' + command, workflow)
-        self.assertIn('timeout-minutes: 45', workflow.split('  check:', 1)[1].split('  shell-full:', 1)[0])
+        self.assertIn('timeout-minutes: 55', workflow.split('  check:', 1)[1].split('  shell-full:', 1)[0])
         self.assertIn('timeout-minutes: 35', workflow.split('  shell-full:', 1)[1].split('  sync-source-sharing:', 1)[0])
         self.assertIn('timeout-minutes: 30', workflow.split('  sync-source-sharing:', 1)[1])
 

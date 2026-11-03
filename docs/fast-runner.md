@@ -176,7 +176,7 @@ parent has already exited emits `TEST_GROUP_KILL` with the group and limit.
 Compilation and execution have separate shell budgets. Every enclosing deadline
 covers the sum of its children plus 60 s setup/cleanup overhead; job ceilings
 cover all bounded steps plus 90 s checkout/toolchain/final-cleanup margin.
-Job ceilings are now check 45 min, shell-full 35 min, sync-source-sharing 30 min.
+Job ceilings are now check 55 min, shell-full 35 min, sync-source-sharing 30 min.
 These are ceilings for slow progressing work; a hung phase is still killed by
 its own original deadline plus at most 30 s cleanup:
 
@@ -214,12 +214,17 @@ aggregate limits, growth of every child phase/lock, and insufficient step/job
 ceilings. The invariant test fails against the pre-fix limits.
 
 The check job's current bounded steps consume 4 + 2 + 2 min Python step ceilings
-plus 2100 + 30 s for fast-local, leaving 90 s in 45 min. If #2536's three 5 min
-Python steps land second, the same invariant requires raising check to 55 min;
-its certification checkout/concurrency lines are independent of this fix.
-The historical host-level 20 min runner setting above is not changed by this PR.
-If it is still enforced, it can truncate the larger workflow budgets and must be
-adjusted by the runner owner; phase watchdogs remain independent of that setting.
+plus 2100 + 30 s for fast-local, leaving 690 s in 55 min. The 55 min job
+also reserves #2536's three 5 min Python steps: 900 + 2100 + 30 + 90 = 3120 s <= 3300 s. A separate compatibility
+control applies those step budgets and verifies the invariant; its certification
+checkout/concurrency lines are independent of this fix.
+Read-only verification on baldr during this follow-up confirmed that
+`/var/lib/forgejo-runner-fast/config.yml` still has `runner.timeout: 20m`.
+That host ceiling can truncate these larger workflow budgets. The runner owner
+must raise it to at least 55 min (60 min leaves runner-level cleanup margin).
+Worker scope explicitly excludes changing baldr host settings; this PR does not
+change them. Until the owner adjusts the ceiling, full-budget operational
+acceptance remains blocked even if a warm CI run fits below 20 min.
 
 ### Resizing evidence, PR #2510
 
