@@ -254,21 +254,57 @@ impl Board {
             .into_any_element()
     }
     pub(in super::super) fn filter_empty(&self, cx: &mut Context<Self>) -> AnyElement {
-        h_flex()
+        let colors = brand::palette(cx);
+        let line = problem_line(
+            source_problem("Forgejo", &self.snapshot.forgejo, 30, now())
+                .into_iter()
+                .collect(),
+        )
+        .unwrap_or_default();
+        v_flex()
             .debug_selector(|| "board-filter-empty".into())
-            .gap_1()
-            .items_center()
-            .text_size(px(12.))
-            .text_color(brand::palette(cx).text_muted)
-            .child("Ничего не найдено ·")
+            .flex_1()
+            .min_h_0()
+            .relative()
             .child(
-                Button::new("board-reset-filters")
-                    .debug_selector(|| "board-reset-filters".into())
-                    .ghost()
-                    .small()
-                    .label("Сбросить фильтр")
+                h_flex()
+                    .gap_1()
+                    .items_center()
                     .text_size(px(12.))
-                    .on_click(cx.listener(|board, _, window, cx| board.reset_filters(window, cx))),
+                    .text_color(colors.text_muted)
+                    .child("Ничего не найдено ·")
+                    .child(
+                        Button::new("board-reset-filters")
+                            .debug_selector(|| "board-reset-filters".into())
+                            .ghost()
+                            .small()
+                            .label("Сбросить фильтр")
+                            .text_size(px(12.))
+                            .on_click(
+                                cx.listener(|board, _, window, cx| board.reset_filters(window, cx)),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .right_0()
+                    .child(self.source_indicator(cx)),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "board-live-status".into())
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_8()
+                    .h(px(16.))
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.))
+                    .text_color(colors.text_muted)
+                    .child(line),
             )
             .into_any_element()
     }

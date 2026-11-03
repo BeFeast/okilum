@@ -1072,10 +1072,7 @@ impl Render for Board {
             root = root.child(notice.clone());
         }
         if self.filter.is_active() && projection.counts.iter().all(|n| *n == 0) {
-            return root
-                .child(self.filter_empty(cx))
-                .child(self.source_indicator(cx))
-                .into_any_element();
+            return root.child(self.filter_empty(cx)).into_any_element();
         }
         let counts = projection.counts;
         let ready = self.column_sources_ready(binding);
