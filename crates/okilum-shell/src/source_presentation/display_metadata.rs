@@ -138,26 +138,30 @@ impl Metadata {
         self.inline.dedup_by(|a, b| a.range == b.range);
         let old_lines = self.snapshot.text().line_bounds(edit.old.start).start
             ..self.snapshot.text().line_bounds(edit.old.end).end;
-        let new_lines = old_lines.start..old_lines.end - edit.old.end + edit.new_end();
+        let new_lines = old_lines.start..edit.forward(old_lines.end);
         self.prose = retained
             .prose_blocks()
             .filter_map(|(block, markers)| {
                 let old = self.prose.iter().find(|p| {
                     let mapped = moved(&p.range, &edit).or_else(|| {
                         (p.range.start <= edit.old.start && edit.old.end <= p.range.end)
-                            .then(|| p.range.start..p.range.end - edit.old.end + edit.new_end())
+                            .then(|| p.range.start..edit.forward(p.range.end))
                     });
                     mapped.as_ref() == Some(block)
                 });
                 let inventory = if let Some(old) = old {
-                    if old.range.end <= old_lines.start {
+                    // A structural prefix can share a logical line with an
+                    // unchanged prose run. Preserve its lexical proof using
+                    // the actual edit, then map suffix coordinates before
+                    // considering the broader dirty wrapping lines.
+                    if old.range.end <= edit.old.start {
                         old.inventory.clone()
-                    } else if old.range.start >= old_lines.end {
+                    } else if old.range.start >= edit.old.end {
                         old.inventory.shifted(|at| edit.forward(at))
                     } else {
                         let dirty =
                             old_lines.start.max(old.range.start)..old_lines.end.min(old.range.end);
-                        let new_end = dirty.end - edit.old.end + edit.new_end();
+                        let new_end = edit.forward(dirty.end);
                         old.inventory.remap(
                             dirty.clone(),
                             &next.text().slice(dirty.start..new_end),
