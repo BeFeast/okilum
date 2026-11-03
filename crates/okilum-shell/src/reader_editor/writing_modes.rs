@@ -539,9 +539,22 @@ mod tests {
         });
         assert_centred(&input, visual, "end of note typed");
         visual.run_until_parked();
+        assert_centred(&input, visual, "end of note typed and published");
         visual.dispatch_action(gpui_component::input::Undo);
         assert_centred(&input, visual, "end of note Undo");
         visual.run_until_parked();
+        assert_centred(&input, visual, "end of note Undo and published");
+        visual.simulate_resize(size(px(800.), px(700.)));
+        visual.run_until_parked();
+        assert_centred(&input, visual, "end of note rewrapped");
+        input.read_with(visual, |i, _| {
+            let row = i.text().offset_to_point(i.cursor()).row;
+            assert_eq!(
+                i.focus_lines(),
+                &[row..row + 1],
+                "only the final paragraph stays bright"
+            );
+        });
         assert_eq!(
             input.read_with(visual, |input, _| input.value().to_string()),
             note
@@ -618,6 +631,15 @@ mod tests {
         assert!(
             paused.is_none_or(|off| off.abs() > 2.),
             "manual scroll survives publication/rewrap: {paused:?}"
+        );
+        visual.update(|window, cx| {
+            window.dispatch_keystroke(gpui::Keystroke::parse("left").unwrap(), cx);
+        });
+        assert_centred(&input, visual, "caret navigation after manual scroll");
+        assert_eq!(
+            input.read_with(visual, |i, _| i.value().to_string()),
+            note,
+            "caret navigation resumes following without a source edit"
         );
         visual.update(|window, cx| {
             window.dispatch_keystroke(gpui::Keystroke::parse("v").unwrap(), cx);
