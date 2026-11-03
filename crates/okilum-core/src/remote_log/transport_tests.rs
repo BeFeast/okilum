@@ -685,3 +685,369 @@ fn field_catalog_uses_advertised_scalar_mappings_and_keyword_multifields() {
     );
     assert_eq!(server.state.lock().unwrap().rejected_headers, 0);
 }
+
+#[test]
+fn search_catalog_fallback_denied_missing_empty_malformed_with_typed_scope_and_counts() {
+    for scenario in [
+        Scenario {
+            catalog_status: Some(401),
+            ..Default::default()
+        },
+        Scenario {
+            catalog_status: Some(403),
+            ..Default::default()
+        },
+        Scenario {
+            catalog_status: Some(404),
+            ..Default::default()
+        },
+        Scenario {
+            catalog_status: Some(400),
+            ..Default::default()
+        },
+        Scenario {
+            catalog_empty: true,
+            ..Default::default()
+        },
+        Scenario {
+            catalog_malformed: true,
+            ..Default::default()
+        },
+    ] {
+        let server = server(
+            12,
+            Scenario {
+                legacy_total: true,
+                status_denied: true,
+                async_polls: 1,
+                ..scenario
+            },
+        );
+        let source = source(&server);
+        let client = client(&server);
+        let catalog = client.field_catalog(&source).unwrap();
+        assert!(catalog.fallback);
+        assert!(!catalog.limited);
+        let service = catalog
+            .fields
+            .iter()
+            .find(|f| f.source_path == "service")
+            .unwrap();
+        assert_eq!(
+            service.name, "service.keyword",
+            "base text aggregation fails"
+        );
+        assert!(catalog.fields.iter().any(|f| f.name == "context.operation"));
+        assert!(catalog
+            .observed
+            .iter()
+            .any(|f| f.path == "labels" && f.types.contains(&FieldType::Array)));
+        assert!(catalog
+            .observed
+            .iter()
+            .any(|f| f.path == "duration" && f.missing_count == 6));
+        assert!(catalog.observed.iter().any(|f| f.path == "text_only"));
+        assert!(!catalog.fields.iter().any(|f| f.source_path == "text_only"));
+        let values = client
+            .field_values(
+                &source,
+                &FieldValuesRequest {
+                    field: service.name.clone(),
+                    field_type: service.field_type,
+                    limit: 1000,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            values.buckets[0].value,
+            FieldValue::String("checkout".into())
+        );
+        let mut scoped = source.clone();
+        scoped
+            .discover
+            .filters
+            .push(json!({"query":values.buckets[0].value.filter(&service.name)}));
+        let page = History::for_source(client.clone(), &scoped)
+            .unwrap()
+            .page()
+            .unwrap();
+        assert_eq!(
+            page.events.len(),
+            6,
+            "normalized key is compiled against confirmed multifield"
+        );
+        let category = catalog
+            .fields
+            .iter()
+            .find(|f| f.source_path == "category")
+            .unwrap();
+        assert_eq!(
+            category.name, "category",
+            "standalone keyword uses its confirmed base field"
+        );
+        let normalized = client
+            .field_values(
+                &source,
+                &FieldValuesRequest {
+                    field: category.name.clone(),
+                    field_type: category.field_type,
+                    limit: 1000,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            normalized.buckets[0].value,
+            FieldValue::String("batch".into())
+        );
+        scoped.discover.filters =
+            vec![json!({"query":normalized.buckets[0].value.filter(&category.name)})];
+        let page = History::for_source(client.clone(), &scoped)
+            .unwrap()
+            .page()
+            .unwrap();
+        assert_eq!(page.events.len(), 6);
+        assert!(page
+            .events
+            .iter()
+            .all(|e| e["_source"]["category"] == "Batch"));
+        let numbers = client
+            .field_values(
+                &source,
+                &FieldValuesRequest {
+                    field: "duration".into(),
+                    field_type: FieldType::Number,
+                    limit: 1000,
+                },
+            )
+            .unwrap();
+        assert_eq!(numbers.missing_count, 6);
+        assert!(matches!(numbers.buckets[0].value, FieldValue::Number(_)));
+        scoped.discover.filters =
+            vec![json!({"query":numbers.buckets[0].value.filter("duration")})];
+        assert_eq!(
+            History::for_source(client.clone(), &scoped)
+                .unwrap()
+                .page()
+                .unwrap()
+                .events
+                .len(),
+            1
+        );
+        scoped.discover.filters = vec![json!({"query":FieldValue::Missing.filter("duration")})];
+        assert_eq!(
+            History::for_source(client.clone(), &scoped)
+                .unwrap()
+                .page()
+                .unwrap()
+                .events
+                .len(),
+            6
+        );
+        scoped.discover.filters = vec![json!({"query":FieldValue::Boolean(true).filter("active")})];
+        assert_eq!(
+            History::for_source(client.clone(), &scoped)
+                .unwrap()
+                .page()
+                .unwrap()
+                .events
+                .len(),
+            6
+        );
+        let details = client.connection_details().copy_text();
+        assert!(details.contains("field catalog: HTTP"));
+        assert!(details.contains("fallback probe: HTTP"));
+        assert!(details.contains("search sample + terms probes"));
+        assert!(details.contains("async poll: HTTP 200"));
+        assert!(details.contains("Kibana version: not readable"));
+        for private in [
+            server.endpoint.as_str(),
+            "remote-*:events",
+            "remote-a",
+            "test-secret",
+            "Checkout",
+            "checkout",
+            "service.keyword",
+        ] {
+            assert!(!details.contains(private), "diagnostics leaked {private}");
+        }
+        let state = server.state.lock().unwrap();
+        assert!(
+            state.calls.iter().any(|c| c.body["params"]["aggs"]
+                .as_object()
+                .is_some_and(|a| a.len() > 1 && a.contains_key("probe_0"))),
+            "positive control: combined bounded probe ran"
+        );
+        assert!(state.calls.iter().any(|c| c.body["params"]["query"]
+            .to_string()
+            .contains("service.keyword")));
+        assert_eq!(state.rejected_headers, 0);
+    }
+}
+
+#[test]
+fn search_catalog_positive_control_and_empty_window_do_not_invent_mappings() {
+    let server = server(12, Scenario::default());
+    let client = client(&server);
+    let catalog = client.field_catalog(&source(&server)).unwrap();
+    assert!(!catalog.fallback);
+    assert!(client
+        .connection_details()
+        .copy_text()
+        .contains("fallback not used"));
+    assert!(
+        !server
+            .state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|c| c.path.ends_with("/internal/search/es")),
+        "positive control: available catalog bypasses sample and probes"
+    );
+    server.state.lock().unwrap().scenario.catalog_empty = true;
+    let mut source = source(&server);
+    source.discover.time = TimeRange {
+        from: "2020-01-01T00:00:00Z".into(),
+        to: "2020-01-02T00:00:00Z".into(),
+    };
+    let catalog = client.field_catalog(&source).unwrap();
+    assert!(catalog.fallback);
+    assert!(catalog.fields.is_empty());
+    assert!(catalog.observed.is_empty());
+}
+
+#[test]
+fn search_catalog_bounds_sample_paths_batches_and_probe_requests() {
+    let server = server(
+        256,
+        Scenario {
+            catalog_empty: true,
+            ..Default::default()
+        },
+    );
+    for row in &mut server.state.lock().unwrap().records {
+        for i in 0..80 {
+            row["_source"][format!("candidate_{i:03}")] = json!("synthetic analyzed text");
+        }
+    }
+    let catalog = client(&server).field_catalog(&source(&server)).unwrap();
+    assert!(catalog.fallback && catalog.limited);
+    assert!(
+        catalog
+            .fields
+            .iter()
+            .all(|f| !f.name.starts_with("candidate_")),
+        "failed probes never become mappings"
+    );
+    let state = server.state.lock().unwrap();
+    let probes = state
+        .calls
+        .iter()
+        .filter(|c| c.body["params"]["aggs"].get("probe_0").is_some())
+        .collect::<Vec<_>>();
+    assert!(!probes.is_empty());
+    assert!(probes.len() <= 64);
+    assert!(probes
+        .iter()
+        .all(|p| p.body["params"]["aggs"].as_object().unwrap().len() <= 8));
+    assert!(state.calls.iter().any(|c| c.body["params"]["size"] == 128));
+    assert!(catalog.observed.iter().all(|f| f.present_count <= 128));
+}
+
+#[test]
+fn search_catalog_cancelled_never_falls_back_and_probe_budget_expires() {
+    let server = server(
+        12,
+        Scenario {
+            catalog_status: Some(403),
+            ..Default::default()
+        },
+    );
+    let client = client(&server);
+    client.cancelled.store(true, Ordering::Release);
+    assert!(client.field_catalog(&source(&server)).is_err());
+    assert!(server.state.lock().unwrap().calls.is_empty());
+    client.cancelled.store(false, Ordering::Release);
+    let mut requests = 0;
+    let mut confirmed = Vec::new();
+    let mut limited = false;
+    // The very same probe is exercised successfully by the fallback tests;
+    // an exhausted whole-discovery deadline must suppress all HTTP requests.
+    client
+        .probe_fields(
+            &json!({}),
+            &[super::super::result::AggregatableField {
+                name: "service.keyword".into(),
+                source_path: "service".into(),
+                field_type: FieldType::String,
+            }],
+            std::time::Instant::now() - Duration::from_secs(9),
+            &mut requests,
+            &mut confirmed,
+            &mut limited,
+        )
+        .unwrap();
+    assert!(limited && confirmed.is_empty());
+    assert_eq!(requests, 0);
+    assert!(server.state.lock().unwrap().calls.is_empty());
+}
+
+#[test]
+fn connection_details_last_attempt_excludes_late_http_failures_from_previous_source() {
+    let server = server(
+        12,
+        Scenario {
+            data_view_denied: true,
+            delay: Duration::from_millis(100),
+            ..Default::default()
+        },
+    );
+    let (worker, _events) = crate::remote_log::live::Worker::start();
+    let previous = worker.diagnostics();
+    let old_client = client(&server).with_diagnostics(previous.clone());
+    let mut imported = source(&server);
+    imported.index_pattern = None;
+    let late = std::thread::spawn(move || old_client.resolve_source(&imported));
+    let began = std::time::Instant::now();
+    while !server
+        .state
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .any(|c| c.path.contains("/api/data_views/"))
+    {
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "positive control: previous HTTP request must fire"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    worker.begin_attempt();
+    let next = client(&server).with_diagnostics(worker.diagnostics());
+    next.field_values(
+        &source(&server),
+        &FieldValuesRequest {
+            field: "duration".into(),
+            field_type: FieldType::Number,
+            limit: 1000,
+        },
+    )
+    .unwrap();
+    assert!(late.join().unwrap().is_err());
+    assert!(
+        previous
+            .lock()
+            .unwrap()
+            .copy_text()
+            .contains("data view: HTTP 403"),
+        "positive control: the late failure was actually recorded"
+    );
+    let details = worker.diagnostics().lock().unwrap().copy_text();
+    assert!(details.contains("data view: not attempted"));
+    assert!(details.contains("search: HTTP 200"));
+    assert!(
+        !details.contains("403"),
+        "a previous source cannot contaminate this attempt's diagnostic text"
+    );
+}

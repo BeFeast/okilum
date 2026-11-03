@@ -121,3 +121,37 @@ To continue the synthetic demo after Include/Exclude:
 12. Saved views (star) → Save current view… → enter a name → Save. Choose the name
     from the star menu to restore source, time preset, pinned scope, chips, columns,
     message/correlation fields and request identity.
+
+## Search-only field discovery and diagnostics (#2437)
+
+When the field catalog is denied, absent, malformed or empty, field pickers use
+only POST /internal/search/es. The selected window supplies at most 128 sampled
+_source documents. Object paths are flattened and up to 256 array/type observations retained.
+Up to 24 scalar paths are checked in batches of eight aggregation candidates;
+strings test both the base and .keyword field. Failed combined requests are
+bisected to isolate unsupported fields. At most 64 probe requests share an eight
+second sample/probe budget. Only nonempty, successful terms buckets without explicit partial failures or timeouts confirm a mapping. Unconfirmed fields are explicitly limited to loaded
+row filtering. The sample can miss rare fields; widening the window can help.
+Confirmed fallback discoveries are cached per source/dataset for the window
+session, with at most 16 cache entries. API key replacement clears this cache.
+An empty sample is not cached so a later wider window can discover fields.
+
+Scope and server chips use the confirmed field and the exact typed aggregation
+key, including normalized string keys. Missing uses exists; no source-text case
+conversion is used to apply a server chip locally.
+
+Open Logs, choose the saved environment, then click Connection details beside
+Advanced. Copy connection details copies the last connection attempt's route
+outcomes, safe Kibana version, total relation, shard/cluster counts and timeouts.
+The endpoint and pattern are redacted by default. Document values, cluster names,
+credentials and raw server errors never enter this diagnostic text. Cached
+fallback discovery is marked explicitly; routes not used in this attempt say
+not attempted. Catalog permission denial alone does not require replacing a key
+when the search route still works.
+
+The debug fake_kibana example accepts catalog-403, catalog-404, catalog-empty and
+catalog-malformed modes. Its synthetic fixtures include a base text field whose
+keyword multifield succeeds with lowercase keys, a text-only field, nested
+objects, arrays, booleans and a numeric field missing in half the documents.
+Synthetic tests do not certify a private network, scoped key or native macOS
+credential storage; Connection details is the evidence to collect there.

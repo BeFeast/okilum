@@ -369,6 +369,11 @@ impl Panel {
         self.guided.open_scope = None;
         self.guided.custom = false;
         self.guided.connection = "Connecting…".into();
+        self.worker.begin_attempt();
+        let diagnostics = self.worker.diagnostics();
+        if replacement {
+            self.guided.catalog_cache.clear();
+        }
         let count_cancel = self.guided.cancel.clone();
         #[cfg(test)]
         let test_key = self.guided.test_key.clone();
@@ -459,6 +464,7 @@ impl Panel {
                 match result {
                     Ok((key, client)) => {
                         this.guided.key_needed = false;
+                        let client = client.with_diagnostics(diagnostics);
                         this.guided.count_client = Some(client.clone());
                         this.load_catalog(client, source.clone(), cx);
                         if let Some(definition) = definition {
@@ -825,6 +831,33 @@ impl Panel {
         if self.proposal.is_some() {
             header = header.child(self.render_start_confirmation(cx));
         }
+        if self.guided.details_open {
+            let text = self.worker.diagnostics().lock().unwrap().copy_text();
+            header = header.child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("remote-copy-details")
+                            .debug_selector(|| "remote-copy-details".into())
+                            .small()
+                            .label("Copy connection details")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let text = this.worker.diagnostics().lock().unwrap().copy_text();
+                                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("remote-details-text")
+                            .max_h(px(180.))
+                            .overflow_y_scroll()
+                            .children(
+                                text.lines()
+                                    .map(|line| div().text_xs().child(line.to_owned())),
+                            ),
+                    ),
+            );
+        }
         header.child(self.render_status(cx)).into_any_element()
     }
     fn render_source_form(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -958,6 +991,18 @@ impl Panel {
                         .disabled(!self.following && !self.busy)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.stop();
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("remote-connection-details")
+                        .debug_selector(|| "remote-connection-details".into())
+                        .small()
+                        .ghost()
+                        .label("Connection details")
+                        .selected(self.guided.details_open)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.guided.details_open = !this.guided.details_open;
                             cx.notify();
                         })),
                 )

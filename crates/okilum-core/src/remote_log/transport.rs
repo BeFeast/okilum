@@ -15,11 +15,14 @@ use std::{
     collections::HashSet,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
 use url::Url;
+
+#[path = "catalog.rs"]
+mod catalog;
 
 const RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -71,6 +74,7 @@ pub struct Kibana {
     key: Arc<ApiKey>,
     runtime: Arc<tokio::runtime::Runtime>,
     cancelled: Arc<AtomicBool>,
+    diagnostics: Arc<Mutex<super::result::ConnectionDetails>>,
 }
 impl Kibana {
     pub fn new(source: &Source, key: ApiKey, cancelled: Arc<AtomicBool>) -> Result<Self> {
@@ -109,7 +113,18 @@ impl Kibana {
             key: Arc::new(key),
             runtime,
             cancelled,
+            diagnostics: Default::default(),
         })
+    }
+    pub fn with_diagnostics(
+        mut self,
+        details: Arc<Mutex<super::result::ConnectionDetails>>,
+    ) -> Self {
+        self.diagnostics = details;
+        self
+    }
+    pub fn connection_details(&self) -> super::result::ConnectionDetails {
+        self.diagnostics.lock().unwrap().clone()
     }
     /// Reuse this source-bound client with a fresh cancellation lifetime.
     pub fn with_cancellation(&self, cancelled: Arc<AtomicBool>) -> Self {
@@ -165,6 +180,20 @@ impl Kibana {
             request = request.json(body);
         }
         request = request.timeout(budget);
+        let diagnostic_route = if body.is_some_and(|b| b["id"].is_string()) {
+            "async poll"
+        } else if route == "/internal/search/es"
+            && body.is_some_and(|b| b["params"]["aggs"].get("probe_0").is_some())
+        {
+            "fallback probe"
+        } else {
+            match route {
+                "/internal/search/es" => "search",
+                "/internal/data_views/_fields_for_wildcard" => "field catalog",
+                "/api/status" => "version",
+                _ => "data view",
+            }
+        };
         let execute = async {
             let mut response = request.send().await.map_err(|error| {
                 if error.is_timeout() {
@@ -176,6 +205,10 @@ impl Kibana {
                 }
             })?;
             let status = response.status().as_u16();
+            self.diagnostics
+                .lock()
+                .unwrap()
+                .route(diagnostic_route, &format!("HTTP {status}"));
             match status {
                 407 => return Err(anyhow::anyhow!(Rejected(okilum_http::http_reason(407)))),
                 401 | 403 => return Err(anyhow::anyhow!(AuthError { status })),
@@ -201,7 +234,7 @@ impl Kibana {
             }
             Ok::<_, anyhow::Error>(bytes)
         };
-        let bytes = self.runtime.block_on(async {
+        let result = self.runtime.block_on(async {
             if cleanup {
                 return execute.await;
             }
@@ -213,12 +246,30 @@ impl Kibana {
                     }
                 } => bail!("Log request cancelled"),
             }
-        })?;
+        });
+        if let Err(error) = &result {
+            let mut details = self.diagnostics.lock().unwrap();
+            details.timeouts |= error.is::<SearchTimeout>();
+            details.route(
+                diagnostic_route,
+                if error.is::<SearchTimeout>() {
+                    "timeout"
+                } else {
+                    "request failed"
+                },
+            );
+        }
+        let bytes = result?;
         if bytes.is_empty() && cleanup {
             return Ok(Value::Null);
         }
-        let value: Value =
-            serde_json::from_slice(&bytes).context("Kibana did not return valid JSON")?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+            self.diagnostics
+                .lock()
+                .unwrap()
+                .route(diagnostic_route, "malformed JSON");
+            anyhow::anyhow!("Kibana did not return valid JSON")
+        })?;
         ensure!(
             value.get("error").is_none()
                 && value
@@ -237,7 +288,8 @@ impl Kibana {
         format!("{prefix}/{encoded}")
     }
     fn version(&self) -> Option<String> {
-        self.request(Method::GET, "/api/status", &[], None, false)
+        let version = self
+            .request(Method::GET, "/api/status", &[], None, false)
             .ok()
             .and_then(|v| {
                 v["version"]["number"]
@@ -248,7 +300,9 @@ impl Kibana {
                                 .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c))
                     })
                     .map(str::to_owned)
-            })
+            });
+        self.diagnostics.lock().unwrap().version = version.clone();
+        version
     }
     pub fn resolve_source(&self, source: &Source) -> Result<Source> {
         source.validate()?;
@@ -315,12 +369,14 @@ impl Kibana {
             if response["isRunning"] != true
                 && !(response["isPartial"] == true && response["id"].is_string())
             {
+                self.record_search_status(&response, params, false);
                 return Ok((response, false));
             }
             let current = id
                 .as_deref()
                 .context("Malformed async search: missing id")?;
             if clock.elapsed() >= deadline {
+                self.record_search_status(&response, params, true);
                 return Ok((timeout_response(response), true));
             }
             // The verified protocol polls the same route with the current id
@@ -348,18 +404,28 @@ impl Kibana {
             ) {
                 Ok(value) => response = value,
                 Err(error) if error.is::<SearchTimeout>() => {
+                    self.record_search_status(&response, params, true);
                     return Ok((timeout_response(response), true));
                 }
                 Err(error) => return Err(error),
             }
         }
     }
+    fn record_search_status(&self, response: &Value, params: &Value, timeout: bool) {
+        let mut details = self.diagnostics.lock().unwrap();
+        details.timeouts |= timeout;
+        if let Ok(status) = ResultStatus::parse(
+            response,
+            &params["track_total_hits"],
+            params["index"].as_str().is_some_and(|p| p.contains(':')),
+        ) {
+            details.timeouts |= status.timed_out;
+            details.status = Some(status);
+        }
+    }
     /// Kibana's field catalog distinguishes keyword multifields from analyzed text.
-    /// A denied catalog is an explicit picker error, never a guessed `.keyword` suffix.
-    pub fn aggregatable_fields(
-        &self,
-        source: &Source,
-    ) -> Result<Vec<super::result::AggregatableField>> {
+    /// This mapping-only path is optional; discovery falls back to search probes.
+    fn mapped_fields(&self, source: &Source) -> Result<Vec<super::result::AggregatableField>> {
         let source = self.resolve_source(source)?;
         let pattern = source
             .index_pattern
@@ -378,6 +444,13 @@ impl Kibana {
         ensure!(
             fields.len() <= 20_000,
             "Kibana field catalog exceeds 20,000 fields"
+        );
+        ensure!(!fields.is_empty(), "Empty Kibana field catalog");
+        ensure!(
+            fields.iter().all(|f| f["name"].is_string()
+                && f["aggregatable"].is_boolean()
+                && f["searchable"].is_boolean()),
+            "Malformed Kibana field catalog entries"
         );
         let mut found = Vec::new();
         for field in fields {
@@ -446,6 +519,10 @@ impl Kibana {
             "Conflicting Kibana field catalog entries; no mapping was selected"
         );
         found.dedup_by(|a, b| a.name == b.name);
+        ensure!(
+            !found.is_empty(),
+            "No scalar fields in Kibana field catalog"
+        );
         Ok(found)
     }
     /// Top-N server aggregation over the same source, absolute time and server

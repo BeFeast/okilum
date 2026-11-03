@@ -11,6 +11,10 @@ fn main() -> anyhow::Result<()> {
     let mode = args.next().unwrap_or_else(|| "sync".into());
     let scenario = match mode.as_str() {
         "sync" | "investigation" => Scenario::default(),
+        "catalog-403" => Scenario { catalog_status: Some(403), ..Default::default() },
+        "catalog-404" => Scenario { catalog_status: Some(404), ..Default::default() },
+        "catalog-empty" => Scenario { catalog_empty: true, ..Default::default() },
+        "catalog-malformed" => Scenario { catalog_malformed: true, ..Default::default() },
         "async" => Scenario {
             async_polls: 3,
             ..Default::default()
@@ -37,7 +41,7 @@ fn main() -> anyhow::Result<()> {
             ..Default::default()
         },
         _ => anyhow::bail!(
-            "Scenario: sync | investigation | async | partial-id | partial | timeout | legacy | lower-bound"
+            "Scenario: sync | investigation | async | partial-id | partial | timeout | legacy | lower-bound | catalog-403 | catalog-404 | catalog-empty | catalog-malformed"
         ),
     };
     let server = FakeKibana::start(&address, 603, scenario)?;

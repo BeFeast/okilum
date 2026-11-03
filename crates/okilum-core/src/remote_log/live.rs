@@ -128,8 +128,10 @@ struct Mailbox {
     closing: bool,
 }
 type Shared = Arc<(Mutex<Mailbox>, Condvar)>;
+type Diagnostics = Arc<Mutex<Arc<Mutex<super::result::ConnectionDetails>>>>;
 pub struct Worker {
     shared: Shared,
+    diagnostics: Diagnostics,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
@@ -165,6 +167,13 @@ impl Default for Timing {
 impl Worker {
     pub fn start() -> (Self, async_channel::Receiver<Update>) {
         Self::spawn(Timing::default(), None)
+    }
+    pub fn diagnostics(&self) -> Arc<Mutex<super::result::ConnectionDetails>> {
+        self.diagnostics.lock().unwrap().clone()
+    }
+    /// New clients share this attempt; late replies keep the previous sink.
+    pub fn begin_attempt(&self) {
+        *self.diagnostics.lock().unwrap() = Default::default();
     }
     pub fn generation(&self) -> u64 {
         self.shared.0.lock().unwrap().generation
@@ -217,8 +226,20 @@ impl Worker {
         ));
         let (sender, receiver) = async_channel::bounded(1);
         let control = shared.clone();
-        std::thread::spawn(move || Engine::new(timing, endpoint).run(control, sender));
-        (Self { shared }, receiver)
+        let diagnostics: Diagnostics = Default::default();
+        let sink = diagnostics.clone();
+        std::thread::spawn(move || {
+            let mut engine = Engine::new(timing, endpoint);
+            engine.diagnostics = sink;
+            engine.run(control, sender)
+        });
+        (
+            Self {
+                shared,
+                diagnostics,
+            },
+            receiver,
+        )
     }
 }
 struct Applied {
@@ -228,6 +249,7 @@ struct Applied {
     events: Vec<Arc<serde_json::Value>>,
 }
 struct Engine {
+    diagnostics: Diagnostics,
     timing: Timing,
     endpoint: Option<url::Url>,
     applied: Option<Applied>,
@@ -242,6 +264,7 @@ impl Engine {
         Self {
             timing,
             endpoint,
+            diagnostics: Default::default(),
             applied: None,
             retry_source: None,
             loaded: None,
@@ -392,6 +415,7 @@ impl Engine {
             Some(endpoint) => Kibana::with_endpoint(endpoint.clone(), key, cancel)?,
             None => Kibana::new(&source, key, cancel)?,
         };
+        let client = client.with_diagnostics(self.diagnostics.lock().unwrap().clone());
         let source = client.resolve_source(&source)?;
         self.retry_source = Some(source.clone());
         let retained_count = if replacing_key {

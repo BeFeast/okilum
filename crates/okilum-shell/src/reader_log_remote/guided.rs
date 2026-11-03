@@ -43,6 +43,9 @@ pub(super) struct Guided {
     pub(super) catalog_scope: Option<String>,
     pub(super) catalog: Option<Result<Vec<remote_log::result::AggregatableField>, String>>,
     pub(super) _catalog: Option<Task<()>>,
+    pub(super) discovery: Option<remote_log::result::FieldCatalog>,
+    pub(super) catalog_cache: BTreeMap<String, remote_log::result::FieldCatalog>,
+    pub(super) details_open: bool,
     #[cfg(test)]
     pub(super) test_key: Option<Vec<u8>>,
 }
@@ -81,6 +84,9 @@ impl Guided {
             catalog: None,
             catalog_scope: None,
             _catalog: None,
+            discovery: None,
+            catalog_cache: BTreeMap::new(),
+            details_open: false,
             #[cfg(test)]
             test_key: None,
         }
@@ -96,6 +102,7 @@ impl Guided {
         self._catalog = None;
         self.catalog = None;
         self.catalog_scope = None;
+        self.discovery = None;
     }
 }
 impl Drop for Guided {
@@ -106,6 +113,34 @@ impl Drop for Guided {
 impl Panel {
     pub(super) fn guided_candidate(&self, source: &mut Source, cx: &App) -> Result<()> {
         for (field, value) in &self.guided.scope {
+            // Existing scope values were selected from confirmed server buckets.
+            // Revalidate against this source's cached discovery on every Apply.
+            let catalog = self
+                .guided
+                .catalog
+                .as_ref()
+                .context("Refresh the source before applying scope")?
+                .as_ref()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let mut selected = source.clone();
+            if selected.index_pattern.is_none() {
+                selected.index_pattern =
+                    self.applied.as_ref().and_then(|s| s.index_pattern.clone());
+            }
+            anyhow::ensure!(
+                self.guided.catalog_scope.as_ref() == Some(&selected.identity_scope()?),
+                "Scope mapping does not match this dataset. Clear scope values before applying a changed source"
+            );
+            let mapping = remote_log::chips::mapped_field(field, catalog)?;
+            anyhow::ensure!(
+                matches!((value, mapping.field_type),
+                    (FieldValue::Missing, _)
+                    | (FieldValue::String(_), FieldType::String)
+                    | (FieldValue::Number(_), FieldType::Number)
+                    | (FieldValue::Boolean(_), FieldType::Boolean)),
+                "Scope value type does not match the confirmed field. Clear scope and choose its value again"
+            );
+            let field = &mapping.name;
             source.discover.filters.push(serde_json::json!({
                 "meta":{"controlledBy":GENERATED,"type":"scope","key":field,"value":value_label(value)}, "query":value.filter(field)
             }));
@@ -254,13 +289,19 @@ impl Panel {
         cx: &mut Context<Self>,
     ) {
         let cancelled = self.guided.cancel.clone();
+        let cache = self.guided.catalog_cache.clone();
         self.guided._catalog = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let source = client.resolve_source(&source)?;
                     let scope = source.identity_scope()?;
-                    let fields = client.aggregatable_fields(&source)?;
+                    let fields = if let Some(cached) = cache.get(&scope) {
+                        client.use_cached_catalog(cached);
+                        cached.clone()
+                    } else {
+                        client.field_catalog(&source)?
+                    };
                     Ok::<_, anyhow::Error>((scope, fields))
                 })
                 .await;
@@ -278,8 +319,16 @@ impl Panel {
                 }
                 this.guided.catalog = Some(match result {
                     Ok((scope, fields)) => {
-                        this.guided.catalog_scope = Some(scope);
-                        Ok(fields)
+                        this.guided.catalog_scope = Some(scope.clone());
+                        if fields.fallback && !fields.fields.is_empty() {
+                            // Bound the source/pattern cache for this window session.
+                            if this.guided.catalog_cache.len() >= 16 {
+                                this.guided.catalog_cache.pop_first();
+                            }
+                            this.guided.catalog_cache.insert(scope, fields.clone());
+                        }
+                        this.guided.discovery = Some(fields.clone());
+                        Ok(fields.fields)
                     }
                     Err(error) => {
                         this.guided.catalog_scope = None;
@@ -613,31 +662,66 @@ impl Panel {
                     );
             }
         }
-        scope=scope.child(
+        scope = scope.child(
             Button::new("remote-pin-scope")
-                .debug_selector(||"remote-pin-scope".into())
+                .debug_selector(|| "remote-pin-scope".into())
                 .small()
                 .label("Pin scope field…")
                 .disabled(fields.is_empty() || self.busy || !self.catalog_matches_applied())
-                .tooltip("Scalar fields from Kibana mappings; values and counts cover the applied window")
-                .dropdown_menu(move |mut menu,_,_| {
+                .tooltip(
+                    "Server confirmed scalar fields; values and counts cover the applied window",
+                )
+                .dropdown_menu(move |mut menu, _, _| {
                     for field in &fields {
-                        let field=field.clone();
-                        let weak=weak.clone();
-                        menu=menu.item(
-                            PopupMenuItem::new(field.clone()).on_click(move |_,_,cx| {
-                                let _=weak.update(cx,|this,cx| {
-                                    if this.generation==menu_generation {
-                                        this.pin_scope(field.clone(),cx);
+                        let field = field.clone();
+                        let weak = weak.clone();
+                        menu = menu.item(PopupMenuItem::new(field.clone()).on_click(
+                            move |_, _, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    if this.generation == menu_generation {
+                                        this.pin_scope(field.clone(), cx);
                                     }
                                 });
-                            })
-                        );
+                            },
+                        ));
                     }
                     menu
-                })
+                }),
         );
         controls = controls.child(scope);
+        if let Some(discovery) = &self.guided.discovery {
+            if discovery.fallback {
+                controls = controls.child(div().text_xs().child(if discovery.limited {
+                    "Field catalog unavailable. Using a bounded search sample and server probes; some fields remain unconfirmed. See Connection details."
+                } else {
+                    "Field catalog unavailable. Using a search sample and server confirmed fields. See Connection details."
+                }));
+                let mut observations = v_flex()
+                    .gap_1()
+                    .id("remote-field-observations")
+                    .max_h(px(80.))
+                    .overflow_y_scroll();
+                for info in &discovery.observed {
+                    let aggregatable = discovery.fields.iter().any(|f| f.source_path == info.path);
+                    observations = observations.child(div().text_xs().child(format!(
+                        "{} ({:?}) · {}",
+                        info.path,
+                        info.types,
+                        if aggregatable {
+                            "server confirmed"
+                        } else {
+                            "not aggregatable — loaded-rows filtering only"
+                        }
+                    )));
+                }
+                controls = controls.child(observations);
+                if discovery.observed.is_empty() {
+                    controls = controls.child(div().text_xs().child(
+                        "No fields observed in this window. Widen the time range and Refresh.",
+                    ));
+                }
+            }
+        }
         if let Some(Err(error)) = &self.guided.catalog {
             controls = controls.child(div().text_xs().child(format!(
                 "Cannot discover aggregatable fields: {error}. Refresh to retry."

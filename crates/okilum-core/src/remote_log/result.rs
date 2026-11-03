@@ -24,6 +24,10 @@ pub struct ResultStatus {
     pub partial: bool,
     pub truncated: bool,
     pub timed_out: bool,
+    pub total_shards: Option<u64>,
+    pub successful_shards: Option<u64>,
+    pub total_clusters: Option<u64>,
+    pub successful_clusters: Option<u64>,
     pub failed_shards: u64,
     pub failed_clusters: u64,
     pub skipped_clusters: u64,
@@ -157,6 +161,8 @@ impl ResultStatus {
             partial: response["isPartial"].as_bool().unwrap_or(false),
             timed_out: raw["timed_out"].as_bool().unwrap_or(false),
             failed_shards: shards["failed"].as_u64().unwrap_or(0),
+            total_shards: shards["total"].as_u64(),
+            successful_shards: shards["successful"].as_u64(),
             metadata_unknown: !raw["timed_out"].is_boolean()
                 || shards["failed"].as_u64().is_none()
                 || shards["total"].as_u64().is_none()
@@ -170,6 +176,8 @@ impl ResultStatus {
             status.partial |= successful < total;
         }
         if let Some(clusters) = raw.get("_clusters") {
+            status.total_clusters = clusters["total"].as_u64();
+            status.successful_clusters = clusters["successful"].as_u64();
             for (key, target) in [
                 ("failed", &mut status.failed_clusters),
                 ("skipped", &mut status.skipped_clusters),
@@ -203,6 +211,10 @@ impl ResultStatus {
         if next.total.is_some() {
             self.total = next.total;
         }
+        self.total_shards = next.total_shards.or(self.total_shards);
+        self.successful_shards = next.successful_shards.or(self.successful_shards);
+        self.total_clusters = next.total_clusters.or(self.total_clusters);
+        self.successful_clusters = next.successful_clusters.or(self.successful_clusters);
         self.partial |= next.partial;
         self.truncated |= next.truncated;
         self.timed_out |= next.timed_out;
@@ -258,8 +270,8 @@ pub enum FieldType {
     Array,
     Null,
 }
-/// A scalar field advertised as aggregatable by Kibana's field catalog.
-/// Text fields are represented by their keyword multifield, never guessed.
+/// A scalar mapping advertised by the catalog or confirmed by server buckets.
+/// Text fields use a confirmed keyword multifield, never a guessed suffix.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AggregatableField {
     pub name: String,
@@ -382,4 +394,104 @@ pub struct FieldValues {
     pub sum_other_doc_count: u64,
     pub doc_count_error_upper_bound: Option<u64>,
     pub status: ResultStatus,
+}
+
+/// Session-only observations plus server-confirmed mappings. Unconfirmed paths
+/// remain useful for loaded-row filtering but never compile into server chips.
+#[derive(Clone, Debug, Default)]
+pub struct FieldCatalog {
+    pub fields: Vec<AggregatableField>,
+    pub observed: Vec<FieldInfo>,
+    pub fallback: bool,
+    pub limited: bool,
+}
+
+/// Allowlisted diagnostics only: never store URLs, patterns, headers, errors,
+/// cluster names, aggregation keys or document values here.
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionDetails {
+    pub routes: BTreeMap<String, String>,
+    pub version: Option<String>,
+    pub status: Option<ResultStatus>,
+    pub fallback: Option<&'static str>,
+    pub timeouts: bool,
+}
+impl ConnectionDetails {
+    pub(crate) fn route(&mut self, route: &str, outcome: &str) {
+        let current = self.routes.entry(route.into()).or_default();
+        if !current.split(", ").any(|part| part == outcome) {
+            if !current.is_empty() {
+                current.push_str(", ");
+            }
+            current.push_str(outcome);
+        }
+    }
+    pub fn copy_text(&self) -> String {
+        let mut lines = vec![
+            "Connection details".into(),
+            "Endpoint: [redacted]".into(),
+            "Pattern: [redacted]".into(),
+            format!(
+                "Kibana version: {}",
+                self.version.as_deref().unwrap_or("not readable")
+            ),
+        ];
+        for route in [
+            "version",
+            "data view",
+            "search",
+            "async poll",
+            "field catalog",
+            "fallback probe",
+        ] {
+            lines.push(format!(
+                "{route}: {}",
+                self.routes
+                    .get(route)
+                    .map(String::as_str)
+                    .unwrap_or("not attempted")
+            ));
+        }
+        lines.push(format!(
+            "Field discovery: {}",
+            self.fallback.unwrap_or("not attempted")
+        ));
+        if let Some(s) = &self.status {
+            lines.push(format!(
+                "Total: {}",
+                s.total
+                    .as_ref()
+                    .map(|t| format!(
+                        "{} ({})",
+                        t.value,
+                        if t.relation == TotalRelation::Eq {
+                            "eq"
+                        } else {
+                            "gte"
+                        }
+                    ))
+                    .unwrap_or("unknown".into())
+            ));
+            lines.push(format!(
+                "Shards total/successful: {}/{}; clusters total/successful: {}/{}",
+                count_label(s.total_shards),
+                count_label(s.successful_shards),
+                count_label(s.total_clusters),
+                count_label(s.successful_clusters)
+            ));
+            lines.push(format!("Shards: {} failed; clusters: {} failed, {} skipped, {} partial, {} running; metadata unknown: {}", s.failed_shards, s.failed_clusters, s.skipped_clusters, s.partial_clusters, s.running_clusters, s.metadata_unknown));
+            lines.push(format!(
+                "Partial: {}; truncated: {}",
+                s.partial, s.truncated
+            ));
+        } else {
+            lines.push("Total: unknown; shards/clusters: not readable".into());
+        }
+        lines.push(format!("Timeouts: {}", self.timeouts));
+        lines.join("\n")
+    }
+}
+
+fn count_label(value: Option<u64>) -> String {
+    value.map_or("unknown".into(), |n| n.to_string())
 }

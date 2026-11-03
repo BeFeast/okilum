@@ -274,18 +274,18 @@ async fn guided_source_preset_scope_refresh_and_mid_session_auth_keep_state(
         );
         assert_eq!(panel.guided.scope.len(), 1);
     });
-    // Catalog authentication can fail while history itself succeeds. The history
-    // reply must not hide the replacement action from this independent route.
+    // Catalog permission failures degrade over the working search route; they
+    // must not turn a usable connection into an API-key replacement flow.
     server.state.lock().unwrap().scenario.catalog_status = Some(401);
     guided_click(visual, "remote-refresh");
     visual
         .condition(&panel, |panel, _| {
             !panel.busy
-                && panel.guided.catalog.as_ref().is_some_and(Result::is_err)
-                && panel.auth_error
+                && panel.guided.catalog.as_ref().is_some_and(Result::is_ok)
+                && panel.guided.discovery.as_ref().is_some_and(|d| d.fallback)
         })
         .await;
-    assert!(visual.debug_bounds("remote-replace-key").is_some());
+    assert!(!panel.read_with(visual, |panel, _| panel.auth_error));
     panel.read_with(visual, |panel, cx| {
         assert_eq!(panel.data.as_ref().unwrap().events.len(), 6);
         assert_eq!(
@@ -293,15 +293,14 @@ async fn guided_source_preset_scope_refresh_and_mid_session_auth_keep_state(
             vec!["service", "duration"]
         );
     });
-    // Navigation cannot hide an authentication failure on the independent catalog route.
+    // Navigation keeps the working fallback mapping.
     let view = panel.read_with(visual, |panel, _| panel.view.clone().unwrap());
     view.update_in(visual, |view, window, cx| view.select(0, true, window, cx));
     guided_click(visual, "log-show-request");
     loaded(&panel, visual, 1).await;
-    assert!(panel.read_with(visual, |panel, _| panel.auth_error));
-    assert!(visual.debug_bounds("remote-replace-key").is_some());
+    assert!(!panel.read_with(visual, |panel, _| panel.auth_error));
     server.state.lock().unwrap().scenario.catalog_status = None;
-    guided_click(visual, "remote-replace-key");
+    guided_click(visual, "remote-refresh");
     loaded(&panel, visual, 1).await;
     assert!(!panel.read_with(visual, |panel, _| panel.auth_error));
     guided_click(visual, "log-request-back");
@@ -312,6 +311,9 @@ async fn guided_source_preset_scope_refresh_and_mid_session_auth_keep_state(
     let retained = panel.read_with(visual, |panel, _| panel.data.clone().unwrap());
     server.state.lock().unwrap().scenario.failure_status = Some(400);
     panel.update_in(visual, |panel, window, cx| {
+        // This test deliberately starts a different dataset; its old scope is
+        // not a confirmed mapping for that dataset.
+        panel.guided.scope.clear();
         panel.pattern.update(cx, |input, cx| {
             input.set_value("other-*:events", window, cx)
         });
@@ -419,8 +421,32 @@ fn custom_absolute_range_and_source_switch_are_explicit(cx: &mut TestAppContext)
             "service.keyword".into(),
             remote_log::result::FieldValue::String("Example".into()),
         );
+        assert!(
+            panel.candidate(cx).is_err(),
+            "scope must not compile without a confirmed mapping"
+        );
+        panel.guided.catalog = Some(Ok(vec![remote_log::result::AggregatableField {
+            name: "service.keyword".into(),
+            source_path: "service".into(),
+            field_type: remote_log::result::FieldType::String,
+        }]));
+        panel.guided.catalog_scope = Some(source.identity_scope().unwrap());
         let before = panel.candidate(cx).unwrap();
         assert_eq!(before.discover.filters.len(), 1);
+        let mut changed = source.clone();
+        changed.index_pattern = Some("another-pattern".into());
+        assert!(
+            panel.guided_candidate(&mut changed, cx).is_err(),
+            "another dataset cannot reuse the confirmed scope mapping"
+        );
+        panel.guided.scope.insert(
+            "service.keyword".into(),
+            remote_log::result::FieldValue::Number(1.into()),
+        );
+        assert!(
+            panel.candidate(cx).is_err(),
+            "scope must retain the confirmed scalar type"
+        );
         panel.guided.count_client = Some(
             remote_log::transport::Kibana::new(
                 &source,
@@ -958,4 +984,182 @@ async fn guided_follow_back_live_saved(
     loaded(panel, visual, 6).await;
     guided_click(visual, "log-chips-clear");
     loaded(panel, visual, 6).await;
+}
+
+async fn fallback_scope_header_and_connection_details(cx: &mut TestAppContext, scenario: Scenario) {
+    cx.executor().allow_parking();
+    let server = FakeKibana::start("127.0.0.1:0", 12, scenario).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    let state = dir.path().join("state");
+    std::fs::create_dir_all(&vault).unwrap();
+    let mut source = Source::direct(
+        "Synthetic",
+        &server.endpoint,
+        "remote-*:events",
+        "@timestamp",
+    )
+    .unwrap();
+    source.discover.time = TimeRange {
+        from: "2026-11-01T00:00:00Z".into(),
+        to: "2026-11-05T00:00:00Z".into(),
+    };
+    remote_log::save_source(&state, &vault, &source).unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        crate::bind_keys(cx);
+        reader_ui_state::install(&state, cx);
+    });
+    let mut panel = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let entity = cx.new(|cx| Panel::new(vault.clone(), state.clone(), window, cx));
+        panel = Some(entity.clone());
+        Root::new(entity, window, cx)
+    });
+    visual.simulate_resize(size(px(1800.), px(1400.)));
+    let panel = panel.unwrap();
+    visual
+        .condition(&panel, |panel, _| panel.sources_loaded)
+        .await;
+    panel.update(visual, |panel, _| {
+        panel.guided.test_key = Some(b"test-secret".to_vec())
+    });
+    guided_click(visual, "remote-source-0");
+    loaded(&panel, visual, 12).await;
+    panel.read_with(visual, |panel, _| {
+        assert!(!panel.auth_error);
+        let discovery = panel.guided.discovery.as_ref().unwrap();
+        assert!(discovery.fallback);
+        assert!(discovery.fields.iter().any(|f| f.name == "service.keyword"));
+        assert!(!discovery
+            .fields
+            .iter()
+            .any(|f| f.source_path == "text_only"));
+    });
+    guided_click(visual, "remote-connection-details");
+    guided_click(visual, "remote-copy-details");
+    let copied = visual.update(|_, cx| cx.read_from_clipboard().unwrap().text().unwrap());
+    assert!(copied.contains("field catalog: HTTP"));
+    assert!(copied.contains("search sample + terms probes"));
+    assert!(copied.contains("fallback probe: HTTP"));
+    for private in [
+        server.endpoint.as_str(),
+        "remote-*:events",
+        "test-secret",
+        "Checkout",
+    ] {
+        assert!(!copied.contains(private));
+    }
+    guided_click(visual, "remote-connection-details");
+    guided_click(visual, "remote-pin-scope");
+    let index = panel.read_with(visual, |panel, _| {
+        panel
+            .guided
+            .catalog
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .iter()
+            .position(|f| f.name == "service.keyword")
+            .unwrap()
+    });
+    menu_choice(visual, index);
+    visual
+        .condition(&panel, |panel, _| {
+            panel.guided.counts.contains_key("service.keyword")
+        })
+        .await;
+    panel.read_with(visual, |panel, _| {
+        assert_eq!(
+            panel.guided.counts["service.keyword"]
+                .as_ref()
+                .unwrap()
+                .buckets[0]
+                .value,
+            remote_log::result::FieldValue::String("checkout".into())
+        );
+    });
+    let probes = || {
+        server
+            .state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| c.body["params"]["aggs"].get("probe_0").is_some())
+            .count()
+    };
+    let before = probes();
+    assert!(before > 0, "positive control: fallback actually probed");
+    guided_click(visual, "remote-scope-value-0");
+    loaded(&panel, visual, 6).await;
+    assert_eq!(
+        probes(),
+        before,
+        "source/pattern session cache avoids probing again"
+    );
+    assert!(server
+        .state
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .any(|c| c.body["params"]["query"]
+            .to_string()
+            .contains("\"service.keyword\":\"checkout\"")));
+    // Reuse the full real header-count/chip exercise, including numeric counts,
+    // normalized keys, local/server toggles and menu dismissal.
+    point_and_click_server_chips(&panel, visual, &server).await;
+    visual.simulate_keystrokes("escape");
+    cx.quit();
+}
+
+#[gpui::test]
+async fn catalog_403_fallback_populates_scope_header_counts_and_details(cx: &mut TestAppContext) {
+    fallback_scope_header_and_connection_details(
+        cx,
+        Scenario {
+            catalog_status: Some(403),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+#[gpui::test]
+async fn catalog_404_fallback_populates_scope_header_counts_and_details(cx: &mut TestAppContext) {
+    fallback_scope_header_and_connection_details(
+        cx,
+        Scenario {
+            catalog_status: Some(404),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+#[gpui::test]
+async fn catalog_empty_cross_cluster_fallback_populates_scope_header_counts_and_details(
+    cx: &mut TestAppContext,
+) {
+    fallback_scope_header_and_connection_details(
+        cx,
+        Scenario {
+            catalog_empty: true,
+            ..Default::default()
+        },
+    )
+    .await;
+}
+#[gpui::test]
+async fn catalog_malformed_fallback_populates_scope_header_counts_and_details(
+    cx: &mut TestAppContext,
+) {
+    fallback_scope_header_and_connection_details(
+        cx,
+        Scenario {
+            catalog_malformed: true,
+            ..Default::default()
+        },
+    )
+    .await;
 }

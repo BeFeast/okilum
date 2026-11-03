@@ -26,6 +26,8 @@ pub struct Scenario {
     pub status_denied: bool,
     pub data_view_denied: bool,
     pub catalog_status: Option<u16>,
+    pub catalog_empty: bool,
+    pub catalog_malformed: bool,
     pub reject: bool,
     pub malformed: bool,
     pub unavailable: bool,
@@ -124,7 +126,7 @@ pub fn record(id: usize) -> Value {
         .unwrap()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap();
-    let mut source = json!({"@timestamp":stamp,"service":if id % 2 == 0 {"Checkout"} else {"Worker"},"level":"INFO","request_id":format!("request-{id}"),"details":format!("Synthetic investigation event {id}: a worker completed a read operation and emitted a structured result with full context."),"active":id % 2 == 0,"context":{"operation":"read"},"pod.info":{"name":"synthetic-pod"}});
+    let mut source = json!({"@timestamp":stamp,"service":if id % 2 == 0 {"Checkout"} else {"Worker"},"level":"INFO","category":if id % 2 == 0 {"Web"} else {"Batch"},"request_id":format!("request-{id}"),"details":format!("Synthetic investigation event {id}: a worker completed a read operation and emitted a structured result with full context."),"active":id % 2 == 0,"text_only":"analyzed content", "labels":["synthetic","demo"], "context":{"operation":"read"},"pod.info":{"name":"synthetic-pod"}});
     if id % 2 == 0 {
         source["duration"] = json!(id);
     }
@@ -229,6 +231,7 @@ fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<(
                 json!({"name":"service","type":"string","esTypes":["text"],"aggregatable":false,"searchable":true}),
                 json!({"name":"service.keyword","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true,"subType":{"multi":{"parent":"service"}}}),
                 json!({"name":"level","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true}),
+                json!({"name":"category","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true}),
                 json!({"name":"request_id","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true}),
                 json!({"name":"flow","type":"string","esTypes":["keyword"],"aggregatable":true,"searchable":true}),
                 json!({"name":"duration","type":"number","esTypes":["long"],"aggregatable":true,"searchable":true}),
@@ -238,6 +241,10 @@ fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<(
             ];
             if let Some(status) = s.scenario.catalog_status {
                 (status, json!({"error":"synthetic catalog unavailable"}))
+            } else if s.scenario.catalog_empty {
+                (200, json!({"fields":[]}))
+            } else if s.scenario.catalog_malformed {
+                (200, json!({"unexpected":true}))
             } else {
                 (200, json!({"fields":fields}))
             }
@@ -272,6 +279,17 @@ fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<(
                 (400, json!({"error":"query rejected"}))
             } else if s.scenario.malformed {
                 (200, json!({"unexpected":true}))
+            } else if body["params"]["aggs"].as_object().is_some_and(|aggs| {
+                aggs.values().any(|agg| {
+                    agg["terms"]["field"]
+                        .as_str()
+                        .is_some_and(|name| matches!(name, "service" | "details" | "text_only"))
+                })
+            }) {
+                (
+                    400,
+                    json!({"error":"field is text-only in the synthetic server"}),
+                )
             } else if let Some(id) = body["id"].as_str() {
                 s.polls += 1;
                 let never = s.scenario.never_complete;
@@ -359,7 +377,7 @@ fn lookup(source: &Value, path: &str) -> Option<Value> {
         field(source, path)
     };
     value.map(|v| {
-        if keyword {
+        if keyword || path == "category" {
             v.as_str()
                 .map(|s| json!(s.to_lowercase()))
                 .unwrap_or_else(|| v.clone())
@@ -434,7 +452,7 @@ fn matches(source: &Value, query: &Value) -> bool {
                 let Some(actual) = lookup(source, path) else {
                     return false;
                 };
-                let expected = if path.ends_with(".keyword") {
+                let expected = if path.ends_with(".keyword") || path == "category" {
                     expected
                         .as_str()
                         .map(|s| json!(s.to_lowercase()))
@@ -525,30 +543,60 @@ fn search_response(records: &[Value], params: &Value, scenario: &Scenario) -> Va
         raw["_shards"]["failures"] = json!([{"reason":{"type":"synthetic_failure"}}]);
     }
     if let Some(aggs) = params["aggs"].as_object() {
-        let name = aggs["values"]["terms"]["field"].as_str().unwrap();
-        let limit = aggs["values"]["terms"]["size"].as_u64().unwrap() as usize;
-        let mut values: BTreeMap<String, (Value, u64)> = BTreeMap::new();
-        let mut missing = 0;
-        for row in &rows {
-            match lookup(row, name).filter(|v| !v.is_null()) {
-                Some(value) => {
-                    values.entry(value.to_string()).or_insert((value, 0)).1 += 1;
-                }
-                None => missing += 1,
+        let mut result = serde_json::Map::new();
+        for (aggregation, definition) in aggs {
+            if let Some(name) = definition["missing"]["field"].as_str() {
+                let missing = rows
+                    .iter()
+                    .filter(|row| lookup(row, name).is_none_or(|v| v.is_null()))
+                    .count();
+                result.insert(aggregation.clone(), json!({"doc_count":missing}));
+                continue;
             }
-        }
-        let mut values: Vec<_> = values.into_values().collect();
-        values.sort_by(|a, b| {
-            b.1.cmp(&a.1).then_with(|| {
-                if a.0.is_number() && b.0.is_number() {
-                    compare(&a.0, &b.0)
-                } else {
-                    a.0.to_string().cmp(&b.0.to_string())
+            let name = definition["terms"]["field"].as_str().unwrap();
+            let limit = definition["terms"]["size"].as_u64().unwrap() as usize;
+            let mapped = matches!(
+                name,
+                "service.keyword"
+                    | "level"
+                    | "category"
+                    | "request_id"
+                    | "trace_id"
+                    | "flow"
+                    | "duration"
+                    | "active"
+                    | "details.keyword"
+                    | "context.operation"
+                    | "pod.info.name"
+                    | "labels"
+            );
+            let mut values: BTreeMap<String, (Value, u64)> = BTreeMap::new();
+            for row in &rows {
+                match mapped
+                    .then(|| lookup(row, name))
+                    .flatten()
+                    .filter(|v| !v.is_null())
+                {
+                    Some(value) => {
+                        for value in value.as_array().cloned().unwrap_or_else(|| vec![value]) {
+                            values.entry(value.to_string()).or_insert((value, 0)).1 += 1;
+                        }
+                    }
+                    None => {}
                 }
-            })
-        });
-        let other: u64 = values.iter().skip(limit).map(|v| v.1).sum();
-        let buckets: Vec<_> = values
+            }
+            let mut values: Vec<_> = values.into_values().collect();
+            values.sort_by(|a, b| {
+                b.1.cmp(&a.1).then_with(|| {
+                    if a.0.is_number() && b.0.is_number() {
+                        compare(&a.0, &b.0)
+                    } else {
+                        a.0.to_string().cmp(&b.0.to_string())
+                    }
+                })
+            });
+            let other: u64 = values.iter().skip(limit).map(|v| v.1).sum();
+            let buckets: Vec<_> = values
             .into_iter()
             .take(limit)
             .map(|(key, count)| match key {
@@ -558,7 +606,9 @@ fn search_response(records: &[Value], params: &Value, scenario: &Scenario) -> Va
                 _ => json!({"key":key,"doc_count":count}),
             })
             .collect();
-        raw["aggregations"] = json!({"values":{"buckets":buckets,"sum_other_doc_count":other,"doc_count_error_upper_bound":0},"missing_values":{"doc_count":missing}});
+            result.insert(aggregation.clone(), json!({"buckets":buckets,"sum_other_doc_count":other,"doc_count_error_upper_bound":0}));
+        }
+        raw["aggregations"] = Value::Object(result);
     } else {
         let sort = params["sort"].as_array().unwrap();
         rows.sort_by(|a, b| sort_cmp(&a["sort"], &b["sort"], sort));
