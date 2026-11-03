@@ -23,6 +23,7 @@ struct Binding {
     owner: String,
     reader: String,
     vault: String,
+    remote: bool,
     root: PathBuf,
     root_identity: (u64, u64),
     device: String,
@@ -95,6 +96,13 @@ struct Local {
     entries: Vec<Entry>,
     tree: Tree,
     root: Arc<File>,
+}
+impl Local {
+    fn matches(&self, fresh: &Tree, content: bool) -> bool {
+        fresh.stamps == self.tree.stamps
+            && fresh.policy == self.header.binding.policy
+            && (!content || fresh.files == self.tree.files)
+    }
 }
 pub(super) struct Stored {
     local: Local,
@@ -208,6 +216,7 @@ impl Controller {
             &owner,
             &reader,
             "local-inspection",
+            false,
             &canonical,
             &root,
             &daemon,
@@ -227,6 +236,7 @@ impl Controller {
                 && header.binding.owner == reader
                 && header.binding.reader == owner
                 && header.binding.vault == vault
+                && header.binding.remote
                 && !header.id.is_nil()
                 && header.files > 0
                 && header.files <= MAX_FILES
@@ -252,7 +262,7 @@ impl Controller {
             files.insert(entry.path.clone(), bytes);
         }
         self.validate_remote(peer, &header)?;
-        self.validate_local(&here, &daemon)?;
+        self.validate_local(&here, &daemon, true)?;
         let plan = merge_preview::Plan::preview(
             snapshot(&here)?,
             merge_preview::Snapshot {
@@ -273,7 +283,7 @@ impl Controller {
     pub fn validate_remote_preview(&self, preview: &Preview) -> Result<()> {
         let configs = self.configuration_paths()?;
         ensure!(configs.len() == 1, "selected runtime changed");
-        self.validate_local(&preview.local, &managed(&configs[0])?)?;
+        self.validate_local(&preview.local, &managed(&configs[0])?, true)?;
         self.validate_remote(preview.peer, &preview.remote)
     }
     /// Retrieve one exact file from a still-current preview. Binary content is
@@ -338,7 +348,12 @@ impl Controller {
         );
         Ok(())
     }
-    fn validate_local(&self, local: &Local, daemon: &daemon::DaemonIdentity) -> Result<()> {
+    fn validate_local(
+        &self,
+        local: &Local,
+        daemon: &daemon::DaemonIdentity,
+        content: bool,
+    ) -> Result<()> {
         self.check()?;
         let b = &local.header.binding;
         let current = self.inspection_binding(
@@ -346,14 +361,15 @@ impl Controller {
             &b.owner,
             &b.reader,
             &b.vault,
+            b.remote,
             &b.root,
             &local.root,
             daemon,
         )?;
         ensure!(current == *b, "inspection binding changed");
-        let fresh = Tree::collect(&local.root, &b.root, false)?;
+        let fresh = Tree::collect(&local.root, &b.root, content)?;
         ensure!(
-            fresh.stamps == local.tree.stamps && fresh.policy == b.policy,
+            local.matches(&fresh, content),
             "inventory changed; refresh preview"
         );
         Ok(())
@@ -364,6 +380,7 @@ impl Controller {
         owner: &str,
         reader: &str,
         vault: &str,
+        remote: bool,
         path: &Path,
         root: &File,
         daemon: &daemon::DaemonIdentity,
@@ -385,7 +402,7 @@ impl Controller {
             "inspection requires the pinned managed runtime"
         );
         let config = digest(&api.config()?)?;
-        if vault != "local-inspection" {
+        if remote {
             let ignores = api.ignores(vault)?;
             let lines = ignores["ignore"]
                 .as_array()
@@ -410,6 +427,7 @@ impl Controller {
             owner: owner.into(),
             reader: reader.into(),
             vault: vault.into(),
+            remote,
             root: path.into(),
             root_identity: tree::identity(root)?,
             device: daemon.device_id.clone(),
@@ -465,12 +483,13 @@ impl Controller {
                 &owner,
                 &reader,
                 &vault,
+                true,
                 &source.path,
                 &root,
                 &source.daemon,
             )?;
             let collected = local(binding, root)?;
-            self.validate_local(&collected, &source.daemon)?;
+            self.validate_local(&collected, &source.daemon, true)?;
             let header = collected.header.clone();
             *stored = Some(Stored {
                 local: collected,
@@ -504,7 +523,11 @@ impl Controller {
             existing::same_binding(fresh, &current.source),
             "authorized replica changed"
         );
-        self.validate_local(&current.local, &current.source.daemon)?;
+        // Chunks are immutable original bytes. Full byte revalidation brackets
+        // the public preview/content operations, so even coarse timestamp
+        // filesystems cannot turn an undetected same-size edit into success.
+        let content = matches!(request, Request::Validate { .. });
+        self.validate_local(&current.local, &current.source.daemon, content)?;
         let entries = &current.local.entries;
         let response = match request {
             Request::Page { header, offset } => {
@@ -544,7 +567,11 @@ impl Controller {
         };
         // The returned bytes are the immutable inventory bytes; metadata before
         // and after collection rejects changes rather than mixing generations.
-        self.validate_local(&current.local, &current.source.daemon)?;
+        self.validate_local(&current.local, &current.source.daemon, content)?;
+        ensure!(
+            current.expires > Instant::now(),
+            "inventory expired during collection"
+        );
         Ok(response)
     }
 }

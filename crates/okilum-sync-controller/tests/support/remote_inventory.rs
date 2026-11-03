@@ -203,6 +203,25 @@ fn managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes()
         .second
         .preview_remote_vault(pair.peer, &id, &pair.target.vault)?;
     pair.second.validate_remote_preview(&fresh)?;
+    pair.source.stop()?;
+    pair.source.start()?;
+    assert!(
+        pair.second.validate_remote_preview(&fresh).is_err(),
+        "remote runtime restart retained an old revision"
+    );
+    let fresh = pair
+        .second
+        .preview_remote_vault(pair.peer, &id, &pair.target.vault)?;
+    pair.target.stop()?;
+    pair.target.start()?;
+    assert!(
+        pair.second.validate_remote_preview(&fresh).is_err(),
+        "local runtime restart retained an old revision"
+    );
+    let fresh = pair
+        .second
+        .preview_remote_vault(pair.peer, &id, &pair.target.vault)?;
+    pair.second.validate_remote_preview(&fresh)?;
     pair.first.shutdown();
     pair.second.shutdown();
     pair.source.stop()?;

@@ -52,6 +52,12 @@ runtime binding before and after constructing the response. Cached immutable
 bytes ensure different generations cannot be assembled into a successful read.
 Reading atime is not part of the revision.
 
+Full byte revalidation also brackets public preview/content operations and
+explicit validation. Metadata is a fast per-chunk change detector, not the sole
+freshness proof: even a same-size edit on a coarse timestamp filesystem must
+fail the final complete byte comparison. Unit tests model that metadata
+collision explicitly.
+
 The supported ignore policy is the canonical policy from `direct/source.rs`,
 plus root Syncthing metadata. An unenrolled destination without `.stignore`
 uses those same canonical rules without writing the file. Custom patterns,
@@ -89,7 +95,8 @@ The acceptance test uses two disposable prepared, checksum-pinned Syncthing
 2.1.6 runtimes and non-empty roots. It checks the exact four Plan categories and
 all paths, a 300,007-byte binary across frame bounds, edits on either side,
 replaced snapshot capabilities, unsafe paths, unapproved peer/vault, symlinks,
-ignore changes and a successful authorized read as positive control. It hashes
+ignore changes, runtime restarts on either side and a successful authorized read
+as positive control. It hashes
 all canonical/adjacent files and compares both runtime configurations, on-disk
 configuration bytes and both pairing databases before/after inspection. It also
 checks no destination folder or source share grant appeared and direct

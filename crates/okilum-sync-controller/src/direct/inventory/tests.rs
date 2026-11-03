@@ -13,6 +13,7 @@ fn header(files: usize, bytes: usize) -> Header {
             owner: "owner".into(),
             reader: "reader".into(),
             vault: "vault".into(),
+            remote: true,
             root: "/fixture".into(),
             root_identity: (1, 2),
             device: "device".into(),
@@ -282,5 +283,26 @@ fn unapproved_peers_and_vaults_fail_before_any_filesystem_access() -> Result<()>
             }
         )
         .is_err());
+    Ok(())
+}
+
+#[test]
+fn full_validation_detects_changed_bytes_even_if_metadata_revision_collides() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = Arc::new(tree::open_root(temp.path())?);
+    fs::write(temp.path().join("note.md"), b"positive control")?;
+    let mut binding = header(1, 16).binding;
+    binding.root = temp.path().to_owned();
+    binding.policy = tree::policy(&root)?;
+    let mut original = local(binding, root.clone())?;
+    let good = Tree::collect(&root, temp.path(), true)?;
+    assert!(original.matches(&good, true));
+    fs::write(temp.path().join("note.md"), b"negative control")?;
+    let changed = Tree::collect(&root, temp.path(), true)?;
+    // Model coarse timestamps explicitly rather than depending on host clock
+    // granularity: metadata alone reports the same revision, bytes do not.
+    original.tree.stamps = changed.stamps.clone();
+    assert!(original.matches(&changed, false));
+    assert!(!original.matches(&changed, true));
     Ok(())
 }
