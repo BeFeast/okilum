@@ -1,6 +1,7 @@
 //! End-to-end regression checks use only the pre-existing Reader API, so the
 //! same tests can be compiled against main as a negative control.
 use super::*;
+use ::core::prelude::v1::test;
 
 struct Fixture<'a> {
     reader: Entity<Reader>,
