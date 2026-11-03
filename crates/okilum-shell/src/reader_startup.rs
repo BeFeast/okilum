@@ -715,7 +715,21 @@ mod tests {
                 cx,
             );
         });
-        cx.run_until_parked();
+        // Restoration waits between publications on the foreground timer.
+        for _ in 0..60 {
+            cx.run_until_parked();
+            if cx.update(|cx| {
+                let readers = reader_open::readers(cx);
+                readers.len() == 2
+                    && readers
+                        .iter()
+                        .all(|reader| reader.read(cx).document_ready())
+            }) {
+                break;
+            }
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+        }
         cx.update(|cx| {
             let readers = reader_open::readers(cx);
             assert_eq!(readers.len(), 2);

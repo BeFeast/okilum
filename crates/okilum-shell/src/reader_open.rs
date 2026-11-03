@@ -3490,7 +3490,14 @@ mod entry_tests {
         let source = cx.update(|cx| reader_of(&root, cx).unwrap().upgrade().unwrap());
         let weak_source = source.downgrade();
         cx.update(|cx| duplicate_window(weak_source, Some("note.md".into()), cx).detach());
-        cx.run_until_parked();
+        for _ in 0..60 {
+            cx.run_until_parked();
+            if cx.update(|cx| readers(cx).len() == 2) {
+                break;
+            }
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+        }
         let (other, session, searcher) = cx.update(|cx| {
             let all = readers(cx);
             assert_eq!(all.len(), 2, "positive control: a real duplicate window");
