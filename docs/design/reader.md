@@ -346,7 +346,8 @@ The tree header supplies the badge for its root (vault or project scope).
 Clicking opens that file in Notes without activating the folder. The badge
 remains available with Show hidden files off. This uses the existing single
 View → Show hidden files preference, which also reveals `.claude`, `.agents`
-and `.codex` with their contents. Service-directory exclusions remain in force.
+and `.codex` with their contents. Agent dot-folders also stay hidden inside a
+configured templates branch. Service-directory exclusions remain in force.
 
 The existing exact-name visibility rule is a superset of shim hiding: real
 `CLAUDE.md` / `GEMINI.md` rules retain that existing hidden-by-default behavior.
