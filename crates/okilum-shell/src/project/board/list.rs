@@ -323,6 +323,7 @@ impl Board {
                     .child(
                         div()
                             .text_size(px(15.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Задачи"),
                     )
@@ -359,7 +360,13 @@ impl Board {
             root = root.child(div().px_4().child(notes));
         }
         if let Some(notice) = &self.notice {
-            root = root.child(div().px_4().text_size(px(12.)).child(notice.clone()));
+            root = root.child(
+                div()
+                    .px_4()
+                    .text_size(px(12.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
+                    .child(notice.clone()),
+            );
         }
         if prepared.counts.iter().all(|count| *count == 0) && prepared.sources_ready {
             root = root.child(
@@ -368,6 +375,7 @@ impl Board {
                     .px_4()
                     .py_2()
                     .text_size(px(12.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                     .text_color(p.text_muted)
                     .child(if self.filter.is_some() {
                         "No cards for this executor."
@@ -444,6 +452,7 @@ impl Board {
                 .flex_none()
                 .px_4()
                 .text_size(px(12.))
+                .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                 .text_color(p.text_muted)
                 .truncate()
                 .child(problem_line(problem.into_iter().collect()).unwrap_or_default()),
@@ -503,6 +512,7 @@ impl Board {
                             .w_full()
                             .gap(px(9.))
                             .text_size(px(13.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .child(appearance::icon(
                                 if collapsed {
                                     "chevron-right"
@@ -512,7 +522,14 @@ impl Board {
                                 p.text_muted,
                             ))
                             .child(appearance::icon(icon, tone))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(label(stage)))
+                            .child(
+                                div()
+                                    .debug_selector(move || {
+                                        format!("board-list-group-label-{stage:?}")
+                                    })
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(label(stage)),
+                            )
                             .child(div().text_color(p.text_muted).child(count.to_string())),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -555,6 +572,7 @@ impl Board {
                             .min_w_0()
                             .gap_2()
                             .text_size(px(13.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .child(row_bits::type_tag(None, cx))
                             .child(
                                 div()
@@ -566,6 +584,7 @@ impl Board {
                             .child(
                                 div()
                                     .text_size(px(12.))
+                                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                                     .text_color(p.text_muted)
                                     .child("Local"),
                             ),
@@ -589,6 +608,7 @@ impl Board {
                     .flex()
                     .items_center()
                     .text_size(px(12.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                     .text_color(p.warning)
                     .truncate()
                     .child(format!(
@@ -621,10 +641,12 @@ impl Board {
             .min_w_0()
             .gap(px(10.))
             .text_size(px(13.))
+            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
             .child(
                 div()
                     .flex_none()
                     .text_size(px(12.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                     .text_color(p.text_muted)
                     .child(format!("#{number}")),
             )
@@ -677,6 +699,7 @@ impl Board {
                 .max_w(px(230.))
                 .truncate()
                 .text_size(px(12.))
+                .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                 .text_color(if mapping.is_some() {
                     p.warning
                 } else {
@@ -760,6 +783,7 @@ impl Board {
                 .w(px(if stale { 108. } else { 52. }))
                 .flex_none()
                 .text_size(px(12.))
+                .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                 .text_color(if stale { p.warning } else { p.text_muted })
                 .child(if stale {
                     format!("{time} ⚠ долго")
