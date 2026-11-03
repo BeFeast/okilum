@@ -303,10 +303,15 @@ mod tests {
         };
         let mut note = String::from("# Large note\n\n");
         let mut i = 0;
-        while note.len() < 1 << 20 {
+        // Leave 64 bytes for the edit/Enter/IME sequence under Live's 1 MiB
+        // admission limit. The fixture stays projected throughout the edits.
+        let bytes = (1 << 20) - 64;
+        while note.len() + section(i).len() <= bytes {
             note.push_str(&section(i));
             i += 1;
         }
+        note.push_str(&"z".repeat(bytes - note.len()));
+        assert_eq!(note.len(), bytes);
         note
     }
 
@@ -372,11 +377,11 @@ mod tests {
         );
     }
 
-    // The 1 MiB fixture currently exceeds the shared classifier budget. It
-    // proves geometry in Source/raw fallback, not full Live acceptance (#1643).
+    /// Real Reader + native projected layout acceptance (#1643). Every immediate
+    /// edit and settled publication is measured in Source and Live Preview.
     #[gpui::test]
     fn typewriter_keeps_the_caret_line_centred_in_a_1_mib_note(cx: &mut TestAppContext) {
-        writing_geometry(cx, large_note(), false);
+        writing_geometry(cx, large_note(), true);
     }
 
     #[gpui::test]
@@ -467,11 +472,48 @@ mod tests {
                 "live={live}: every edit undone without source mutation"
             );
 
+            // IME uses the marked range's end as the caret and keeps exact Undo.
+            reader.update_in(visual, |_, window, cx| {
+                input.update(cx, |i, cx| {
+                    let at = i.text().byte_to_utf16_idx(i.cursor());
+                    i.replace_and_mark_text_in_range(Some(at..at), "中", Some(1..1), window, cx);
+                    assert!(i.marked_text_range(window, cx).is_some());
+                });
+            });
+            assert_centred(&input, visual, "IME marked caret");
+            reader.update_in(visual, |_, window, cx| {
+                input.update(cx, |i, cx| i.unmark_text(window, cx));
+            });
+            visual.run_until_parked();
+            assert_centred(&input, visual, "IME committed");
+            visual.dispatch_action(gpui_component::input::Undo);
+            visual.run_until_parked();
+            assert_centred(&input, visual, "IME Undo");
+            assert_eq!(input.read_with(visual, |i, _| i.value().to_string()), note);
+
             // Rewrapping changes the caret's visual row without a selection
             // change. Typewriter must use the newly published row metrics.
             visual.simulate_resize(size(px(720.), px(640.)));
             visual.run_until_parked();
             assert_centred(&input, visual, "rewrapped without moving the caret");
+
+            // Focus must follow the canonical block after a distant caret move,
+            // rather than treating projected display rows as source rows.
+            for needle in ["- deeper", "fn g", "A paragraph"] {
+                let at = note[middle..].find(needle).unwrap() + middle;
+                input.update(visual, |i, cx| i.set_selected_range(at..at, cx));
+                visual.run_until_parked();
+                assert_centred(&input, visual, needle);
+                input.read_with(visual, |i, _| {
+                    let expected = focus_lines(i.text(), i.cursor());
+                    assert_eq!(i.focus_lines(), expected);
+                    assert!(
+                        !expected.is_empty()
+                            && expected.iter().map(|r| r.len()).sum::<usize>() < 10
+                    );
+                    assert!(i.focus_wash().is_some());
+                });
+            }
 
             // End-of-note typing and Undo must retain geometry too.
             input.update(visual, |input, cx| {
@@ -521,6 +563,30 @@ mod tests {
             assert!(
                 scrolled.is_none_or(|off| off.abs() > 2.),
                 "live={live}: the wheel scrolled, caret {scrolled:?} rows off"
+            );
+            // Idle frames, projection publications and a rewrap must not steal
+            // the viewport back from a user who has scrolled away.
+            if live {
+                let provider = reader.read_with(visual, |r, _| {
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .live_preview
+                        .accepted
+                        .clone()
+                        .unwrap()
+                });
+                input.update(visual, |i, cx| {
+                    i.set_projection_provider(Some(provider), cx)
+                });
+                visual.run_until_parked();
+            }
+            visual.simulate_resize(size(px(760.), px(620.)));
+            visual.run_until_parked();
+            let paused = off_centre(&input, visual);
+            assert!(
+                paused.is_none_or(|off| off.abs() > 2.),
+                "manual scroll survives publication/rewrap: {paused:?}"
             );
             visual.update(|window, cx| {
                 window.dispatch_keystroke(gpui::Keystroke::parse("v").unwrap(), cx);

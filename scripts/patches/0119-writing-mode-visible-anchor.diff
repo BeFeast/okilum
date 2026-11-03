@@ -1,23 +1,78 @@
 diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
-@@ -2026,6 +2026,10 @@
+@@ -2022,10 +2022,19 @@
+             .map(|last| (last.source_stamp, last.presentation_epoch));
+         let frame_edit = painted.is_none_or(|(stamp, _)| stamp != initial.source_stamp());
+         let new_frame = painted != Some((initial.source_stamp(), initial.presentation_epoch()));
++        let viewport_changed = initial.input_bounds.size.height != bounds.size.height;
+         let mut anchor_kind = if initial.zoom_anchor.is_some() { "zoom" } else { "none" };
          // Read the old shaped geometry before installing a new projection. The
          // anchor is canonical source, not a display-row index that rewrap moves.
++        // A wheel/scrollbar offset belongs to the user until the next edit or
++        // caret move. Projection publication and resize must respect that pause.
++        let manually_scrolled = initial.typewriter_paused
++            || initial.typewriter_last_scroll.is_some_and(|last| last != scroll_before.y)
++            || initial.deferred_scroll_offset.is_some_and(|offset| offset != scroll_before);
          let source_anchor = initial.zoom_anchor.or_else(|| {
-+            // Typewriter chooses its anchor from this frame's row metrics below.
-+            // Do not scan/copy the old and current source for an anchor that it
-+            // immediately replaces; leave zoom and held-selection handling intact.
-+            if initial.typewriter && !initial.selecting { return None; }
++            // Centring uses this frame's row metrics; avoid scanning/copying a
++            // source anchor that it would immediately replace.
++            if initial.typewriter && !initial.selecting && !manually_scrolled { return None; }
              if !initial.projection.enabled || initial.selecting || initial.deferred_scroll_offset.is_some_and(|offset| offset != initial.scroll_handle.offset())
-                 || initial.text.len() > 256 * 1024 { return None; }
+                 || initial.text.len() > crate::input::projection::MAX_SOURCE_BYTES { return None; }
              let last = initial.last_layout.as_ref().or(initial.projection_anchor_layout.as_ref())?;
-@@ -2280,7 +2284,7 @@
+@@ -2280,7 +2289,13 @@
              // offset found later in caret-follow showed the old lines for a
              // frame. Its cost is the caret's row lookup, whatever the length.
              let caret_moved = state.last_selected_range != Some(state.selected_range);
 -            if state.typewriter && count > 0 && !state.selecting && (frame_edit || caret_moved) {
-+            if state.typewriter && count > 0 && !state.selecting && (frame_edit || caret_moved || new_frame || changed) {
++            if frame_edit || caret_moved {
++                state.typewriter_paused = false;
++            } else if manually_scrolled {
++                state.typewriter_paused = true;
++            }
++            if state.typewriter && count > 0 && !state.selecting && !state.typewriter_paused
++                && (frame_edit || caret_moved || new_frame || changed || viewport_changed) {
                  let row = state.display_map
                      .offset_to_wrap_display_point_with_affinity(caret, state.cursor_line_end_affinity)
                      .row;
+@@ -3110,6 +3125,7 @@
+             state.scroll_size = prepaint.scroll_size;
+             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
+             state.deferred_scroll_offset = None;
++            state.typewriter_last_scroll = Some(state.scroll_handle.offset().y);
+             state.resolve_pending_vertical(cx);
+             if let Some((event, released)) = state.projection_pending_click.take() {
+                 state.on_mouse_down(&event, window, cx);
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -545,6 +545,10 @@
+     /// Typewriter mode: every caret move or edit scrolls the caret row to the
+     /// middle of the viewport (#1643).
+     pub(super) typewriter: bool,
++    /// Manual scroll suspends typewriter until the caret or source changes.
++    pub(super) typewriter_paused: bool,
++    /// Last painted offset, to detect wheel and scrollbar movement alike.
++    pub(super) typewriter_last_scroll: Option<Pixels>,
+     /// Focus mode: the lines it keeps bright, the rest washed (#1643).
+     pub(super) focus_mode: Option<FocusMode>,
+     /// The buffer lines focus mode kept bright in the last prepaint.
+@@ -965,6 +969,8 @@
+             deferred_scroll_offset: None,
+             pending_top_line: None,
+             typewriter: false,
++            typewriter_paused: false,
++            typewriter_last_scroll: None,
+             focus_mode: None,
+             focus_lines: Vec::new(),
+             preferred_column: None,
+@@ -3484,6 +3490,8 @@
+             return;
+         }
+         self.typewriter = on;
++        self.typewriter_paused = false;
++        self.typewriter_last_scroll = None;
+         // Centre at once instead of on the next key.
+         self.last_selected_range = None;
+         cx.notify();
