@@ -328,6 +328,14 @@ impl Panel {
         self.submit_query(source, false, false, requested_generation, window, cx);
     }
     fn replace_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_key_with_storage(false, window, cx);
+    }
+    fn replace_key_with_storage(
+        &mut self,
+        save: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.auth_error || self.busy || self.credential_pending {
             return;
         }
@@ -345,6 +353,7 @@ impl Panel {
             cx.notify();
             return;
         }
+        self.credentials.retry_save = save;
         self.stop();
         self.submit_query(source, true, false, self.generation, window, cx);
     }
@@ -389,6 +398,8 @@ impl Panel {
         self.credentials.select(credential.clone());
         self.credentials.replacement = replacement;
         self.credentials.failure = None;
+        // The explicit save choice belongs to this attempt, including invalid input.
+        let retry_save = std::mem::take(&mut self.credentials.retry_save);
         let input = self.key.read(cx).value();
         if !input.is_empty() {
             match ApiKey::new(input.as_bytes().to_vec()) {
@@ -407,8 +418,7 @@ impl Panel {
                 .placeholder("Encoded API key")
                 .masked(true)
         });
-        let session_only = self.credentials.session_only && !self.credentials.retry_save;
-        self.credentials.retry_save = false;
+        let session_only = self.credentials.session_only && !retry_save;
         let memory_key = self.credentials.key.clone();
         let store = if session_only {
             None
@@ -770,8 +780,12 @@ impl Panel {
             Status::AuthError(error) => {
                 self.auth_error = true;
                 self.guided.connection = "Auth failed → Replace key".into();
-                self.error = Some(error.to_string());
-                self.message = "Enter a replacement API key, then Replace API key to re-run the same query. Loaded rows and settings are retained.".into();
+                self.error = Some(if self.credentials.session_only {
+                    "Kibana rejected the key used for this session. Enter a new key".into()
+                } else {
+                    error.to_string()
+                });
+                self.message = "Enter a new API key and choose how to use it to re-run the same query. Loaded rows and settings are retained.".into();
             }
             Status::IndexPatternRequired => {
                 self.error = Some(remote_log::result::IndexPatternRequired.to_string());
@@ -957,12 +971,28 @@ impl Panel {
                             Button::new("remote-replace-key")
                                 .debug_selector(|| "remote-replace-key".into())
                                 .small()
-                                .label("Replace API key")
+                                .label(if self.credentials.session_only {
+                                    "Replace key (session only)"
+                                } else {
+                                    "Replace API key"
+                                })
                                 .disabled(self.busy || self.credential_pending)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.replace_key(window, cx)),
                                 ),
                         )
+                        .when(self.credentials.session_only, |row| {
+                            row.child(
+                                Button::new("remote-replace-save-key")
+                                    .debug_selector(|| "remote-replace-save-key".into())
+                                    .small()
+                                    .label("Save to keychain")
+                                    .disabled(self.busy || self.credential_pending)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.replace_key_with_storage(true, window, cx)
+                                    })),
+                            )
+                        })
                     }),
             );
         }
@@ -1254,7 +1284,35 @@ impl Render for Panel {
             .child(TitleBar::new().child("Kibana logs"))
             .child(header);
         body = if let Some(view) = &self.view {
-            body.child(div().flex_1().min_h_0().child(view.clone()))
+            body.child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(view.clone())
+                    .when(self.guided.open_scope.is_some(), |body| {
+                        body.child(gpui::deferred(
+                            div()
+                                .id("remote-scope-overlay-scroll")
+                                .debug_selector(|| "remote-scope-overlay".into())
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .w(px(480.))
+                                .max_w_full()
+                                .max_h_full()
+                                .overflow_y_scroll()
+                                .p_3()
+                                .bg(cx.theme().popover)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded_md()
+                                .shadow_md()
+                                .occlude()
+                                .child(self.render_scope_values(cx)),
+                        ))
+                    }),
+            )
         } else {
             body.child(div().flex_1().p_4().child("No history loaded. Events stay in memory until this window closes. Keys use OS storage unless you explicitly choose this session only."))
         };
@@ -1465,3 +1523,7 @@ mod guided_tests;
 #[cfg(test)]
 #[path = "reader_log_remote/session_key_tests.rs"]
 mod session_key_tests;
+
+#[cfg(test)]
+#[path = "reader_log_remote/polish_tests.rs"]
+mod polish_tests;

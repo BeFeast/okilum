@@ -134,6 +134,10 @@ impl Render for ValuePicker {
             .child(
                 div()
                     .debug_selector(|| "log-count-scope".into())
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
+                    .whitespace_normal()
                     .text_sm()
                     .child(match &self.counts {
                         None => "Counting values…".into(),
@@ -512,6 +516,8 @@ impl LogView {
                     .debug_selector(move || selector.clone())
                     .ghost()
                     .xsmall()
+                    .max_w_full()
+                    .truncate()
                     .label(label)
                     .tooltip("Filter column values"),
             )

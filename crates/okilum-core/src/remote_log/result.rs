@@ -246,7 +246,7 @@ impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Kibana authentication or permission denied (HTTP {}); replace the OS-stored API key",
+            "Kibana authentication or permission denied (HTTP {}); enter a new API key",
             self.status
         )
     }

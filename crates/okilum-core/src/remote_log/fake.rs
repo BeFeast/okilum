@@ -165,6 +165,9 @@ pub fn investigation_record(id: usize) -> Value {
 }
 
 fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()> {
+    // Accepted sockets inherit the listener's nonblocking flag on macOS. A
+    // buffered read must wait for later TCP segments, including a delayed body.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut first = String::new();
@@ -180,15 +183,7 @@ fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<(
             headers.insert(key.to_ascii_lowercase(), value.trim().to_owned());
         }
     }
-    let size = headers
-        .get("content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
-    if size > 1024 * 1024 {
-        return Ok(());
-    }
-    let mut bytes = vec![0; size];
-    reader.read_exact(&mut bytes)?;
+    let bytes = read_body(&mut reader, &headers)?;
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let mut request = first.split_whitespace();
     let method = request.next().unwrap_or("");
@@ -347,6 +342,65 @@ fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<(
     let bytes = serde_json::to_vec(&response).unwrap();
     write!(stream, "HTTP/1.1 {status} Response\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", bytes.len())?;
     stream.write_all(&bytes)
+}
+
+fn read_body(
+    reader: &mut impl BufRead,
+    headers: &BTreeMap<String, String>,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind};
+    const LIMIT: usize = 1024 * 1024;
+    let invalid = || Error::new(ErrorKind::InvalidData, "Invalid or oversized request body");
+    if let Some(encoding) = headers.get("transfer-encoding") {
+        if !encoding.eq_ignore_ascii_case("chunked") || headers.contains_key("content-length") {
+            return Err(invalid());
+        }
+        let mut body = Vec::new();
+        loop {
+            let mut line = String::new();
+            (&mut *reader).take(8192).read_line(&mut line)?;
+            if !line.ends_with("\r\n") {
+                return Err(invalid());
+            }
+            let size = usize::from_str_radix(line.trim().split(';').next().unwrap(), 16)
+                .map_err(|_| invalid())?;
+            if size > LIMIT - body.len() {
+                return Err(invalid());
+            }
+            if size == 0 {
+                // Consume bounded trailers, including the terminating empty line.
+                let mut remaining = 8192;
+                loop {
+                    line.clear();
+                    let n = (&mut *reader).take(remaining as u64).read_line(&mut line)?;
+                    if !line.ends_with("\r\n") {
+                        return Err(invalid());
+                    }
+                    remaining -= n;
+                    if line == "\r\n" {
+                        return Ok(body);
+                    }
+                }
+            }
+            let start = body.len();
+            body.resize(start + size, 0);
+            reader.read_exact(&mut body[start..])?;
+            let mut end = [0; 2];
+            reader.read_exact(&mut end)?;
+            if end != *b"\r\n" {
+                return Err(invalid());
+            }
+        }
+    }
+    let size = headers
+        .get("content-length")
+        .map_or(Ok(0), |v| v.parse::<usize>().map_err(|_| invalid()))?;
+    if size > LIMIT {
+        return Err(invalid());
+    }
+    let mut body = vec![0; size];
+    reader.read_exact(&mut body)?;
+    Ok(body)
 }
 fn field<'a>(source: &'a Value, path: &str) -> Option<&'a Value> {
     if let Some(value) = source.get(path) {
@@ -625,3 +679,7 @@ fn search_response(records: &[Value], params: &Value, scenario: &Scenario) -> Va
         json!({"isRunning":false,"isPartial":scenario.partial,"rawResponse":raw})
     }
 }
+
+#[cfg(test)]
+#[path = "fake_tests.rs"]
+mod tests;

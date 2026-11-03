@@ -468,9 +468,6 @@ impl Panel {
             controls = controls.child(self.render_custom_range(cx));
         }
         controls = controls.child(self.render_scope_controls(cx));
-        if self.guided.open_scope.is_some() {
-            controls = controls.child(self.render_scope_values(cx));
-        }
         controls.into_any_element()
     }
     fn render_environments(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -759,8 +756,8 @@ impl Panel {
         }
         controls.into_any_element()
     }
-    fn render_scope_values(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut controls = v_flex().gap_2();
+    pub(super) fn render_scope_values(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut controls = v_flex().w_full().min_w_0().whitespace_normal().gap_2();
         if let Some(field) = &self.guided.open_scope {
             let mut picker = v_flex().gap_2().child(
                 h_flex()
@@ -768,10 +765,13 @@ impl Panel {
                     .child(
                         div()
                             .text_sm()
+                            .flex_1()
+                            .min_w_0()
                             .child(format!("{field} · Kibana counts for the applied window")),
                     )
                     .child(
                         Button::new("remote-scope-close")
+                            .debug_selector(|| "remote-scope-close".into())
                             .small()
                             .ghost()
                             .label("Close")

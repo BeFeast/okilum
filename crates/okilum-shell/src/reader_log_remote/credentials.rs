@@ -111,7 +111,8 @@ impl Panel {
     }
     pub(super) fn render_credential_recovery(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut section = v_flex().gap_2();
-        if self.credentials.failure.is_some() || self.credentials.session_only {
+        if (self.credentials.failure.is_some() || self.credentials.session_only) && !self.auth_error
+        {
             let mut actions = h_flex().gap_2().flex_wrap();
             if self.credentials.failure.is_some() && self.credentials.key.is_some() {
                 actions = actions.child(

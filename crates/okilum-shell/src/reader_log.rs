@@ -4904,13 +4904,15 @@ impl Render for LogView {
                                 .flex_none()
                                 .w(px(self.width_of(key, cx)))
                                 .gap_1()
-                                .child(div().min_w_0().truncate().child(self.filter_popover(
-                                    format!("log-header-filter-{at}").into(),
-                                    key.clone(),
-                                    FieldRef::Key(key.clone()),
-                                    None,
-                                    cx,
-                                )))
+                                .child(div().min_w_0().overflow_hidden().child(
+                                    self.filter_popover(
+                                        format!("log-header-filter-{at}").into(),
+                                        key.clone(),
+                                        FieldRef::Key(key.clone()),
+                                        None,
+                                        cx,
+                                    ),
+                                ))
                                 .child(
                                     Button::new(("log-remove-column", at))
                                         .ghost()

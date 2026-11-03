@@ -273,6 +273,47 @@ async fn refused_store_session_only_rows_auth_replacement_and_retry_save(cx: &mu
         panel.data.as_ref().unwrap(),
         &data
     )));
+    panel.read_with(visual, |panel, _| {
+        assert_eq!(
+            panel.error.as_deref(),
+            Some("Kibana rejected the key used for this session. Enter a new key")
+        );
+        assert!(panel.credentials.session_only);
+    });
+    guided_frame(visual);
+    assert!(visual.debug_bounds("remote-replace-key").is_some());
+    assert!(visual.debug_bounds("remote-replace-save-key").is_some());
+    panel.update_in(visual, |panel, window, cx| {
+        panel
+            .key
+            .update(cx, |input, cx| input.set_value("invalid key", window, cx));
+    });
+    guided_click(visual, "remote-replace-save-key");
+    panel.read_with(visual, |panel, _| {
+        assert!(panel.error.as_ref().unwrap().contains("without whitespace"));
+        assert!(!panel.credentials.retry_save && panel.credentials.session_only);
+    });
+    server.state.lock().unwrap().scenario.failure_status = None;
+    panel.update_in(visual, |panel, window, cx| {
+        panel
+            .key
+            .update(cx, |input, cx| input.set_value("", window, cx));
+    });
+    guided_click(visual, "remote-refresh");
+    visual
+        .condition(&panel, |panel, _| !panel.busy && !panel.auth_error)
+        .await;
+    assert_eq!(
+        store.lock().unwrap().writes,
+        1,
+        "invalid Save input must not make Refresh save the session key"
+    );
+    assert!(panel.read_with(visual, |panel, _| panel.credentials.session_only));
+    server.state.lock().unwrap().scenario.failure_status = Some(401);
+    guided_click(visual, "remote-refresh");
+    visual
+        .condition(&panel, |panel, _| !panel.busy && panel.auth_error)
+        .await;
     server.state.lock().unwrap().scenario.failure_status = None;
     panel.update_in(visual, |panel, window, cx| {
         panel
@@ -335,6 +376,36 @@ async fn refused_store_session_only_rows_auth_replacement_and_retry_save(cx: &mu
         assert!(panel.credentials.key.is_none());
     });
     assert_eq!(store.lock().unwrap().writes, 2);
+    // A session-only replacement can also explicitly switch to OS storage.
+    panel.update(visual, |panel, _| {
+        panel.credentials.session_only = true;
+        panel.credentials.key = Some(ApiKey::new(b"test-secret".to_vec()).unwrap());
+    });
+    server.state.lock().unwrap().scenario.failure_status = Some(401);
+    guided_click(visual, "remote-refresh");
+    visual
+        .condition(&panel, |panel, _| !panel.busy && panel.auth_error)
+        .await;
+    server.state.lock().unwrap().scenario.failure_status = None;
+    panel.update_in(visual, |panel, window, cx| {
+        panel
+            .key
+            .update(cx, |input, cx| input.set_value("test-secret", window, cx));
+    });
+    guided_click(visual, "remote-replace-save-key");
+    visual
+        .condition(&panel, |panel, _| {
+            !panel.busy
+                && !panel.auth_error
+                && !panel.credentials.session_only
+                && panel.credentials.key.is_none()
+        })
+        .await;
+    assert_eq!(
+        store.lock().unwrap().writes,
+        3,
+        "Save to keychain explicitly writes the replacement"
+    );
     assert_no_secret_files(&state);
     cx.quit();
 }
