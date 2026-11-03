@@ -9,6 +9,7 @@ suite() {
     printf '\nLinux suite: %s\n' "$*"
     "$@" || failed=1
 }
+suite bash scripts/ci/local-writer-admission.sh
 suite cargo test -p okilum-appimage --all-features --no-fail-fast
 suite cargo test --locked -p okilum-http --features updates --no-fail-fast
 # Keep an explicit non-empty Settings dismissal verdict ahead of the full shell.

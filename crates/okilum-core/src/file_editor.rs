@@ -2871,3 +2871,94 @@ mod issue2404_crash_revert_control {
         assert_eq!(fs::read(&path).unwrap(), BASE.as_bytes());
     }
 }
+
+#[cfg(all(test, unix))]
+mod local_writer_admission_tests {
+    use super::*;
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    #[test]
+    fn local_writer_admission_actual_save_reaches_exchange_before_drain_can_finish() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("note.md"), b"original").unwrap();
+        let a = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let ready = t.path().join("save-ready");
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "file_editor::local_writer_admission_tests::admitted_save_process",
+                "--nocapture",
+            ])
+            .env("LOCAL_SAVE_ROOT", &root)
+            .env("LOCAL_SAVE_DRAFTS", t.path().join("drafts"))
+            .env("LOCAL_SAVE_READY", &ready)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Owned(std::process::Child);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Owned(child);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !ready.exists() {
+            assert!(child.0.try_wait().unwrap().is_none());
+            assert!(Instant::now() < deadline, "save hook never fired");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut hold = a.begin_drain("actual-editor-save").unwrap();
+        let token = hold.token().clone();
+        assert!(!hold.try_hold(&token).unwrap());
+        assert!(crate::note_files::create(&root, Path::new("next.md")).is_err());
+        assert_eq!(fs::read(root.join("note.md")).unwrap(), b"original");
+        child.0.stdin.as_mut().unwrap().write_all(b"go\n").unwrap();
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "admitted save blocked behind its drain"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            fs::read(root.join("note.md")).unwrap(),
+            b"saved by another process"
+        );
+        assert!(hold.try_hold(&token).unwrap());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        crate::note_files::create(&root, Path::new("next.md")).unwrap();
+    }
+    #[test]
+    #[ignore = "production save subprocess, selected by parent test"]
+    fn admitted_save_process() {
+        let root = PathBuf::from(std::env::var_os("LOCAL_SAVE_ROOT").unwrap());
+        let drafts = PathBuf::from(std::env::var_os("LOCAL_SAVE_DRAFTS").unwrap());
+        let ready = PathBuf::from(std::env::var_os("LOCAL_SAVE_READY").unwrap());
+        let mut editor = FileEditor::open(&root.join("note.md"), &drafts).unwrap();
+        editor.set_text("saved by another process".into()).unwrap();
+        assert_eq!(
+            editor
+                .save_before_exchange(|| {
+                    fs::write(ready, b"real FileEditor save reached exchange hook").unwrap();
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).unwrap();
+                    assert_eq!(line, "go\n");
+                })
+                .unwrap(),
+            Save::Saved
+        );
+    }
+}

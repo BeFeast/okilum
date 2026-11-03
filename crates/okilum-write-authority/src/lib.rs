@@ -1,6 +1,7 @@
 //! Cooperative local canonical-writer admission. This is NOT transport quiescence
 //! or protection from external editors. Durable holds never release on Drop.
-//! All admission/transition calls are nonblocking: drain polling belongs on a worker.
+//! Admission/hold transitions are nonblocking: drain polling belongs on a worker.
+//! First registration serializes account metadata on the vault-opening worker.
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -210,27 +211,15 @@ impl Authority {
             !account.starts_with(&root),
             "Writer authority must be outside the vault"
         );
+        if let Some(a) = Self::existing(&account, &root)? {
+            return Ok(a);
+        }
         let registry = file(&account.join("registry.lock"), true)?;
         registry
             .lock()
             .context("Cannot serialize vault authority registration")?;
-        for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
-            let binding_path = account.join(format!("{}.json", key(ancestor)));
-            if binding_path.try_exists()? {
-                let binding: Binding = read(&binding_path)?;
-                ensure!(
-                    binding.root == ancestor,
-                    "Writer authority root binding mismatch"
-                );
-                let a = Self {
-                    directory: account.join(key(ancestor)),
-                    account: account.clone(),
-                    binding_path,
-                    binding,
-                };
-                a.validate()?;
-                return Ok(a);
-            }
+        if let Some(a) = Self::existing(&account, &root)? {
+            return Ok(a);
         }
         // An old single-folder authority cannot silently become a different
         // vault authority. Surface this ambiguity instead of bypassing its hold.
@@ -280,6 +269,27 @@ impl Authority {
             directory,
             binding,
         })
+    }
+    fn existing(account: &Path, root: &Path) -> Result<Option<Self>> {
+        for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
+            let binding_path = account.join(format!("{}.json", key(ancestor)));
+            if binding_path.try_exists()? {
+                let binding: Binding = read(&binding_path)?;
+                ensure!(
+                    binding.root == ancestor,
+                    "Writer authority root binding mismatch"
+                );
+                let a = Self {
+                    directory: account.join(key(ancestor)),
+                    account: account.to_owned(),
+                    binding_path,
+                    binding,
+                };
+                a.validate()?;
+                return Ok(Some(a));
+            }
+        }
+        Ok(None)
     }
     pub fn root(&self) -> &Path {
         &self.binding.root
@@ -643,4 +653,19 @@ mod tests {
         let token = hold.token().clone();
         hold.release(&token).unwrap();
     }
+}
+
+impl std::fmt::Debug for WriterLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriterLease").finish_non_exhaustive()
+    }
+}
+/// Keep the admission alive through a delayed publication/rollback even when its
+/// destination folder has not been created yet.
+pub fn admit_directory(directory: &Path) -> Result<WriterLease> {
+    let existing = directory
+        .ancestors()
+        .find(|p| p.is_dir())
+        .context("Destination has no existing parent")?;
+    Authority::for_root(existing)?.admit()
 }

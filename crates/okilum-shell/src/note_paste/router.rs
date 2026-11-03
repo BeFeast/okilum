@@ -1044,6 +1044,7 @@ fn rich_routed(
 /// What a background conversion inserts.
 #[derive(Debug, Default)]
 pub struct RichJobDone {
+    pub admission: Option<okilum_write_authority::WriterLease>,
     pub text: String,
     pub block: bool,
     /// Fit as Markdown ([`fit_markdown`]) rather than as plain text.
@@ -1059,6 +1060,10 @@ pub struct RichJobDone {
 /// Convert large rich text off the UI thread: steps 3, 5, 6 and 7 for it,
 /// with its `data:` and `file://` images saved.
 pub fn run_rich_job(job: RichJob) -> RichJobDone {
+    let admission = okilum_write_authority::Authority::for_root(&job.vault_root)
+        .and_then(|a| a.admit())
+        .ok();
+    let _admission = admission.as_ref().and_then(|a| a.enter().ok());
     let started = Instant::now();
     let rich = if job.html.is_empty() {
         None
@@ -1079,6 +1084,7 @@ pub fn run_rich_job(job: RichJob) -> RichJobDone {
     let convert_ms = started.elapsed().as_secs_f64() * 1000.0;
     if let Some(rich) = rich {
         return RichJobDone {
+            admission,
             text: rich.markdown,
             block: rich.block,
             markdown: true,

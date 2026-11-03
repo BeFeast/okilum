@@ -42,6 +42,7 @@ impl Options {
 
 #[derive(Debug)]
 pub struct Imported {
+    pub admission: okilum_write_authority::WriterLease,
     pub name: String,
     /// Only files created by this operation, including the retained original.
     pub paths: Vec<PathBuf>,
@@ -130,8 +131,8 @@ pub fn save(
     bytes: &[u8],
     options: Options,
 ) -> Result<Imported, String> {
-    let _admission =
-        okilum_write_authority::operation_for_directory(folder).map_err(|e| e.to_string())?;
+    let admission = okilum_write_authority::admit_directory(folder).map_err(|e| e.to_string())?;
+    let _admission = admission.enter().map_err(|e| e.to_string())?;
     if bytes.len() > super::offer::MAX_IMAGE_BYTES {
         return Err("The image is too large to import (64 MB at most).".into());
     }
@@ -183,7 +184,11 @@ pub fn save(
     match files::write_into(folder, &output_name, converted.as_deref().unwrap_or(bytes)) {
         Ok(name) => {
             paths.push(folder.join(&name));
-            Ok(Imported { name, paths })
+            Ok(Imported {
+                admission,
+                name,
+                paths,
+            })
         }
         Err(error) => {
             for path in paths {
