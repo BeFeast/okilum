@@ -457,7 +457,7 @@ impl Controller {
                                 // accept loop. Inspection admission separately limits each peer.
                                 if wire::limits(&stream).is_ok()
                                     && connections
-                                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                                        .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                                             (n < 16).then_some(n + 1)
                                         })
                                         .is_ok()

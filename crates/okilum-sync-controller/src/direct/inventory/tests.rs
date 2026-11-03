@@ -444,7 +444,7 @@ fn destination_overlap_is_refused_in_both_directions_before_runtime_access() -> 
     for path in [&state, &state.join("nested"), &temp.path().to_owned()] {
         assert!(disjoint(path, &state).is_err());
     }
-    let controller = Controller::open(&state, vec![])?;
+    let controller = Controller::open(state.clone(), vec![])?;
     for path in [&state, &state.join("nested"), &temp.path().to_owned()] {
         let error = controller
             .preview_remote_vault(Uuid::new_v4(), "vault", path)
