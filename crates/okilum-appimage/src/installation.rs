@@ -28,38 +28,48 @@ fn marker(image: &Path) -> PathBuf {
     image.with_file_name(".appimage-owner")
 }
 /// Build of the bytes at the managed path, recorded by the process that put
-/// them there or ran from there (#2455). Absent or unreadable means unknown.
+/// them there or ran from there (#2455). The record is bound to the file's
+/// identity (size, mtime, inode): bytes written by anything else, such as an
+/// older Okilum that knows nothing of this record, make the build unknown.
 fn build_record(image: &Path) -> PathBuf {
     image.with_file_name(".appimage-build")
 }
+fn identity(metadata: &fs::Metadata) -> String {
+    format!(
+        "{} {} {} {}",
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ino()
+    )
+}
 fn recorded_build(image: &Path) -> Option<u64> {
     regular(&build_record(image)).ok()?;
-    fs::read_to_string(build_record(image))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+    let text = fs::read_to_string(build_record(image)).ok()?;
+    let (build, recorded) = text.trim().split_once(' ')?;
+    let current = fs::symlink_metadata(image).ok()?;
+    (recorded == identity(&current)).then_some(())?;
+    build.parse().ok()
 }
-fn write_build(image: &Path, build: u64) -> Result<()> {
+/// `bytes` is the file that is, or is about to be renamed to, `image`.
+fn write_build(image: &Path, build: u64, bytes: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(bytes)?;
     let mut record = tempfile::NamedTempFile::new_in(image.parent().context("Missing parent")?)?;
-    record.write_all(build.to_string().as_bytes())?;
+    record.write_all(format!("{build} {}", identity(&metadata)).as_bytes())?;
     record.as_file().sync_all()?;
     record.persist(build_record(image))?;
     Ok(())
 }
 
-/// Before an update helper replaces `image`, record the incoming build when
-/// `image` is our managed install. If the apply fails, the record overstates
-/// the bytes, which only stops an older external copy from replacing them
-/// (never a downgrade); the next managed launch records the real build.
-pub(crate) fn note_incoming(image: &Path, build: u64) -> Result<()> {
+/// Before the update helper renames `staged` over `image`, record the incoming
+/// build for the staged file's identity, which the rename preserves. Until the
+/// rename, or if it never happens, the record does not match `image` and the
+/// build is unknown, exactly as before the update was armed.
+pub(crate) fn note_incoming(image: &Path, staged: &Path, build: u64) -> Result<()> {
     if image.file_name() != Some(std::ffi::OsStr::new("Okilum.AppImage")) || owned(image).is_err() {
         return Ok(());
     }
-    if recorded_build(image).is_none_or(|current| build > current) {
-        write_build(image, build)?;
-    }
-    Ok(())
+    write_build(image, build, staged)
 }
 
 /// Record the build now running from `running` when it is our managed image
@@ -72,7 +82,7 @@ pub fn record_running(home: &Path, running: &Path, build: u64) -> Result<()> {
     regular(&image)?;
     owned(&image)?;
     if recorded_build(&image) != Some(build) {
-        write_build(&image, build)?;
+        write_build(&image, build, &image)?;
     }
     Ok(())
 }
@@ -175,7 +185,7 @@ pub fn install(home: &Path, source: &Path, build: u64) -> Result<PathBuf> {
     owner.as_file().sync_all()?;
     owner.persist(marker(&image))?;
     if replace || source == image {
-        write_build(&image, build)?;
+        write_build(&image, build, &image)?;
     }
     fs::File::open(image.parent().unwrap())?.sync_all()?;
     if command.symlink_metadata().is_err() {
@@ -340,17 +350,44 @@ mod tests {
         let image = install(home.path(), &external, 7538).unwrap();
         // The updater holds its transaction lock while staging/applying 7540.
         let lock = crate::update_lock(&image).unwrap();
-        note_incoming(&image, 7540).unwrap();
+        let staged = home
+            .path()
+            .join(".local/share/okilum/.okilum-update-x/new.AppImage");
+        executable(&staged, b"7540");
+        note_incoming(&image, &staged, 7540).unwrap();
+        assert_eq!(recorded_build(&image), None); // not applied yet
         executable(&external, b"7539");
         assert_eq!(install(home.path(), &external, 7539).unwrap(), image);
         assert_eq!(fs::read(&image).unwrap(), b"7538");
+        // Applied (the helper's mv) before startup confirmation: 7539 must not win.
+        fs::rename(&staged, &image).unwrap();
         drop(lock);
-        // Applied 7540 before startup confirmation: 7539 still must not win.
-        executable(&image, b"7540");
+        assert_eq!(recorded_build(&image), Some(7540));
         install(home.path(), &external, 7539).unwrap();
         assert_eq!(fs::read(&image).unwrap(), b"7540");
         // Not our managed install: nothing recorded.
-        note_incoming(&external, 9999).unwrap();
+        note_incoming(&external, &staged, 9999).unwrap();
         assert!(!build_record(&external).exists());
+    }
+
+    #[test]
+    fn bytes_replaced_by_an_older_okilum_make_the_record_unknown() {
+        // #2455 live check: a pre-fix 7543 launcher copied itself over a
+        // recorded 7544; the fixed 7544 launcher must then reinstall itself.
+        let home = tempfile::tempdir().unwrap();
+        let external = home.path().join("AppImages/okilum.appimage");
+        executable(&external, b"7544");
+        let image = install(home.path(), &external, 7544).unwrap();
+        assert_eq!(recorded_build(&image), Some(7544));
+        let old = home.path().join(".local/share/okilum/tmp-old");
+        executable(&old, b"7543-old-code");
+        fs::rename(&old, &image).unwrap(); // what the old copy-and-persist does
+        assert_eq!(recorded_build(&image), None);
+        install(home.path(), &external, 7544).unwrap();
+        assert_eq!(fs::read(&image).unwrap(), b"7544");
+        assert_eq!(recorded_build(&image), Some(7544));
+        // A legacy record without identity is unknown too.
+        fs::write(build_record(&image), "7544").unwrap();
+        assert_eq!(recorded_build(&image), None);
     }
 }

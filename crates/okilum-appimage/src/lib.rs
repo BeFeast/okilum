@@ -454,7 +454,11 @@ impl Staged {
         self.target.unchanged()?;
         // An older external launcher copy must not replace these bytes between
         // apply and the new process's startup confirmation (#2455).
-        if let Err(error) = installation::note_incoming(&self.target.path, self.release.build) {
+        if let Err(error) = installation::note_incoming(
+            &self.target.path,
+            &self.directory.path().join("new.AppImage"),
+            self.release.build,
+        ) {
             eprintln!("AppImage installation record: {error:#}");
         }
         let dir = self.directory.path();
