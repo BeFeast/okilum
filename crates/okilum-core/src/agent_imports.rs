@@ -4,6 +4,12 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+/// Document behavior is independent of tree/search visibility. The root contract
+/// participates in Rules, while remaining an ordinary visible vault entry.
+pub fn is_agent_document(path: &str) -> bool {
+    path == "_AgentContract.md" || crate::quick_open::is_agent_file(path)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Import {
     pub line: Range<usize>,
