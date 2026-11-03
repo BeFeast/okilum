@@ -2972,7 +2972,22 @@ mod tests {
         let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
         let untouched = input.read_with(visual, |i, _| (i.source_stamp(), i.selected_range()));
         let at = note.find(query).unwrap();
-        reader.update_in(visual, |r, window, cx| r.open_find(window, cx));
+        reader.update_in(visual, |r, window, cx| {
+            // A cold heading/Back handoff can finish after Find is opened.
+            // Search leaves the editing selection unchanged, so revision and
+            // selection alone cannot cancel that earlier placement.
+            r.place_editor_at_reader(
+                input.clone(),
+                (
+                    2,
+                    r.note_canonical_source.clone().unwrap(),
+                    r.note_source.clone(),
+                ),
+                window,
+                cx,
+            );
+            r.open_find(window, cx);
+        });
         visual.run_until_parked();
         input.update(visual, |i, cx| {
             i.set_search_query(query, false, cx);
@@ -3154,6 +3169,73 @@ mod tests {
                 "Back must not time out: {:?}",
                 r.link_notice
             );
+        });
+    }
+
+    #[gpui::test]
+    fn issue2484_closed_find_supersedes_pending_editor_handoff(cx: &mut TestAppContext) {
+        let (reader, visual, _directory) = fixture(cx, ORIGINAL);
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let untouched = input.read_with(visual, |i, _| (i.source_stamp(), i.selected_range()));
+        reader.update_in(visual, |r, window, cx| {
+            r.place_editor_at_reader(
+                input.clone(),
+                (
+                    1,
+                    r.note_canonical_source.clone().unwrap(),
+                    r.note_source.clone(),
+                ),
+                window,
+                cx,
+            );
+            let activation = input.read(cx).search_activation_revision();
+            r.open_find(window, cx);
+            assert!(
+                input.read(cx).search_activation_revision() > activation,
+                "positive control: Find really opened"
+            );
+            input.update(cx, |i, cx| i.close_search(cx));
+            assert!(
+                !input.read(cx).search_session().open,
+                "Find closed before the old placement can complete"
+            );
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |i, _| {
+            assert_eq!((i.source_stamp(), i.selected_range()), untouched, "a completed Find supersedes the old Reader position even without an edit or caret move");
+            assert_eq!(i.value().as_ref(), ORIGINAL);
+        });
+    }
+
+    #[gpui::test]
+    fn issue2484_editor_handoff_preserves_later_sidebar_focus(cx: &mut TestAppContext) {
+        let (reader, visual, _directory) = fixture(cx, ORIGINAL);
+        let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        reader.update_in(visual, |r, window, cx| {
+            r.place_editor_at_reader(
+                input.clone(),
+                (
+                    1,
+                    r.note_canonical_source.clone().unwrap(),
+                    r.note_source.clone(),
+                ),
+                window,
+                cx,
+            );
+            r.focus_sidebar_search(window, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            assert_eq!(
+                input.read(cx).cursor_position().line,
+                2,
+                "positive control: the Reader-to-editor placement completed"
+            );
+            assert!(
+                r.sidebar_search_focus.is_focused(window),
+                "a late landing must not steal focus from the next action"
+            );
+            assert_eq!(input.read(cx).value().as_ref(), ORIGINAL);
         });
     }
 

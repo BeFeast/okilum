@@ -36,7 +36,9 @@ large notes and newly measured rendered blocks (#2484). This handoff leaves the
 editing selection, canonical text and Undo history intact. Heading and Back
 landings wait for the current document's parse, and can initialize a prepared
 Reader list before it is painted; an editor hiding that list cannot cause a
-rendering timeout. A new navigation or editing retires an obsolete landing notice.
+rendering timeout. Opening Find supersedes an older Reader-to-editor handoff,
+including one that finishes after Find closes; an asynchronous placement retains
+later keyboard focus. A new navigation or editing retires an obsolete landing notice.
 
 Heading completion (#1638) uses the same inline popup and keyboard/Undo path as
 note completion: type `[[#` for headings in this unsaved note, or

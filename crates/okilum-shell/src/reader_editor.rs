@@ -2138,7 +2138,7 @@ impl Reader {
     /// #1296: scroll the new editor to the Reader's top block and start the
     /// caret there, so typing stays in view; a restored selection (#1095)
     /// elsewhere would be off screen. Undo still scrolls to its own edit
-    /// (#945). Skipped when the user typed or moved the caret meanwhile.
+    /// (#945). Skipped when the user typed, moved the caret or opened Find.
     fn place_editor_at_reader(
         &mut self,
         input: Entity<EditorState>,
@@ -2148,7 +2148,11 @@ impl Reader {
     ) {
         let untouched = {
             let input = input.read(cx);
-            (input.source_stamp(), input.selected_range())
+            (
+                input.source_stamp(),
+                input.selected_range(),
+                input.search_activation_revision(),
+            )
         };
         cx.spawn_in(window, async move |this, cx| {
             let line = cx
@@ -2161,7 +2165,7 @@ impl Reader {
             let Some(line) = line else {
                 return;
             };
-            let _ = this.update_in(cx, |this, window, cx| {
+            let _ = this.update_in(cx, |this, _window, cx| {
                 if this
                     .editing
                     .as_ref()
@@ -2170,17 +2174,28 @@ impl Reader {
                     return;
                 }
                 input.update(cx, |input, cx| {
-                    if (input.source_stamp(), input.selected_range()) != untouched {
+                    // Find does not move the editing selection. Its activation
+                    // still supersedes an older Reader-to-editor handoff, even
+                    // if Find has already closed when this parse completes.
+                    if (
+                        input.source_stamp(),
+                        input.selected_range(),
+                        input.search_activation_revision(),
+                    ) != untouched
+                    {
                         return;
                     }
-                    input.set_cursor_position(
-                        gpui_component::input::Position {
-                            line: line - 1,
-                            character: 0,
-                        },
-                        window,
-                        cx,
-                    );
+                    // Place the source selection without changing keyboard
+                    // focus (including an IME in a later sidebar action).
+                    use gpui_component::input::RopeExt as _;
+                    let offset =
+                        input
+                            .text()
+                            .position_to_offset(&gpui_component::input::Position {
+                                line: line - 1,
+                                character: 0,
+                            });
+                    input.set_selected_range(offset..offset, cx);
                     input.scroll_line_to_top(line as usize - 1, cx);
                 });
             });
