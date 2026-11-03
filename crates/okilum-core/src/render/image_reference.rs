@@ -191,7 +191,10 @@ mod tests {
             );
         }
         assert!(
-            rendered.contains(&crate::render::unavailable_file("missing.zip")),
+            rendered.contains(&format!(
+                "{}?target=missing.zip",
+                crate::render::UNAVAILABLE_IMAGE
+            )),
             "{rendered}"
         );
         assert!(!root.join("missing.zip").exists());
