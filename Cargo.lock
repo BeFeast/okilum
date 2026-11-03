@@ -6550,6 +6550,7 @@ dependencies = [
  "image",
  "lb-wry",
  "libc",
+ "lsp-types",
  "merman",
  "notify",
  "objc2 0.6.4",

@@ -38,6 +38,29 @@ fn embed_regex() -> &'static Regex {
     &EMBED
 }
 
+/// Attachments retain a visible file surface instead of becoming ordinary links.
+/// Extensionless wiki targets keep note transclusion semantics.
+pub fn file_embed_target(target: &str) -> bool {
+    target
+        .rsplit('/')
+        .next()
+        .unwrap_or(target)
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| !matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown"))
+}
+
+pub fn unavailable_file(target: &str) -> String {
+    format!(
+        "{UNAVAILABLE_IMAGE}?target={}",
+        crate::document_links::encode(target)
+    )
+}
+
+pub fn unavailable_target(url: &str) -> Option<String> {
+    url.strip_prefix(&format!("{UNAVAILABLE_IMAGE}?target="))
+        .map(crate::document_links::decode)
+}
+
 /// Obsidian embeds `![[x]]` are not comrak wikilinks; turn image embeds into
 /// standard images and other embeds into plain wikilinks before parsing.
 ///
@@ -63,12 +86,7 @@ pub fn preprocess(text: &str) -> String {
                         title
                     );
                 }
-                let ext = base.rsplit('.').next().unwrap_or("").to_lowercase();
-                if [
-                    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic", "heif",
-                ]
-                .contains(&ext.as_str())
-                {
+                if file_embed_target(base) {
                     format!("![]({})", base.replace(' ', "%20"))
                 } else {
                     format!("[[{inner}]]")
@@ -105,7 +123,7 @@ pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, s
             NodeValue::Image(img) => {
                 if !img.url.contains("://") {
                     img.url = image_file_url(&img.url, vault, &resolver, note_rel)
-                        .unwrap_or_else(|| UNAVAILABLE_IMAGE.into());
+                        .unwrap_or_else(|| unavailable_file(&img.url));
                 }
             }
             NodeValue::Link(link) => {
@@ -360,8 +378,7 @@ fn rewrite_source_images_indexed(
             );
         }
         Some(
-            image_file_url(url, vault, resolver, note_rel)
-                .unwrap_or_else(|| UNAVAILABLE_IMAGE.into()),
+            image_file_url(url, vault, resolver, note_rel).unwrap_or_else(|| unavailable_file(url)),
         )
     })
 }
