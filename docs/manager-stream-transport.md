@@ -131,3 +131,38 @@ commands return their saved receipt without network dispatch. Resolved request
 and stale Stop retries are disabled. Message retries retain their original target
 even when the active run changes, allowing server idempotency readback without
 turning an old Steer into a new message. Missing or malformed receipts fail closed.
+
+## Time-to-first-message diagnostics (#2518)
+
+The native Manager records one `manager_ttfm` JSON event per panel open in
+`reader-diagnostic.log`. All millisecond fields are monotonic offsets from the
+same **panel open** (including asynchronous descriptor/binding lookup):
+
+- `connect_start_ms`: descriptor/connect start, currently zero.
+- `auth_ms`: Manager subscription's authenticated WebSocket-ticket HTTP reply.
+- `connect_ms`: that same socket's WebSocket upgrade completed. Ticket auth
+  precedes the upgrade in this transport; it is not a later WebSocket handshake.
+- `shell_ms`: first accepted `subscribeShell` directory snapshot.
+- `thread_ms`: first accepted `subscribeThread` Manager snapshot, independently
+  of the later synchronized marker.
+- `render_ms` and `open_to_first_message_ms`: first message row's visible paint
+  callback, excluding virtual-list row construction/measurement and activity rows.
+- `reused_connection`: the open reuses an existing paired `NativeClient` and
+  retained feed. Closing currently pauses both subscriptions, so `true` does
+  **not** claim that a physical WebSocket survived the close.
+
+Shell and Manager subscriptions run in parallel; `shell_ms` need not precede
+`thread_ms` or even the first paint. On a cold open, emission waits for both
+snapshots while preserving the original paint timestamp. A warm open can paint
+retained history immediately; phases not observed during that open are explicit
+JSON `null`, never invented zero timings or timestamps from the previous open.
+Each reopen has a fresh clock. Further frames do not log again; closing cancels
+unfinished measurements and stale paint callbacks.
+
+A cold open whose Manager snapshot never arrives emits no successful TTFM line.
+An empty snapshot also cannot complete TTFM until a message actually paints.
+The existing asynchronous diagnostic writer does disk I/O. This instrumentation
+adds no RPCs and records only timings and the reuse flag: no tokens, origins,
+thread identities or message content. Compare measurements on the same machine
+in the same session; Linux and macOS measurements should each use their own
+before/after pair (native macOS mounting follows #2522).

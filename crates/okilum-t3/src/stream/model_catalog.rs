@@ -156,11 +156,12 @@ impl NativeClient {
             return Err(StreamError::Closed);
         }
         self.token.validate(&self.environment, crate::unix_now())?;
-        let (socket, cancel) = self.open_socket()?;
+        let (socket, cancel, phases) = self.open_socket()?;
         let mut inner = ThreadSubscription {
             access: self.access.clone(),
             socket,
             cancel,
+            phases,
             origin: self.environment.origin(),
             thread_id: String::new(),
             cursor: None,

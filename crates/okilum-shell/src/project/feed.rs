@@ -80,6 +80,7 @@ pub(super) struct Feed {
     scroller: Entity<MessageScrollerState>,
     enabled: bool,
     busy: bool,
+    pub(super) ttfm: Option<super::ttfm::Ttfm>,
     typed_revision: u64,
     typed_sources: Option<Arc<Vec<super::message_types::Source>>>,
     typed_source_owner: Option<(String, String, String)>,
@@ -120,6 +121,7 @@ impl Feed {
             scroller,
             enabled: false,
             busy: false,
+            ttfm: None,
             typed_revision: 0,
             typed_sources: None,
             typed_source_owner: None,
@@ -377,6 +379,25 @@ impl Feed {
             self.busy = busy;
             cx.notify();
         }
+    }
+    /// The virtual scroller builds rows for measurement too. Only a visible
+    /// paint callback can complete TTFM; this probe draws nothing.
+    fn first_message_paint(&self) -> AnyElement {
+        let Some(ttfm) = self.ttfm.clone().filter(|ttfm| ttfm.needs_paint()) else {
+            return div().absolute().into_any_element();
+        };
+        gpui::canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let visible = bounds.intersect(&window.content_mask().bounds);
+                if visible.size.width > px(0.) && visible.size.height > px(0.) {
+                    ttfm.mark(super::ttfm::Phase::Paint, std::time::Instant::now());
+                }
+            },
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
     }
     pub(super) fn apply<'a>(
         &mut self,
@@ -718,7 +739,9 @@ impl Feed {
                         row.pl(px(design::INSET * 2.)).items_end()
                     })
                     .when(!message.user, |row| row.items_start())
+                    .relative()
                     .child(body)
+                    .child(self.first_message_paint())
                     .into_any_element()
             }
             Some(Row::WorkSummary(key)) => self.work_summary(key, cx),
@@ -738,6 +761,8 @@ impl Feed {
                         "project-retained-{}",
                         record.message.client_request_id
                     )))
+                    .relative()
+                    .child(self.first_message_paint())
                     .child(chip)
                     .px(px(design::INSET))
                     .py(px(design::GAP))

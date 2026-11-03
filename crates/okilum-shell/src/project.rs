@@ -45,6 +45,8 @@ mod rules_reread;
 mod setup;
 #[cfg(target_os = "linux")]
 mod threads;
+#[cfg(target_os = "linux")]
+mod ttfm;
 
 pub(super) fn save_browser_environment(
     state: &Path,
@@ -173,6 +175,8 @@ pub(crate) struct ProjectView {
     native: native::Native,
     #[cfg(target_os = "linux")]
     threads: threads::Directory,
+    #[cfg(target_os = "linux")]
+    ttfm: ttfm::Ttfm,
 }
 
 pub(super) struct ManagerStarted;
@@ -183,6 +187,7 @@ impl ProjectView {
         binding: Option<AreaBinding>,
         state: Option<PathBuf>,
         area: PathBuf,
+        opened: std::time::Instant,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -191,6 +196,7 @@ impl ProjectView {
         #[cfg(target_os = "linux")]
         {
             view.threads.enabled = true;
+            view.ttfm_open(opened, cx);
         }
         let area_copy = area.clone();
         view.area = Some(area);
@@ -326,7 +332,13 @@ impl ProjectView {
         #[cfg(target_os = "linux")]
         let parent = cx.entity().downgrade();
         #[cfg(target_os = "linux")]
-        let feed = cx.new(|cx| feed::Feed::new(parent.clone(), cx));
+        let ttfm = ttfm::Ttfm::open(std::time::Instant::now(), false, cx);
+        #[cfg(target_os = "linux")]
+        let feed = cx.new(|cx| {
+            let mut feed = feed::Feed::new(parent.clone(), cx);
+            feed.ttfm = Some(ttfm.clone());
+            feed
+        });
         #[cfg(target_os = "linux")]
         let composer = cx.new(|cx| {
             let mut composer = composer::Composer::new(compose.clone(), cx);
@@ -512,6 +524,8 @@ impl ProjectView {
             native,
             #[cfg(target_os = "linux")]
             threads: threads::Directory::default(),
+            #[cfg(target_os = "linux")]
+            ttfm,
         }
     }
 
@@ -900,8 +914,23 @@ impl ProjectView {
     }
 
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_active_since(active, std::time::Instant::now(), window, cx);
+    }
+
+    fn set_active_since(
+        &mut self,
+        active: bool,
+        opened: std::time::Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(target_os = "linux")]
+        if active && !self.active {
+            self.ttfm_open(opened, cx);
+        }
         #[cfg(target_os = "linux")]
         if !active {
+            self.ttfm.cancel();
             self.invalidate_rotation(cx);
         }
         #[cfg(target_os = "linux")]
@@ -2247,6 +2276,7 @@ impl Reader {
         if let Some(previous) = &self.project {
             previous.update(cx, |view, cx| view.set_active(false, window, cx));
         }
+        let opened = std::time::Instant::now();
         self.project_open = true;
         self.project = None;
         self.project_request = self.project_request.wrapping_add(1);
@@ -2282,14 +2312,22 @@ impl Reader {
                 let project = match binding {
                     Ok((key, binding)) => match this.project_views.get(&key).cloned() {
                         Some(project) => {
-                            project.update(cx, |project, cx| project.set_active(true, window, cx));
+                            project.update(cx, |project, cx| {
+                                project.set_active_since(true, opened, window, cx)
+                            });
                             project
                         }
                         None => {
                             let state = this.session_directory.clone();
                             let project = cx.new(|cx| {
-                                let mut view =
-                                    ProjectView::new(binding, state, key.0.clone(), window, cx);
+                                let mut view = ProjectView::new(
+                                    binding,
+                                    state,
+                                    key.0.clone(),
+                                    opened,
+                                    window,
+                                    cx,
+                                );
                                 view.context_path = key
                                     .0
                                     .strip_prefix(&this.vault_root)

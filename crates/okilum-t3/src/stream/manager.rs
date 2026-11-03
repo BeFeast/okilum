@@ -46,10 +46,11 @@ impl NativeClient {
         snapshot: bool,
     ) -> StreamResult<Value> {
         self.token.validate(&self.environment, crate::unix_now())?;
-        let (socket, cancel) = self.open_socket()?;
+        let (socket, cancel, phases) = self.open_socket()?;
         let mut rpc = ThreadSubscription {
             socket,
             cancel,
+            phases,
             origin: self.environment.origin(),
             thread_id: String::new(),
             cursor: None,
