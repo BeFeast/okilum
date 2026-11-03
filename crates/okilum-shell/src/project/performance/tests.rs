@@ -43,6 +43,9 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         });
         populate(&project, cx);
         let board = cx.new(|cx| board::Board::performance_fixture(vault.clone(), window, cx));
+        board.update(cx, |board, cx| {
+            board.set_manager(project.clone(), window, cx)
+        });
         reader.project_navigation.active =
             Some(okilum_t3::projects::Project::read(&vault).unwrap());
         reader
@@ -59,6 +62,13 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         (project, board)
     });
     visual.run_until_parked();
+    let renders = board.read_with(visual, |board, _| board.render_calls.get());
+    project.update(visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+    assert!(
+        board.read_with(visual, |board, _| board.render_calls.get()) > renders,
+        "positive control: cached Board retains Manager status/progress publications"
+    );
     let feed = project.read_with(visual, |project, _| project.feed.clone());
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();

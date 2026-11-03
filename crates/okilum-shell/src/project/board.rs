@@ -24,6 +24,7 @@ pub(crate) struct Board {
     binding_loading: bool,
     snapshot: Snapshot,
     manager: Option<Entity<ProjectView>>,
+    _manager_observer: Option<Subscription>,
     active: bool,
     ticker: Option<Task<()>>,
     focus: FocusHandle,
@@ -133,6 +134,7 @@ impl Board {
             binding_loading: false,
             snapshot: Snapshot::new(owner),
             manager: None,
+            _manager_observer: None,
             active: false,
             ticker: None,
             focus: cx.focus_handle(),
@@ -261,6 +263,9 @@ impl Board {
         self.snapshot.t3 = Source::default();
         self.delivery_loading = false;
         self.notes_loading = false;
+        // This sibling is now cached: retain the live progress/status updates
+        // that previously arrived incidentally through Reader redraws.
+        self._manager_observer = Some(cx.observe(&manager, |_, _, cx| cx.notify()));
         self.manager = Some(manager);
         if self.active {
             self.refresh(window, cx);
