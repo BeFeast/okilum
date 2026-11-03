@@ -83,7 +83,7 @@ pub(super) fn install(
 
 // A part inherits its document's style. Document edge padding must appear
 // only once around the whole note, never around every inline decoration.
-fn fragment_style(style: TextViewStyle) -> TextViewStyle {
+fn fragment_style(style: gpui_base::TextViewStyle) -> gpui_base::TextViewStyle {
     style.with_top_padding(px(0.)).with_bottom_padding(px(0.))
 }
 
