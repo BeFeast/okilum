@@ -115,7 +115,10 @@ fn start_check(trigger: Trigger) -> bool {
     #[cfg(not(target_os = "linux"))]
     let _ = trigger;
     #[cfg(target_os = "macos")]
-    return macos::check(mode().download(matches!(trigger, Trigger::Download)));
+    return macos::check(
+        mode().download(matches!(trigger, Trigger::Download)),
+        trigger.manual(),
+    );
     #[cfg(windows)]
     return windows::check(mode().download(matches!(trigger, Trigger::Download)));
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

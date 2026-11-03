@@ -614,7 +614,7 @@ void okilum_updater_set_automatic_admission(TSAutomaticAdmission admit) { TSAdmi
 
 // False while a check or download session is already running: Sparkle would
 // ignore the probe and never call the delegate.
-bool okilum_updater_check(bool download) {
+bool okilum_updater_check(bool download, bool foreground) {
     if (!TSUpdater || TSUpdater.sessionInProgress || TSProbe.completion || TSManualCheck) return false;
     TSManualCheck = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -626,7 +626,8 @@ bool okilum_updater_check(bool download) {
                 TSSend(1, selected.displayVersionString);
                 if (download) {
                     TSInstallRequested = YES;
-                    [TSUpdater checkForUpdates];
+                    if (foreground) [TSUpdater checkForUpdates];
+                    else [TSUpdater checkForUpdatesInBackground];
                 }
             }
             else TSSend(0, nil);

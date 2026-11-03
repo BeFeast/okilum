@@ -501,7 +501,7 @@ int main(void) {
         TSInstallRequested = !mode && !TSCompare && ![[bundle objectForInfoDictionaryKey:@"TSDiscovery"] boolValue]; // explicit About Install intent
         if (mode) {
             Trace(mode.intValue == 2 ? @"mode off manual check" : @"mode scheduled discovery");
-            if (!okilum_updater_check(mode.intValue == 0)) return 73;
+            if (!okilum_updater_check(mode.intValue == 0, mode.intValue == 2)) return 73;
         }
         else if (TSCompare && !TSComparisonForeground) [TSUpdater checkForUpdateInformation];
         else if ([[bundle objectForInfoDictionaryKey:@"TSBackgroundInstall"] boolValue]) [TSUpdater checkForUpdatesInBackground];

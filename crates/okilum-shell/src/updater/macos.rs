@@ -8,7 +8,7 @@ extern "C" {
     fn okilum_updater_set_report(report: extern "C" fn(c_int, *const c_char));
     fn okilum_updater_set_automatic_admission(admit: extern "C" fn(bool) -> bool);
     fn okilum_updater_available() -> bool;
-    fn okilum_updater_check(download: bool) -> bool;
+    fn okilum_updater_check(download: bool, foreground: bool) -> bool;
     fn okilum_updater_set_mode(mode: c_int);
     fn okilum_updater_can_cancel() -> bool;
     fn okilum_updater_cancel();
@@ -74,9 +74,9 @@ pub(super) fn start() {
 pub(super) fn available() -> bool {
     unsafe { okilum_updater_available() }
 }
-pub(super) fn check(download: bool) -> bool {
+pub(super) fn check(download: bool, foreground: bool) -> bool {
     // A repeated check must not replace download progress or a ready action.
-    if unsafe { okilum_updater_check(download) } {
+    if unsafe { okilum_updater_check(download, foreground) } {
         status::set(CheckStatus::Checking);
         true
     } else {
