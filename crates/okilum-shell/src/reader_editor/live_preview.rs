@@ -3064,6 +3064,17 @@ mod tests {
                 "an obsolete landing error must not remain while editing"
             )
         });
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.displayed_notice.is_none(),
+                "typing immediately retires the presented landing notice"
+            );
+        });
+        // The existing notification lifecycle keeps an exiting toast mounted
+        // for 200 ms, ticking every 50 ms. No further edit or autosave (300 ms)
+        // is needed to finish its normal dismissal.
+        visual.executor().advance_clock(Duration::from_millis(250));
+        visual.run_until_parked();
         visual.update(|window, cx| {
             assert!(
                 window.notifications(cx).is_empty(),
