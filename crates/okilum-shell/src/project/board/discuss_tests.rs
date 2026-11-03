@@ -89,6 +89,7 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
                         labels: Vec::new(),
                         open_pull_requests: Vec::new(),
                         live_pulls: Vec::new(),
+                        updated_at: None,
                     })
                     .collect())
             },

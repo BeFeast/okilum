@@ -134,6 +134,7 @@ fn issue(number: u64, state: &str) -> Issue {
         labels: Vec::new(),
         open_pull_requests: Vec::new(),
         live_pulls: Vec::new(),
+        updated_at: None,
     }
 }
 #[test]
