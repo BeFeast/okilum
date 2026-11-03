@@ -43,6 +43,7 @@ jobs:
           restore-keys: |
             manager-board-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
             agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
+            manager-board-native-v1-${{ runner.os }}-
       - name: Verify source and build the release fixture
         run: |
           test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
