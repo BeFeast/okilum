@@ -23,7 +23,7 @@ class FastScript(unittest.TestCase):
                 self.assertIsNotNone(match, name)
                 step = match[1]
                 self.assertNotIn('if:', step)
-                self.assertIn('        timeout-minutes: 2\n', step)
+                self.assertIn('        timeout-minutes: 5\n', step)
                 command = shlex.split(step.split('        run: ', 1)[1].strip())
                 self.assertEqual(command, ['python3', '-I', '-m', 'unittest', 'discover',
                                            '-s', f'scripts/{directory}', '-p', 'test_*.py', '-v'])

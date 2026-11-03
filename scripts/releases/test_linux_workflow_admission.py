@@ -15,7 +15,7 @@ class LinuxAdmission(unittest.TestCase):
         # runs have independent groups, so Arch cannot occupy their admission.
         self.assertIn('github.run_id', workflow['concurrency']['group'])
         self.assertIn("inputs.hourly_source", workflow['concurrency']['group'])
-        self.assertIs(workflow['concurrency']['cancel-in-progress'], True)
+        self.assertIs(workflow['concurrency']['cancel-in-progress'], False)
         jobs = workflow['jobs']
         self.assertNotIn('needs', jobs['select'])
         self.assertEqual(jobs['appimage-reuse']['needs'], 'select')
