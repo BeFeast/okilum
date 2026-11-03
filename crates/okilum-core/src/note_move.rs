@@ -170,7 +170,7 @@ impl MovePlan {
     }
 
     fn commit_before_rename(self, before: impl FnOnce()) -> Result<Moved> {
-        let _admission = self.authority.admit()?.enter()?;
+        let _admission = self.authority.operation()?;
         if snapshot(&self.source_dir, &self.source_name)
             .context("The source is no longer readable. Nothing was moved; preview again")?
             != self.expected

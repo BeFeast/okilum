@@ -147,7 +147,7 @@ impl DirectoryMovePlan {
         })
     }
     pub fn commit(self) -> Result<Moved> {
-        let _admission = self.authority.admit()?.enter()?;
+        let _admission = self.authority.operation()?;
         ensure!(
             DirectorySnapshot::at(&self.source_dir, &self.source_name)? == self.expected,
             "Folder changed after preview; nothing was moved"

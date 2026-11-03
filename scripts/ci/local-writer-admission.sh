@@ -17,3 +17,7 @@ run_group cargo test --locked -p okilum-core --lib file_editor::local_writer_adm
 run_group cargo test --locked -p okilum-core --test local_writer_admission -- --nocapture
 run_group cargo test --locked -p okilum-shell --bin okilum local_writer_admission -- --nocapture
 run_group cargo test --locked -p okilum-t3 local_writer_admission -- --nocapture
+
+# #2507 data-safety follow-up: every reviewed regression group is non-empty.
+run_group cargo test --locked -p okilum-core --lib local_writer_review -- --nocapture
+run_group cargo test --locked -p okilum-shell --bin okilum local_writer_review -- --nocapture

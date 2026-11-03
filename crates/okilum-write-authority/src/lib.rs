@@ -1,8 +1,8 @@
 //! Cooperative local canonical-writer admission. This is NOT transport quiescence
 //! or protection from external editors. Durable holds never release on Drop.
-//! Admission/hold transitions are nonblocking: drain polling belongs on a worker.
+//! Short admission metadata locks serialize ordinary writers; drain polling is nonblocking.
 //! First registration serializes account metadata on the vault-opening worker.
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -252,8 +252,9 @@ impl Authority {
         if let Some(a) = Self::existing(&account, &root)? {
             return Ok(a);
         }
-        // An old single-folder authority cannot silently become a different
-        // vault authority. Surface this ambiguity instead of bypassing its hold.
+        // Promote idle quick-file scopes under the registry lock. Keep their
+        // records: existing handles resolve the new enclosing authority at admission.
+        let mut enclosed = Vec::new();
         let ancestor_identities = root.ancestors().map(identity).collect::<Result<Vec<_>>>()?;
         for entry in fs::read_dir(&account)? {
             let p = entry?.path();
@@ -279,16 +280,33 @@ impl Authority {
                         "Physical vault identity has an unfinished hold at another root; explicit recovery required");
                 }
                 if b.root.starts_with(&root) && b.root != root && b.root.exists() {
-                    bail!("An enclosed folder already has writer authority; reopen that folder or explicitly reconcile vault scopes");
+                    let child = Self {
+                        account: account.clone(),
+                        binding_path: p.clone(),
+                        directory: account.join(key(&b.root)),
+                        binding: b,
+                    };
+                    let admission = file(&child.directory.join("admission.lock"), false)?;
+                    admission.lock()?;
+                    child.validate()?;
+                    ensure!(child.state()?.phase == Phase::Open,
+                        "Enclosed folder has an unfinished writer hold; release or recover it before opening the enclosing vault");
+                    let writers = file(&child.directory.join("writers.lock"), false)?;
+                    writers.try_lock().context("Enclosed folder is publishing; retry opening the enclosing vault after it finishes")?;
+                    enclosed.push((admission, writers));
                 }
             }
         }
         let directory = account.join(key(&root));
-        ensure!(
-            !directory.try_exists()?,
-            "Incomplete writer authority initialization; explicit recovery required"
-        );
+        // No binding was published, so no caller can have acquired this scope.
+        // Resume interrupted initialization under registry.lock, preserving any
+        // unfinished durable hold rather than resetting operational state.
         private_dir(&directory)?;
+        let state_path = directory.join("state.json");
+        if state_path.try_exists()? {
+            ensure!(read::<Snapshot>(&state_path)?.phase == Phase::Open,
+                "Unbound authority has an unfinished hold; recovery required");
+        }
         for name in ["admission.lock", "writers.lock", "owner.lock"] {
             file(&directory.join(name), true)?.sync_all()?;
         }
@@ -303,14 +321,14 @@ impl Authority {
             owner: identity(&directory.join("owner.lock"))?,
         };
         persist(
-            &directory.join("state.json"),
+            &state_path,
             &Snapshot {
                 epoch: binding.epoch.clone(),
                 revision: 0,
                 operation_id: None,
                 phase: Phase::Open,
             },
-            true,
+            !state_path.try_exists()?,
         )?;
         let binding_path = account.join(format!("{}.json", key(&root)));
         persist(&binding_path, &binding, true)?;
@@ -346,6 +364,8 @@ impl Authority {
         &self.binding.root
     }
     fn validate(&self) -> Result<()> {
+        #[cfg(test)]
+        VALIDATIONS.with(|count| count.set(count.get() + 1));
         ensure!(
             self.binding.schema == 1,
             "Unsupported local writer authority"
@@ -372,12 +392,39 @@ impl Authority {
         );
         Ok(())
     }
-    fn locked(&self) -> Result<File> {
-        self.validate()?;
-        let f = file(&self.directory.join("admission.lock"), false)?;
-        exclusive(&f)?;
-        self.validate()?;
-        Ok(f)
+    // Read the outermost published scope without validating each candidate.
+    // The selected scope is validated exactly once, under its admission lock.
+    fn enclosing(&self) -> Result<Option<Self>> {
+        for ancestor in self.root().ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
+            let binding_path = self.account.join(format!("{}.json", key(ancestor)));
+            if binding_path.try_exists()? {
+                let binding: Binding = read(&binding_path)?;
+                ensure!(binding.root == ancestor, "Writer scope binding mismatch");
+                return Ok(Some(Self {
+                    account: self.account.clone(),
+                    directory: self.account.join(key(ancestor)),
+                    binding_path,
+                    binding,
+                }));
+            }
+        }
+        Ok(None)
+    }
+    fn locked(&self) -> Result<(Self, File)> {
+        let mut authority = self.enclosing()?.unwrap_or_else(|| self.clone());
+        loop {
+            let f = file(&authority.directory.join("admission.lock"), false)?;
+            // This protects only bounded metadata work, never a writer's whole
+            // lifetime. Contention is normal and must not become a failed save.
+            f.lock().context("Cannot serialize local writer admission")?;
+            if let Some(parent) = authority.enclosing()? {
+                drop(f);
+                authority = parent;
+                continue;
+            }
+            authority.validate()?;
+            return Ok((authority, f));
+        }
     }
     fn state(&self) -> Result<Snapshot> {
         let s: Snapshot = read(&self.directory.join("state.json"))?;
@@ -388,20 +435,19 @@ impl Authority {
         Ok(s)
     }
     fn save(&self, s: &Snapshot) -> Result<()> {
-        self.validate()?;
         persist(&self.directory.join("state.json"), s, false)
     }
     /// No waiting. Dropped/crashed holders leave admission closed. A fresh reader
     /// additionally records RecoveryPending when the owner lock has disappeared.
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let _l = self.locked()?;
-        let mut s = self.state()?;
+        let (authority, _l) = self.locked()?;
+        let mut s = authority.state()?;
         if matches!(s.phase, Phase::Draining | Phase::Held) {
-            let owner = file(&self.directory.join("owner.lock"), false)?;
+            let owner = file(&authority.directory.join("owner.lock"), false)?;
             if owner.try_lock().is_ok() {
                 s.phase = Phase::RecoveryPending;
                 s.revision = next(s.revision)?;
-                self.save(&s)?;
+                authority.save(&s)?;
             }
         }
         Ok(s)
@@ -410,25 +456,32 @@ impl Authority {
         if let Some(lease) = ACTIVE.with(|a| {
             a.borrow()
                 .iter()
-                .find(|l| l.0.authority.binding == self.binding)
+                .find(|l| l.0.authority.binding == self.binding
+                    || (l.0.authority.account == self.account
+                        && self.root().starts_with(l.0.authority.root())))
                 .cloned()
         }) {
             lease.validate()?;
             return Ok(lease);
         }
-        let _l = self.locked()?;
-        let s = self.state()?;
+        let (authority, _l) = self.locked()?;
+        let s = authority.state()?;
         ensure!(s.phase == Phase::Open, "Canonical publication deferred by local writer hold {:?} (operation {:?}); draft and recovery must be retained", s.phase, s.operation_id);
-        let writers = file(&self.directory.join("writers.lock"), false)?;
+        let writers = file(&authority.directory.join("writers.lock"), false)?;
         writers
             .try_lock_shared()
             .context("Local writer drain is active; retain draft and retry")?;
-        self.validate()?;
+
         Ok(WriterLease(Arc::new(LeaseInner {
-            authority: self.clone(),
+            authority: authority.clone(),
             _writers: writers,
             revision: s.revision,
         })))
+    }
+    /// Admit and enter one immediate synchronous operation. Delayed jobs use
+    /// admit() and enter() separately, revalidating when publication resumes.
+    pub fn operation(&self) -> Result<OperationGuard> {
+        Ok(self.admit()?.enter_validated())
     }
     /// Close admission durably BEFORE testing/draining existing writers. Caller
     /// retains Hold and polls try_hold on a worker; there is no UI-thread wait.
@@ -439,20 +492,20 @@ impl Authority {
                 && !operation_id.chars().any(char::is_control),
             "Invalid hold operation identity"
         );
-        let _l = self.locked()?;
-        let mut s = self.state()?;
+        let (authority, _l) = self.locked()?;
+        let mut s = authority.state()?;
         ensure!(
             s.phase == Phase::Open,
             "An unfinished local writer hold already exists"
         );
-        let owner = file(&self.directory.join("owner.lock"), false)?;
+        let owner = file(&authority.directory.join("owner.lock"), false)?;
         exclusive(&owner)?;
         s.phase = Phase::Draining;
         s.operation_id = Some(operation_id.into());
         s.revision = next(s.revision)?;
-        self.save(&s)?;
+        authority.save(&s)?;
         Ok(Hold {
-            authority: self.clone(),
+            authority: authority.clone(),
             token: token(&s)?,
             _owner: owner,
         })
@@ -460,19 +513,19 @@ impl Authority {
     /// Explicit recovery adopts the exact observed state after the former holder
     /// has died/closed. It does not grant transport ownership or resume anything.
     pub fn recover(&self, observed: &Snapshot) -> Result<Hold> {
-        let _l = self.locked()?;
-        let mut s = self.state()?;
+        let (authority, _l) = self.locked()?;
+        let mut s = authority.state()?;
         ensure!(
             &s == observed && s.phase != Phase::Open,
             "Stale recovery observation refused"
         );
-        let owner = file(&self.directory.join("owner.lock"), false)?;
+        let owner = file(&authority.directory.join("owner.lock"), false)?;
         exclusive(&owner)?;
         s.phase = Phase::RecoveryPending;
         s.revision = next(s.revision)?;
-        self.save(&s)?;
+        authority.save(&s)?;
         Ok(Hold {
-            authority: self.clone(),
+            authority: authority.clone(),
             token: token(&s)?,
             _owner: owner,
         })
@@ -501,7 +554,7 @@ impl Hold {
         &self.token
     }
     pub fn try_hold(&mut self, expected: &Token) -> Result<bool> {
-        let _l = self.authority.locked()?;
+        let (_authority, _l) = self.authority.locked()?;
         let mut s = self.authority.state()?;
         ensure!(
             expected == &self.token && token(&s)? == *expected,
@@ -525,7 +578,7 @@ impl Hold {
     /// Explicit release/cancel after the owner has reconciled its operation.
     /// Refuses while a previously admitted operation/rollback is still alive.
     pub fn release(self, expected: &Token) -> Result<()> {
-        let _l = self.authority.locked()?;
+        let (_authority, _l) = self.authority.locked()?;
         let mut s = self.authority.state()?;
         ensure!(
             expected == &self.token && token(&s)? == *expected,
@@ -576,10 +629,12 @@ impl WriterLease {
     }
 }
 pub fn with_root<T>(root: &Path, body: impl FnOnce() -> Result<T>) -> Result<T> {
-    Authority::for_root(root)?.admit()?.scope(body)
+    let _operation = operation(root)?;
+    body()
 }
 pub fn with_path<T>(path: &Path, body: impl FnOnce() -> Result<T>) -> Result<T> {
-    Authority::for_path(path)?.admit()?.scope(body)
+    let _operation = operation_for_path(path)?;
+    body()
 }
 
 /// Synchronous operation scope. It is intentionally !Send: transfer a cloned
@@ -598,18 +653,21 @@ impl Drop for OperationGuard {
 impl WriterLease {
     pub fn enter(&self) -> Result<OperationGuard> {
         self.validate()?;
+        Ok(self.enter_validated())
+    }
+    fn enter_validated(&self) -> OperationGuard {
         ACTIVE.with(|a| a.borrow_mut().push(self.clone()));
-        Ok(OperationGuard {
+        OperationGuard {
             _lease: self.clone(),
             _thread: std::marker::PhantomData,
-        })
+        }
     }
 }
 pub fn operation(root: &Path) -> Result<OperationGuard> {
-    Authority::for_root(root)?.admit()?.enter()
+    Authority::for_root(root)?.operation()
 }
 pub fn operation_for_path(path: &Path) -> Result<OperationGuard> {
-    Authority::for_path(path)?.admit()?.enter()
+    Authority::for_path(path)?.operation()
 }
 
 /// Resolve a destination folder before create_dir_all. Never create canonical
@@ -623,6 +681,9 @@ pub fn operation_for_directory(directory: &Path) -> Result<OperationGuard> {
 }
 
 #[cfg(test)]
+thread_local! { static VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn fixture() -> (tempfile::TempDir, Authority) {
@@ -630,6 +691,96 @@ mod tests {
         fs::create_dir(t.path().join("vault")).unwrap();
         let a = Authority::open_in(&t.path().join("account"), &t.path().join("vault")).unwrap();
         (t, a)
+    }
+    #[test]
+    fn local_writer_admission_review_parallel_normal_writers_all_succeed() {
+        let (_t, a) = fixture();
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        std::thread::scope(|scope| {
+            let mut jobs = vec![];
+            for index in 0..16 {
+                let a = &a;
+                let barrier = &barrier;
+                jobs.push(scope.spawn(move || {
+                    barrier.wait();
+                    for iteration in 0..16 {
+                        let _operation = a.operation().unwrap();
+                        fs::write(a.root().join(format!("{index}-{iteration}.md")), b"saved").unwrap();
+                    }
+                }));
+            }
+            for job in jobs { job.join().unwrap(); }
+        });
+        assert_eq!(fs::read_dir(a.root()).unwrap().count(), 256);
+        let hold = a.begin_drain("positive-hold-control").unwrap();
+        assert!(a.operation().is_err());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        a.operation().unwrap();
+    }
+    #[test]
+    fn local_writer_admission_review_synchronous_operation_validates_once() {
+        let (_t, a) = fixture();
+        VALIDATIONS.with(|count| count.set(0));
+        let operation = a.operation().unwrap();
+        assert_eq!(VALIDATIONS.with(|count| count.get()), 1);
+        drop(operation);
+        // Delayed publications still validate when their worker resumes.
+        let lease = a.admit().unwrap();
+        VALIDATIONS.with(|count| count.set(0));
+        let _operation = lease.enter().unwrap();
+        assert_eq!(VALIDATIONS.with(|count| count.get()), 1);
+    }
+    #[test]
+    fn local_writer_admission_review_subfolder_first_promotes_and_old_handles_follow_root() {
+        let (t, _) = fixture();
+        let root = t.path().join("quick-vault");
+        let sub = root.join("Sub");
+        let sibling = root.join("Other");
+        fs::create_dir_all(&sub).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        let account = t.path().join("quick-account");
+        let first = Authority::open_in(&account, &sub).unwrap();
+        let other = Authority::open_in(&account, &sibling).unwrap();
+        let lease = first.admit().unwrap();
+        assert!(Authority::open_in(&account, &root).is_err(), "live lease fences promotion");
+        drop(lease);
+        let hold = other.begin_drain("subfolder-hold").unwrap();
+        assert!(Authority::open_in(&account, &root).is_err(), "hold cannot be bypassed by promotion");
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        let vault = Authority::open_in(&account, &root).unwrap();
+        assert_eq!(Authority::open_in(&account, &sub).unwrap().root(), vault.root());
+        assert_eq!(Authority::open_in(&account, &sibling).unwrap().root(), vault.root());
+        first.operation().unwrap();
+        other.operation().unwrap();
+        let hold = vault.begin_drain("whole-vault").unwrap();
+        for authority in [&first, &other, &vault] { assert!(authority.admit().is_err()); }
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        let _operation = vault.operation().unwrap();
+        // An editor that predates promotion can join its parent's rollback.
+        first.operation().unwrap();
+        other.operation().unwrap();
+    }
+    #[test]
+    fn local_writer_admission_review_interrupted_initialization_is_resumable() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let account = t.path().join("account");
+        let directory = account.join(key(&root.canonicalize().unwrap()));
+        private_dir(&directory).unwrap();
+        file(&directory.join("admission.lock"), true).unwrap();
+        let a = Authority::open_in(&account, &root).unwrap();
+        a.operation().unwrap();
+        assert_eq!(a.snapshot().unwrap().phase, Phase::Open);
+        // Crash after state.json but before the binding was published.
+        fs::remove_file(&a.binding_path).unwrap();
+        let recovered = Authority::open_in(&account, &root).unwrap();
+        assert_ne!(recovered.binding.epoch, a.binding.epoch);
+        recovered.operation().unwrap();
+        assert!(a.admit().is_err(), "the interrupted epoch cannot publish");
     }
     #[test]
     fn local_writer_admission_drain_closes_before_existing_lease_and_nested_rollback() {

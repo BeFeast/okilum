@@ -1378,7 +1378,7 @@ pub(crate) fn create_window(
         window.on_window_should_close(cx, move |window, cx| {
             super::window_state::record_window(window, cx);
             weak.update(cx, |reader, cx| {
-                if !reader.save_source(cx) {
+                if !reader.save_source_for_close(cx) {
                     return false;
                 }
                 reader.record_ui_state(reader.ui_state.was_active(), cx);

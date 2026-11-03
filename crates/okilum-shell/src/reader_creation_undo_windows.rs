@@ -34,6 +34,7 @@ impl Reader {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    let _admission = okilum_write_authority::operation(&target.root)?;
                     let _lock = if !has_editor && target.source.is_some() {
                         Some(okilum_core::file_editor::FileEditor::reserve_destination(
                             &target.root.join(&target.relative),

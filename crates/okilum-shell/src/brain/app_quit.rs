@@ -58,7 +58,7 @@ pub(super) fn register(view: WeakEntity<BrainView>, window: AnyWindowHandle, cx:
 }
 
 fn request(cx: &mut App) {
-    if !crate::reader_editor::save_all(cx) {
+    if !crate::reader_editor::save_all_for_quit(cx) {
         return;
     }
     let state = cx.default_global::<Coordinator>();
