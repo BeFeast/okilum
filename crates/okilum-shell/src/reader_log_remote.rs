@@ -10,6 +10,8 @@ mod guided;
 #[path = "reader_log_remote/server_filters.rs"]
 mod server_filters;
 use guided::Guided;
+#[path = "reader_log_remote/credentials.rs"]
+mod credentials;
 #[derive(Default)]
 struct Windows(std::collections::BTreeMap<String, WindowHandle<Root>>);
 impl Global for Windows {}
@@ -85,6 +87,7 @@ fn show_inner(vault: PathBuf, link: Option<remote_log::link::RemoteLink>, cx: &m
 }
 
 struct Panel {
+    credentials: credentials::Credentials,
     guided: Guided,
     _chips: Option<Subscription>,
     pending_link: Option<remote_log::link::RemoteLink>,
@@ -137,7 +140,7 @@ impl Panel {
         let time_field = input("Time field (default @timestamp)", cx, window);
         let key = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Encoded API key → OS credential storage")
+                .placeholder("Encoded API key")
                 .masked(true)
         });
         let kql = input("Server KQL", cx, window);
@@ -173,10 +176,11 @@ impl Panel {
             });
         });
         let guided = Guided::new(window, cx);
-        Self{_navigation:None,guided,_chips:None,generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,requested_definition:None,applied_definition:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
+        Self{credentials:Default::default(),_navigation:None,guided,_chips:None,generation:0,following:false,credential_pending:false,proposal:None,pending_link:None,sources_loaded:false,vault,state,name,url,pattern,time_field,requested:None,requested_definition:None,applied_definition:None,auth_error:false,quality:None,key,kql,filters,from,to,sources:Vec::new(),draft:None,applied:None,range:None,view:None,data:None,busy:false,more:false,exporting:false,message:"Add a source or import Discover, review the query and filters, then Apply to load history. Start never runs automatically.".into(),error:None,worker,_events,_load,_credential:None}
     }
     fn choose(&mut self, source: Source, window: &mut Window, cx: &mut Context<Self>) {
         self.stop();
+        self.credentials.select(source.credential_url(&self.vault));
         if self
             .draft
             .as_ref()
@@ -195,7 +199,7 @@ impl Panel {
         self.configure_server_counts(cx);
         self.key = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Encoded API key → OS credential storage")
+                .placeholder("Encoded API key")
                 .masked(true)
         });
         self.name
@@ -234,6 +238,7 @@ impl Panel {
             }
         );
         self.draft = Some(source);
+        self.guided.adding = false;
         self.error = None;
         cx.notify();
     }
@@ -320,7 +325,7 @@ impl Panel {
                 return;
             }
         };
-        self.submit_query(source, false, requested_generation, window, cx);
+        self.submit_query(source, false, false, requested_generation, window, cx);
     }
     fn replace_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.auth_error || self.busy || self.credential_pending {
@@ -341,12 +346,13 @@ impl Panel {
             return;
         }
         self.stop();
-        self.submit_query(source, true, self.generation, window, cx);
+        self.submit_query(source, true, false, self.generation, window, cx);
     }
     fn submit_query(
         &mut self,
         source: Source,
         replacement: bool,
+        credential_retry: bool,
         requested_generation: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -354,6 +360,8 @@ impl Panel {
         self.requested = Some(source.clone());
         let definition = if replacement {
             None
+        } else if credential_retry {
+            self.requested_definition.clone()
         } else {
             let mut definition = source.clone();
             definition.discover.filters = serde_json::from_str(&self.filters.read(cx).value())
@@ -377,20 +385,38 @@ impl Panel {
         let count_cancel = self.guided.cancel.clone();
         #[cfg(test)]
         let test_key = self.guided.test_key.clone();
-        let mut secret = self.key.read(cx).value().as_bytes().to_vec();
-        // Drop the entire input/undo history after handing bytes to the keychain task.
+        let credential = source.credential_url(&self.vault);
+        self.credentials.select(credential.clone());
+        self.credentials.replacement = replacement;
+        self.credentials.failure = None;
+        let input = self.key.read(cx).value();
+        if !input.is_empty() {
+            match ApiKey::new(input.as_bytes().to_vec()) {
+                Ok(key) => self.credentials.key = Some(key),
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    self.busy = false;
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        // Drop the entire input/undo history; retained retry bytes have a zeroizing owner.
         self.key = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Encoded API key → OS credential storage")
+                .placeholder("Encoded API key")
                 .masked(true)
         });
-        let credential = source.credential_url(&self.vault);
-        let store = if secret.is_empty() {
+        let session_only = self.credentials.session_only && !self.credentials.retry_save;
+        self.credentials.retry_save = false;
+        let memory_key = self.credentials.key.clone();
+        let store = if session_only {
             None
         } else {
-            Some(cx.write_credentials(&credential, "ApiKey", &secret))
+            memory_key
+                .as_ref()
+                .map(|key| self.write_key(&credential, key, cx))
         };
-        secret.fill(0);
         let root = self.vault.clone();
         let directory = self.state.clone();
         self.busy = true;
@@ -416,26 +442,30 @@ impl Panel {
                         .await?;
                     return Ok((key, client));
                 }
-                if let Some(store) = store {
-                    store.await.context(
-                        "OS credential storage could not save the key; no file fallback is used",
-                    )?;
-                }
-                let read = cx.update(|cx| cx.read_credentials(&credential));
-                let (_, bytes) = read
-                    .await
-                    .context("OS credential storage is unavailable")?
-                    .context("No OS-stored key for this vault/source; enter an encoded API key")?;
-                let key = ApiKey::new(bytes.clone())?;
+                let key = if session_only {
+                    memory_key.context("Enter an encoded API key for this session")?
+                } else {
+                    if let Some(store) = store {
+                        store.await.map_err(credentials::StorageError::from)?;
+                    }
+                    let read = this.update(cx, |this, cx| this.read_key(&credential, cx))?;
+                    let (_, bytes) = read
+                        .await
+                        .map_err(credentials::StorageError::from)?
+                        .ok_or_else(|| {
+                            credentials::StorageError(
+                                "No OS-stored key for this vault/source; enter an encoded API key"
+                                    .into(),
+                            )
+                        })?;
+                    ApiKey::new(bytes)?
+                };
+                let client_key = key.clone();
                 let selected = source.clone();
                 let client = cx
                     .background_executor()
                     .spawn(async move {
-                        remote_log::transport::Kibana::new(
-                            &selected,
-                            ApiKey::new(bytes)?,
-                            count_cancel,
-                        )
+                        remote_log::transport::Kibana::new(&selected, client_key, count_cancel)
                     })
                     .await?;
                 Ok((key, client))
@@ -463,6 +493,11 @@ impl Panel {
                 this.credential_pending = false;
                 match result {
                     Ok((key, client)) => {
+                        this.credentials.failure = None;
+                        this.credentials.session_only = session_only;
+                        if !session_only {
+                            this.credentials.key = None;
+                        }
                         this.guided.key_needed = false;
                         let client = client.with_diagnostics(diagnostics);
                         this.guided.count_client = Some(client.clone());
@@ -493,7 +528,18 @@ impl Panel {
                         this.guided.connection = "Connection failed".into();
                         this.message =
                             "History request failed; previous applied results are retained.".into();
-                        this.error = Some(format!("{error:#}"));
+                        if let Some(storage) = error.downcast_ref::<credentials::StorageError>() {
+                            this.credentials.failure = Some(storage.0.clone());
+                            this.error = Some(credentials::recovery_message().into());
+                            if storage.0.starts_with("No OS-stored key") {
+                                this.error = Some(storage.0.clone());
+                                if this.credentials.key.is_none() {
+                                    this.credentials.failure = None;
+                                }
+                            }
+                        } else {
+                            this.error = Some(format!("{error:#}"));
+                        }
                     }
                 }
                 cx.notify();
@@ -807,23 +853,14 @@ impl Panel {
     // Bound debug stack use by materializing one native section at a time.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut header = v_flex()
+            .id("remote-header-scroll")
             .p_3()
             .gap_2()
-            .flex_none()
+            .min_w_0()
+            .max_h(relative(0.75))
+            .overflow_y_scroll()
+            .flex_shrink_0()
             .child(self.render_guided(cx));
-        if self.guided.adding {
-            header = header.child(self.render_source_form(cx));
-        }
-        if self.auth_error
-            || self.guided.key_needed
-            || self.draft.as_ref().is_some_and(|draft| {
-                self.applied.as_ref().is_none_or(|applied| {
-                    applied.id != draft.id || applied.endpoint != draft.endpoint
-                })
-            })
-        {
-            header = header.child(self.render_key_controls(cx));
-        }
         header = header.child(self.render_actions(cx));
         if self.guided.advanced {
             header = header.child(self.render_advanced_controls(cx));
@@ -831,10 +868,12 @@ impl Panel {
         if self.proposal.is_some() {
             header = header.child(self.render_start_confirmation(cx));
         }
+        header = header.child(self.render_status(cx));
         if self.guided.details_open {
             let text = self.worker.diagnostics().lock().unwrap().copy_text();
             header = header.child(
                 v_flex()
+                    .debug_selector(|| "remote-connection-section".into())
                     .gap_2()
                     .child(
                         Button::new("remote-copy-details")
@@ -858,7 +897,7 @@ impl Panel {
                     ),
             );
         }
-        header.child(self.render_status(cx)).into_any_element()
+        header.into_any_element()
     }
     fn render_source_form(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut header = v_flex().gap_2();
@@ -867,8 +906,14 @@ impl Panel {
                 .child(
                     h_flex()
                         .gap_2()
+                        .min_w_0()
                         .child(div().w(px(180.)).child(Input::new(&self.name).small()))
-                        .child(div().flex_1().child(Input::new(&self.url).small()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Input::new(&self.url).small()),
+                        )
                         .child(
                             Button::new("remote-import")
                                 .debug_selector(|| "remote-import".into())
@@ -1026,7 +1071,7 @@ impl Panel {
         if self.guided.advanced {
             header=header
                 .child(div().text_xs().child("Advanced · Discover import, server KQL, complete filter objects and exact timestamps"))
-                .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.url).small()))
+                .child(h_flex().gap_2().child(div().flex_1().min_w_0().child(Input::new(&self.url).small()))
                     .child(Button::new("remote-advanced-import").small().label("Import Discover").on_click(cx.listener(|this,_,window,cx|this.import(window,cx)))))
                 .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&self.pattern).small())).child(div().flex_1().child(Input::new(&self.time_field).small())))
                 .child(Input::new(&self.kql).small())
@@ -1052,12 +1097,30 @@ impl Panel {
         }
         header.into_any_element()
     }
+    fn environment_name(&self) -> &str {
+        self.draft
+            .as_ref()
+            .or(self.requested.as_ref())
+            .or(self.applied.as_ref())
+            .map_or("No environment", |source| source.name.as_str())
+    }
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut header = v_flex().gap_2();
-        let environment = self
+        let environment = self.environment_name();
+        let retained_environment = self
             .applied
             .as_ref()
-            .map_or("No environment", |source| source.name.as_str());
+            .filter(|applied| {
+                self.draft.as_ref().is_some_and(|draft| {
+                    draft.id != applied.id || draft.endpoint != applied.endpoint
+                })
+            })
+            .map(|source| {
+                format!(
+                    "Loaded rows remain from {} until Refresh succeeds",
+                    source.name
+                )
+            });
         let scope = self
             .applied
             .as_ref()
@@ -1089,8 +1152,9 @@ impl Panel {
                     .debug_selector(|| "remote-status".into())
                     .text_sm()
                     .child(format!(
-                        "{environment} · {} · Scope: {}",
+                        "{environment} · {}{} · Scope: {}",
                         self.guided.connection,
+                        self.credential_status(),
                         if scope.is_empty() {
                             "All values"
                         } else {
@@ -1098,6 +1162,7 @@ impl Panel {
                         }
                     )),
             )
+            .children(retained_environment.map(|label| div().text_xs().child(label)))
             .children(self.range.as_ref().map(|range| {
                 div().text_xs().child(format!(
                     "Applied window · {} → {} · UTC · bounded changing data",
@@ -1112,7 +1177,7 @@ impl Panel {
                         "Incomplete window: partial responses, failed shards/clusters or a deadline can omit events. A cap stops at 10,000 rows / 16 MiB; narrow the range and Refresh. Unknown metadata cannot certify completion."
                     )))
             }))
-            .children(self.error.as_ref().map(|error| {
+            .children(self.error.as_ref().filter(|_| self.credentials.failure.is_none()).map(|error| {
                 div()
                     .text_sm()
                     .text_color(brand::palette(cx).danger)
@@ -1191,7 +1256,7 @@ impl Render for Panel {
         body = if let Some(view) = &self.view {
             body.child(div().flex_1().min_h_0().child(view.clone()))
         } else {
-            body.child(div().flex_1().p_4().child("No history loaded. Events stay in memory until this window closes; credentials stay in the OS credential store."))
+            body.child(div().flex_1().p_4().child("No history loaded. Events stay in memory until this window closes. Keys use OS storage unless you explicitly choose this session only."))
         };
         body
     }
@@ -1396,3 +1461,7 @@ mod investigation_tests;
 #[cfg(test)]
 #[path = "reader_log_remote/guided_tests.rs"]
 mod guided_tests;
+
+#[cfg(test)]
+#[path = "reader_log_remote/session_key_tests.rs"]
+mod session_key_tests;

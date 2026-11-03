@@ -65,6 +65,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 # Reuse the existing HTTP runtime/channel versions for cancellable remote sessions.
 tokio = { version = "1", features = ["rt", "sync", "macros", "time", "net"] }
 async-channel = "2"
+# Secret buffers must be erased even when validation or a credential write fails.
+zeroize = "1.9"
 
 [dev-dependencies]
 # The default reader parses Markdown with markdown-rs inside gpui-component

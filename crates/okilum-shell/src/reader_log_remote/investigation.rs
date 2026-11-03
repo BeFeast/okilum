@@ -165,7 +165,7 @@ impl Panel {
                     }
                     self.generation = self.worker.navigate(compiled);
                 } else {
-                    self.submit_query(compiled, false, self.generation, window, cx);
+                    self.submit_query(compiled, false, false, self.generation, window, cx);
                 }
             }
         }

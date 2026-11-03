@@ -448,6 +448,12 @@ impl Panel {
     // Keep section stack frames bounded; GPUI debug controls are large values.
     pub(super) fn render_guided(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut controls = v_flex().gap_2().child(self.render_environments(cx));
+        if self.guided.adding {
+            controls = controls.child(self.render_source_form(cx));
+        }
+        controls = controls
+            .child(self.render_key_controls(cx))
+            .child(self.render_credential_recovery(cx));
         if self.draft.is_none() {
             return controls
                 .child(
@@ -471,7 +477,14 @@ impl Panel {
         let mut environments = h_flex()
             .gap_2()
             .flex_wrap()
-            .child(div().text_sm().child("Environment"));
+            .debug_selector(|| "remote-environments".into())
+            .child(div().text_sm().child("Environment"))
+            .children(
+                self.draft
+                    .as_ref()
+                    .filter(|draft| !self.sources.iter().any(|s| s.id == draft.id))
+                    .map(|draft| div().text_sm().child(draft.name.clone())),
+            );
         for (source_index, source) in self.sources.iter().enumerate() {
             let source = source.clone();
             let id = source.id.to_string();
@@ -511,6 +524,7 @@ impl Panel {
         let mut time = h_flex()
             .gap_2()
             .flex_wrap()
+            .debug_selector(|| "remote-time-controls".into())
             .child(div().text_sm().child("Time · UTC"));
         for (at, (label, from)) in PRESETS.iter().enumerate() {
             let selected = self.from.read(cx).value().as_str() == *from
@@ -542,15 +556,22 @@ impl Panel {
     fn render_custom_range(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut controls = v_flex().gap_2();
         if self.guided.custom {
-            let mut row = h_flex().gap_2();
             for at in 0..2 {
-                row = row
+                let mut row = h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(div().w(px(112.)).flex_none().text_sm().child(if at == 0 {
+                        "From"
+                    } else {
+                        "To (exclusive)"
+                    }))
                     .child(
                         div()
-                            .text_sm()
-                            .child(if at == 0 { "From" } else { "To (exclusive)" }),
-                    )
-                    .child(DatePicker::new(&self.guided.dates[at]).small());
+                            .w(px(200.))
+                            .flex_none()
+                            .debug_selector(move || format!("remote-date-{at}"))
+                            .child(DatePicker::new(&self.guided.dates[at]).small()),
+                    );
                 for (part, value, total) in [
                     (0, self.guided.hours[at], 24),
                     (1, self.guided.minutes[at], 60),
@@ -558,6 +579,7 @@ impl Panel {
                     let weak = cx.entity().downgrade();
                     row = row.child(
                         Button::new(("remote-clock", at * 2 + part))
+                            .debug_selector(move || format!("remote-clock-{}", at * 2 + part))
                             .small()
                             .label(format!("{value:02}"))
                             .tooltip(if part == 0 { "Hour (UTC)" } else { "Minute" })
@@ -583,19 +605,27 @@ impl Panel {
                             }),
                     );
                 }
+                if at == 1 {
+                    row = row
+                        .child(
+                            div()
+                                .text_sm()
+                                .debug_selector(|| "remote-custom-zone".into())
+                                .child("UTC"),
+                        )
+                        .child(
+                            Button::new("remote-custom-apply")
+                                .debug_selector(|| "remote-custom-apply".into())
+                                .small()
+                                .label("Apply range")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.set_custom_range(window, cx);
+                                    this.apply(window, cx);
+                                })),
+                        );
+                }
+                controls = controls.child(row);
             }
-            controls = controls.child(
-                row.child(
-                    Button::new("remote-custom-apply")
-                        .debug_selector(|| "remote-custom-apply".into())
-                        .small()
-                        .label("Apply range")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.set_custom_range(window, cx);
-                            this.apply(window, cx);
-                        })),
-                ),
-            );
         }
         controls.into_any_element()
     }

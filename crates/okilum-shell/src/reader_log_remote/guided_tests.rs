@@ -3,12 +3,12 @@ use super::*;
 use ::core::prelude::v1::test;
 use okilum_core::remote_log::fake::{FakeKibana, Scenario};
 
-fn guided_frame(visual: &mut VisualTestContext) {
+pub(super) fn guided_frame(visual: &mut VisualTestContext) {
     visual.run_until_parked();
     visual.update(|window, cx| window.draw(cx).clear(cx));
     visual.run_until_parked();
 }
-fn guided_click(visual: &mut VisualTestContext, selector: &'static str) {
+pub(super) fn guided_click(visual: &mut VisualTestContext, selector: &'static str) {
     guided_frame(visual);
     let position = visual
         .debug_bounds(selector)

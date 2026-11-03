@@ -26,14 +26,20 @@ mod catalog;
 
 const RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 
-pub struct ApiKey(Vec<u8>);
+#[derive(Clone)]
+pub struct ApiKey(zeroize::Zeroizing<Vec<u8>>);
 impl ApiKey {
     pub fn new(bytes: Vec<u8>) -> Result<Self> {
+        let bytes = zeroize::Zeroizing::new(bytes);
         ensure!(
             !bytes.is_empty() && bytes.len() <= 8192 && bytes.iter().all(|b| b.is_ascii_graphic()),
             "Enter an encoded Kibana API key without whitespace"
         );
         Ok(Self(bytes))
+    }
+    /// Borrow only for the explicit OS credential write; never serialize this buffer.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
     }
 }
 impl std::fmt::Debug for ApiKey {
@@ -41,12 +47,6 @@ impl std::fmt::Debug for ApiKey {
         f.write_str("ApiKey([redacted])")
     }
 }
-impl Drop for ApiKey {
-    fn drop(&mut self) {
-        self.0.fill(0);
-    }
-}
-
 /// Only explicit transport outages retry automatically; query/auth/quality errors do not.
 #[derive(Debug)]
 pub(super) struct Transient(pub &'static str);
@@ -164,11 +164,11 @@ impl Kibana {
         if !query.is_empty() {
             url.query_pairs_mut().extend_pairs(query.iter().copied());
         }
-        let mut authorization = b"ApiKey ".to_vec();
+        let mut authorization = zeroize::Zeroizing::new(b"ApiKey ".to_vec());
         authorization.extend_from_slice(&self.key.0);
         let mut auth = reqwest::header::HeaderValue::from_bytes(&authorization)?;
         auth.set_sensitive(true);
-        authorization.fill(0);
+        drop(authorization);
         let mut request = self
             .client
             .request(method, url)

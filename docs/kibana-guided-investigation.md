@@ -7,6 +7,27 @@ remains available. A new source needs a key and Refresh before it is saved.
 Keys are scoped to the vault, source identity and endpoint. Event data stays in
 session memory.
 
+The panel reads from top to bottom: Environment, Time, Scope, query actions,
+status and table. Add source opens a collapsible connection section directly
+under Environment; adding the source closes it and immediately shows its name,
+even before authentication succeeds. Advanced is collapsed initially. Custom
+uses two bounded date/time rows, with UTC and Apply range beside the end time,
+at both 1200 × 800 and the minimum 900 × 600 window. Expanded connection,
+recovery and Advanced controls can scroll without displacing the results table.
+Connection details stays collapsed beneath the status line until explicitly opened.
+
+If OS credential storage refuses access, the panel explains recovery for the
+current OS. The raw error is available under Credential error details. The
+explicit **Use this key for this session only** action retains a zeroizing key
+buffer in process memory, scoped to this vault/source/endpoint, and loads the
+requested rows without another credential-store call. Status shows **Key not
+saved — session only**. Refresh, scope changes and 401 Replace API key retain
+that choice. **Retry saving** uses the existing OS credential API and replays the
+requested query. Successful saving clears the retained retry buffer. Switching
+sources or closing the panel drops that buffer; reopening requires a key again
+unless it was successfully saved. No key or credential mode is serialized in
+source definitions, saved views or event exports.
+
 The six presets select rolling intervals of 5 minutes, 15 minutes, 1 hour,
 4 hours, 24 hours or 7 days. Each query freezes an absolute half-open window.
 Refresh resolves a new window for a rolling selection; custom ranges remain
@@ -74,7 +95,10 @@ No corporate endpoint or key is needed.
    `remote-*:events`, time field `@timestamp`. Click Add source / import.
 3. Enter key `test-secret`. Click Last 24 h (while the fixed synthetic events
    fall in that window), or Custom and select 1 November 2026 00:00 through
-   5 November 2026 00:00, UTC, then Apply range.
+   5 November 2026 00:00, UTC, then Apply range. If the OS store refuses,
+   click Use this key for this session only; the same request loads the rows.
+   The status must show Synthetic and Key not saved — session only. Retry saving
+   remains available after unlocking the OS store.
 4. Click Pin scope field → `service.keyword` → `"checkout"`. The values/counts
    come from the server; source rows still contain `Checkout`.
 5. Open Columns and select `service`, then `duration`. Click the `service`
