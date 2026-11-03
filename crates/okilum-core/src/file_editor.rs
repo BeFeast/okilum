@@ -540,6 +540,15 @@ impl FileEditor {
         self.advance_generation();
         self.pending_write()
     }
+    /// A whole-buffer reset is an explicit bulk operation, unlike a key edit.
+    /// Establish exact equality here so a clean reload does not appear edited
+    /// merely because the native buffer has a different revision identity.
+    pub fn queue_reset_snapshot(&mut self, text: Text) -> DraftWrite {
+        if self.draft.base == text {
+            self.draft.base = text.clone();
+        }
+        self.queue_snapshot(text)
+    }
     pub fn snapshot(&self) -> Text {
         self.draft.text.clone()
     }
@@ -716,6 +725,10 @@ impl FileEditor {
         self.refuse_unresolved_link_recovery()?;
         if !self.dirty() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
+            // Undo or a clean explicit Save can have equal bytes in distinct
+            // native revisions. Publish the worker's equality proof by sharing
+            // the same snapshot, so UI dirty hints remain constant-time.
+            self.draft.base = self.draft.text.clone();
             return Ok(Save::Saved);
         }
         self.persist()?;
@@ -1132,6 +1145,10 @@ impl FileEditor {
     fn save_before_exchange_locked(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
         if !self.dirty() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
+            // Undo or a clean explicit Save can have equal bytes in distinct
+            // native revisions. Publish the worker's equality proof by sharing
+            // the same snapshot, so UI dirty hints remain constant-time.
+            self.draft.base = self.draft.text.clone();
             return Ok(Save::Saved);
         }
         self.persist()?;
@@ -2541,6 +2558,18 @@ mod persistence_order_tests {
         let recovered = FileEditor::open(&path, &state).unwrap();
         assert_eq!(recovered.text(), "\u{feff}last acknowledged 🧠\r\n");
         assert_eq!(fs::read(&path).unwrap(), "\u{feff}base\r\n".as_bytes());
+    }
+
+    #[test]
+    fn issue2404_clean_save_shares_the_equal_native_revision_after_undo() {
+        let (_dir, _path, _state, mut editor) = fixture();
+        let source = Text::from_rope(ropey::Rope::from_str("\u{feff}base\r\n"));
+        editor.queue_snapshot(source.clone());
+        assert!(editor.has_pending_revision());
+        assert!(!editor.dirty());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        assert!(!editor.has_pending_revision());
+        assert!(editor.snapshot().same(&source));
     }
 
     #[test]

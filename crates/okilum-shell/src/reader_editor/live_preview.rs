@@ -3570,7 +3570,7 @@ mod tests {
         reader.read_with(visual, |r, cx| {
             let e = r.editing.as_ref().unwrap();
             assert!(!e.refresh_deferred && !e.conflict_detected);
-            assert_eq!(e.input.read(cx).value().as_ref(), saved_text);
+            assert_eq!(e.input.read(cx).value().as_ref(), &*saved_text);
             assert_eq!(std::fs::read_to_string(e.store.path()).unwrap(), saved_text);
             assert_eq!(
                 *e.live_preview.completed_navigation_bytes().last().unwrap(),

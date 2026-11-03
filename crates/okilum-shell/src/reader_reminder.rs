@@ -241,7 +241,8 @@ impl MenuFacts {
     }
 
     #[cfg(test)]
-    pub(super) fn code_block(&self) -> Option<bool> {
+    pub(super) fn code_block(&self, cx: &App) -> Option<bool> {
+        self.prepare(cx);
         self.0.get().code_block
     }
 

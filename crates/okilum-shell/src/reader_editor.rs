@@ -121,6 +121,8 @@ pub(super) struct Editing {
     /// One persistent cell grid per editor; cell changes use the source Undo path.
     table_grid: Entity<tables::TableGrid>,
     save_status: Entity<status::SaveStatus>,
+    block_context: BlockContext,
+    block_cache: block_context::WorkerCache,
     input: Entity<EditorState>,
     conflict: Option<String>,
     conflict_detected: bool,
@@ -357,6 +359,8 @@ impl Editing {
             math_preview,
             table_grid,
             save_status,
+            block_context,
+            block_cache,
             input,
             conflict,
             conflict_detected,
@@ -389,6 +393,8 @@ impl Editing {
             math_preview,
             table_grid,
             save_status,
+            block_context,
+            block_cache,
             input,
             conflict,
             conflict_detected,
@@ -690,8 +696,9 @@ impl Reader {
         let language = code.unwrap_or(if plain_file { "text" } else { "markdown" });
         let wrap = code.is_none() || reader_ui_state::code_soft_wrap(cx);
         // The note's reference definitions and text, for rendered blocks (#1067).
-        let block_context: BlockContext =
-            Rc::new(std::cell::RefCell::new(BlockNote::new(store.text().into())));
+        let block_context: BlockContext = Rc::new(std::cell::RefCell::new(BlockNote::initial(
+            store.snapshot(),
+        )));
         let blocks = (!plain_file).then(|| {
             (
                 self.vault_root.clone(),
@@ -784,7 +791,7 @@ impl Reader {
                 this.refresh_link_complete(window, cx);
             }
         });
-        let changed = cx.subscribe(&input, move |this, input, _: &SourceMutation, cx| {
+        let changed = cx.subscribe(&input, move |this, input, mutation: &SourceMutation, cx| {
             let Some(editing) = &mut this.editing else {
                 return;
             };
@@ -792,18 +799,26 @@ impl Reader {
                 return;
             }
             let snapshot = input.read(cx).source_snapshot();
+            let source_stamp = snapshot.stamp;
             let value = okilum_core::source_projection::revision::Text::from_identified_rope(
                 snapshot.text.rope().clone(),
                 snapshot.text.id(),
             );
             // Retain the exact native revision, including silent Undo/Redo/IME.
-            let write = editing.store.queue_snapshot(value.clone());
-            *block_context.borrow_mut() = BlockNote::from_snapshot(value.clone());
+            let write = if mutation.reason
+                == gpui_component::input::projection::SourceMutationReason::Reset
+            {
+                editing.store.queue_reset_snapshot(value.clone())
+            } else {
+                editing.store.queue_snapshot(value.clone())
+            };
+            *editing.block_context.borrow_mut() = BlockNote::pending();
             editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
             let epoch = editing.recovery_epoch;
             let input_id = input.entity_id();
             editing.protecting = true;
-            let context = block_context.clone();
+            let context = editing.block_context.clone();
+            let cache = editing.block_cache.clone();
             editing.recovery_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(RECOVERY_PAUSE).await;
                 let (result, directions, prepared_context) = cx
@@ -816,6 +831,10 @@ impl Reader {
                             crate::source_presentation::CachedProvider::classify(snapshot.clone());
                         let prepared =
                             BlockNote::prepare(value, provider.rendered_blocks(&snapshot));
+                        // The worker retains the last large derived cache until
+                        // its replacement. A key can drop its UI reference in O(1)
+                        // without destroying a note-wide footnote map on the UI.
+                        *cache.lock().unwrap_or_else(|p| p.into_inner()) = Some(prepared.2.clone());
                         (result, directions, prepared)
                     })
                     .await;
@@ -823,19 +842,30 @@ impl Reader {
                     let Some(editing) = &mut this.editing else {
                         return;
                     };
-                    if editing.input.entity_id() != input_id || editing.recovery_epoch != epoch {
+                    if editing.input.entity_id() != input_id
+                        || editing.input.read(cx).source_stamp() != source_stamp
+                    {
                         return;
                     }
-                    editing.protecting = false;
+                    // Save retires recovery ownership, not same-revision
+                    // presentation preparation. New typing invalidates both.
                     *context.borrow_mut() = BlockNote::from_prepared(prepared_context);
                     editing.input.update(cx, |input, cx| {
                         input.set_direction_exempt_lines(directions);
                         cx.notify();
                     });
+                    if editing.recovery_epoch != epoch {
+                        return;
+                    }
+                    editing.protecting = false;
                     if let Err(error) = result {
                         editing.save_failed = true;
                         eprintln!("Draft recovery could not be saved: {error:#}");
                         this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
+                        cx.notify();
+                    } else if this.link_notice.as_deref() == Some(DRAFT_WRITE_NOTICE) {
+                        editing.save_failed = false;
+                        this.link_notice = None;
                         cx.notify();
                     }
                 });
@@ -1023,6 +1053,7 @@ impl Reader {
         let reader = cx.entity();
         let math_preview =
             cx.new(|cx| math_preview::MathPreview::new(reader.clone(), input.clone(), cx));
+        let block_cache = block_context::WorkerCache::default();
         let save_status = cx.new(|cx| status::SaveStatus::new(reader.clone(), &input, cx));
         let table_grid = cx.new(|cx| tables::TableGrid::new(reader, input.clone(), window, cx));
         self.editing = Some(Editing {
@@ -1032,6 +1063,8 @@ impl Reader {
             math_preview,
             table_grid,
             save_status,
+            block_context,
+            block_cache,
             input: input.clone(),
             conflict: None,
             conflict_detected: false,
@@ -1426,6 +1459,12 @@ impl Reader {
                 editing.conflict_detected = false;
                 editing.save_failed = false;
                 editing.protecting = false;
+                if matches!(
+                    self.link_notice.as_deref(),
+                    Some(DRAFT_WRITE_NOTICE | AUTOSAVE_START_NOTICE)
+                ) {
+                    self.link_notice = None;
+                }
                 if let Some((absolute_path, saved_revision)) = rules_revision {
                     self.agents_rules_saved(&absolute_path, &saved_revision, cx);
                 }
@@ -1622,6 +1661,12 @@ impl Reader {
                         .unwrap_or_else(|_| time::OffsetDateTime::now_utc()),
                 );
                 editing.save_failed = false;
+                if matches!(
+                    self.link_notice.as_deref(),
+                    Some(DRAFT_WRITE_NOTICE | AUTOSAVE_START_NOTICE)
+                ) {
+                    self.link_notice = None;
+                }
                 // Typing during the save: its timer found this save running
                 // and skipped, so the rest is saved after its own pause.
                 let editing = self.editing.as_mut().unwrap();
@@ -5793,6 +5838,8 @@ mod autosave_tests {
         f.reader
             .update_in(visual, |r, _, cx| assert!(r.save_source(cx)));
         assert_eq!(on_disk(&f), "latestbase");
+        f.reader
+            .read_with(visual, |r, _| assert!(r.link_notice.is_none()));
     }
 
     #[gpui::test]
@@ -5812,6 +5859,27 @@ mod autosave_tests {
         f.reader
             .update_in(visual, |r, _, cx| assert!(r.save_source(cx)));
         assert_eq!(on_disk(&f), "latestbase");
+        f.reader
+            .read_with(visual, |r, _| assert!(r.link_notice.is_none()));
+    }
+
+    #[gpui::test]
+    fn issue2404_save_does_not_cancel_same_revision_context_preparation(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "[id]: https://example.com/old\r\n");
+        let input = input(&f, visual);
+        input.update_in(visual, |i, window, cx| {
+            i.set_value("[id]: https://example.com/new\r\n", window, cx)
+        });
+        visual.run_until_parked();
+        f.reader
+            .update_in(visual, |r, _, cx| assert!(r.save_source(cx)));
+        wait(visual, 350);
+        f.reader.read_with(visual, |r, _| {
+            let context = r.editing.as_ref().unwrap().block_context.borrow();
+            let source = context.with_definitions("[label][id]".into());
+            assert!(source.contains("https://example.com/new"));
+            assert!(!source.contains("https://example.com/old"));
+        });
     }
 
     /// A change made outside Okilum before the autosave is never overwritten:

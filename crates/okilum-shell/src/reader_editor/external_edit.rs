@@ -980,8 +980,9 @@ mod tests {
     }
 
     fn shown_fact(note: &Note, visual: &mut VisualTestContext) -> Option<bool> {
-        note.reader.read_with(visual, |r, _| {
-            r.editing.as_ref().unwrap().menu_facts().code_block()
+        note.reader.read_with(visual, |r, cx| {
+            // Request the same demand-driven facts as opening the menu.
+            r.editing.as_ref().unwrap().menu_facts().code_block(cx)
         })
     }
 
