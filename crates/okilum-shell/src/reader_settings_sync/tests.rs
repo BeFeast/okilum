@@ -44,6 +44,95 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
 }
 
 #[gpui::test]
+fn settings_2487_escape_commits_focused_sync_fields_before_closing(cx: &mut TestAppContext) {
+    settings_2487_close_focused_fields(cx, false);
+}
+
+#[gpui::test]
+fn settings_2487_visible_close_button_commits_focused_sync_fields(cx: &mut TestAppContext) {
+    settings_2487_close_focused_fields(cx, true);
+}
+
+fn settings_2487_close_focused_fields(cx: &mut TestAppContext, button: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_settings::install(cx);
+        reader_features::install(directory.path(), cx);
+    });
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    cx.update(|cx| reader_settings::show(None, cx));
+    cx.run_until_parked();
+    let mut handle = cx.update(|cx| cx.windows()[0]);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let sync = visual.debug_bounds("settings-section-Sync").unwrap();
+    visual.simulate_click(sync.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
+    let view = visual.update(|_, cx| cx.global::<BackgroundSync>().0.clone());
+
+    for invitation in [false, true] {
+        let field = view.read_with(&mut visual, |view, _| {
+            if invitation {
+                view.invitation.clone()
+            } else {
+                view.name.clone()
+            }
+        });
+        let committed = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let saved = committed.clone();
+        view.update(&mut visual, |_, cx| {
+            cx.subscribe(&field, move |_, input, event, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Blur) {
+                    assert!(
+                        cx.windows().contains(&handle),
+                        "the focused field must finish before the window is removed"
+                    );
+                    *saved.lock().unwrap() = Some(input.read(cx).value().to_string());
+                }
+            })
+            .detach();
+        });
+        visual.update(|window, cx| {
+            field.update(cx, |input, cx| input.focus(window, cx));
+        });
+        visual.run_until_parked();
+        visual.simulate_input("Desktop 2487");
+        visual.update(|window, cx| {
+            let input = field.read(cx);
+            assert!(input.focus_handle(cx).is_focused(window));
+            assert_eq!(input.value().as_ref(), "Desktop 2487");
+        });
+        assert!(
+            committed.lock().unwrap().is_none(),
+            "blur has not fired yet"
+        );
+        if button {
+            let close = visual
+                .debug_bounds("settings-close")
+                .expect("Settings has a visible Close button");
+            assert!(close.size.width > px(0.) && close.size.height > px(0.));
+            visual.simulate_click(close.center(), Modifiers::default());
+        } else {
+            visual.simulate_keystrokes("escape");
+        }
+        visual.run_until_parked();
+        assert!(!cx.read(|cx| cx.windows().contains(&handle)));
+        assert_eq!(committed.lock().unwrap().as_deref(), Some("Desktop 2487"));
+
+        cx.update(|cx| reader_settings::show(None, cx));
+        cx.run_until_parked();
+        handle = cx.update(|cx| cx.windows()[0]);
+        visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        field.read_with(&mut visual, |input, _| {
+            assert_eq!(input.value().as_ref(), "Desktop 2487");
+        });
+    }
+}
+
+#[gpui::test]
 fn reader_settings_sync_validates_before_starting_any_controller(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     let (root, visual) = cx.add_window_view(|window, cx| {
