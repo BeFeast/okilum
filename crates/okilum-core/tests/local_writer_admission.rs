@@ -187,6 +187,8 @@ fn local_writer_admission_core_publishers_and_recovery_copies_refuse_then_resume
     let h = f.authority.begin_drain("publisher-matrix").unwrap();
     assert!(move_plan.commit().is_err());
     assert!(PreparedCopy::prepare(&f.root.join("copy.bin"), &f.drafts, b"asset").is_err());
+    assert!(note_files::create_folders(&f.root, Path::new("new-folder/nested"), false).is_err());
+    assert!(!f.root.join("new-folder").exists());
     assert!(
         note_files::create_attachment_with_source(&f.root, Path::new("asset.bin"), b"asset")
             .is_err()
