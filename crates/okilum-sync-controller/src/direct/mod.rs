@@ -3,6 +3,8 @@
 mod addresses;
 mod existing;
 #[cfg(target_os = "linux")]
+pub mod inventory;
+#[cfg(target_os = "linux")]
 mod source;
 mod transfer;
 pub use transfer::received_vault_names;
@@ -154,6 +156,8 @@ struct Shared {
     observation_generation: Uuid,
     transfer_lock: Mutex<()>,
     connection_watch: Mutex<addresses::ConnectionWatch>,
+    #[cfg(target_os = "linux")]
+    inventory: Mutex<Option<inventory::Stored>>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
     _lock: std::fs::File,
 }
@@ -179,10 +183,22 @@ pub struct Controller {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
-    Redeem { request: Request },
+    Redeem {
+        request: Request,
+    },
     Catalog {},
-    Share { vault: String, device: String },
-    Observe { vault: String, device: String },
+    Share {
+        vault: String,
+        device: String,
+    },
+    Observe {
+        vault: String,
+        device: String,
+    },
+    #[cfg(target_os = "linux")]
+    Inspect {
+        request: inventory::Request,
+    },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -206,12 +222,27 @@ struct Response {
 enum Reply {
     Pending,
     Rejected,
-    Approved { paired: Paired, catalog: Vec<Vault> },
-    Catalog { catalog: Vec<Vault> },
-    Shared { connection: transfer::Connection },
-    Observed { observation: transfer::Observation },
+    Approved {
+        paired: Paired,
+        catalog: Vec<Vault>,
+    },
+    Catalog {
+        catalog: Vec<Vault>,
+    },
+    Shared {
+        connection: transfer::Connection,
+    },
+    Observed {
+        observation: transfer::Observation,
+    },
+    #[cfg(target_os = "linux")]
+    Inspection {
+        response: inventory::Response,
+    },
     NotReady,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 impl Controller {
@@ -250,6 +281,8 @@ impl Controller {
                 observation_generation: Uuid::new_v4(),
                 transfer_lock: Mutex::new(()),
                 connection_watch: Mutex::new(Default::default()),
+                #[cfg(target_os = "linux")]
+                inventory: Mutex::new(None),
                 _lock,
             }),
         })
@@ -654,12 +687,17 @@ impl Controller {
         operation: Operation,
     ) -> Result<Reply> {
         self.check()?;
+        let read_only = operation.read_only();
         let seed = self.shared.db.lock().unwrap().seed;
         let message = Message {
             nonce: Uuid::new_v4(),
             target: public.to_vec(),
             operation,
-            transport: self.local_transport()?,
+            transport: if read_only {
+                None
+            } else {
+                self.local_transport()?
+            },
         };
         let frame = wire::seal(scope, credential, &seed, &message)?;
         let mut stream = wire::connect(endpoint).with_context(|| format!(
@@ -673,6 +711,10 @@ impl Controller {
         self.check()?;
         let mut reply = response.result;
         if let Some(transport) = response.transport {
+            ensure!(
+                !read_only,
+                "inspection cannot exchange transport configuration"
+            );
             match &mut reply {
                 Reply::Approved { paired, .. } => addresses::remember(paired, &transport)?,
                 Reply::Error { .. } | Reply::Pending | Reply::Rejected => {}
@@ -704,6 +746,10 @@ impl Controller {
         };
         let (message, signer): (Message, _) =
             wire::open(envelope, &credential, expected.as_deref())?;
+        ensure!(
+            !message.operation.read_only() || message.transport.is_none(),
+            "inspection cannot exchange transport configuration"
+        );
         ensure!(
             message.target == wire::public(&db.seed)?,
             "wrong intended computer"
@@ -869,6 +915,10 @@ impl Controller {
                     Err(error) => Err(error),
                 }
             }
+            #[cfg(target_os = "linux")]
+            Operation::Inspect { request } => Ok(Reply::Inspection {
+                response: self.inspect_request(db, scope, &signer, request)?,
+            }),
         }
     }
     fn save(&self, db: &Database) -> Result<()> {
@@ -891,6 +941,15 @@ impl Controller {
             }
         }
         Ok(())
+    }
+}
+impl Operation {
+    fn read_only(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if matches!(self, Self::Inspect { .. }) {
+            return true;
+        }
+        false
     }
 }
 fn snapshot(db: &Database) -> Result<Snapshot> {

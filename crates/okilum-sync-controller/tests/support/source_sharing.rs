@@ -595,3 +595,6 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
     assert_eq!(pair.target.api.folder(id)?, expected);
     Ok(())
 }
+
+#[path = "remote_inventory.rs"]
+mod remote_inventory;
