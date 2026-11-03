@@ -30,14 +30,23 @@ pub(super) fn label_pill(label: impl Into<SharedString>, tone: Hsla, cx: &App) -
         .child(label.into())
         .into_any_element()
 }
+pub(super) fn ci_label(state: Option<&str>) -> &'static str {
+    match state {
+        Some("success") => "CI passed",
+        Some("pending" | "running") => "CI running",
+        Some("failure" | "error") => "CI failed",
+        _ => "CI unknown",
+    }
+}
 pub(super) fn ci_dot(state: Option<&str>, cx: &App) -> AnyElement {
     let p = brand::palette(cx);
-    let (tone, label) = match state {
-        Some("success") => (p.success, "CI passed"),
-        Some("pending" | "running") => (p.warning, "CI running"),
-        Some("failure" | "error") => (p.danger, "CI failed"),
-        _ => (p.text_muted, "CI unknown"),
+    let tone = match state {
+        Some("success") => p.success,
+        Some("pending" | "running") => p.warning,
+        Some("failure" | "error") => p.danger,
+        _ => p.text_muted,
     };
+    let label = ci_label(state);
     div()
         .debug_selector(move || label.into())
         .size(px(7.))

@@ -684,6 +684,8 @@ impl Board {
             let url = binding.pull_url(*pr);
             row = row.child(
                 Button::new(("board-list-pr", number as usize))
+                    .accessibility_label(format!("PR {pr} · {}", row_bits::ci_label(checks)))
+                    .tooltip(format!("Open PR {pr} · {}", row_bits::ci_label(checks)))
                     .ghost()
                     .small()
                     .flex_none()
