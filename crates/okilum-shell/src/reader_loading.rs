@@ -75,7 +75,7 @@ enum Event {
     Siblings(Vault, Option<VaultWatcher>),
     SearchInventory {
         notes: Vec<okilum_core::vault::Note>,
-        reconciled: Option<Box<Vault>>,
+        reconciled: Option<Arc<Vault>>,
     },
     PanelPreferences {
         root: PathBuf,
@@ -85,7 +85,7 @@ enum Event {
     },
     Ready {
         move_snapshot: Box<okilum_core::vault::warm::Snapshot>,
-        vault: Vault,
+        vault: Arc<Vault>,
         searcher: Option<Box<Searcher>>,
         watcher: Option<VaultWatcher>,
         warnings: Vec<okilum_core::vault::UnreadableEntry>,
@@ -858,11 +858,20 @@ fn prepare_rest_with_io_and_snapshot(
             .iter()
             .filter(|note| source_snapshot.contains_key(&note.path))
             .cloned();
+        let published = if let Some(previous) = opts
+            .publication_vault
+            .as_ref()
+            .filter(|previous| previous.publish_semantics(&vault))
+        {
+            previous.clone()
+        } else {
+            Arc::new(vault.clone())
+        };
         send.send_blocking(Event::SearchInventory {
             notes: okilum_core::quick_open::inventory(readable, &vault.entries),
             // Publish cold and warm trees before search preparation; a usable
             // inventory does not depend on a writable search cache.
-            reconciled: Some(Box::new(vault.clone())),
+            reconciled: Some(published.clone()),
         })
         .map_err(|_| anyhow::anyhow!("Reader closed"))?;
         progress(send, "Checking search data".into())?;
@@ -1067,7 +1076,7 @@ fn prepare_rest_with_io_and_snapshot(
         drop(publication_pins);
         return Ok(Event::Ready {
             move_snapshot: Box::new(snapshot),
-            vault,
+            vault: published,
             searcher: searcher.map(Box::new),
             watcher,
             warnings,
@@ -1740,9 +1749,12 @@ impl Reader {
             return;
         }
         if self.editing.is_some() {
-            self.refresh_source_from_disk(window, cx);
-            self.track_deleted_note(sources, cx);
+            self.refresh_source_in_background(window, cx);
             self.refresh_link_preparation(cx);
+            return;
+        }
+        if self.deleted_current().is_some() {
+            self.reconcile_deleted_source_in_background(window, cx);
             return;
         }
         // A deleted note stays on screen with its own notice (#1986).
@@ -1774,7 +1786,7 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
-        self.reconcile_document_source(Some(raw.clone()), window, cx);
+        self.reconcile_document_source(Some(raw.clone().into()), window, cx);
     }
 
     /// Refresh from the immutable published graph even when a shared worker owns
@@ -1785,10 +1797,15 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.editing.is_some() {
+            self.refresh_source_in_background(window, cx);
+            return;
+        }
+        if self.deleted_current().is_some() {
+            self.reconcile_deleted_source_in_background(window, cx);
+            return;
+        }
         if self.track_deleted_note(&Default::default(), cx) {
-            if self.editing.is_some() {
-                self.refresh_source_from_disk(window, cx);
-            }
             return;
         }
         self.reconcile_document_source(None, window, cx);
@@ -1815,7 +1832,7 @@ impl Reader {
 
     pub(super) fn reconcile_document_source(
         &mut self,
-        raw: Option<String>,
+        raw: Option<Arc<str>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1830,12 +1847,16 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
-        if self.track_deleted_note(&Default::default(), cx) {
+        if self.editing.is_some() {
+            self.refresh_source_in_background(window, cx);
             self.refresh_link_preparation(cx);
             return;
         }
-        if self.editing.is_some() {
-            self.refresh_source_from_disk(window, cx);
+        if self.deleted_current().is_some() {
+            self.reconcile_deleted_source_in_background(window, cx);
+            return;
+        }
+        if self.track_deleted_note(&Default::default(), cx) {
             self.refresh_link_preparation(cx);
             return;
         }
@@ -1854,7 +1875,11 @@ impl Reader {
                 .background_executor()
                 .spawn(async move {
                     if html {
-                        prepared_links::PreparedDocument::html(&vault, &target, raw)
+                        prepared_links::PreparedDocument::html(
+                            &vault,
+                            &target,
+                            raw.map(|raw| raw.to_string()),
+                        )
                     } else {
                         let doc = if let Some(raw) = raw {
                             okilum_core::render::reader_document_from_source(&vault, &target, &raw)
@@ -1874,6 +1899,10 @@ impl Reader {
                 {
                     return;
                 }
+                if this.deleted_current().is_some() {
+                    this.reconcile_deleted_source_in_background(window, cx);
+                    return;
+                }
                 if this.track_deleted_note(&Default::default(), cx) {
                     return;
                 }
@@ -1881,7 +1910,7 @@ impl Reader {
                     document.canonical_source == this.note_canonical_source
                         && document.encoding_damaged == this.note_encoding_damaged
                         && document.source == this.note_source
-                        && document.original == this.link_original_source
+                        && document.original.as_deref() == this.link_original_source.as_deref()
                 }) {
                     this.refresh_link_preparation(cx);
                     return;
@@ -2414,6 +2443,7 @@ impl Reader {
         }
         let (send, receive) = async_channel::unbounded();
         let refresh_worker = refresh.is_some();
+        let publication_vault = refresh_worker.then(|| self.vault.clone());
         let prepare_preferences = !refresh_worker || !self.panel_preferences_ready;
         let panel_revision = self.panel_widths_revision;
         let recovery_startup = self.recovery_startup;
@@ -2421,6 +2451,7 @@ impl Reader {
         cx.background_executor()
             .spawn(async move {
                 let mut opts = opts;
+                opts.publication_vault = publication_vault;
                 let result = async {
                     #[cfg(test)]
                     if let Some(hold) = &opts.validation_hold {
@@ -2700,7 +2731,8 @@ impl Reader {
                             }
                             Event::SearchInventory { notes, reconciled } => {
                                 if let Some(vault) = reconciled {
-                                    this.vault = Arc::new(*vault);
+                                    this.source_publication_epoch = this.source_publication_epoch.wrapping_add(1);
+                                    this.vault = vault;
                                     this.set_backlinks(this.vault.backlinks(&this.current_rel), false);
                                 }
                                 this.quick_open.inventory = Some(Arc::new(notes));
@@ -2729,8 +2761,9 @@ impl Reader {
                                 let index_root = this.vault_root.clone();
                                 let generation = this.loading.as_ref().map(|load| load.generation);
                                 let epoch = this.incremental_epoch;
-                                let ready_vault = Arc::new(vault);
+                                let ready_vault = vault;
                                 let state_vault = ready_vault.clone();
+                                let shared_publication = this.shared_session.is_some();
                                 #[cfg(any(unix, windows))]
                                 { this.move_index = None; }
                                 let index_task = cx.background_executor().spawn(async move {
@@ -2740,10 +2773,11 @@ impl Reader {
                                     let state = okilum_core::vault::warm::incremental::State::new((*state_vault).clone(), *move_snapshot);
                                     #[cfg(any(unix, windows))]
                                     let candidates = state.candidates.clone();
-                                    (state, tasks, projects, workbench, { #[cfg(any(unix, windows))] { Some(candidates) } #[cfg(not(any(unix, windows)))] { None::<()> } })
+                                    let sources = if shared_publication { reader_publication::snapshot_sources(&state) } else { Arc::default() };
+                                    (state, tasks, projects, workbench, sources, { #[cfg(any(unix, windows))] { Some(candidates) } #[cfg(not(any(unix, windows)))] { None::<()> } })
                                 });
                                 cx.spawn(async move |this, cx| {
-                                    let (state, tasks, projects, workbench, candidates) = index_task.await;
+                                    let (state, tasks, projects, workbench, sources, candidates) = index_task.await;
                                     let _ = this.update(cx, |this, cx| {
                                         if this.vault_root == index_root && this.incremental_epoch == epoch
                                             && this.loading.as_ref().map(|load| load.generation) == generation {
@@ -2754,13 +2788,14 @@ impl Reader {
                                             this.incremental_initializing = false;
                                             #[cfg(any(unix, windows))]
                                             { this.move_index = candidates; this.reminder_tick(cx); }
-                                            this.publish_shared_ready();
+                                            this.publish_shared_ready(sources);
                                             #[cfg(not(any(unix, windows)))]
                                             let _ = candidates;
                                             cx.notify();
                                         }
                                     });
                                 }).detach();
+                                this.source_publication_epoch = this.source_publication_epoch.wrapping_add(1);
                                 this.vault = ready_vault;
                                 this.searcher = searcher.map(|searcher| Arc::new(*searcher));
                                 this.watcher = watcher;
@@ -6582,7 +6617,7 @@ mod tests {
                 panic!("ready baseline")
             };
             let mut state =
-                okilum_core::vault::warm::incremental::State::new(vault, *move_snapshot);
+                okilum_core::vault::warm::incremental::State::new((*vault).clone(), *move_snapshot);
             let session = searcher.fork_session().unwrap();
             let transient = root.join("transient.md");
             for present in [true, false] {

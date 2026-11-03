@@ -134,7 +134,7 @@ fn aliases_match_quick_open_once_per_path_with_unicode_and_ambiguity() {
     let root = fixture();
     let vault = Vault::scan(root.path()).unwrap();
     let titles = HashMap::new();
-    let search = |q| quick_open::search_named(&vault.notes, &titles, vault.aliases(), q, &[], 100);
+    let search = |q| quick_open::search_named(&vault.notes, &titles, &vault.aliases(), q, &[], 100);
     assert!(
         quick_open::search(&vault.notes, "Winter", &[], 100).is_empty(),
         "names alone cannot match the alias control"

@@ -199,6 +199,15 @@ impl Reader {
                 },
             },
         };
+        self.track_deleted_observation(on_disk, cx)
+    }
+
+    /// A worker's checked observation; publication never reads source on the UI.
+    pub(super) fn track_deleted_observation(
+        &mut self,
+        on_disk: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let editing = self.editing.is_some();
         let retained = self.source_text(cx);
         let mut returned = false;
@@ -247,6 +256,70 @@ impl Reader {
         }
         cx.notify();
         held
+    }
+
+    /// Recheck a retained read-only note's return on a worker. Even this less
+    /// common watcher route must not hydrate/read the source on the UI thread.
+    pub(super) fn reconcile_deleted_source_in_background(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.vault_root.clone();
+        let rel = self.current_rel.clone();
+        self.navigation.reconciliation_generation =
+            self.navigation.reconciliation_generation.wrapping_add(1);
+        let generation = self.navigation.reconciliation_generation;
+        let vault = self.vault.clone();
+        let selected = rel.clone();
+        let task = cx.background_executor().spawn(async move {
+            let read = || -> anyhow::Result<String> {
+                anyhow::ensure!(
+                    vault.root.canonicalize()? == vault.root,
+                    "The retained vault was redirected"
+                );
+                let metadata = std::fs::symlink_metadata(vault.root.join(&selected))?;
+                let path = reader_files::checked_path(&vault.root, &selected)?;
+                anyhow::ensure!(
+                    metadata.is_file() && !metadata.file_type().is_symlink(),
+                    "Returned note is not a regular file"
+                );
+                Ok(okilum_core::vault::read_display_source(&path)?.text)
+            };
+            read()
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
+                if this.vault_root != root
+                    || this.current_rel != rel
+                    || this.editing.is_some()
+                    || this.navigation.reconciliation_generation != generation
+                {
+                    return;
+                }
+                let source = match result {
+                    Ok(raw) => Some(raw),
+                    Err(error)
+                        if error.chain().any(|cause| {
+                            cause
+                                .downcast_ref::<std::io::Error>()
+                                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                        }) =>
+                    {
+                        None
+                    }
+                    Err(error) => {
+                        eprintln!("Could not check returned note: {error:#}");
+                        return;
+                    }
+                };
+                if !this.track_deleted_observation(source.clone(), cx) {
+                    this.reconcile_document_source(source.map(Arc::from), window, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// The persistent notice. Overlays the document like every Reader notice,
@@ -432,7 +505,7 @@ impl Reader {
         match std::fs::read_to_string(&path) {
             Ok(raw) => {
                 self.deleted_note = None;
-                self.reconcile_document_source(Some(raw), window, cx);
+                self.reconcile_document_source(Some(raw.into()), window, cx);
             }
             Err(error) => {
                 eprintln!("Could not reload the returned note: {error:#}");

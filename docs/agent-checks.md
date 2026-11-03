@@ -67,3 +67,14 @@ and repeats the build, core suite and Linux suites using the already warm
 Cargo downloads/target on the same 4-vCPU VM. Each pass has separately timed steps;
 each new head gets a cold branch cache scope. `--rerun` instead measures a new
 hosted job including archive restoration; its VM hardware may differ.
+
+For source-pinned editor publication measurements and a real main negative
+control on the same hosted VM, supply the public main SHA explicitly:
+
+```bash
+H=github scripts/agent/gh-check.sh --dispatch --publication-baseline <full-main-sha>
+```
+
+This also runs the normal complete checks. The helper requires the comparison
+step to succeed; missing/skipped comparison work is not a passing verdict.
+The baseline compile must pass before its failing regression counts as evidence.

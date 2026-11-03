@@ -136,12 +136,14 @@ pub(super) struct Publication {
     vault: Arc<Vault>,
     owner_lease: Arc<()>,
     view_generation: u64,
+    source_publication_epoch: u64,
 }
 impl PartialEq for Publication {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.vault, &other.vault)
             && Arc::ptr_eq(&self.owner_lease, &other.owner_lease)
             && self.view_generation == other.view_generation
+            && self.source_publication_epoch == other.source_publication_epoch
     }
 }
 impl Eq for Publication {}
@@ -163,6 +165,7 @@ impl Owner {
             vault: reader.vault.clone(),
             owner_lease: self.lease.clone(),
             view_generation: generation,
+            source_publication_epoch: reader.source_publication_epoch,
         })
     }
     fn same(&self, other: &Self) -> bool {

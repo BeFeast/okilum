@@ -2,6 +2,7 @@
 """Push committed HEAD to the public mirror and return an exact-source verdict."""
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -30,7 +31,7 @@ def gh_json(*args):
     return json.loads(output("gh", *args))
 
 
-def verdict(info, sha, benchmark=False):
+def verdict(info, sha, benchmark=False, publication_controls=False):
     """Missing/mismatched/partial/cancelled work never counts as a verdict."""
     if info.get("headSha") != sha or info.get("status") != "completed":
         return 75
@@ -40,6 +41,8 @@ def verdict(info, sha, benchmark=False):
     steps = jobs[0].get("steps", [])
     required = {"Prepare and verify pinned vendor and comrak",
                 "Build Linux desktop offline", "Run complete okilum-core suite offline", "Run Linux Rust suites offline"}
+    if publication_controls:
+        required.add("Compare editor publication with pinned main on this host")
     if benchmark:
         required |= {"Warm build Linux desktop offline", "Warm complete okilum-core suite offline",
                      "Warm Linux Rust suites offline"}
@@ -83,7 +86,10 @@ def main():
     parser.add_argument("--timeout", type=int, default=7200, help="total wait ceiling in seconds")
     parser.add_argument("--receipt", type=Path, help="also write the final GitHub JSON receipt to this path")
     parser.add_argument("--benchmark", action="store_true", help="repeat checks with warm target on the same runner VM")
+    parser.add_argument("--publication-baseline", help="public main SHA for same-host editor controls; requires --dispatch")
     args = parser.parse_args()
+    if args.publication_baseline and (not args.dispatch or not re.fullmatch(r"[0-9a-f]{40}", args.publication_baseline)):
+        parser.error("--publication-baseline requires --dispatch and a full lowercase SHA")
     if args.rerun and args.dispatch:
         parser.error("choose --rerun or --dispatch")
     if args.timeout <= 0:
@@ -111,7 +117,10 @@ def main():
     previous_runs = set()
     if args.dispatch:
         previous_runs = {r["id"] for r in find_run(branch, sha, event)}
-        run("gh", "workflow", "run", WORKFLOW, "-R", REPO, "--ref", branch)
+        dispatch = ["gh", "workflow", "run", WORKFLOW, "-R", REPO, "--ref", branch]
+        if args.publication_baseline:
+            dispatch += ["-f", "publication_baseline=" + args.publication_baseline]
+        run(*dispatch)
     found = None
     # GitHub's run index is eventually consistent. Polling lives only inside
     # this single bounded helper process, never in an agent/thread loop.
@@ -152,7 +161,7 @@ def main():
     summarize(info)
     if attempt is not None and info["attempt"] <= attempt:
         return 75
-    result = verdict(info, sha, args.benchmark)
+    result = verdict(info, sha, args.benchmark, bool(args.publication_baseline))
     if result:
         logs = subprocess.run(["gh", "run", "view", run_id, "-R", REPO, "--log-failed"],
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)

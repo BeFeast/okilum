@@ -9,6 +9,7 @@ pub(crate) struct Work {
     pub largest: usize,
     pub frees: usize,
     pub inspected: usize,
+    pub nanos: u128,
 }
 thread_local! {
     static WORK: Cell<Option<Work>> = const { Cell::new(None) };
@@ -17,14 +18,25 @@ thread_local! {
 // A whole App update includes native input and GPUI test-executor bookkeeping.
 // Scope app editor/persistence entry points to match this issue's layer. The
 // same scopes are overlaid on origin/main; actual allocations are intercepted.
-pub(crate) struct Scope;
+pub(crate) struct Scope(std::time::Instant);
 pub(crate) fn scope() -> Scope {
     DEPTH.with(|d| d.set(d.get() + 1));
-    Scope
+    Scope(std::time::Instant::now())
 }
 impl Drop for Scope {
     fn drop(&mut self) {
-        DEPTH.with(|d| d.set(d.get() - 1));
+        let outermost = DEPTH.with(|d| {
+            d.set(d.get() - 1);
+            d.get() == 0
+        });
+        if outermost {
+            WORK.with(|slot| {
+                if let Some(mut work) = slot.get() {
+                    work.nanos += self.0.elapsed().as_nanos();
+                    slot.set(Some(work));
+                }
+            });
+        }
     }
 }
 pub(crate) fn inspect(bytes: usize) {

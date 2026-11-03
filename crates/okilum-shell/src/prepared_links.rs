@@ -249,6 +249,14 @@ pub(crate) struct DocumentRequest {
     pub restore_position: Option<ListOffset>,
 }
 
+enum LinkSource {
+    Displayed(Arc<str>, Arc<str>),
+    Editing(
+        okilum_core::source_projection::revision::Text,
+        gpui_component::input::projection::SourceStamp,
+    ),
+}
+
 impl Reader {
     pub(crate) fn prepare_document(
         &mut self,
@@ -609,18 +617,33 @@ impl Reader {
         self.prepared_links = Arc::default();
     }
 
-    fn prepare_links(&mut self, original: String, cx: &mut Context<Self>) {
+    fn prepare_links(&mut self, source: LinkSource, cx: &mut Context<Self>) {
         self.invalidate_links();
         let generation = self.link_preparation_generation;
         let navigation = self.navigation.generation;
         let from = self.current_rel.clone();
         let vault = self.vault.clone();
-        let rendered = self.note_source.clone();
+        let source_stamp = match &source {
+            LinkSource::Editing(_, stamp) => Some(*stamp),
+            _ => None,
+        };
         let identities = self.link_identities.clone();
         cx.spawn(async move |this, cx| {
-            let states = cx
+            let (states, identities) = cx
                 .background_executor()
                 .spawn(async move {
+                    let (original, rendered, identities) = match source {
+                        LinkSource::Displayed(original, rendered) => {
+                            (original.to_string(), rendered.to_string(), identities)
+                        }
+                        LinkSource::Editing(text, _) => {
+                            let raw = text.to_string();
+                            let document = okilum_core::render::reader_document_from_source(
+                                &vault, &from, &raw,
+                            );
+                            (raw, document.rendered, Arc::new(document.links))
+                        }
+                    };
                     let mut preparation = LinkPreparation::new(&vault, &from, |target| {
                         let (raw, heading_source) = if target == from {
                             (original.clone(), rendered.clone())
@@ -642,17 +665,30 @@ impl Reader {
                         })
                     })
                     .with_local_files();
-                    Arc::new(preparation.identities(&identities))
+                    let states = Arc::new(preparation.identities(&identities));
+                    (states, identities)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.link_preparation_generation != generation
                     || this.navigation.generation != navigation
+                    || source_stamp.is_some_and(|stamp| {
+                        this.editing
+                            .as_ref()
+                            .is_none_or(|editing| editing.input().read(cx).source_stamp() != stamp)
+                    })
                 {
                     return;
                 }
-                this.link_presentations = states.clone();
+                let retired_states =
+                    std::mem::replace(&mut this.link_presentations, states.clone());
+                let retired_identities = std::mem::replace(&mut this.link_identities, identities);
                 this.prepared_links = states;
+                cx.background_executor()
+                    .spawn(async move {
+                        drop((retired_states, retired_identities));
+                    })
+                    .detach();
                 // TextView caches its entity render independently of Reader.
                 // Refresh paint without replacing the parse, scroll or selection.
                 this.content.update(cx, |_, cx| cx.notify());
@@ -666,8 +702,19 @@ impl Reader {
     }
 
     pub(crate) fn refresh_link_preparation(&mut self, cx: &mut Context<Self>) {
-        if let Some(original) = self.link_original_source.clone() {
-            self.prepare_links(original, cx);
+        if let Some(editing) = &self.editing {
+            let snapshot = editing.input().read(cx).source_snapshot();
+            let text = okilum_core::source_projection::revision::Text::from_identified_rope(
+                snapshot.text.rope().clone(),
+                snapshot.text.id(),
+            );
+            self.prepare_links(LinkSource::Editing(text, snapshot.stamp), cx);
+        } else if let Some(original) = self.link_original_source.clone() {
+            let rendered = self
+                .link_rendered_source
+                .clone()
+                .unwrap_or_else(|| original.clone());
+            self.prepare_links(LinkSource::Displayed(original, rendered), cx);
         } else {
             self.invalidate_links();
         }

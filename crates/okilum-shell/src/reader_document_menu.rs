@@ -624,7 +624,8 @@ impl Reader {
         self.invalidate_links();
         self.link_presentations = Arc::default();
         self.link_original_source = None;
-        self.link_identities.clear();
+        self.link_rendered_source = None;
+        self.link_identities = Arc::default();
         self.last_recorded_document = None;
         if let Some(send) = &self.session_records {
             let _ = send.try_send(reader_loading::SessionRecord {

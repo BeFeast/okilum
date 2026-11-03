@@ -958,6 +958,14 @@ fn save_local_image(
             0,
             kind.map(|k| k.extension()).or(extension.as_deref())?,
         )
+    } else if extension.as_deref().is_none_or(str::is_empty) {
+        // A confirmed image stays embeddable outside platform-specific
+        // clipboard cache roots too (including a custom TMPDIR).
+        files::sanitize_name(&format!(
+            "{}.{}",
+            path.file_name()?.to_string_lossy(),
+            kind?.extension()
+        ))
     } else {
         files::sanitize_name(&path.file_name()?.to_string_lossy())
     };
