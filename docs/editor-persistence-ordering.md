@@ -15,6 +15,10 @@ Recovery starts after a 300 ms pause. A writer owns only the generation captured
 with its snapshot; it checks ownership before serialization and again under the
 journal publication lock. Locks remain held while any writer/save copy exists.
 No completion from an older input/session may report the latest draft protected.
+The UI holds a synchronous pending-write ticket until the worker starts; dropping
+an async Task alone is insufficient because its captures can outlive close/move.
+Save, park and close clear that ticket immediately. A clean reset schedules only
+presentation preparation, without holding an unnecessary recovery writer lock.
 Recovery errors retain the editor and are shown to the user; explicit Save retries.
 
 Canonical saves use a separate shared serialization lock. A save first protects
@@ -42,7 +46,7 @@ on a worker, accepted only for the same editor/generation. Pending block context
 unresolved rather than borrowed from another revision. The initial context shares
 its base revision, and workers retain the last large footnote cache until its
 replacement so a key does not destroy note-wide data on the UI thread.
-Context-menu source facts
+Context-menu source facts and captured reminder requests
 are immutable Rope snapshots; full reference/code context is extracted on opening
 the menu, not on every editor notification.
 

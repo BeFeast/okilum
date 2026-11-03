@@ -737,6 +737,12 @@ mod tests {
             assert!(!r.tree.rows.iter().any(|row| row.path == folder));
         });
         if operation == "recovery_failure" {
+            // The recovery writer is debounced; exercise its actual publication
+            // before replacing the journal destination with a failing directory.
+            visual
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(301));
+            visual.run_until_parked();
             let journal = std::fs::read_dir(state.join("editor-drafts"))
                 .unwrap()
                 .flatten()

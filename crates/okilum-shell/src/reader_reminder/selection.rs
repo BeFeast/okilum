@@ -60,7 +60,7 @@ enum Evidence {
 pub(super) struct Request {
     owner: Owner,
     selection: String,
-    source: String,
+    source: okilum_core::source_projection::revision::Text,
     date: time::Date,
     evidence: Evidence,
 }
@@ -78,30 +78,20 @@ impl Request {
     ) -> Option<Self> {
         let selection = state.selected_text().to_string();
         let date = reminder_dates::parse(&selection, today())?;
-        Some(
-            Self::direct(reader, selection, date, Some(state.value().to_string())).with_evidence(
-                Evidence::Editor {
-                    input: input.clone(),
-                    stamp: state.source_stamp(),
-                    range: state.selected_range(),
-                },
+        let source = state.source_snapshot();
+        Some(Self {
+            owner: Owner::capture(reader),
+            selection,
+            date,
+            source: okilum_core::source_projection::revision::Text::from_identified_rope(
+                source.text.rope().clone(),
+                source.text.id(),
             ),
-        )
-    }
-
-    pub(super) fn editor_snapshot(
-        reader: &Reader,
-        input: Entity<EditorState>,
-        stamp: SourceStamp,
-        range: std::ops::Range<usize>,
-        selection: String,
-        date: time::Date,
-        source: String,
-    ) -> Self {
-        Self::direct(reader, selection, date, Some(source)).with_evidence(Evidence::Editor {
-            input,
-            stamp,
-            range,
+            evidence: Evidence::Editor {
+                input: input.clone(),
+                stamp: source.stamp,
+                range: state.selected_range(),
+            },
         })
     }
 
@@ -114,13 +104,15 @@ impl Request {
         Self {
             owner: Owner::capture(reader),
             selection,
-            source: source.unwrap_or_else(|| {
-                reader
-                    .note_canonical_source
-                    .as_deref()
-                    .unwrap_or(&reader.note_source)
-                    .to_owned()
-            }),
+            source: source
+                .unwrap_or_else(|| {
+                    reader
+                        .note_canonical_source
+                        .as_deref()
+                        .unwrap_or(&reader.note_source)
+                        .to_owned()
+                })
+                .into(),
             date,
             evidence: Evidence::Direct,
         }
@@ -147,7 +139,7 @@ impl Request {
                             .note_canonical_source
                             .as_deref()
                             .unwrap_or(&reader.note_source)
-                            == self.source
+                            == &*self.source
                 }
                 Evidence::Editor {
                     input,

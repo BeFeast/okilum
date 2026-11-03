@@ -11,6 +11,7 @@ mod lists;
 mod live_preview;
 mod math_preview;
 mod paste_jobs;
+mod recovery;
 mod status;
 mod tables;
 #[cfg(test)]
@@ -132,6 +133,7 @@ pub(super) struct Editing {
     recovery_epoch: u64,
     draft_stamp: gpui_component::input::projection::SourceStamp,
     recovery_task: Option<Task<()>>,
+    recovery_pending: Option<recovery::Pending>,
     save_pending: bool,
     /// The text an autosave is writing on a worker (#1353).
     autosaving: Option<DraftText>,
@@ -348,6 +350,7 @@ impl Editing {
     // UI subscriptions stay on the foreground executor; only the locked file
     // store crosses to the worker. Reassembly preserves undo/input state.
     fn park(mut self, cx: &mut App) -> (FileEditor, impl FnOnce(FileEditor) -> Self) {
+        self.recovery_pending = None;
         // A second window can still hold its painted input until the next frame.
         // Freeze it synchronously, before moving the store off the UI thread.
         self.live_preview.suspend();
@@ -371,6 +374,7 @@ impl Editing {
             recovery_epoch,
             draft_stamp,
             recovery_task,
+            recovery_pending,
             save_pending,
             autosaving,
             refresh_deferred,
@@ -406,6 +410,7 @@ impl Editing {
             recovery_epoch,
             draft_stamp,
             recovery_task,
+            recovery_pending,
             save_pending,
             autosaving,
             refresh_deferred,
@@ -827,17 +832,31 @@ impl Reader {
             // A clean reload/reset already has its exact canonical bytes.
             // Preparing its context must not block a move for 300 ms.
             editing.protecting = editing.store.has_pending_revision();
+            editing.recovery_pending = if editing.protecting {
+                Some(recovery::Pending::new(write))
+            } else {
+                drop(write);
+                None
+            };
+            let ticket = editing
+                .recovery_pending
+                .as_ref()
+                .map(recovery::Pending::ticket);
             let context = editing.block_context.clone();
             let cache = editing.block_cache.clone();
             #[cfg(test)]
             drop(_work); // GPUI scheduling traces are outside snapshot/persistence work.
             editing.recovery_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(RECOVERY_PAUSE).await;
+                let write = ticket.and_then(|ticket| {
+                    let write = ticket.borrow_mut().take();
+                    write
+                });
                 let (result, directions, prepared_context) = cx
                     .background_executor()
                     .spawn(async move {
                         // Persist first: presentation preparation must not delay recovery.
-                        let result = write.persist();
+                        let result = write.map_or(Ok(()), |write| write.persist());
                         let directions = direction_exempt_lines(&value);
                         let provider =
                             crate::source_presentation::CachedProvider::classify(snapshot.clone());
@@ -1091,6 +1110,7 @@ impl Reader {
             recovery_epoch: 0,
             draft_stamp: input.read(cx).source_stamp(),
             recovery_task: None,
+            recovery_pending: None,
             save_pending: false,
             autosaving: None,
             refresh_deferred: false,
@@ -1439,6 +1459,7 @@ impl Reader {
             return (true, true);
         };
         editing.save_pending = false;
+        editing.recovery_pending = None;
         editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
         editing.protecting = false;
         editing.saves = editing.saves.wrapping_add(1);
@@ -5854,7 +5875,6 @@ mod autosave_tests {
         // Keep Draft closes immediately, before the recovery timer can run.
         f.reader
             .update_in(visual, |r, window, cx| r.park_source(window, cx));
-        visual.run_until_parked();
         let recovered = FileEditor::open(&f.file, &path).unwrap();
         assert_eq!(recovered.text(), text);
         assert_eq!(on_disk(&f), "\u{feff}base\r\n");
@@ -5869,7 +5889,6 @@ mod autosave_tests {
         f.reader.update_in(visual, |r, _, _| {
             r.editing = None;
         });
-        visual.run_until_parked();
         assert_eq!(FileEditor::open(&f.file, &path).unwrap().text(), expected);
     }
 

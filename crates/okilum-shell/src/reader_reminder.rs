@@ -221,11 +221,8 @@ pub(super) struct MenuFacts(
 struct MenuSource {
     source: gpui_component::input::projection::SourceSnapshot,
     cursor: usize,
-    input: Entity<EditorState>,
     reader: WeakEntity<Reader>,
     markdown: bool,
-    selection: String,
-    range: std::ops::Range<usize>,
 }
 
 impl MenuFacts {
@@ -263,7 +260,7 @@ impl MenuFacts {
 
     fn refresh(
         &self,
-        _reader: &Reader,
+        reader: &Reader,
         input: &Entity<EditorState>,
         markdown: bool,
         cx: &Context<Reader>,
@@ -283,16 +280,15 @@ impl MenuFacts {
         *self.2.borrow_mut() = Some(MenuSource {
             source: state.source_snapshot(),
             cursor: state.cursor(),
-            input: input.clone(),
             reader: cx.entity().downgrade(),
             markdown,
-            selection: if date.is_some() {
-                state.selected_text().to_string()
-            } else {
-                String::new()
-            },
-            range: state.selected_range(),
         });
+        #[cfg(any(unix, windows))]
+        {
+            *self.3.borrow_mut() = (markdown && date.is_some())
+                .then(|| selection::Request::editor(reader, input, state))
+                .flatten();
+        }
         let code_block = None;
         self.0.set(Facts {
             capabilities: state.context_menu_capabilities(),
@@ -316,20 +312,6 @@ impl MenuFacts {
             && source.source.text.len() <= okilum_core::source_classifier::MAX_BYTES)
             .then(|| reader.external_block_fact(&source.source.text, source.cursor))
             .flatten();
-        #[cfg(any(unix, windows))]
-        {
-            *self.3.borrow_mut() = facts.date.filter(|_| source.markdown).map(|date| {
-                selection::Request::editor_snapshot(
-                    reader,
-                    source.input.clone(),
-                    source.source.stamp,
-                    source.range.clone(),
-                    source.selection.clone(),
-                    date,
-                    source.source.text.to_string(),
-                )
-            });
-        }
         self.0.set(facts);
     }
 }
