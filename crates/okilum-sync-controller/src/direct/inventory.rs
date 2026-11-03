@@ -172,13 +172,17 @@ impl Cache {
         self.busy.insert(peer, vault.map(str::to_owned));
         Ok(())
     }
-    fn insert(&mut self, stored: Stored) -> Header {
+    fn insert(&mut self, mut stored: Stored) -> Header {
         let h = &stored.local.header;
         let key = (h.binding.pair, h.binding.vault.clone(), h.revision.clone());
         // Reuse unchanged capabilities; refresh never evicts another peer/vault.
         if let Some(current) = self.entries.get(&key) {
             if current.local.header.binding == h.binding && current.expires > Instant::now() {
-                return current.local.header.clone();
+                // Open already collected and fully validated this new snapshot.
+                // Keep the capability stable, but install that fresh witness and
+                // its admission deadline instead of returning an almost-expired
+                // old allocation. Ordinary page/content/validate never renew it.
+                stored.local.header = current.local.header.clone();
             }
         }
         self.entries

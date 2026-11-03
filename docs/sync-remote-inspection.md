@@ -82,13 +82,16 @@ path. Traversal has a two-second per-pass budget. These are error boundaries,
 not successful truncation. At most four snapshots (256 MiB cached content), two
 per peer, are retained by (peer, vault, revision). Admission reserves capacity
 before collection; full caches refuse new vaults rather than evict another peer.
-Unchanged revisions reuse their capability; changed revisions replace only that
-peer/vault. One request per peer and four inspection requests globally may run
-concurrently. Up to 16 bounded connection workers keep slow inspections off the
-listener; excess connections are closed without a queue. Capabilities expire
-after 120 seconds, never survive controller restart, and the listener reaps
-expired allocations even without a new inspection request. In-flight ownership
-and full byte validation have bounded additional temporary allocations.
+Unchanged revisions reuse their capability while installing the newly collected,
+fully validated snapshot and its admission deadline; changed revisions replace
+only that peer/vault. Reads never renew a deadline. One request per peer and four
+inspection requests globally may run concurrently. Up to 16 bounded connection
+workers keep slow inspections off the listener; excess connections are closed
+without a queue. Capabilities expire
+120 seconds after the latest fully validated opening, never survive controller
+restart, and the listener reaps expired allocations even without a new inspection
+request. In-flight ownership and full byte validation have bounded additional
+temporary allocations.
 
 Pages contain at most four entries and content chunks at most 4,096 original
 bytes. Hex encoding stays below the existing 256 KiB authenticated wire-frame

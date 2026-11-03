@@ -378,6 +378,43 @@ fn cache_is_peer_vault_revision_scoped_bounded_and_reaps_expired_bytes() -> Resu
     Ok(())
 }
 #[test]
+fn unchanged_reopening_retains_capability_but_installs_the_fresh_validated_snapshot() -> Result<()>
+{
+    let temp = tempfile::tempdir()?;
+    fs::write(temp.path().join("note.md"), b"unchanged canonical bytes")?;
+    let peer = Uuid::new_v4();
+    let mut cache = Cache::default();
+    let mut first = stored(temp.path(), peer, "vault")?;
+    first.expires = Instant::now() + Duration::from_secs(LIFETIME_SECONDS / 2);
+    let original_expiry = first.expires;
+    let header = cache.insert(first);
+    let key = (peer, "vault".into(), header.revision.clone());
+    let in_flight = cache.entries[&key].clone();
+    let mut fresh = stored(temp.path(), peer, "vault")?;
+    fresh.local.header.binding = header.binding.clone();
+    let fresh_expiry = fresh.expires;
+    let fresh_root = fresh.local.root.clone();
+    assert!(fresh_expiry > original_expiry);
+    assert!(!Arc::ptr_eq(&in_flight.local.root, &fresh_root));
+    assert_eq!(cache.insert(fresh), header);
+    let reopened = &cache.entries[&key];
+    assert_eq!(
+        reopened.expires, fresh_expiry,
+        "fresh Open discarded its newly validated snapshot's expiry"
+    );
+    assert!(Arc::ptr_eq(&reopened.local.root, &fresh_root));
+    assert_eq!(in_flight.expires, original_expiry);
+    assert_eq!(cache.entries.len(), 1);
+    // Once expired, even an identical full reopening needs a new capability.
+    Arc::get_mut(cache.entries.get_mut(&key).unwrap())
+        .unwrap()
+        .expires = Instant::now();
+    let mut after_expiry = stored(temp.path(), peer, "vault")?;
+    after_expiry.local.header.binding = header.binding.clone();
+    assert_ne!(cache.insert(after_expiry).id, header.id);
+    Ok(())
+}
+#[test]
 fn paused_receiving_and_missing_folder_state_are_explicit_refusals() -> Result<()> {
     use serde_json::json;
     inspectable(&json!({"paused":false,"type":"sendreceive"}))?;
