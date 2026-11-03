@@ -186,7 +186,11 @@ impl Hover {
             Some(State::Ready(Facts {
                 bytes,
                 pixels: None,
-            })) => format!("{} · dimensions unavailable", size_label(bytes)),
+            })) if target.is_image() => format!("{} · dimensions unavailable", size_label(bytes)),
+            Some(State::Ready(Facts {
+                bytes,
+                pixels: None,
+            })) => size_label(bytes),
             Some(State::Unavailable) | None => UNAVAILABLE.to_owned(),
         };
         vec![relative.clone(), details, HINT.to_owned()]
