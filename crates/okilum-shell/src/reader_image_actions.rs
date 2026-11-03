@@ -144,7 +144,7 @@ impl Target {
                 ));
             }
         }
-        if self.placeholder {
+        if self.placeholder && self.is_image() {
             entries.push(("Download from iCloud", Command::Download, false));
         }
         entries
@@ -188,7 +188,11 @@ impl Target {
     }
     fn notice(&self) -> Option<&'static str> {
         if self.placeholder {
-            Some("Download this image from iCloud before opening or copying it.")
+            Some(if self.is_image() {
+                "Download this image from iCloud before opening or copying it."
+            } else {
+                "Download this file from iCloud before opening it."
+            })
         } else if self.url.is_none() {
             Some("File not found, outside this vault, or ambiguous.")
         } else {
@@ -698,6 +702,18 @@ mod tests {
             );
         }
         assert_eq!(std::fs::read(root.join(path)).unwrap(), b"synthetic pdf");
+        let cloud_file = Target {
+            placeholder: true,
+            ..file.clone()
+        };
+        assert!(!cloud_file.entries().iter().any(|(_, command, _)| matches!(
+            command,
+            Command::Download | Command::SaveAs | Command::CopyImage
+        )));
+        assert!(cloud_file
+            .entries()
+            .contains(&("Open in default app", Command::Open, true)));
+
         for os in [
             platform::labels::Os::Mac,
             platform::labels::Os::Windows,
