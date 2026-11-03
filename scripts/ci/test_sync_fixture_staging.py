@@ -48,7 +48,7 @@ class FixtureStagingTests(unittest.TestCase):
         (self.cache / helper.ARCHIVE).write_bytes(self.archive)
 
     def running(self, binary):
-        process = subprocess.Popen([str(binary), '60'])
+        process = subprocess.Popen(['sleep', '60'], executable=binary)
         def stop():
             process.kill()
             process.wait()
@@ -69,7 +69,7 @@ class FixtureStagingTests(unittest.TestCase):
         helper.publish(binary, self.executable, 0o555)
         self.assertNotEqual(original_inode, binary.stat().st_ino)
         self.assertIsNone(process.poll())
-        subprocess.run([str(binary), '0'], check=True)
+        subprocess.run(['sleep', '0'], executable=binary, check=True)
         with patch.object(helper, 'publish', side_effect=AssertionError('rewrote verified cache')):
             self.assertEqual(helper.stage(self.cache), binary)
 
@@ -82,7 +82,7 @@ class FixtureStagingTests(unittest.TestCase):
         self.running(legacy)
         raw = gzip.decompress(self.archive)
         compressor = zlib.compressobj(wbits=31)
-        cut = 20 * 1024
+        cut = 40 * 1024  # gzip must emit a full output block before pausing.
         process = subprocess.Popen(['tar', '-xzf', '-', '-C', str(self.cache)],
                                    stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
@@ -97,7 +97,7 @@ class FixtureStagingTests(unittest.TestCase):
             else:
                 self.fail('old tar control never opened the executable for writing')
             with self.assertRaises(OSError) as error:
-                subprocess.run([str(legacy), '0'], check=True)
+                subprocess.run(['sleep', '0'], executable=legacy, check=True)
             self.assertEqual(error.exception.errno, errno.ETXTBSY)
             print('Old tar staging positive control: live executable + concurrent exec returned ETXTBSY', flush=True)
             process.stdin.write(compressor.compress(raw[cut:]) + compressor.flush())
@@ -118,7 +118,7 @@ class FixtureStagingTests(unittest.TestCase):
                 barrier.wait()  # Every caller must take the publication path.
             publish(destination, data, mode)
             if destination.name == 'syncthing':
-                subprocess.run([str(destination), '0'], check=True)
+                subprocess.run(['sleep', '0'], executable=destination, check=True)
         with patch.object(helper, 'publish', side_effect=synchronized):
             with ThreadPoolExecutor(max_workers=8) as pool:
                 binaries = list(pool.map(lambda _: helper.stage(self.cache), range(8)))
@@ -134,7 +134,7 @@ class FixtureStagingTests(unittest.TestCase):
             replace(source, destination)
             # Run before publish returns, at the first instant the name becomes
             # visible. A still-open temp writer would deterministically ETXTBSY.
-            subprocess.run([str(destination), '0'], check=True)
+            subprocess.run(['sleep', '0'], executable=destination, check=True)
         with patch.object(helper.os, 'replace', side_effect=exec_at_publication):
             helper.publish(binary, self.executable, 0o555)
 
