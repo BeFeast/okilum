@@ -1225,3 +1225,16 @@ mod windows_policy_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod document_classification_tests {
+    #[test]
+    fn root_contract_is_an_agent_document_without_changing_browser_visibility() {
+        assert!(super::is_agent_document("_AgentContract.md"));
+        assert!(!super::is_agent_document("project/_AgentContract.md"));
+        assert!(super::is_agent_document("project/AGENTS.md"));
+        assert!(!super::is_agent_document("project/not-AGENTS.md"));
+        assert!(crate::quick_open::FileFilter::Default.admits("_AgentContract.md"));
+        assert!(!crate::quick_open::FileFilter::AgentFiles.admits("_AgentContract.md"));
+    }
+}

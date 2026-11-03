@@ -1467,6 +1467,9 @@ impl Reader {
             self.sel_format,
             Arc::default(),
             &self.link_identities,
+            !self.single_file
+                && reader_features::enabled(reader_features::Feature::Agents, cx)
+                && okilum_core::agent_imports::is_agent_document(&rel),
         );
         let _phase = self.loading.as_ref().and_then(|load| {
             load.opts
@@ -5068,6 +5071,7 @@ mod tests {
                 v.sel_format,
                 v.prepared_links.clone(),
                 &v.link_identities,
+                v.agent_document_enabled(cx),
             );
             v.content.update(cx, |state, cx| {
                 configured.prepare_state(state, cx);
