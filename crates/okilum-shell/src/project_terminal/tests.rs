@@ -10,7 +10,10 @@ fn shortcuts_preserve_input_conflicts_and_are_shown_in_keyboard_settings(cx: &mu
     });
     let matches = |key: &str, contexts: &[&str]| {
         let keys = KeyBinding::new(key, OpenTerminal, None);
-        let contexts: Vec<gpui::KeyContext> = contexts.iter().map(|c| c.parse().unwrap()).collect();
+        let contexts: Vec<gpui::KeyContext> = contexts
+            .iter()
+            .map(|c| gpui::KeyContext::parse(c).unwrap())
+            .collect();
         keymap
             .bindings_for_input(keys.keystrokes(), &contexts)
             .0
