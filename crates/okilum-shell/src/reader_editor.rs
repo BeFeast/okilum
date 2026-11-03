@@ -86,6 +86,28 @@ const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 /// notice with it and leaves any other notice alone (#1376).
 const CONFLICT_NOTICE: &str = "This file changed outside Okilum.";
 
+fn conflict_copy_rel(current_rel: &str) -> String {
+    let path = Path::new(current_rel);
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let extension = path.extension().unwrap_or_default().to_string_lossy();
+    let id = uuid::Uuid::new_v4();
+    // This random discriminator is not a claim about a device identity.
+    let suffix: String = id
+        .as_bytes()
+        .iter()
+        .take(7)
+        .map(|b| b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[(b & 31) as usize] as char)
+        .collect();
+    let name = format!(
+        "{stem}.okilum-conflict-{}-{suffix}.{extension}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    );
+    // Syncthing prunes *.sync-conflict-*. Even an original named by Syncthing
+    // must not pass its retention marker on to an Okilum-owned copy.
+    let name = name.replace(".sync-conflict-", ".syncthing-conflict-");
+    okilum_core::vault::note_path(&path.with_file_name(name))
+}
+
 /// A disk reload keeps the native editor entity, focus, cursor and viewport.
 /// set_value deliberately clears undo: the old base must not be undoable over
 /// a newly arrived remote version without another revision-checked save.
@@ -2281,26 +2303,7 @@ impl Reader {
                         == Some(text.as_str())
             })
             .map(|(_, rel)| rel.clone());
-        let rel = previous.unwrap_or_else(|| {
-            let path = Path::new(&self.current_rel);
-            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-            let extension = path.extension().unwrap_or_default().to_string_lossy();
-            let id = uuid::Uuid::new_v4();
-            // Syncthing prunes its own *.sync-conflict-* files. These copies
-            // belong to Okilum and must never participate in that retention.
-            // This random discriminator is not a claim about a device identity.
-            let suffix: String = id
-                .as_bytes()
-                .iter()
-                .take(7)
-                .map(|b| b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[(b & 31) as usize] as char)
-                .collect();
-            let name = format!(
-                "{stem}.okilum-conflict-{}-{suffix}.{extension}",
-                chrono::Local::now().format("%Y%m%d-%H%M%S")
-            );
-            okilum_core::vault::note_path(&path.with_file_name(name))
-        });
+        let rel = previous.unwrap_or_else(|| conflict_copy_rel(&self.current_rel));
         let saved = editing
             .conflict_copy
             .as_ref()

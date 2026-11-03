@@ -283,6 +283,25 @@ mod tests {
     }
 
     #[test]
+    fn issue2486_copy_of_syncthing_conflict_never_inherits_its_pruning_marker() {
+        for rel in [
+            "folder/note.md",
+            "folder/note.sync-conflict-20261103-123456-ABCDEFG.md",
+            "folder/note.sync-conflict-20261103-123456-ABCDEFG",
+        ] {
+            let copy = conflict_copy_rel(rel);
+            let path = Path::new(&copy);
+            assert_eq!(path.parent(), Some(Path::new("folder")));
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert!(name.contains(".okilum-conflict-"));
+            assert!(
+                !name.contains(".sync-conflict-"),
+                "Syncthing would prune {name}"
+            );
+        }
+    }
+
+    #[test]
     fn issue2486_selected_notifications_ignore_reads_and_siblings() {
         use notify::{
             event::{AccessKind, ModifyKind, RenameMode},
