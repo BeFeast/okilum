@@ -2337,6 +2337,10 @@ impl Reader {
     ) {
         if !changes.is_empty() {
             self.invalidate_links();
+            // A newer source hint revokes an older document reconciliation,
+            // including its late attempt to prepare actionable link evidence.
+            self.navigation.reconciliation_generation =
+                self.navigation.reconciliation_generation.wrapping_add(1);
         }
         if self.shared_session.is_some() {
             self.deferred_vault_changes.rescan |= changes.rescan;

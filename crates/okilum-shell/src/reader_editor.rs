@@ -6022,9 +6022,8 @@ mod autosave_tests {
                 visual.run_until_parked();
                 visual.update(|window, cx| window.draw(cx).clear(cx));
                 let prepared = LIVE_PREPARES.with(|n| n.get());
-                native.read_with(visual, |i, _| {
-                    i.take_layout_frames();
-                });
+                // Retain the edited frame: an unchanged autosave correctly
+                // performs no new native layout. The final stamp must match.
                 work::reset();
                 wait(visual, 1200);
                 f.reader.update_in(visual, |r, window, cx| {
@@ -6057,12 +6056,11 @@ mod autosave_tests {
                 });
                 visual.update(|window, cx| window.draw(cx).clear(cx));
                 native.read_with(visual, |i, _| {
-                    assert!(
-                        i.take_layout_frames()
-                            .last()
-                            .is_some_and(|frame| !frame.raw),
-                        "autosaved fixture must remain actual projected Live Preview"
-                    )
+                    let frames = i.take_layout_frames();
+                    let frame = frames.last().expect("actual edited native frame");
+                    assert!(!frame.raw, "autosaved fixture must remain projected");
+                    assert_eq!(frame.generation, i.source_stamp().generation);
+                    assert_eq!(frame.presentation_epoch, i.presentation_epoch());
                 });
                 let cache_kept = LIVE_PREPARES.with(|n| n.get()) == prepared;
                 println!("EDITOR_SAVE_WORK bytes={bytes} shared={shared} measured={measured:?} same_vault={same} cache_kept={cache_kept}");

@@ -45,7 +45,7 @@ def main():
         shutil.copy(root / editor.parent / 'reader_editor/work.rs', dest / editor.parent / 'reader_editor/work.rs')
         # Both native callbacks use this exact subscription boundary.
         for marker in [
-            'let changed = cx.subscribe(&input, move |this, input, _: &SourceMutation, cx| {',
+            'let changed = cx.subscribe(&input, move |this, input, mutation: &SourceMutation, cx| {',
             'pub(super) fn refresh_source_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {',
         ]:
             if marker not in old:

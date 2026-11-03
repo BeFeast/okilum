@@ -675,6 +675,7 @@ impl ProjectView {
         reader: &Entity<Reader>,
         root: PathBuf,
         mut published: Arc<Vault>,
+        mut publication_epoch: u64,
         cx: &mut Context<Self>,
     ) {
         let scope_changed = self.resource_vault.as_ref() != Some(&root);
@@ -684,7 +685,6 @@ impl ProjectView {
         }
         agent_skills::bind(self, reader.downgrade(), root.clone());
         self.resource_vault = Some(root.clone());
-        let mut publication_epoch = reader.read(cx).source_publication_epoch;
         self._resource_observer = Some(cx.observe(reader, move |this, reader, cx| {
             let reader = reader.read(cx);
             if reader.vault_root != root
@@ -2327,9 +2327,10 @@ impl Reader {
                 };
                 let root = this.vault_root.clone();
                 let published = this.vault.clone();
+                let publication_epoch = this.source_publication_epoch;
                 let reader = cx.entity();
                 project.update(cx, |view, cx| {
-                    view.bind_resources(&reader, root, published, cx)
+                    view.bind_resources(&reader, root, published, publication_epoch, cx)
                 });
                 let _resource_open = cx.subscribe_in(
                     &project,

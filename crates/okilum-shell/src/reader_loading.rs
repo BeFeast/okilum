@@ -1869,24 +1869,51 @@ impl Reader {
         self.navigation.reconciliation_generation =
             self.navigation.reconciliation_generation.wrapping_add(1);
         let reconciliation = self.navigation.reconciliation_generation;
+        let previous_canonical = self.note_canonical_source.clone();
+        let previous_rendered = self.link_rendered_source.clone();
+        let previous_original = self.link_original_source.clone();
+        let previous_damaged = self.note_encoding_damaged;
         cx.spawn_in(window, async move |this, cx| {
             let target = rel.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    if html {
+                    // Equal canonical bytes keep the existing document and its
+                    // authored-link identities. Resolution evidence is refreshed
+                    // separately; only pending embeds/images need a new render.
+                    // Comparisons and scans belong on this worker too.
+                    if raw.is_some()
+                        && raw == previous_canonical
+                        && previous_damaged == vault.note_encoding_damaged(&target)
+                        && previous_rendered.as_deref().is_some_and(|source| {
+                            !okilum_core::render::has_pending_embeds(source)
+                                && !okilum_core::render::has_unavailable_images(source)
+                        })
+                    {
+                        return Ok(None);
+                    }
+                    let document: prepared_links::PreparedDocument = if html {
                         prepared_links::PreparedDocument::html(
                             &vault,
                             &target,
                             raw.map(|raw| raw.to_string()),
-                        )
+                        )?
                     } else {
                         let doc = if let Some(raw) = raw {
                             okilum_core::render::reader_document_from_source(&vault, &target, &raw)
                         } else {
                             okilum_core::render::reader_document(&vault, &target)?
                         };
-                        Ok(doc.into())
+                        doc.into()
+                    };
+                    if document.canonical_source == previous_canonical
+                        && document.encoding_damaged == previous_damaged
+                        && Some(document.source.as_str()) == previous_rendered.as_deref()
+                        && document.original.as_deref() == previous_original.as_deref()
+                    {
+                        Ok(None)
+                    } else {
+                        Ok(Some(document))
                     }
                 })
                 .await;
@@ -1906,15 +1933,14 @@ impl Reader {
                 if this.track_deleted_note(&Default::default(), cx) {
                     return;
                 }
-                if result.as_ref().is_ok_and(|document| {
-                    document.canonical_source == this.note_canonical_source
-                        && document.encoding_damaged == this.note_encoding_damaged
-                        && document.source == this.note_source
-                        && document.original.as_deref() == this.link_original_source.as_deref()
-                }) {
-                    this.refresh_link_preparation(cx);
-                    return;
-                }
+                let result = match result {
+                    Ok(None) => {
+                        this.refresh_link_preparation(cx);
+                        return;
+                    }
+                    Ok(Some(document)) => Ok(document),
+                    Err(error) => Err(error),
+                };
                 // Sample the position after preparation, so intervening scrolling
                 // cannot be overwritten with the earlier reconciliation position.
                 // A consumed session snapshot may still await its first layout
