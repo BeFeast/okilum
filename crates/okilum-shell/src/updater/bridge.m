@@ -518,6 +518,10 @@ static TSTerminationDelegate *TSTermination;
         [self cancel]; reply(YES);
     } else {
         self.quitReply = reply;
+        // A refused termination after a prior explicit Restart is already an
+        // authorized installation transaction. Preserve its freshness/editor
+        // guard instead of hanging Quit waiting for a nonexistent Ready event.
+        if (self.retryTermination && !self.verifying) [self requestRestart];
     }
 }
 - (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void (^)(void))acknowledgement {

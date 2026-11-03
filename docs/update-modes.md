@@ -13,7 +13,8 @@ previous in-memory choice and reports an inline error. Channels remain separate.
 
 Manual Check remains immediate in every mode and also postpones automatic
 checks. An explicit Download action revalidates the selected channel/feed; it
-never installs. A downloaded package is never applied on ordinary Quit/startup.
+never installs. A downloaded package is never applied on ordinary Quit/startup without an
+earlier explicit Restart click.
 Restart keeps editor protection, state persistence, freshness/channel admission,
 and window restoration from #2387. Existing channel migration from #2369/#2457
 and Linux launcher downgrade protection remain in force.
@@ -38,6 +39,9 @@ installer remains disabled. Download cancellation consumes Sparkle's cancellatio
 continuation; cancellation at Ready uses Skip, clearing all freshness/session
 continuations. Ordinary Quit cancels rather than authorizes installation;
 extraction finishes into the same cancellable Ready boundary before shutdown.
+If an explicitly clicked Restart has already reached Sparkle installation but
+termination was refused, its existing guarded retry/quit transaction is retained;
+that case already has installation consent.
 Signed freshness checks and explicit-restart editor/recovery guards remain intact.
 
 Cancellation keeps the worker/session busy until cleanup completes. Blocking
