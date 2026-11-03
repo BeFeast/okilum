@@ -518,3 +518,14 @@ fn waiting_reports_read_all_comments_in_existing_refresh_and_fail_incomplete_sou
     .unwrap_err();
     assert!(incomplete.to_string().contains("comments changed"));
 }
+
+#[test]
+fn waiting_report_comment_missing_identity_is_not_a_successful_answer() {
+    let binding = binding();
+    let repo = repository_url(&binding.repository).unwrap();
+    let error=read_with(&binding,&repo,86500,&mut |path| {
+        if path.starts_with("issues?state=open") { return Ok(json!([{"number":42,"title":"Report","state":"open","labels":[{"name":"from-oleg"}],"created_at":"1970-01-02T00:00:00Z","comments":1,"user":{"id":4}}])); }
+        Ok(json!([{"user":null}]))
+    }).unwrap_err();
+    assert!(error.to_string().contains("no author identity"));
+}
