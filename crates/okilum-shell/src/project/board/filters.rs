@@ -207,17 +207,18 @@ impl Board {
                 counts: [0; 5],
                 scopes: Default::default(),
                 locals: Default::default(),
-                labels: BTreeSet::new(),
+                labels: self
+                    .snapshot
+                    .forgejo
+                    .value
+                    .values()
+                    .flat_map(|issue| issue.labels.iter().map(|label| label.name.clone()))
+                    .collect(),
                 executors: BTreeSet::new(),
             };
             let query = self.filter.search.trim().to_lowercase();
             projected.issues.retain(|scope| {
                 let issue = self.snapshot.forgejo.value.get(&scope.number);
-                if let Some(issue) = issue {
-                    result
-                        .labels
-                        .extend(issue.labels.iter().map(|l| l.name.clone()));
-                }
                 result.executors.insert(scope.executor.clone());
                 let active = active(scope, &self.snapshot.t3.value);
                 let extras = self.filter.extras_match(scope, issue, &query);
@@ -236,9 +237,9 @@ impl Board {
                 result.scopes[column].push(index);
                 result.counts[column] += 1;
             }
+            let mut all = self.filter.clone();
+            all.chip = Chip::All;
             for (index, card) in self.local_cards.value.cards.iter().enumerate() {
-                let mut all = self.filter.clone();
-                all.chip = Chip::All;
                 if all.matches_local(card) {
                     result.chip_counts[0] += 1;
                 }

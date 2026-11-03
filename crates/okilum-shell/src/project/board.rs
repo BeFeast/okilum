@@ -7,6 +7,8 @@ mod appearance;
 mod columns;
 mod delivery;
 mod filters;
+#[cfg(feature = "project-ui-harness")]
+pub(super) mod fixture;
 mod live;
 mod local;
 mod manage;
@@ -1047,9 +1049,6 @@ impl Render for Board {
         let projection = self.filtered_projection();
         let binding = &projection.binding;
         root = root.child(self.filter_bar(&projection, cx));
-        if self.filter.is_active() && projection.counts.iter().all(|n| *n == 0) {
-            return root.child(self.filter_empty(cx)).into_any_element();
-        }
         if binding.repository.is_empty() {
             root = root.child(div().debug_selector(|| "board-local".into())
                 .text_size(px(12.)).text_color(colors.text_muted)
@@ -1066,6 +1065,12 @@ impl Render for Board {
         }
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
+        }
+        if self.filter.is_active() && projection.counts.iter().all(|n| *n == 0) {
+            return root
+                .child(self.filter_empty(cx))
+                .child(self.source_indicator(cx))
+                .into_any_element();
         }
         let counts = projection.counts;
         let ready = self.column_sources_ready(binding);
