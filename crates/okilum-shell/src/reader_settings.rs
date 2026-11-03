@@ -2006,17 +2006,27 @@ impl Render for Settings {
             }))
             // GPUI negotiates SSD through xdg-decoration and reports CSD when
             // unavailable (GNOME). TitleBar hides its controls under SSD.
-            .child(TitleBar::new().child("Settings"))
-            .child(content)
             .child(
-                h_flex().flex_none().justify_end().p_3().child(
-                    Button::new("settings-close")
-                        .debug_selector(|| "settings-close".into())
-                        .label("Close")
-                        .accessibility_label("Close Settings")
-                        .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+                TitleBar::new().child("Settings").child(
+                    h_flex()
+                        .h_full()
+                        .items_center()
+                        .pr_3()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            Button::new("settings-close")
+                                .debug_selector(|| "settings-close".into())
+                                .small()
+                                .ghost()
+                                .label("Close")
+                                .accessibility_label("Close Settings")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.close(window, cx)),
+                                ),
+                        ),
                 ),
             )
+            .child(content)
             // Confirmations (Uninstall Okilum…) open as dialogs on this window;
             // without the dialog layer they exist but are never drawn (#1085).
             .children(Root::render_sheet_layer(window, cx))

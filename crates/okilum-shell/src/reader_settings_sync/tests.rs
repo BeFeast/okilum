@@ -79,6 +79,7 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
     if invitation {
         visual.simulate_resize(size(px(820.), px(800.)));
     }
+    visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
     let sync = visual.debug_bounds("settings-section-Sync").unwrap();
     visual.simulate_click(sync.center(), Modifiers::default());
@@ -114,6 +115,7 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
     visual.simulate_input("Desktop 2487");
     visual.update(|window, cx| {
         let input = field.read(cx);
+        assert!(window.is_window_active(), "native focus events are active");
         assert!(input.focus_handle(cx).is_focused(window));
         assert_eq!(input.value().as_ref(), "Desktop 2487");
     });
