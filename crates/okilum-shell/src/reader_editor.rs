@@ -861,7 +861,21 @@ impl Reader {
             input
         });
         let mut last_find_case = reader_ui_state::find_case_sensitive(cx);
+        let mut last_embed_hover = None;
         let highlighting = cx.observe_in(&input, window, move |this, input, window, cx| {
+            // Editor/Input are RenderOnce wrappers owned by Reader. Native
+            // hover state alone redraws the text engine, not its overlay host.
+            // Rebuild that host only when the popup opens/closes or changes
+            // target; ordinary input/caret notifications stay on the hot path.
+            let hover = input
+                .read(cx)
+                .hover_popover()
+                .map(|hover| hover.symbol_range.clone());
+            if last_embed_hover != hover {
+                last_embed_hover = hover;
+                cx.notify();
+            }
+
             if this.editing.as_ref().is_some_and(|editing| {
                 editing.input == input
                     && editing.live_preview.restore_after_find
