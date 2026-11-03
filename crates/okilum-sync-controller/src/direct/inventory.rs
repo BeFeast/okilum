@@ -146,10 +146,11 @@ fn local(header_binding: Binding, root: Arc<File>) -> Result<Local> {
         "ignore policy changed during inspection"
     );
     let entries = manifest(&tree);
+    let revision = digest(&(&tree.stamps, &entries))?;
     let header = Header {
         id: Uuid::new_v4(),
         binding: header_binding,
-        revision: digest(&tree.stamps)?,
+        revision,
         manifest: digest(&entries)?,
         files: entries.len(),
         bytes: entries.iter().map(|e| e.size).sum(),

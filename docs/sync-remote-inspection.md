@@ -40,7 +40,7 @@ A header binds the peer capability, both persistent signing identities, vault ID
 canonical root path and open-directory filesystem identity, daemon identity,
 complete runtime configuration hash, controller generation, daemon start time,
 and canonical ignore policy. Its revision includes regular-file and directory
-identity, size, mode, link count, mtime and ctime. Its manifest separately binds
+identity, size, mode, link count, mtime, ctime and the content manifest. The manifest binds
 every complete relative path, byte length and content hash.
 
 Descriptor-relative `openat` traversal refuses symlinks, hard links, special or
