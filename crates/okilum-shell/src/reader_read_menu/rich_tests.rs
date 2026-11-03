@@ -3,7 +3,7 @@ use ::core::prelude::v1::test;
 use platform::rich_clipboard::{self, Payload};
 use std::{cell::RefCell, rc::Rc};
 
-const NOTE: &str = "# Title\r\n\r\nA **café 雪** and *italic* with [Example](https://example.test).\r\n\r\n```rs\r\n    let a = \"<&>\";\r\n```\r\n\r\nAfter.\r\n";
+const NOTE: &str = "# Title\r\n\r\nA **café 雪** and *italic* with [Example](https://example.test).\r\n\r\n```rs\r\n    let a = \"<&>\";\r\n```\r\n\r\nAfter.\r\n\r\n- First\r\n- Second\r\n";
 struct Fixture<'a> {
     reader: Entity<Reader>,
     visual: &'a mut VisualTestContext,
@@ -60,6 +60,41 @@ fn open(cx: &mut TestAppContext) -> Fixture<'_> {
     }
 }
 impl Fixture<'_> {
+    fn seed_clipboard(&mut self) {
+        self.visual
+            .update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+    }
+    fn focus_text(&mut self) {
+        self.reader.update_in(self.visual, |r, window, cx| {
+            let focus = r.content.read(cx).focus_handle().clone();
+            focus.focus(window, cx);
+        });
+    }
+    fn palette_copy(&mut self, formatted: bool) {
+        self.focus_text();
+        self.visual.simulate_keystrokes("secondary-k");
+        self.visual.simulate_input(if formatted {
+            "copy with formatting"
+        } else {
+            "copy as markdown"
+        });
+        self.visual.run_until_parked();
+        self.seed_clipboard();
+        self.visual.simulate_keystrokes("secondary-shift-c");
+        self.visual.run_until_parked();
+        assert_eq!(
+            self.clipboard(),
+            "sentinel",
+            "Read shortcut excludes palette input"
+        );
+        self.visual.update(|window, cx| window.draw(cx).clear(cx));
+        self.pick(if formatted {
+            "palette-copy-formatted"
+        } else {
+            "palette-copy-markdown"
+        });
+        assert!(!self.reader.read_with(self.visual, |r, _| r.quick_open.open));
+    }
     fn background(&mut self) -> Point<Pixels> {
         let bounds = self
             .visual
@@ -85,6 +120,13 @@ impl Fixture<'_> {
         self.visual.run_until_parked();
     }
     fn select_all(&mut self) -> String {
+        // Keyboard and palette copy can retain selection. Start each independent
+        // menu scenario on the background, which offers Select all.
+        self.reader.update(self.visual, |r, cx| {
+            r.content
+                .update(cx, |content, cx| content.clear_selection(cx));
+        });
+        self.visual.run_until_parked();
         let at = self.background();
         self.right_click(at);
         self.pick("read-menu-Select all");
@@ -115,6 +157,152 @@ impl Fixture<'_> {
             })
             .expect("positive control: rendered link hit detected")
     }
+}
+
+#[gpui::test]
+fn markdown_copy_uses_a_partial_rendered_selection_instead_of_the_document(
+    cx: &mut TestAppContext,
+) {
+    let mut f = open(cx);
+    let paragraph = f.reader.read_with(f.visual, |r, cx| {
+        r.content.read(cx).list_state().bounds_for_item(1).unwrap()
+    });
+    let start = point(
+        paragraph.left() + px(2.),
+        paragraph.top() + px(BODY_FONT_SIZE * 0.8),
+    );
+    let end = point(paragraph.right() - px(2.), start.y);
+    let select = |f: &mut Fixture<'_>| {
+        f.visual
+            .simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        f.visual
+            .simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        f.visual
+            .simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+    };
+    select(&mut f);
+    let (plain, markdown) = f.reader.read_with(f.visual, |r, cx| {
+        let content = r.content.read(cx);
+        (
+            content.selected_text_as(SelectionFormat::Plain),
+            content.selected_text_as(SelectionFormat::Source),
+        )
+    });
+    assert!(
+        plain.contains("café 雪") && !plain.contains("Title") && !plain.contains("After"),
+        "positive control: paragraph-only selection: {plain:?}"
+    );
+    assert!(markdown.contains("**café 雪**") && markdown.contains("https://example.test"));
+    assert_ne!(markdown, NOTE);
+    let at = f.background();
+    f.right_click(at);
+    f.pick("read-menu-Copy as Markdown");
+    assert_eq!(f.clipboard(), markdown);
+    select(&mut f);
+    f.visual.simulate_keystrokes("secondary-c");
+    f.visual.run_until_parked();
+    let plain_copy = f.clipboard();
+    // The existing keyboard Copy trims the renderer's final block separator;
+    // the explicit context-menu snapshot intentionally keeps it.
+    assert_eq!(plain_copy, plain.trim_end_matches('\n'));
+    f.seed_clipboard();
+    f.visual.simulate_keystrokes("secondary-shift-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), markdown);
+    f.visual.simulate_keystrokes("secondary-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), plain_copy);
+    select(&mut f);
+    f.palette_copy(false);
+    assert_eq!(f.clipboard(), markdown);
+}
+
+#[gpui::test]
+fn markdown_shortcut_and_palette_match_menu_and_plain_copy_stays_plain(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let plain = f.select_all();
+    assert!(plain.contains("Title") && plain.contains("First") && !plain.contains("**"));
+    let at = f.background();
+    f.right_click(at);
+    f.pick("read-menu-Copy as Markdown");
+    let markdown = f.clipboard();
+    assert_eq!(markdown, NOTE);
+
+    f.select_all();
+    f.focus_text();
+    f.visual.simulate_keystrokes("secondary-c");
+    f.visual.run_until_parked();
+    let plain_copy = f.clipboard();
+    assert_eq!(plain_copy, plain.trim_end_matches('\n'));
+    f.seed_clipboard();
+    f.visual.simulate_keystrokes("secondary-shift-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), markdown);
+    f.visual.simulate_keystrokes("secondary-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), plain_copy);
+
+    f.select_all();
+    f.seed_clipboard();
+    f.palette_copy(false);
+    assert_eq!(f.clipboard(), markdown);
+    f.select_all();
+    f.palette_copy(true);
+    assert_eq!(f.clipboard(), plain);
+    assert_eq!(
+        f.seen.borrow().len(),
+        1,
+        "formatted palette command reaches the native writer boundary"
+    );
+    assert_eq!(
+        std::fs::read(f.root.join("note.md")).unwrap(),
+        NOTE.as_bytes()
+    );
+}
+
+#[gpui::test]
+fn markdown_shortcut_and_palette_without_selection_match_document_menu(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let at = f.background();
+    f.right_click(at);
+    f.pick("read-menu-Copy entire document as Markdown");
+    let markdown = f.clipboard();
+    assert_eq!(markdown, NOTE);
+    f.focus_text();
+    f.seed_clipboard();
+    f.visual.simulate_keystrokes("secondary-shift-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), markdown);
+    f.seed_clipboard();
+    f.palette_copy(false);
+    assert_eq!(f.clipboard(), markdown);
+    assert!(f.reader.read_with(f.visual, |r, cx| r
+        .content
+        .read(cx)
+        .selected_text()
+        .is_empty()));
+
+    // History can be open beside the current Read document without a version
+    // preview. Its keyboard context must retain the Read copy shortcut.
+    f.reader
+        .update_in(f.visual, |r, window, cx| r.open_timeline(window, cx));
+    f.visual.run_until_parked();
+    f.reader.read_with(f.visual, |r, _| {
+        assert!(r
+            .active_timeline()
+            .is_some_and(|timeline| timeline.selected.is_none()));
+        assert!(r.read_copy_available());
+    });
+    assert!(
+        f.visual.debug_bounds("reader-column").is_some(),
+        "current Read document remains visible"
+    );
+    f.focus_text();
+    f.seed_clipboard();
+    f.visual.simulate_keystrokes("secondary-shift-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), markdown);
 }
 #[gpui::test]
 fn rich_read_menu_publishes_html_and_plain_without_changing_other_copy_formats(

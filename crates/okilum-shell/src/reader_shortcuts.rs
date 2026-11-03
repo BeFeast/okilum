@@ -111,6 +111,7 @@ fn catalog() -> Vec<Entry> {
         entry::<RedoTrash>(Os::CURRENT.redo_move_to_trash(), Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
+        entry::<reader_read_menu::CopyAsMarkdown>("Copy as Markdown", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),
         entry::<reader_log::ToggleMark>("Mark log row", Notes),
         entry::<reader_log::NextMark>("Next marked log row", Navigation),
@@ -500,6 +501,23 @@ mod tests {
     }
 
     #[gpui::test]
+    fn markdown_copy_shortcut_has_no_reader_or_toolkit_collision(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let keymap = reader_keymap(cx);
+        let expected = KeyBinding::new(
+            reader_read_menu::COPY_MARKDOWN_KEY,
+            reader_read_menu::CopyAsMarkdown,
+            None,
+        );
+        let actions: Vec<_> = keymap
+            .bindings()
+            .filter(|binding| binding.keystrokes() == expected.keystrokes())
+            .map(|binding| binding.action().name())
+            .collect();
+        assert_eq!(actions, [reader_read_menu::CopyAsMarkdown::name_for_type()]);
+    }
+
+    #[gpui::test]
     fn every_bound_reader_action_is_listed(cx: &mut TestAppContext) {
         // Bound only in the separate settings window, which has no sheet.
         const NOT_IN_READER: [&str; 1] = ["okilum_settings::CloseSettings"];
@@ -567,6 +585,10 @@ mod tests {
         }
         let row = |label: &str| rows.iter().find(|row| row.label == label).unwrap();
         assert_eq!(row("New note").keys, [Os::CURRENT.shortcut("secondary-n")]);
+        assert_eq!(
+            row("Copy as Markdown").keys,
+            [Os::CURRENT.shortcut(reader_read_menu::COPY_MARKDOWN_KEY)]
+        );
         assert_eq!(
             row("Keyboard shortcuts").keys,
             [Os::CURRENT.shortcut("secondary-/")]
