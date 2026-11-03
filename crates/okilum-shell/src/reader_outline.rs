@@ -802,8 +802,8 @@ mod tests {
             // Both jobs begin only after this update returns. The older result
             // must not win even if background completion order changes.
             reader.update_in(visual, |reader, window, cx| {
-                reader.open_outline_heading(reader.outline[0].clone(), window, cx);
-                reader.open_outline_heading(reader.outline[2].clone(), window, cx);
+                reader.open_outline_heading(reader.visible_outline()[0].clone(), window, cx);
+                reader.open_outline_heading(reader.visible_outline()[2].clone(), window, cx);
             });
             settle(visual);
             let end_line = original[..original.find("## End").unwrap()]
@@ -816,7 +816,7 @@ mod tests {
             });
             // A user caret move while parsing is pending cancels the landing.
             reader.update_in(visual, |reader, window, cx| {
-                reader.open_outline_heading(reader.outline[1].clone(), window, cx);
+                reader.open_outline_heading(reader.visible_outline()[1].clone(), window, cx);
                 input.update(cx, |input, cx| place(input, 0, window, cx));
             });
             settle(visual);

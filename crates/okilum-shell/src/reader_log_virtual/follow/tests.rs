@@ -394,6 +394,29 @@ fn follow_history_bounds_are_terminal_without_dropping_accepted_epochs() {
 
 #[test]
 fn follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias() {
+    // The decoder reserves from the process-wide Log budget (#1428). Other
+    // parallel tests deliberately exhaust it; exercise both outcomes in a
+    // fresh process rather than interpreting their pressure as a bad archive.
+    const CHILD: &str = "OKILUM_COMPRESSED_ALIAS_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "reader_log::virtual_sources::follow::tests::follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "isolated alias test failed: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("compressed alias and pressure controls passed"));
+        return;
+    }
     let f = Fixture::new();
     fs::write(
         &f.path,
@@ -430,6 +453,53 @@ fn follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias() {
         .unwrap()
         .iter()
         .any(|c| c.path == archive && c.reason == Reason::DuplicateSource));
+    // A byte-distinct archive must be admitted, not coalesced by name alone.
+    let different = f.vault.join("logs/a.log.2.gz");
+    // Valid gzip containing "second\n", with a different decoded prefix.
+    fs::write(
+        &different,
+        [
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 43, 78, 77, 206, 207, 75, 225, 2, 0, 126, 29, 222,
+            6, 7, 0, 0, 0,
+        ],
+    )
+    .unwrap();
+    // Consume the global pool with real retained snapshots. Membership must
+    // fail closed under pressure, leaving the last accepted rows/aliases intact.
+    let mut pressure = Vec::new();
+    loop {
+        match LogFile::open(&a) {
+            Ok(file) => pressure.push(file),
+            Err(error) => {
+                assert!(
+                    error.is::<okilum_core::log::window_budget::BudgetBusy>(),
+                    "{error:#}"
+                );
+                break;
+            }
+        }
+    }
+    assert!(
+        !pressure.is_empty(),
+        "positive control: real reservations were held"
+    );
+    let error = session
+        .refresh(&plan, &f.change("logs/a.log.2.gz"), &AtomicBool::new(false))
+        .err()
+        .expect("membership cannot decode under exhausted budget");
+    assert!(error.to_string().contains("Membership refresh incomplete"));
+    assert_eq!(session.published.len(), 2);
+    assert_eq!(session.aliases.len(), 1);
+    assert_eq!(session.published[&0].snapshot.raw(0).unwrap(), b"first");
+    drop(pressure);
+    let update = session
+        .refresh(&plan, &f.change("logs/a.log.2.gz"), &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(update.sources.len(), 1);
+    assert_eq!(update.sources[0].snapshot.raw(0).unwrap(), b"second");
+    assert_eq!(session.published.len(), 3);
+    assert_eq!(session.aliases.len(), 1);
+    println!("compressed alias and pressure controls passed");
 }
 
 #[test]

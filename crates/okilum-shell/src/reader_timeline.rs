@@ -997,12 +997,27 @@ mod tests {
         reader.update_in(visual, |r, w, cx| {
             r.open_timeline(w, cx);
             r.show_empty_vault(w, cx);
+            assert!(w.has_active_dialog(cx));
+            assert_eq!(r.current_rel, "note.md");
+            assert!(r.active_timeline().is_some());
         });
+        visual.run_until_parked();
+        // #2375 protects the displayed version after external deletion, even
+        // when closing from history. Explicitly decline saving before leaving.
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        let dont_save = visual
+            .debug_bounds("deleted-note-dont-save")
+            .expect("deleted displayed note requires a leave decision");
+        visual.simulate_click(dont_save.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert!(r.current_rel.is_empty());
             assert!(r.active_timeline().is_none());
         });
+        assert!(
+            !root.join("note.md").exists(),
+            "Don't Save never restores it"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
