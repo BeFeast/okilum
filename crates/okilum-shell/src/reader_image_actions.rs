@@ -360,7 +360,11 @@ impl Reader {
             }
             menu
         });
-        cx.subscribe(&popup, |reader, _, _: &DismissEvent, cx| {
+        // Match the toolkit's popup ownership so active image tooltips cannot
+        // cover the menu or arm a second editor context menu underneath it.
+        let popup_context = gpui_base::GlobalState::register_deferred_popover(cx);
+        cx.subscribe(&popup, move |reader, _, _: &DismissEvent, cx| {
+            let _popup_context = &popup_context;
             diagnostics("image menu dismissed");
             reader.file_menu = None;
             cx.notify();
