@@ -130,6 +130,9 @@ def classify(log):
     # suite's output may print the same shape.
     if PYTHON_FAILED.search(text):
         return 'code', python_failures(text)
+    # check-linux.sh runs cargo fmt --check and check_brand.py before the first compile (#1966).
+    if re.search(r'^(Diff in |\S+ brand assets remain:$)', text, re.M):
+        return 'code', []
     for line in RUNNER_LINE.findall(text):
         for marker in INFRA_MARKERS:
             if marker in line:
@@ -137,7 +140,7 @@ def classify(log):
                 # slow test finished, the job was still making progress and the host was slow.
                 hung = unfinished_tests(text) if marker == DEADLINE else []
                 return ('code', hung) if hung else ('infra', marker)
-    if not re.search(r'^\s*(Compiling|Checking|Finished|Running) ', text, re.M):
+    if not re.search(r'^(\s*(Compiling|Checking|Finished|Running)|nofile before:) ', text, re.M):
         return 'infra', 'the job ended before any build or test output'
     return 'unknown', []
 

@@ -417,6 +417,56 @@ class MainHealthTests(unittest.TestCase):
         self.assert_blamed(api, body)
         self.assertIn(''.join(f'\n- `{name}`' for name in names), body)
 
+    # Split so scripts/rebrand/check_brand.py never finds the old product name in this file.
+    OLD_BRAND = 'Tes' + 'sera'
+    PRE_GATE = ('2026-10-31T22:06:13.8816614Z Cache not found for input keys: okilum-cargo-v2-Linux-bd86e2df\n')
+    GATE_START = ('2026-10-31T22:06:13.9865501Z nofile before: soft=1024 hard=524288\n'
+                  '2026-10-31T22:06:13.9875542Z nofile for tests: soft=524288 hard=524288\n')
+
+    def test_a_rustfmt_failure_before_compile_blames_the_merges(self):
+        # Run 17839 (linux-local): cargo fmt --check fails before the first Compiling line (#1966).
+        log = (self.PRE_GATE + self.GATE_START +
+               '2026-10-31T22:06:17.7573880Z Diff in /workspace/BeFeast/okilum/crates/okilum-shell/src/'
+               'platform/exact_x11_clipboard.rs:39:\n'
+               '2026-10-31T22:06:17.7575749Z +fn read_note(display: &str, own_pid: u32, deadline: Instant)'
+               ' -> Result<Selection, Error> {\n' + self.PY_RUNNER_END)
+        self.assertEqual(health.classify(log), ('code', []))
+        api, body = self.red_on_log(log)
+        self.assert_blamed(api, body)
+        self.assertNotIn(health.AWAITING, body)
+        self.assertNotIn('Failing tests:', body)
+
+    def test_a_brand_check_failure_before_compile_blames_the_merges(self):
+        # check-linux.sh runs scripts/rebrand/check_brand.py before cargo clippy (#1966).
+        log = (self.PRE_GATE + self.GATE_START +
+               f'2026-10-31T22:06:18.0000000Z {self.OLD_BRAND} brand assets remain:\n'
+               f'2026-10-31T22:06:18.0000100Z   docs/hosted-ci.md:59: names {self.OLD_BRAND}\n' +
+               self.PY_RUNNER_END)
+        self.assertEqual(health.classify(log), ('code', []))
+        api, body = self.red_on_log(log)
+        self.assert_blamed(api, body)
+        self.assertNotIn(health.AWAITING, body)
+        self.assertNotIn('Failing tests:', body)
+
+    def test_no_output_fallback_requires_no_gate_step_start(self):
+        # Once the gate step starts (nofile before:), a failure before Compiling is not infrastructure.
+        started = (self.PRE_GATE + self.GATE_START +
+                   f'2026-10-29T10:10:56.8571372Z Okilum brand check: 6 icons match the approved masters; '
+                   f'no {self.OLD_BRAND} mark in shipped assets; 32 images and binary assets clean; '
+                   f'no {self.OLD_BRAND} name in 1780 tracked files\n' + self.PY_RUNNER_END)
+        self.assertEqual(health.classify(started), ('unknown', []))
+        self.assert_blamed(*self.red_on_log(started))
+        # A runner infrastructure marker after the gate step starts still counts as infrastructure.
+        disk_full = started.replace("exitcode '1': failure", 'No space left on device')
+        self.assertEqual(health.classify(disk_full), ('infra', 'No space left on device'))
+        # Positive control: the same failure before the gate step starts stays infrastructure.
+        before_gate = self.PRE_GATE + self.PY_RUNNER_END
+        self.assertEqual(health.classify(before_gate),
+                         ('infra', 'the job ended before any build or test output'))
+        api, body = self.red_on_log(before_gate)
+        self.assertEqual([w[1] for w in api.writes], ['/issues'], 'no merge is blamed')
+        self.assertIn('looks like infrastructure', body)
+
 
 if __name__ == '__main__':
     unittest.main()
