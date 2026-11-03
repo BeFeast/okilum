@@ -241,6 +241,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         )
     });
     visual.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
     for delta in [20., 50., 80., 40., 0.] {
         header.read_with(visual, |header, _| header.render_calls.set(0));
         board.read_with(visual, |board, _| {
@@ -281,6 +282,12 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
             0,
             "splitter geometry must not publish a whole-Reader source change"
         );
+        visual.update(|_, cx| {
+            assert!(
+                !cx.has_active_drag(),
+                "a splitter must not trigger the framework's whole-window DnD refresh"
+            )
+        });
         feed.read_with(visual, |feed, _| {
             assert!(
                 feed.row_calls.get() <= 96,

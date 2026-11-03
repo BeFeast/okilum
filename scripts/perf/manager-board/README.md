@@ -95,6 +95,8 @@ projection and column membership are reused between publications, with a
 second-resolution freshness boundary. Splitter geometry invalidates its own
 layout signal; actual Reader publications still invalidate the fixed header.
 The Reader-mounted regression bounds fixed-header rebuilds during both inputs.
+The Linux splitter uses pointer capture instead of a generic DnD preview,
+which otherwise forces a whole-window refresh on every motion.
 Measured lane extents invalidate a rendered geometry leaf, preserving the
 canonical projection cache while still updating the real scroll extent.
 
