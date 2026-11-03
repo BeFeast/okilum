@@ -329,3 +329,40 @@ fn local_writer_admission_source_store_retains_durable_request_before_refusing_p
         b"proposed\0exact\xff"
     );
 }
+
+#[test]
+fn local_writer_admission_raw_byte_proposals_remain_exact_and_retry_after_release() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let f = Fixture::new();
+    let before = b"original\0\xff\r\n";
+    let after = b"restored\0\xfe\r\n";
+    let note = f.root.join("raw.md");
+    fs::write(&note, before).unwrap();
+    let h = f.authority.begin_drain("raw-byte-restore").unwrap();
+    assert!(FileEditor::replace_bytes(&note, &f.drafts, before, after).is_err());
+    assert_eq!(fs::read(&note).unwrap(), before);
+    let deferred: Vec<_> = fs::read_dir(f.drafts.join("deferred-byte-publications"))
+        .unwrap()
+        .collect();
+    assert_eq!(deferred.len(), 1);
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(deferred[0].as_ref().unwrap().path()).unwrap()).unwrap();
+    assert_eq!(
+        STANDARD
+            .decode(record["reviewed_base64"].as_str().unwrap())
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        STANDARD
+            .decode(record["proposed_base64"].as_str().unwrap())
+            .unwrap(),
+        after
+    );
+    f.release(h);
+    assert_eq!(
+        FileEditor::replace_bytes(&note, &f.drafts, before, after).unwrap(),
+        Save::Saved
+    );
+    assert_eq!(fs::read(&note).unwrap(), after);
+}
