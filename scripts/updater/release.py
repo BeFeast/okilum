@@ -38,6 +38,7 @@ PUBLIC = 'https://updates.befeast.com'
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / 'releases'))
 import catalog
+import release_notes
 
 
 class Forgejo:
@@ -156,10 +157,19 @@ def publish(a):
     archive = pathlib.Path(a.archive)
     if forgejo.release(tag) is not None:
         sys.exit(f'Release {tag} already exists')
+    body = (f'Signed and notarized macOS arm64 build {a.build} from {a.source}.\n'
+            f'Channel at publication: {a.channel}.')
+    if a.app == 'okilum':
+        notes_path = os.environ.get('OKILUM_RELEASE_NOTES')
+        notes = (json.loads(pathlib.Path(notes_path).read_text()) if notes_path else
+                 release_notes.prepare(r2, forgejo, 'macos', a.build, a.source, a.channel))
+        if (notes['build'], notes['source'], notes['platform'], notes['channel']) != (
+                a.build, a.source, 'macos', a.channel):
+            raise ValueError('Release notes do not belong to this Forgejo release')
+        body = release_notes.forgejo_body(notes, body)
     release = forgejo.call('POST', '/releases', {
         'tag_name': tag, 'target_commitish': a.source, 'name': f'Okilum {a.short_version} ({a.build})',
-        'body': f'Signed and notarized macOS arm64 build {a.build} from {a.source}.\n'
-                f'Channel at publication: {a.channel}.',
+        'body': body,
         'draft': False, 'prerelease': a.channel != 'stable'})
     data = archive.read_bytes()
     forgejo.upload(release, archive.name, data)
@@ -185,15 +195,26 @@ def publish(a):
             r2.put('okilum/macos/beta/Okilum.dmg', image, 'application/x-apple-diskimage', 'no-cache')
 
 
+def update_forgejo_notes(forgejo, build, notes, *, promoted=False):
+    """Update only an existing release; never create or re-upload on promotion."""
+    release = forgejo.release(f'macos-stable-{build}')
+    if release is not None:
+        changes = {'prerelease': False} if promoted else {}
+        if notes is not None:
+            if notes['build'] != build or notes['platform'] != 'macos' or notes['channel'] != 'stable':
+                raise ValueError('Stable notes do not belong to this Forgejo release')
+            changes['body'] = release_notes.forgejo_body(notes, release.get('body') or '')
+        if changes:
+            forgejo.call('PATCH', f'/releases/{release["id"]}', changes)
+
+
 def promote(a):
     forgejo = Forgejo()
     arguments = ['promote', '--build', str(a.build)]
     if getattr(a, 'release_notes', None) is not None:
         arguments += ['--notes-json', json.dumps(a.release_notes)]
     update_appcast(a.app, R2(), forgejo, arguments)
-    release = forgejo.release(f'macos-stable-{a.build}')
-    if release is not None:
-        forgejo.call('PATCH', f'/releases/{release["id"]}', {'prerelease': False})
+    update_forgejo_notes(forgejo, a.build, getattr(a, 'release_notes', None), promoted=True)
 
 
 def main():

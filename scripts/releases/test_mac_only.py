@@ -35,7 +35,9 @@ def prepared():
 class MacOnlyTests(unittest.TestCase):
     def setUp(self):
         for target, kwargs in [('publish.Forgejo', {}), ('publish.release_notes.merged_items', {'return_value': []})]:
-            stub = patch(target, **kwargs); stub.start(); self.addCleanup(stub.stop)
+            stub = patch(target, **kwargs); mock = stub.start(); self.addCleanup(stub.stop)
+            if target == 'publish.Forgejo':
+                mock.return_value.release.return_value = None
 
     def test_only_mac_feeds_and_canonical_notes_no_other_platform_dependency(self):
         store = prepared()
