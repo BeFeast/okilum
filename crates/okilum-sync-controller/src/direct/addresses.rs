@@ -274,6 +274,52 @@ fn disconnected_status(name: &str, addresses: &[String], elapsed: Duration) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn address_reconciliation_does_not_rehash_the_runtime_package() -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let root = tempfile::tempdir()?;
+        let state = root.path().join("prepared");
+        let home = state.join("syncthing");
+        private::directory(&state)?;
+        private::directory(&home)?;
+        let config = home.join("config.xml");
+        private::write(&config, br#"<configuration><gui tls="false"><address>127.0.0.1:12345</address><apikey>synthetic-key</apikey></gui></configuration>"#)?;
+        let certificate = home.join("cert.pem");
+        private::write(&certificate, b"synthetic certificate")?;
+        // A deliberately different package is a deterministic tripwire for a
+        // full managed_identity check, without a timing assertion or a daemon.
+        let executable = root.path().join("syncthing");
+        private::write(&executable, b"changed package")?;
+        let device = ["AAAAAAA"; 8].join("-");
+        let mut receipt = json!({
+            "request": {"executable": executable, "rest_address": "127.0.0.1:12345",
+                "listen_address": "0.0.0.0:23456"},
+            "binary_version": crate::daemon::CLIENT_VERSION,
+            "binary_hash": crate::linux_bootstrap::BINARY_SHA,
+            "identity": {"config_file": config, "device_id": device,
+                "certificate_hash": format!("{:x}", Sha256::digest(b"synthetic certificate"))}
+        });
+        let file = state.join("prepared.json");
+        private::write(&file, &serde_json::to_vec(&receipt)?)?;
+        let configs = std::slice::from_ref(&config);
+        assert_eq!(managed(configs)?.unwrap().config_file, config);
+        // Positive control: preparation/enable/source enrollment still verify
+        // the package and reject it before attempting any REST connection.
+        assert!(crate::daemon::managed_identity(&state)
+            .unwrap_err()
+            .to_string()
+            .contains("selected managed runtime preparation changed"));
+        receipt["binary_hash"] = json!("untrusted hash");
+        private::write(&file, &serde_json::to_vec(&receipt)?)?;
+        assert!(managed(configs).is_err(), "receipt pin was not checked");
+        receipt["binary_hash"] = json!(crate::linux_bootstrap::BINARY_SHA);
+        private::write(&file, &serde_json::to_vec(&receipt)?)?;
+        private::write(&certificate, b"different certificate")?;
+        assert!(managed(configs).is_err(), "certificate pin was not checked");
+        Ok(())
+    }
+
     #[test]
     fn peer_address_filter_rejects_loopback_link_local_and_handles_ipv6() {
         let invalid = [
