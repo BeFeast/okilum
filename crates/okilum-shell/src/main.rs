@@ -7612,6 +7612,10 @@ impl Render for Reader {
         #[cfg(target_os = "linux")]
         {
             let _ = self.layout_signal.read(cx);
+            if self.resizing_panel.is_some() && self.panel_capture.get() != window.captured_hitbox()
+            {
+                self.resizing_panel = None;
+            }
             if self.resizing_panel.is_none() {
                 self.release_panel_pointer(window);
             }

@@ -81,7 +81,12 @@ impl Element for Handle {
     ) -> Hitbox {
         line.prepaint(window, cx);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::BlockMouse);
-        if self.active {
+        // Transfer only our existing grab. A release or another control taking
+        // capture must never be undone by a later repaint of this handle.
+        if self.active
+            && self.capture.get().is_some()
+            && self.capture.get() == window.captured_hitbox()
+        {
             window.capture_pointer(hitbox.id);
             self.capture.set(Some(hitbox.id));
         }

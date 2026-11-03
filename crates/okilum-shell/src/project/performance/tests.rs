@@ -308,6 +308,12 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         !board.read_with(visual, |board, _| board.performance_resizing()),
         "release restores scroll premeasurement"
     );
+    visual.update(|window, _| {
+        assert!(
+            window.captured_hitbox().is_none(),
+            "release must end the native splitter grab"
+        )
+    });
     // Force a complete fresh paint to recover debug bounds for cached sibling views.
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();

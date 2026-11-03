@@ -98,6 +98,7 @@ The Reader-mounted regression bounds fixed-header rebuilds during both inputs.
 The Linux splitter uses pointer capture instead of a generic DnD preview,
 which otherwise forces a whole-window refresh on every motion. Capture is
 released on pointer-up, cancellation, panel closure and focus loss.
+Repaints transfer only an owned grab and cannot reacquire a released pointer.
 Measured lane extents invalidate a rendered geometry leaf, preserving the
 canonical projection cache while still updating the real scroll extent.
 
