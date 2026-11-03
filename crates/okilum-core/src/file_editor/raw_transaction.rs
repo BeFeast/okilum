@@ -1191,6 +1191,8 @@ mod interrupted_link_tests {
         let note = root.join("Synthetic.md");
         fs::write(&note, b"\xef\xbb\xbforiginal\r\n").unwrap();
         let mut editor = FileEditor::open(&note, &state).unwrap();
+        // Ancestor replacement tests must move the real directory, not its alias.
+        let note = editor.draft.path.clone();
         editor.set_text("proposed\r\n".into()).unwrap();
         if raw {
             let original = b"\xef\xbb\xbforiginal\xff\r\n";
