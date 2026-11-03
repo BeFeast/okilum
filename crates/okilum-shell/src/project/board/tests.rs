@@ -622,6 +622,13 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.simulate_click(back.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-attention-0").is_some());
+    assert!(visual.debug_bounds("board-waiting-open-0").is_some());
+    assert!(visual.debug_bounds("board-note-open-0").is_none());
+    // The waiting summary is immediate; detailed context and Discuss expand
+    // explicitly, preserving the real Reader/Manager/Undo acceptance below.
+    let details = visual.debug_bounds("board-context-details").unwrap();
+    visual.simulate_click(details.center(), Modifiers::default());
+    visual.run_until_parked();
     assert!(visual.debug_bounds("board-note-open-0").is_some());
     assert!(visual.debug_bounds("board-next-stage").is_some());
     assert!(visual.debug_bounds("board-note-card-next").is_none());
@@ -676,7 +683,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             draft_before
         );
     });
-    let note = visual.debug_bounds("board-note-open-0").unwrap();
+    let note = visual.debug_bounds("board-waiting-open-0").unwrap();
     visual.simulate_click(note.center(), Modifiers::default());
     visual.run_until_parked();
     reader.read_with(visual, |reader, _| {
