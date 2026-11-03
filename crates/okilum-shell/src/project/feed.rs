@@ -824,7 +824,7 @@ impl Render for Feed {
         .with_jump_button_renderer(|button| button.debug_selector(|| "project-jump-latest".into()))
         .size_full()
         .min_h_0();
-        div()
+        let root = div()
             .debug_selector(|| "project-history".into())
             .bg(brand::palette(cx).surface)
             .size_full()
@@ -837,6 +837,10 @@ impl Render for Feed {
                 )
             })
             .child(scroller)
+            .into_any_element();
+        #[cfg(feature = "project-ui-harness")]
+        let root = super::performance::Trace::new(root, 1).into_any_element();
+        root
     }
 }
 

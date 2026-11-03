@@ -45,8 +45,8 @@ pub(super) fn collect(cx: &mut App) {
     cx.spawn(async move |_cx| {
         loop {
             _cx.background_executor().timer(Duration::from_millis(250)).await;
-            let work = std::mem::replace(&mut *WORK.lock().unwrap(), [(0, 0); 3]);
-            eprintln!("WORK {}", json!({"unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),"board":work[0],"card":work[1],"row":work[2]}));
+            let work = std::mem::replace(&mut *WORK.lock().unwrap(), [(0, 0); 9]);
+            eprintln!("WORK {}", json!({"unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),"board":work[0],"card":work[1],"row":work[2],"stages":&work[3..]}));
             for event in collector.collect_unseen() {
                 if let gpui::profiler::FrameEvent::Present(frame) = event {
                     let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64() - frame.present_end.elapsed().as_secs_f64();
@@ -62,7 +62,7 @@ pub(super) fn collect(cx: &mut App) {
 }
 
 #[cfg(feature = "project-ui-harness")]
-static WORK: std::sync::Mutex<[(u64, u64); 3]> = std::sync::Mutex::new([(0, 0); 3]);
+static WORK: std::sync::Mutex<[(u64, u64); 9]> = std::sync::Mutex::new([(0, 0); 9]);
 #[cfg(feature = "project-ui-harness")]
 pub(super) struct Work(usize, std::time::Instant);
 #[cfg(feature = "project-ui-harness")]
@@ -82,3 +82,68 @@ impl Drop for Work {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "project-ui-harness")]
+pub(super) struct Trace {
+    child: AnyElement,
+    kind: usize,
+}
+#[cfg(feature = "project-ui-harness")]
+impl Trace {
+    pub(super) fn new(child: AnyElement, kind: usize) -> Self {
+        Self { child, kind }
+    }
+}
+#[cfg(feature = "project-ui-harness")]
+impl IntoElement for Trace {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+#[cfg(feature = "project-ui-harness")]
+impl gpui::Element for Trace {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        let _work = Work::start(3 + self.kind * 3);
+        (self.child.request_layout(window, cx), ())
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let _work = Work::start(4 + self.kind * 3);
+        self.child.prepaint(window, cx);
+    }
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let _work = Work::start(5 + self.kind * 3);
+        self.child.paint(window, cx);
+    }
+}

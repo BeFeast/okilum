@@ -1387,7 +1387,8 @@ impl Render for Board {
         let line = problem_line(forgejo_problem.into_iter().collect()).unwrap_or_default();
         // Keep the quiet source line at the viewport's lower edge. Its reserved
         // bottom padding preserves card geometry without restoring a header.
-        root.pb_8()
+        let root = root
+            .pb_8()
             .child(columns.child(end.child(self.source_indicator(cx)).child(toggle)))
             .child(
                 div()
@@ -1403,7 +1404,10 @@ impl Render for Board {
                     .text_color(colors.text_muted)
                     .child(line),
             )
-            .into_any_element()
+            .into_any_element();
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let root = super::performance::Trace::new(root, 0).into_any_element();
+        root
     }
 }
 
