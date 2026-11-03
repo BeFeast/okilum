@@ -59,7 +59,13 @@ fn mount<'a>(
         let project = cx.new(|cx| {
             let mut view = ProjectView::empty(Some(state.join("state")), window, cx);
             view.area = Some(root.join("p"));
-            view.bind_resources(&reader, root.clone(), reader.read(cx).vault.clone(), cx);
+            view.bind_resources(
+                &reader,
+                root.clone(),
+                reader.read(cx).vault.clone(),
+                reader.read(cx).source_publication_epoch,
+                cx,
+            );
             view.select_section(ProjectSection::Skills, cx);
             view
         });
@@ -271,14 +277,24 @@ async fn skills_1591_hide_project_switch_and_same_owner_rebind_reject_held_reloa
         project.update_in(visual, |view, _, cx| {
             match action {
                 "hide" => view.select_section(ProjectSection::Manager, cx),
-                "rebind" => {
-                    view.bind_resources(&reader, root.clone(), reader.read(cx).vault.clone(), cx)
-                }
+                "rebind" => view.bind_resources(
+                    &reader,
+                    root.clone(),
+                    reader.read(cx).vault.clone(),
+                    reader.read(cx).source_publication_epoch,
+                    cx,
+                ),
                 _ => {
                     std::fs::create_dir_all(root.join("other")).unwrap();
                     view.area = Some(root.join("other"));
                     view.generation += 1;
-                    view.bind_resources(&reader, root.clone(), reader.read(cx).vault.clone(), cx);
+                    view.bind_resources(
+                        &reader,
+                        root.clone(),
+                        reader.read(cx).vault.clone(),
+                        reader.read(cx).source_publication_epoch,
+                        cx,
+                    );
                     assert!(
                         view.skills.snapshot().is_none(),
                         "a new project cannot inherit lastgood rows"
@@ -321,7 +337,13 @@ async fn skills_1591_stale_open_refuses_rebind_and_fresh_reload_opens_exact_sour
     });
     let root = state.path().join("vault");
     project.update_in(visual, |view, _, cx| {
-        view.bind_resources(&reader, root.clone(), reader.read(cx).vault.clone(), cx);
+        view.bind_resources(
+            &reader,
+            root.clone(),
+            reader.read(cx).vault.clone(),
+            reader.read(cx).source_publication_epoch,
+            cx,
+        );
         cx.notify();
     });
     visual.run_until_parked();
