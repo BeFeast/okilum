@@ -10,6 +10,7 @@ mod live;
 mod local;
 mod manage;
 mod notes;
+mod virtual_cards;
 
 type IssueReader =
     Arc<dyn Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String> + Send + Sync>;
@@ -1132,6 +1133,7 @@ impl Render for Board {
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
         }
+        let shared_binding = Arc::new(binding.clone());
         let mut counts = self.column_counts(binding);
         let ready = self.column_sources_ready(binding);
         self.columns.observe(counts, ready);
@@ -1230,10 +1232,20 @@ impl Render for Board {
                 );
             }
             for scope in scopes {
-                lane = lane.child(self.card(scope, column, binding, cx));
+                lane = lane.child(virtual_cards::Card::issue(
+                    &cx.entity(),
+                    scope,
+                    column,
+                    shared_binding.clone(),
+                    self.selected == Some(scope.number),
+                ));
             }
             for card in local_cards {
-                lane = lane.child(self.local_card(card, cx));
+                lane = lane.child(virtual_cards::Card::local(
+                    &cx.entity(),
+                    card,
+                    self.selected_local.as_ref() == Some(&card.id),
+                ));
             }
             if column == Column::Queue {
                 lane = lane.child(self.add_card_button(cx));
@@ -1520,7 +1532,10 @@ impl Reader {
         if self.project_navigation.section == reader_project_navigation::Section::Reader {
             if let Some(board) = board {
                 if self.project_navigation.board_visible {
-                    return div().size_full().child(board.clone()).into_any_element();
+                    return div()
+                        .size_full()
+                        .child(board.clone().cached(StyleRefinement::default().size_full()))
+                        .into_any_element();
                 }
                 return v_flex()
                     .size_full()
