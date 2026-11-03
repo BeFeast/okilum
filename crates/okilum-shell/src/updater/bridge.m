@@ -201,6 +201,7 @@ static BOOL TSBackgroundDownloads;
 static BOOL TSAutomaticChecks = YES;
 static BOOL TSCancelledCycle;
 static BOOL TSScheduledCheckSkipped;
+static void (^TSQuitAfterCycle)(BOOL);
 static BOOL TSReplacingUpdate(void);
 static NSSet<NSString *> *TSChannels(void) {
     return [NSUserDefaults.standardUserDefaults boolForKey:TSBetaKey]
@@ -305,7 +306,12 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     TSScheduledCheckSkipped = NO;
     TSRestartAfterCycle = NO;
     if (TSCycleFailure) { TSSend(2, TSCycleFailure); TSCycleFailure = nil; }
-    if (restart) {
+    if (TSQuitAfterCycle) {
+        // Skip/cancellation must finish its IPC cleanup before the process
+        // exits, otherwise Sparkle's retained installer can install on quit.
+        void (^quit)(BOOL) = TSQuitAfterCycle; TSQuitAfterCycle = nil;
+        dispatch_async(dispatch_get_main_queue(), ^{ quit(YES); });
+    } else if (restart) {
         if (TSReplacementForeground) [updater checkForUpdates];
         else [updater checkForUpdatesInBackground];
     }
@@ -445,11 +451,10 @@ static TSTerminationDelegate *TSTermination;
 }
 - (void)showReadyToInstallAndRelaunch:(void (^)(SPUUserUpdateChoice))reply {
     self.restartReply = reply;
-    if (self.quitReply) {
-        // Quit during extraction waits for Sparkle's cancellable Ready boundary.
-        // Skip removes the prepared installer before ordinary shutdown.
-        void (^quit)(BOOL) = self.quitReply; self.quitReply = nil;
-        [self cancel]; quit(YES); return;
+    if (TSQuitAfterCycle) {
+        // Extraction has no cancellation callback. At Ready, Skip the installer
+        // and let cycle completion release the pending ordinary Quit.
+        [self cancel]; return;
     }
     self.verifying = YES;
     NSUInteger generation = self.generation;
@@ -512,17 +517,17 @@ static TSTerminationDelegate *TSTermination;
     });
 }
 - (void)verifyQuit:(void (^)(BOOL))reply {
-    // Ordinary Quit is never installation consent. Cancel download/Ready using
-    // public continuations; extraction completes into the same Skip boundary.
-    if (self.cancellation || self.restartReply) {
-        [self cancel]; reply(YES);
-    } else {
+    // A refused termination after a prior explicit Restart is already an
+    // authorized installation transaction. Preserve its freshness/editor guard.
+    if (self.retryTermination) {
         self.quitReply = reply;
-        // A refused termination after a prior explicit Restart is already an
-        // authorized installation transaction. Preserve its freshness/editor
-        // guard instead of hanging Quit waiting for a nonexistent Ready event.
-        if (self.retryTermination && !self.verifying) [self requestRestart];
+        if (!self.verifying) [self requestRestart];
+        return;
     }
+    // Ordinary Quit is never initial installation consent. Wait for Sparkle's
+    // cancellation cycle, including helper IPC, before forwarding termination.
+    TSQuitAfterCycle = reply;
+    if (self.cancellation || self.restartReply) [self cancel];
 }
 - (void)showUpdateInstalledAndRelaunched:(BOOL)relaunched acknowledgement:(void (^)(void))acknowledgement {
     [self dismissUpdateInstallation];
