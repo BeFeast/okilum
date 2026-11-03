@@ -39,7 +39,7 @@ impl Render for Header {
     }
 }
 impl Reader {
-    fn board_manager_header_cache(&self, available: f32) -> bool {
+    pub(super) fn board_manager_header_cache(&self, available: f32) -> bool {
         self.project_navigation.active.is_some()
             && self.project_navigation.board_visible
             && self
