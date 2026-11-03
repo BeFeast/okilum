@@ -456,7 +456,10 @@ mod tests {
                     remote
                 );
                 reader.update(visual, |r, cx| {
-                    assert!(!r.save_source(cx), "canonical save remains conflicted")
+                    assert!(
+                        !r.save_source_explicit(cx),
+                        "canonical save remains conflicted"
+                    )
                 });
                 let copy = reader.read_with(visual, |r, _| {
                     r.editing
@@ -475,7 +478,7 @@ mod tests {
                     "no lost remote line on Save"
                 );
                 reader.update(visual, |r, cx| {
-                    r.save_source(cx);
+                    r.save_source_explicit(cx);
                 });
                 reader.read_with(visual, |r, _| {
                     assert_eq!(
@@ -494,7 +497,7 @@ mod tests {
                     i.replace_text_in_range(Some(0..0), "local after notice\n", window, cx)
                 });
                 reader.update(visual, |r, cx| {
-                    r.save_source(cx);
+                    r.save_source_explicit(cx);
                 });
                 let newer = reader.read_with(visual, |r, _| {
                     r.editing
@@ -525,6 +528,343 @@ mod tests {
                 visual.run_until_parked();
             }
         }
+    }
+
+    #[gpui::test]
+    fn issue2486_reload_after_keep_both_preserves_later_typing(cx: &mut TestAppContext) {
+        for live in [false, true] {
+            for immediate in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let root = dir.path().join("vault");
+                let (reader, visual) = open(cx, dir.path(), 0);
+                reader.update_in(visual, |r, window, cx| {
+                    r.toggle_source(window, cx);
+                    r.set_live_preview(live, window, cx);
+                    input(r).update(cx, |i, cx| {
+                        i.replace_text_in_range(Some(0..0), "local before copy\n", window, cx)
+                    });
+                });
+                let remote = "# Note\n\nremote incoming line\n";
+                replace(&root, remote);
+                settle(visual, &reader, "conflict before Keep both", |r, _| {
+                    r.editing.as_ref().unwrap().conflict_detected
+                });
+                reader.update(visual, |r, cx| {
+                    r.save_source_explicit(cx);
+                });
+                let first = reader.read_with(visual, |r, _| {
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .conflict_copy
+                        .as_ref()
+                        .unwrap()
+                        .1
+                        .clone()
+                });
+                let first_text = std::fs::read_to_string(root.join(&first)).unwrap();
+                assert!(first_text.contains("local before copy"));
+                reader.update_in(visual, |r, window, cx| {
+                    input(r).update(cx, |i, cx| {
+                        i.replace_text_in_range(Some(0..0), "typed after Keep both\n", window, cx)
+                    });
+                    if immediate {
+                        // No SourceMutation subscriber has run yet.
+                        r.resolve_source(true, window, cx);
+                    }
+                });
+                if !immediate {
+                    visual.run_until_parked();
+                    reader.read_with(visual, |r, _| {
+                        let notice = r.link_notice.as_deref().unwrap();
+                        assert!(notice.contains("latest edits are not in the saved copy"));
+                        assert!(!notice.contains("Your version was saved"));
+                        assert!(!notice.contains("Both versions are kept"));
+                    });
+                    reader.update_in(visual, |r, window, cx| r.resolve_source(true, window, cx));
+                }
+                visual.run_until_parked();
+                let latest = reader.read_with(visual, |r, cx| {
+                    let e = r.editing.as_ref().unwrap();
+                    assert!(!e.conflict_detected);
+                    assert_eq!(input(r).read(cx).value().as_ref(), remote);
+                    e.conflict_copy.as_ref().unwrap().1.clone()
+                });
+                assert_ne!(latest, first);
+                assert_eq!(
+                    std::fs::read_to_string(root.join(&latest)).unwrap(),
+                    format!("typed after Keep both\n{first_text}")
+                );
+                assert_eq!(
+                    std::fs::read_to_string(root.join(&first)).unwrap(),
+                    first_text
+                );
+                assert_eq!(
+                    std::fs::read_to_string(root.join("note.md")).unwrap(),
+                    remote
+                );
+                visual.update(|window, _| window.remove_window());
+                visual.run_until_parked();
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn issue2486_reload_refuses_when_latest_conflict_copy_cannot_be_written(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let (reader, visual) = open(cx, dir.path(), 0);
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            input(r).update(cx, |i, cx| {
+                i.replace_text_in_range(Some(0..0), "local\n", window, cx)
+            });
+        });
+        let remote = "remote incoming line\n";
+        replace(&root, remote);
+        settle(visual, &reader, "conflict before copy failure", |r, _| {
+            r.editing.as_ref().unwrap().conflict_detected
+        });
+        reader.update(visual, |r, cx| {
+            r.save_source_explicit(cx);
+        });
+        let first = reader.read_with(visual, |r, _| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .conflict_copy
+                .as_ref()
+                .unwrap()
+                .1
+                .clone()
+        });
+        let first_text = std::fs::read_to_string(root.join(&first)).unwrap();
+        let moved = dir.path().join("moved-vault");
+        std::fs::rename(&root, &moved).unwrap();
+        reader.update_in(visual, |r, window, cx| {
+            input(r).update(cx, |i, cx| {
+                i.replace_text_in_range(Some(0..0), "must survive failed Reload\n", window, cx)
+            });
+            r.resolve_source(true, window, cx);
+            assert!(r.editing.as_ref().unwrap().conflict_detected);
+            assert_eq!(
+                input(r).read(cx).value().as_ref(),
+                format!("must survive failed Reload\n{first_text}")
+            );
+            assert!(r
+                .link_notice
+                .as_deref()
+                .unwrap()
+                .contains("Could not save both versions"));
+        });
+        assert_eq!(
+            std::fs::read_to_string(moved.join(&first)).unwrap(),
+            first_text
+        );
+        assert_eq!(
+            std::fs::read_to_string(moved.join("note.md")).unwrap(),
+            remote
+        );
+        std::fs::rename(&moved, &root).unwrap();
+        reader.update(visual, |r, _| {
+            r.editing = None;
+        });
+        let recovered = FileEditor::open(
+            &root.join("note.md"),
+            &dir.path().join("state/editor-drafts"),
+        )
+        .unwrap();
+        assert_eq!(
+            recovered.text(),
+            format!("must survive failed Reload\n{first_text}")
+        );
+        visual.update(|window, _| window.remove_window());
+        visual.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn issue2486_implicit_conflict_saves_keep_recovery_without_copies(cx: &mut TestAppContext) {
+        for live in [false, true] {
+            for copied in [false, true] {
+                for signal in 0..4 {
+                    let dir = tempfile::tempdir().unwrap();
+                    let root = dir.path().join("vault");
+                    let (reader, visual) = open(cx, dir.path(), 0);
+                    reader.update_in(visual, |r, window, cx| {
+                        window.activate_window();
+                        r.toggle_source(window, cx);
+                        r.set_live_preview(live, window, cx);
+                        input(r).update(cx, |i, cx| {
+                            i.replace_text_in_range(Some(0..0), "local\n", window, cx)
+                        });
+                    });
+                    let remote = "remote incoming line\n";
+                    replace(&root, remote);
+                    settle(visual, &reader, "conflict before lifecycle save", |r, _| {
+                        r.editing.as_ref().unwrap().conflict_detected
+                    });
+                    if copied {
+                        // Exercise the real queued explicit Save entry point.
+                        reader.update(visual, |r, cx| r.request_source_save(cx));
+                        visual.run_until_parked();
+                        visual.executor().advance_clock(Duration::from_millis(40));
+                        visual.run_until_parked();
+                    }
+                    let before = reader.read_with(visual, |r, _| {
+                        let e = r.editing.as_ref().unwrap();
+                        assert_eq!(
+                            e.conflict_copy.is_some(),
+                            copied,
+                            "explicit Save positive control"
+                        );
+                        e.conflict_copy.clone()
+                    });
+                    let mut files_before: Vec<_> = std::fs::read_dir(&root)
+                        .unwrap()
+                        .map(|e| e.unwrap().file_name())
+                        .collect();
+                    files_before.sort();
+                    reader.update_in(visual, |r, window, cx| {
+                        input(r).focus_handle(cx).focus(window, cx)
+                    });
+                    visual.run_until_parked();
+                    let saves = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().saves);
+                    let latest = reader.update_in(visual, |r, window, cx| {
+                        // Lifecycle flush must sample even before recovery debounce.
+                        input(r).update(cx, |i, cx| {
+                            i.replace_text_in_range(
+                                Some(0..0),
+                                "latest lifecycle draft\n",
+                                window,
+                                cx,
+                            )
+                        });
+                        input(r).read(cx).value().to_string()
+                    });
+                    match signal {
+                        0 => {
+                            reader.update_in(visual, |r, window, cx| r.tree_focus.focus(window, cx))
+                        }
+                        1 => {
+                            visual.update(|window, _| {
+                                assert!(window.is_window_active(), "deactivate positive control")
+                            });
+                            visual.deactivate_window();
+                        }
+                        2 => reader.update_in(visual, |r, window, cx| {
+                            r.open_note("sibling.md", None, window, cx)
+                        }),
+                        _ => visual.update(|_, cx| assert!(protect_all_for_quit(cx))),
+                    }
+                    visual.run_until_parked();
+                    reader.read_with(visual, |r, cx| {
+                        let e = r.editing.as_ref().unwrap();
+                        assert!(
+                            e.saves > saves,
+                            "positive control: lifecycle save actually fired (signal {signal})"
+                        );
+                        assert!(e.conflict_detected);
+                        assert_eq!(e.conflict_copy, before);
+                        assert_eq!(input(r).read(cx).value().as_ref(), latest);
+                        assert_eq!(
+                            r.current_rel, "note.md",
+                            "conflicting navigation stays open"
+                        );
+                    });
+                    let mut files_after: Vec<_> = std::fs::read_dir(&root)
+                        .unwrap()
+                        .map(|e| e.unwrap().file_name())
+                        .collect();
+                    files_after.sort();
+                    assert_eq!(files_after, files_before, "implicit saves publish no file");
+                    assert_eq!(
+                        std::fs::read_to_string(root.join("note.md")).unwrap(),
+                        remote
+                    );
+                    reader.update(visual, |r, _| {
+                        r.editing = None;
+                    });
+                    let recovered = FileEditor::open(
+                        &root.join("note.md"),
+                        &dir.path().join("state/editor-drafts"),
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        recovered.text(),
+                        latest,
+                        "latest draft is durable for signal {signal}, copied={copied}"
+                    );
+                    drop(recovered);
+                    visual.update(|window, _| window.remove_window());
+                    visual.run_until_parked();
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn issue2486_conflict_copy_name_uses_local_time_outside_syncthing_pattern(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let (reader, visual) = open(cx, dir.path(), 0);
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            input(r).update(cx, |i, cx| {
+                i.replace_text_in_range(Some(0..0), "local\n", window, cx)
+            });
+        });
+        replace(&root, "remote\n");
+        settle(
+            visual,
+            &reader,
+            "conflict before copy name check",
+            |r, _| r.editing.as_ref().unwrap().conflict_detected,
+        );
+        let before = chrono::Local::now();
+        reader.update(visual, |r, cx| {
+            r.save_source_explicit(cx);
+        });
+        let after = chrono::Local::now();
+        let copy = reader.read_with(visual, |r, _| {
+            r.editing
+                .as_ref()
+                .unwrap()
+                .conflict_copy
+                .as_ref()
+                .unwrap()
+                .1
+                .clone()
+        });
+        // Syncthing's pruning glob is *.sync-conflict-*, regardless of suffix.
+        let syncthing_conflict = |name: &str| name.contains(".sync-conflict-");
+        assert!(
+            syncthing_conflict("note.sync-conflict-20261103-123456-ABCDEFG.md"),
+            "positive control: Syncthing's own copies match"
+        );
+        assert!(!syncthing_conflict(&copy));
+        let suffix = copy.strip_prefix("note.okilum-conflict-").unwrap();
+        let timestamp = &suffix[..15];
+        assert!(
+            (before.timestamp()..=after.timestamp()).any(|second| {
+                chrono::DateTime::from_timestamp(second, 0)
+                    .unwrap()
+                    .with_timezone(&chrono::Local)
+                    .format("%Y%m%d-%H%M%S")
+                    .to_string()
+                    == timestamp
+            }),
+            "copy timestamp must use local wall time: {copy}"
+        );
+        assert!(copy.ends_with(".md"));
+        assert!(std::fs::read_to_string(root.join(&copy))
+            .unwrap()
+            .contains("local"));
+        visual.update(|window, _| window.remove_window());
+        visual.run_until_parked();
     }
 
     #[gpui::test]

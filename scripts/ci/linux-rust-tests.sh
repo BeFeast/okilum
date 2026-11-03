@@ -13,7 +13,9 @@ suite cargo test -p okilum-appimage --all-features --no-fail-fast
 suite cargo test --locked -p okilum-http --features updates --no-fail-fast
 # Run the source/input acceptance groups independently, so an unrelated native
 # task abort cannot hide their verdict behind an unfinished full shell binary.
-suite cargo test --locked -p okilum-shell --bin okilum issue2486_ -- --nocapture --test-threads=1
+# A non-UTC process timezone makes the conflict-copy local timestamp check
+# distinguish Local from Utc without mutating global environment in Rust tests.
+suite env TZ=Pacific/Auckland cargo test --locked -p okilum-shell --bin okilum issue2486_ -- --nocapture --test-threads=1
 suite cargo test --locked -p okilum-sync-controller --lib direct::origin::tests:: -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum source_presentation:: -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture

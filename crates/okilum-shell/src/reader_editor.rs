@@ -876,6 +876,14 @@ impl Reader {
             }
             let snapshot = input.read(cx).source_snapshot();
             let source_stamp = snapshot.stamp;
+            if editing.conflict_detected
+                && editing
+                    .conflict_copy
+                    .as_ref()
+                    .is_some_and(|(stamp, _)| *stamp != source_stamp)
+            {
+                this.link_notice = Some(format!("{CONFLICT_NOTICE} Your latest edits are not in the saved copy. Save or Keep both versions to save another copy. Reload will keep your latest edits in a new copy first.").into());
+            }
             let value = okilum_core::source_projection::revision::Text::from_identified_rope(
                 snapshot.text.rope().clone(),
                 snapshot.text.id(),
@@ -1242,7 +1250,7 @@ impl Reader {
                     .as_ref()
                     .is_some_and(|e| e.input.entity_id() == input_id && e.save_pending)
                 {
-                    this.save_source(cx);
+                    this.save_source_explicit(cx);
                 }
             });
         })
@@ -1635,6 +1643,23 @@ impl Reader {
         self.save_source_outcome(cx).0
     }
 
+    /// Only a deliberate Save/Keep both may publish a conflict copy. Lifecycle
+    /// saves protect the latest recovery draft without adding files to the vault.
+    fn save_source_explicit(&mut self, cx: &mut Context<Self>) -> bool {
+        let (saved, protected) = self.save_source_outcome(cx);
+        if !saved
+            && protected
+            && self.deleted_note.is_none()
+            && self
+                .editing
+                .as_ref()
+                .is_some_and(|e| e.conflict_detected && e.conflict.is_some())
+        {
+            self.keep_both_source(cx);
+        }
+        saved
+    }
+
     fn save_source_outcome(&mut self, cx: &mut Context<Self>) -> (bool, bool) {
         if self.editing.as_ref().is_some_and(|editing| {
             editing
@@ -1735,16 +1760,6 @@ impl Reader {
                 false
             }
         };
-        if !saved
-            && protected
-            && self.deleted_note.is_none()
-            && self
-                .editing
-                .as_ref()
-                .is_some_and(|e| e.conflict_detected && e.conflict.is_some())
-        {
-            self.keep_both_source(cx);
-        }
         if !saved {
             self.describe_source_conflict(cx);
         }
@@ -2105,6 +2120,20 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Keep both promises preservation. A later Reload must not throw away
+        // typing since that copy (even before mutation subscribers have run).
+        // Revalidate the copy's bytes too: it may have been changed or removed.
+        if reload
+            && self
+                .editing
+                .as_ref()
+                .is_some_and(|e| e.conflict_detected && e.conflict_copy.is_some())
+        {
+            let (_, protected) = self.save_source_outcome(cx);
+            if !protected || !self.keep_both_source(cx) {
+                return;
+            }
+        }
         let Some(mut editing) = self.editing.take() else {
             return;
         };
@@ -2235,9 +2264,9 @@ impl Reader {
     /// Explicit Save/Keep both publishes the latest local buffer as a new
     /// conflict note. The incoming canonical note is never replaced. Keep the
     /// conflict open until the person chooses which document to continue with.
-    fn keep_both_source(&mut self, cx: &mut Context<Self>) {
+    fn keep_both_source(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(editing) = self.editing.as_mut().filter(|e| e.conflict_detected) else {
-            return;
+            return false;
         };
         let stamp = editing.input.read(cx).source_stamp();
         let text = editing.input.read(cx).value().to_string();
@@ -2257,7 +2286,8 @@ impl Reader {
             let stem = path.file_stem().unwrap_or_default().to_string_lossy();
             let extension = path.extension().unwrap_or_default().to_string_lossy();
             let id = uuid::Uuid::new_v4();
-            // Match the existing possible-conflict inventory's filename grammar.
+            // Syncthing prunes its own *.sync-conflict-* files. These copies
+            // belong to Okilum and must never participate in that retention.
             // This random discriminator is not a claim about a device identity.
             let suffix: String = id
                 .as_bytes()
@@ -2266,8 +2296,8 @@ impl Reader {
                 .map(|b| b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[(b & 31) as usize] as char)
                 .collect();
             let name = format!(
-                "{stem}.sync-conflict-{}-{suffix}.{extension}",
-                chrono::Utc::now().format("%Y%m%d-%H%M%S")
+                "{stem}.okilum-conflict-{}-{suffix}.{extension}",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
             );
             okilum_core::vault::note_path(&path.with_file_name(name))
         });
@@ -2288,10 +2318,12 @@ impl Reader {
                 text.as_bytes(),
             )
         };
+        let kept = result.is_ok();
         match result {
             Ok(()) => {
                 editing.conflict_copy = Some((stamp, rel.clone()));
-                self.link_notice = Some(format!("{CONFLICT_NOTICE} Both versions are kept. Your version was saved as {rel}. The incoming file is unchanged. Compare versions or Reload to continue.").into());
+                editing.save_failed = false;
+                self.link_notice = Some(format!("{CONFLICT_NOTICE} Both versions are kept. A local snapshot was saved as {rel}. The incoming file is unchanged. Reload keeps any later edits in another copy before loading the incoming file.").into());
                 self.queue_vault_mutation(
                     okilum_core::Changes {
                         changed: [rel].into(),
@@ -2306,6 +2338,7 @@ impl Reader {
             }
         }
         cx.notify();
+        kept
     }
 
     fn park_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2527,7 +2560,7 @@ impl Reader {
                                     .debug_selector(|| "source-keep-both".into())
                                     .on_click(cx.listener(
                                         |this, _, _, cx| {
-                                            this.save_source(cx);
+                                            this.save_source_explicit(cx);
                                         },
                                     )),
                                 )
