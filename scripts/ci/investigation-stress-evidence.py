@@ -31,7 +31,7 @@ def run(binary, test, name, seed=0, iterations=1):
     with log.open('w') as f:
         r = subprocess.run([binary, test, '--exact', '--nocapture'], stdout=f, stderr=subprocess.STDOUT, env=env, timeout=600)
     data = log.read_text(errors='replace')
-    result = dict(name=name, code=r.returncode, seed=seed, requested=iterations, started=len(re.findall(r'^seed = [0-9]+$', data, re.MULTILINE)))
+    result = dict(name=name, code=r.returncode, seed=seed, requested=iterations, started=len(re.findall(r'^seed = [0-9]+$', data, re.MULTILINE)) or int('running 1 test' in data))
     print(json.dumps(result), flush=True)
     if r.returncode:
         print(data[-7000:], flush=True)
