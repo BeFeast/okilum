@@ -96,6 +96,10 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
             window,
             cx,
         );
+        reader.project_navigation.boards[&area].update(cx, |board, cx| {
+            board.list.preferences.mode = list::Mode::Board;
+            cx.notify();
+        });
         reader.close_panel(reader_layout::Panel::Backlinks, window, cx);
         cx.notify();
         manager

@@ -892,9 +892,10 @@ fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestA
             );
             let center = visual.debug_bounds("project-board").unwrap();
             let columns = visual.debug_bounds("board-columns").unwrap();
+            let view = visual.debug_bounds("board-view-board").unwrap();
             assert!(
-                columns.top() <= center.top() + px(20.),
-                "no header block above columns"
+                columns.top() >= view.bottom() && columns.top() - view.bottom() <= px(24.),
+                "only the compact view control precedes the columns"
             );
             let filter = visual
                 .debug_bounds("board-agent-filter")
@@ -1379,9 +1380,10 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
     let center = visual.debug_bounds("project-board").unwrap();
     let status = visual.debug_bounds("board-live-status").unwrap();
     let columns = visual.debug_bounds("board-columns").unwrap();
+    let view = visual.debug_bounds("board-view-board").unwrap();
     assert!(
-        columns.top() <= center.top() + px(20.),
-        "source error must not restore a header above the Board"
+        columns.top() >= view.bottom() && columns.top() - view.bottom() <= px(24.),
+        "source error adds no header beyond the compact view control"
     );
     assert!(
         status.bottom() <= center.bottom() && status.top() >= center.bottom() - px(32.),

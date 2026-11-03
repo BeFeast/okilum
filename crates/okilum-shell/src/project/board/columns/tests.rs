@@ -165,7 +165,8 @@ fn empty_column_can_be_expanded_from_the_keyboard(cx: &mut TestAppContext) {
     loaded(&board, visual);
     board.update_in(visual, |board, window, cx| board.focus.focus(window, cx));
     visual.run_until_parked();
-    visual.simulate_keystrokes("tab");
+    // The new List/Board control precedes the first empty-column control.
+    visual.simulate_keystrokes("tab tab tab");
     let keystroke = gpui::Keystroke::parse("enter").unwrap();
     visual.simulate_event(gpui::KeyDownEvent {
         keystroke: keystroke.clone(),
