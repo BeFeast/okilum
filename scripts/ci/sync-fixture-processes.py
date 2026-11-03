@@ -15,7 +15,7 @@ def fixtures(root):
             continue
         try:
             args = (entry / 'cmdline').read_bytes().split(b'\0')
-            executable = os.readlink(entry / 'exe')
+            executable = os.readlink(entry / 'exe').removesuffix(' (deleted)')
             if '/okilum-sync-fixture/' not in executable or Path(executable).name != 'syncthing':
                 continue
             home = Path(os.fsdecode(args[args.index(b'--home') + 1])).resolve()

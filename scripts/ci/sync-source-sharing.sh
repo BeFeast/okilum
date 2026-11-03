@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Real pinned managed-runtime source sharing; never a system service/user daemon.
 set -euo pipefail
+python3 -m unittest discover -s scripts/ci -p test_sync_fixture_processes.py
 export TMPDIR="${TMPDIR:-${RUNNER_TEMP:?}}"
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/okilum-sync-fixture"
 mkdir -p "$cache"
