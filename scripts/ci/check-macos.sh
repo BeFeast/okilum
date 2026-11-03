@@ -65,7 +65,7 @@ cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 cargo "${cargo_args[@]}" --workspace --no-run
 
 # #2442: release-profile dependency fixtures and Sync macro imports must also run.
-run_tests okilum-shell --bins reader_log_remote::
+run_tests okilum-shell --bins reader_log::remote::
 run_tests okilum-shell --bins reader_settings_sync::
 run_tests okilum-core --lib capture::attachments::tests::receipt_lookup_bounds_and_exact_ledger_binding_fail_closed --exact
 
