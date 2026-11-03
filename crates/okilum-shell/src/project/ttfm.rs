@@ -91,7 +91,10 @@ impl ProjectView {
     pub(super) fn ttfm_open(&mut self, opened: Instant, cx: &mut Context<Self>) {
         self.ttfm.cancel();
         self.ttfm = Ttfm::open(opened, self.native.active(), cx);
-        self.feed
-            .update(cx, |feed, _| feed.ttfm = Some(self.ttfm.clone()));
+        self.feed.update(cx, |feed, cx| {
+            feed.ttfm = Some(self.ttfm.clone());
+            // A warm feed may otherwise reuse a cached frame with the old probe.
+            cx.notify();
+        });
     }
 }
