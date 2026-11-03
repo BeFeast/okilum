@@ -30,6 +30,16 @@ unambiguously, a notice asks to refresh Contents in Read. Navigation never edits
 or saves the source. Results from an older click, document, text revision or caret
 position cannot move the current editor.
 
+Find from Live Preview temporarily shows Source. Closing Find restores Live
+Preview with the matched source row at its previous viewport position, including
+large notes and newly measured rendered blocks (#2484). This handoff leaves the
+editing selection, canonical text and Undo history intact. Heading and Back
+landings wait for the current document's parse, and can initialize a prepared
+Reader list before it is painted; an editor hiding that list cannot cause a
+rendering timeout. Opening Find supersedes an older Reader-to-editor handoff,
+including one that finishes after Find closes; an asynchronous placement retains
+later keyboard focus. A new navigation or editing retires an obsolete landing notice.
+
 Heading completion (#1638) uses the same inline popup and keyboard/Undo path as
 note completion: type `[[#` for headings in this unsaved note, or
 `[[Note#` for headings in a uniquely resolved note. Up/Down chooses a row;
