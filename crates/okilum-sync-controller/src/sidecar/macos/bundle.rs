@@ -237,6 +237,7 @@ pub fn trusted_preparation_runtime(
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn trusted_preparation_runtime_with<V: SignatureVerifier>(
     app: &Path,
     app_executable: &str,

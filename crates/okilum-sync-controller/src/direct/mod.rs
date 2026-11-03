@@ -1025,7 +1025,7 @@ fn decode_url(input: &str) -> Result<Offer> {
     );
     let encoded = url.fragment().context("pairing capability missing")?;
     ensure!(
-        encoded.len() % 2 == 0 && encoded.bytes().all(|b| b.is_ascii_hexdigit()),
+        encoded.len().is_multiple_of(2) && encoded.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid pairing capability"
     );
     let bytes = (0..encoded.len())
