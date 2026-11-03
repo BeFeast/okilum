@@ -68,7 +68,22 @@ fn list_2530_default_and_groups_persist_per_project(cx: &mut TestAppContext) {
     let row = visual.debug_bounds("board-list-row-1").unwrap();
     assert_eq!(row.size.height, px(38.));
     click(visual, "board-list-group-Working");
-    click(visual, "board-view-board");
+    board.update_in(visual, |board, window, cx| {
+        board.selected = Some(1);
+        board.focus.focus(window, cx);
+        cx.notify();
+    });
+    // A selected issue must not steal Enter from the focused view control.
+    visual.simulate_keystrokes("tab tab");
+    let keystroke = gpui::Keystroke::parse("enter").unwrap();
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: keystroke.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    visual.simulate_event(gpui::KeyUpEvent { keystroke });
+    visual.run_until_parked();
+    board.read_with(visual, |board, _| assert!(!board.list.details_open));
     assert!(visual.debug_bounds("board-columns").is_some());
     board.read_with(visual, |board, cx| {
         let restored = State::load(area.path(), cx);

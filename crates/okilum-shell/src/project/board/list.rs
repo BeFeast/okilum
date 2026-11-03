@@ -279,7 +279,7 @@ impl Board {
                 cx.stop_propagation();
                 cx.notify();
             }
-            "enter" => {
+            "enter" if self.focus.is_focused(window) => {
                 if self.selected.is_some() || self.selected_local.is_some() {
                     self.list.details_open = !self.list.details_open;
                     cx.stop_propagation();
