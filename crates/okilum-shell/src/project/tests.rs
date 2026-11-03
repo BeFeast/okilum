@@ -578,7 +578,7 @@ fn projects_section_is_the_shared_picker_with_quiet_skips_and_row_warnings(
         .expect("the shared picker is the Projects surface");
     assert!(
         picker.origin.x - section.origin.x < px(40.),
-        "left-aligned, not centered: {picker:?} after selecting {selector}"
+        "left-aligned, not centered: {picker:?} in {section:?}"
     );
     for selector in [
         "project-section-0",
