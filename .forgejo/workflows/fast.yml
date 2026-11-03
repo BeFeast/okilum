@@ -2,8 +2,13 @@ name: fast
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      certification_source:
+        description: 'Internal hourly main certification; must match the run commit'
+        required: false
+        default: ''
 concurrency:
-  group: fast-${{ github.event.pull_request.number || github.ref }}
+  group: fast-${{ inputs.certification_source != '' && 'hourly-main' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   check:
@@ -31,6 +36,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Validate hourly certification source before compiling
+        if: inputs.certification_source != ''
+        env:
+          CERTIFICATION_SOURCE: ${{ inputs.certification_source }}
+          FORGEJO_URL: ${{ github.server_url }}
+        run: python3 scripts/releases/hourly_beta.py certify-source
       - name: Prepare local Linux toolchain
         run: |
           set -euo pipefail
@@ -122,10 +133,28 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           bash scripts/ci/fast-local.sh shell-full
 
+  certification-status:
+    needs: [check, shell-full]
+    if: always() && inputs.certification_source != ''
+    runs-on: bridge
+    timeout-minutes: 2
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Report both gates on the requested main commit
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          CERTIFICATION_SOURCE: ${{ inputs.certification_source }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python3 scripts/releases/hourly_beta.py certification-status
+
   sync-source-sharing:
     # Keep this additional compiler/daemon load outside the bounded desktop gate.
     needs: [check]
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: inputs.certification_source == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: fast-linux
     timeout-minutes: 15
     env:
