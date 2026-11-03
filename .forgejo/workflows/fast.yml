@@ -53,6 +53,12 @@ jobs:
       - name: Run the full CI tooling Python suite
         timeout-minutes: 2
         run: python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+      - name: Run the full releases Python suite
+        timeout-minutes: 2
+        run: python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
+      - name: Run the full updater Python suite
+        timeout-minutes: 2
+        run: python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
       - name: Build Linux desktop and run fast unit tests
         env:
           GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

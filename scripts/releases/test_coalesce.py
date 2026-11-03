@@ -276,13 +276,70 @@ class MacBetaWindowTests(unittest.TestCase):
 
     def test_workflow_keeps_tick_off_mac_and_preserves_publication(self):
         workflow = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/macos-release.yml').read_text()
+        self.assert_macos_publication_workflow(workflow)
+
+    def assert_macos_publication_workflow(self, workflow):
         self.assertNotIn('  schedule:', workflow)
         self.assertIn('  push:', workflow)
-        self.assertIn('runs-on: publish', workflow)
-        self.assertIn("if: steps.select.outputs.build == 'true'", workflow)
-        self.assertIn("if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'local'", workflow)
+        select, release = workflow.split('\n  release:\n', 1)
+        release, hosted = release.split('\n  hosted-artifact:\n', 1)
+        self.assertIn('    runs-on: publish\n', select)
+        self.assertIn("        if: steps.select.outputs.build == 'true'\n", select)
+        self.assertIn('        run: python3 scripts/releases/coalesce.py macos\n', select)
+        self.assertIn('        run: python3 scripts/releases/macos-hosted.py route\n', select)
+        # #2139 prohibits corporate M4 CI and forces route() to hosted even for
+        # stale local lane variables. Publication must survive on the active job.
+        self.assertEqual([line.split('#', 1)[0].strip() for line in release.splitlines()
+                          if line.startswith('    if:')], ['if: false'])
+        self.assertIn('    runs-on: macos\n', release)
+        self.assertIn('    needs: select\n', hosted)
+        self.assertEqual([line.strip() for line in hosted.splitlines() if line.startswith('    if:')],
+                         ["if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && "
+                          "(github.event_name == 'workflow_dispatch' || github.event_name == 'push')"])
+        self.assertIn('    runs-on: bridge\n', hosted)
+        self.assertNotIn('continue-on-error:', hosted)
+        producer = hosted.split('      - name: Produce a source-pinned hosted shipping artifact\n', 1)[1].split(
+            '\n      - uses:', 1)[0]
+        self.assertNotIn('if:', producer)
+        self.assertIn('          PRODUCT_SOURCE: ${{ needs.select.outputs.source }}\n', producer)
+        self.assertIn('        run: python3 scripts/ci/github-macos-shipping.py\n', producer)
+        self.assertIn("      - uses: https://code.forgejo.org/actions/upload-artifact@v3\n"
+                      "        if: github.event_name == 'push'\n"
+                      "        with:\n"
+                      "          name: macos-publication\n"
+                      "          path: ${{ runner.temp }}/publish/*\n", hosted)
+        self.assertIn("      - name: Dispatch protected hosted beta publication\n"
+                      "        if: github.event_name == 'push'\n"
+                      "        env:\n"
+                      "          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
+                      "          FORGEJO_URL: ${{ github.server_url }}\n"
+                      "        run: python3 scripts/releases/publication.py dispatch macos\n", hosted)
         self.assertIn("github.event_name == 'schedule' && 'okilum-macos-select' || 'okilum-macos-build'", workflow)
         self.assertIn('cancel-in-progress: false', workflow)
         self.assertIn('FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}', workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch macos', workflow)
         self.assertLess(workflow.index('id: select'), workflow.index('id: route'))
+
+    def test_workflow_publication_assertions_reject_disabled_hosted_path_and_local_tick(self):
+        workflow = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/macos-release.yml').read_text()
+        prefix, hosted = workflow.split('\n  hosted-artifact:\n', 1)
+        for label, broken in [
+            ('local reenabled', workflow.replace('    if: false # Corporate', '    if: true # Corporate')),
+            ('tick on Mac', workflow.replace('  push:', '  schedule:\n  push:', 1)),
+            ('selector on Mac', workflow.replace('    runs-on: publish', '    runs-on: macos', 1)),
+            ('hosted disabled', prefix + '\n  hosted-artifact:\n' + hosted.replace(
+                "    if: needs.select.outputs.build == 'true'", '    if: false && true', 1)),
+            ('producer disabled', workflow.replace('      - name: Produce a source-pinned hosted shipping artifact\n',
+                                                   '      - name: Produce a source-pinned hosted shipping artifact\n'
+                                                   '        if: false\n')),
+            ('upload disabled', prefix + '\n  hosted-artifact:\n' + hosted.replace(
+                "        if: github.event_name == 'push'", '        if: false', 1)),
+            ('dispatch disabled', workflow.replace('      - name: Dispatch protected hosted beta publication\n'
+                                                  "        if: github.event_name == 'push'",
+                                                  '      - name: Dispatch protected hosted beta publication\n'
+                                                  '        if: false')),
+        ]:
+            with self.subTest(regression=label):
+                self.assertNotEqual(workflow, broken)
+                with self.assertRaises(AssertionError):
+                    self.assert_macos_publication_workflow(broken)
