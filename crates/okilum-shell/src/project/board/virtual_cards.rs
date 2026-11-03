@@ -28,6 +28,17 @@ pub(super) struct Card {
     height: Option<Entity<Height>>,
 }
 impl Card {
+    fn overdraw(&self, cx: &App) -> Pixels {
+        if self
+            .board
+            .upgrade()
+            .is_some_and(|board| board.read(cx).resizing)
+        {
+            px(0.)
+        } else {
+            px(400.)
+        }
+    }
     #[cfg(test)]
     fn count_layout(&self, cx: &App) {
         if let Some(board) = self.board.upgrade() {
@@ -183,7 +194,19 @@ impl RenderOnce for Lane {
         let ids: std::collections::HashSet<_> =
             self.cards.iter().map(|card| card.id.clone()).collect();
         states.update(cx, |states, _| states.retain(|id, _| ids.contains(id)));
-        let viewport = Bounds::new(Point::default(), window.viewport_size()).dilate(px(400.));
+        let overdraw = self
+            .cards
+            .first()
+            .map(|card| card.overdraw(cx))
+            .unwrap_or(px(400.));
+        let viewport = self
+            .cards
+            .first()
+            .and_then(|card| card.board.upgrade())
+            .map(|board| board.read(cx).scroll.bounds())
+            .filter(|bounds| bounds.size.height > px(0.))
+            .unwrap_or_else(|| Bounds::new(Point::default(), window.viewport_size()))
+            .dilate(overdraw);
         let mut root = v_flex().id(self.id).w_full().min_w_0().gap_3();
         let mut hidden = Vec::new();
         let mut initial_y = px(0.);
@@ -288,7 +311,12 @@ impl Element for Space {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let viewport = window.content_mask().bounds.dilate(px(400.));
+        let overdraw = self
+            .cards
+            .first()
+            .map(|card| card.overdraw(cx))
+            .unwrap_or(px(400.));
+        let viewport = window.content_mask().bounds.dilate(overdraw);
         let mut y = bounds.top();
         let mut painted = Vec::new();
         for card in &self.cards {

@@ -237,6 +237,10 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
                 board.frame_work.borrow()
             );
             assert!(
+                board.performance_resizing(),
+                "real splitter selects viewport layout work"
+            );
+            assert!(
                 board
                     .frame_layout_work
                     .borrow()
@@ -262,6 +266,10 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     });
     visual.simulate_mouse_up(handle, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert!(
+        !board.read_with(visual, |board, _| board.performance_resizing()),
+        "release restores scroll premeasurement"
+    );
     // Force a complete fresh paint to recover debug bounds for cached sibling views.
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();

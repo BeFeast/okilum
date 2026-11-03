@@ -37,6 +37,7 @@ pub(crate) struct Board {
     focus: FocusHandle,
     scroll: ScrollHandle,
     height_refinement_pending: bool,
+    resizing: bool,
     verified_open: bool,
     filter: Option<String>,
     selected: Option<u64>,
@@ -159,6 +160,7 @@ impl Board {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             height_refinement_pending: false,
+            resizing: false,
             verified_open: false,
             filter: None,
             selected: None,
@@ -1634,6 +1636,13 @@ impl Reader {
         if self.project_navigation.section == reader_project_navigation::Section::Reader {
             if let Some(board) = board {
                 if self.project_navigation.board_visible {
+                    let resizing = self.resizing_panel.is_some();
+                    board.update(cx, |board, cx| {
+                        if board.resizing != resizing {
+                            board.resizing = resizing;
+                            cx.notify();
+                        }
+                    });
                     return div()
                         .size_full()
                         .child(board.clone().cached(StyleRefinement::default().size_full()))
@@ -1674,6 +1683,10 @@ mod discuss_tests;
 
 #[cfg(all(target_os = "linux", any(test, feature = "project-ui-harness")))]
 impl Board {
+    #[cfg(test)]
+    pub(in crate::project) fn performance_resizing(&self) -> bool {
+        self.resizing
+    }
     pub(in crate::project) fn performance_fixture(
         area: PathBuf,
         window: &mut Window,
