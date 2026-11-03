@@ -169,6 +169,8 @@ pub fn save_pasted_image_with(
     stamp: &str,
     options: super::image_import::Options,
 ) -> Result<SavedImage, SaveError> {
+    let _admission = okilum_write_authority::operation(vault_root)
+        .map_err(|e| SaveError::Write(io::Error::other(e)))?;
     if options.enabled {
         let folder = attachment_folder(vault_root, note_rel);
         let wanted = pasted_name(stamp, 0, image.kind.extension());
@@ -305,6 +307,8 @@ pub fn save_pasted_files_with(
     stamp: &str,
     is_cache: &dyn Fn(&Path) -> bool,
 ) -> Result<SavedFiles, SaveError> {
+    let _admission = okilum_write_authority::operation(vault_root)
+        .map_err(|e| SaveError::Write(io::Error::other(e)))?;
     let mut saved = SavedFiles::default();
     let mut links = Vec::new();
     let root = std::fs::canonicalize(vault_root).unwrap_or_else(|_| vault_root.to_path_buf());

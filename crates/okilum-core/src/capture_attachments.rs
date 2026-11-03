@@ -426,6 +426,8 @@ impl<'a> Publisher<'a> {
         composer_id: &str,
         assets: &[VerifiedAsset],
     ) -> Result<AttachmentReceipt> {
+        self.draft.persist(self.root, self.records)?;
+        let _admission = okilum_write_authority::operation(self.root)?;
         id(composer_id)?;
         ensure!(self.draft.id == composer_id, "Attachment composer changed");
         ensure!(

@@ -55,6 +55,7 @@ fn publish_created(
     source: &[u8],
     parts: &[Component<'_>],
 ) -> Result<()> {
+    let _admission = okilum_write_authority::operation(root)?;
     #[cfg(windows)]
     {
         // Validate the original root before canonicalization can follow links.

@@ -39,6 +39,7 @@ impl Receipt {
 /// Missing destinations refuse: exclusive creation is a separate operation.
 pub fn apply(root: &Path, drafts: &Path, relative: &str, plan: &Plan) -> Result<Receipt> {
     let root = root.canonicalize()?;
+    okilum_write_authority::Authority::for_root(&root)?;
     let path = bound_path(&root, relative)?;
     let mut editor = open_clean(&path, drafts)?;
     let after = plan
@@ -90,6 +91,7 @@ pub fn add(root: &Path, drafts: &Path, relative: &str, reminder: &str) -> Result
 /// based delete cannot be made race-free against a concurrent writer.
 pub fn create_and_apply(root: &Path, relative: &str, plan: &Plan) -> Result<Receipt> {
     let root = root.canonicalize()?;
+    okilum_write_authority::Authority::for_root(&root)?;
     let rel = checked_relative(relative)?;
     let after = plan.apply_source("").map_err(anyhow::Error::msg)?;
     crate::note_files::create_with_source(&root, rel, after.as_bytes())?;
@@ -115,6 +117,7 @@ fn checked_relative(relative: &str) -> Result<&Path> {
 }
 
 fn bound_path(root: &Path, relative: &str) -> Result<PathBuf> {
+    okilum_write_authority::Authority::for_root(root)?;
     let rel = checked_relative(relative)?;
     let mut path = root.to_owned();
     for component in rel.components() {

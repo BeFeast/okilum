@@ -130,6 +130,8 @@ pub fn save(
     bytes: &[u8],
     options: Options,
 ) -> Result<Imported, String> {
+    let _admission =
+        okilum_write_authority::operation_for_directory(folder).map_err(|e| e.to_string())?;
     if bytes.len() > super::offer::MAX_IMAGE_BYTES {
         return Err("The image is too large to import (64 MB at most).".into());
     }

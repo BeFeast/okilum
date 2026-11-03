@@ -46,6 +46,7 @@ pub fn apply(
     change: Change,
 ) -> Result<Option<Receipt>> {
     let root = root.canonicalize()?;
+    okilum_write_authority::Authority::for_root(&root)?;
     let path = bound_path(&root, target.path())?;
     let mut editor = open_clean(&path, drafts)?;
     let plan = target
@@ -65,6 +66,7 @@ pub fn apply_indexed(
     change: Change,
 ) -> Result<Option<Receipt>> {
     let root = root.canonicalize()?;
+    okilum_write_authority::Authority::for_root(&root)?;
     let path = bound_path(&root, &task.path)?;
     let mut editor = open_clean(&path, drafts)?;
     let target = displayed
@@ -107,6 +109,7 @@ fn save(editor: &mut FileEditor) -> Result<()> {
     }
 }
 fn bound_path(root: &Path, relative: &str) -> Result<PathBuf> {
+    okilum_write_authority::Authority::for_root(root)?;
     let rel = Path::new(relative);
     ensure!(
         !relative.is_empty() && rel.components().all(|c| matches!(c, Component::Normal(_))),

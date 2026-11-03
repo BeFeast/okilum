@@ -94,6 +94,7 @@ pub fn stamp(_path: &Path, meta: &fs::Metadata) -> (u64, u64, u64, i64, i64) {
 }
 
 pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
+    let _admission = okilum_write_authority::operation(root)?;
     let root = root.canonicalize()?;
     let (source_parent, source_name) = parent(&root, relative)?;
     let source = root.join(relative);
@@ -172,6 +173,7 @@ impl Trashed {
     }
 
     pub fn restore(&self) -> Result<()> {
+        let _admission = okilum_write_authority::operation(&self.root)?;
         let kept_in = self.kept_in();
         let metadata = fs::symlink_metadata(&self.location)
             .with_context(|| format!("The item is no longer in {kept_in}"))?;

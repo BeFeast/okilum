@@ -716,6 +716,10 @@ impl Vault {
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
     ) -> Result<Vault> {
         checkpoint("Discovering notes", 0)?;
+        // Register the vault scope before a nested editor/publisher resolves it.
+        // Read-only discovery still works if operational authority needs repair;
+        // every writer independently fails closed against that same record.
+        let _ = okilum_write_authority::Authority::for_root(root);
         #[cfg(unix)]
         let _ = crate::unix_publish::register_vault(root);
         // A bad root is a failed open, not an empty successful inventory.

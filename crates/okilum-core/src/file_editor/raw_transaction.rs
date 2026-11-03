@@ -89,6 +89,7 @@ impl FileEditor {
             history: Mutex::default(),
         });
         let mut editor = Self {
+            authority: okilum_write_authority::Authority::for_path(&path)?,
             draft: Draft {
                 path: path.clone(),
                 base: String::from_utf8_lossy(&current).into_owned().into(),
@@ -104,6 +105,8 @@ impl FileEditor {
             base_generation: 0,
             raw_transaction: Some(transaction),
         };
+        editor.persist()?;
+        let _admission = editor.authority.admit()?.enter()?;
         let result = editor.save_before_exchange(before_exchange);
         let retain_recovery = result.as_ref().err().is_some_and(|error| {
             error.is::<UnconfirmedSave>() || error.is::<PublishedSaveNeedsAttention>()
@@ -1070,6 +1073,7 @@ impl InterruptedSave {
     /// The proposal is never adopted. Reinspect before cleaning recovery.
     pub fn restore_missing_source(&self) -> Result<()> {
         let r = &self.inner;
+        let _admission = okilum_write_authority::operation_for_path(&r.intent.note)?;
         anyhow::ensure!(r.current.is_none(), "Source was present at inspection");
         r.directory.validate(r.intent.note.parent().unwrap())?;
         anyhow::ensure!(

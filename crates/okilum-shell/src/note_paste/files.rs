@@ -450,6 +450,8 @@ pub fn copy_into(
     wanted: &str,
     progress: &mut dyn FnMut(u64),
 ) -> Result<String, CopyError> {
+    let _admission = okilum_write_authority::operation_for_directory(folder)
+        .map_err(|e| CopyError::Write(io::Error::other(e)))?;
     std::fs::create_dir_all(folder).map_err(CopyError::Folder)?;
     remove_stale_temporaries(folder);
     let temporary = folder.join(format!(".okilum-paste-{}.tmp", uuid::Uuid::new_v4()));
@@ -465,6 +467,8 @@ pub fn copy_into(
 /// return the final name: a hidden temporary file first, synced, then linked
 /// into place without replacing anything (#1611: downloaded images).
 pub fn write_into(folder: &Path, wanted: &str, bytes: &[u8]) -> Result<String, CopyError> {
+    let _admission = okilum_write_authority::operation_for_directory(folder)
+        .map_err(|e| CopyError::Write(io::Error::other(e)))?;
     std::fs::create_dir_all(folder).map_err(CopyError::Folder)?;
     let temporary = folder.join(format!(".okilum-paste-{}.tmp", uuid::Uuid::new_v4()));
     let written = (|| -> Result<(), CopyError> {

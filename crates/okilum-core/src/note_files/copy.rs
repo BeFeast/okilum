@@ -11,6 +11,7 @@ use std::{
 };
 
 pub struct PreparedCopy {
+    admission: okilum_write_authority::WriterLease,
     parent: PathBuf,
     chosen_parent: PathBuf,
     name: OsString,
@@ -29,6 +30,7 @@ pub struct PreparedCopy {
 
 impl PreparedCopy {
     pub fn prepare(path: &Path, drafts: &Path, bytes: &[u8]) -> Result<Self> {
+        let admission = okilum_write_authority::Authority::for_path(path)?.admit()?;
         let chosen_parent = path
             .parent()
             .context("Destination has no folder")?
@@ -67,6 +69,7 @@ impl PreparedCopy {
                 Mode::from_bits_truncate(0o644),
             )?);
             let mut prepared = Self {
+                admission,
                 parent,
                 chosen_parent,
                 name,
@@ -87,6 +90,7 @@ impl PreparedCopy {
             file.write_all(bytes)?;
             file.as_file().sync_all()?;
             Ok(Self {
+                admission,
                 parent,
                 chosen_parent,
                 name,
@@ -100,6 +104,7 @@ impl PreparedCopy {
     /// Call only after validating the owning document and source image. Staging
     /// already flushed the full bytes; this performs only exclusive publication.
     pub fn publish(mut self) -> Result<()> {
+        let _admission = self.admission.enter()?;
         anyhow::ensure!(
             self.chosen_parent.canonicalize()? == self.parent,
             "Destination folder changed; choose it again"

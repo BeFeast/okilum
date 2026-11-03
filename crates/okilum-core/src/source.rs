@@ -1345,6 +1345,12 @@ impl SourceStore {
             return Err(conflict_error(conflict));
         }
         self.save(&record)?; // intent + preimage durable before source mutation
+        let _admission = okilum_write_authority::operation(&self.root_path).map_err(|e| {
+            error(
+                ErrorCode::InvalidRequest,
+                format!("Canonical source publication deferred; retain proposed source: {e:#}"),
+            )
+        })?;
         hook(CommitPoint::IntentSaved)?;
         if current.as_deref() != Some(proposed.as_slice()) {
             let temporary = format!(".okilum-source-{}.tmp", Uuid::new_v4());

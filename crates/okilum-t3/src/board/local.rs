@@ -302,6 +302,7 @@ impl Session {
         Ok(updated)
     }
     pub fn save(&self, change: &Change) -> Result<Self> {
+        let _admission = okilum_write_authority::operation(&self.area)?;
         let updated = self.preview(change)?;
         self.check_sources()?;
         if let Some(doc) = &self.document {
