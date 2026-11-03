@@ -1500,3 +1500,31 @@ fn cached_live_agent_cards_ignore_composer_notifications_and_keep_source_publica
         "Keep the draft"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn compact_pull_badge_opens_its_bound_pull_without_selecting_the_card(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let board = cx.new(|cx| Board::performance_fixture(temp.path().join("board"), window, cx));
+        Root::new(board, window, cx)
+    });
+    visual.simulate_resize(size(px(1200.), px(800.)));
+    visual.run_until_parked();
+    let board = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<Board>().unwrap()
+    });
+    let expected = board.update(visual, |board, _| {
+        board.presentation().binding.pull_url(1002)
+    });
+    let badge = visual
+        .debug_bounds("board-pr-badge-2")
+        .expect("real live PR badge");
+    assert!(badge.intersects(&visual.debug_bounds("project-board").unwrap()));
+    assert_ne!(visual.opened_url().as_deref(), Some(expected.as_str()));
+    visual.simulate_click(badge.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.opened_url().as_deref(), Some(expected.as_str()));
+    board.read_with(visual, |board, _| assert_eq!(board.selected, None));
+}
