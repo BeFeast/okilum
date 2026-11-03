@@ -4,7 +4,7 @@ use gpui_component::{
     button::ButtonGroup,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     switch::Switch,
-    ThemeMode,
+    ThemeMode, WindowExt,
 };
 use okilum_core::log::source_link;
 
@@ -565,6 +565,16 @@ struct Settings {
     vault_color_saved: Option<Option<brand::VaultColor>>,
 }
 impl Settings {
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.blur(cx);
+        // GPUI delivers focus/blur events during drawing. Let inputs and their
+        // Blur subscribers finish before removing the window and its views.
+        window.defer(cx, |window, cx| {
+            window.draw(cx).clear(cx);
+            window.defer(cx, |window, _| window.remove_window());
+        });
+    }
+
     fn enable_section(&mut self, _section: Section, _cx: &mut Context<Self>) -> bool {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if _section == Section::Sync {
@@ -1914,6 +1924,15 @@ impl Render for Settings {
         let p = brand::palette(cx);
         let body = self.body(window, cx);
         let content = h_flex()
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    && event.keystroke.modifiers == Modifiers::default()
+                    && !window.has_active_dialog(cx)
+                {
+                    this.close(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .flex_1()
             .min_h_0()
             .w_full()
@@ -1990,14 +2009,33 @@ impl Render for Settings {
             .text_color(p.text)
             .key_context("OkilumSettings")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|_, _: &CloseSettings, window, _| window.remove_window()))
+            .on_action(cx.listener(|this, _: &CloseSettings, window, cx| this.close(window, cx)))
             .on_action(cx.listener(|_, _: &OpenSettings, window, cx| {
                 window.activate_window();
                 cx.stop_propagation();
             }))
             // GPUI negotiates SSD through xdg-decoration and reports CSD when
             // unavailable (GNOME). TitleBar hides its controls under SSD.
-            .child(TitleBar::new().child("Settings"))
+            .child(
+                TitleBar::new().child("Settings").child(
+                    h_flex()
+                        .h_full()
+                        .items_center()
+                        .pr_3()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            Button::new("settings-close")
+                                .debug_selector(|| "settings-close".into())
+                                .small()
+                                .ghost()
+                                .label("Close")
+                                .accessibility_label("Close Settings")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.close(window, cx)),
+                                ),
+                        ),
+                ),
+            )
             .child(content)
             // Confirmations (Uninstall Okilum…) open as dialogs on this window;
             // without the dialog layer they exist but are never drawn (#1085).

@@ -53,6 +53,12 @@ jobs:
       - name: Run the full CI tooling Python suite
         timeout-minutes: 2
         run: python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+      - name: Run the full releases Python suite
+        timeout-minutes: 2
+        run: python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
+      - name: Run the full updater Python suite
+        timeout-minutes: 2
+        run: python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
       - name: Build Linux desktop and run fast unit tests
         env:
           GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -132,6 +138,11 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Allocate job-owned fixture directory
+        run: |
+          fixture_root=$(mktemp -d "${RUNNER_TEMP:?}/sync-fixtures-XXXXXX")
+          echo "OKILUM_SYNC_FIXTURE_ROOT=$fixture_root" >> "$GITHUB_ENV"
+          echo "TMPDIR=$fixture_root" >> "$GITHUB_ENV"
       - name: Verify ordinary source sharing with two pinned managed runtimes
         run: |
           set -euo pipefail
@@ -144,3 +155,9 @@ jobs:
           scripts/vendor-setup.sh --verify 9>&-
           bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2 9>&-
           bash scripts/ci/sync-network-policy.sh 9>&-
+      - name: Reject and reap surviving job fixture daemons
+        if: always()
+        run: |
+          if [[ -n "${OKILUM_SYNC_FIXTURE_ROOT:-}" ]]; then
+            python3 scripts/ci/sync-fixture-processes.py --root "$OKILUM_SYNC_FIXTURE_ROOT" --cleanup
+          fi

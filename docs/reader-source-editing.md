@@ -10,6 +10,24 @@ encodings are refused, never decoded lossily. Native undo/redo and the existing
 exact clipboard adapter apply. Cmd+S/Ctrl+S saves; leaving the note, losing focus,
 closing the window and quitting also attempt a save.
 
+Incoming changes to an open note (#2486) are observed through a shallow parent
+watch independently of vault indexing, including Syncthing's rename over the
+original file. Clean Source and Live Preview buffers reload in place while
+retaining the source selection and scroll. A native reset is bound to the refreshed base, so repeated incoming changes
+do not turn a clean editor into an apparent unsaved edit. Dirty buffers retain their text and show
+a conflict notice; an already active Sync controller may add the uniquely
+identified remote computer name. Unavailable or ambiguous provenance remains
+unattributed rather than guessing a computer.
+
+Explicit Save during that conflict, or **Keep both versions**, creates a complete,
+create-only `*.sync-conflict-YYYYMMDD-HHMMSS-XXXXXXX.md` copy of the latest local
+buffer next to the note and names it in the notice. The incoming canonical file
+and previous conflict copies remain unchanged; the draft and conflict stay open
+for comparison or explicit resolution. Repeating Save for the same unchanged
+copy reuses it; later local edits produce a new copy. Autosave stops at the
+conflict and retains the recovery draft. This supplies the keep-both preservation
+boundary of #2044 without claiming its full conflict-resolution workflow.
+
 Within the same Reader window, choosing another supported Markdown note keeps the
 chosen Read, Source or Live Preview mode (#1723). An explicit return to Read keeps
 later notes in Read. File switching still completes the existing save/recovery
@@ -29,6 +47,16 @@ edits in an unsaved draft may shift it. If a changed heading cannot be identifie
 unambiguously, a notice asks to refresh Contents in Read. Navigation never edits
 or saves the source. Results from an older click, document, text revision or caret
 position cannot move the current editor.
+
+Find from Live Preview temporarily shows Source. Closing Find restores Live
+Preview with the matched source row at its previous viewport position, including
+large notes and newly measured rendered blocks (#2484). This handoff leaves the
+editing selection, canonical text and Undo history intact. Heading and Back
+landings wait for the current document's parse, and can initialize a prepared
+Reader list before it is painted; an editor hiding that list cannot cause a
+rendering timeout. Opening Find supersedes an older Reader-to-editor handoff,
+including one that finishes after Find closes; an asynchronous placement retains
+later keyboard focus. A new navigation or editing retires an obsolete landing notice.
 
 Heading completion (#1638) uses the same inline popup and keyboard/Undo path as
 note completion: type `[[#` for headings in this unsaved note, or

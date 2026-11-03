@@ -24,6 +24,15 @@ pub(super) fn shared(window: &mut Window, cx: &mut App) -> Entity<SyncSettings> 
     cx.set_global(BackgroundSync(view.clone()));
     view
 }
+/// Reuse an already running controller; a conflict never starts Sync or
+/// discovers credentials on the UI thread merely to decorate a notice.
+pub(super) fn active_controller(cx: &App) -> Option<Controller> {
+    cx.try_global::<BackgroundSync>()?
+        .0
+        .read(cx)
+        .controller
+        .clone()
+}
 pub(super) fn suspend(cx: &mut App) {
     if let Some(view) = cx.try_global::<BackgroundSync>().map(|s| s.0.clone()) {
         view.update(cx, |view, cx| {

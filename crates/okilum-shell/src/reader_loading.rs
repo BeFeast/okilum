@@ -1748,6 +1748,11 @@ impl Reader {
             self.refresh_link_preparation(cx);
             return;
         }
+        if self.has_open_note_watch() {
+            self.reconcile_published_document(window, cx);
+            self.refresh_link_preparation(cx);
+            return;
+        }
         if self.editing.is_some() {
             self.refresh_source_in_background(window, cx);
             self.refresh_link_preparation(cx);
@@ -1878,13 +1883,24 @@ impl Reader {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    // Equal canonical bytes keep the existing document and its
-                    // authored-link identities. Resolution evidence is refreshed
-                    // separately; only pending embeds/images need a new render.
-                    // Comparisons and scans belong on this worker too.
-                    if raw.is_some()
-                        && raw == previous_canonical
-                        && previous_damaged == vault.note_encoding_damaged(&target)
+                    // A live source owner reads once, then shares the same
+                    // immutable bytes with equality checks and rendering. A
+                    // graph-only publication must keep authored-link identity,
+                    // document selection and history when source is unchanged.
+                    let (raw, encoding_damaged) = match raw {
+                        Some(raw) => (raw, vault.note_encoding_damaged(&target)),
+                        None => {
+                            anyhow::ensure!(
+                                vault.root.canonicalize()? == vault.root,
+                                "The opened folder has been redirected"
+                            );
+                            reader_files::checked_path(&vault.root, &target)?;
+                            let display = vault.read_note_display(&target)?;
+                            (Arc::<str>::from(display.text), display.encoding_damaged)
+                        }
+                    };
+                    if previous_canonical.as_ref() == Some(&raw)
+                        && previous_damaged == encoding_damaged
                         && previous_rendered.as_deref().is_some_and(|source| {
                             !okilum_core::render::has_pending_embeds(source)
                                 && !okilum_core::render::has_unavailable_images(source)
@@ -1892,20 +1908,17 @@ impl Reader {
                     {
                         return Ok(None);
                     }
-                    let document: prepared_links::PreparedDocument = if html {
+                    let mut document: prepared_links::PreparedDocument = if html {
                         prepared_links::PreparedDocument::html(
                             &vault,
                             &target,
-                            raw.map(|raw| raw.to_string()),
+                            Some(raw.to_string()),
                         )?
                     } else {
-                        let doc = if let Some(raw) = raw {
-                            okilum_core::render::reader_document_from_source(&vault, &target, &raw)
-                        } else {
-                            okilum_core::render::reader_document(&vault, &target)?
-                        };
-                        doc.into()
+                        okilum_core::render::reader_document_from_source(&vault, &target, &raw)
+                            .into()
                     };
+                    document.encoding_damaged = encoding_damaged;
                     if document.canonical_source == previous_canonical
                         && document.encoding_damaged == previous_damaged
                         && Some(document.source.as_str()) == previous_rendered.as_deref()
@@ -2373,7 +2386,7 @@ impl Reader {
         self.start_preparation(opts, Some(changes), window, cx);
     }
 
-    fn start_preparation(
+    pub(super) fn start_preparation(
         &mut self,
         mut opts: Opts,
         refresh: Option<okilum_core::Changes>,
