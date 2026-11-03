@@ -1682,6 +1682,10 @@ impl Board {
     pub(in crate::project) fn performance_resizing(&self) -> bool {
         self.resizing
     }
+    #[cfg(test)]
+    pub(in crate::project) fn performance_selected(&self) -> Option<u64> {
+        self.selected
+    }
     pub(in crate::project) fn performance_fixture(
         area: PathBuf,
         window: &mut Window,

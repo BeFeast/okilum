@@ -253,7 +253,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
                     .borrow()
                     .iter()
                     .all(|count| *count <= 64),
-                "offscreen cards must share spacers rather than one layout node per card: {:?}",
+                "offscreen cards must share lane geometry rather than one layout node per card: {:?}",
                 board.frame_layout_work.borrow()
             );
         });
@@ -303,7 +303,10 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         board.read_with(visual, |board, _| board.render_calls.get()) > 0,
         "positive control: Space activates the real disclosure button"
     );
-    assert_eq!(board.read_with(visual, |board, _| board.selected), None);
+    assert_eq!(
+        board.read_with(visual, |board, _| board.performance_selected()),
+        None
+    );
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-discuss-1").is_none());
@@ -315,7 +318,10 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     });
     visual.simulate_event(gpui::KeyUpEvent { keystroke: key });
     visual.run_until_parked();
-    assert_eq!(board.read_with(visual, |board, _| board.selected), Some(1));
+    assert_eq!(
+        board.read_with(visual, |board, _| board.performance_selected()),
+        Some(1)
+    );
     assert!(
         visual.debug_bounds("board-discuss-1").is_some(),
         "Enter retains keyboard disclosure and its actions"
