@@ -1620,7 +1620,13 @@ mod windows_cleanup_tests {
         assert!(hold.try_hold(&token).unwrap());
         assert!(crate::windows_files::undo_created(&created, expected, Some(b"created")).is_err());
         assert!(cleanup_windows(&drafts, &root).unwrap().len() >= 2);
-        for path in [&created, &prepared_path, &previous_path, &prepared_record, &previous_record] {
+        for path in [
+            &created,
+            &prepared_path,
+            &previous_path,
+            &prepared_record,
+            &previous_record,
+        ] {
             assert!(path.exists(), "held cleanup retained {}", path.display());
         }
         let token = hold.token().clone();

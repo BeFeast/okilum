@@ -28,17 +28,26 @@ outside the cooperative fencing guarantee.
 
 Vault discovery registers the actual root before nested editors. A standalone
 file uses its containing folder. Nested publishers reuse an existing enclosing
-root. Opening a new larger root around an already registered live smaller scope
-is refused as an explicit scope ambiguity; it never bypasses that scope's hold.
-Root registration serializes a short metadata transaction on the opening worker;
-ordinary admission resolves existing bindings without waiting for registration.
-No operation waits for drain, transport, a peer, or another canonical writer on
-the UI thread.
+root. Discovery promotes idle smaller scopes into the actual vault root under
+registry and child admission/writer locks. Existing editor handles follow the
+published enclosing scope on their next admission, including nested rollback.
+A live lease or unfinished child hold prevents promotion until it finishes or is
+explicitly released/recovered; discovery surfaces that refusal. Publishing the
+parent binding is the atomic promotion point; old bindings remain durable.
+Interrupted initialization without a published binding can resume under the
+registry lock, but an unfinished durable hold is never reset.
+Root registration serializes a short metadata transaction on the opening worker.
+Ordinary admission serializes bounded metadata work on admission.lock, so normal
+concurrent writers do not fail due to transient contention. It never waits for
+drain, transport, a peer or another canonical writer's publication.
 
 ## Lease and hold protocol
 
-1. `Authority::admit` briefly takes the nonblocking admission lock, reads durable
-   Open state, and takes a shared writers lock before reopening admission.
+1. `Authority::operation` briefly serializes admission metadata, validates the
+   authority once, reads durable Open state and takes a shared writers lock.
+   It enters the synchronous scope without repeating validation. `admit` plus
+   checked `enter` remain available for delayed work; resuming publication on
+   another worker revalidates the retained lease.
 2. A `WriterLease` spans the complete operation and any rollback. Synchronous
    nested publishers inherit it through a thread-confined `OperationGuard`.
    A delayed job retains a cloned lease and calls `enter` on its own worker.
@@ -70,7 +79,10 @@ closed state and must be surfaced to the caller.
 
 | Entrance | Admission lifetime / retained state |
 | --- | --- |
-| `FileEditor::save_before_exchange`, task/reminder apply/Undo, history restore | Draft is durable before admission; one scope covers save/history/rollback. Editor copies retain the root binding. |
+| `FileEditor::save_before_exchange`, history restore | Dirty draft is durable before admission with one pre-publication journal flush; clean navigation needs no admission. One scope covers save/history/rollback. Protected drafts permit closing/quit after a save access refusal. |
+| Task/reminder apply/Undo, virtual-log criteria | Admit before generating a temporary dirty draft, so certain hold refusal leaves retry/reopen usable. Canonical conflicts and unconfirmed errors still preserve recovery. |
+| Windows creation Undo, prepared/preimage startup cleanup | Native `windows_files::undo_created` admits before unlink; ordinary save cleanup inherits the current lease. Startup warnings retain files for retry after release. |
+| Rich paste while held | Data images and bounded local payloads remain inline in the text draft; unreadable/oversized local images retain file references. Both immediate and background results explain the paused write. |
 | Explicit raw byte repair/history replacement | Whole raw transaction, including rollback, inherits one admission; existing exact history/recovery remains authoritative. |
 | `SourceStore::write_base_with_hook` | Durable intent and preimage before admission; source replacement and receipt under one lease. |
 | `note_files` create/attachment create | Whole create-only publication and cleanup. |

@@ -304,7 +304,11 @@ impl DraftWrite {
             crate::source_state::persist(&self.journal, &serde_json::to_vec(&self.draft)?)?;
         }
         #[cfg(test)]
-        JOURNAL_COMMITS.with(|commits| commits.borrow_mut().push(self.draft.base == self.draft.text));
+        JOURNAL_COMMITS.with(|commits| {
+            commits
+                .borrow_mut()
+                .push(self.draft.base == self.draft.text)
+        });
         Ok(())
     }
 }
@@ -2976,6 +2980,39 @@ mod local_writer_admission_tests {
 mod local_writer_review_tests {
     use super::*;
     #[test]
+    fn windows_local_writer_review_vault_discovery_promotes_subfolder_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let sub = root.join("Sub");
+        let sibling = root.join("Other");
+        fs::create_dir_all(&sub).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        fs::write(sub.join("note.md"), b"original").unwrap();
+        let mut editor =
+            FileEditor::open(&sub.join("note.md"), &temp.path().join("drafts")).unwrap();
+        crate::Vault::scan_metadata(&root).unwrap();
+        let vault = okilum_write_authority::Authority::for_root(&root).unwrap();
+        assert_eq!(
+            okilum_write_authority::Authority::for_root(&sibling)
+                .unwrap()
+                .root(),
+            vault.root()
+        );
+        editor.queue_text("promoted editor".into());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        let hold = vault.begin_drain("promoted-root").unwrap();
+        editor.queue_text("held draft".into());
+        assert!(editor.save().is_err());
+        assert!(okilum_write_authority::Authority::for_root(&sibling)
+            .unwrap()
+            .admit()
+            .is_err());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+    }
+
+    #[test]
     fn windows_local_writer_review_clean_save_during_hold_and_single_draft_flush() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
@@ -2990,7 +3027,10 @@ mod local_writer_review_tests {
         assert!(JOURNAL_COMMITS.with(|commits| commits.borrow().is_empty()));
         editor.queue_text("held draft".into());
         assert!(editor.save().is_err());
-        assert_eq!(JOURNAL_COMMITS.with(|commits| commits.borrow().clone()), vec![false]);
+        assert_eq!(
+            JOURNAL_COMMITS.with(|commits| commits.borrow().clone()),
+            vec![false]
+        );
         assert_eq!(fs::read(&path).unwrap(), b"original");
         let token = hold.token().clone();
         hold.release(&token).unwrap();
@@ -2998,11 +3038,17 @@ mod local_writer_review_tests {
         assert_eq!(editor.save().unwrap(), Save::Saved);
         // One recovery flush before publication, one clean acknowledgement.
         // No duplicate pre-publication temp-file/fsync sequence was added.
-        assert_eq!(JOURNAL_COMMITS.with(|commits| commits.borrow().clone()), vec![false, true]);
+        assert_eq!(
+            JOURNAL_COMMITS.with(|commits| commits.borrow().clone()),
+            vec![false, true]
+        );
         assert_eq!(fs::read(&path).unwrap(), b"held draft");
         editor.queue_text("ordinary autosave".into());
         JOURNAL_COMMITS.with(|commits| commits.borrow_mut().clear());
         assert_eq!(editor.save().unwrap(), Save::Saved);
-        assert_eq!(JOURNAL_COMMITS.with(|commits| commits.borrow().clone()), vec![false, true]);
+        assert_eq!(
+            JOURNAL_COMMITS.with(|commits| commits.borrow().clone()),
+            vec![false, true]
+        );
     }
 }
