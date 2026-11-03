@@ -89,6 +89,22 @@ impl Request {
         )
     }
 
+    pub(super) fn editor_snapshot(
+        reader: &Reader,
+        input: Entity<EditorState>,
+        stamp: SourceStamp,
+        range: std::ops::Range<usize>,
+        selection: String,
+        date: time::Date,
+        source: String,
+    ) -> Self {
+        Self::direct(reader, selection, date, Some(source)).with_evidence(Evidence::Editor {
+            input,
+            stamp,
+            range,
+        })
+    }
+
     pub(super) fn direct(
         reader: &Reader,
         selection: String,

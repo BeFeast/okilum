@@ -2,34 +2,87 @@
 //! must not scan the entire note for link definitions (#1621). Only a rendered
 //! block that could contain a reference link needs them (#1067).
 use gpui::SharedString;
+use okilum_core::source_projection::revision::Text;
 use std::{cell::OnceCell, rc::Rc};
 
 #[derive(Clone, Default)]
 pub(super) struct BlockNote {
-    pub(super) text: SharedString,
+    text: Option<Text>,
     // All blocks/clones of this immutable revision share one extraction. A new
     // snapshot gets its own cell, including edits that only change definitions.
     definitions: Rc<OnceCell<SharedString>>,
+    footnotes: Option<Rc<std::collections::HashMap<(usize, usize), String>>>,
 }
 
 impl BlockNote {
     pub(super) fn new(text: SharedString) -> Self {
         Self {
-            text,
+            text: Some(text.to_string().into()),
             definitions: Default::default(),
+            footnotes: None,
         }
+    }
+
+    pub(super) fn from_snapshot(_text: Text) -> Self {
+        // Pending context is explicitly unresolved. Never resolve a new revision
+        // using an old definition, or flatten it while typing/painting.
+        Self::default()
+    }
+    pub(super) fn prepare(
+        text: Text,
+        blocks: Vec<std::ops::Range<usize>>,
+    ) -> (
+        Text,
+        String,
+        std::collections::HashMap<(usize, usize), String>,
+    ) {
+        let definitions = okilum_core::render::reference_definitions(&text);
+        let footnotes = blocks
+            .into_iter()
+            .filter_map(|range| {
+                okilum_core::obsidian::block_footnotes(&text, range.clone())
+                    .map(|source| ((range.start, range.end), source))
+            })
+            .collect();
+        (text, definitions, footnotes)
+    }
+    pub(super) fn from_prepared(
+        (text, definitions, footnotes): (
+            Text,
+            String,
+            std::collections::HashMap<(usize, usize), String>,
+        ),
+    ) -> Self {
+        Self {
+            text: Some(text),
+            definitions: Rc::new(OnceCell::from(definitions.into())),
+            footnotes: Some(Rc::new(footnotes)),
+        }
+    }
+    pub(super) fn block_footnotes(
+        &self,
+        source: &str,
+        range: std::ops::Range<usize>,
+    ) -> Option<String> {
+        if !source.contains("[^") && !source.contains("^[") {
+            return None;
+        }
+        if let Some(footnotes) = &self.footnotes {
+            return footnotes.get(&(range.start, range.end)).cloned();
+        }
+        okilum_core::obsidian::block_footnotes(self.text.as_ref()?, range)
     }
 
     pub(super) fn with_definitions(&self, block: String) -> SharedString {
         // Full, collapsed and shortcut reference links/images all need '['.
         // Check only the rendered block, not the whole note. This deliberately
         // permits false positives (code/escaped brackets), never false negatives.
-        if !block.contains('[') {
+        if self.text.is_none() || !block.contains('[') {
             return block.into();
         }
-        let definitions = self
-            .definitions
-            .get_or_init(|| okilum_core::render::reference_definitions(&self.text).into());
+        let definitions = self.definitions.get_or_init(|| {
+            okilum_core::render::reference_definitions(self.text.as_ref().unwrap()).into()
+        });
         if definitions.is_empty() {
             block.into()
         } else {

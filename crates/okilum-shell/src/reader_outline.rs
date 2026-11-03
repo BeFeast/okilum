@@ -46,7 +46,7 @@ impl Reader {
         }
     }
 
-    pub(super) fn refresh_draft_outline(&mut self, _source: &str, cx: &mut Context<Self>) {
+    pub(super) fn refresh_draft_outline(&mut self, cx: &mut Context<Self>) {
         self.draft_outline.pending = true;
         // One parser in flight, with no queue of intermediate drafts. Every
         // completion either publishes its exact revision or reads the latest.
@@ -62,7 +62,11 @@ impl Reader {
                 };
                 let input = editing.input().clone();
                 let state = input.read(cx);
-                Some((input.clone(), state.source_stamp(), state.value()))
+                Some((
+                    input.clone(),
+                    state.source_stamp(),
+                    state.source_snapshot().text,
+                ))
             }) else {
                 return;
             };
@@ -85,6 +89,12 @@ impl Reader {
                 {
                     return false;
                 }
+                let labels_changed = this
+                    .draft_outline
+                    .entries
+                    .iter()
+                    .map(|h| (&h.text, h.level))
+                    .ne(snapshot.entries.iter().map(|h| (&h.text, h.level)));
                 this.draft_outline.cache = Some(std::mem::take(&mut cache));
                 this.draft_outline.source = snapshot.source;
                 this.draft_outline.entries = snapshot.entries;
@@ -97,7 +107,9 @@ impl Reader {
                         px(OUTLINE_ROW_HEIGHT),
                     );
                 }
-                cx.notify();
+                if labels_changed {
+                    cx.notify();
+                }
                 true
             }) else {
                 return;

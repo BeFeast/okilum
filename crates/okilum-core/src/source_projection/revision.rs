@@ -170,6 +170,21 @@ impl Text {
         start..end
     }
 }
+impl From<&str> for Text {
+    fn from(text: &str) -> Self {
+        Self::from(Arc::<str>::from(text))
+    }
+}
+impl From<String> for Text {
+    fn from(text: String) -> Self {
+        Self::from(Arc::<str>::from(text))
+    }
+}
+impl PartialEq<Text> for String {
+    fn eq(&self, other: &Text) -> bool {
+        other == self
+    }
+}
 impl From<Arc<str>> for Text {
     fn from(text: Arc<str>) -> Self {
         let result = Self::from_rope(Rope::from_str(&text));

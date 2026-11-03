@@ -214,15 +214,19 @@ struct Facts {
 pub(super) struct MenuFacts(
     std::rc::Rc<std::cell::Cell<Facts>>,
     reader_image_actions::SourceFacts,
-    /// The note's text at a source stamp, so a caret move does not copy it.
-    std::rc::Rc<
-        std::cell::RefCell<(
-            Option<gpui_component::input::projection::SourceStamp>,
-            String,
-        )>,
-    >,
+    std::rc::Rc<std::cell::RefCell<Option<MenuSource>>>,
     #[cfg(any(unix, windows))] std::rc::Rc<std::cell::RefCell<Option<selection::Request>>>,
 );
+
+struct MenuSource {
+    source: gpui_component::input::projection::SourceSnapshot,
+    cursor: usize,
+    input: Entity<EditorState>,
+    reader: WeakEntity<Reader>,
+    markdown: bool,
+    selection: String,
+    range: std::ops::Range<usize>,
+}
 
 impl MenuFacts {
     /// Read the mirrored capabilities; menu builders must not borrow the input.
@@ -256,9 +260,14 @@ impl MenuFacts {
         (facts, subscription)
     }
 
-    fn refresh(&self, reader: &Reader, input: &Entity<EditorState>, markdown: bool, cx: &App) {
+    fn refresh(
+        &self,
+        _reader: &Reader,
+        input: &Entity<EditorState>,
+        markdown: bool,
+        cx: &Context<Reader>,
+    ) {
         let state = input.read(cx);
-        self.1.refresh(reader, state, markdown);
         #[cfg(any(unix, windows))]
         let date = {
             let range = state.selected_range();
@@ -268,34 +277,62 @@ impl MenuFacts {
         };
         #[cfg(not(any(unix, windows)))]
         let date = None;
-        let code_block = markdown
-            .then(|| {
-                let mut source = self.2.borrow_mut();
-                let stamp = state.source_stamp();
-                if source.0 != Some(stamp) {
-                    *source = (Some(stamp), state.text().to_string());
-                }
-                let cursor = state.cursor();
-                (source.1.len() <= okilum_core::source_classifier::MAX_BYTES)
-                    .then(|| reader.external_block_fact(&source.1, cursor))
-                    .flatten()
-            })
-            .flatten();
-        #[cfg(any(unix, windows))]
-        {
-            *self.3.borrow_mut() = (markdown && date.is_some())
-                .then(|| selection::Request::editor(reader, input, state))
-                .flatten();
-        }
+        *self.2.borrow_mut() = Some(MenuSource {
+            source: state.source_snapshot(),
+            cursor: state.cursor(),
+            input: input.clone(),
+            reader: cx.entity().downgrade(),
+            markdown,
+            selection: if date.is_some() {
+                state.selected_text().to_string()
+            } else {
+                String::new()
+            },
+            range: state.selected_range(),
+        });
+        let code_block = None;
         self.0.set(Facts {
             capabilities: state.context_menu_capabilities(),
             date,
             code_block,
         });
     }
+    fn prepare(&self, cx: &App) {
+        let source = self.2.borrow();
+        let Some(source) = source.as_ref() else {
+            return;
+        };
+        let Ok(reader) = source.reader.upgrade().ok_or(()) else {
+            return;
+        };
+        let reader = reader.read(cx);
+        self.1
+            .refresh_snapshot(reader, &source.source, source.cursor, source.markdown);
+        let mut facts = self.0.get();
+        facts.code_block = (source.markdown
+            && source.source.text.len() <= okilum_core::source_classifier::MAX_BYTES)
+            .then(|| reader.external_block_fact(&source.source.text, source.cursor))
+            .flatten();
+        #[cfg(any(unix, windows))]
+        {
+            *self.3.borrow_mut() = facts.date.filter(|_| source.markdown).map(|date| {
+                selection::Request::editor_snapshot(
+                    reader,
+                    source.input.clone(),
+                    source.source.stamp,
+                    source.range.clone(),
+                    source.selection.clone(),
+                    date,
+                    source.source.text.to_string(),
+                )
+            });
+        }
+        self.0.set(facts);
+    }
 }
 
 pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> NativeMenu {
+    facts.prepare(cx);
     use gpui_base::input::{Copy, Cut, GoToDefinition, Paste, SelectAll, ToggleCodeActions};
     #[cfg(test)]
     MENU_BUILDS.with(|builds| builds.set(builds.get() + 1));

@@ -67,6 +67,7 @@ fn missing(error: &anyhow::Error) -> bool {
                 .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
     })
 }
+use crate::source_projection::revision::Text;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(windows)]
@@ -160,8 +161,27 @@ impl Drop for EditorLock {
 #[derive(Clone, Serialize, Deserialize)]
 struct Draft {
     path: PathBuf,
-    base: String,
-    text: String,
+    #[serde(with = "draft_text")]
+    base: Text,
+    #[serde(with = "draft_text")]
+    text: Text,
+}
+
+// Keep the existing JSON recovery format. Flatten only at the persistence
+// boundary (workers during typing), never while retaining a draft revision.
+mod draft_text {
+    use super::*;
+    pub fn serialize<S: serde::Serializer>(
+        text: &Text,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(text)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Text, D::Error> {
+        Ok(String::deserialize(deserializer)?.into())
+    }
 }
 
 /// What a `stat` of the note says about it: which file it is, its size, and
@@ -204,12 +224,23 @@ pub struct FileEditor {
     journal: PathBuf,
     lock: Arc<EditorLock>,
     writes: Arc<JournalWrites>,
+    generation: u64,
+    base_generation: u64,
 }
 
 #[derive(Default)]
 struct JournalWrites {
     generation: AtomicU64,
     commit: Mutex<()>,
+    // Canonical saves are serialized independently of journal commits. A UI
+    // Save/close waits for an in-flight autosave and adopts only its confirmed
+    // base. A late older worker can never publish over a newer Save.
+    save: Mutex<SaveOrder>,
+}
+
+#[derive(Default)]
+struct SaveOrder {
+    saved: Option<(Text, Option<DiskStamp>, u64)>,
 }
 
 /// A supersedable background journal write. The note lock remains held until
@@ -233,7 +264,11 @@ impl DraftWrite {
             let mut temp = tempfile::NamedTempFile::new_in(parent)?;
             temp.write_all(&serde_json::to_vec(&self.draft)?)?;
             temp.as_file().sync_all()?;
-            let _commit = self.writes.commit.lock().unwrap();
+            let _commit = self
+                .writes
+                .commit
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Recovery worker failed; keep the draft open"))?;
             if self.writes.generation.load(Ordering::Acquire) != self.generation {
                 return Ok(());
             }
@@ -242,7 +277,11 @@ impl DraftWrite {
         }
         #[cfg(windows)]
         {
-            let _commit = self.writes.commit.lock().unwrap();
+            let _commit = self
+                .writes
+                .commit
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Recovery worker failed; keep the draft open"))?;
             if self.writes.generation.load(Ordering::Acquire) != self.generation {
                 return Ok(());
             }
@@ -388,6 +427,7 @@ impl FileEditor {
             "The source file changed while opening; reopen it"
         );
         directory.validate(path.parent().unwrap())?;
+        let base: Text = base.into();
         // A recovered draft may carry another base than the file holds; then
         // its stamp says nothing about the base.
         let (draft, holds_base) = if journal.exists() {
@@ -422,6 +462,8 @@ impl FileEditor {
             journal,
             lock: Arc::new(lock),
             writes: Arc::default(),
+            generation: 0,
+            base_generation: 0,
             raw_transaction: None,
         })
     }
@@ -433,7 +475,16 @@ impl FileEditor {
         &self.draft.text
     }
     pub fn dirty(&self) -> bool {
-        self.base_bytes() != self.proposed_bytes()
+        if self.raw_transaction.is_some() {
+            self.base_bytes() != self.proposed_bytes()
+        } else {
+            self.draft.base != self.draft.text
+        }
+    }
+    /// Constant-time UI hint. A distinct revision may be an Undo back to the
+    /// base; exact byte equality is established by the save/recovery worker.
+    pub fn has_pending_revision(&self) -> bool {
+        self.raw_transaction.is_some() || !self.draft.base.same(&self.draft.text)
     }
     pub fn current(&self) -> Result<String> {
         Ok(self.read_current()?.0)
@@ -481,8 +532,39 @@ impl FileEditor {
     }
     /// Update the UI-owned snapshot without performing filesystem I/O.
     pub fn queue_text(&mut self, text: String) -> DraftWrite {
+        self.queue_snapshot(text.into())
+    }
+    /// Retain the native immutable Rope revision without copying/scanning text.
+    pub fn queue_snapshot(&mut self, text: Text) -> DraftWrite {
         self.draft.text = text;
+        self.advance_generation();
         self.pending_write()
+    }
+    pub fn snapshot(&self) -> Text {
+        self.draft.text.clone()
+    }
+    fn advance_generation(&mut self) {
+        self.generation = self.writes.generation.fetch_add(1, Ordering::AcqRel) + 1;
+    }
+    fn retire_snapshot_writes(&mut self) {
+        // A successful save may retire only its own journal generation. Never
+        // manufacture ownership for an older worker after a newer input edit.
+        if self
+            .writes
+            .generation
+            .compare_exchange(
+                self.generation,
+                self.generation + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.generation += 1;
+        }
+    }
+    pub fn flush_draft(&self) -> Result<()> {
+        self.persist()
     }
     pub fn set_text(&mut self, text: String) -> Result<()> {
         self.queue_text(text).persist()
@@ -492,7 +574,7 @@ impl FileEditor {
             draft: self.draft.clone(),
             journal: self.journal.clone(),
             writes: self.writes.clone(),
-            generation: self.writes.generation.fetch_add(1, Ordering::AcqRel) + 1,
+            generation: self.generation,
             _lock: self.lock.clone(),
         }
     }
@@ -516,6 +598,7 @@ impl FileEditor {
             return Ok(Save::Saved);
         }
         let (current, stamp) = self.read_current()?;
+        let current: Text = current.into();
         if self.dirty() {
             if current == self.draft.base {
                 self.on_disk = stamp;
@@ -529,6 +612,7 @@ impl FileEditor {
             );
         }
         if current != self.draft.base {
+            self.advance_generation();
             let mut write = self.pending_write();
             write.draft.base = current.clone();
             write.draft.text = current.clone();
@@ -538,6 +622,7 @@ impl FileEditor {
             write.persist()?;
             self.draft.base = current.clone();
             self.draft.text = current;
+            self.base_generation = self.generation;
         }
         self.on_disk = stamp;
         Ok(Save::Saved)
@@ -545,6 +630,9 @@ impl FileEditor {
 
     pub fn reload(&mut self) -> Result<()> {
         let (current, stamp) = self.read_current()?;
+        let current: Text = current.into();
+        self.advance_generation();
+        self.base_generation = self.generation;
         self.draft.base = current.clone();
         self.draft.text = current;
         self.on_disk = stamp;
@@ -555,7 +643,9 @@ impl FileEditor {
         if self.current()? != reviewed {
             return Ok(Save::Conflict);
         }
-        self.draft.base = reviewed.to_owned();
+        self.advance_generation();
+        self.base_generation = self.generation;
+        self.draft.base = reviewed.to_owned().into();
         self.on_disk = None;
         self.save()
     }
@@ -573,6 +663,8 @@ impl FileEditor {
             journal: self.journal.clone(),
             lock: self.lock.clone(),
             writes: self.writes.clone(),
+            generation: self.generation,
+            base_generation: self.base_generation,
             raw_transaction: self.raw_transaction.clone(),
         })
     }
@@ -587,12 +679,40 @@ impl FileEditor {
     /// `saved_as_queued` with the stamp the saving copy left (`disk_stamp`),
     /// so the next refresh does not read back the text just written.
     pub fn saved_as_queued_at(&mut self, text: String, stamp: Option<DiskStamp>) -> DraftWrite {
+        self.saved_snapshot_queued_at(text.into(), stamp)
+    }
+    pub fn saved_snapshot_queued_at(&mut self, text: Text, stamp: Option<DiskStamp>) -> DraftWrite {
         self.draft.base = text;
         self.on_disk = stamp;
+        self.advance_generation();
+        self.base_generation = self.generation;
         self.pending_write()
     }
-    #[cfg(unix)]
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
+        let writes = self.writes.clone();
+        let mut order = writes
+            .save
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Save worker failed; draft retained"))?;
+        if let Some((base, stamp, generation)) = &order.saved {
+            if *generation > self.generation {
+                return Ok(Save::Conflict);
+            }
+            if *generation >= self.base_generation {
+                self.draft.base = base.clone();
+                self.on_disk = *stamp;
+                self.base_generation = *generation;
+            }
+        }
+        let requested_generation = self.generation;
+        let result = self.save_before_exchange_locked(before_exchange);
+        if matches!(result, Ok(Save::Saved)) {
+            order.saved = Some((self.draft.base.clone(), self.on_disk, requested_generation));
+        }
+        result
+    }
+    #[cfg(unix)]
+    fn save_before_exchange_locked(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
         self.refuse_unresolved_link_recovery()?;
         if !self.dirty() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
@@ -609,6 +729,7 @@ impl FileEditor {
         if current == self.proposed_bytes() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
             self.draft.base = self.draft.text.clone();
+            self.retire_snapshot_writes();
             self.on_disk = Some(DiskStamp::of(&metadata));
             self.persist()?;
             return Ok(Save::Saved);
@@ -748,6 +869,7 @@ impl FileEditor {
         }
         let stamp = DiskStamp::of(&temp.metadata().context(UnconfirmedSave::Published)?);
         let previous_base = std::mem::replace(&mut self.draft.base, self.draft.text.clone());
+        self.retire_snapshot_writes();
         if let Err(error) = self.persist() {
             self.draft.base = previous_base;
             return Err(error.context(UnconfirmedSave::Published));
@@ -1007,7 +1129,7 @@ impl FileEditor {
         }
     }
     #[cfg(windows)]
-    fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
+    fn save_before_exchange_locked(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
         if !self.dirty() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
             return Ok(Save::Saved);
@@ -1022,6 +1144,7 @@ impl FileEditor {
         }
         if current == self.proposed_bytes() {
             self.draft.base = self.draft.text.clone();
+            self.retire_snapshot_writes();
             self.persist()?;
             return Ok(Save::Saved);
         }
@@ -1062,6 +1185,7 @@ impl FileEditor {
         }
         crate::source_history::Preimage::finish_windows(&history, &directory, preimage_identity)?;
         self.draft.base = self.draft.text.clone();
+        self.retire_snapshot_writes();
         self.on_disk = None;
         self.persist()?;
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
@@ -2281,6 +2405,163 @@ mod network_save_tests {
                     .to_string_lossy()
                     .starts_with(".okilum-save-")));
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod persistence_order_tests {
+    use super::*;
+
+    fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, FileEditor) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        let state = dir.path().join("state");
+        fs::write(&path, "\u{feff}base\r\n").unwrap();
+        let editor = FileEditor::open(&path, &state).unwrap();
+        (dir, path, state, editor)
+    }
+
+    #[test]
+    fn issue2404_stale_save_worker_cannot_replace_latest_recovery_or_canonical_save() {
+        let (_dir, path, state, mut editor) = fixture();
+        editor
+            .queue_text("\u{feff}older\r\n".into())
+            .persist()
+            .unwrap();
+        let mut old = editor.save_copy().unwrap();
+        let latest = "\u{feff}latest typed שלום 🧠\r\n";
+        editor.queue_text(latest.into()).persist().unwrap();
+        // A save is allowed to publish its captured revision, but its journal
+        // acknowledgements must never replace the later unsaved generation.
+        assert_eq!(old.save().unwrap(), Save::Saved);
+        drop(old);
+        drop(editor);
+        let mut recovered = FileEditor::open(&path, &state).unwrap();
+        assert_eq!(recovered.text(), latest);
+        assert!(recovered.dirty());
+        assert_eq!(fs::read(&path).unwrap(), "\u{feff}older\r\n".as_bytes());
+        // Restart recovery offers a conflict rather than overwriting the file.
+        assert_eq!(recovered.save().unwrap(), Save::Conflict);
+        assert_eq!(
+            recovered.keep_mine("\u{feff}older\r\n").unwrap(),
+            Save::Saved
+        );
+        let mut stale = recovered.save_copy().unwrap();
+        recovered.set_text("\u{feff}newest\r\n".into()).unwrap();
+        assert_eq!(recovered.save().unwrap(), Save::Saved);
+        assert_eq!(stale.save().unwrap(), Save::Conflict);
+        assert_eq!(fs::read(&path).unwrap(), "\u{feff}newest\r\n".as_bytes());
+    }
+
+    #[test]
+    fn issue2404_save_adopts_only_confirmed_in_flight_base_and_flushes_latest() {
+        let (_dir, path, state, mut editor) = fixture();
+        editor.set_text("\u{feff}autosave\r\n".into()).unwrap();
+        let mut copy = editor.save_copy().unwrap();
+        let (started, receive) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                copy.save_before_exchange(|| {
+                    started.send(()).unwrap();
+                    wait.recv().unwrap();
+                })
+            });
+            receive.recv().unwrap();
+            editor.queue_text("\u{feff}typed during save\r\n".into());
+            editor.flush_draft().unwrap();
+            release.send(()).unwrap();
+            // Explicit Save/close takes the same ordering lock; it must adopt
+            // the old save's confirmed base and publish this newer revision.
+            assert_eq!(editor.save().unwrap(), Save::Saved);
+            assert_eq!(worker.join().unwrap().unwrap(), Save::Saved);
+        });
+        drop(editor);
+        let recovered = FileEditor::open(&path, &state).unwrap();
+        assert_eq!(recovered.text(), "\u{feff}typed during save\r\n");
+        assert!(!recovered.dirty());
+        assert_eq!(fs::read(&path).unwrap(), recovered.text().as_bytes());
+    }
+
+    #[test]
+    fn issue2404_saved_generation_retires_delayed_recovery_of_its_old_base() {
+        let (_dir, path, state, mut editor) = fixture();
+        let delayed = editor.queue_text("\u{feff}saved\r\n".into());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        delayed.persist().unwrap();
+        drop(editor);
+        let recovered = FileEditor::open(&path, &state).unwrap();
+        assert!(
+            !recovered.dirty(),
+            "late pre-save recovery cannot restore an obsolete base"
+        );
+        assert_eq!(recovered.text(), "\u{feff}saved\r\n");
+    }
+
+    #[test]
+    fn issue2404_flush_supersedes_debounce_and_failure_is_retryable() {
+        let (_dir, path, state, mut editor) = fixture();
+        let old = editor.queue_text("old".into());
+        let latest = editor.queue_text("\u{feff}latest before close\r\n".into());
+        // A directory at the journal path makes atomic publication fail.
+        fs::create_dir(&editor.journal).unwrap();
+        assert!(latest.persist().is_err());
+        assert_eq!(editor.text(), "\u{feff}latest before close\r\n");
+        fs::remove_dir(&editor.journal).unwrap();
+        editor.flush_draft().unwrap();
+        old.persist().unwrap();
+        drop(editor);
+        let recovered = FileEditor::open(&path, &state).unwrap();
+        assert_eq!(recovered.text(), "\u{feff}latest before close\r\n");
+        assert_eq!(fs::read(&path).unwrap(), "\u{feff}base\r\n".as_bytes());
+    }
+
+    #[test]
+    fn issue2404_process_exit_restores_latest_acknowledged_crlf_bom_revision() {
+        const CHILD: &str = "OKILUM_2404_CRASH_FIXTURE";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(root);
+            let mut editor = FileEditor::open(&root.join("note.md"), &root.join("state")).unwrap();
+            let old = editor.queue_text("obsolete".into());
+            editor
+                .queue_snapshot(Text::from("\u{feff}last acknowledged 🧠\r\n"))
+                .persist()
+                .unwrap();
+            old.persist().unwrap();
+            // Skip every destructor/lifecycle guard, as with a process crash.
+            std::process::exit(0);
+        }
+        let (dir, path, state, editor) = fixture();
+        drop(editor);
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "file_editor::persistence_order_tests::issue2404_process_exit_restores_latest_acknowledged_crlf_bom_revision"])
+            .env(CHILD, dir.path()).status().unwrap();
+        assert!(status.success(), "crash writer positive control must run");
+        let recovered = FileEditor::open(&path, &state).unwrap();
+        assert_eq!(recovered.text(), "\u{feff}last acknowledged 🧠\r\n");
+        assert_eq!(fs::read(&path).unwrap(), "\u{feff}base\r\n".as_bytes());
+    }
+
+    #[test]
+    fn issue2404_queue_and_save_copy_share_native_revisions_at_all_sizes() {
+        use crate::source_projection::revision::{reset_work, take_work};
+        for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
+            let (_dir, _path, _state, mut editor) = fixture();
+            let original = Text::from_rope(ropey::Rope::from_str(&"prose\r\n".repeat(bytes / 7)));
+            let next = original.replace(0..1, "x");
+            reset_work();
+            let pending = editor.queue_snapshot(next.clone());
+            let copy = editor.save_copy().unwrap();
+            assert!(copy.snapshot().same(&next));
+            let work = take_work();
+            assert_eq!(work.flattened_bytes, 0, "{bytes}: {work:?}");
+            assert_eq!(work.scanned_bytes, 0, "{bytes}: {work:?}");
+            // Positive control traverses the very same shared snapshot.
+            reset_work();
+            let _ = copy.text();
+            assert!(take_work().flattened_bytes >= bytes - 7);
+            pending.persist().unwrap();
         }
     }
 }
