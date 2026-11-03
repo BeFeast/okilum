@@ -8,6 +8,7 @@ struct Managed {
     state: PathBuf,
     vault: PathBuf,
     identity: DaemonIdentity,
+    listen: std::net::SocketAddr,
     child: Child,
 }
 impl Managed {
@@ -25,12 +26,13 @@ impl Managed {
         .canonicalize()?;
         let rest = std::net::TcpListener::bind("127.0.0.1:0")?;
         let listen = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let listen_address = listen.local_addr()?;
         let (instance, identity) = okilum_sync_controller::daemon::prepare(
             &prepared,
             &Preparation {
                 executable: binary.clone(),
                 rest_address: rest.local_addr()?,
-                listen_address: listen.local_addr()?,
+                listen_address,
             },
         )?;
         drop(rest);
@@ -57,6 +59,7 @@ impl Managed {
             state: parent.join("direct"),
             vault,
             identity,
+            listen: listen_address,
             child,
             _root: root,
         };
@@ -273,7 +276,7 @@ fn sync_new_destination_receive_and_existing_empty_control() -> Result<()> {
     let source = Managed::new()?;
     std::fs::write(source.vault.join("note.md"), b"source note\n")?;
     let shared = source.perform(None, Operation::Share(source.vault.clone()))?;
-    for case in ["new", "empty", "nonempty", "missing-parent"] {
+    for case in ["empty", "new", "nonempty", "missing-parent"] {
         let target = Managed::new()?;
         let url = shared
             .controller
@@ -295,6 +298,19 @@ fn sync_new_destination_receive_and_existing_empty_control() -> Result<()> {
         if case == "nonempty" {
             std::fs::write(path.join("keep.md"), b"keep these bytes\n")?;
         }
+        // This fixture deliberately has loopback-only listeners and disables
+        // discovery. Production hint exchange rejects loopback, so supply the
+        // isolated test peers' dial addresses explicitly, as in source_sharing.
+        source.identity.connect()?.add_device(&serde_json::json!({
+            "deviceID": target.identity.device_id,
+            "name": "Target fixture",
+            "addresses": [format!("tcp://{}", target.listen)],
+        }))?;
+        target.identity.connect()?.add_device(&serde_json::json!({
+            "deviceID": source.identity.device_id,
+            "name": "Source fixture",
+            "addresses": [format!("tcp://{}", source.listen)],
+        }))?;
         let target_before = target.identity.connect()?.config()?;
         let source_before = source.identity.connect()?.config()?;
         let result = target.perform(
@@ -330,6 +346,8 @@ fn sync_new_destination_receive_and_existing_empty_control() -> Result<()> {
             }
             let start = std::time::Instant::now();
             while !path.join("note.md").try_exists()? {
+                source.identity.connect()?.scan(&catalog[0].id)?;
+                target.identity.connect()?.scan(&catalog[0].id)?;
                 anyhow::ensure!(
                     start.elapsed() < Duration::from_secs(30),
                     "{case}: receive never started"
