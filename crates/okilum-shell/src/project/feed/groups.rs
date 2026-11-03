@@ -1184,10 +1184,9 @@ mod tests {
         server.join().unwrap();
         draw(visual);
         feed.read_with(visual, |feed, _| {
-            assert!(
-                feed.detail_text(1, &feed.messages[&1].text)
-                    .contains("NESTED_FULL_END")
-            )
+            assert!(feed
+                .detail_text(1, &feed.messages[&1].text)
+                .contains("NESTED_FULL_END"))
         });
         nested.read_with(visual,|list,_| {
             assert!(list.remeasures>=2,"member disclosure and actual RPC completion both invalidate nested height");
