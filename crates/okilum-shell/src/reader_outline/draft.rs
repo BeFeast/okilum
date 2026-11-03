@@ -526,6 +526,7 @@ pub(crate) struct DraftOutline {
     pub(super) cache: Option<DraftCache>,
     pub(super) source: String,
     pub(super) entries: Vec<HeadingEntry>,
+    pub(super) signature: [u8; 32],
     pub(super) lines: Vec<usize>,
     pub(super) pending: bool,
     pub(super) worker: Option<gpui::Task<()>>,
@@ -552,6 +553,22 @@ impl DraftOutline {
                 heading
             })
             .collect();
+        // A repaint hint only: click authority still checks exact source and
+        // HeadingEntry identity. Compute it here, on the outline worker.
+        use sha2::{Digest, Sha256};
+        let mut signature = Sha256::new();
+        for heading in &entries {
+            signature.update([
+                heading.level,
+                heading.supported_container as u8,
+                heading.target.setext as u8,
+            ]);
+            signature.update(heading.target.block.to_le_bytes());
+            signature.update(heading.target.offset.to_le_bytes());
+            signature.update(heading.text.len().to_le_bytes());
+            signature.update(heading.text.as_bytes());
+        }
+        let signature = signature.finalize().into();
         let mut previous = 0;
         let mut line = 0;
         let lines = entries
@@ -569,6 +586,7 @@ impl DraftOutline {
             cache: None,
             source: source.into(),
             entries,
+            signature,
             lines,
             pending: false,
             worker: None,

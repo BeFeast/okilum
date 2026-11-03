@@ -5751,6 +5751,13 @@ mod autosave_tests {
                 "unfired positive control: {control:?}"
             );
             assert!(flat.starts_with('x'));
+            f.reader.read_with(visual, |r, _| {
+                assert_eq!(
+                    r.editing.as_ref().unwrap().store.text(),
+                    flat,
+                    "the measured mutation must reach the real persistence subscription"
+                );
+            });
             println!("EDITOR_KEY_WORK bytes={bytes} measured={measured:?} control={control:?}");
         }
         assert!(

@@ -32,7 +32,8 @@ that exact text; a changed canonical file remains an explicit conflict.
 
 Typing notifies editor entities. TableGrid no longer forwards every editor
 notification to Reader. Outline workers share native snapshots and notify Reader
-only when displayed outline labels change. Direction exemptions, rendered-block
+only when outline entries or their click targets change. Repaint signatures and
+retirement of the previous entry set run on workers. Direction exemptions, rendered-block
 reference definitions and footnote context are prepared after the recovery pause
 on a worker, accepted only for the same editor/generation. Pending block context is
 unresolved rather than borrowed from another revision. The initial context shares

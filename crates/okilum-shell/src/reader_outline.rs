@@ -89,16 +89,19 @@ impl Reader {
                 {
                     return false;
                 }
-                let labels_changed = this
-                    .draft_outline
-                    .entries
-                    .iter()
-                    .map(|h| (&h.text, h.level))
-                    .ne(snapshot.entries.iter().map(|h| (&h.text, h.level)));
+                let labels_changed = this.draft_outline.signature != snapshot.signature;
+                this.draft_outline.signature = snapshot.signature;
                 this.draft_outline.cache = Some(std::mem::take(&mut cache));
-                this.draft_outline.source = snapshot.source;
-                this.draft_outline.entries = snapshot.entries;
-                this.draft_outline.lines = snapshot.lines;
+                let retired = (
+                    std::mem::replace(&mut this.draft_outline.source, snapshot.source),
+                    std::mem::replace(&mut this.draft_outline.entries, snapshot.entries),
+                    std::mem::replace(&mut this.draft_outline.lines, snapshot.lines),
+                );
+                cx.background_executor()
+                    .spawn(async move {
+                        drop(retired);
+                    })
+                    .detach();
                 this.draft_outline.pending = false;
                 this.draft_outline.worker = None;
                 if this.outline_list.item_count() != this.draft_outline.entries.len() {
