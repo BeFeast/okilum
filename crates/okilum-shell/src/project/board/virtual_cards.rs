@@ -192,9 +192,19 @@ impl Element for Card {
                 .height
                 .update(cx, |height, _| height.value = measured.height);
             let board = self.board.clone();
-            window.defer(cx, move |_, cx| {
-                let _ = board.update(cx, |_, cx| cx.notify());
-            });
+            let schedule = board
+                .update(cx, |board, _| {
+                    !std::mem::replace(&mut board.height_refinement_pending, true)
+                })
+                .unwrap_or(false);
+            if schedule {
+                window.defer(cx, move |_, cx| {
+                    let _ = board.update(cx, |board, cx| {
+                        board.height_refinement_pending = false;
+                        cx.notify();
+                    });
+                });
+            }
         }
         // Overdraw is for height refinement, not invisible interaction trees.
         // A card entering the viewport still builds and prepaints in this frame.
