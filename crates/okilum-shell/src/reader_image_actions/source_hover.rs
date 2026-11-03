@@ -192,6 +192,7 @@ mod tests {
                 })
                 .detach();
             });
+            visual.run_until_parked();
             visual.executor().advance_clock(Duration::from_millis(500));
             visual.run_until_parked();
             let result = result.borrow();
@@ -264,11 +265,17 @@ mod tests {
                 ..Default::default()
             }
         };
-        visual.simulate_mouse_down(surface.center(), MouseButton::Left, modifiers);
-        visual.simulate_mouse_up(surface.center(), MouseButton::Left, modifiers);
+        let image = visual
+            .debug_bounds("reader-block-image")
+            .expect("positive control: a real image renders");
+        visual.simulate_mouse_down(image.center(), MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(image.center(), MouseButton::Left, modifiers);
         visual.run_until_parked();
-        // The last surface can be the broken embed: that click must stay inert.
-        // A source click on the existing PDF is a positive open control.
+        assert!(
+            visual.opened_url().is_some_and(|url| url.ends_with(".png")),
+            "modified rendered click opens the image"
+        );
+        // Source dispatch also opens non-image attachments in the default app.
         reader.update_in(visual, |reader, window, cx| {
             assert!(reader.open_source_image_at(
                 source,
