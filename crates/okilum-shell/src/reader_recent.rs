@@ -41,6 +41,27 @@ impl Switcher {
     pub fn open(&self) -> bool {
         self.gallery_open || self.paths.len() > 1
     }
+    #[cfg(test)]
+    pub(super) fn gallery_selection(&self, cx: &App) -> Option<String> {
+        self.gallery
+            .as_ref()?
+            .view
+            .read(cx)
+            .selected_path()
+            .map(str::to_owned)
+    }
+
+    #[cfg(test)]
+    pub(super) fn gallery_paths(&self) -> Vec<&str> {
+        self.gallery.as_ref().map_or_else(Vec::new, |session| {
+            session
+                .entries
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect()
+        })
+    }
+
     fn step(&mut self, delta: isize) {
         self.invalidate_release();
         if self.paths.len() > 1 && !self.gallery_open {
@@ -365,7 +386,7 @@ impl Reader {
             self.restore_document_focus(window, cx);
         }
     }
-    fn close_recent_gallery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_recent_gallery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.recent_switcher.cancel();
         self.finish_recent_gallery_close(window, cx);
         cx.notify();

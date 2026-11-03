@@ -273,6 +273,8 @@ mod tests {
         settle(visual);
         reader.update_in(visual, |reader, window, cx| {
             assert_eq!(reader.outline.len(), 20, "loaded note positive control");
+            reader.panels.open(reader_layout::Panel::Backlinks);
+            cx.notify();
             if live {
                 reader.open_live_preview(window, cx);
             } else {

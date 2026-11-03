@@ -2262,6 +2262,10 @@ mod tests {
                         reader.single_file, *folder,
                         "positive control: both opener modes"
                     );
+                    // #2278 gives the root index its own header, independent of
+                    // filename/title sorting and hidden-file settings.
+                    assert_eq!(reader.vault_index_path().as_deref(), Some("_index.md"));
+                    assert!(!reader.tree.rows.iter().any(|row| row.path == "_index.md"));
                     let labels = reader
                         .tree
                         .rows
@@ -2271,9 +2275,9 @@ mod tests {
                     assert_eq!(
                         labels,
                         if titles && !folder {
-                            vec!["Index title", "Alpha metadata", "Zebra heading", "data.csv"]
+                            vec!["Alpha metadata", "Zebra heading", "data.csv"]
                         } else {
-                            vec!["_index", "a", "data.csv", "z"]
+                            vec!["a", "data.csv", "z"]
                         },
                         "LABEL1834: Settings must update existing tree rows and their sort live"
                     );

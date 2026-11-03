@@ -83,8 +83,8 @@ fn format_selection_from_context_menu(cx: &mut TestAppContext, live: bool) {
         0..6,
         "right-click preserves selection"
     );
-    // Last top-level item is Format; first child is the existing Bold action.
-    visual.simulate_keystrokes("up");
+    // Table follows Format in editable Markdown; Bold is Format's first child.
+    visual.simulate_keystrokes("up up");
     visual.run_until_parked();
     visual.simulate_keystrokes("right");
     visual.run_until_parked();

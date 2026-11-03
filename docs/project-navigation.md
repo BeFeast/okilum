@@ -32,6 +32,8 @@ Recent, Pinned and search remain available. Files in the header returns to the
 normal vault tree; the Notes shortcut makes the same explicit transition rather
 than opening a scoped tree. A stale Notes flag never reserves sidebar width or
 renders the folder browser while a project is active.
+New note and New folder also switch to Files, retaining their project destination
+and showing the focused name input there (#2426).
 Background updates of the retained note do not leave Board; an explicit note
 selection does. Pending note preparation from before project selection cannot
 replace the newly selected project surface. Switching
