@@ -459,7 +459,7 @@ fn follow_byte_equivalent_compressed_rotation_is_an_explicit_archive_alias() {
     fs::write(
         &different,
         [
-            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 43, 78, 77, 206, 207, 75, 225, 2, 0, 126, 29, 222,
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 43, 78, 77, 206, 207, 75, 225, 2, 0, 126, 192, 15,
             6, 7, 0, 0, 0,
         ],
     )
