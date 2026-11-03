@@ -347,6 +347,56 @@ class MainHealthTests(unittest.TestCase):
         self.assertEqual(health.classify(log), ('unknown', []))
         self.assert_blamed(*self.red_on_log(log))
 
+    def test_a_rustfmt_diff_before_any_compile_is_code(self):
+        # Run 15255 (#1966): `cargo fmt --check` failed before the first Compiling line.
+        log = ('2026-10-29T10:18:48.4000000Z nofile before: soft=1024 hard=1048576\n'
+               '2026-10-29T10:19:11.0000000Z Diff in /home/runner/work/okilum/src/main.rs:6675:\n'
+               '2026-10-29T10:19:12.0000000Z -    let x=1;\n'
+               '2026-10-29T10:19:13.0000000Z +    let x = 1;\n'
+               "2026-10-29T10:19:14.0000000Z ⚙️ [runner]: exitcode '1': failure\n"
+               '2026-10-29T10:19:16.0000000Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(log), ('code', []))
+        self.assert_blamed(*self.red_on_log(log))
+        # Positive control: the same log without rustfmt's diff header names no code failure.
+        self.assertEqual(health.classify(log.replace(' Diff in', ' // Diff in')), ('unknown', []))
+
+    def test_a_brand_check_failure_before_any_compile_is_code(self):
+        # check_brand.py also runs before the first compile; its summary names no test (#1966).
+        # The old brand's name is spelled in parts, as in check_brand.py, so the brand check
+        # keeps passing on this file.
+        log = ('2026-10-29T10:18:48.4000000Z nofile before: soft=1024 hard=1048576\n'
+               f"2026-10-29T10:19:11.0000000Z {'Tes' + 'sera'} brand assets remain:\n"
+               '2026-10-29T10:19:12.0000000Z   web/inbox/icon.svg: not the approved Okilum asset (fba80d5bf2a6)\n'
+               "2026-10-29T10:19:13.0000000Z ⚙️ [runner]: exitcode '1': failure\n"
+               '2026-10-29T10:19:16.0000000Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(log), ('code', []))
+        self.assert_blamed(*self.red_on_log(log))
+        # Positive control: without the brand check's summary line no code failure is named.
+        self.assertEqual(health.classify(log.replace('brand assets remain:', 'brand assets are fine')),
+                         ('unknown', []))
+
+    def test_a_started_gate_without_build_output_is_not_infrastructure(self):
+        # The fallback's narrow case (#1966): the gate step started, so 'no build or test
+        # output' no longer means infrastructure. test-nofile.sh appears only in recent logs;
+        # the runner's exit code for a step that ran and failed is the other sign.
+        nofile = ('2026-10-29T10:18:48.4000000Z nofile before: soft=1024 hard=1048576\n'
+                  '2026-10-29T10:18:50.0000000Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(nofile), ('unknown', []))
+        self.assert_blamed(*self.red_on_log(nofile))
+        exitcode = ("2026-10-29T10:19:14.0000000Z ⚙️ [runner]: exitcode '1': failure\n"
+                    '2026-10-29T10:19:16.0000000Z 🏁  Job failed\n')
+        self.assertEqual(health.classify(exitcode), ('unknown', []))
+        self.assert_blamed(*self.red_on_log(exitcode))
+
+    def test_a_log_without_a_started_gate_is_still_infrastructure(self):
+        # Nothing ran: no gate output, no runner exit code; the job never reached the gate.
+        log = ('2026-10-29T10:18:48.4000000Z Run Main checkout\n'
+               '2026-10-29T10:18:50.0000000Z Job failed\n')
+        self.assertEqual(health.classify(log), ('infra', 'the job ended before any build or test output'))
+        api, body = self.red_on_log(log)
+        self.assertEqual([w[1] for w in api.writes], ['/issues'], 'no merge is blamed')
+        self.assertIn('looks like infrastructure', body)
+
     def test_the_runner_line_names_the_infrastructure(self):
         # Run 10907 (shared lane): out of time while still making progress; every test that
         # cargo called slow finished, so the host was slow.

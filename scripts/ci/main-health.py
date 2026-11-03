@@ -12,7 +12,9 @@ issue carries the current state for the manager. A green main closes that issue.
 
 A failure that never reached the build or tests (runner, Docker, network, disk) is
 reported as likely infrastructure and blames no merge. Its error markers count only on
-the runner's own lines, never in test or script output. A job that hit its time limit
+the runner's own lines, never in test or script output. 'No build or test output' means
+infrastructure only when no line shows the gate step started (#1966): a failed rustfmt or
+brand check before the first compile is code. A job that hit its time limit
 with a test still running hung in that test, which is code. Forgejo has no API to re-run a job,
 so a human re-runs it or the next merge retests. For real failures the failing
 tests are listed. A lane log that cannot be read proves nothing: the merges are blamed
@@ -92,6 +94,15 @@ LOG_PREFIX = re.compile(r'^\S+Z ', re.M)
 # before 3.11 names only the class in the parentheses; a subTest appends its parameters.
 PYTHON_FAILURE = re.compile(r'^(?:FAIL|ERROR): (\S+) \(([^()\s]+)\)', re.M)
 PYTHON_FAILED = re.compile(r'^FAILED \(', re.M)
+# rustfmt's diff header when `cargo fmt --check` fails, and check_brand.py's failure summary
+# line. The gate runs both before the first compile, so their failure leaves no Compiling
+# line (#1966).
+RUSTFMT_DIFF = re.compile(r'^Diff in ', re.M)
+BRAND_FAILURE = 'brand assets remain:'
+# The signs that the gate step started (#1966): test-nofile.sh, sourced first by
+# check-linux.sh, prints 'nofile before:', and the runner writes "exitcode '<n>': failure"
+# for a step that ran and failed.
+GATE_STARTED = re.compile(r"^nofile before:|^⚙️ \[runner\]: exitcode '\d+': failure$", re.M)
 
 
 def python_failures(text):
@@ -130,6 +141,10 @@ def classify(log):
     # suite's output may print the same shape.
     if PYTHON_FAILED.search(text):
         return 'code', python_failures(text)
+    # `cargo fmt --check` and check_brand.py run before the first compile; their failures are
+    # code with no failing test to name (#1966).
+    if RUSTFMT_DIFF.search(text) or BRAND_FAILURE in text:
+        return 'code', []
     for line in RUNNER_LINE.findall(text):
         for marker in INFRA_MARKERS:
             if marker in line:
@@ -137,9 +152,13 @@ def classify(log):
                 # slow test finished, the job was still making progress and the host was slow.
                 hung = unfinished_tests(text) if marker == DEADLINE else []
                 return ('code', hung) if hung else ('infra', marker)
-    if not re.search(r'^\s*(Compiling|Checking|Finished|Running) ', text, re.M):
-        return 'infra', 'the job ended before any build or test output'
-    return 'unknown', []
+    if re.search(r'^\s*(Compiling|Checking|Finished|Running) ', text, re.M):
+        return 'unknown', []
+    # Ended before any build or test output with no sign the gate step started: the failure is
+    # the runner's, not a merge's. A gate that started still blames the merges (#1966).
+    if GATE_STARTED.search(text):
+        return 'unknown', []
+    return 'infra', 'the job ended before any build or test output'
 
 
 def lane_log(api, run_id):
