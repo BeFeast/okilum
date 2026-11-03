@@ -212,6 +212,14 @@ fn inspectable(folder: &serde_json::Value) -> Result<()> {
     );
     Ok(())
 }
+fn authorized_root(source: &ExistingVault) -> Result<Arc<File>> {
+    let root = Arc::new(tree::open_root(&source.path)?);
+    ensure!(
+        Some(tree::identity(&root)?) == source.root_identity,
+        "authorized root changed before collection"
+    );
+    Ok(root)
+}
 fn opaque_root(key: &[u8; 32], pair: Uuid, path: &Path, root: &File) -> Result<String> {
     let bytes = serde_json::to_vec(&(pair, path, tree::identity(root)?))?;
     let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
@@ -534,6 +542,13 @@ impl Controller {
                 .find(|f| f["id"] == vault)
                 .context("authorized vault unavailable")?;
             inspectable(folder)?;
+            let configured = folder["path"]
+                .as_str()
+                .context("runtime folder path missing")?;
+            ensure!(
+                Path::new(configured).canonicalize()? == path,
+                "authorized runtime folder path changed"
+            );
             let ignores = api.ignores(vault)?;
             let lines = ignores["ignore"]
                 .as_array()
@@ -639,7 +654,7 @@ impl Controller {
                 daemon::managed_identity(prepared)? == source.daemon,
                 "source is not the pinned managed runtime"
             );
-            let root = Arc::new(tree::open_root(&source.path)?);
+            let root = authorized_root(&source)?;
             let owner = wire::fingerprint(&wire::public(&seed)?);
             let reader = wire::fingerprint(signer);
             let binding = self.inspection_binding(

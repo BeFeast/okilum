@@ -584,3 +584,25 @@ fn slow_inspection_does_not_block_second_peer_pairing_or_controller_locks() -> R
     server.shutdown();
     Ok(())
 }
+
+#[test]
+fn opened_inventory_descriptor_must_match_the_approved_root_identity() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("vault");
+    fs::create_dir(&path)?;
+    fs::write(path.join("note.md"), b"approved root")?;
+    let original = tree::open_root(&path)?;
+    let mut approved = source(&path);
+    approved.root_identity = Some(tree::identity(&original)?);
+    let pinned = authorized_root(&approved)?;
+    assert_eq!(tree::identity(&pinned)?, tree::identity(&original)?);
+    fs::rename(&path, temp.path().join("previous"))?;
+    fs::create_dir(&path)?;
+    fs::write(path.join("note.md"), b"unapproved replacement")?;
+    assert!(authorized_root(&approved).is_err());
+    assert_ne!(
+        tree::identity(&tree::open_root(&path)?)?,
+        tree::identity(&original)?
+    );
+    Ok(())
+}
