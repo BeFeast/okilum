@@ -1013,17 +1013,39 @@ mod tests {
                 .is_empty());
         });
         visual.update(|window, cx| window.draw(cx).clear(cx));
+        // #552 moved Undo into a compact bottom toast. Complete its lifecycle
+        // and measurement, then approach it with the pointer before clicking.
+        visual.executor().advance_clock(Duration::from_millis(450));
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let undo = visual
             .debug_bounds("undo-trash")
             .expect("actual Trash Undo action");
+        assert!(visual.debug_bounds("confirm-trash").is_none());
+        visual.update(|window, cx| {
+            let viewport = Bounds::new(Point::default(), window.viewport_size());
+            assert!(
+                viewport.contains(&undo.center()),
+                "Undo must be on screen: {undo:?}, viewport={viewport:?}"
+            );
+            eprintln!(
+                "Trash Undo before hover: {undo:?}, viewport={viewport:?}, notifications={}",
+                window.notifications(cx).len()
+            );
+        });
+        visual.simulate_mouse_move(undo.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let undo = visual
+            .debug_bounds("undo-trash")
+            .expect("hovered Undo action");
         visual.simulate_click(undo.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |v, _| {
             assert!(
                 v.trash_undo.items.is_empty(),
-                "positive control: Undo dispatched and restored"
+                "positive control: Undo dispatched and restored at {undo:?}, pending={}, notice={:?}",
+                v.trash_pending, v.link_notice
             );
             assert_eq!(v.loading.as_ref().unwrap().generation, generation);
             assert!(v.vault.notes.iter().any(|note| note.path == "New.md"));
