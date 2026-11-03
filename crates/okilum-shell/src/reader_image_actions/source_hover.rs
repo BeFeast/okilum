@@ -113,3 +113,182 @@ impl HoverProvider for SourceHover {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn issue1622_source_hover_and_live_caption_use_the_captured_file(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(4, 7)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        for path in ["root.png", "attachments/photo.png"] {
+            std::fs::write(root.join(path), png.get_ref()).unwrap();
+        }
+        std::fs::write(root.join("attachments/manual.pdf"), b"synthetic pdf").unwrap();
+        let source = "# Files\n\n![[root.png]]\n\n![[attachments/photo.png]]\n\n![[attachments/manual.pdf]]\n\n![[missing.png]]\n\n`![[ignored.png]]`\n";
+        std::fs::write(root.join("note.md"), source).unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        session_directory: Some(fixture.path().join("state")),
+                        index_dir: Some(fixture.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.simulate_resize(size(px(1400.), px(1100.)));
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx)
+        });
+        visual.run_until_parked();
+        let input = reader.read_with(visual, |reader, _| reader.source_input().unwrap());
+        for (path, expected) in [
+            ("root.png", "4 × 7 px"),
+            ("attachments/photo.png", "4 × 7 px"),
+            ("attachments/manual.pdf", "13 bytes"),
+            ("missing.png", "File not found"),
+        ] {
+            let result = Rc::new(std::cell::RefCell::new(None));
+            let output = result.clone();
+            visual.update(|window, cx| {
+                let state = input.read(cx);
+                let task = state
+                    .lsp()
+                    .hover_provider
+                    .as_ref()
+                    .expect("Source installs native hover")
+                    .hover(
+                        state.source_snapshot().text.rope(),
+                        source.find(path).unwrap(),
+                        window,
+                        cx,
+                    );
+                cx.spawn(async move |_| {
+                    *output.borrow_mut() = Some(task.await.unwrap());
+                })
+                .detach();
+            });
+            visual.executor().advance_clock(Duration::from_millis(500));
+            visual.run_until_parked();
+            let result = result.borrow();
+            let hover = result
+                .as_ref()
+                .expect("hover task ran")
+                .as_ref()
+                .expect("embed has a hover");
+            let lsp_types::HoverContents::Markup(content) = &hover.contents else {
+                panic!("plain hover");
+            };
+            assert!(content.value.contains(path), "{}", content.value);
+            assert!(content.value.contains(expected), "{}", content.value);
+        }
+        // Copy path acts on the clicked attachment, and never changes the note.
+        reader.update_in(visual, |reader, window, cx| {
+            let reference = okilum_core::render::image_reference::references(
+                source,
+                &reader.vault,
+                &reader.current_rel,
+            )
+            .into_iter()
+            .find(|image| image.target == "attachments/manual.pdf")
+            .unwrap();
+            reader.image_command(
+                &ImageCommand {
+                    target: Target::reference(reader, &reference),
+                    command: Command::CopyRelative,
+                },
+                window,
+                cx,
+            );
+        });
+        visual.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "attachments/manual.pdf"
+            )
+        });
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_live_preview(window, cx)
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("embed-path-caption").is_some(),
+            "Live shows a file path caption"
+        );
+        assert!(
+            visual.debug_bounds("live-image-unavailable").is_some(),
+            "broken embed stays visible beside real images"
+        );
+        // Use a real rendered surface for right-click and modified-click.
+        let surface = visual.debug_bounds("image-action-surface").unwrap();
+        visual.simulate_mouse_down(surface.center(), MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(surface.center(), MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |reader, _| assert!(reader.file_menu.is_some()));
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        let modifiers = if cfg!(target_os = "macos") {
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            }
+        } else {
+            Modifiers {
+                control: true,
+                ..Default::default()
+            }
+        };
+        visual.simulate_mouse_down(surface.center(), MouseButton::Left, modifiers);
+        visual.simulate_mouse_up(surface.center(), MouseButton::Left, modifiers);
+        visual.run_until_parked();
+        // The last surface can be the broken embed: that click must stay inert.
+        // A source click on the existing PDF is a positive open control.
+        reader.update_in(visual, |reader, window, cx| {
+            assert!(reader.open_source_image_at(
+                source,
+                source.find("manual.pdf").unwrap(),
+                window,
+                cx
+            ));
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.opened_url(),
+            Some(
+                url::Url::from_file_path(root.join("attachments/manual.pdf"))
+                    .unwrap()
+                    .into()
+            )
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            source
+        );
+    }
+}

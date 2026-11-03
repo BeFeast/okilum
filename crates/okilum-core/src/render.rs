@@ -67,6 +67,10 @@ pub fn unavailable_target(url: &str) -> Option<String> {
 /// Code spans and blocks are left alone: an embed written inside one is an
 /// example, not an embed (#20).
 pub fn preprocess(text: &str) -> String {
+    preprocess_with_files(text, |_| false)
+}
+
+fn preprocess_with_files(text: &str, is_file: impl Fn(&str) -> bool) -> String {
     replace_in_prose(text, |prose| {
         embed_regex()
             .replace_all(prose, |cap: &regex::Captures| {
@@ -86,7 +90,7 @@ pub fn preprocess(text: &str) -> String {
                         title
                     );
                 }
-                if file_embed_target(base) {
+                if file_embed_target(base) || is_file(base) {
                     format!("![]({})", base.replace(' ', "%20"))
                 } else {
                     format!("[[{inner}]]")
@@ -843,19 +847,39 @@ fn process_source_collect(
     } else {
         std::borrow::Cow::Borrowed(body)
     };
+    let resolver = crate::document_links::IndexedResolver::new(vault);
+    let body = replace_in_prose(&body, |prose| {
+        embed_regex()
+            .replace_all(prose, |cap: &regex::Captures| {
+                let base = crate::document_links::wiki_parts(cap[1].trim())
+                    .0
+                    .split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if !file_embed_target(base)
+                    && resolver.resolve(base, true, from).status == "attachment"
+                    && !crate::excalidraw::is_drawing(base)
+                {
+                    format!("![]({})", crate::document_links::encode(base))
+                } else {
+                    cap[0].to_owned()
+                }
+            })
+            .into_owned()
+    });
     let s = if expand {
         {
             let _phase = crate::open_diagnostics::phase("embeds");
             expand_embeds_collect(&body, vault, from, identities)
         }
     } else {
-        body.into_owned()
+        body
     };
     let s = {
         let _phase = crate::open_diagnostics::phase("preprocess");
         preprocess(&s)
     };
-    let resolver = crate::document_links::IndexedResolver::new(vault);
     let s = {
         let _phase = crate::open_diagnostics::phase("images");
         rewrite_source_images_indexed(&s, vault, &resolver, from)
