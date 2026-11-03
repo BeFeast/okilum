@@ -71,7 +71,10 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     );
     let start = feed.read_with(visual, |feed, cx| feed.performance_scroll_position(cx));
     for _ in 0..6 {
-        board.read_with(visual, |board, _| board.card_calls.set(0));
+        board.read_with(visual, |board, _| {
+            board.card_calls.set(0);
+            board.frame_work.borrow_mut().clear();
+        });
         feed.read_with(visual, |feed, _| feed.row_calls.set(0));
         visual.simulate_event(gpui::ScrollWheelEvent {
             position: history.center(),
@@ -107,7 +110,10 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     });
     visual.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
     for delta in [20., 50., 80., 40., 0.] {
-        board.read_with(visual, |board, _| board.card_calls.set(0));
+        board.read_with(visual, |board, _| {
+            board.card_calls.set(0);
+            board.frame_work.borrow_mut().clear();
+        });
         feed.read_with(visual, |feed, _| feed.row_calls.set(0));
         visual.simulate_mouse_move(
             handle + point(px(delta), px(0.)),
@@ -117,9 +123,10 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         visual.run_until_parked();
         board.read_with(visual, |board, _| {
             assert!(
-                board.card_calls.get() > 0 && board.card_calls.get() <= 64,
-                "splitter must rebuild a viewport, not all 240 cards: {}",
-                board.card_calls.get()
+                board.card_calls.get() > 0
+                    && board.frame_work.borrow().iter().all(|count| *count <= 64),
+                "each splitter frame must rebuild a viewport, not all 240 cards: {:?}",
+                board.frame_work.borrow()
             )
         });
         feed.read_with(visual, |feed, _| {
@@ -147,5 +154,37 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     assert!(
         visual.debug_bounds("board-discuss-1").is_some(),
         "positive control: a real card click responds"
+    );
+    let viewport = visual.debug_bounds("project-board").unwrap();
+    board.read_with(visual, |board, _| board.frame_work.borrow_mut().clear());
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: viewport.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let (last, bounds) = [238, 239]
+        .into_iter()
+        .find_map(|number| {
+            visual
+                .debug_bounds(&format!("board-expand-{number}"))
+                .filter(|bounds| bounds.intersects(&viewport))
+                .map(|bounds| (number, bounds))
+        })
+        .expect("positive control: physical Board scroll reaches a last card, not an empty spacer");
+    board.read_with(visual, |board, _| {
+        assert!(
+            board.frame_work.borrow().iter().all(|count| *count <= 64),
+            "Board scroll viewport bound: {:?}",
+            board.frame_work.borrow()
+        )
+    });
+    visual.simulate_click(bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(&format!("board-discuss-{last}"))
+            .is_some(),
+        "offscreen card source and Discuss action remain available after virtualization"
     );
 }
