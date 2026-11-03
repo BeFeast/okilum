@@ -2306,14 +2306,19 @@ mod tests {
             .contains("exceeds bounds"));
         std::fs::write(&plan_path, &saved_plan).unwrap();
         std::fs::remove_file(&aggregate).unwrap();
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            &aggregate,
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::from_raw_mode(0o600),
-            0,
-        )
-        .unwrap();
+        // rustix gates both mknodat and mkfifoat off on Apple targets.
+        // POSIX mkfifo creates the same real FIFO on Linux and macOS.
+        assert!(std::process::Command::new("mkfifo")
+            .args(["-m", "600"])
+            .arg(&aggregate)
+            .status()
+            .unwrap()
+            .success());
+        use std::os::unix::fs::FileTypeExt as _;
+        assert!(std::fs::symlink_metadata(&aggregate)
+            .unwrap()
+            .file_type()
+            .is_fifo());
         assert!(recover_receipt(&root, &records, &draft.id)
             .unwrap_err()
             .to_string()

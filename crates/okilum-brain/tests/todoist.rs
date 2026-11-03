@@ -369,6 +369,7 @@ fn response_for_different_task_cannot_replace_requested_binding() {
     server.finish();
 }
 
+#[cfg(unix)]
 #[test]
 fn application_recovers_ambiguous_task_intent_and_rejects_changed_uuid_payload() {
     use okilum_brain::{application::*, Criterion, Goal, Runner, RunnerConfig};
@@ -458,6 +459,7 @@ fn application_recovers_ambiguous_task_intent_and_rejects_changed_uuid_payload()
     assert_eq!(wire(&requests[0]), wire(&requests[1]));
 }
 
+#[cfg(unix)]
 #[test]
 fn obsolete_create_receipt_cannot_replace_a_newer_explicit_task_link() {
     use okilum_brain::{application::*, Criterion, Goal, Runner, RunnerConfig};

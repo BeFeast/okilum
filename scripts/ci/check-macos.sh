@@ -4,6 +4,7 @@ set -Eeuo pipefail
 [[ $(uname -s) = Darwin && $(uname -m) = arm64 ]]
 # Exercise optional signing arrays with macOS /bin/bash 3.2 before any Cargo work.
 python3 scripts/ci/test_supervisor_bundle.py
+python3 scripts/ci/test_macos_rust_runner.py
 # Pure page guard units; no GUI/NSApp activation and no production browser data.
 node scripts/ci/test-manager-page-keys.mjs
 node scripts/ci/test-manager-webkit-compatibility.mjs
@@ -38,27 +39,46 @@ if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://githu
     python3 scripts/ci/sparkle-freshness/run.py "$archive"
 fi
 cargo_args=(test --release --locked --target aarch64-apple-darwin)
-# Compile the production binary too: cargo test alone only builds the shell
-# with cfg(test), because this crate has no integration-test targets.
-cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
-# Compile test-only cfg branches and integration tests.
-# Core and shell tests below select exactly this package pair: the same selection
-# unifies the same features (and dev-dependencies), so they reuse these binaries.
-# Selecting one package at a time rebuilt core and shell, about 7 minutes per PR.
-SHARED=(-p okilum-core -p okilum-shell)
-cargo "${cargo_args[@]}" "${SHARED[@]}" --no-run
+# Keep the workspace selection for filtered core/shell runs too. Selecting only
+# that pair drops features from other members' dev-dependencies (e.g. Brain's
+# TLS-enabled tungstenite), rebuilding the enormous shell test binary again.
+SHARED=(--workspace)
 
+macos_rust_failed=0
 run_tests() {
     local package="$1" target="$2" filter="$3"
     shift 3
     local selection=(-p "$package")
     case "$package" in okilum-core|okilum-shell) selection=("${SHARED[@]}") ;; esac
     # Positive control: a renamed/removed filter must not silently run zero tests.
-    cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --list "$@" \
-        | tee "${RUNNER_TEMP}/macos-test-list.txt"
-    grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
-    cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --test-threads=1 "$@"
+    if ! cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --list "$@" \
+        | tee "${RUNNER_TEMP}/macos-test-list.txt"; then
+        macos_rust_failed=1
+        return 0
+    fi
+    if ! grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"; then
+        echo "No native Rust test matched $package $target $filter" >&2
+        macos_rust_failed=1
+        return 0
+    fi
+    cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --test-threads=1 "$@" || macos_rust_failed=1
 }
+# Kernel lifecycle failures should surface before the long desktop/test builds.
+# The full sidecar suite remains mandatory; this only moves its existing invocation.
+run_tests okilum-sync-controller --lib sidecar::
+if [[ "$macos_rust_failed" != 0 ]]; then exit "$macos_rust_failed"; fi
+
+# Compile the production binary too: cargo test alone only builds the shell
+# with cfg(test), because this crate has no integration-test targets.
+cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
+# Compile every workspace test target, including test-only cfg branches and integration tests.
+cargo "${cargo_args[@]}" --workspace --no-run
+
+# #2442: release-profile dependency fixtures and Sync macro imports must also run.
+run_tests okilum-shell --bins reader_log::remote::
+run_tests okilum-shell --bins reader_settings_sync::
+run_tests okilum-core --lib capture::attachments::tests::receipt_lookup_bounds_and_exact_ledger_binding_fail_closed --exact
+
 run_tests okilum-shell --bins reader_manager_compatibility::tests::
 run_tests okilum-shell --bins reader_manager_panel::status_tests::webkit_failure_preserves_thread_actions_without_retries_or_raw_ui_errors --exact
 # APFS rejects invalid UTF-8 filenames even though Unix OsString can represent them.
@@ -73,10 +93,7 @@ done
 # #1120: one note that is not valid UTF-8 must not block links between readable notes.
 # The integration test is its own target; the positive control keeps a renamed test from
 # passing by running nothing.
-cargo "${cargo_args[@]}" "${SHARED[@]}" --test prepared_links a_non_utf8_note_leaves_links_between_readable_notes_working -- --list \
-    | tee "${RUNNER_TEMP}/macos-test-list.txt"
-grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
-cargo "${cargo_args[@]}" "${SHARED[@]}" --test prepared_links a_non_utf8_note_leaves_links_between_readable_notes_working -- --test-threads=1 --exact
+run_tests okilum-core --test=prepared_links a_non_utf8_note_leaves_links_between_readable_notes_working --exact
 run_tests okilum-shell --bins document_link_landing_tests::one_non_utf8_note_does_not_block_links_between_readable_notes --exact
 run_tests okilum-shell --bins document_link_landing_tests::hover_and_navigation_agree_in_a_vault_with_a_non_utf8_note_also_on_a_warm_start --exact
 # #1234: the first click on a link after a word selection (press and release in one frame).
@@ -114,27 +131,20 @@ run_tests okilum-shell --bins reader_tasks::tests::task_labels_fit_descenders --
 # Linux and Windows. These cover the Unix state store (flock, atomic replace), the
 # process-group owned tree (real process tree, signals, process scan via libproc) and
 # the private socket transport (LOCAL_PEERCRED); each needs the real macOS kernel.
-run_tests okilum-sync-controller --lib sidecar::
 # #588: the durable pairing journal is shared with macOS, independently of the
 # Linux systemd runtime. Exercise actual private-file/lock operations on this OS.
 run_tests okilum-sync-controller --lib enrollment::
-cargo "${cargo_args[@]}" -p okilum-sync-controller --test enrollment_storage -- --list \
-    | tee "${RUNNER_TEMP}/macos-test-list.txt"
-grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
-cargo "${cargo_args[@]}" -p okilum-sync-controller --test enrollment_storage -- --test-threads=1
+run_tests okilum-sync-controller --test=enrollment_storage ""
 # #588: authenticated daemon inspection and folder state are shared Unix code.
 run_tests okilum-sync-controller --lib presentation::
-cargo "${cargo_args[@]}" -p okilum-sync-controller --test daemon_access -- --list \
-    | tee "${RUNNER_TEMP}/macos-test-list.txt"
-grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
-cargo "${cargo_args[@]}" -p okilum-sync-controller --test daemon_access -- --test-threads=1
+run_tests okilum-sync-controller --test=daemon_access ""
 # #1013: the supervisor's run loop against a real process tree and real sockets (the
 # shell does not depend on this crate, so nothing else would even build it here).
 run_tests okilum-sync-supervisor --tests ""
 # #1083: the exit path, deterministically (the integration tests above only race it).
 run_tests okilum-sync-supervisor --lib serve::unix::tests::a_connection_pending_under_the_state_lock_does_not_block_clearing_the_hint --exact
 # #1013: the supervisor's packaging steps, as the release runs them, on a real Mac.
-bash scripts/ci/check-supervisor-bundle.sh
+bash scripts/ci/check-supervisor-bundle.sh || macos_rust_failed=1
 
 # #477: real Quick Look providers, bounded Retina output and cancellation.
 export OKILUM_THUMBNAIL_EVIDENCE_DIR="${RUNNER_TEMP}/thumbnail-evidence"
@@ -203,3 +213,6 @@ run_tests okilum-shell --bins reader_deleted_note::tests::
 run_tests okilum-shell --bins reader_update_restart::tests::
 run_tests okilum-shell --bins reader_editor::tests::update_install_post_verification_protects_latest_edits_and_refuses_failure --exact
 run_tests okilum-shell --bins reader_editor::tests::update_restart_refuses_unprotected_single_file_then_preserves_latest_draft --exact
+
+# Keep independent runtime evidence, but never turn a failed or unfired suite green.
+exit "$macos_rust_failed"

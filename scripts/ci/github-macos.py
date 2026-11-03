@@ -233,7 +233,7 @@ def hosted_request(api, path, *, sleep=time.sleep):
 # several PRs land at once; waiting is not a failure (2026-10-09). The
 # Forgejo job timeout in ci.yml must exceed QUEUE_TIMEOUT + RUN_TIMEOUT.
 QUEUE_TIMEOUT = 3 * 3600
-RUN_TIMEOUT = 2400
+RUN_TIMEOUT = 75 * 60
 PROGRESS_EVERY = 300
 
 

@@ -9,8 +9,7 @@ use anyhow::{ensure, Context, Result};
 use rustix::{
     io::Errno,
     process::{
-        getpgid, kill_process_group, test_kill_process_group, waitid, Pid, Signal, WaitId,
-        WaitIdOptions,
+        kill_process_group, test_kill_process_group, waitid, Pid, Signal, WaitId, WaitIdOptions,
     },
 };
 use std::{
@@ -49,8 +48,19 @@ fn signal_owned_group(
 }
 
 fn inspect_leader(pid: Pid) -> Result<GroupLeader> {
-    let started = scan::started(pid.as_raw_pid() as u32)?;
-    let group = getpgid(Some(pid))?;
+    #[cfg(target_os = "macos")]
+    let (started, group) = {
+        let (started, group) = scan::leader(pid.as_raw_pid() as u32)?;
+        (
+            started,
+            Pid::from_raw(group).context("invalid process group")?,
+        )
+    };
+    #[cfg(not(target_os = "macos"))]
+    let (started, group) = (
+        scan::started(pid.as_raw_pid() as u32)?,
+        rustix::process::getpgid(Some(pid))?,
+    );
     // Holding a Child value alone does not prove the PID is reserved: an
     // external waiter or SIGCHLD auto-reaping may already have released it.
     // NOWAIT preserves our reservation, including an exited zombie leader.

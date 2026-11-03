@@ -24,6 +24,8 @@ suite cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no
 suite cargo test --locked -p okilum-core --lib unix_publish:: --no-fail-fast
 suite cargo test --locked -p okilum-core --lib file_editor::network_save_tests:: --no-fail-fast
 suite cargo test --locked -p okilum-shell --bins reader_trash_fs::tests::unsupported_flags_trash_and_restore_files_and_folders_without_clobber --no-fail-fast -- --exact
+# #2442: retain process-group generation checks across live -> zombie -> reaped.
+suite cargo test --locked -p okilum-sync-controller --lib sidecar::supervisor::process_group:: --no-fail-fast -- --test-threads=1
 # #588: keep shared durable pairing recovery covered on both Unix platforms.
 suite cargo test --locked -p okilum-sync-controller --lib enrollment:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --test enrollment_storage --no-fail-fast

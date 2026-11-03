@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use base64::{engine::general_purpose::STANDARD, Engine};
 use okilum_brain::*;
 use okilum_core::source::{SourceWrite, WriteBoundary};

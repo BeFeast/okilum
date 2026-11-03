@@ -1,4 +1,5 @@
 //! Read-only all-goal admission proof; never opens a live Runner.
+#[cfg(unix)]
 fn main() {
     let result = (|| -> anyhow::Result<serde_json::Value> {
         let args = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -33,4 +34,9 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+#[cfg(not(unix))]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("The AI Brain source-store runtime is only available on Unix")
 }

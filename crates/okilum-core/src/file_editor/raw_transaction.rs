@@ -1181,10 +1181,18 @@ mod interrupted_link_tests {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("vault");
         let state = fixture.path().join("state");
-        fs::create_dir(&root).unwrap();
+        let actual_root = fixture.path().join("vault-real");
+        fs::create_dir(&actual_root).unwrap();
+        // Exercise a noncanonical parent on Linux too, just like Darwin's
+        // /var -> /private/var temporary directory. Production stages beside
+        // the canonical editor path; recovery records require that same parent.
+        std::os::unix::fs::symlink(&actual_root, &root).unwrap();
+        assert_ne!(root, root.canonicalize().unwrap());
         let note = root.join("Synthetic.md");
         fs::write(&note, b"\xef\xbb\xbforiginal\r\n").unwrap();
         let mut editor = FileEditor::open(&note, &state).unwrap();
+        // Ancestor replacement tests must move the real directory, not its alias.
+        let note = editor.draft.path.clone();
         editor.set_text("proposed\r\n".into()).unwrap();
         if raw {
             let original = b"\xef\xbb\xbforiginal\xff\r\n";
@@ -1201,7 +1209,7 @@ mod interrupted_link_tests {
         let (mut staged, name) = editor.directory.temporary().unwrap();
         staged.write_all(editor.proposed_bytes()).unwrap();
         staged.sync_all().unwrap();
-        let displaced = root.join(&name);
+        let displaced = editor.draft.path.parent().unwrap().join(&name);
         let history = editor.begin_save_history(&displaced, None).unwrap();
         let prepared = format!(".okilum-save-{}", uuid::Uuid::new_v4());
         editor

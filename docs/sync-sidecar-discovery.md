@@ -69,6 +69,13 @@ the controller the same way before accepting a Stop.
 
 ## macOS: what "owned tree stopped" means
 
+Darwin leader inspection uses a zombie-inclusive `PROC_PIDTBSDINFO` snapshot
+(nonzero `arg`, supported by [XNU on macOS 12](https://github.com/apple-oss-distributions/xnu/blob/xnu-8019.80.24/bsd/kern/proc_info.c)).
+This retains the kernel start time and group of an exited, unreaped child for the
+final group signal. Inspection still compares PID, group and start time and
+requires `waitid(NOWAIT)` ownership; an unreadable identity never falls back to
+cached values. The independent live-copy scan excludes zombies.
+
 There is no Job Object. The supervisor spawns the runtime as the leader of a new
 process group and owns: the root (waited and reaped), and every process still in that
 group. `Stopped` means the root was reaped and the group has no member, checked after a

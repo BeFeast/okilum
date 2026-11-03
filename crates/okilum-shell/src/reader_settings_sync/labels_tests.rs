@@ -1,4 +1,5 @@
 use super::*;
+use crate::reader_settings_sync::perform_with_locations;
 use anyhow::{Context as _, Result};
 use okilum_sync_controller::daemon::{DaemonIdentity, Preparation};
 use std::process::{Child, Command, Stdio};
