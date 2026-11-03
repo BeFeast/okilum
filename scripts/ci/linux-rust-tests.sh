@@ -14,6 +14,7 @@ suite node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pair
 suite cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture
 suite cargo test -p okilum-appimage --all-features --no-fail-fast
 suite cargo test --locked -p okilum-http --features updates --no-fail-fast
+suite cargo test --locked -p okilum-shell --bin okilum issue1622_ -- --nocapture
 # Keep an explicit non-empty Settings dismissal verdict ahead of the full shell.
 # Keep Board filter interaction and model verdicts explicit and non-empty.
 suite cargo test --locked -p okilum-shell --bin okilum issue2532_ -- --nocapture
