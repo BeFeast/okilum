@@ -84,6 +84,14 @@ class Frames:
                         attachmentIds=[a["id"] for a in value.get("attachments", [])],
                     )
                 )
+            elif tag == "orchestration.subscribeThread":
+                log(
+                    dict(
+                        event="subscribe",
+                        threadId=value.get("threadId"),
+                        afterSequence=value.get("afterSequence"),
+                    )
+                )
             elif tag == "attachments.createUploadUrl":
                 log(
                     dict(
