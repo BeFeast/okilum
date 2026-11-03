@@ -241,7 +241,11 @@ async fn delivery(cx: &mut TestAppContext, input: Input, fail_upload: bool) {
                     .into(),
                 })
             });
-            visual.simulate_keystrokes("ctrl-v");
+            visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-v"
+            } else {
+                "ctrl-v"
+            });
         }
         Input::Drop => {
             let position = visual

@@ -1,18 +1,30 @@
 # macOS checks before merge
 
-macOS PR checks run on **GitHub-hosted arm64 runners**, through
+macOS validation runs on **GitHub-hosted arm64 runners**, through
 `forgejo-macos / macos`. Do not run CI on the corporate M4 or SSH to a Mac.
-The Forgejo `ci` workflow bridges trusted same-repository PR heads to unique
-`forgejo-pr/<number>-<sha>-...` refs on the GitHub mirror. It reports the hosted
-result back to Forgejo; no Forgejo credentials reach the hosted runner.
+Required `fast` checks run on PRs; the full Forgejo `ci` workflow is currently
+scheduled/manual. Its `macos-github` job bridges trusted same-repository heads
+to unique `forgejo-pr/<number>-<sha>-...` refs on the GitHub mirror and reports
+the result back to Forgejo. No Forgejo credentials reach the hosted runner.
 
-Open a same-repository PR with the committed head pushed to Forgejo. Follow its
-`ci / macos-github` job to the exact-head GitHub Actions run and check that
-`forgejo-macos / macos` executed successfully (a skipped job is not evidence).
-If a run is superseded, use the replacement run for the current PR head. The
-bridge is implemented in `scripts/ci/github-macos.py`; the hosted workflow is
+For an implementation PR, explicitly run the exact committed head on the hosted
+lane. From a clean worktree, with the existing host `gh` login:
+
+```bash
+PR_NUMBER=2524 # replace with your Forgejo PR number
+macos_ref="forgejo-pr/$PR_NUMBER-$(git rev-parse HEAD)-$(date +%Y%m%d%H%M%S)"
+git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+  push https://github.com/BeFeast/okilum.git "HEAD:refs/heads/$macos_ref"
+gh run list -R BeFeast/okilum --branch "$macos_ref" --workflow forgejo-macos.yml
+```
+
+Open that GitHub Actions run and verify its SHA equals the PR head. A skipped
+`macos` job is not evidence; use a completed successful native job. Superseded
+PR runs are cancelled, so use the replacement for the current head. The bridge
+is implemented in `scripts/ci/github-macos.py`, and the hosted workflow is
 `.github/workflows/forgejo-macos.yml`. Main's supplementary native checks follow
-the hourly beta cadence. Root/docs Markdown-only PRs are exempt from the PR lane.
+the hourly beta cadence. The full acceptance workflow exempts root/docs
+Markdown-only PRs from macOS.
 
 `scripts/ci/check-macos.sh` verifies the vendor patches, compiles the production
 Reader and **every workspace test target** in release mode, then runs selected

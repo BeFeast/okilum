@@ -77,6 +77,14 @@ fn key(visual: &mut VisualTestContext, binding: &str) {
     visual.simulate_keystrokes(binding);
     visual.run_until_parked();
 }
+fn primary_key(visual: &mut VisualTestContext, binding: &str) {
+    let primary = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    key(visual, &format!("{primary}-{binding}"));
+}
 
 #[gpui::test]
 fn readable_rows_stars_and_keyboard_keep_exact_accounts_and_durable_favorites(
@@ -85,9 +93,9 @@ fn readable_rows_stars_and_keyboard_keep_exact_accounts_and_durable_favorites(
     let current = selection("work-account", "same-model", json!([]));
     let (view, visual, state, gateway) = fixture(cx, catalog("codex", json!([])), current);
     let warmed_reads = gateway.reads.lock().unwrap().len();
-    // The advertised Linux opening shortcut reaches the actual popover and
+    // The advertised platform opening shortcut reaches the actual popover and
     // search field; open/close itself does not request model/thread reads.
-    key(visual, "ctrl-shift-m");
+    primary_key(visual, "shift-m");
     assert!(visual.debug_bounds("project-model-panel").is_some());
     assert!(visual.debug_bounds("project-model-label-0").is_some());
     assert!(visual
@@ -127,7 +135,7 @@ fn readable_rows_stars_and_keyboard_keep_exact_accounts_and_durable_favorites(
             .any(|choice| choice.selection.model == "swift-model"));
     });
     key(visual, "escape");
-    key(visual, "ctrl-shift-m");
+    primary_key(visual, "shift-m");
     click(visual, "project-model-provider-1");
     view.read_with(visual, |view, cx| {
         let visible = view.visible_model_choices(cx);
@@ -144,7 +152,7 @@ fn readable_rows_stars_and_keyboard_keep_exact_accounts_and_durable_favorites(
         warmed_reads,
         "two open/close cycles start zero reads"
     );
-    key(visual, "ctrl-1");
+    primary_key(visual, "1");
     let writes = gateway.model_writes.lock().unwrap();
     assert_eq!(
         writes.len(),
@@ -155,7 +163,7 @@ fn readable_rows_stars_and_keyboard_keep_exact_accounts_and_durable_favorites(
     assert_eq!(writes[0].model, "same-model");
     drop(writes);
     assert!(visual.debug_bounds("project-model-panel").is_none());
-    key(visual, "ctrl-shift-m");
+    primary_key(visual, "shift-m");
     assert!(
         visual.debug_bounds("project-model-current-0").is_some(),
         "confirmed current is checked after reopening"
@@ -230,7 +238,7 @@ fn supported_reasoning_changes_preserve_other_options_and_confirm_the_compact_ch
     assert!(visual.debug_bounds("project-model-current-0").is_some());
     key(visual, "escape");
     assert!(visual.debug_bounds("project-manager-model").is_some());
-    key(visual, "ctrl-shift-m");
+    primary_key(visual, "shift-m");
     view.read_with(visual, |view, cx| {
         assert_eq!(
             view.model_chip_summary(view.models.as_ref().unwrap(), cx),
