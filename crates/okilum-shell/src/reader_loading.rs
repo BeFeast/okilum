@@ -2861,6 +2861,7 @@ impl Reader {
                     view.child(div().text_color(muted).child("Auto-refresh limited"))
                         .child(
                             Button::new("rescan-network-vault")
+                                .debug_selector(|| "rescan-network-vault".into())
                                 .small()
                                 .label("Rescan")
                                 .tooltip("Changes from other devices may need Rescan.")
@@ -5243,6 +5244,7 @@ mod tests {
             Root::new(reader, window, cx)
         });
         let reader = entity.unwrap();
+        visual.simulate_resize(size(px(1600.), px(960.)));
         visual.run_until_parked();
         // Remote FUSE keeps its local watcher and gains only the inline
         // Rescan control. This must not open a modal or lose the document.
@@ -7636,7 +7638,8 @@ mod quick_view_tests {
             let entity = cx.new(|cx| {
                 Reader::new(
                     Opts {
-                        open_path: Some(fixture.join("notes")),
+                        open_path: Some(fixture.join("notes/start.md")),
+                        single_file: true,
                         session_directory: Some(fixture.join("state")),
                         panel_settings_override: Some(fixture.join("panels.json")),
                         ..Default::default()
@@ -7661,6 +7664,7 @@ mod quick_view_tests {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("notes");
         std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("start.md"), "# Start").unwrap();
         std::fs::write(root.join("old.md"), "# Old").unwrap();
         let (reader, visual) = folder_reader(cx, fixture.path());
         reader.update_in(visual, |r, _, cx| {
@@ -7699,6 +7703,7 @@ mod quick_view_tests {
         let root = fixture.path().join("notes");
         std::fs::create_dir_all(root.join("child/nested")).unwrap();
         std::fs::write(root.join("child/nested/old.md"), "# Old").unwrap();
+        std::fs::write(root.join("start.md"), "# Start").unwrap();
         let (reader, visual) = folder_reader(cx, fixture.path());
         reader.update_in(visual, |r, _, cx| {
             let child = QuickFolderRefresh::begin(r, "child".into());

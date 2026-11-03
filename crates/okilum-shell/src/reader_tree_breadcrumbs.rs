@@ -279,24 +279,7 @@ impl Reader {
                 .on_click({
                     let reader = reader.clone();
                     move |_, window, cx| {
-                        let _ = reader.update(cx, |this, cx| {
-                            let folder = this
-                                .tree
-                                .cursor
-                                .as_deref()
-                                .filter(|path| this.tree.is_directory(path))
-                                .unwrap_or("")
-                                .to_owned();
-                            match action {
-                                #[cfg(any(unix, windows))]
-                                SidebarAction::NewNote => this.new_note(Some(&folder), window, cx),
-                                #[cfg(any(unix, windows))]
-                                SidebarAction::NewFolder => {
-                                    this.new_folder(Some(&folder), window, cx)
-                                }
-                                _ => action.run(this, window, cx),
-                            }
-                        });
+                        let _ = reader.update(cx, |this, cx| action.run(this, window, cx));
                     }
                 }),
             );
@@ -673,7 +656,7 @@ mod tests {
         });
         reader.update_in(visual, |view, window, cx| {
             view.cancel_creation(window, cx);
-            // A selected file is not the explicit destination folder.
+            // #1512: a selected file creates beside itself, just like keyboard creation.
             view.tree.cursor = Some("Area/LongDeepDirectory/Leaf/Note 00.md".into());
         });
         visual.run_until_parked();
@@ -681,7 +664,25 @@ mod tests {
         visual.simulate_click(folder.center(), Modifiers::default());
         visual.run_until_parked();
         reader.read_with(visual, |view, _| {
-            assert_eq!(view.creation.as_ref().unwrap().folder, "")
+            assert_eq!(
+                view.creation.as_ref().unwrap().folder,
+                "Area/LongDeepDirectory/Leaf"
+            )
+        });
+        reader.update_in(visual, |view, window, cx| {
+            view.cancel_creation(window, cx);
+            view.tree.cursor = None;
+        });
+        visual.run_until_parked();
+        let folder = visual.debug_bounds("sidebar-new-folder").unwrap();
+        visual.simulate_click(folder.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert_eq!(
+                view.creation.as_ref().unwrap().folder,
+                "",
+                "no selection creates at root"
+            );
         });
     }
 

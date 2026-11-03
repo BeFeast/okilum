@@ -890,6 +890,8 @@ mod tests {
 
     fn open<'a>(cx: &'a mut TestAppContext, text: &str) -> (Note, &'a mut VisualTestContext) {
         cx.update(|cx| {
+            // Notification animation uses the display clock, not the poll timer.
+            cx.set_reduce_motion(true);
             gpui_component::init(cx);
             bind_keys(cx);
         });
@@ -986,6 +988,14 @@ mod tests {
     /// A toast's control once the toast has slid into place.
     fn toast_control(visual: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
         poll(visual);
+        // The test clock alone does not deliver the toast animation frames.
+        for _ in 0..2 {
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            visual.run_until_parked();
+        }
         let bounds = visual.debug_bounds(selector).expect(selector);
         let viewport = visual.update(|window, _| window.viewport_size());
         assert!(

@@ -10,6 +10,8 @@ pub(super) struct CreatedUndo {
     pub relative: String,
     pub(super) source: Option<String>,
     pub(super) identity: (u64, u64),
+    #[cfg(test)]
+    pointer_clicks: std::sync::atomic::AtomicUsize,
 }
 
 impl CreatedUndo {
@@ -26,6 +28,8 @@ impl CreatedUndo {
             relative: relative.into(),
             source,
             identity,
+            #[cfg(test)]
+            pointer_clicks: Default::default(),
         };
         item.verify()?;
         Ok(item)
@@ -152,6 +156,12 @@ impl Reader {
                     )
                     .debug_selector(|| "undo-create".into())
                     .on_click(move |_, window, cx| {
+                        #[cfg(test)]
+                        {
+                            announced
+                                .pointer_clicks
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
                         let _ = reader.update(cx, |this, cx| {
                             this.undo_creation(Some(&announced), window, cx)
                         });
@@ -307,7 +317,7 @@ impl Reader {
         }
         self.renaming = None;
         self.close_creation_folder_picker(cx);
-        let previous_cursor = self
+        let mut previous_cursor = self
             .creation
             .take()
             .map_or_else(|| self.tree.cursor.clone(), |c| c.previous_cursor);
@@ -332,6 +342,13 @@ impl Reader {
         let error = templates.as_ref().err().map(|e| format!("{e:#}"));
         let templates = templates.ok();
         let selected_template = templates.as_ref().and_then(|c| c.default_file());
+        if self.project_navigation.active.is_some() {
+            // Project has no folder browser (#2222). Keep the destination from
+            // its scope, but show the input in Files and let Cancel restore that
+            // browser's selection rather than an invisible scoped cursor.
+            self.show_vault_files(window, cx);
+            previous_cursor = self.tree.cursor.clone();
+        }
         self.reveal_in_tree(&folder, window, cx);
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(if directory {
@@ -632,13 +649,22 @@ mod tests {
         let button = visual
             .debug_bounds("deleted-note-dont-save")
             .expect("leaving deleted content requires an explicit choice");
+        visual.simulate_mouse_move(button.center(), None, Modifiers::default());
         visual.simulate_click(button.center(), Modifiers::default());
         visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert!(
+                !window.has_active_dialog(cx),
+                "positive control: explicit choice closed the dialog"
+            )
+        });
     }
 
     fn deleted_folder_operation(cx: &mut TestAppContext, operation: &str, nested: bool) {
         use gpui_component::WindowExt;
         cx.update(|cx| {
+            // Dialog bounds must describe the same frame that receives the click.
+            cx.set_reduce_motion(true);
             crate::test_init(cx);
             bind_keys(cx);
         });
@@ -677,7 +703,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .set_value("# Unsaved שלום\r\n", window, cx);
-            r.tree.cursor = Some(folder.into());
+            // Auto-reveal is optional (#1762); explicitly reveal the nested
+            // folder before testing its deletion and header actions.
+            r.reveal_in_tree(folder, window, cx);
             assert!(r.tree.rows.iter().any(|row| row.path == folder));
         });
         visual.run_until_parked();
@@ -977,14 +1005,49 @@ mod tests {
                 });
                 assert!(root.join(relative).exists());
             }
-            // Toast stack geometry animates after the previous Undo feedback.
+            // Toast stack geometry changes after the previous Undo feedback.
             visual.executor().advance_clock(Duration::from_secs(1));
             visual.run_until_parked();
+            for _ in 0..2 {
+                visual.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    window.draw(cx).clear(cx);
+                });
+                visual.run_until_parked();
+            }
             let undo = visual
                 .debug_bounds("undo-create")
                 .expect("creation toast offers Undo");
             if directory {
+                let probe = reader.read_with(visual, |r, _| {
+                    let item = r.creation_undo.as_ref().unwrap();
+                    assert_eq!(item.relative, relative);
+                    item.verify()
+                        .expect("positive control: this creation can be undone");
+                    item.clone()
+                });
+                // A native pointer enters and expands the collapsed toast stack.
+                // Its old painted button bounds can be covered by another toast.
+                visual.simulate_mouse_move(undo.center(), None, Modifiers::default());
+                for _ in 0..2 {
+                    visual.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        window.draw(cx).clear(cx);
+                    });
+                    visual.run_until_parked();
+                }
+                let undo = visual
+                    .debug_bounds("undo-create")
+                    .expect("expanded creation Undo");
+                visual.simulate_mouse_move(undo.center(), None, Modifiers::default());
                 visual.simulate_click(undo.center(), Modifiers::default());
+                assert_eq!(
+                    probe
+                        .pointer_clicks
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    1,
+                    "positive control: real creation Undo callback fired"
+                );
             } else {
                 reader.update_in(visual, |r, window, cx| {
                     let input = r.editing.as_ref().unwrap().test_input();
@@ -1009,6 +1072,12 @@ mod tests {
                     "Undo dispatched for {relative}: pending={}, dirty={}, loading={}, bounds={undo:?}",
                     r.trash_pending, r.source_is_dirty(cx),
                     r.loading.as_ref().is_some_and(|l| l.active));
+            });
+            visual.update(|window, cx| {
+                assert!(
+                    !window.has_active_dialog(cx),
+                    "our confirmed creation Undo must not ask about an external deletion (#2433)"
+                );
             });
             assert!(
                 !root.join(relative).exists(),
@@ -1949,10 +2018,11 @@ mod tests {
         creation_entry_points(cx, false);
     }
 
+    #[track_caller]
     fn click(visual: &mut VisualTestContext, selector: &'static str) {
-        let bounds = visual
-            .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("{selector} is shown"));
+        let Some(bounds) = visual.debug_bounds(selector) else {
+            panic!("{selector} is shown");
+        };
         visual.simulate_click(bounds.center(), gpui::Modifiers::default());
         visual.run_until_parked();
     }
@@ -2007,6 +2077,10 @@ mod tests {
             cx.notify();
         });
         visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| {
+            r.reveal_in_tree("Security/start.md", window, cx);
+        });
+        visual.run_until_parked();
         click(visual, "sidebar-new-note");
         visual.update(|window, cx| window.draw(cx).clear(cx));
         let field = visual
@@ -2033,7 +2107,8 @@ mod tests {
     /// selected note: its folder); with nothing selected, to the vault root,
     /// never the first folder («AI»). The inline row says where («in: …»)
     /// and its list changes that before Enter; Esc or a click on the tree's
-    /// empty space deselects. Inside a project «/» is the project's folder.
+    /// empty space deselects. From Project, creation shows Files and retains
+    /// the project destination; «/» in that browser is the vault root.
     #[gpui::test]
     fn creation_destination_is_shown_and_changeable(cx: &mut TestAppContext) {
         cx.update(|cx| {
@@ -2045,6 +2120,8 @@ mod tests {
         let root = temp.path().join("vault");
         std::fs::create_dir_all(root.join("AI")).unwrap();
         std::fs::create_dir_all(root.join("Work/Projects")).unwrap();
+        std::fs::create_dir_all(root.join("Work/ops")).unwrap();
+        std::fs::write(root.join("Work/ops/project.yaml"), "kind: knowledge\n").unwrap();
         std::fs::write(root.join("AI/Prompt.md"), "# Prompt\n").unwrap();
         std::fs::write(root.join("Work/Plan.md"), "# Plan\n").unwrap();
         std::fs::write(root.join("Root.md"), "# Root\n").unwrap();
@@ -2074,7 +2151,12 @@ mod tests {
         });
         visual.run_until_parked();
 
-        // The open note is the selection: New note goes to its folder.
+        // With auto-reveal off (#1762), select the note explicitly.
+        reader.update_in(visual, |r, window, cx| {
+            r.reveal_in_tree("Work/Plan.md", window, cx);
+        });
+        visual.run_until_parked();
+        // New note goes beside the selected note, including from the header.
         reader.read_with(visual, |r, _| {
             assert_eq!(r.tree.cursor.as_deref(), Some("Work/Plan.md"));
         });
@@ -2094,6 +2176,24 @@ mod tests {
                 "Cancel keeps the selection"
             );
         });
+
+        // Both header actions must use the selected note's parent (#2278
+        // regression), matching the keyboard route and preserving Cancel.
+        click(visual, "sidebar-new-folder");
+        reader.read_with(visual, |r, _| {
+            let create = r.creation.as_ref().unwrap();
+            assert!(create.directory);
+            assert_eq!(create.folder, "Work");
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.tree_focus.focus(window, cx));
+        visual.simulate_keystrokes("secondary-n");
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.creation.as_ref().unwrap().folder, "Work");
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
 
         // Esc in the tree deselects: New folder then goes to the root, first.
         reader.update_in(visual, |r, window, cx| r.tree_focus.focus(window, cx));
@@ -2188,45 +2288,61 @@ mod tests {
             r.cancel_creation(window, cx);
         });
 
-        // Inside a project «/» is the project's folder.
-        reader.update(visual, |r, cx| {
-            r.tree.scope_to("Work");
-            r.project_navigation.active = Some(okilum_t3::projects::Project {
-                folder: r.vault_root.join("Work"),
-                name: "Work".into(),
-                kind: okilum_t3::projects::Kind::Code,
-                environment: None,
-                manager_project: None,
-                manager: okilum_t3::projects::Manager::NotStarted,
-                appearance: Default::default(),
-            });
-            cx.notify();
+        // #2222: Project owns Board/Manager, and Files restores the vault tree.
+        // Exercise that real transition rather than drawing an obsolete scoped Tree.
+        reader.update_in(visual, |r, window, cx| {
+            let project = okilum_t3::projects::Project::read(&root.join("Work")).unwrap();
+            r.enter_vault_project(project, window, cx);
         });
         visual.run_until_parked();
-        reader.update_in(visual, |r, window, cx| {
-            r.tree.cursor = None;
-            r.new_note(None, window, cx);
-            assert_eq!(r.creation.as_ref().unwrap().folder, "Work");
-            assert!(matches!(
-                r.sidebar_items().first(),
-                Some(SideItem::Create(..))
-            ));
+        reader.read_with(visual, |r, _| {
             assert_eq!(
-                destination(r),
-                Some(("in: /".into(), "Project root".into()))
+                r.project_navigation.active.as_ref().unwrap().folder,
+                root.join("Work")
             );
         });
+        assert!(visual.debug_bounds("sidebar-tree-body").is_none());
+        // New note must not focus an invisible row behind Board. Its scoped
+        // destination survives the real keyboard transition back to Files.
+        reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
+        visual.simulate_keystrokes("secondary-n");
         visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.project_navigation.active.is_none());
+            assert_eq!(r.tree.scope(), "");
+            assert_eq!(r.creation.as_ref().unwrap().folder, "Work");
+            assert_eq!(destination(r), Some(("in: Work".into(), "Work".into())));
+        });
+        assert!(visual.debug_bounds("sidebar-tree-body").is_some());
+        assert!(visual.debug_bounds("create-name-input").is_some());
         click(visual, "create-destination");
-        assert!(visual.debug_bounds("move-folder-1").is_some());
-        assert!(
-            visual.debug_bounds("move-folder-2").is_none(),
-            "only the project's root and its folders"
-        );
-        click(visual, "move-folder-1");
+        click(visual, "move-folder-0");
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.creation.as_ref().unwrap().folder, "");
+            assert_eq!(destination(r), Some(("in: /".into(), "Vault root".into())));
+        });
+        click(visual, "create-destination");
+        // The restored browser exposes the whole vault, including the former
+        // project's nested destination, and accepts its exact filtered match.
+        visual.simulate_input("Work/Projects");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
         reader.update_in(visual, |r, window, cx| {
             assert_eq!(r.creation.as_ref().unwrap().folder, "Work/Projects");
             r.cancel_creation(window, cx);
+            let project = okilum_t3::projects::Project::read(&root.join("Work")).unwrap();
+            r.enter_vault_project(project, window, cx);
         });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, window, cx| r.focus_handle.focus(window, cx));
+        visual.dispatch_action(NewFolder);
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(r.project_navigation.active.is_none());
+            let create = r.creation.as_ref().unwrap();
+            assert!(create.directory);
+            assert_eq!(create.folder, "Work");
+        });
+        assert!(visual.debug_bounds("create-name-input").is_some());
     }
 }

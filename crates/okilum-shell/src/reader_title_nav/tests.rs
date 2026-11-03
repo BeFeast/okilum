@@ -169,18 +169,21 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
         );
     });
     click(visual, "title-recent");
-    assert!(visual.debug_bounds("title-nav-recent").is_some());
-    assert!(visual.debug_bounds("title-nav-entry-2").is_some());
-    assert!(visual.debug_bounds("title-nav-entry-3").is_none());
+    assert!(visual.debug_bounds("recent-gallery-overlay").is_some());
+    assert!(visual.debug_bounds("recent-gallery-card-2").is_some());
+    assert!(visual.debug_bounds("recent-gallery-card-3").is_none());
     assert!(visual.debug_bounds("title-nav-scope-project").is_none());
     let (trigger, menu) = (
         visual.debug_bounds("title-recent").unwrap(),
-        visual.debug_bounds("title-nav-recent").unwrap(),
+        visual.debug_bounds("recent-gallery-overlay").unwrap(),
     );
-    assert!(menu.top() >= trigger.bottom() && (menu.left() - trigger.left()).abs() < px(1.));
+    assert!(menu.top() >= trigger.bottom());
+    let viewport = visual.update(|window, _| window.viewport_size());
+    assert!(menu.left() >= px(0.) && menu.right() <= viewport.width);
+    assert!(menu.size.width <= px(800.));
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    assert!(visual.debug_bounds("title-nav-recent").is_none());
+    assert!(visual.debug_bounds("recent-gallery-overlay").is_none());
     reader.read_with(visual, |view, _| assert_eq!(view.title_nav.menu, None));
 
     // ⌘K from an open menu replaces it, so Escape then closes the palette
@@ -188,7 +191,7 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
     click(visual, "title-recent");
     visual.simulate_keystrokes("ctrl-k");
     visual.run_until_parked();
-    assert!(visual.debug_bounds("title-nav-recent").is_none());
+    assert!(visual.debug_bounds("recent-gallery-overlay").is_none());
     reader.read_with(visual, |view, _| {
         assert!(view.quick_open.open);
         assert_eq!(view.title_nav.menu, None);
@@ -223,12 +226,18 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
     // Another trigger switches menus in one click.
     click(visual, "title-recent");
     assert!(visual.debug_bounds("title-nav-pinned").is_none());
-    assert!(visual.debug_bounds("title-nav-recent").is_some());
+    assert!(visual.debug_bounds("recent-gallery-overlay").is_some());
 
-    // All vault: the menu stays open, the choice is saved for this project.
+    assert!(visual.debug_bounds("recent-gallery-card-1").is_some());
+    assert!(visual.debug_bounds("recent-gallery-card-2").is_none());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    // #2329: Recent is now a gallery; the Pinned menu retains the shared
+    // project/vault scope control and persists it for both surfaces.
+    click(visual, "title-pinned");
     click(visual, "title-nav-scope-vault");
-    assert!(visual.debug_bounds("title-nav-recent").is_some());
-    assert!(visual.debug_bounds("title-nav-entry-2").is_some());
+    assert!(visual.debug_bounds("title-nav-pinned").is_some());
+    assert!(visual.debug_bounds("title-nav-entry-1").is_some());
     let saved = reader.read_with(visual, |view, _| {
         assert_eq!(view.nav_scope(), Some(Scope::Vault));
         view.sidebar_path.clone().unwrap()
@@ -237,12 +246,16 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
     assert!(reader_sidebar::State::load(&saved)
         .nav_all_vault
         .contains("Dev/Areas/App"));
-
-    // Keyboard: ↓ then ↵ opens the second row and closes the menu.
-    visual.simulate_keystrokes("down enter");
+    click(visual, "title-recent");
+    assert!(visual.debug_bounds("title-nav-pinned").is_none());
+    assert!(visual.debug_bounds("recent-gallery-card-2").is_some());
+    // Gallery search and arrows retain exact file identity; highlight alone
+    // never opens a note, and Enter closes the overlay after navigation.
+    visual.simulate_keystrokes("right enter");
     visual.run_until_parked();
     reader.read_with(visual, |view, _| {
         assert_eq!(view.current_rel, "Other/far.md");
+        assert!(!view.recent_switcher.open());
         assert_eq!(view.title_nav.menu, None);
     });
 
@@ -267,12 +280,14 @@ fn recent_and_pinned_menus_follow_the_project_scope_and_remember_it(cx: &mut Tes
 }
 
 #[gpui::test]
-fn recent_menu_trims_to_show_all_and_narrow_windows_keep_glyphs(cx: &mut TestAppContext) {
+fn recent_gallery_shows_cards_beyond_the_old_list_cap_and_narrow_windows_keep_glyphs(
+    cx: &mut TestAppContext,
+) {
     let fixture = tempfile::tempdir().unwrap();
     let vault = fixture.path().join("vault");
     std::fs::create_dir_all(&vault).unwrap();
     std::fs::write(vault.join("note.md"), "# Retained note\n").unwrap();
-    let total = reader_sidebar::RECENT_SHOWN + 3;
+    let total = 43;
     for i in 0..total {
         std::fs::write(vault.join(format!("n{i}.md")), format!("# N{i}\n")).unwrap();
     }
@@ -287,23 +302,37 @@ fn recent_menu_trims_to_show_all_and_narrow_windows_keep_glyphs(cx: &mut TestApp
     visual.run_until_parked();
     let wide = visual.debug_bounds("title-recent").unwrap();
     click(visual, "title-recent");
-    let last = reader_sidebar::RECENT_SHOWN;
-    assert!(visual
-        .debug_bounds(leak(format!("title-nav-entry-{}", last - 1)))
-        .is_some());
-    assert!(visual
-        .debug_bounds(leak(format!("title-nav-entry-{last}")))
-        .is_none());
-    click(visual, "title-nav-show-all");
-    assert!(visual
-        .debug_bounds(leak(format!("title-nav-entry-{}", total - 1)))
-        .is_some());
+    // #2329 replaces the trimmed list/Show all footer with at most 40 cards.
+    // Prove both the inventory bound and an actual card beyond the old list cap.
+    reader.read_with(visual, |view, _| {
+        let expected = (0..40).map(|i| format!("n{i}.md")).collect::<Vec<_>>();
+        assert_eq!(view.recent_switcher.gallery_paths(), expected);
+    });
     assert!(visual.debug_bounds("title-nav-show-all").is_none());
-    // An outside press closes the menu.
-    let body = visual.debug_bounds("reader-document-root").unwrap();
-    visual.simulate_click(body.center(), Modifiers::none());
+    visual.simulate_input("n39.md");
     visual.run_until_parked();
-    assert!(visual.debug_bounds("title-nav-recent").is_none());
+    reader.read_with(visual, |view, cx| {
+        assert_eq!(
+            view.current_rel, "note.md",
+            "search alone is not navigation"
+        );
+        assert_eq!(
+            view.recent_switcher.gallery_selection(cx).as_deref(),
+            Some("n39.md")
+        );
+    });
+    click(visual, "recent-gallery-card-39");
+    reader.read_with(visual, |view, _| {
+        assert_eq!(view.current_rel, "n39.md");
+        assert!(!view.recent_switcher.open());
+    });
+    click(visual, "title-recent");
+    assert!(visual.debug_bounds("recent-gallery-overlay").is_some());
+    // An outside press closes the menu.
+    // The gallery covers the document center; choose a real point outside it.
+    visual.simulate_click(point(px(10.), px(850.)), Modifiers::none());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("recent-gallery-overlay").is_none());
 
     visual.simulate_resize(size(px(800.), px(900.)));
     visual.run_until_parked();
@@ -315,10 +344,6 @@ fn recent_menu_trims_to_show_all_and_narrow_windows_keep_glyphs(cx: &mut TestApp
         "glyph only: {narrow:?} vs {wide:?}"
     );
     assert!(visual.debug_bounds("title-pinned").is_some());
-}
-
-fn leak(selector: String) -> &'static str {
-    Box::leak(selector.into_boxed_str())
 }
 
 #[gpui::test]
@@ -447,12 +472,10 @@ fn the_switcher_opens_the_shared_picker_enters_and_leaves(cx: &mut TestAppContex
     reader.read_with(visual, |view, _| assert!(!view.quick_open.open));
 }
 
-/// #1517: the Recent menu's footer says «[Ctrl] [Tab] cycles recent» in key
-/// caps, the word Ctrl on every system, so Ctrl+Tab with
-/// the menu open moves its highlight (wrapping) and Enter opens that row.
-/// Closed, ⌃Tab is still the Reader-wide recent switcher.
+/// #2329: Recent uses a search-focused gallery. Control release/Tab must not
+/// start or commit the independent MRU gesture behind it; arrows select cards.
 #[gpui::test]
-fn ctrl_tab_cycles_the_open_recent_menu(cx: &mut TestAppContext) {
+fn recent_gallery_arrows_wrap_without_starting_the_ctrl_tab_switcher(cx: &mut TestAppContext) {
     let fixture = tempfile::tempdir().unwrap();
     let vault = fixture.path().join("vault");
     std::fs::create_dir_all(&vault).unwrap();
@@ -471,67 +494,43 @@ fn ctrl_tab_cycles_the_open_recent_menu(cx: &mut TestAppContext) {
         cx.notify();
     });
     visual.run_until_parked();
-    // The footer hint names the key the open menu handles, as key caps.
-    visual.update(|_, cx| {
-        assert!(reader_shortcuts::shortcut(&NavMenuCycleNext, cx).is_some());
-        assert_eq!(
-            reader_shortcuts::shortcut_caps(&NavMenuCycleNext, cx).unwrap(),
-            ["Ctrl", "Tab"]
-        );
-    });
-    assert_eq!(CYCLE_HINT, "cycles recent");
-    assert!(visual.debug_bounds("title-nav-cycle-hint").is_none());
-
     click(visual, "title-recent");
-    let hint = visual
-        .debug_bounds("title-nav-cycle-hint")
-        .expect("the open Recent menu shows its key hint");
-    assert!(
-        hint.size.height <= px(20.),
-        "small caps fit the footer: {hint:?}"
-    );
-    let rows = reader.read_with(visual, |view, _| {
-        assert_eq!(view.title_nav.menu, Some(Menu::Recent));
-        assert_eq!(view.title_nav.selected, 0);
-        paths(view, Menu::Recent)
-    });
-    assert_eq!(rows, ["a.md", "b.md", "c.md"]);
+    assert!(visual.debug_bounds("recent-gallery-overlay").is_some());
     let selected = |visual: &mut VisualTestContext| {
-        reader.read_with(visual, |view, _| {
-            assert_eq!(view.title_nav.menu, Some(Menu::Recent), "menu stays open");
-            assert!(!view.recent_switcher.open(), "no switcher behind the menu");
-            view.title_nav.selected
+        reader.read_with(visual, |view, cx| {
+            assert_eq!(view.title_nav.menu, None);
+            assert_eq!(view.current_rel, "note.md", "highlight is not navigation");
+            view.recent_switcher.gallery_selection(cx).unwrap()
         })
     };
-    for expected in [1, 2, 0] {
-        visual.simulate_keystrokes("ctrl-tab");
-        visual.run_until_parked();
-        assert_eq!(selected(visual), expected, "⌃Tab moves down and wraps");
-    }
-    visual.simulate_keystrokes("ctrl-shift-tab");
+    assert_eq!(selected(visual), "a.md");
+    visual.simulate_keystrokes("ctrl-tab");
+    visual.simulate_event(gpui::ModifiersChangedEvent::default());
+    visual.executor().advance_clock(Duration::from_millis(150));
     visual.run_until_parked();
-    assert_eq!(selected(visual), 2, "⌃⇧Tab moves up and wraps");
+    assert_eq!(selected(visual), "a.md");
     assert!(visual.debug_bounds("recent-switcher").is_none());
-    // Arrows still stop at the ends.
-    visual.simulate_keystrokes("down");
-    visual.run_until_parked();
-    assert_eq!(selected(visual), 2);
-    visual.simulate_keystrokes("ctrl-shift-tab");
-    visual.run_until_parked();
-    assert_eq!(selected(visual), 1);
-    visual.simulate_keystrokes("enter");
+    for expected in ["b.md", "c.md", "a.md"] {
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        assert_eq!(
+            selected(visual),
+            expected,
+            "arrows wrap across gallery cards"
+        );
+    }
+    visual.simulate_keystrokes("left left enter");
     visual.run_until_parked();
     reader.read_with(visual, |view, _| {
         assert_eq!(view.current_rel, "b.md");
-        assert_eq!(view.title_nav.menu, None);
+        assert!(!view.recent_switcher.open());
     });
-
-    // Escape closes the menu without opening anything.
+    assert!(visual.debug_bounds("recent-gallery-overlay").is_none());
     click(visual, "title-recent");
-    visual.simulate_keystrokes("ctrl-tab escape");
+    visual.simulate_keystrokes("right escape");
     visual.run_until_parked();
     reader.read_with(visual, |view, _| {
-        assert_eq!(view.title_nav.menu, None);
+        assert!(!view.recent_switcher.open());
         assert_eq!(view.current_rel, "b.md");
     });
 
