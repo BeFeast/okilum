@@ -444,7 +444,16 @@ impl Reader {
         };
         // None retains the native exact-source/grapheme opt-in from ExactSource.
         // Neither mode replaces the buffer or touches its undo transaction chain.
-        input.update(cx, |input, cx| input.set_projection_provider(provider, cx));
+        // Native LSP overlays require raw editor coordinates and deliberately
+        // disable projection. Source owns that hover provider; rendered Live
+        // blocks keep their own target-bound tooltips.
+        let source_hover =
+            (!enabled).then(|| reader_image_actions::source_hover(cx.entity().downgrade()));
+        input.update(cx, |input, cx| {
+            input.clear_hover_state(cx);
+            input.lsp_mut().hover_provider = source_hover;
+            input.set_projection_provider(provider, cx);
+        });
         self.schedule_live_preview(cx);
         input.focus_handle(cx).focus(window, cx);
         cx.notify();
