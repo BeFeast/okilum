@@ -472,6 +472,11 @@ const HIDDEN_FILES_KEYS: [&str; 2] = ["ctrl-shift-.", "ctrl->"];
 const HIDDEN_FILES_KEY_MAC: &str = "cmd->";
 
 fn bind_keys(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new(
+        reader_read_menu::COPY_MARKDOWN_KEY,
+        reader_read_menu::CopyAsMarkdown,
+        Some("ReaderRead && !Input && !ReaderTree"),
+    )]);
     project_terminal::bind_keys(cx);
     reader_text_zoom::bind_keys(cx);
     reader_editor::format::bind_keys(cx);
@@ -7782,10 +7787,25 @@ impl Render for Reader {
                 && !self.shortcut_sheet.open
             {
                 "Reader ReaderHistory"
+            } else if self.editing.is_none()
+                && self.file_preview.is_none()
+                && !self.selected_file().is_empty()
+            {
+                "Reader ReaderRead"
             } else {
                 READER_CONTEXT
             })
             .track_focus(&self.focus_handle)
+            .on_action(
+                cx.listener(|this, _: &reader_read_menu::CopyAsMarkdown, window, cx| {
+                    this.copy_read_markdown(window, cx)
+                }),
+            )
+            .on_action(cx.listener(
+                |this, _: &reader_read_menu::CopyWithFormatting, window, cx| {
+                    this.copy_read_formatted(window, cx)
+                },
+            ))
             .map(|view| reader_text_zoom::reader(view, cx))
             .on_action(cx.listener(
                 |reader, action: &reader_image_actions::ImageCommand, window, cx| {

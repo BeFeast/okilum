@@ -111,6 +111,7 @@ fn catalog() -> Vec<Entry> {
         entry::<RedoTrash>(Os::CURRENT.redo_move_to_trash(), Notes),
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
+        entry::<reader_read_menu::CopyAsMarkdown>("Copy as Markdown", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),
         entry::<reader_log::ToggleMark>("Mark log row", Notes),
         entry::<reader_log::NextMark>("Next marked log row", Navigation),
@@ -567,6 +568,10 @@ mod tests {
         }
         let row = |label: &str| rows.iter().find(|row| row.label == label).unwrap();
         assert_eq!(row("New note").keys, [Os::CURRENT.shortcut("secondary-n")]);
+        assert_eq!(
+            row("Copy as Markdown").keys,
+            [Os::CURRENT.shortcut(reader_read_menu::COPY_MARKDOWN_KEY)]
+        );
         assert_eq!(
             row("Keyboard shortcuts").keys,
             [Os::CURRENT.shortcut("secondary-/")]

@@ -2,6 +2,24 @@
 use super::*;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 
+gpui::actions!(reader_read_menu, [CopyAsMarkdown, CopyWithFormatting]);
+
+pub(super) const COPY_MARKDOWN_KEY: &str = "secondary-shift-c";
+
+impl Reader {
+    pub(super) fn copy_read_markdown(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(snapshot) = snapshot(self, cx) {
+            snapshot.copy_format(false, window, cx);
+        }
+    }
+
+    pub(super) fn copy_read_formatted(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(snapshot) = snapshot(self, cx) {
+            snapshot.copy_format(true, window, cx);
+        }
+    }
+}
+
 mod commands;
 #[cfg(test)]
 mod rich_tests;
@@ -29,6 +47,38 @@ pub(super) struct Snapshot {
     document: Option<SharedString>,
     generation: u64,
     rich_markdown: bool,
+}
+
+impl Snapshot {
+    pub(super) fn copy_format(&self, formatted: bool, window: &mut Window, cx: &mut App) {
+        if formatted {
+            if self.rich_markdown && self.has_selection() {
+                self.copy(Command::Rich, window, cx);
+            }
+        } else {
+            self.copy(Command::Markdown, window, cx);
+        }
+    }
+
+    fn has_selection(&self) -> bool {
+        !self.plain.is_empty() || !self.markdown.is_empty()
+    }
+
+    fn copy(&self, command: Command, window: &mut Window, cx: &mut App) {
+        let text = match command {
+            Command::Plain | Command::Rich => Some(self.plain.as_str()),
+            Command::Markdown if self.has_selection() => Some(self.markdown.as_str()),
+            Command::Markdown | Command::Document => self.document.as_deref(),
+            Command::SelectAll => None,
+        };
+        if let Some(text) = text {
+            if command == Command::Rich {
+                platform::rich_clipboard::copy(text.to_owned(), self.markdown.clone(), window, cx);
+            } else {
+                cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+            }
+        }
+    }
 }
 
 pub(super) fn snapshot(state: &Reader, cx: &App) -> Option<Snapshot> {
@@ -61,55 +111,41 @@ fn build(
     snapshot: Option<Snapshot>,
     object: bool,
 ) -> PopupMenu {
-    let Some(Snapshot {
-        plain,
-        markdown,
-        document,
-        generation,
-        rich_markdown,
-    }) = snapshot
-    else {
+    let Some(snapshot) = snapshot else {
         return menu;
     };
-    let has_selection = !plain.is_empty() || !markdown.is_empty();
+    let has_selection = snapshot.has_selection();
     if object && !has_selection {
         return menu;
     }
     let mut menu = menu;
     for &command in commands(has_selection) {
-        let payload = match command {
-            Command::Plain | Command::Rich => Some(plain.clone()),
-            Command::Markdown => Some(markdown.clone()),
-            Command::Document => document.as_ref().map(ToString::to_string),
-            Command::SelectAll => None,
-        };
+        let snapshot = snapshot.clone();
         let reader = reader.clone();
-        let rich_source = (command == Command::Rich).then(|| markdown.clone());
         menu = menu.item(
-            PopupMenuItem::element(move |_, _| {
-                div()
+            PopupMenuItem::element(move |_, cx| {
+                h_flex()
                     .debug_selector(move || format!("read-menu-{}", command.label()))
-                    .child(command.label())
+                    .child(div().flex_1().child(command.label()))
+                    .when(command == Command::Markdown, |row| {
+                        row.child(reader_shortcuts::all_shortcuts(&CopyAsMarkdown, cx))
+                    })
             })
             .disabled(
-                (command == Command::Document && payload.is_none())
-                    || (command == Command::Rich && !rich_markdown),
+                (command == Command::Document && snapshot.document.is_none())
+                    || (command == Command::Rich && !snapshot.rich_markdown),
             )
             .on_click(move |_, window, cx| {
                 if command == Command::SelectAll {
                     let _ = reader.update(cx, |reader, cx| {
-                        if reader.navigation.preparation_generation == generation {
+                        if reader.navigation.preparation_generation == snapshot.generation {
                             reader
                                 .content
                                 .update(cx, |content, cx| content.select_all(cx));
                         }
                     });
-                } else if let Some(text) = &payload {
-                    if let Some(markdown) = &rich_source {
-                        platform::rich_clipboard::copy(text.clone(), markdown.clone(), window, cx);
-                    } else {
-                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                    }
+                } else {
+                    snapshot.copy(command, window, cx);
                 }
             }),
         );
