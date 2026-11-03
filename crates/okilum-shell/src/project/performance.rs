@@ -44,7 +44,7 @@ pub(super) fn collect(cx: &mut App) {
     let mut collector = gpui::profiler::FrameTimingCollector::new();
     cx.spawn(async move |_cx| {
         loop {
-            gpui::Timer::after(Duration::from_millis(250)).await;
+            _cx.background_executor().timer(Duration::from_millis(250)).await;
             let work = std::mem::replace(&mut *WORK.lock().unwrap(), [(0, 0); 3]);
             eprintln!("WORK {}", json!({"unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64(),"board":work[0],"card":work[1],"row":work[2]}));
             for event in collector.collect_unseen() {
