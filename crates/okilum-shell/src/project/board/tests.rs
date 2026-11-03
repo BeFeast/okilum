@@ -352,7 +352,9 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                         title: format!("Fixture issue {}", s.number),
                         state: "open".into(),
                         body: String::new(),
-                        labels: Vec::new(),
+                        labels: vec![okilum_t3::board::IssueLabel {
+                            name: "from-oleg".into(),
+                        }],
                         open_pull_requests: Vec::new(),
                         live_pulls: Vec::new(),
                     })
@@ -465,6 +467,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         });
         reader.project_navigation.boards[&folder].update(cx, |board, cx| {
             board.filter.executor = Some("Editing".into());
+            board.filter.chip = filters::Chip::Oleg;
             board.filter.search = "#1767".into();
             board
                 .filter_ui
@@ -582,6 +585,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         let board = reader.project_navigation.boards[&folder].read(cx);
         assert_eq!(board.filter.executor.as_deref(), Some("Editing"));
         assert_eq!(board.filter.search, "#1767");
+        assert_eq!(board.filter.chip, filters::Chip::Oleg);
         assert_eq!(board.selected, Some(1767));
         assert!(reader
             .project
@@ -683,6 +687,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         let board = reader.project_navigation.boards[&folder].read(cx);
         assert_eq!(board.filter.executor.as_deref(), Some("Editing"));
         assert_eq!(board.filter.search, "#1767");
+        assert_eq!(board.filter.chip, filters::Chip::Oleg);
         assert_eq!(board.selected, Some(1767));
         assert_eq!(
             reader
