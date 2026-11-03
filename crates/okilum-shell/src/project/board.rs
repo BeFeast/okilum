@@ -1418,14 +1418,8 @@ impl Render for Board {
                     }),
             );
         }
-        let verified = binding
-            .issues
-            .iter()
-            .filter(|scope| {
-                self.delivery_column(scope) == Column::Verified
-                    && self.filter.as_ref().is_none_or(|f| f == &scope.executor)
-            })
-            .count();
+        // The lane snapshot already classified and filtered these issues.
+        let verified = presentation.columns[Column::Verified as usize].len();
         // A narrow native strip leaves all working columns inside the center.
         // Its full accessible label/tooltip remain readable when space is tight.
         let toggle = Button::new("board-verified-toggle")
