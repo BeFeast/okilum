@@ -37,7 +37,8 @@ struct Prepared {
     counts: [usize; 5],
     filter: Option<String>,
     collapsed: [bool; 5],
-    roles: Vec<String>,
+    roles: Arc<[String]>,
+    local_indices: std::collections::BTreeMap<String, usize>,
     source_problem: Option<String>,
     sources_ready: bool,
     mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
@@ -220,7 +221,15 @@ impl Board {
             counts,
             filter: self.filter.clone(),
             collapsed: self.list.preferences.collapsed,
-            roles: roles.into_iter().collect(),
+            roles: roles.into_iter().collect::<Vec<_>>().into(),
+            local_indices: self
+                .local_cards
+                .value
+                .cards
+                .iter()
+                .enumerate()
+                .map(|(i, card)| (card.id.clone(), i))
+                .collect(),
         });
         self.list.prepared = Some(prepared.clone());
         #[cfg(test)]
@@ -318,7 +327,7 @@ impl Board {
                     )
                     .child(self.view_toggle(cx))
                     .child(div().flex_1())
-                    .child(self.list_filter(&prepared.roles, cx))
+                    .child(self.list_filter(prepared.roles.clone(), cx))
                     .child(self.add_card_button(cx))
                     .child(
                         Button::new("board-manage")
@@ -407,12 +416,10 @@ impl Board {
                     cx,
                 ))
             } else {
-                self.local_cards
-                    .value
-                    .cards
-                    .iter()
-                    .find(|card| Some(&card.id) == self.selected_local.as_ref())
-                    .map(|card| self.local_card(card, cx))
+                self.selected_local
+                    .as_ref()
+                    .and_then(|id| prepared.local_indices.get(id))
+                    .map(|index| self.local_card(&self.local_cards.value.cards[*index], cx))
             };
             if let Some(details) = details {
                 root = root.child(
@@ -442,9 +449,8 @@ impl Board {
         )
         .into_any_element()
     }
-    fn list_filter(&self, roles: &[String], cx: &mut Context<Self>) -> AnyElement {
+    fn list_filter(&self, roles: Arc<[String]>, cx: &mut Context<Self>) -> AnyElement {
         use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let roles = roles.to_vec();
         let selected = self.filter.clone();
         let weak = cx.entity().downgrade();
         Button::new("board-agent-filter")
