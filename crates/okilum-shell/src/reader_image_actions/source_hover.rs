@@ -293,6 +293,16 @@ mod tests {
                     .into()
             )
         );
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_live_preview(window, cx)
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| {
+            assert!(
+                input.lsp().hover_provider.is_some(),
+                "Source hover returns after leaving Live"
+            )
+        });
         assert_eq!(
             std::fs::read_to_string(root.join("note.md")).unwrap(),
             source
