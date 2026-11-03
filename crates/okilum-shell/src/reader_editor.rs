@@ -824,7 +824,9 @@ impl Reader {
             editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
             let epoch = editing.recovery_epoch;
             let input_id = input.entity_id();
-            editing.protecting = true;
+            // A clean reload/reset already has its exact canonical bytes.
+            // Preparing its context must not block a move for 300 ms.
+            editing.protecting = editing.store.has_pending_revision();
             let context = editing.block_context.clone();
             let cache = editing.block_cache.clone();
             #[cfg(test)]
@@ -3485,6 +3487,10 @@ mod tests {
                 .set_value("first draft", window, cx);
         });
         visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
+        visual.run_until_parked();
         let journal = std::fs::read_dir(state.join("editor-drafts"))
             .unwrap()
             .flatten()
@@ -3501,6 +3507,10 @@ mod tests {
                 .unwrap()
                 .set_value("latest draft", window, cx);
         });
+        visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(
@@ -3575,6 +3585,10 @@ mod tests {
                 .set_value("first draft", window, cx);
         });
         visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
+        visual.run_until_parked();
         let journal = std::fs::read_dir(state.join("editor-drafts"))
             .unwrap()
             .flatten()
@@ -3591,6 +3605,10 @@ mod tests {
                 .unwrap()
                 .set_value("latest draft", window, cx);
         });
+        visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
         visual.run_until_parked();
         reader.read_with(visual, |r, _| {
             assert_eq!(
@@ -5234,6 +5252,10 @@ mod tests {
         visual.simulate_keystrokes("cmd-z");
         #[cfg(not(target_os = "macos"))]
         visual.simulate_keystrokes("ctrl-z");
+        visual.run_until_parked();
+        visual
+            .executor()
+            .advance_clock(RECOVERY_PAUSE + std::time::Duration::from_millis(1));
         visual.run_until_parked();
         let journal = std::fs::read_dir(directory.join("state/editor-drafts"))
             .unwrap()

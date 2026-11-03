@@ -2518,9 +2518,17 @@ mod tests {
             );
             assert!(r.source_is_dirty(cx), "the independent action guard agrees");
         });
+        assert_eq!(
+            crate::reader_editor::block_entry::take_source_work_bytes(),
+            0,
+            "a new authored revision uses shared revision facts, without scanning status bytes"
+        );
+        input.read_with(visual, |i, _| {
+            let _ = i.value();
+        });
         assert!(
             crate::reader_editor::block_entry::take_source_work_bytes() >= note.len(),
-            "positive control: a new authored revision performs exact status work"
+            "positive control: legacy native materialization is still observed"
         );
         block_draw(visual);
         reader.update_in(visual, |r, _, cx| {
