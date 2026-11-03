@@ -69,6 +69,7 @@ pub(super) fn agent_avatar(name: &str, active: bool, cx: &App) -> AnyElement {
         .when(active, |avatar| {
             avatar.child(
                 div()
+                    .debug_selector(|| "board-agent-live-dot".into())
                     .absolute()
                     .right(px(-2.))
                     .bottom(px(-2.))

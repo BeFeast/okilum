@@ -39,6 +39,7 @@ struct Prepared {
     collapsed: [bool; 5],
     roles: Vec<String>,
     source_problem: Option<String>,
+    sources_ready: bool,
     issue_indices: std::collections::BTreeMap<u64, usize>,
 }
 pub(super) struct State {
@@ -178,8 +179,10 @@ impl Board {
             .map(|(i, s)| (s.number, i))
             .collect();
         let source_problem = self.problem(now());
+        let sources_ready = self.column_sources_ready(&binding);
         let prepared = Arc::new(Prepared {
             source_problem,
+            sources_ready,
             issue_indices,
             binding,
             rows,
@@ -317,9 +320,7 @@ impl Board {
         if let Some(notice) = &self.notice {
             root = root.child(div().px_4().text_size(px(12.)).child(notice.clone()));
         }
-        if prepared.counts.iter().all(|count| *count == 0)
-            && self.column_sources_ready(&prepared.binding)
-        {
+        if prepared.counts.iter().all(|count| *count == 0) && prepared.sources_ready {
             root = root.child(
                 div()
                     .debug_selector(|| "board-empty-state".into())
@@ -648,12 +649,14 @@ impl Board {
             );
         }
         if let Some(agent) = &agent {
-            let active = agent.working()
-                && agent
-                    .thread
-                    .active_run_id
-                    .as_ref()
-                    .is_some_and(|id| !id.is_empty())
+            let active = matches!(
+                agent.thread.status.as_str(),
+                "preparing" | "starting" | "running" | "waiting"
+            ) && agent
+                .thread
+                .active_run_id
+                .as_ref()
+                .is_some_and(|id| !id.is_empty())
                 && !agent.thread.settled;
             let url = self.manager.as_ref().and_then(|m| {
                 m.read(cx)
@@ -686,7 +689,13 @@ impl Board {
             .unwrap_or_else(|| "—".into());
         row = row.child(
             div()
-                .debug_selector(move || format!("board-list-time-{number}"))
+                .debug_selector(move || {
+                    if stale {
+                        format!("board-list-stale-{number}")
+                    } else {
+                        format!("board-list-time-{number}")
+                    }
+                })
                 .w(px(if stale { 108. } else { 52. }))
                 .flex_none()
                 .text_size(px(12.))

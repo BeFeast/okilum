@@ -188,6 +188,7 @@ impl Board {
                         .await;
                     let _ = this.update_in(cx, |this, window, cx| {
                         this.binding_loading = false;
+                        this.list.invalidate();
                         match result {
                             Ok(binding) => {
                                 let same_source = this
@@ -231,7 +232,6 @@ impl Board {
                                         }
                                     }
                                 }
-                                this.list.invalidate();
                                 this.binding = binding;
                                 this.binding_read = Some(now());
                                 this.binding_error = None;

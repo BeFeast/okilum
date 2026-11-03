@@ -214,3 +214,62 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
     });
     reader.read_with(visual, |r, _| assert!(r.project_navigation.board_visible));
 }
+
+#[gpui::test]
+fn list_2530_ci_live_age_and_executor_filter_use_existing_evidence(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(4));
+    board.update(visual, |board, cx| {
+        let binding = board.binding.as_mut().unwrap();
+        for scope in &mut binding.issues {
+            scope.pull_requests = vec![100 + scope.number];
+        }
+        binding.issues[0].agent_thread_id = Some("synthetic-agent".into());
+        binding.issues[1].executor = "Tests".into();
+        let at = now();
+        board.snapshot.forgejo.value = (1..=4).map(|number| {
+            let mut issue: okilum_t3::board::Issue = serde_json::from_value(serde_json::json!({"number":number,"state":"open","title":format!("Source title {number}"),"labels":[{"name":"bug"},{"name":"from-oleg"},{"name":"epic: Board"}],"updated_at":"1970-01-01T00:00:00Z"})).unwrap();
+            issue.open_pull_requests = vec![100 + number];
+            issue.live_pulls = vec![okilum_t3::board::live::Pull { number: 100 + number, merged_at: None, checks: ["success", "pending", "failure", "unknown"][(number-1) as usize].into() }];
+            (number, issue)
+        }).collect();
+        board.snapshot.forgejo.last_success = Some(at);
+        board.snapshot.t3.value = vec![serde_json::from_value(serde_json::json!({"threadId":"synthetic-agent","title":"Not issue progress","status":"running","providerInstanceId":"codex","model":"synthetic","runtimeMode":"full-access","activeRunId":"run","updatedAt":chrono::DateTime::from_timestamp((at-4*3600-1) as i64, 0).unwrap().to_rfc3339()})).unwrap()];
+        board.list.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for selector in [
+        "CI passed",
+        "CI running",
+        "CI failed",
+        "CI unknown",
+        "board-agent-live-dot",
+        "board-list-stale-1",
+        "board-list-time-2",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "missing {selector}"
+        );
+    }
+    board.read_with(visual, |b, _| {
+        assert_eq!(b.list.prepared.as_ref().unwrap().counts, [0, 1, 3, 0, 0]);
+        let scope = &b.binding.as_ref().unwrap().issues[0];
+        let active = live::agent(scope, &b.snapshot.t3.value, now(), 4 * 3600).unwrap();
+        assert!(active.stuck);
+        assert!(
+            live::progress(scope, active.thread, None).is_none(),
+            "thread titles never become progress"
+        );
+    });
+    board.update(visual, |b, cx| {
+        b.filter = Some("Tests".into());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-row-2").is_some());
+    assert!(visual.debug_bounds("board-list-row-1").is_none());
+    board.read_with(visual, |b, _| assert_eq!(b.snapshot.forgejo.value.len(), 4));
+}
