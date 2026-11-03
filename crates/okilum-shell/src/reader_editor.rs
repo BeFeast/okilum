@@ -1034,6 +1034,18 @@ impl Reader {
                     return;
                 }
                 let source = input.read(cx).value().to_string();
+                this.sync_agent_document(cx);
+                if let Some((token, link)) = this.agent_document.as_ref().and_then(|current| {
+                    current
+                        .imports
+                        .links()
+                        .iter()
+                        .find(|link| link.import.line.contains(&click.offset.0))
+                        .map(|link| (current.token.clone(), link.clone()))
+                }) {
+                    this.open_agent_import(token, link, window, cx);
+                    return;
+                }
                 if this.open_source_image_at(&source, click.offset.0, window, cx) {
                     return;
                 }
@@ -2711,6 +2723,21 @@ fn live_blocks(
         let Some(this) = reader.upgrade() else {
             return div().into_any_element();
         };
+        if let Some(link) = this.read(cx).agent_document.as_ref().and_then(|current| {
+            current
+                .imports
+                .links()
+                .iter()
+                .find(|link| link.import.line == (block.source.start.0..block.source.end.0))
+                .cloned()
+        }) {
+            return reader_document_decorations::render_line(
+                this.read(cx),
+                link,
+                reader.clone(),
+                cx,
+            );
+        }
         let table_range = block.source.start.0..block.source.end.0;
         let grid = {
             let reader = this.read(cx);

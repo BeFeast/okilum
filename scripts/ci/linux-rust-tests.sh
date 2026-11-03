@@ -23,6 +23,8 @@ suite cargo test --locked -p okilum-shell --bin okilum settings_2487_ -- --nocap
 suite cargo test --locked -p okilum-shell --bin okilum kanban_2534_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum list_2548_ -- --nocapture
 suite cargo test --locked -p okilum-t3 board::order:: -- --nocapture
+# Keep the inline agent-document regression verdict non-empty and independent.
+suite cargo test --locked -p okilum-shell --bin okilum issue1588_ -- --nocapture --test-threads=1
 # Run the source/input acceptance groups independently, so an unrelated native
 # task abort cannot hide their verdict behind an unfinished full shell binary.
 # A non-UTC process timezone makes the conflict-copy local timestamp check
