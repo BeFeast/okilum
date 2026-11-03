@@ -14,6 +14,13 @@ pub fn live_copies(image: &Path, uid: u32, since: u64) -> Result<Vec<u32>> {
     imp::live_copies(image, uid, since)
 }
 
+/// Start time and process group from the same Darwin kernel snapshot, including
+/// an exited leader retained by waitid(NOWAIT).
+#[cfg(target_os = "macos")]
+pub(super) fn leader(pid: u32) -> Result<(u64, i32)> {
+    imp::leader(pid)
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use anyhow::{ensure, Context, Result};
@@ -332,14 +339,15 @@ mod imp {
     use anyhow::{ensure, Result};
     use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path::Path};
 
-    fn info(pid: u32) -> Option<libc::proc_bsdinfo> {
+    fn info(pid: u32, include_zombies: bool) -> Option<libc::proc_bsdinfo> {
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
         let read = unsafe {
             libc::proc_pidinfo(
                 pid as libc::c_int,
                 libc::PROC_PIDTBSDINFO,
-                0,
+                // XNU proc_pidinfo explicitly includes unreaped zombies when arg != 0.
+                u64::from(include_zombies),
                 (&mut info as *mut libc::proc_bsdinfo).cast(),
                 size,
             )
@@ -350,8 +358,19 @@ mod imp {
         info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
     }
     pub fn started(pid: u32) -> Result<u64> {
-        let info = info(pid).ok_or_else(|| anyhow::anyhow!("process {pid} not readable"))?;
-        Ok(start_of(&info))
+        Ok(leader(pid)?.0)
+    }
+    pub fn leader(pid: u32) -> Result<(u64, i32)> {
+        // An unreaped leader still reserves its PID/group after exit. Ordinary
+        // proc_pidinfo and getpgid omit zombies on Darwin, so read both identity
+        // fields in one zombie-inclusive kernel snapshot; never substitute a
+        // cached generation when inspection fails.
+        let info = info(pid, true).ok_or_else(|| anyhow::anyhow!("process {pid} not readable"))?;
+        ensure!(
+            info.pbi_pid == pid,
+            "process identity changed during inspection"
+        );
+        Ok((start_of(&info), i32::try_from(info.pbi_pgid)?))
     }
     pub fn live_copies(image: &Path, uid: u32, since: u64) -> Result<Vec<u32>> {
         // The process table can grow between sizing and filling; a full buffer may
@@ -378,7 +397,7 @@ mod imp {
             if pid <= 0 {
                 continue;
             }
-            let Some(info) = info(pid as u32) else {
+            let Some(info) = info(pid as u32, false) else {
                 continue;
             };
             if info.pbi_uid != uid || start_of(&info) < since {

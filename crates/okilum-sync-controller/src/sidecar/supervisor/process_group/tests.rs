@@ -375,3 +375,23 @@ fn dropping_the_tree_does_not_leave_the_runtime_behind() {
     drop(tree);
     wait_until("descendant to disappear", || !alive(child));
 }
+
+#[test]
+fn exited_unreaped_leader_retains_the_captured_generation_and_group() {
+    let fixture = Fixture::new();
+    let (mut tree, child, _data) =
+        fixture.tree("zombie-identity", &["exit-parent"], Duration::from_secs(10));
+    let captured = GroupLeader {
+        pid: Pid::from_raw(tree.root.as_ref().unwrap().id() as i32).unwrap(),
+        group: tree.group,
+        started: tree.started.unwrap(),
+    };
+    assert!(alive(child), "positive control: the group member is live");
+    wait_until("leader exit without reaping", || {
+        tree.root_exited().unwrap()
+    });
+    assert_eq!(inspect_leader(captured.pid).unwrap(), captured);
+    assert_eq!(tree.status().unwrap(), Status::Running);
+    assert_eq!(tree.stop().unwrap(), Status::Stopped);
+    wait_until("owned member to disappear", || !alive(child));
+}

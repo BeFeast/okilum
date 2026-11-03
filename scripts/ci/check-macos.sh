@@ -38,15 +38,10 @@ if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://githu
     python3 scripts/ci/sparkle-freshness/run.py "$archive"
 fi
 cargo_args=(test --release --locked --target aarch64-apple-darwin)
-# Compile the production binary too: cargo test alone only builds the shell
-# with cfg(test), because this crate has no integration-test targets.
-cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
-# Compile every workspace test target, including test-only cfg branches and integration tests.
 # Keep the workspace selection for filtered core/shell runs too. Selecting only
 # that pair drops features from other members' dev-dependencies (e.g. Brain's
 # TLS-enabled tungstenite), rebuilding the enormous shell test binary again.
 SHARED=(--workspace)
-cargo "${cargo_args[@]}" --workspace --no-run
 
 run_tests() {
     local package="$1" target="$2" filter="$3"
@@ -59,6 +54,21 @@ run_tests() {
     grep -q ': test$' "${RUNNER_TEMP}/macos-test-list.txt"
     cargo "${cargo_args[@]}" "${selection[@]}" "$target" "$filter" -- --test-threads=1 "$@"
 }
+# Kernel lifecycle failures should surface before the long desktop/test builds.
+# The full sidecar suite remains mandatory; this only moves its existing invocation.
+run_tests okilum-sync-controller --lib sidecar::
+
+# Compile the production binary too: cargo test alone only builds the shell
+# with cfg(test), because this crate has no integration-test targets.
+cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
+# Compile every workspace test target, including test-only cfg branches and integration tests.
+cargo "${cargo_args[@]}" --workspace --no-run
+
+# #2442: release-profile dependency fixtures and Sync macro imports must also run.
+run_tests okilum-shell --bins reader_log_remote::
+run_tests okilum-shell --bins reader_settings_sync::
+run_tests okilum-core --lib capture_attachments::tests::receipt_lookup_bounds_and_exact_ledger_binding_fail_closed --exact
+
 run_tests okilum-shell --bins reader_manager_compatibility::tests::
 run_tests okilum-shell --bins reader_manager_panel::status_tests::webkit_failure_preserves_thread_actions_without_retries_or_raw_ui_errors --exact
 # APFS rejects invalid UTF-8 filenames even though Unix OsString can represent them.
@@ -114,7 +124,6 @@ run_tests okilum-shell --bins reader_tasks::tests::task_labels_fit_descenders --
 # Linux and Windows. These cover the Unix state store (flock, atomic replace), the
 # process-group owned tree (real process tree, signals, process scan via libproc) and
 # the private socket transport (LOCAL_PEERCRED); each needs the real macOS kernel.
-run_tests okilum-sync-controller --lib sidecar::
 # #588: the durable pairing journal is shared with macOS, independently of the
 # Linux systemd runtime. Exercise actual private-file/lock operations on this OS.
 run_tests okilum-sync-controller --lib enrollment::
@@ -201,8 +210,3 @@ run_tests okilum-shell --bins reader_deleted_note::tests::
 run_tests okilum-shell --bins reader_update_restart::tests::
 run_tests okilum-shell --bins reader_editor::tests::update_install_post_verification_protects_latest_edits_and_refuses_failure --exact
 run_tests okilum-shell --bins reader_editor::tests::update_restart_refuses_unprotected_single_file_then_preserves_latest_draft --exact
-
-# #2442: release-profile dependency fixtures and Sync macro imports must also run.
-run_tests okilum-shell --bins reader_log_remote::
-run_tests okilum-shell --bins reader_settings_sync::
-run_tests okilum-core --lib capture_attachments::tests::receipt_lookup_bounds_and_exact_ledger_binding_fail_closed --exact
