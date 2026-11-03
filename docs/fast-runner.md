@@ -152,3 +152,65 @@ provisional until two complete normal-load measurements establish the runtime
 and margin. Keep the new status non-required until those successful PR runs;
 record the final measurements and branch-protection decision in PR #2434 and
 issue #2415 before re-enabling auto-merge.
+
+
+## Test-group hard deadlines (#2503)
+
+The Linux fast workflow uses `scripts/ci/test-group.sh GROUP SECONDS COMMAND...`.
+The Python supervisor starts a private session and becomes a Linux child
+subreaper. It sends TERM to the entire descendant tree at the wall-clock limit,
+then KILL and reaps adopted children within a further 30 seconds before returning
+124 (reserving up to 0.5 s of that budget for reaping and returning).
+This includes double-forked daemons that created another session; a plain
+`timeout ... setsid ...` does not cover those. Exact privileged descendants from
+`sync-network-policy.sh` are signalled through the runner's existing noninteractive
+sudo, without changing its services, watchdog, capacity or labels. Cancellation
+also cleans descendants and returns a failure. Normal command status is preserved;
+a successful command cannot leave background children running. Logs contain one
+`TEST_GROUP_TIMEOUT group=... limit=...s kill_after=30s` line per expired group,
+plus start/end lines with actual elapsed seconds. Cleanup that needs KILL after a
+parent has already exited emits `TEST_GROUP_KILL` with the group and limit.
+
+Limits include compilation/downloads and leave room below the unchanged job
+ceilings (check 15 min, shell-full 20 min, sync-source-sharing 15 min):
+
+| Scope | Limit | Basis / margin |
+| --- | ---: | --- |
+| CI tooling Python discovery | 90 s | Includes the real hanging control (~2.3 s with a shortened grace); existing step ceiling stays 2 min. |
+| Entire fast-local check / locked fast.sh | 540 / 480 s | ~330 s measured check, with 150 s gate margin; outer scope also bounds source/cache setup. |
+| Check build / workspace test compilation | 360 s each | Inside the tighter 480 s combined gate. |
+| Channel / paste inventory / paste tests | 120 s each | Inside the same combined gate; test selection is unchanged. |
+| Entire fast-local shell / locked shell-full.sh | 1110 / 1020 s | ~780 s measured full shell run, 240 s locked gate margin. |
+| Shell inventory / unfiltered execution | 360 / 900 s | Compilation allowance and 15 min execution cap inside the combined gate. |
+| Entire sync-local entrypoint | 840 s | Bounds lock, vendor preparation and both groups together below the 15 min job ceiling. |
+| Sync target lock / vendor setup / verification | 600 / 120 / 60 s | Preserve the existing lock wait for concurrent jobs; the outer scope bounds the combined wait/setup/tests. |
+| Sync source sharing (two concurrent trials) | 480 s | See same-runner measurements below; nearly 2x the longest complete observed sync step. |
+| Sync network policy | 120 s | ~51 s test execution in the measured loaded run, plus compile/setup margin. |
+
+Read-only measurements on **baldr fast-linux**, 2026-11-03, from successful
+Forgejo job details/logs (all before this change, no cross-machine comparison):
+
+- [run 21635, sync job](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21635/jobs/2/attempt/1):
+  complete step 244 s; source compilation 41.89 + 9.80 s, two concurrent five-test
+  trials ~100.2 s, network-policy compilation 1.45 s and execution 50.80 s.
+- [run 21578, sync job](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21578/jobs/2/attempt/1):
+  complete step 120 s.
+- [run 21482, sync job](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21482/jobs/2/attempt/1):
+  complete step 100 s.
+
+`test_test_group.py` is part of required CI discovery. Its real hanging fixture
+starts a test, a double-forked detached daemon and another helper, with descendants
+ignoring TERM. With a 2 s limit and a 0.3 s test grace it must return 124 around 2.3 s, identify the group
+and limit, and leave none of the recorded PIDs in `/proc` (including zombies).
+The production grace defaults to 30 s; `--kill-after` accepts only (0, 30] s.
+Independent subprocess deadlines and fixture cleanup turn a broken watchdog into
+a failing test. Passing, failing, signal cancellation and successful-parent orphan
+controls exercise the same production entrypoint. Existing inventory checks and
+full shell/source-sharing/network-policy selections are unchanged.
+
+After merge, use `scripts/ci/fast-runtime-report.py PR_NUMBER` to inspect the next
+24 h of `fast.yml`. It prints the longest started-to-stopped runtime and the run
+URL against the incident's 2700 s (45 min). Creation-to-stop is printed separately
+because queue delay is not execution time. Running workflows are lower bounds;
+include failed/cancelled runs and do not claim a full-day observation early.
+Record the result in #2503 with the observation window and raw JSON evidence.

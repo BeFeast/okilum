@@ -14,6 +14,8 @@ class ParallelTargets(unittest.TestCase):
     def fixture(self, root):
         scripts=root/'scripts/ci';scripts.mkdir(parents=True)
         shutil.copyfile(SCRIPT,scripts/'fast-local.sh')
+        for name in ['test-group.sh', 'test-group.py']:
+            shutil.copyfile(SCRIPT.with_name(name), scripts/name)
         shutil.copyfile(SCRIPT.with_name('fast-source.sh'),scripts/'fast-source.sh')
         (scripts/'release-cache.sh').write_text('release_cache_stats() { :; }\n')
         (scripts/'fast.sh').write_text('''#!/usr/bin/env bash
@@ -73,6 +75,7 @@ exit "${COMPILER_STATUS:-0}"
             env['COMPILER_STATUS']='23'
             result=subprocess.run(['bash','scripts/ci/fast-local.sh'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
             self.assertEqual(result.returncode,23,result.stderr)
+            self.assertIn('TEST_GROUP_START group=fast.sh limit=480s', result.stdout)
             env['COMPILER_STATUS']='0'
             result=subprocess.run(['bash','scripts/ci/fast-local.sh'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
             self.assertEqual(result.returncode,0,result.stderr)
@@ -95,6 +98,7 @@ exit 41
             env['GITHUB_SHA']=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
             full=subprocess.run(['bash','scripts/ci/fast-local.sh','shell-full'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
             self.assertEqual(full.returncode,41,full.stderr)
+            self.assertIn('TEST_GROUP_START group=shell-full.sh limit=1020s', full.stdout)
             self.assertIn('SHELL_GATE_EXECUTED',full.stdout)
             fast=subprocess.run(['bash','scripts/ci/fast-local.sh'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
             self.assertEqual(fast.returncode,0,fast.stderr)

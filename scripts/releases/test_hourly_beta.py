@@ -476,6 +476,20 @@ class WorkflowContract(unittest.TestCase):
             self.assertEqual(job['runs-on'], 'fast-linux')
             self.assertNotIn("!= 'push'", job.get('if', ''))
         self.assertEqual(data['jobs']['shell-full']['needs'], ['check'])
+        # Certification and PR admission share the same bounded test entrypoints.
+        for name, command in [
+            ('check', 'fast-local-check 540 bash scripts/ci/fast-local.sh'),
+            ('shell-full', 'fast-local-shell-full 1110 bash scripts/ci/fast-local.sh shell-full'),
+        ]:
+            step = data['jobs'][name]['steps'][-1]
+            self.assertNotIn('if', step)
+            self.assertIn('bash scripts/ci/test-group.sh ' + command, step['run'])
+        for directory in ['ci', 'releases', 'updater']:
+            command = (f'bash scripts/ci/test-group.sh {directory}-python 90 '
+                       f"python3 -I -m unittest discover -s scripts/{directory} -p 'test_*.py' -v")
+            step = next(s for s in data['jobs']['check']['steps'] if s.get('run') == command)
+            self.assertNotIn('if', step)
+            self.assertEqual(step['timeout-minutes'], '2')
         check = data['jobs']['check']['steps']
         validation = next(s for s in check if s.get('run') == 'python3 scripts/releases/hourly_beta.py certify-source')
         self.assertEqual(validation['env']['CERTIFICATION_SOURCE'], '${{ inputs.certification_source }}')

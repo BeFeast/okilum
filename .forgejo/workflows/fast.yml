@@ -65,20 +65,20 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Run the full CI tooling Python suite
         timeout-minutes: 5
-        run: python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+        run: bash scripts/ci/test-group.sh ci-python 90 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - name: Run the full releases Python suite
         timeout-minutes: 5
-        run: python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
+        run: bash scripts/ci/test-group.sh releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
       - name: Run the full updater Python suite
         timeout-minutes: 5
-        run: python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
+        run: bash scripts/ci/test-group.sh updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
       - name: Build Linux desktop and run fast unit tests
         env:
           GITHUB_SHA: ${{ inputs.certification_source || github.sha }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/fast-local.sh
+          bash scripts/ci/test-group.sh fast-local-check 540 bash scripts/ci/fast-local.sh
 
   shell-full:
     # Full runtime coverage never occupies a PR admission slot.
@@ -116,7 +116,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          packages=(build-essential cmake pkg-config curl git mold zstd
+          packages=(build-essential cmake pkg-config curl git mold zstd python3
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
             libfontconfig-dev libfreetype-dev libxcb1-dev)
           if ! dpkg-query -W -f='${Status}\n' "${packages[@]}" 2>/dev/null | grep -vFx 'install ok installed' | grep -q . &&
@@ -137,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/fast-local.sh shell-full
+          bash scripts/ci/test-group.sh fast-local-shell-full 1110 bash scripts/ci/fast-local.sh shell-full
 
   certification-status:
     # Beta gates on check alone: report and dispatch as soon as it finishes,
@@ -203,14 +203,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          export CARGO_TARGET_DIR="$HOME/.cache/okilum-sync-source-sharing/target"
-          mkdir -p "$CARGO_TARGET_DIR"
-          exec 9>"$HOME/.cache/okilum-sync-source-sharing/gate.lock"
-          flock -w 600 9
-          scripts/vendor-setup.sh 9>&-
-          scripts/vendor-setup.sh --verify 9>&-
-          bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2 9>&-
-          bash scripts/ci/sync-network-policy.sh 9>&-
+          bash scripts/ci/test-group.sh sync-local 840 bash scripts/ci/sync-source-sharing-fast.sh
       - name: Reject and reap surviving job fixture daemons
         if: always()
         run: |

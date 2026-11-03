@@ -3,8 +3,8 @@
 set -euo pipefail
 # Share the existing source/target locks while keeping independent job budgets.
 case ${1:-fast} in
-    fast) gate_script=fast.sh ;;
-    shell-full) gate_script=shell-full.sh ;;
+    fast) gate_script=fast.sh; gate_limit=480 ;;
+    shell-full) gate_script=shell-full.sh; gate_limit=1020 ;;
     *) echo 'Expected fast or shell-full gate' >&2; exit 64 ;;
 esac
 slot_root=${OKILUM_FAST_SLOT_ROOT:-"$HOME/.cache/okilum-fast/slots"}
@@ -51,7 +51,7 @@ while true; do
             # not inherit it and retain a slot after their build has completed.
             source scripts/ci/release-cache.sh 9>&-
             result=0
-            bash "scripts/ci/$gate_script" 9>&- || result=$?
+            bash scripts/ci/test-group.sh "$gate_script" "$gate_limit" bash "scripts/ci/$gate_script" 9>&- || result=$?
             release_cache_stats 9>&-
             exit "$result"
         fi
