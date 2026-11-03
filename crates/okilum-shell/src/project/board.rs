@@ -1210,6 +1210,11 @@ impl Render for Board {
             .id("board-columns")
             .debug_selector(|| "board-columns".into())
             .items_start()
+            // The row is scroll content, so it must keep its natural height.
+            // Avoid asking flexbox for the min-content height of every rich
+            // card while trying (and failing) to shrink the entire Board.
+            .flex_shrink_0()
+            .min_h_0()
             .gap_3()
             .w_full()
             .min_w_0();
