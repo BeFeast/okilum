@@ -45,6 +45,10 @@ pub(crate) struct Board {
     notes_expanded: bool,
     next_stage_open: bool,
     columns: columns::State,
+    #[cfg(test)]
+    pub(in crate::project) card_calls: std::cell::Cell<usize>,
+    #[cfg(test)]
+    pub(in crate::project) render_calls: std::cell::Cell<usize>,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -148,6 +152,10 @@ impl Board {
             notes_expanded: false,
             next_stage_open: false,
             columns: columns::State::default(),
+            #[cfg(test)]
+            card_calls: std::cell::Cell::new(0),
+            #[cfg(test)]
+            render_calls: std::cell::Cell::new(0),
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -678,6 +686,8 @@ impl Board {
     ) -> AnyElement {
         #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
         let _work = super::performance::Work::start(1);
+        #[cfg(test)]
+        self.card_calls.set(self.card_calls.get() + 1);
         let colors = brand::palette(cx);
         let number = scope.number;
         let issue = self.snapshot.forgejo.value.get(&number);
@@ -1018,6 +1028,8 @@ impl Render for Board {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
         let _work = super::performance::Work::start(0);
+        #[cfg(test)]
+        self.render_calls.set(self.render_calls.get() + 1);
         if self.local_editor.is_some() {
             return self.render_local_management(window, cx);
         }

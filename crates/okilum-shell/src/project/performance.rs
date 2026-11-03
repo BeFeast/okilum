@@ -79,3 +79,6 @@ impl Drop for Work {
         work[self.0].1 += self.1.elapsed().as_nanos() as u64;
     }
 }
+
+#[cfg(test)]
+mod tests;

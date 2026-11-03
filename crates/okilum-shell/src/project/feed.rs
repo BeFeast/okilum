@@ -133,6 +133,10 @@ impl Feed {
         }
     }
     #[cfg(test)]
+    pub(in crate::project) fn performance_scroll_position(&self, cx: &App) -> usize {
+        self.scroller.read(cx).logical_scroll_top().item_ix
+    }
+    #[cfg(test)]
     pub(in crate::project) fn test_scroll_anchor(
         &self,
         cx: &App,
