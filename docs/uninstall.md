@@ -103,6 +103,14 @@ sudo pacman -Rns okilum     # the package
   user unit. Sync must be removed in Okilum → Settings → Sync, so the hub forgets
   this computer and the service is stopped by the controller, never by deleting
   files.
+- **Managed Sync bootstrap (#2396):** its runtime, preparation identity and
+  Syncthing config live under `<state>/sync/managed/`; the retained selection is
+  `<state>/sync/runtime.json`. These are covered by the state root above.
+  Its owned `okilum-syncthing-*.service` lives under
+  `${XDG_CONFIG_HOME:-~/.config}/systemd/user/`. Installation and uninstall use
+  the same `managed_service_directory()` resolver. The Sync controller removes
+  its exact owned unit before uninstall may proceed; the shared `systemd/user`
+  directory and unrelated services are preserved.
 - `okilum.desktop` in `~/.config/mimeapps.list`, if the user chose Okilum as the
   default for Markdown, is the user's own choice and stays. It is harmless once
   the package is gone.

@@ -3,6 +3,21 @@ use super::*;
 use anyhow::{ensure, Context as _};
 use okilum_sync_controller::daemon::{self, DaemonIdentity, Discovery};
 
+/// Shared by managed installation and uninstall's live-service refusal. This
+/// directory is shared with other apps and must never be recursively purged.
+pub(crate) fn managed_service_directory() -> anyhow::Result<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .context("user service location unavailable")?;
+    ensure!(
+        config.is_absolute(),
+        "absolute user service location required"
+    );
+    Ok(config.join("systemd/user"))
+}
+
 #[derive(Clone)]
 pub(super) struct Choice {
     pub identity: DaemonIdentity,
@@ -244,18 +259,11 @@ pub(super) fn prepare_managed(
             "Sync connection is already in use"
         );
     }
-    let home = PathBuf::from(std::env::var_os("HOME").context("HOME unavailable")?);
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".config"));
-    ensure!(
-        config_home.is_absolute(),
-        "absolute user service location required"
-    );
+    let units = managed_service_directory()?;
     let identity = okilum_sync_controller::linux_bootstrap::connect(
         true,
         &parent.join("managed"),
-        &config_home.join("systemd/user"),
+        &units,
         configs,
         &check,
     )?;

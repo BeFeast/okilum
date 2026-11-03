@@ -10329,7 +10329,13 @@ mod document_link_landing_tests {
             assert!(visual.debug_bounds("sidebar-vault-dot").is_none());
         }
         let title_before = first.debug_bounds("sidebar-vault-title").unwrap();
-        let actions_before = first.debug_bounds("sidebar-header-actions").unwrap();
+        let actions = |visual: &mut gpui::VisualTestContext| {
+            SidebarAction::available()
+                .iter()
+                .map(|action| visual.debug_bounds(action.id()).expect(action.id()))
+                .collect::<Vec<_>>()
+        };
+        let actions_before = actions(&mut first);
         first.update(|_, cx| {
             reader_ui_state::set_vault_color(&root, Some(brand::VaultColor::Teal), cx)
         });
@@ -10356,7 +10362,7 @@ mod document_link_landing_tests {
             "the dot takes exactly its slot before the name"
         );
         assert_eq!(
-            first.debug_bounds("sidebar-header-actions").unwrap(),
+            actions(&mut first),
             actions_before,
             "header actions do not shift"
         );
@@ -10418,11 +10424,13 @@ mod document_link_landing_tests {
         ] {
             assert!(visual.debug_bounds(gone).is_none(), "{gone} is retired");
         }
-        // The tree takes everything below its header.
+        // #2278: Vault Index owns a fixed action row below the mode header.
+        let index_header = visual.debug_bounds("tree-index-header").unwrap();
         assert_eq!(
-            before[2].top(),
+            index_header.top(),
             visual.debug_bounds("sidebar-mode-header").unwrap().bottom()
         );
+        assert_eq!(before[2].top(), index_header.bottom());
         assert!(before[2].bottom() >= before[0].bottom() - px(16.));
         view.update(visual, |v, cx| {
             v.tree_scroll
@@ -10595,10 +10603,9 @@ mod document_link_landing_tests {
         });
     }
 
-    /// #1512, #1474: the sidebar has one header row. The vault name sits on
-    /// the left and opens the vault menu; New note, New folder, Collapse all,
-    /// Show hidden keep fixed slots on the right, idle and
-    /// hovered. There is no Folders row: root entries follow the header.
+    /// #2278/#2280: Vault Index and the four fixed actions share one row
+    /// below the vault/mode header. Hovering and toggling never move them;
+    /// there is no Folders section between that row and the root entries.
     #[gpui::test]
     fn sidebar_header_is_one_row_with_fixed_actions_and_no_folders_row(
         cx: &mut gpui::TestAppContext,
@@ -10681,13 +10688,13 @@ mod document_link_landing_tests {
             assert_eq!(pair[0].center().y, pair[1].center().y, "one row: {idle:?}");
         }
         assert_eq!(idle[0].size.width, px(28.));
-        // One row: the name on the left, the actions on the right, all of
-        // it inside the header strip.
-        let header = visual.debug_bounds("sidebar-header").unwrap();
-        let panel = visual.debug_bounds("reader-notes-panel").unwrap();
-        let title = visual.debug_bounds("sidebar-vault-title").unwrap();
-        assert_eq!(header.size.height, px(READER_HEADER_HEIGHT));
-        assert_eq!(header.top(), panel.top());
+        // The vault menu remains above the independent Vault Index action row.
+        let header = visual.debug_bounds("tree-index-header").unwrap();
+        let mode_header = visual.debug_bounds("sidebar-mode-header").unwrap();
+        let title = visual.debug_bounds("tree-vault-index").unwrap();
+        assert_eq!(header.size.height, px(32.));
+        assert_eq!(header.top(), mode_header.bottom());
+        assert!(visual.debug_bounds("sidebar-vault-title").unwrap().bottom() <= header.top());
         assert!(
             title.left() <= header.left() + px(16.),
             "name is left-aligned"
@@ -10731,8 +10738,7 @@ mod document_link_landing_tests {
             ));
         });
         let first = visual.debug_bounds("tree-row-Folder").unwrap();
-        let mode_header = visual.debug_bounds("sidebar-mode-header").unwrap();
-        assert!(first.top() >= mode_header.bottom() && first.top() < mode_header.bottom() + px(4.));
+        assert!(first.top() >= header.bottom() && first.top() < header.bottom() + px(4.));
         visual.simulate_mouse_move(title.center(), None, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(slots(visual), idle, "hovering the name moves nothing");

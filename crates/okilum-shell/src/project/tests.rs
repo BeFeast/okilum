@@ -1654,31 +1654,55 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
         reader.panel_widths.backlinks = 560.;
         cx.notify();
     });
-    visual.run_until_parked();
-    let panel = visual
-        .debug_bounds("reader-backlinks-panel")
-        .expect("mounted Manager panel");
-    let header = visual
-        .debug_bounds("project-chat-header")
-        .expect("conversation owns one header");
-    assert!(
-        visual.debug_bounds("reader-backlinks-header").is_none(),
-        "no duplicate outer Manager title"
-    );
-    assert_eq!(header.top(), panel.top());
-    assert_eq!(header.size.height, px(40.));
-    for selector in [
-        "project-manager-title",
-        "project-chat-status",
-        "project-connection-menu",
-        "project-open-t3",
-    ] {
-        let bounds = visual
-            .debug_bounds(selector)
-            .unwrap_or_else(|| panic!("functional header control: {selector}"));
+    // The real mounted panel, including section navigation, must retain the
+    // identity header at its top at both ordinary and narrow panel widths.
+    for width in [560., 320.] {
+        reader.update(visual, |reader, cx| {
+            reader.panel_widths.backlinks = width;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let panel = visual
+            .debug_bounds("reader-backlinks-panel")
+            .expect("mounted Manager panel");
+        let header = visual
+            .debug_bounds("project-chat-header")
+            .expect("workspace owns one header");
         assert!(
-            bounds.top() >= header.top() && bounds.bottom() <= header.bottom(),
-            "{selector} stays in the single header"
+            visual.debug_bounds("reader-backlinks-header").is_none(),
+            "no duplicate outer Manager title"
         );
+        assert_eq!(panel.size.width, px(width));
+        assert_eq!(header.top(), panel.top());
+        assert_eq!(header.size.height, px(40.));
+        assert_eq!(header.right(), panel.right());
+        let mut previous_right = header.left();
+        for selector in [
+            "project-manager-title",
+            "project-chat-status",
+            "project-connection-menu",
+            "project-open-t3",
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("functional header control: {selector}"));
+            assert!(
+                bounds.top() >= header.top() && bounds.bottom() <= header.bottom(),
+                "{selector} stays in the single header at {width}px: {bounds:?}"
+            );
+            assert!(
+                bounds.left() >= previous_right && bounds.right() <= header.right(),
+                "{selector} keeps its order without overlap or horizontal overflow at {width}px: {bounds:?}"
+            );
+            assert!(
+                (bounds.center().y - header.center().y).abs() <= px(1.),
+                "{selector} is vertically centered at {width}px: {bounds:?}"
+            );
+            previous_right = bounds.right();
+        }
+        let title = visual.debug_bounds("project-manager-title").unwrap();
+        let open = visual.debug_bounds("project-open-t3").unwrap();
+        assert_eq!(title.left() - header.left(), px(design::INSET));
+        assert_eq!(header.right() - open.right(), px(design::INSET));
     }
 }
