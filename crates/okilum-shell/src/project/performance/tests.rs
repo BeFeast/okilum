@@ -107,6 +107,18 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     );
     let feed = project.read_with(visual, |project, _| project.feed.clone());
     let chrome = project.read_with(visual, |project, _| project.chrome.clone());
+    let header = reader.read_with(visual, |reader, _| reader.header_cache.clone());
+    let renders = header.read_with(visual, |header, _| header.render_calls.get());
+    assert!(
+        renders > 0,
+        "positive control: production fixed header is mounted"
+    );
+    reader.update(visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+    assert!(
+        header.read_with(visual, |header, _| header.render_calls.get()) > renders,
+        "Reader publications must still update the header"
+    );
     // Reader-mounted typing must keep the existing inner Feed cache (#2410).
     // Wrapping all of Manager in another cached view forces a subtree refresh
     // and silently defeats that boundary, unlike a standalone ProjectView test.
@@ -179,6 +191,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     let start = feed.read_with(visual, |feed, cx| feed.performance_scroll_position(cx));
     for _ in 0..6 {
         chrome.read_with(visual, |chrome, _| chrome.render_calls.set(0));
+        header.read_with(visual, |header, _| header.render_calls.set(0));
         board.read_with(visual, |board, _| {
             board.card_calls.set(0);
             board.frame_work.borrow_mut().clear();
@@ -203,6 +216,11 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
             0,
             "Manager scrolling must not rebuild fixed identity/navigation chrome"
         );
+        assert_eq!(
+            header.read_with(visual, |header, _| header.render_calls.get()),
+            0,
+            "scroll must not rebuild the fixed Reader header"
+        );
         feed.read_with(visual, |feed, _| {
             assert!(
                 feed.row_calls.get() <= 96,
@@ -224,6 +242,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     });
     visual.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
     for delta in [20., 50., 80., 40., 0.] {
+        header.read_with(visual, |header, _| header.render_calls.set(0));
         board.read_with(visual, |board, _| {
             board.card_calls.set(0);
             board.frame_work.borrow_mut().clear();
@@ -257,6 +276,11 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
                 board.frame_layout_work.borrow()
             );
         });
+        assert_eq!(
+            header.read_with(visual, |header, _| header.render_calls.get()),
+            0,
+            "splitter geometry must not publish a whole-Reader source change"
+        );
         feed.read_with(visual, |feed, _| {
             assert!(
                 feed.row_calls.get() <= 96,

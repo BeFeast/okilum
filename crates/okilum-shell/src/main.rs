@@ -67,6 +67,8 @@ mod reader_external_changes;
 mod reader_feedback;
 mod reader_files;
 mod reader_fonts;
+#[cfg(target_os = "linux")]
+mod reader_header_cache;
 mod reader_history;
 mod reader_hover;
 #[cfg(any(target_os = "macos", test))]
@@ -1622,6 +1624,10 @@ fn markdown_plugins_at(
 }
 
 struct Reader {
+    #[cfg(target_os = "linux")]
+    header_cache: Entity<reader_header_cache::Header>,
+    #[cfg(target_os = "linux")]
+    layout_signal: Entity<()>,
     navigation: reader_navigation::State,
     ui_state: reader_ui_state::Session,
     single_file: bool,
@@ -1992,7 +1998,18 @@ impl Reader {
 
         let content_sub = cx.observe(&content, |this, _, cx| this.content_changed(cx));
 
+        #[cfg(target_os = "linux")]
+        let header_cache = {
+            let parent = cx.weak_entity();
+            cx.new(|cx| reader_header_cache::Header::new(parent, cx))
+        };
+        #[cfg(target_os = "linux")]
+        let layout_signal = cx.new(|_| ());
         let mut this = Self {
+            #[cfg(target_os = "linux")]
+            header_cache,
+            #[cfg(target_os = "linux")]
+            layout_signal,
             navigation: Default::default(),
             ui_state: Default::default(),
             loading: None,
@@ -7538,6 +7555,8 @@ impl Reader {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(target_os = "linux")]
+        let _ = self.layout_signal.read(cx);
         let _render_timing =
             platform::text_diagnostics::time(platform::text_diagnostics::Work::UiRender);
         platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
@@ -8023,6 +8042,23 @@ impl Render for Reader {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .map(|view| {
+                #[cfg(target_os = "linux")]
+                let header = if self.board_manager_header_cache(available) {
+                    self.header_cache
+                        .update(cx, |header, cx| header.set_available(available, cx));
+                    self.header_cache
+                        .clone()
+                        .cached(
+                            gpui::StyleRefinement::default()
+                                .w_full()
+                                .h(px(READER_HEADER_HEIGHT))
+                                .flex_shrink_0(),
+                        )
+                        .into_any_element()
+                } else {
+                    self.render_header(available, window, cx)
+                };
+                #[cfg(not(target_os = "linux"))]
                 let header = self.render_header(available, window, cx);
                 let view = if self.embedded_in_workspace {
                     // Workspace owns the window title bar; this is a plain row.
@@ -8180,6 +8216,17 @@ impl Render for Reader {
                                                 f32::from(this.body_bounds.size.width),
                                             );
                                             this.set_panel_width(panel, width);
+                                            #[cfg(target_os = "linux")]
+                                            if this.board_manager_header_cache(f32::from(
+                                                this.body_bounds.size.width,
+                                            )) {
+                                                // Geometry changed; Reader source observers and
+                                                // the fixed header have no new presentation data.
+                                                this.layout_signal.update(cx, |_, cx| cx.notify());
+                                            } else {
+                                                cx.notify();
+                                            }
+                                            #[cfg(not(target_os = "linux"))]
                                             cx.notify();
                                         });
                                     },

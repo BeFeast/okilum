@@ -91,7 +91,8 @@ The reference retains natural card heights and actual text reflow throughout a
 splitter drag; it does not freeze content until release. Offscreen lane state
 retains height/focus hints only, with no offscreen interaction tree. Source
 projection and column membership are reused between publications, with a
-second-resolution freshness boundary.
+second-resolution freshness boundary. Splitter geometry invalidates its own
+layout signal; actual Reader publications still invalidate the fixed header.
 
 The ordinary Linux Rust suite includes the Reader-mounted reference regression,
 its real wheel/drag/card-tail controls and Reader Escape/focus assertions. It
