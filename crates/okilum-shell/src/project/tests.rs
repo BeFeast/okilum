@@ -506,7 +506,7 @@ fn projects_section_is_the_shared_picker_with_quiet_skips_and_row_warnings(
         crate::test_init(cx);
         bind_keys(cx);
     });
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = fixture::canonical_tempdir();
     let vault = fixture.path().join("vault");
     let grisaille_id = "b0728fed-73e6-45c2-9c61-a96f7df467f8";
     for (folder, manifest) in [
@@ -650,7 +650,7 @@ fn projects_menu_scope_switch_and_leave_restore_the_original_tree(cx: &mut TestA
         crate::test_init(cx);
         bind_keys(cx);
     });
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = fixture::canonical_tempdir();
     let vault = fixture.path().join("vault");
     for folder in ["Dev/Areas/App", "Music/Areas/Studio"] {
         std::fs::create_dir_all(vault.join(folder).join("ops")).unwrap();
@@ -833,7 +833,7 @@ fn a_failed_new_intent_keeps_a_draft_even_when_old_text_matches(cx: &mut TestApp
 #[gpui::test]
 fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
-    let files = tempfile::tempdir().unwrap();
+    let files = fixture::canonical_tempdir();
     let vault = files.path().join("vault");
     std::fs::create_dir_all(vault.join("ops")).unwrap();
     std::fs::write(vault.join("note.md"), "# Retained note\n").unwrap();

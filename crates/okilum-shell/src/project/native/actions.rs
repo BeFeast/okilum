@@ -1834,6 +1834,8 @@ mod tests {
                 let started = std::time::Instant::now();
                 loop {
                     if let Ok((s, _)) = listener.accept() {
+                        // BSD/macOS inherits the listener's nonblocking mode.
+                        s.set_nonblocking(false).unwrap();
                         s.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
                         return s;
                     }

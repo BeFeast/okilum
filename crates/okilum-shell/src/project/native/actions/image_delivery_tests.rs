@@ -72,6 +72,8 @@ impl Server {
                     thread::sleep(Duration::from_millis(2));
                     continue;
                 };
+                // BSD/macOS inherits the listener's nonblocking mode.
+                stream.set_nonblocking(false).unwrap();
                 let state = state.clone();
                 workers.push(thread::spawn(move || {
                     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -136,9 +138,7 @@ impl Server {
                     }
                 }));
             }
-            for worker in workers {
-                worker.join().unwrap();
-            }
+            crate::project::fixture::join_workers(workers);
         });
         Self {
             environment,
@@ -152,8 +152,41 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        self.worker.take().unwrap().join().unwrap();
+        crate::project::fixture::join_workers(self.worker.take());
     }
+}
+
+fn server_with_failed_worker() -> Server {
+    let mut server = Server::new(false);
+    server.stop.store(true, Ordering::Release);
+    crate::project::fixture::join_workers(server.worker.take());
+    server.worker = Some(thread::spawn(|| panic!("socket worker failure")));
+    server
+}
+
+#[test]
+fn server_cleanup_reports_worker_failure() {
+    let server = server_with_failed_worker();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(server)))
+        .expect_err("a fixture failure must fail an otherwise successful test");
+    assert_eq!(
+        failure.downcast_ref::<&str>(),
+        Some(&"socket worker failure")
+    );
+}
+
+#[test]
+fn server_cleanup_preserves_failure_during_unwinding() {
+    let server = server_with_failed_worker();
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _server = server;
+        panic!("original test failure");
+    }))
+    .expect_err("the original test failure must remain visible without aborting");
+    assert_eq!(
+        failure.downcast_ref::<&str>(),
+        Some(&"original test failure")
+    );
 }
 
 #[derive(Clone, Copy)]
