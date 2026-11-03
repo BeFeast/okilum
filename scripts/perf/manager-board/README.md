@@ -93,7 +93,7 @@ splitter drag; it does not freeze content until release.
 The ordinary Linux Rust suite includes the Reader-mounted reference regression,
 its real wheel/drag/card-tail controls and Reader Escape/focus assertions. It
 rejects Board card builds during Manager scrolling, >64 card builds in any
-splitter frame, >64 card/spacer layout nodes per frame, >96 Manager row builds
+splitter frame, >64 card/lane layout nodes per frame, >96 Manager row builds
 per settled scroll/resize step, and an
 unreachable last card. The standalone blocked-picker regression covers sending,
 offline, inactive and model-loading state without sends/model writes/draft loss.

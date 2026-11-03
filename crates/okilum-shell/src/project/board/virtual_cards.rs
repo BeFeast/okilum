@@ -171,9 +171,10 @@ impl Element for Card {
     }
 }
 
-/// Contiguous offscreen runs share one layout node. Height/focus state belongs
-/// to the lane's canonical card IDs, not to whichever viewport currently mounts.
-#[derive(IntoElement)]
+/// Each lane has one natural-height layout node. Rich viewport cards are
+/// measured once at the resolved lane width, rather than participating in
+/// ancestor flexbox intrinsic-size negotiations. Canonical height/focus hints
+/// survive unmounting; a refinement schedules one shared extent update.
 pub(super) struct Lane {
     id: ElementId,
     cards: Vec<Card>,
@@ -185,102 +186,37 @@ impl Lane {
             cards,
         }
     }
-}
-impl RenderOnce for Lane {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let states = window.use_keyed_state((self.id.clone(), "heights"), cx, |_, _| {
-            std::collections::HashMap::<ElementId, Entity<Height>>::new()
-        });
-        let ids: std::collections::HashSet<_> =
-            self.cards.iter().map(|card| card.id.clone()).collect();
-        states.update(cx, |states, _| states.retain(|id, _| ids.contains(id)));
-        let overdraw = self
-            .cards
-            .first()
-            .map(|card| card.overdraw(cx))
-            .unwrap_or(px(400.));
-        let viewport = self
-            .cards
-            .first()
-            .and_then(|card| card.board.upgrade())
-            .map(|board| board.read(cx).scroll.bounds())
-            .filter(|bounds| bounds.size.height > px(0.))
-            .unwrap_or_else(|| Bounds::new(Point::default(), window.viewport_size()))
-            .dilate(overdraw);
-        let mut root = v_flex()
-            .id(self.id)
-            .w_full()
-            .min_w_0()
-            .min_h_0()
-            .flex_shrink_0()
-            .gap_3();
-        let mut hidden = Vec::new();
-        let mut initial_y = px(0.);
-        for mut card in self.cards {
-            let state = states.update(cx, |states, cx| {
-                states
-                    .entry(card.id.clone())
-                    .or_insert_with(|| {
-                        cx.new(|_| Height {
-                            value: px(192.),
-                            focused: None,
-                            bounds: None,
-                            scroll: Point::default(),
-                        })
-                    })
-                    .clone()
-            });
-            let height = state.read(cx);
-            let focused = height
-                .focused
-                .as_ref()
-                .is_some_and(|focus| focus.contains_focused(window, cx));
-            let predicted = height
-                .bounds
-                .map(|bounds| {
-                    Bounds::new(bounds.origin + card.scroll(cx) - height.scroll, bounds.size)
-                })
-                .unwrap_or_else(|| {
-                    Bounds::new(
-                        point(px(0.), initial_y),
-                        size(window.viewport_size().width, height.value),
-                    )
+    fn refine(&self, window: &mut Window, cx: &mut App) {
+        let Some(card) = self.cards.first() else {
+            return;
+        };
+        let board = card.board.clone();
+        let schedule = board
+            .update(cx, |board, _| {
+                !std::mem::replace(&mut board.height_refinement_pending, true)
+            })
+            .unwrap_or(false);
+        if schedule {
+            window.defer(cx, move |_, cx| {
+                let _ = board.update(cx, |board, cx| {
+                    board.height_refinement_pending = false;
+                    cx.notify();
                 });
-            initial_y += height.value + px(12.);
-            let mounted = card.selected || focused || predicted.intersects(&viewport);
-            card.height = Some(state);
-            if mounted {
-                if !hidden.is_empty() {
-                    root = root.child(Space {
-                        cards: std::mem::take(&mut hidden),
-                    });
-                }
-                root = root.child(card);
-            } else {
-                hidden.push(card);
-            }
+            });
         }
-        if !hidden.is_empty() {
-            root = root.child(Space { cards: hidden });
-        }
-        root
     }
 }
-
-struct Space {
-    cards: Vec<Card>,
-}
-impl IntoElement for Space {
+impl IntoElement for Lane {
     type Element = Self;
     fn into_element(self) -> Self {
         self
     }
 }
-impl Element for Space {
+impl Element for Lane {
     type RequestLayoutState = ();
-    type PrepaintState = Vec<(Bounds<Pixels>, AnyElement)>;
+    type PrepaintState = Vec<AnyElement>;
     fn id(&self) -> Option<ElementId> {
-        None
+        Some(self.id.clone())
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
@@ -296,15 +232,35 @@ impl Element for Space {
         if let Some(card) = self.cards.first() {
             card.count_layout(cx);
         }
-        let height = self
-            .cards
-            .iter()
-            .map(|card| card.height.as_ref().unwrap().read(cx).value)
-            .fold(px(0.), |sum, height| sum + height)
-            + px(12. * self.cards.len().saturating_sub(1) as f32);
+        let states = window.use_keyed_state((self.id.clone(), "heights"), cx, |_, _| {
+            std::collections::HashMap::<ElementId, Entity<Height>>::new()
+        });
+        let ids: std::collections::HashSet<_> =
+            self.cards.iter().map(|card| card.id.clone()).collect();
+        states.update(cx, |states, _| states.retain(|id, _| ids.contains(id)));
+        let mut height = px(0.);
+        for card in &mut self.cards {
+            let state = states.update(cx, |states, cx| {
+                states
+                    .entry(card.id.clone())
+                    .or_insert_with(|| {
+                        cx.new(|_| Height {
+                            value: px(192.),
+                            focused: None,
+                            bounds: None,
+                            scroll: Point::default(),
+                        })
+                    })
+                    .clone()
+            });
+            height += state.read(cx).value;
+            card.height = Some(state);
+        }
+        height += px(12. * self.cards.len().saturating_sub(1) as f32);
         let mut style = Style::default();
         style.size.width = gpui::relative(1.).into();
         style.size.height = height.into();
+        style.min_size.width = px(0.).into();
         style.flex_shrink = 0.;
         (window.request_layout(style, None, cx), ())
     }
@@ -316,7 +272,7 @@ impl Element for Space {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) -> Self::PrepaintState {
+    ) -> Vec<AnyElement> {
         let overdraw = self
             .cards
             .first()
@@ -327,19 +283,24 @@ impl Element for Space {
         let mut painted = Vec::new();
         for card in &self.cards {
             let state = card.height.as_ref().unwrap();
-            let height = state.read(cx).value;
-            let estimated = Bounds::new(point(bounds.left(), y), size(bounds.size.width, height));
+            let height = state.read(cx);
+            let focused = height
+                .focused
+                .as_ref()
+                .is_some_and(|focus| focus.contains_focused(window, cx));
+            let estimated = Bounds::new(
+                point(bounds.left(), y),
+                size(bounds.size.width, height.value),
+            );
             let scroll = card.scroll(cx);
             state.update(cx, |state, _| {
                 state.bounds = Some(estimated);
                 state.scroll = scroll;
             });
-            y += height + px(12.);
-            if !estimated.intersects(&viewport) {
+            if !card.selected && !focused && !estimated.intersects(&viewport) {
+                y += estimated.size.height + px(12.);
                 continue;
             }
-            // A jump or a large height refinement can cross the predicted range.
-            // Render it now, then fold its measured height into the shared pass.
             let mut element = card.clone().into_any_element();
             let measured = element.layout_as_root(
                 size(
@@ -349,26 +310,15 @@ impl Element for Space {
                 window,
                 cx,
             );
-            if (measured.height - height).abs() > px(0.5) {
-                let board = card.board.clone();
-                let schedule = board
-                    .update(cx, |board, _| {
-                        !std::mem::replace(&mut board.height_refinement_pending, true)
-                    })
-                    .unwrap_or(false);
-                if schedule {
-                    window.defer(cx, move |_, cx| {
-                        let _ = board.update(cx, |board, cx| {
-                            board.height_refinement_pending = false;
-                            cx.notify();
-                        });
-                    });
-                }
-            }
-            window.with_content_mask(Some(ContentMask { bounds: estimated }), |window| {
-                element.prepaint_at(estimated.origin, window, cx);
-            });
-            painted.push((estimated, element));
+            // Place the next card using its actual predecessor, in this frame.
+            // No placeholder can blank out a newly exposed portion of the lane.
+            element.prepaint_at(estimated.origin, window, cx);
+            y += measured.height + px(12.);
+            painted.push(element);
+        }
+        let measured_height = y - bounds.top() - px(12.);
+        if (measured_height - bounds.size.height).abs() > px(0.5) {
+            self.refine(window, cx);
         }
         painted
     }
@@ -378,14 +328,12 @@ impl Element for Space {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut (),
-        elements: &mut Self::PrepaintState,
+        elements: &mut Vec<AnyElement>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        for (bounds, element) in elements {
-            window.with_content_mask(Some(ContentMask { bounds: *bounds }), |window| {
-                element.paint(window, cx)
-            });
+        for element in elements {
+            element.paint(window, cx);
         }
     }
 }
