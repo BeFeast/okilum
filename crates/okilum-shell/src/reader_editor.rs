@@ -2516,20 +2516,22 @@ impl Reader {
                                     |this, _, window, cx| this.resolve_source(false, window, cx),
                                 )),
                             )
-                            .child(
-                                reader_icon_button(
-                                    "source-keep-both",
-                                    IconName::Copy,
-                                    "Keep both versions",
-                                    cx,
+                            .when(self.deleted_note.is_none(), |row| {
+                                row.child(
+                                    reader_icon_button(
+                                        "source-keep-both",
+                                        IconName::Copy,
+                                        "Keep both versions",
+                                        cx,
+                                    )
+                                    .debug_selector(|| "source-keep-both".into())
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.save_source(cx);
+                                        },
+                                    )),
                                 )
-                                .debug_selector(|| "source-keep-both".into())
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.save_source(cx);
-                                    },
-                                )),
-                            )
+                            })
                             .child(
                                 reader_icon_button(
                                     "source-compare",
