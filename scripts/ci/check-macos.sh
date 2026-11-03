@@ -67,7 +67,7 @@ cargo "${cargo_args[@]}" --workspace --no-run
 # #2442: release-profile dependency fixtures and Sync macro imports must also run.
 run_tests okilum-shell --bins reader_log_remote::
 run_tests okilum-shell --bins reader_settings_sync::
-run_tests okilum-core --lib capture_attachments::tests::receipt_lookup_bounds_and_exact_ledger_binding_fail_closed --exact
+run_tests okilum-core --lib capture::attachments::tests::receipt_lookup_bounds_and_exact_ledger_binding_fail_closed --exact
 
 run_tests okilum-shell --bins reader_manager_compatibility::tests::
 run_tests okilum-shell --bins reader_manager_panel::status_tests::webkit_failure_preserves_thread_actions_without_retries_or_raw_ui_errors --exact
