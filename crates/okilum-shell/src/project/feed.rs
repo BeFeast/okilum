@@ -13,6 +13,7 @@ pub(super) mod content;
 mod details;
 mod groups;
 mod message_actions;
+mod rich_cache;
 
 #[derive(Clone, PartialEq)]
 struct Message {
@@ -78,6 +79,7 @@ pub(super) struct Feed {
     copy_lease: Arc<()>,
     next_native_position: u64,
     scroller: Entity<MessageScrollerState>,
+    rich: std::cell::RefCell<rich_cache::Cache>,
     enabled: bool,
     busy: bool,
     typed_revision: u64,
@@ -94,7 +96,10 @@ pub(super) struct Feed {
 impl Feed {
     pub(super) fn new(parent: WeakEntity<ProjectView>, cx: &mut Context<Self>) -> Self {
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
-        let scroll = cx.observe(&scroller, |_, _, cx| cx.notify());
+        let scroll = cx.observe(&scroller, |this, _, cx| {
+            this.prewarm_markdown(cx);
+            cx.notify();
+        });
         Self {
             parent,
             actions: None,
@@ -118,6 +123,7 @@ impl Feed {
             copy_lease: Arc::new(()),
             next_native_position: 1,
             scroller,
+            rich: Default::default(),
             enabled: false,
             busy: false,
             typed_revision: 0,
@@ -352,6 +358,7 @@ impl Feed {
     }
 
     pub(super) fn reset(&mut self, cx: &mut Context<Self>) {
+        self.rich.borrow_mut().clear();
         self.typed_data_changed();
         self.request_cards.clear();
         self.messages.clear();
