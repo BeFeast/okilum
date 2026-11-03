@@ -214,7 +214,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
         root.view().clone().downcast::<Board>().unwrap()
     });
     board.update_in(visual, |board, window, cx| {
-        board.filter = Some("Editing".into());
+        board.filter.executor = Some("Editing".into());
         board.selected = Some(1767);
         board.scroll.set_offset(point(px(0.), px(-120.)));
         // Use the production activation path, then deliver a real-generation source result late.
@@ -239,7 +239,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
             1,
         );
         assert!(board.snapshot.forgejo.value.is_empty());
-        assert_eq!(board.filter.as_deref(), Some("Editing"));
+        assert_eq!(board.filter.executor.as_deref(), Some("Editing"));
         assert_eq!(board.selected, Some(1767));
         assert!(board.ticker.is_none());
         assert_eq!(board.scroll.offset().y, px(-120.));
@@ -464,7 +464,12 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                 .update(cx, |input, cx| input.set_value("Keep my draft", window, cx))
         });
         reader.project_navigation.boards[&folder].update(cx, |board, cx| {
-            board.filter = Some("Editing".into());
+            board.filter.executor = Some("Editing".into());
+            board.filter.search = "#1767".into();
+            board
+                .filter_ui
+                .search
+                .update(cx, |input, cx| input.set_value("#1767", window, cx));
             cx.notify();
         });
     });
@@ -575,7 +580,8 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         );
         assert!(reader.navigation.pending_landing.is_none());
         let board = reader.project_navigation.boards[&folder].read(cx);
-        assert_eq!(board.filter.as_deref(), Some("Editing"));
+        assert_eq!(board.filter.executor.as_deref(), Some("Editing"));
+        assert_eq!(board.filter.search, "#1767");
         assert_eq!(board.selected, Some(1767));
         assert!(reader
             .project
@@ -675,7 +681,8 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.run_until_parked();
     reader.read_with(visual, |reader, cx| {
         let board = reader.project_navigation.boards[&folder].read(cx);
-        assert_eq!(board.filter.as_deref(), Some("Editing"));
+        assert_eq!(board.filter.executor.as_deref(), Some("Editing"));
+        assert_eq!(board.filter.search, "#1767");
         assert_eq!(board.selected, Some(1767));
         assert_eq!(
             reader
@@ -880,15 +887,14 @@ fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestA
             );
             let center = visual.debug_bounds("project-board").unwrap();
             let columns = visual.debug_bounds("board-columns").unwrap();
-            assert!(
-                columns.top() <= center.top() + px(20.),
-                "no header block above columns"
-            );
             let filter = visual
-                .debug_bounds("board-agent-filter")
-                .expect("compact agent control");
-            assert!(filter.size.width <= px(36.));
-            assert!(filter.top() >= columns.top() && filter.top() <= columns.top() + px(4.));
+                .debug_bounds("board-filter-bar")
+                .expect("native filter bar");
+            assert!(filter.left() >= center.left() && filter.right() <= center.right());
+            assert!(
+                columns.top() >= filter.bottom(),
+                "filters precede either presentation"
+            );
             assert!(visual.debug_bounds("board-refresh").is_none());
             assert!(visual.debug_bounds("board-plan").is_none());
 
@@ -1359,8 +1365,8 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
     let status = visual.debug_bounds("board-live-status").unwrap();
     let columns = visual.debug_bounds("board-columns").unwrap();
     assert!(
-        columns.top() <= center.top() + px(20.),
-        "source error must not restore a header above the Board"
+        columns.top() >= visual.debug_bounds("board-filter-bar").unwrap().bottom(),
+        "source error leaves the filter bar in place"
     );
     assert!(
         status.bottom() <= center.bottom() && status.top() >= center.bottom() - px(32.),

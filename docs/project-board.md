@@ -53,7 +53,7 @@ same refresh cycle. The earlier selected-scope descriptions below document the
 historical Board slices; this live membership rule supersedes them.
 
 Entering a project opens a native Board in its existing center pane. Notes and
-Board share that center. Returning with **Board** retains the executor filter,
+Board share that center. Returning with **Board** retains the filters and search,
 selected card and scroll. The existing right-hand Manager and its draft stay in
 place. Note opens still use the Reader's ordinary revision/save/refusal path;
 only a successfully accepted Markdown document hides the Board.
@@ -139,6 +139,33 @@ integration, delivery feeds and execution mutations remain outside this slice: B
 currently appends to the native composer, separately from the visible Mac webview.
 
 ## Board v2: subtractive presentation
+
+### Shared filter bar (#2532)
+
+The native header replaces the executor icon with one selected chip: Все,
+От Олега (`from-oleg`), Баги (`bug`), От testers (`from-tester`), or Агенты сейчас.
+The last chip requires a unique bound thread, an unsettled active run and this
+issue's explicit current-task mapping; an agent's backlog is not current work.
+Counts show each chip's matches within the current search and extra filters.
+The selected chip, all selected labels and the optional executor intersect.
+＋ Фильтр lists the snapshot's labels (including epic labels) and executors;
+selected extra filters remain visible as removable chips even if a refresh no
+longer contains that value.
+
+`/` focuses the native search input. Title matching uses Unicode lowercase
+(including Cyrillic); `#123` and `123` also match the exact issue number.
+Escape clears search and returns focus to the Board. Zero matches show
+«Ничего не найдено · Сбросить фильтр». Local tasks participate in Все and title
+search; issue-only label/agent filters do not invent metadata for them.
+Invalid annotation diagnostics remain visible independently of filtering.
+
+Filter and search preferences are stored per canonical project path in app-owned
+state, outside the vault and disposable index, and survive note navigation and
+reopening. Both List and Board consume the narrowed issue binding before grouping.
+The cached projection owns chip counts, column counts and membership; unchanged
+frames reuse it. Snapshot, filter and delivery changes invalidate it, with merge
+expiry and delivery freshness still respected. No additional source polling is
+introduced. This header supersedes the historical single executor control below.
 
 The compact card contains its issue title/number, a small agent tag and one
 existing stage-state line. The expected result and issue/PR/build/note/Discuss
