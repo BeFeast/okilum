@@ -16,6 +16,8 @@ struct Published {
     candidates: Option<Arc<okilum_core::link_rewrite::CandidateIndex>>,
     titles: Arc<std::collections::HashMap<String, String>>,
     version: u64,
+    sources: Arc<reader_publication::Sources>,
+    reconciled: bool,
     warnings: Vec<okilum_core::vault::UnreadableEntry>,
     network: bool,
     limited_external_refresh: bool,
@@ -88,6 +90,8 @@ impl Reader {
                 candidates: self.move_index.clone(),
                 titles: self.backlink_titles.clone(),
                 version: 1,
+                sources: Arc::default(),
+                reconciled: false,
                 warnings: self
                     .loading
                     .as_ref()
@@ -143,21 +147,16 @@ impl Reader {
         let Some(session) = &self.shared_session else {
             return;
         };
-        let (published, sources) = {
+        let published = {
             let shared = session.lock().unwrap();
             if self.shared_version == shared.published.version {
                 return;
             }
-            let sources = shared.state.as_ref().map(|state| {
-                state
-                    .snapshot
-                    .source(&self.current_rel)
-                    .map(|raw| (self.current_rel.clone(), raw))
-                    .into_iter()
-                    .collect()
-            });
-            (shared.published.clone(), sources)
+            shared.published.clone()
         };
+        let publish_started = std::time::Instant::now();
+        #[cfg(test)]
+        let _work = reader_editor::work::scope();
         if self.loading.is_none() {
             self.loading = Some(reader_loading::Loading {
                 #[cfg(any(target_os = "macos", test))]
@@ -187,7 +186,12 @@ impl Reader {
             load.limited_external_refresh = published.limited_external_refresh;
             load.warnings = published.warnings;
         }
+        self.source_publication_epoch = self.source_publication_epoch.wrapping_add(1);
+        let previous_version = self.shared_version;
         self.shared_version = published.version;
+        let graph_changed = !Arc::ptr_eq(&self.vault, &published.vault)
+            || self.vault_publication_revision != published.vault.publication_identity();
+        self.vault_publication_revision = published.vault.publication_identity();
         self.vault = published.vault;
         self.searcher = Some(published.searcher);
         self.tasks_index = Some(published.tasks);
@@ -197,26 +201,39 @@ impl Reader {
             self.move_index = published.candidates;
             self.reminder_tick(cx);
         }
-        self.set_backlinks(self.vault.backlinks(&self.current_rel), true);
+        self.set_backlinks(self.vault.backlinks(&self.current_rel), false);
         self.quick_open.inventory = Some(Arc::new(self.vault.notes.clone()));
         self.sync_tree();
         self.backlink_titles = published.titles.clone();
         reader_drawing::invalidate(&self.vault_root, cx);
         self.invalidate_links();
         self.refresh_quick_open(cx);
-        if !self.current_rel.is_empty() {
-            // Re-read only this window's displayed document; the shared graph
-            // and search work has already happened once in the session worker.
-            if let Some(sources) = sources {
-                self.reconcile_inventory_document(&sources, window, cx);
-            } else {
-                self.reconcile_published_document(window, cx);
-            }
+        let source = published.sources.get(&self.current_rel);
+        let source_changed =
+            published.reconciled || source.is_some_and(|source| source.version > previous_version);
+        if !self.current_rel.is_empty() && (source_changed || graph_changed) {
+            self.reconcile_source_publication(
+                published.sources.get(&self.current_rel),
+                graph_changed,
+                window,
+                cx,
+            );
+        }
+        self.refresh_link_preparation(cx);
+        if graph_changed {
+            self.refresh_link_complete(window, cx);
+        }
+        if let Some(trace) = self
+            .loading
+            .as_ref()
+            .and_then(|load| load.opts.diagnostics.as_ref())
+        {
+            trace.event("shared_ui_publish", serde_json::json!({"duration_ms":publish_started.elapsed().as_secs_f64()*1000.,"version":self.shared_version}));
         }
         cx.notify();
     }
 
-    pub(crate) fn publish_shared_ready(&mut self) {
+    pub(crate) fn publish_shared_ready(&mut self, sources: Arc<reader_publication::Sources>) {
         let Some(session) = &self.shared_session else {
             return;
         };
@@ -243,6 +260,8 @@ impl Reader {
             candidates: self.move_index.clone(),
             titles: self.backlink_titles.clone(),
             version: shared.published.version.wrapping_add(1),
+            sources,
+            reconciled: true,
             warnings: self
                 .loading
                 .as_ref()
@@ -376,6 +395,7 @@ fn update(
     index: Option<&Path>,
 ) -> anyhow::Result<Published> {
     let batch = state.apply(changes, &mut |_, _| Ok(()))?;
+    published.reconciled = false;
     let mut tasks = (*published.tasks).clone();
     for path in &batch.removed {
         tasks.remove(path);
@@ -432,7 +452,31 @@ fn update(
             eprintln!("Shared vault cache checkpoint failed: {error:#}");
         }
     }
-    published.vault = Arc::new(state.vault.clone());
+    if !published.vault.publish_semantics(&state.vault) {
+        published.vault = Arc::new(state.vault.clone());
+    }
+    let sources = Arc::make_mut(&mut published.sources);
+    for path in &batch.removed {
+        sources.remove(path);
+    }
+    for path in &batch.affected {
+        if let Some(raw) = state.snapshot.source(path) {
+            let verified = !state
+                .vault
+                .unreadable
+                .iter()
+                .any(|entry| entry.path == state.vault.root.join(path))
+                && !state
+                    .vault
+                    .cloud_placeholders
+                    .iter()
+                    .any(|entry| *entry == state.vault.root.join(path));
+            sources.insert(
+                path.clone(),
+                reader_publication::Source::new(raw, verified, published.version.wrapping_add(1)),
+            );
+        }
+    }
     published.tasks = Arc::new(tasks);
     let mut workbench = (*published.workbench).clone();
     reader_workbench::update_index(

@@ -76,6 +76,8 @@ use okilum_core::source_projection::revision::Text as DraftText;
 /// The pause in typing after which an edit is saved (#1353).
 const RECOVERY_PAUSE: std::time::Duration = std::time::Duration::from_millis(300);
 #[cfg(test)]
+thread_local! { static LIVE_PREPARES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
 thread_local! { static FAIL_AUTOSAVE_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 const AUTOSAVE_START_NOTICE: &str = "Automatic Save couldn’t start. Your edits are still here. Retry Save or keep this window open.";
 const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
@@ -189,6 +191,24 @@ pub(super) const MOVED_OR_DELETED_NOTICE: &str =
 
 const DRAFT_WRITE_NOTICE: &str =
     "The recovery copy couldn’t be saved. Keep this window open and retry Save or copy your draft.";
+
+fn missing_source(error: &anyhow::Error) -> bool {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    }) {
+        return true;
+    }
+    #[cfg(unix)]
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<rustix::io::Errno>() == Some(&rustix::io::Errno::NOENT))
+    {
+        return true;
+    }
+    false
+}
 
 fn file_access_notice(error: &anyhow::Error) -> &'static str {
     if let Some(notice) = crate::reader_file_access_notice::publication_notice(error) {
@@ -1226,7 +1246,132 @@ impl Reader {
             .into_any_element()
     }
 
+    pub(super) fn owns_source_publication(&self, digest: &[u8; 32]) -> bool {
+        self.editing
+            .as_ref()
+            .is_some_and(|e| e.store.owns_publication(digest))
+    }
+
+    /// Background watcher refresh. Sampling the canonical Rope is bounded; all
+    /// byte comparisons, disk reads and recovery persistence belong to workers.
+    pub(super) fn refresh_source_in_background(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        if editing.autosaving.is_some() {
+            editing.refresh_deferred = true;
+            return;
+        }
+        let snapshot = editing.input.read(cx).source_snapshot();
+        if editing.draft_stamp != snapshot.stamp {
+            editing.draft_stamp = snapshot.stamp;
+            editing
+                .store
+                .queue_snapshot(DraftText::from_identified_rope(
+                    snapshot.text.rope().clone(),
+                    snapshot.text.id(),
+                ));
+        }
+        let copy = match editing.store.publication_copy() {
+            Ok(copy) => copy,
+            Err(error) => {
+                editing.save_failed = true;
+                self.link_notice = Some(file_access_notice(&error).into());
+                cx.notify();
+                return;
+            }
+        };
+        let input_id = editing.input.entity_id();
+        let saves = editing.saves;
+        let recovery = editing.recovery_epoch;
+        let retained = self.deleted_current().is_some();
+        let root = self.vault_root.clone();
+        let rel = self.current_rel.clone();
+        self.navigation.reconciliation_generation =
+            self.navigation.reconciliation_generation.wrapping_add(1);
+        let generation = self.navigation.reconciliation_generation;
+        let task = cx.background_executor().spawn(async move {
+            let observed = copy.current();
+            let reviewed = retained.then(|| observed.as_ref().ok().cloned()).flatten();
+            let refresh = if retained {
+                Ok(None)
+            } else {
+                copy.refresh_publication()
+            };
+            (observed, reviewed, refresh)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let (observed, reviewed, refresh) = task.await;
+            let _ = this.update_in_own_window(cx, |this, window, cx| {
+                if this.navigation.reconciliation_generation != generation || this.vault_root != root || this.current_rel != rel { return; }
+                let Some(editing) = this.editing.as_mut().filter(|e| e.input.entity_id() == input_id) else { return; };
+                if editing.autosaving.is_some() { editing.refresh_deferred = true; return; }
+                if editing.saves != saves { this.refresh_source_in_background(window, cx); return; }
+                if editing.input.read(cx).source_stamp() != snapshot.stamp || editing.recovery_epoch != recovery {
+
+                    this.refresh_source_in_background(window, cx); return;
+                }
+                let held = match observed {
+                    Ok(raw) => this.track_deleted_observation(Some(raw), cx),
+                    Err(ref error) if missing_source(error) => this.track_deleted_observation(None, cx),
+                    Err(_) => false,
+                };
+                let retained_cleared = this.deleted_current().is_none();
+                let editing = this.editing.as_mut().unwrap();
+                if held {
+                    if this.deleted_note.as_ref().is_some_and(|note| note.disk == reader_deleted_note::Disk::Different) {
+                        editing.conflict_detected = true;
+                        editing.conflict = reviewed;
+                    } else {
+                        editing.save_failed = true;
+                    }
+                    cx.notify(); return;
+                }
+                let was_conflict = editing.conflict_detected;
+                let mut resume = None;
+                match refresh {
+                    Ok(Some(okilum_core::file_editor::PublicationRefresh { editor: store, outcome: result, conflict, replacement })) => {
+                        editing.store = store;
+                        editing.source_status.set(None);
+                        editing.conflict = conflict;
+                        editing.conflict_detected = result == Save::Conflict;
+                        if result == Save::Conflict {
+                            this.link_notice = Some(format!("{CONFLICT_NOTICE} Your edits are still here. Reload, keep your version, or compare before saving.").into());
+                        } else {
+                            editing.save_failed = false;
+                            editing.compare = false;
+                            if was_conflict && editing.store.has_pending_revision() {
+                                resume = Some((editing.input.entity_id(), editing.recovery_epoch));
+                            }
+                            if this.link_notice.as_deref().is_some_and(|n| n.starts_with(CONFLICT_NOTICE)) { this.link_notice = None; }
+                            if let Some(updated) = replacement {
+                                editing.input.update(cx, |input, cx| input.set_value(updated, window, cx));
+                                editing.saved_at = None;
+                            }
+                        }
+                        cx.notify();
+                    }
+                    Ok(None) if !retained || retained_cleared => this.refresh_source_in_background(window, cx),
+                    Ok(None) => {},
+                    Err(error) => {
+
+                        editing.save_failed = true;
+                        this.link_notice = Some(file_access_notice(&error).into());
+                        cx.notify();
+                    }
+                }
+                if let Some((input_id, epoch)) = resume { this.schedule_autosave(input_id, epoch, cx); }
+            });
+        }).detach();
+    }
+
     pub(super) fn refresh_source_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        let _work = work::scope();
         // Every refresh entry point (including shared-window publications and
         // deferred autosave refreshes) preserves an observed deletion. Do this
         // before FileEditor can silently refresh a clean buffer on file return.
@@ -1625,10 +1770,13 @@ impl Reader {
             let rules_revision = pending_agents_revision(&copy, copy.dirty());
             let result = copy.save();
             // The UI editor takes the stamp, so its next refresh skips the read (#1363).
-            (result, copy.disk_stamp(), rules_revision)
+            let conflict = matches!(result, Ok(Save::Conflict))
+                .then(|| copy.current().ok())
+                .flatten();
+            (result, copy.disk_stamp(), rules_revision, conflict)
         });
         cx.spawn(async move |this, cx| {
-            let (result, stamp, rules_revision) = worker.await;
+            let (result, stamp, rules_revision, conflict) = worker.await;
             let _ = this.update(cx, |this, cx| {
                 let accepted = matches!(&result, Ok(Save::Saved))
                     && this.editing.as_ref().is_some_and(|editing| {
@@ -1636,7 +1784,7 @@ impl Reader {
                             && editing.saves == saves
                             && editing.autosaving.as_ref() == Some(&text)
                     });
-                this.autosaved(input_id, saves, text, result, stamp, cx);
+                this.autosaved_observed(input_id, saves, text, result, stamp, conflict, cx);
                 if accepted {
                     if let Some((absolute_path, saved_revision)) = rules_revision {
                         this.agents_rules_saved(&absolute_path, &saved_revision, cx);
@@ -1647,6 +1795,7 @@ impl Reader {
         .detach();
     }
 
+    #[cfg(test)]
     fn autosaved(
         &mut self,
         input_id: EntityId,
@@ -1656,6 +1805,21 @@ impl Reader {
         stamp: Option<DiskStamp>,
         cx: &mut Context<Self>,
     ) {
+        self.autosaved_observed(input_id, saves, text, result, stamp, None, cx);
+    }
+
+    fn autosaved_observed(
+        &mut self,
+        input_id: EntityId,
+        saves: u64,
+        text: DraftText,
+        result: anyhow::Result<Save>,
+        stamp: Option<DiskStamp>,
+        conflict: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(test)]
+        let _work = work::scope();
         let Some(editing) = &mut self.editing else {
             return;
         };
@@ -1732,7 +1896,7 @@ impl Reader {
             Ok(Save::Conflict) => {
                 editing.conflict_detected = true;
                 if editing.conflict.is_none() {
-                    editing.conflict = editing.store.current().ok();
+                    editing.conflict = conflict;
                 }
                 self.link_notice = Some(format!("{CONFLICT_NOTICE} Your edits are still here. Reload, keep your version, or compare before saving.").into());
             }
@@ -1751,7 +1915,7 @@ impl Reader {
         let handle = self.reader_window;
         cx.spawn(async move |this, cx| {
             let _ = handle.update(cx, |_, window, cx| {
-                let _ = this.update(cx, |this, cx| this.refresh_source_from_disk(window, cx));
+                let _ = this.update(cx, |this, cx| this.refresh_source_in_background(window, cx));
             });
         })
         .detach();
@@ -2254,8 +2418,8 @@ fn live_blocks(
     // from, for the vault it was prepared against: a rescanned vault (a new
     // image) prepares again.
     let prepared = Rc::new(std::cell::RefCell::new((
-        None::<Arc<okilum_core::vault::Vault>>,
-        std::collections::HashMap::<u64, (SharedString, SharedString)>::new(),
+        std::collections::HashMap::<u64, (SharedString, SharedString, (u64, u64), bool)>::new(),
+        std::collections::VecDeque::<u64>::new(),
     )));
     Rc::new(move |block, source, _width, window, cx| {
         let Some(this) = reader.upgrade() else {
@@ -2296,13 +2460,6 @@ fn live_blocks(
         };
         let markdown = {
             let mut prepared = prepared.borrow_mut();
-            if !prepared
-                .0
-                .as_ref()
-                .is_some_and(|known| Arc::ptr_eq(known, &vault))
-            {
-                *prepared = (Some(vault.clone()), Default::default());
-            }
             let note = context.borrow().clone();
             // Footnote references take the whole note's numbers; only a
             // block with footnote syntax pays for the note-wide pass.
@@ -2313,14 +2470,30 @@ fn live_blocks(
                         .unwrap_or_else(|| source.to_owned())
                 });
             let input = note.with_definitions(block_source);
-            let entry = prepared.1.entry(block.key).or_default();
-            if entry.1.is_empty() || entry.0 != input {
+            let identity = vault.resolution_identity();
+            // Old/deleted block keys cannot grow forever now that autosave no
+            // longer clears preparation. Retire one FIFO entry, never walk it.
+            if !prepared.0.contains_key(&block.key) {
+                if prepared.0.len() >= 256 {
+                    if let Some(retired) = prepared.1.pop_front() {
+                        prepared.0.remove(&retired);
+                    }
+                }
+                prepared.1.push_back(block.key);
+            }
+            let entry = prepared.0.entry(block.key).or_default();
+            if entry.1.is_empty() || entry.0 != input || (entry.3 && entry.2 != identity) {
                 let source = input.to_string();
+                #[cfg(test)]
+                LIVE_PREPARES.with(|count| count.set(count.get() + 1));
+                let dependent = input.contains('[');
                 *entry = (
                     input,
                     okilum_core::render::reader_document_from_source(&vault, &rel, &source)
                         .rendered
                         .into(),
+                    identity,
+                    dependent,
                 );
             }
             entry.1.clone()
@@ -5779,6 +5952,235 @@ mod autosave_tests {
         assert_ne!(undone, "baedit original", "undo works after an autosave");
         wait(visual, 1200);
         assert_eq!(on_disk(&f), undone);
+    }
+
+    #[gpui::test]
+    fn issue2405_autosave_publication_work_and_prepared_cache(cx: &mut TestAppContext) {
+        let mut violations = Vec::new();
+        for shared in [false, true] {
+            for bytes in [25 * 1024, 130 * 1024, 1024 * 1024] {
+                let mut source =
+                    "# Note [[note]]\r\n\r\n```rust\r\nlet value = 1;\r\n```\r\n\r\n".to_owned();
+                source
+                    .push_str(&"Ordinary prose with unchanged semantics. ".repeat(bytes / 40 + 1));
+                source.truncate(bytes);
+                let before_preparation = LIVE_PREPARES.with(|n| n.get());
+                let mut sibling_cx = cx.clone();
+                let (f, visual) = open(cx, &source);
+                let original = f.reader.update_in(visual, |r, window, cx| {
+                    r.editing
+                        .as_ref()
+                        .unwrap()
+                        .input
+                        .update(cx, |i, _| i.enable_layout_diagnostics());
+                    r.set_live_preview(true, window, cx);
+                    if shared {
+                        assert!(r.share_session().is_some());
+                    }
+                    r.vault.clone()
+                });
+                let sibling = if shared {
+                    let (session, opts) = f.reader.read_with(visual, |r, _| {
+                        (
+                            r.shared_session.clone().unwrap(),
+                            Opts {
+                                vault: Some(r.vault_root.clone()),
+                                note: Some("note.md".into()),
+                                session_directory: Some(f._temp.path().join("other-state")),
+                                defer_loading: true,
+                                ..Default::default()
+                            },
+                        )
+                    });
+                    let mut sibling = None;
+                    let (_, other_visual) = sibling_cx.add_window_view(|window, cx| {
+                        let view = cx.new(|cx| Reader::new(opts, window, cx));
+                        view.update(cx, |r, cx| {
+                            r.attach_session(session, "note.md".into(), window, cx)
+                        });
+                        sibling = Some(view.clone());
+                        Root::new(view, window, cx)
+                    });
+                    other_visual.run_until_parked();
+                    Some((sibling.unwrap(), other_visual))
+                } else {
+                    None
+                };
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                let prepared = LIVE_PREPARES.with(|n| n.get());
+                assert!(
+                    prepared > before_preparation,
+                    "prepared block positive control must fire for each fixture"
+                );
+                // Real native edit, debounce, worker save, and both publication paths.
+                let native = input(&f, visual);
+                native.update_in(visual, |i, window, cx| {
+                    i.take_layout_frames();
+                    i.replace_text_in_range(Some(0..1), "x", window, cx);
+                });
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                let prepared = LIVE_PREPARES.with(|n| n.get());
+                // Retain the edited frame: an unchanged autosave correctly
+                // performs no new native layout. The final stamp must match.
+                work::reset();
+                wait(visual, 1200);
+                f.reader.update_in(visual, |r, window, cx| {
+                    if shared {
+                        r.poll_shared_session(window, cx);
+                    }
+                });
+                visual.run_until_parked();
+                let measured = work::take();
+                let mut sibling_same = true;
+                if let Some((other, other_visual)) = sibling {
+                    other.update_in(other_visual, |r, window, cx| {
+                        r.poll_shared_session(window, cx)
+                    });
+                    other_visual.run_until_parked();
+                    sibling_same = other.read_with(other_visual, |r, _| {
+                        assert_eq!(
+                            r.note_canonical_source.as_deref(),
+                            Some(format!("x{}", &source[1..]).as_str()),
+                            "duplicate reader receives the actual edited source, not just its unchanged length"
+                        );
+                        Arc::ptr_eq(&r.vault, &original)
+                    });
+                    other_visual.update(|window, _| window.remove_window());
+                    other_visual.run_until_parked();
+                }
+                let same = f.reader.read_with(visual, |r, cx| {
+                    assert_eq!(on_disk(&f), format!("x{}", &source[1..]));
+                    assert!(!r.source_is_dirty(cx));
+                    assert!(!r.editing.as_ref().unwrap().conflict_detected);
+                    Arc::ptr_eq(&original, &r.vault) && sibling_same
+                });
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                native.read_with(visual, |i, _| {
+                    let frames = i.take_layout_frames();
+                    let frame = frames.last().expect("actual edited native frame");
+                    assert!(!frame.raw, "autosaved fixture must remain projected");
+                    assert_eq!(frame.generation, i.source_stamp().generation);
+                    assert_eq!(frame.presentation_epoch, i.presentation_epoch());
+                });
+                let cache_kept = LIVE_PREPARES.with(|n| n.get()) == prepared;
+                println!("EDITOR_SAVE_WORK bytes={bytes} shared={shared} measured={measured:?} same_vault={same} cache_kept={cache_kept}");
+                if !same
+                    || !cache_kept
+                    || measured.largest >= 16 * 1024
+                    || measured.bytes >= 128 * 1024
+                    || measured.frees >= 512
+                {
+                    violations.push((bytes, shared, measured, same, cache_kept));
+                }
+                // The exact legacy UI refresh must expose the same note-size
+                // copies even when its timestamp fast path avoids a disk read.
+                work::reset();
+                f.reader.update_in(visual, |r, window, cx| {
+                    r.refresh_source_from_disk(window, cx)
+                });
+                let control = work::take();
+                assert!(
+                    control.largest >= bytes && control.bytes >= 2 * bytes,
+                    "unfired refresh control {control:?}"
+                );
+                println!("EDITOR_SAVE_CONTROL bytes={bytes} shared={shared} measured={control:?}");
+                // Each size owns its windows. Old watcher timers must not join
+                // the next fixture's measured autosave after its vault is gone.
+                visual.update(|window, _| window.remove_window());
+                visual.run_until_parked();
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "own-save publication regression: {violations:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn issue2405_external_publication_refreshes_clean_and_conflicts_dirty(cx: &mut TestAppContext) {
+        for shared in [false, true] {
+            let (f, visual) = open(cx, "\u{feff}base\r\n");
+            f.reader.update_in(visual, |r, _, _| {
+                if shared {
+                    assert!(r.share_session().is_some());
+                }
+            });
+            std::fs::write(&f.file, "\u{feff}outside\r\n").unwrap();
+            f.reader.update_in(visual, |r, window, cx| {
+                r.apply_vault_changes(
+                    okilum_core::Changes {
+                        changed: ["note.md".into()].into(),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            visual.run_until_parked();
+            if shared {
+                f.reader
+                    .update_in(visual, |r, window, cx| r.poll_shared_session(window, cx));
+                visual.run_until_parked();
+            }
+            assert_eq!(
+                input(&f, visual).read_with(visual, |i, _| i.value().to_string()),
+                "\u{feff}outside\r\n"
+            );
+            type_at_start(&f, visual, "mine");
+            std::fs::write(&f.file, "\u{feff}external conflict\r\n").unwrap();
+            f.reader.update_in(visual, |r, window, cx| {
+                r.apply_vault_changes(
+                    okilum_core::Changes {
+                        changed: ["note.md".into()].into(),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            visual.run_until_parked();
+            if shared {
+                f.reader
+                    .update_in(visual, |r, window, cx| r.poll_shared_session(window, cx));
+                visual.run_until_parked();
+            }
+            f.reader.read_with(visual, |r, _| {
+                assert!(r.editing.as_ref().unwrap().conflict_detected)
+            });
+            assert_eq!(
+                input(&f, visual).read_with(visual, |i, _| i.value().to_string()),
+                "\u{feff}mineoutside\r\n"
+            );
+            wait(visual, 1200);
+            assert_eq!(on_disk(&f), "\u{feff}external conflict\r\n");
+            // Its original timer has exited while the conflict was visible.
+            // Returning the confirmed base must restart autosave without a key.
+            std::fs::write(&f.file, "\u{feff}outside\r\n").unwrap();
+            f.reader.update_in(visual, |r, window, cx| {
+                r.apply_vault_changes(
+                    okilum_core::Changes {
+                        changed: ["note.md".into()].into(),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            visual.run_until_parked();
+            if shared {
+                f.reader
+                    .update_in(visual, |r, window, cx| r.poll_shared_session(window, cx));
+                visual.run_until_parked();
+            }
+            wait(visual, 1200);
+            assert_eq!(
+                on_disk(&f),
+                "\u{feff}mineoutside\r\n",
+                "conflict-cleared autosave resumes without new input"
+            );
+        }
     }
 
     #[gpui::test]

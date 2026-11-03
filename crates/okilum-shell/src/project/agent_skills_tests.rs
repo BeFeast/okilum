@@ -59,7 +59,13 @@ fn mount<'a>(
         let project = cx.new(|cx| {
             let mut view = ProjectView::empty(Some(state.join("state")), window, cx);
             view.area = Some(root.join("p"));
-            view.bind_resources(&reader, root.clone(), reader.read(cx).vault.clone(), cx);
+            view.bind_resources(
+                &reader,
+                root.clone(),
+                reader.read(cx).vault.clone(),
+                reader.read(cx).source_publication_epoch,
+                cx,
+            );
             view.select_section(ProjectSection::Skills, cx);
             view
         });
@@ -163,16 +169,21 @@ async fn skills_1591_content_only_publication_refuses_completion_before_observer
     });
     let root = state.path().join("vault");
     write_skill(&root, "bravo");
-    // Identical inventory metadata and paths; a different accepted Arc is still
-    // a new content publication. Deliberately do NOT notify the Reader observer.
+    // #2405 retains the inventory Arc across content-only saves. The source
+    // publication epoch must still reject an old result before observers drain.
     reader.update_in(visual, |reader, _, _| {
         let next = publication(&root, false);
         assert_eq!(
             reader.vault.link_inventory_revision(),
             next.link_inventory_revision()
         );
-        assert!(!Arc::ptr_eq(&reader.vault, &next));
-        reader.vault = next;
+        let original = reader.vault.clone();
+        assert!(reader.vault.publish_semantics(&next));
+        reader.source_publication_epoch = reader.source_publication_epoch.wrapping_add(1);
+        assert!(
+            Arc::ptr_eq(&reader.vault, &original),
+            "content-only publication keeps inventory ownership"
+        );
     });
     let obsolete_result = ticket.request.discover();
     project.update_in(visual, |view, _, cx| {
@@ -266,14 +277,24 @@ async fn skills_1591_hide_project_switch_and_same_owner_rebind_reject_held_reloa
         project.update_in(visual, |view, _, cx| {
             match action {
                 "hide" => view.select_section(ProjectSection::Manager, cx),
-                "rebind" => {
-                    view.bind_resources(&reader, root.clone(), reader.read(cx).vault.clone(), cx)
-                }
+                "rebind" => view.bind_resources(
+                    &reader,
+                    root.clone(),
+                    reader.read(cx).vault.clone(),
+                    reader.read(cx).source_publication_epoch,
+                    cx,
+                ),
                 _ => {
                     std::fs::create_dir_all(root.join("other")).unwrap();
                     view.area = Some(root.join("other"));
                     view.generation += 1;
-                    view.bind_resources(&reader, root.clone(), reader.read(cx).vault.clone(), cx);
+                    view.bind_resources(
+                        &reader,
+                        root.clone(),
+                        reader.read(cx).vault.clone(),
+                        reader.read(cx).source_publication_epoch,
+                        cx,
+                    );
                     assert!(
                         view.skills.snapshot().is_none(),
                         "a new project cannot inherit lastgood rows"
@@ -316,7 +337,13 @@ async fn skills_1591_stale_open_refuses_rebind_and_fresh_reload_opens_exact_sour
     });
     let root = state.path().join("vault");
     project.update_in(visual, |view, _, cx| {
-        view.bind_resources(&reader, root.clone(), reader.read(cx).vault.clone(), cx);
+        view.bind_resources(
+            &reader,
+            root.clone(),
+            reader.read(cx).vault.clone(),
+            reader.read(cx).source_publication_epoch,
+            cx,
+        );
         cx.notify();
     });
     visual.run_until_parked();

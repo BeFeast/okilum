@@ -110,6 +110,7 @@ mod reader_plain_text;
 mod reader_project_create;
 mod reader_project_navigation;
 mod reader_properties;
+mod reader_publication;
 mod reader_read_menu;
 mod reader_reading_controls;
 #[cfg(any(unix, windows))]
@@ -897,6 +898,8 @@ type FirstDocumentRead = Arc<dyn Fn(&Path) -> std::io::Result<Vec<u8>> + Send + 
 
 #[derive(Default, Clone)]
 struct Opts {
+    /// Worker-only inventory reuse during a full refresh of the current root.
+    publication_vault: Option<Arc<Vault>>,
     /// Opt-in backend client; the ordinary reader remains unchanged.
     brain_endpoint: Option<std::net::SocketAddr>,
     /// Open the managed workspace chooser only by explicit request.
@@ -1698,6 +1701,8 @@ struct Reader {
     index_dir: Option<PathBuf>,
     cache_lease: Option<Arc<reader_cache::Lease>>,
     vault: Arc<Vault>,
+    vault_publication_revision: (u64, u64),
+    source_publication_epoch: u64,
     searcher: Option<Arc<Searcher>>,
     vault_root: PathBuf,
     /// The watcher lives here so it is dropped with the reader; the poll
@@ -1761,8 +1766,9 @@ struct Reader {
     /// evidence is cleared separately during same-document verification.
     link_presentations: prepared_links::States,
     link_preparation_generation: u64,
-    link_original_source: Option<String>,
-    link_identities: Vec<okilum_core::document_links::prepared::LinkIdentity>,
+    link_original_source: Option<Arc<str>>,
+    link_rendered_source: Option<Arc<str>>,
+    link_identities: Arc<Vec<okilum_core::document_links::prepared::LinkIdentity>>,
     backlinks: Vec<Backlink>,
     /// `backlinks` is grouped by source note: one range per card of the «Linked from» list.
     /// Kept with the list state below, which counts exactly these cards (#1135).
@@ -1992,6 +1998,8 @@ impl Reader {
             content_status: None,
             shared_session: None,
             shared_version: 0,
+            vault_publication_revision: (0, 0),
+            source_publication_epoch: 0,
             usable_document: false,
             open_started: None,
             note_body_trace: None,
@@ -2091,7 +2099,8 @@ impl Reader {
             link_presentations: Arc::default(),
             link_preparation_generation: 0,
             link_original_source: None,
-            link_identities: Vec::new(),
+            link_rendered_source: None,
+            link_identities: Arc::default(),
             backlinks: Vec::new(),
             backlink_groups: Vec::new(),
             backlinks_list: ListState::new(0, ListAlignment::Top, px(200.)),
@@ -2326,6 +2335,13 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !changes.is_empty() {
+            self.invalidate_links();
+            // A newer source hint revokes an older document reconciliation,
+            // including its late attempt to prepare actionable link evidence.
+            self.navigation.reconciliation_generation =
+                self.navigation.reconciliation_generation.wrapping_add(1);
+        }
         if self.shared_session.is_some() {
             self.deferred_vault_changes.rescan |= changes.rescan;
             self.deferred_vault_changes.changed.extend(changes.changed);
@@ -2569,8 +2585,9 @@ impl Reader {
         }
         self.invalidate_links();
         self.link_presentations = Arc::default();
-        self.link_original_source = original_body.clone();
-        self.link_identities = identities;
+        self.link_original_source = original_body.as_deref().map(Arc::from);
+        self.link_rendered_source = Some(Arc::from(source.as_str()));
+        self.link_identities = Arc::new(identities);
         let configured = reader_plugins(
             self.vault_root.clone(),
             TextView::new(&self.content),

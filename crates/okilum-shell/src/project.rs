@@ -675,6 +675,7 @@ impl ProjectView {
         reader: &Entity<Reader>,
         root: PathBuf,
         mut published: Arc<Vault>,
+        mut publication_epoch: u64,
         cx: &mut Context<Self>,
     ) {
         let scope_changed = self.resource_vault.as_ref() != Some(&root);
@@ -686,10 +687,14 @@ impl ProjectView {
         self.resource_vault = Some(root.clone());
         self._resource_observer = Some(cx.observe(reader, move |this, reader, cx| {
             let reader = reader.read(cx);
-            if reader.vault_root != root || Arc::ptr_eq(&published, &reader.vault) {
+            if reader.vault_root != root
+                || (Arc::ptr_eq(&published, &reader.vault)
+                    && publication_epoch == reader.source_publication_epoch)
+            {
                 return;
             }
             published = reader.vault.clone();
+            publication_epoch = reader.source_publication_epoch;
             agent_skills::published(this, cx);
             // A publication represents a reconciled source batch; rebuild rather
             // than infer which imported/renamed source influenced the stack.
@@ -2319,9 +2324,10 @@ impl Reader {
                 };
                 let root = this.vault_root.clone();
                 let published = this.vault.clone();
+                let publication_epoch = this.source_publication_epoch;
                 let reader = cx.entity();
                 project.update(cx, |view, cx| {
-                    view.bind_resources(&reader, root, published, cx)
+                    view.bind_resources(&reader, root, published, publication_epoch, cx)
                 });
                 let _resource_open = cx.subscribe_in(
                     &project,
