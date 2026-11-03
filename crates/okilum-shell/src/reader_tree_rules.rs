@@ -34,12 +34,15 @@ impl Reader {
             || self
                 .tree_rules_source
                 .as_ref()
-                .is_some_and(|source| Arc::ptr_eq(source, &self.vault))
+                .is_some_and(|(source, epoch)| {
+                    Arc::ptr_eq(source, &self.vault) && *epoch == self.source_publication_epoch
+                })
         {
             return;
         }
         self.tree_rules_running = true;
         let vault = self.vault.clone();
+        let epoch = self.source_publication_epoch;
         cx.spawn(async move |this, cx| {
             let source = vault.clone();
             let shims = cx
@@ -50,8 +53,8 @@ impl Reader {
                 this.tree_rules_running = false;
                 // A different inventory/root supersedes this read. At most one
                 // worker runs; coalesce changes into one follow-up on completion.
-                if Arc::ptr_eq(&this.vault, &vault) {
-                    this.tree_rules_source = Some(vault);
+                if Arc::ptr_eq(&this.vault, &vault) && this.source_publication_epoch == epoch {
+                    this.tree_rules_source = Some((vault, epoch));
                     this.tree.set_agent_shims(shims);
                     cx.notify();
                 }
