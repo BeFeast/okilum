@@ -95,7 +95,7 @@ diff --git a/crates/base/src/input/editor/search.rs b/crates/base/src/input/edit
 @@ -133,7 +133,28 @@
          cx.notify();
      }
- 
+
 +    /// Pin the actual match through a presentation handoff. Uses the painted
 +    /// source-to-display map; no source edit, caret move or Undo transaction.
 +    pub(super) fn preserve_search_match_anchor(&mut self) {
