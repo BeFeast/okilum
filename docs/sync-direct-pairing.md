@@ -175,6 +175,28 @@ each name plus `5 passed`, including peer-address, skipped-share, nonempty refus
 label migration/recovery controls.
 Native idunn/muninn acceptance belongs to the Sync owner after beta delivery.
 
+### Disposable CI fixture staging (#2527)
+
+Both source-sharing and network-policy jobs obtain the pinned runtime through
+`scripts/ci/sync-fixture-stage.py`. The helper verifies the archive checksum and
+the extracted executable checksum before publishing. Each writer uses a unique
+temporary file in the destination directory, flushes and fsyncs its contents,
+closes the writable descriptor, then atomically renames and fsyncs the directory.
+Closing before rename prevents concurrent exec from observing a writable inode.
+
+Verified executables are read-only and cached at
+`~/.cache/okilum-sync-fixture/<binary-sha256>/syncthing`. This also isolates new
+trials from older jobs extracting over the legacy version-named directory. No
+job truncates an existing executable, and concurrent cold-cache downloads never
+share a partial archive. Derived fixture caches remain disposable.
+
+The staging unit controls hold the legacy `tar -xzf` path open during exec to
+reproduce ETXTBSY, then check atomic replacement of a running ELF, exec exactly
+at publication, concurrent cold-cache writers/downloaders and checksum failures.
+The real lifecycle driver publishes and executes four replacements concurrently
+while two pinned daemons stay live in its own cache. Normal exit, panic, SIGKILL
+and orphan-guard controls still require all owned fixture processes to disappear.
+
 ## Guided Linux first run (#2368)
 
 The welcome screen's **Get notes from another computer** opens Settings directly
