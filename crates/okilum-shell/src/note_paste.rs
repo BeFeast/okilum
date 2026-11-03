@@ -44,6 +44,11 @@ pub trait NoteClipboard: Send + Sync {
     fn read_chat_offer(&self) -> Result<PasteOffer, OfferError> {
         self.read_offer()
     }
+    /// Read inside the paste action so a self-owned or unsupported native
+    /// selection can fall back to GPUI's clipboard on this UI thread.
+    fn read_chat_offer_in_command(&self, _: &App) -> Result<PasteOffer, OfferError> {
+        self.read_chat_offer()
+    }
     /// Whether anything at all is on the clipboard (enables the Paste item).
     fn has_content(&self) -> bool;
     /// The clipboard's type names, for the paste log (never contents).

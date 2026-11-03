@@ -64,7 +64,7 @@ fn alias(mime: &str) -> &str {
         "image/gif" => "com.compuserve.gif",
         "image/tiff" => "public.tiff",
         "image/bmp" => "com.microsoft.bmp",
-        "text/uri-list" => offer::FILE_URL,
+        "text/uri-list" | "x-special/gnome-copied-files" => offer::FILE_URL,
         "text/html" => "public.html",
         "text/plain;charset=utf-8" | "UTF8_STRING" | "text/plain" => "public.utf8-plain-text",
         _ => mime,
@@ -95,7 +95,12 @@ impl Pasteboard for Board {
     fn file_urls(&self) -> Vec<String> {
         self.0
             .iter()
-            .filter(|(mime, _)| mime == "text/uri-list")
+            .filter(|(mime, _)| {
+                matches!(
+                    mime.as_str(),
+                    "text/uri-list" | "x-special/gnome-copied-files"
+                )
+            })
             .flat_map(|(_, bytes)| {
                 String::from_utf8_lossy(bytes)
                     .lines()
@@ -160,10 +165,12 @@ fn chat_offer(board: &Board) -> Result<PasteOffer, OfferError> {
     // File-manager copies carry an explicit file flavor. Never turn an
     // ordinary pasted path into an upload, or stat a remote mount on the UI.
     if board.types().iter().any(|kind| kind == offer::FILE_URL) {
+        let mut seen = std::collections::HashSet::new();
         let paths: Vec<_> = board
             .file_urls()
             .iter()
             .filter_map(|raw| url::Url::parse(raw).ok()?.to_file_path().ok())
+            .filter(|path| seen.insert(path.clone()))
             .collect();
         if !paths.is_empty() {
             return Ok(PasteOffer::Files(paths));
@@ -178,6 +185,10 @@ impl NoteClipboard for LinuxNoteClipboard {
     }
     fn read_chat_offer(&self) -> Result<PasteOffer, OfferError> {
         let board = settle(self.read(), Board::default).map_err(offer_error)?;
+        chat_offer(&board)
+    }
+    fn read_chat_offer_in_command(&self, cx: &App) -> Result<PasteOffer, OfferError> {
+        let board = settle(self.read(), || platform_board(cx)).map_err(offer_error)?;
         chat_offer(&board)
     }
     fn has_content(&self) -> bool {
@@ -222,6 +233,75 @@ mod tests {
             PasteOffer::Text(uri.into()),
             "a text URL must never upload the referenced file"
         );
+    }
+
+    #[test]
+    fn native_gnome_copied_file_flavor_reaches_chat_without_uploading_plain_paths() {
+        let mimes = vec!["x-special/gnome-copied-files".into(), "text/plain".into()];
+        let selection = receive_selection(&mimes, None, true, |mime, _| {
+            Ok(match mime {
+                "x-special/gnome-copied-files" => b"copy\nfile:///qa/exact%20image.png\n".to_vec(),
+                "text/plain" => b"exact image.png".to_vec(),
+                _ => panic!("unexpected clipboard read"),
+            })
+        })
+        .unwrap();
+        let board = settle(Ok(selection), || {
+            panic!("typed file offer must not fall back")
+        })
+        .unwrap();
+        assert_eq!(
+            chat_offer(&board).unwrap(),
+            PasteOffer::Files(vec![PathBuf::from("/qa/exact image.png")])
+        );
+        let mut both = board;
+        both.0.push((
+            "text/uri-list".into(),
+            b"file:///qa/exact%20image.png\r\n".to_vec(),
+        ));
+        assert_eq!(
+            chat_offer(&both).unwrap(),
+            PasteOffer::Files(vec![PathBuf::from("/qa/exact image.png")])
+        );
+    }
+
+    #[gpui::test]
+    fn chat_command_falls_back_to_self_owned_pixels_files_and_text(cx: &mut gpui::TestAppContext) {
+        let clipboard = LinuxNoteClipboard {
+            socket: None,
+            seat: None,
+            x11: None,
+        };
+        let bytes = png();
+        cx.update(|cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image {
+                id: 0,
+                format: gpui::ImageFormat::Png,
+                bytes: bytes.clone(),
+            }));
+            let offer = clipboard.read_chat_offer_in_command(cx).unwrap();
+            assert!(matches!(offer, PasteOffer::Image(image) if image.bytes == bytes));
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string("Keep exact text".into()));
+            assert_eq!(
+                clipboard.read_chat_offer_in_command(cx).unwrap(),
+                PasteOffer::Text("Keep exact text".into())
+            );
+        });
+        // Unsupported native readers must use the same captured GPUI board;
+        // an empty supported selection must not paste stale platform content.
+        let board = || {
+            Board(vec![(
+                "text/uri-list".into(),
+                b"file:///qa/image.png".to_vec(),
+            )])
+        };
+        assert!(
+            matches!(chat_offer(&settle(Ok(Selection::Own), board).unwrap()).unwrap(), PasteOffer::Files(paths) if paths == vec![PathBuf::from("/qa/image.png")])
+        );
+        assert!(matches!(
+            chat_offer(&settle(Ok(Selection::Empty), board).unwrap()).unwrap(),
+            PasteOffer::Nothing { .. }
+        ));
     }
 
     fn png() -> Vec<u8> {

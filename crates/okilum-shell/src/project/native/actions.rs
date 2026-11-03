@@ -2346,3 +2346,6 @@ mod question_progress_tests;
 
 #[cfg(test)]
 mod question_options_tests;
+
+#[cfg(test)]
+mod image_delivery_tests;

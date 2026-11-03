@@ -98,6 +98,10 @@ fn metadata(name: String) -> AttachmentMetadata {
         "csv" => "text/csv",
         "json" => "application/json",
         "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "avif" => "image/avif",
+        "heic" | "heif" => "image/heic",
         _ => "application/octet-stream",
     };
     AttachmentMetadata {
@@ -122,29 +126,16 @@ fn draft_kind(kind: AttachmentKind) -> DraftKind {
     }
 }
 
-fn encode_image(bytes: &[u8]) -> anyhow::Result<(String, Vec<u8>)> {
-    use image::ImageFormat;
-    let format = image::guess_format(bytes)?;
-    let mime = match format {
-        ImageFormat::Png => Some("image/png"),
-        ImageFormat::Jpeg => Some("image/jpeg"),
-        ImageFormat::Gif => Some("image/gif"),
-        ImageFormat::WebP => Some("image/webp"),
-        _ => None,
-    };
-    if let Some(mime) = mime {
-        return Ok((mime.into(), bytes.to_vec()));
+fn supported_image_mime(bytes: &[u8]) -> anyhow::Result<&'static str> {
+    match image::guess_format(bytes)
+        .context("Unsupported image type. Attach a PNG, JPEG, GIF or WebP image.")?
+    {
+        image::ImageFormat::Png => Ok("image/png"),
+        image::ImageFormat::Jpeg => Ok("image/jpeg"),
+        image::ImageFormat::Gif => Ok("image/gif"),
+        image::ImageFormat::WebP => Ok("image/webp"),
+        _ => anyhow::bail!("Unsupported image type. Attach a PNG, JPEG, GIF or WebP image."),
     }
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(16384);
-    limits.max_image_height = Some(16384);
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
-    let image = reader.decode()?;
-    let mut png = std::io::Cursor::new(Vec::new());
-    image.write_to(&mut png, ImageFormat::Png)?;
-    Ok(("image/png".into(), png.into_inner()))
 }
 
 pub(super) fn thumbnail(bytes: &[u8]) -> Option<Arc<gpui::Image>> {
@@ -235,28 +226,20 @@ fn prepare(
                 "File changed while it was being attached; select it again"
             );
             let mut meta = metadata(name.to_owned());
-            if let Ok(format) = image::guess_format(&bytes) {
-                let mime = match format {
-                    image::ImageFormat::Png => Some("image/png"),
-                    image::ImageFormat::Jpeg => Some("image/jpeg"),
-                    image::ImageFormat::Gif => Some("image/gif"),
-                    image::ImageFormat::WebP => Some("image/webp"),
-                    _ => None,
-                };
-                if let Some(mime) = mime {
-                    meta.kind = AttachmentKind::Image;
-                    meta.mime_type = mime.into();
-                }
+            if image::guess_format(&bytes).is_ok() || meta.mime_type.starts_with("image/") {
+                meta.kind = AttachmentKind::Image;
+                meta.mime_type = supported_image_mime(&bytes)?.into();
             }
             (meta, bytes)
         }
         Source::Image(bytes) => {
-            let (mime, bytes) = encode_image(bytes)?;
+            let mime = supported_image_mime(bytes)?;
+            let bytes = bytes.as_ref().clone();
             (
                 AttachmentMetadata {
                     kind: AttachmentKind::Image,
                     name: name.to_owned(),
-                    mime_type: mime,
+                    mime_type: mime.into(),
                     size_bytes: 0,
                 },
                 bytes,
@@ -264,7 +247,6 @@ fn prepare(
         }
     };
     meta.size_bytes = bytes.len() as u64;
-    meta.validate()?;
     if meta.kind == AttachmentKind::Image {
         anyhow::ensure!(
             meta.size_bytes <= MAX_IMAGE_BYTES,
@@ -275,6 +257,7 @@ fn prepare(
             "Images exceed T3's 80 MiB total image limit; remove a file before retrying"
         );
     }
+    meta.validate()?;
     Ok((meta, bytes))
 }
 
@@ -377,7 +360,7 @@ impl ProjectView {
         use crate::note_paste::offer::PasteOffer;
         let offer = cx
             .try_global::<crate::note_paste::ManagedNoteClipboard>()
-            .map(|p| p.0.read_chat_offer());
+            .map(|p| p.0.read_chat_offer_in_command(cx));
         match offer {
             Some(Ok(PasteOffer::Files(paths))) => {
                 self.attach_paths(&paths, None, window, cx);
@@ -390,6 +373,13 @@ impl ProjectView {
             Some(Ok(PasteOffer::Text(text))) => {
                 self.compose
                     .update(cx, |input, cx| input.insert(text, window, cx));
+                return;
+            }
+            Some(Err(crate::note_paste::offer::OfferError::TooLarge)) => {
+                self.attachments.notice = Some(
+                    "Clipboard content is too large. Images support up to 10 MiB; choose a smaller image.".into(),
+                );
+                cx.notify();
                 return;
             }
             Some(Err(_)) => {
@@ -1269,6 +1259,58 @@ mod tests {
             prepare(&Source::Image(Arc::new(png.clone())), "Screenshot.png", 0).unwrap();
         assert_eq!(meta.kind, AttachmentKind::Image);
         assert_eq!(actual, png);
+    }
+
+    #[test]
+    fn image_preparation_preserves_every_supported_format_and_rejects_unsupported_or_oversized() {
+        let temp = tempfile::tempdir().unwrap();
+        for (format, name) in [
+            (image::ImageFormat::Png, "exact.png"),
+            (image::ImageFormat::Jpeg, "exact.jpg"),
+            (image::ImageFormat::Gif, "exact.gif"),
+            (image::ImageFormat::WebP, "exact.webp"),
+        ] {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(8, 6)
+                .write_to(&mut bytes, format)
+                .unwrap();
+            let bytes = bytes.into_inner();
+            let path = temp.path().join(name);
+            std::fs::write(&path, &bytes).unwrap();
+            for source in [Source::File(path), Source::Image(Arc::new(bytes.clone()))] {
+                let prepared = prepare_with_preview(&source, name, 0).unwrap();
+                assert_eq!(
+                    prepared.bytes, bytes,
+                    "upload must retain original encoded bytes"
+                );
+                assert!(prepared.previews.is_some());
+            }
+        }
+        let mut bmp = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(8, 6)
+            .write_to(&mut bmp, image::ImageFormat::Bmp)
+            .unwrap();
+        let path = temp.path().join("unsupported.bmp");
+        std::fs::write(&path, bmp.get_ref()).unwrap();
+        for source in [
+            Source::File(path),
+            Source::Image(Arc::new(bmp.into_inner())),
+        ] {
+            assert!(prepare(&source, "unsupported.bmp", 0)
+                .unwrap_err()
+                .to_string()
+                .contains("Unsupported image type"));
+        }
+        let path = temp.path().join("oversized.png");
+        let mut bytes = vec![0; MAX_IMAGE_BYTES as usize + 1];
+        bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        std::fs::write(&path, &bytes).unwrap();
+        for source in [Source::File(path), Source::Image(Arc::new(bytes))] {
+            assert!(prepare(&source, "oversized.png", 0)
+                .unwrap_err()
+                .to_string()
+                .contains("10 MiB"));
+        }
     }
 
     #[gpui::test]
