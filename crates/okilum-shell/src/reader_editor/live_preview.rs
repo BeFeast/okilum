@@ -2956,6 +2956,7 @@ mod tests {
     /// elsewhere: Find does not move the editing selection.
     #[gpui::test]
     fn issue2484_large_find_close_keeps_match_visible(cx: &mut TestAppContext) {
+        use gpui_component::WindowExt as _;
         let query = "Concurrent identical first submissions";
         let block = "## Section\n\nA public **paragraph** with `code` and enough text to wrap. ".to_owned()
             + &"More documentation text. ".repeat(12)
