@@ -4188,7 +4188,7 @@ mod tests {
             assert!(!reader.save_source(cx));
             assert!(reader.save_source_for_close(cx));
         });
-        cx.update(|cx| assert!(save_all_for_quit(cx)));
+        visual.update(|_, cx| assert!(save_all_for_quit(cx)));
         assert_eq!(
             std::fs::read_to_string(root.join("note.md")).unwrap(),
             "original"
