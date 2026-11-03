@@ -576,7 +576,13 @@ impl Reader {
             editing.live_preview.suspend();
             editing.live_preview.enabled = false;
             let sensitive = reader_ui_state::find_case_sensitive(cx);
+            let source_hover = editing
+                .markdown
+                .then(|| reader_image_actions::source_hover(cx.entity().downgrade()));
             editing.input.update(cx, |input, cx| {
+                if let Some(source_hover) = source_hover {
+                    input.lsp_mut().hover_provider = Some(source_hover);
+                }
                 input.set_projection_provider(None, cx);
                 input.set_searchable(true, cx);
                 let query = input.search_session().query.clone();
