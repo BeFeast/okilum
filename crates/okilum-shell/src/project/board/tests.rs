@@ -15,8 +15,12 @@ fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserv
     let binding = Binding::parse(&source.to_string()).unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board =
-                Board::with_reader(area.path().into(), okilum_t3::board::live::read, window, cx);
+            let mut board = Board::with_kanban_reader(
+                area.path().into(),
+                okilum_t3::board::live::read,
+                window,
+                cx,
+            );
             board.binding = Some(binding.clone());
             board
         });
@@ -77,8 +81,12 @@ fn source_error_and_recovery_keep_board_geometry_stable(cx: &mut TestAppContext)
     .unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board =
-                Board::with_reader(area.path().into(), okilum_t3::board::live::read, window, cx);
+            let mut board = Board::with_kanban_reader(
+                area.path().into(),
+                okilum_t3::board::live::read,
+                window,
+                cx,
+            );
             board.binding = Some(binding);
             board
         });
@@ -201,7 +209,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
     let area = tempfile::tempdir().unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            Board::with_reader(
+            Board::with_kanban_reader(
                 area.path().to_owned(),
                 okilum_t3::board::live::read,
                 window,
@@ -229,6 +237,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
                 Ok(okilum_t3::board::Issue {
                     number: 1767,
                     title: "late".into(),
+                    updated_at: String::new(),
                     state: "closed".into(),
                     body: String::new(),
                     labels: Vec::new(),
@@ -350,6 +359,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                     .map(|s| okilum_t3::board::Issue {
                         number: s.number,
                         title: format!("Fixture issue {}", s.number),
+                        updated_at: String::new(),
                         state: "open".into(),
                         body: String::new(),
                         labels: Vec::new(),
@@ -464,6 +474,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                 .update(cx, |input, cx| input.set_value("Keep my draft", window, cx))
         });
         reader.project_navigation.boards[&folder].update(cx, |board, cx| {
+            board.list.preferences.mode = list::Mode::Board;
             board.filter = Some("Editing".into());
             cx.notify();
         });
@@ -731,7 +742,8 @@ fn board_without_registered_agents_does_not_request_a_separate_t3_connection(
     }
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
+            let mut board =
+                Board::with_kanban_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
             board.binding = Some(binding);
             board.active = true;
             board.refresh(window, cx);
@@ -834,7 +846,7 @@ fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestA
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(
+            let mut board = Board::with_kanban_reader(
                 area.path().into(),
                 okilum_t3::board::live::read,
                 window,
@@ -958,8 +970,12 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     let mut entity = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut b =
-                Board::with_reader(area.path().into(), okilum_t3::board::live::read, window, cx);
+            let mut b = Board::with_kanban_reader(
+                area.path().into(),
+                okilum_t3::board::live::read,
+                window,
+                cx,
+            );
             b.binding = Some(binding.clone());
             assert_eq!(
                 b.delivery_column(&binding.issues[0]),
@@ -1131,7 +1147,8 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
     .unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
+            let mut board =
+                Board::with_kanban_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
             board
                 .project_notes
                 .accept(okilum_t3::board::context::refresh(area.path()), now());
@@ -1203,8 +1220,12 @@ fn release_table_stays_compact_at_normal_and_wide_widths_in_both_themes(cx: &mut
     }
     let (_, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board =
-                Board::with_reader(area.path().into(), okilum_t3::board::live::read, window, cx);
+            let mut board = Board::with_kanban_reader(
+                area.path().into(),
+                okilum_t3::board::live::read,
+                window,
+                cx,
+            );
             board.binding = Some(binding);
             board.delivery.accept(
                 d::Update {
@@ -1317,7 +1338,7 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
     binding.issues.clear();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(
+            let mut board = Board::with_kanban_reader(
                 area.path().into(),
                 |_| panic!("hidden fixture must not access the network"),
                 window,

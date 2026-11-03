@@ -23,7 +23,8 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
     });
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut b = Board::with_reader(area.into(), okilum_t3::board::live::read, window, cx);
+            let mut b =
+                Board::with_kanban_reader(area.into(), okilum_t3::board::live::read, window, cx);
             b.binding = Binding::read(area).unwrap();
             b.active = true;
             b.local_cards.accept(Ok(model::read(area).unwrap()), now());

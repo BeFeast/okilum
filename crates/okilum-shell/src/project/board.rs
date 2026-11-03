@@ -6,10 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod appearance;
 mod columns;
 mod delivery;
+mod list;
 mod live;
 mod local;
 mod manage;
 mod notes;
+mod row_bits;
 
 type IssueReader =
     Arc<dyn Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String> + Send + Sync>;
@@ -45,6 +47,7 @@ pub(crate) struct Board {
     notes_expanded: bool,
     next_stage_open: bool,
     columns: columns::State,
+    list: list::State,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -107,6 +110,20 @@ fn problem_line(problems: Vec<(String, Option<u64>)>) -> Option<String> {
     Some(text)
 }
 impl Board {
+    #[cfg(test)]
+    fn with_kanban_reader(
+        area: PathBuf,
+        read_issues: impl Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String>
+            + Send
+            + Sync
+            + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut board = Self::with_reader(area, read_issues, window, cx);
+        board.list.preferences.mode = list::Mode::Board;
+        board
+    }
     fn with_reader(
         area: PathBuf,
         read_issues: impl Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String>
@@ -117,6 +134,7 @@ impl Board {
         cx: &mut Context<Self>,
     ) -> Self {
         let owner = area.to_string_lossy().into_owned();
+        let list = list::State::load(&area, cx);
         Self {
             area,
             binding: None,
@@ -148,6 +166,7 @@ impl Board {
             notes_expanded: false,
             next_stage_open: false,
             columns: columns::State::default(),
+            list,
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -212,6 +231,7 @@ impl Board {
                                         }
                                     }
                                 }
+                                this.list.invalidate();
                                 this.binding = binding;
                                 this.binding_read = Some(now());
                                 this.binding_error = None;
@@ -246,6 +266,7 @@ impl Board {
         }
         self.snapshot.invalidate();
         self.snapshot.t3 = Source::default();
+        self.list.invalidate();
         self.delivery_loading = false;
         self.notes_loading = false;
         self.manager = Some(manager);
@@ -325,6 +346,7 @@ impl Board {
                         }))
                         .await;
                     let _ = this.update_in(cx, |this, window, cx| {
+                        this.list.invalidate();
                         this.snapshot.live_issues(&forgejo_ticket, result, now());
                         if this.snapshot.matches(&forgejo_ticket) {
                             this.refresh_delivery(forgejo_ticket.clone(), window, cx);
@@ -387,6 +409,7 @@ impl Board {
                         }))
                         .await;
                     let _ = this.update_in(cx, |this, _, cx| {
+                        this.list.invalidate();
                         let previous = this.snapshot.t3.error.clone();
                         this.snapshot.threads(&ticket, result, now());
                         if this.snapshot.t3.error != previous {
@@ -468,9 +491,10 @@ impl Board {
         problem_line(problems)
     }
     fn source_indicator(&self, cx: &mut Context<Self>) -> AnyElement {
+        self.source_indicator_for(self.problem(now()), cx)
+    }
+    fn source_indicator_for(&self, problem: Option<String>, cx: &mut Context<Self>) -> AnyElement {
         use gpui_component::popover::Popover;
-
-        let problem = self.problem(now());
         let has_problem = problem.is_some();
         let colors = brand::palette(cx);
         let detail = problem.unwrap_or_else(|| "No source errors reported.".into());
@@ -663,7 +687,9 @@ impl Board {
                         .child("Waiting for you")
                         .child(binding.attention.len().to_string())
                         .child(div().flex_1())
-                        .child(self.agent_filter(binding, false, cx)),
+                        .when(self.list.preferences.mode == list::Mode::Board, |header| {
+                            header.child(self.agent_filter(binding, false, cx))
+                        }),
                 )
                 .child(cards)
                 .into_any_element(),
@@ -1020,6 +1046,9 @@ impl Render for Board {
         if self.editor.is_some() {
             return self.render_management(window, cx);
         }
+        if self.binding.is_some() && self.list.preferences.mode == list::Mode::List {
+            return self.render_list(window, cx);
+        }
         let colors = brand::palette(cx);
         let mut root = v_flex()
             .id("project-board")
@@ -1099,6 +1128,7 @@ impl Render for Board {
         } else {
             binding
         };
+        root = root.child(self.view_toggle(cx));
         if binding.repository.is_empty() {
             root = root.child(div().debug_selector(|| "board-local".into())
                 .text_size(px(12.)).text_color(colors.text_muted)

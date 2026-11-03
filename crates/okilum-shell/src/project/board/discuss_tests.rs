@@ -84,6 +84,7 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
                     .map(|scope| okilum_t3::board::Issue {
                         number: scope.number,
                         title: "Exact Board context".into(),
+                        updated_at: String::new(),
                         state: "open".into(),
                         body: String::new(),
                         labels: Vec::new(),

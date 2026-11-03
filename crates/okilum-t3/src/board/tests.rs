@@ -129,6 +129,7 @@ fn issue(number: u64, state: &str) -> Issue {
     Issue {
         number,
         title: format!("Issue {number}"),
+        updated_at: String::new(),
         state: state.into(),
         body: "Actual issue body".into(),
         labels: Vec::new(),

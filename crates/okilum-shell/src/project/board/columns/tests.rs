@@ -10,7 +10,7 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
             let mut board =
-                Board::with_reader(area.into(), okilum_t3::board::live::read, window, cx);
+                Board::with_kanban_reader(area.into(), okilum_t3::board::live::read, window, cx);
             board.binding = Some(Binding::parse("version: 1\ntitle: Empty\nissues: []\n").unwrap());
             board.local_loading = true;
             board
