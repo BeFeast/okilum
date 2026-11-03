@@ -2,16 +2,7 @@
 # Compile normally; run real transport policy tests with loopback as the only NIC.
 set -euo pipefail
 export TMPDIR="${TMPDIR:-${RUNNER_TEMP:?}}"
-cache="${XDG_CACHE_HOME:-$HOME/.cache}/okilum-sync-fixture"
-mkdir -p "$cache"
-archive=syncthing-linux-amd64-v2.1.6.tar.gz
-if [[ ! -f "$cache/$archive" ]]; then
-    curl --fail --location --retry 2 "https://github.com/syncthing/syncthing/releases/download/v2.1.6/$archive" -o "$cache/$archive.part"
-    mv "$cache/$archive.part" "$cache/$archive"
-fi
-(cd "$cache"; echo "524ef4e1df1850b719e2378c8369956f4e5f2ab9a46fdf7f45f2b925012147aa  $archive" | sha256sum --check)
-tar -xzf "$cache/$archive" -C "$cache"
-binary="$cache/syncthing-linux-amd64-v2.1.6/syncthing"
+binary=$(python3 scripts/ci/sync-fixture-stage.py)
 artifacts=$(mktemp)
 trap 'rm -f "$artifacts"' EXIT
 cargo test --locked --offline -p okilum-sync-controller --test network_policy --no-run --message-format=json > "$artifacts"

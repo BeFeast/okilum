@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real pinned-daemon lifetime controls; absence only counts after observing peers."""
 import ctypes
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import runpy
@@ -13,6 +14,7 @@ import time
 processes = runpy.run_path(str(Path(__file__).with_name('sync-fixture-processes.py')))
 fixtures = processes['fixtures']
 check = processes['check']
+staging = runpy.run_path(str(Path(__file__).with_name('sync-fixture-stage.py')))
 
 
 def parent_death_signal():
@@ -74,6 +76,18 @@ def control(executable, evidence, mode):
         assert len(pids) == 2 and {pid for pid, _ in live} == pids, live
         print(f'Lifecycle {mode}: positive control observed 2 live fixtures {sorted(pids)}', flush=True)
         homes = [home for _, home in live]
+        if mode == 'normal':
+            binary = Path(os.environ['OKILUM_SYNC_DIRECT_CLIENT'])
+            data = staging['verified'](binary.read_bytes(), staging['BINARY_SHA256'])
+            def publish_and_exec(_):
+                staging['publish'](binary, data, 0o555)
+                output = subprocess.check_output([str(binary), '--version'], text=True)
+                assert output.startswith('syncthing v2.1.6 '), output
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                list(pool.map(publish_and_exec, range(4)))
+            assert {pid for pid, _ in fixtures(work)} == pids
+            assert staging['stage'](binary.parent.parent) == binary
+            print('Staging control: 4 concurrent publications + execs passed while 2 pinned daemons stayed live', flush=True)
         if mode == 'killed':
             process.kill()  # SIGKILL deliberately bypasses Rust Drop and unwinding.
         else:
@@ -129,6 +143,12 @@ def main():
     print(f'Lifecycle evidence: {evidence}', flush=True)
     executable = Path(sys.argv[1]).resolve()
     try:
+        # Own the replacement control's cache; never modify another job's binary.
+        binary = evidence / 'okilum-sync-fixture' / staging['BINARY_SHA256'] / 'syncthing'
+        data = staging['verified'](Path(os.environ['OKILUM_SYNC_DIRECT_CLIENT']).read_bytes(),
+                                   staging['BINARY_SHA256'])
+        staging['publish'](binary, data, 0o555)
+        os.environ['OKILUM_SYNC_DIRECT_CLIENT'] = str(binary)
         for mode in ('normal', 'panic', 'killed'):
             homes = control(executable, evidence, mode)
         orphan_control(evidence, homes[0])
