@@ -1574,13 +1574,18 @@ impl Board {
         .unwrap();
         source["issues"] = serde_json::json!([]);
         source["attention"] = serde_json::json!([]);
+        source["stage_note"] = serde_json::json!("home.md");
         let mut binding = Binding::parse(&source.to_string()).unwrap();
         for number in 1..=240 {
-            binding.issues.push(serde_json::from_value(serde_json::json!({
+            let value = serde_json::json!({
                 "number":number,"expected":format!("Synthetic task {number}: retain source identity and verify the next delivery with a realistic wrapping title"),
                 "executor":"Fixture", "notes":["home.md"],"pull_requests":[],
                 "stage": if number % 4 == 0 { serde_json::json!("ready") } else { serde_json::Value::Null }
-            })).unwrap());
+            });
+            binding
+                .issues
+                .push(serde_json::from_value(value.clone()).unwrap());
+            source["issues"].as_array_mut().unwrap().push(value);
             board.snapshot.forgejo.value.insert(
                 number,
                 okilum_t3::board::Issue {
@@ -1611,6 +1616,12 @@ impl Board {
                 },
             );
         }
+        let issues: Vec<_> = board.snapshot.forgejo.value.values().cloned().collect();
+        board.read_issues = Arc::new(move |_| Ok(issues.clone()));
+        // Reader's initial note load may hide the Board. Re-enter through the
+        // real Board action and retain the same synthetic sources on refresh.
+        std::fs::create_dir_all(board.area.join("ops")).unwrap();
+        std::fs::write(board.area.join("ops/board.yaml"), source.to_string()).unwrap();
         board.snapshot.forgejo.last_success = Some(now());
         board.snapshot.t3.last_success = Some(now());
         board.local_cards.last_success = Some(now());
