@@ -2,9 +2,9 @@
 //! lifecycle. Opening this controller does not listen or start a daemon.
 mod addresses;
 mod existing;
-mod origin;
 #[cfg(target_os = "linux")]
 pub mod inventory;
+mod origin;
 #[cfg(target_os = "linux")]
 mod source;
 mod transfer;
