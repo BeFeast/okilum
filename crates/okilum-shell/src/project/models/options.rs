@@ -144,7 +144,7 @@ impl ProjectView {
             if text != original {
                 self.compose
                     .update(cx, |input, cx| input.set_value(text, window, cx));
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 self.draft_changed(window, cx);
             }
         }

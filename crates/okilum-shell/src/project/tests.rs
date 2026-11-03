@@ -1056,10 +1056,10 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
     let menu = visual.debug_bounds("project-connection-menu").unwrap();
     visual.simulate_click(menu.center(), Modifiers::default());
     visual.run_until_parked();
-    // Linux also has Rotation policy and Express session before Diagnostics.
-    #[cfg(target_os = "linux")]
+    // The native Manager also has Rotation policy and Express session before Diagnostics.
+    #[cfg(native_manager)]
     visual.simulate_keystrokes("down down down down down enter");
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(native_manager))]
     visual.simulate_keystrokes("down down down enter");
     visual.executor().advance_clock(Duration::from_secs(20));
     visual.run_until_parked();
@@ -1502,7 +1502,7 @@ fn reconnect_browser_guidance_opens_only_the_entered_t3_origin(cx: &mut TestAppC
     assert!(gateway.sends.lock().unwrap().is_empty());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 #[gpui::test]
 fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together(
     cx: &mut TestAppContext,

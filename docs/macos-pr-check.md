@@ -1,37 +1,39 @@
 # macOS checks before merge
 
-`ci / check` is the required aggregate gate: Linux must pass, then code PRs
-must pass a native M4 job. Only root Markdown files and Markdown under `docs/`
-are exempt; mixed changes and unknown paths require macOS. Main keeps its
-existing macOS release checks. Superseded PR runs are cancelled; main releases
-are not. Native work starts only after Linux passes, avoiding wasted M4 builds.
+macOS PR checks run on **GitHub-hosted arm64 runners**, through
+`forgejo-macos / macos`. Do not run CI on the corporate M4 or SSH to a Mac.
+The Forgejo `ci` workflow bridges trusted same-repository PR heads to unique
+`forgejo-pr/<number>-<sha>-...` refs on the GitHub mirror. It reports the hosted
+result back to Forgejo; no Forgejo credentials reach the hosted runner.
 
-The native job compiles Reader production and test targets in release mode and
-runs the APFS/invalid-filename regression, four file-editor locking/recovery
-regressions, and isolated native pasteboard tests. Every test filter must match
-at least one test. No signing, notarization, package or upload happens on PRs.
-This is a small platform smoke suite, not the complete macOS test suite.
+Open a same-repository PR with the committed head pushed to Forgejo. Follow its
+`ci / macos-github` job to the exact-head GitHub Actions run and check that
+`forgejo-macos / macos` executed successfully (a skipped job is not evidence).
+If a run is superseded, use the replacement run for the current PR head. The
+bridge is implemented in `scripts/ci/github-macos.py`; the hosted workflow is
+`.github/workflows/forgejo-macos.yml`. Main's supplementary native checks follow
+the hourly beta cadence. Root/docs Markdown-only PRs are exempt from the PR lane.
 
-## Why native, and runner cost
+`scripts/ci/check-macos.sh` verifies the vendor patches, compiles the production
+Reader and **every workspace test target** in release mode, then runs selected
+native regressions. This includes all eleven portable native Manager modules
+(`attachments`, `composer`, `discuss_handoff`, `drafts`, `express_session`, `feed`,
+`links`, `message_types`, `native`, `rotation`, `threads`) and the shared
+ProjectView, models and connections tests. Each filter must list at least one
+test before executing; each suite reports its passed/failed/ignored counts.
+A failing suite remains a failure even if later independent suites pass.
+Link the exact-head hosted run and native Manager counts in the PR.
 
-Linux `cargo check --target aarch64-apple-darwin` cannot check this project with
-just rustup: the shell build script invokes `xcrun` for its Objective-C bridge
-and needs the macOS SDK and Sparkle. Cross-checking also cannot reproduce APFS
-`EILSEQ`. It would not cover both observed main-release failures.
+The shell build script defines `cfg(native_manager)` on Linux and macOS only.
+This is compilation coverage, separate from the platform's runtime panel choice:
+macOS still mounts WKWebView until #2522. Its retained ProjectView does not
+implicitly restore a native token or start a native stream. Linux keeps its
+native Manager, and Windows keeps its existing path.
 
-On 2026-10-05, the last 12 successful releases took 4:35–5:35. Build 6490 spent
-2:14 in its test stage. Budget roughly 3–5 additional M4 minutes per warm code
-PR, to be checked against the first native run; cold dependencies cost more.
-The job has a 20-minute cap and shares the release toolchain/profile/target
-cache, avoiding a second debug cache. With one runner slot, PRs and releases
-queue serially; no job interrupts a release. At ten code PRs/hour, the estimate
-adds 30–50 runner-minutes/hour; combined with releases, ten merges/hour
-would exceed one runner’s capacity. Avoid stacking superseded revisions. Documentation changes consume no M4 slot.
-
-The host has a signing keychain, so fork PRs never execute on it. A maintainer
-must review and copy approved changes to a same-repository branch; a code PR
-whose native job is skipped does not pass the aggregate gate. The workflow
-lives under `.forgejo/`; GitHub mirrors do not automatically execute it.
+Linux cross-compilation cannot exercise the macOS Objective-C bridges, SDK,
+Sparkle, APFS semantics or AppKit pasteboards. Hosted native checks use the same
+release profile and shared dependency cache as the main lane. They do not sign
+or publish a shipping app. The isolated Sparkle fixture uses its own test identity.
 
 ## Portable filesystem fixtures
 

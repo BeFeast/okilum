@@ -150,14 +150,14 @@ impl ProjectView {
                     ),
             ),
         );
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let catalog_loading = self.native.active()
             && self
                 .native
                 .catalog
                 .as_ref()
                 .is_none_or(|catalog| catalog.read(cx).loading);
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let catalog_loading = false;
         let loading = self.model_busy || catalog_loading;
         let status = if self.model_error.is_some() {
