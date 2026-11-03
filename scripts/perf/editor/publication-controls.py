@@ -46,8 +46,10 @@ def main():
         meter = (root / editor.parent / 'reader_editor/work.rs').read_text()
         # Archived main retains its original allocator. Only the accounting
         # scopes/counters are overlaid; it need not depend on head's backend.
-        meter = meter.replace('use crate::NATIVE_ALLOCATION;',
-                              'const NATIVE_ALLOCATION: std::alloc::System = std::alloc::System;')
+        baseline_main = (dest / editor.parent / 'main.rs').read_text()
+        if not re.search(r'const\s+NATIVE_ALLOCATION\b', baseline_main):
+            meter = meter.replace('use crate::NATIVE_ALLOCATION;',
+                                  'const NATIVE_ALLOCATION: std::alloc::System = std::alloc::System;')
         (dest / editor.parent / 'reader_editor/work.rs').write_text(meter)
         # Keep existing key scopes, including their deliberate early drop before
         # GPUI scheduling. A duplicate outer scope would measure a wider callback
