@@ -39,11 +39,13 @@ impl Card {
                 .expect("Board render frame") += 1;
         }
     }
-    fn build(&self, cx: &mut App) -> Option<AnyElement> {
+    fn build(&self, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         self.board
             .update(cx, |board, cx| match &self.source {
-                Source::Issue(scope, column, binding) => board.card(scope, *column, binding, cx),
-                Source::Local(card) => board.local_card(card, cx),
+                Source::Issue(scope, column, binding) => {
+                    board.card(scope, *column, binding, window, cx)
+                }
+                Source::Local(card) => board.local_card(card, window, cx),
             })
             .ok()
     }
@@ -106,7 +108,9 @@ impl Element for Card {
     ) -> (LayoutId, AnyElement) {
         #[cfg(test)]
         self.count_layout(cx);
-        let mut child = self.build(cx).unwrap_or_else(|| div().into_any_element());
+        let mut child = self
+            .build(window, cx)
+            .unwrap_or_else(|| div().into_any_element());
         (child.request_layout(window, cx), child)
     }
     fn prepaint(

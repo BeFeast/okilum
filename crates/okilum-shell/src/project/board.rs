@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod appearance;
 mod columns;
+mod controls;
 mod delivery;
 mod live;
 mod local;
@@ -62,6 +63,9 @@ pub(crate) struct Board {
     pub(in crate::project) frame_work: std::cell::RefCell<Vec<usize>>,
     #[cfg(test)]
     pub(in crate::project) frame_layout_work: std::cell::RefCell<Vec<usize>>,
+    #[cfg(test)]
+    pub(in crate::project) card_focus:
+        std::cell::RefCell<std::collections::BTreeMap<u64, FocusHandle>>,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -181,6 +185,8 @@ impl Board {
             frame_work: std::cell::RefCell::new(Vec::new()),
             #[cfg(test)]
             frame_layout_work: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
+            card_focus: std::cell::RefCell::new(std::collections::BTreeMap::new()),
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -742,6 +748,7 @@ impl Board {
         scope: &okilum_t3::board::Scope,
         column: Column,
         binding: &Binding,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
@@ -757,6 +764,10 @@ impl Board {
         }
         let colors = brand::palette(cx);
         let number = scope.number;
+        let (disclosure, _focus) =
+            controls::disclosure(("board-expand", number as usize), window, cx);
+        #[cfg(test)]
+        self.card_focus.borrow_mut().insert(number, _focus);
         let issue = self.snapshot.forgejo.value.get(&number);
         let (kind, glyph) = appearance::kind(issue);
         let tone = appearance::type_color(kind, cx);
@@ -817,10 +828,9 @@ impl Board {
             })
             .overflow_hidden()
             .child(
-                Button::new(("board-expand", number as usize))
+                disclosure
                     .debug_selector(move || format!("board-expand-{number}"))
                     .accessibility_label(format!("Expand issue {number}"))
-                    .ghost()
                     .w_full()
                     .min_w_0()
                     .h_auto()

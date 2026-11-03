@@ -272,6 +272,23 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         visual.debug_bounds("board-discuss-1").is_some(),
         "positive control: a real card click responds"
     );
+    let focus = board.read_with(visual, |board, _| board.card_focus.borrow()[&1].clone());
+    visual.update(|window, cx| window.focus(&focus, cx));
+    visual.run_until_parked();
+    board.read_with(visual, |board, _| board.render_calls.set(0));
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert!(
+        board.read_with(visual, |board, _| board.render_calls.get()) > 0,
+        "positive control: Space activates the real disclosure button"
+    );
+    assert!(visual.debug_bounds("board-discuss-1").is_none());
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-discuss-1").is_some(),
+        "Enter retains keyboard disclosure and its actions"
+    );
     let viewport = visual.debug_bounds("project-board").unwrap();
     board.read_with(visual, |board, _| board.frame_work.borrow_mut().clear());
     visual.simulate_event(gpui::ScrollWheelEvent {
