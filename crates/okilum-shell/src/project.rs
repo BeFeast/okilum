@@ -2128,16 +2128,13 @@ impl Render for ProjectView {
         }
         let mut tabs = h_flex().id("project-sections").gap_2().p_2();
         for (id, label, section) in [
-            (
-                "project-section-manager",
-                "Manager",
-                ProjectSection::Manager,
-            ),
+            ("project-section-manager", "Chat", ProjectSection::Manager),
             ("project-section-rules", "Rules", ProjectSection::Rules),
             ("project-section-skills", "Skills", ProjectSection::Skills),
         ] {
             tabs = tabs.child(
                 Button::new(id)
+                    .debug_selector(move || format!("project-section-label-{label}"))
                     .ghost()
                     .label(label)
                     .selected(self.section == section)
