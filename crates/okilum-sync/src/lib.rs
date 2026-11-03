@@ -228,6 +228,17 @@ impl Syncthing {
             None,
         )
     }
+    /// Read one file's Syncthing revision metadata. Query encoding keeps note
+    /// names (including spaces, Unicode and '&') separate from REST parameters.
+    pub fn file_info(&self, folder: &str, file: &str) -> Result<Value> {
+        let mut url = reqwest::Url::parse("http://localhost/rest/db/file")?;
+        url.query_pairs_mut()
+            .append_pair("folder", folder)
+            .append_pair("file", file);
+        let path = format!("/rest/db/file?{}", url.query().unwrap());
+        self.request(Method::GET, &path, None)
+    }
+
     pub fn connections(&self) -> Result<Value> {
         self.request(Method::GET, "/rest/system/connections", None)
     }
@@ -352,6 +363,31 @@ pub enum Destination {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn issue2486_file_info_encodes_the_complete_note_path() -> Result<()> {
+        use std::io::{Read, Write};
+        let access = NetworkAccess::default();
+        let _scope = access.enter();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let client = Syncthing::connect(listener.local_addr()?, "fixture-key")?;
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).unwrap();
+            let request = std::str::from_utf8(&buffer[..count]).unwrap();
+            assert!(request.starts_with("GET /rest/db/file?folder=vault%26id&file=Daily%2F%D0%97%D0%B0%D0%BC%D0%B5%D1%82%D0%BA%D0%B0+%26+plan.md HTTP/1.1"), "{request}");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
+        });
+        assert_eq!(
+            client.file_info("vault&id", "Daily/Заметка & plan.md")?,
+            json!({})
+        );
+        server.join().unwrap();
+        Ok(())
+    }
+
     #[test]
     fn retained_syncthing_client_cannot_send_after_module_is_disabled() -> Result<()> {
         use std::io::{BufRead, BufReader, Write};
