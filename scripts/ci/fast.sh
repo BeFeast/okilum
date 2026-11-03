@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Desktop build, Linux headless shell runtime contracts and parsing unit tests.
+# Process v2: real desktop build + deterministic parsing unit tests, no native suites.
 set -euo pipefail
 source "$(dirname "$0")/test-nofile.sh"
 export CARGO_INCREMENTAL=0
@@ -35,16 +35,8 @@ if [ "${RUNNER_OS:-Linux}" = Linux ]; then
 fi
 phase build "$@"
 # Compile every workspace test target; fixture/API drift must block merge even
-# when its suite runs only during full overnight acceptance.
+# when its suite runs only during full overnight acceptance. Do not execute it.
 phase workspace-test-check cargo check --locked --workspace --tests
-if [ "${RUNNER_OS:-Linux}" = Linux ]; then
-    # #2415: execute every shell runtime contract on each PR. The workspace
-    # check above resolves test dependencies before this locked offline run.
-    phase shell-binary-list cargo test --offline --locked -p okilum-shell --bin okilum -- --list | tee "${RUNNER_TEMP:?}/shell-tests.txt"
-    grep -q ': test$' "$RUNNER_TEMP/shell-tests.txt"
-    # Match hosted validation's four test workers rather than the host CPU count.
-    phase shell-binary-tests cargo test --offline --locked -p okilum-shell --bin okilum -- --test-threads=4
-fi
 # Pure HTML/Markdown parsing tests, no UI, process trees, network or timers.
 phase list-tests cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/fast-tests.txt"

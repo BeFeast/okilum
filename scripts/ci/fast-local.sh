@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Independent warm Cargo targets; runner capacity queues work before admission.
 set -euo pipefail
+# Share the existing source/target locks while keeping independent job budgets.
+case ${1:-fast} in
+    fast) gate_script=fast.sh ;;
+    shell-full) gate_script=shell-full.sh ;;
+    *) echo 'Expected fast or shell-full gate' >&2; exit 64 ;;
+esac
 slot_root=${OKILUM_FAST_SLOT_ROOT:-"$HOME/.cache/okilum-fast/slots"}
 slots=${OKILUM_FAST_SLOTS:-2}
 wait_seconds=${OKILUM_FAST_SLOT_WAIT_SECONDS:-20}
@@ -45,7 +51,7 @@ while true; do
             # not inherit it and retain a slot after their build has completed.
             source scripts/ci/release-cache.sh 9>&-
             result=0
-            bash scripts/ci/fast.sh 9>&- || result=$?
+            bash "scripts/ci/$gate_script" 9>&- || result=$?
             release_cache_stats 9>&-
             exit "$result"
         fi

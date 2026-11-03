@@ -10,11 +10,14 @@ describe CI and producer mechanics, not additional merge gates.
 `fast / check (pull_request)` is the sole required main protection context.
 It runs the exact PR head on baldr's dedicated `fast-linux` Forgejo host runner (capacity two):
 desktop/supervisor build, `cargo check --locked --workspace --tests` (compilation
-only), the complete unfiltered Linux `okilum-shell --bin okilum` test suite,
-plus deterministic okilum-paste library unit tests. The shell run uses locked
-offline dependencies resolved by the workspace check and fails admission on any
-runtime test failure or empty test inventory (#2415). Four test workers match hosted worker validation;
-every test runs with no name filter. Full native/overnight acceptance retains its scope.
+only), plus deterministic okilum-paste library unit tests. Test fixture/API drift
+therefore blocks merge without executing the full runtime suite inside this job.
+A separate `fast / shell-full (pull_request)` job executes the complete unfiltered
+Linux `okilum-shell --bin okilum` suite with four test workers and a nonempty
+inventory control (#2415). It has its own twenty-minute budget and reuses the
+same locked persistent source/target pool after `check`. No test is removed or
+weakened. Main protection is changed only after this reporting context passes
+reliably twice on the fast runner; see [the evidence](fast-runner.md).
 The fifteen-minute job budget includes setup and build. The LAN compiler cache and
 Cargo downloads are reused; two separately locked persistent targets
 allow two simultaneous builds. Each job has three compiler workers (six total).
