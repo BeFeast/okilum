@@ -344,7 +344,7 @@ impl FakeServer {
         let handle = std::thread::spawn({
             let requests = requests.clone();
             let stop = stop.clone();
-            move || serve(listener, &script, &requests, &stop)
+            move || serve(&listener, &script, &requests, &stop)
         });
         Self {
             url,
@@ -611,7 +611,7 @@ fn production_retries_once_with_a_longer_first_connect_inside_a_bounded_total() 
         "the first request fits inside one attempt's budget"
     );
     assert_eq!(
-        profile.budget * profile.attempts,
+        profile.budget * u32::try_from(profile.attempts).unwrap(),
         Duration::from_secs(20),
         "the documented total bound"
     );
