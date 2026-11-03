@@ -6595,6 +6595,7 @@ dependencies = [
  "image",
  "lb-wry",
  "libc",
+ "lsp-types",
  "merman",
  "mimalloc",
  "notify",

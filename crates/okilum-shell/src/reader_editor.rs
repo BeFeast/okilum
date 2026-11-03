@@ -805,6 +805,7 @@ impl Reader {
         // Cmd/Ctrl+/ comments code-block lines; elsewhere it falls through.
         code_comforts::ensure_keys(cx);
         tables::ensure_keys(cx);
+        let embed_hover = reader_image_actions::source_hover(cx.entity().downgrade());
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .document_newlines(true)
@@ -831,6 +832,9 @@ impl Reader {
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
+            if !plain_file {
+                input.lsp_mut().hover_provider = Some(embed_hover);
+            }
             input.set_direction_exempt_lines(direction_exempt_lines(store.text()));
             let press = input.block_press_slot();
             input.set_block_renderer(blocks.map(|(root, rel, reader, context)| {
@@ -2841,16 +2845,6 @@ fn live_blocks(
             }
         });
         let font_size = px(reader_ui_state::font_size(cx));
-        // A missing image must not hide its source behind a blank row.
-        if markdown.contains("okilum-asset://unavailable") {
-            return div()
-                .debug_selector(|| "live-image-unavailable".into())
-                .when_some(on_image, |this, f| this.on_mouse_down(MouseButton::Left, f))
-                .text_size(font_size)
-                .text_color(cx.theme().muted_foreground)
-                .child(format!("Image unavailable \u{b7} {source}"))
-                .into_any_element();
-        }
         let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = font_size;
         // The first line keeps two identical blocks apart.

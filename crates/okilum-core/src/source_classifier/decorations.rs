@@ -357,17 +357,17 @@ fn validate_ranges(markers: &[Marker], context: &Context<'_>) -> Option<()> {
 
 /// Image file extensions an embed is drawn for: the Reader's list
 /// (`render::preprocess`).
-const IMAGE_EXTENSIONS: [&str; 9] = [
-    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic", "heif",
-];
-
 /// One line that is exactly one image embed: `![[x.png]]`, `![[x.png|200]]`
 /// or `![alt](path.png)` / `![alt](https://…)`, with no other text.
 fn image_embed(line: &str) -> bool {
     let is_image = |target: &str| {
         let path = target.split(['|', '#', '?']).next().unwrap_or("").trim();
-        path.rsplit_once('.')
-            .is_some_and(|(_, ext)| IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        path.rsplit_once('.').is_some_and(|(_, ext)| {
+            !matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "md" | "markdown" | "excalidraw"
+            )
+        })
     };
     if let Some(inner) = line
         .strip_prefix("![[")
