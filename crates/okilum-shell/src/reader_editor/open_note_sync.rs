@@ -226,6 +226,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
             visual.executor().advance_clock(Duration::from_millis(100));
             visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+            visual.run_until_parked();
             if reader.read_with(visual, |r, cx| done(r, cx)) {
                 return;
             }
