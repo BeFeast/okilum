@@ -30,9 +30,10 @@ class FixtureStagingTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.cache = Path(self.directory.name) / 'okilum-sync-fixture'
         self.cache.mkdir()
-        # A real ELF that stays executing until explicitly reaped; no compiler,
-        # network, shell interpreter or daemon readiness can bypass execve.
-        self.executable = Path('/bin/sleep').read_bytes()
+        # Copy a standalone ELF, rather than a multicall utility that dispatches
+        # from /proc/self/exe. Padding keeps the streaming tar control partial
+        # even on distributions whose Python executable is a small launcher.
+        self.executable = Path('/usr/bin/python3').read_bytes() + b'\0' * (2 * 1024 * 1024)
         archive = io.BytesIO()
         with tarfile.open(fileobj=archive, mode='w:gz') as bundle:
             member = tarfile.TarInfo(helper.MEMBER)
@@ -48,11 +49,14 @@ class FixtureStagingTests(unittest.TestCase):
         (self.cache / helper.ARCHIVE).write_bytes(self.archive)
 
     def running(self, binary):
-        process = subprocess.Popen(['sleep', '60'], executable=binary)
+        process = subprocess.Popen([str(binary), '-c',
+            'import time; print("ready", flush=True); time.sleep(60)'], stdout=subprocess.PIPE)
         def stop():
             process.kill()
             process.wait()
+            process.stdout.close()
         self.addCleanup(stop)
+        self.assertEqual(process.stdout.readline(), b'ready\n')
         self.assertIsNone(process.poll())
         self.assertTrue(Path(f'/proc/{process.pid}/exe').samefile(binary))
         return process
@@ -70,7 +74,7 @@ class FixtureStagingTests(unittest.TestCase):
         helper.publish(binary, self.executable, 0o555)
         self.assertNotEqual(original_inode, binary.stat().st_ino)
         self.assertIsNone(process.poll())
-        subprocess.run(['sleep', '0'], executable=binary, check=True)
+        subprocess.run([str(binary), '-c', 'pass'], check=True)
         with patch.object(helper, 'publish', side_effect=AssertionError('rewrote verified cache')):
             self.assertEqual(helper.stage(self.cache), binary)
 
@@ -83,7 +87,7 @@ class FixtureStagingTests(unittest.TestCase):
         self.running(legacy)
         raw = gzip.decompress(self.archive)
         compressor = zlib.compressobj(wbits=31)
-        cut = 40 * 1024  # gzip must emit a full output block before pausing.
+        cut = 1024 * 1024  # gzip must emit full output blocks before pausing.
         process = subprocess.Popen(['tar', '-xzf', '-', '-C', str(self.cache)],
                                    stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
@@ -106,7 +110,7 @@ class FixtureStagingTests(unittest.TestCase):
             else:
                 self.fail('old tar control never opened the executable for writing')
             with self.assertRaises(OSError) as error:
-                subprocess.run(['sleep', '0'], executable=legacy, check=True)
+                subprocess.run([str(legacy), '-c', 'pass'], check=True)
             self.assertEqual(error.exception.errno, errno.ETXTBSY)
             print('Old tar staging positive control: live executable + concurrent exec returned ETXTBSY', flush=True)
             process.stdin.write(compressor.compress(raw[cut:]) + compressor.flush())
@@ -127,7 +131,7 @@ class FixtureStagingTests(unittest.TestCase):
                 barrier.wait()  # Every caller must take the publication path.
             publish(destination, data, mode)
             if destination.name == 'syncthing':
-                subprocess.run(['sleep', '0'], executable=destination, check=True)
+                subprocess.run([str(destination), '-c', 'pass'], check=True)
         with patch.object(helper, 'publish', side_effect=synchronized):
             with ThreadPoolExecutor(max_workers=8) as pool:
                 binaries = list(pool.map(lambda _: helper.stage(self.cache), range(8)))
@@ -143,7 +147,7 @@ class FixtureStagingTests(unittest.TestCase):
             replace(source, destination)
             # Run before publish returns, at the first instant the name becomes
             # visible. A still-open temp writer would deterministically ETXTBSY.
-            subprocess.run(['sleep', '0'], executable=destination, check=True)
+            subprocess.run([str(destination), '-c', 'pass'], check=True)
         with patch.object(helper.os, 'replace', side_effect=exec_at_publication):
             helper.publish(binary, self.executable, 0o555)
 
