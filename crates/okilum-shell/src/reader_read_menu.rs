@@ -144,9 +144,10 @@ fn build(
                 h_flex()
                     .debug_selector(move || format!("read-menu-{}", command.label()))
                     .child(div().flex_1().child(command.label()))
-                    .when(command == Command::Markdown, |row| {
-                        row.child(reader_shortcuts::all_shortcuts(&CopyAsMarkdown, cx))
-                    })
+                    .when(
+                        matches!(command, Command::Markdown | Command::Document),
+                        |row| row.child(reader_shortcuts::all_shortcuts(&CopyAsMarkdown, cx)),
+                    )
             })
             .disabled(
                 (command == Command::Document && snapshot.document.is_none())

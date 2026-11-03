@@ -120,7 +120,7 @@ impl Fixture<'_> {
         self.visual.run_until_parked();
     }
     fn select_all(&mut self) -> String {
-        // Keyboard and palette copy retain selection. Start each independent
+        // Keyboard and palette copy can retain selection. Start each independent
         // menu scenario on the background, which offers Select all.
         self.reader.update(self.visual, |r, cx| {
             r.content

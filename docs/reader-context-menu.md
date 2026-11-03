@@ -7,7 +7,7 @@ group. Source and Live Preview editing menus are unchanged.
 
 **Copy as Markdown** also runs with Ctrl+Shift+C (Linux/Windows) or
 Cmd+Shift+C (macOS). Without a selection it copies the same accepted document
-body as the background menu. The shortcut sheet and selection context menu show
+body as the background menu. The shortcut sheet and Read context menus show
 the live key binding. Quick open (Ctrl/Cmd+K) finds **Copy as Markdown** and
 **Copy with formatting** by name; these commands retain the accepted selection
 captured when the palette opens. Plain Ctrl/Cmd+C keeps its existing behavior.
