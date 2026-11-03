@@ -136,6 +136,10 @@ fn files_and_notes_shortcut_restore_the_global_tree_after_project_switches(
         reader.finish_enter_vault_project(project, window, cx);
     });
     visual.run_until_parked();
+    // Re-entry may retain the cached Board scene. Collect fresh debug selectors
+    // before testing its presence; the native scene already remains visible.
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
     assert!(visual.debug_bounds("project-board").is_some());
     visual.dispatch_action(ToggleNotes);
     visual.run_until_parked();
