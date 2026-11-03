@@ -3,6 +3,7 @@
 import concurrent.futures
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -30,13 +31,15 @@ def run(binary, test, name, seed=0, iterations=1):
     with log.open('w') as f:
         r = subprocess.run([binary, test, '--exact', '--nocapture'], stdout=f, stderr=subprocess.STDOUT, env=env, timeout=600)
     data = log.read_text(errors='replace')
-    result = dict(name=name, code=r.returncode, seed=seed, requested=iterations, started=data.count('Running seed: '))
+    result = dict(name=name, code=r.returncode, seed=seed, requested=iterations, started=len(re.findall(r'^seed = [0-9]+$', data, re.MULTILINE)))
     print(json.dumps(result), flush=True)
     if r.returncode:
         print(data[-7000:], flush=True)
     return result
 
 def stress(binary, name):
+    # Pinned GPUI 0.3.3 runs the explicit SEED once, then SEED..SEED+ITERATIONS.
+    # Thus each worker proves 51 executions (200 distinct seeds overall).
     # Four independent test processes compete for the hosted runner's four CPUs.
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         return list(pool.map(lambda i: run(binary, NAME, f'{name}-{i}', i * 50, 50), range(4)))
@@ -65,8 +68,8 @@ new_results = stress(new, 'fixed')
 summary = dict(base=BASE, head=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(), regression_red=red, regression_green=green, old=old_results, fixed=new_results)
 (OUT / 'summary.json').write_text(json.dumps(summary, indent=2))
 print(json.dumps(summary, indent=2), flush=True)
-assert green['code'] == 0 and green['started'] == 200
-assert all(r['code'] == 0 and r['started'] == 50 for r in new_results)
+assert green['code'] == 0 and green['started'] == 201
+assert all(r['code'] == 0 and r['started'] == 51 for r in new_results)
 # Keep logs/summary as the artifact; avoid uploading multi-hundred-MB binaries.
 (OUT / 'old-product-and-harness').unlink()
 (OUT / 'fixed').unlink()
