@@ -49,8 +49,8 @@ the menu, not on every editor notification.
 Regression coverage includes reverse recovery completion, canonical save races,
 a late pre-save journal writer, typing during publication, failed recovery/retry,
 close/quit before debounce, crash-style reopen and exact BOM/CRLF bytes. The
-foreground allocator gate scopes actual editor persistence, menu-observer and
-outline snapshot entry points, including the legacy String path, at 25 KB, 130 KB and 1 MiB. It requires a bounded largest allocation
+foreground allocator gate scopes actual editor draft retention, menu-observer
+and outline snapshot extraction, before GPUI task scheduling, including the legacy String path, at 25 KB, 130 KB and 1 MiB. It requires a bounded largest allocation
 and total allocated bytes, bounds foreground deallocation calls, and requires a positive control that materializes the
 same native input. The same test is overlaid on the pinned origin/main source for
 a real negative-control run. Core revision counters independently establish no

@@ -827,6 +827,8 @@ impl Reader {
             editing.protecting = true;
             let context = editing.block_context.clone();
             let cache = editing.block_cache.clone();
+            #[cfg(test)]
+            drop(_work); // GPUI scheduling traces are outside snapshot/persistence work.
             editing.recovery_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(RECOVERY_PAUSE).await;
                 let (result, directions, prepared_context) = cx
