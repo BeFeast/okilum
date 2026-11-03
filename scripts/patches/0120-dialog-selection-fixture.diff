@@ -1,0 +1,18 @@
+diff --git a/crates/component/src/text/window_selection.rs b/crates/component/src/text/window_selection.rs
+--- a/crates/component/src/text/window_selection.rs
++++ b/crates/component/src/text/window_selection.rs
+@@ -2041,11 +2041,13 @@
+ 
+         // A drag entirely within the dialog's TextView must still select (the
+         // scope filter must not break in-dialog selection — see #2501).
++        // The TextView may fill the dialog content width: dragging beyond it
++        // hits the backdrop instead of exercising selection inside the dialog.
+         let b = dialog_state.read_with(cx, |s, _| s.bounds());
+         drag(
+             cx,
+             point(b.origin.x + px(1.), b.center().y),
+-            point(b.origin.x + b.size.width + px(80.), b.center().y),
++            point(b.right() - px(1.), b.center().y),
+         );
+ 
+         let text = window_selected_text(cx);

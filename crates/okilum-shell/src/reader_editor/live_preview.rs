@@ -164,6 +164,10 @@ impl LivePreview {
 
 #[cfg(test)]
 impl LivePreview {
+    pub(super) fn accepted_provider(&self) -> Option<Arc<CachedProvider>> {
+        self.accepted.clone()
+    }
+
     pub(super) fn pending_marker(&self) -> Option<Rc<Cell<bool>>> {
         self.running.as_ref().map(|flight| flight.busy.clone())
     }
