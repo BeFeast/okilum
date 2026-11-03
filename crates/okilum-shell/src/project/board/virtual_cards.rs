@@ -125,6 +125,11 @@ impl Element for Card {
                 let _ = board.update(cx, |_, cx| cx.notify());
             });
         }
+        // Overdraw is for height refinement, not invisible interaction trees.
+        // A card entering the viewport still builds and prepaints in this frame.
+        if !focused && !bounds.intersects(&viewport) {
+            return None;
+        }
         // Refinement can change a lane's total height on the next frame.
         // Contain this frame until the shared outer scroll surface relays it.
         let focused = window.with_content_mask(Some(ContentMask { bounds }), |window| {

@@ -417,6 +417,10 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             "background reconciliation does not report a navigation failure"
         );
     });
+    // Cached Board paint is retained when only the background note changes.
+    // Debug selectors are collected on fresh paint, unlike the native scene.
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
     assert!(visual.debug_bounds("project-board").is_some());
     reader.read_with(visual, |reader, _| {
         assert_eq!(

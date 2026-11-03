@@ -230,7 +230,9 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
             board.frame_work.borrow()
         )
     });
-    visual.simulate_click(bounds.center(), Modifiers::default());
+    // The tail card may extend below the scroll viewport. Click its visible
+    // intersection rather than an offscreen center that native input cannot hit.
+    visual.simulate_click(bounds.intersect(&viewport).center(), Modifiers::default());
     visual.run_until_parked();
     assert!(
         visual.debug_bounds(discuss).is_some(),

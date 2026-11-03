@@ -9,6 +9,53 @@ struct Entry {
     state: Entity<TextViewState>,
     used: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn adjacent_markdown_reuses_state_updates_source_and_has_a_bounded_lifetime(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let mut cache = Cache::default();
+        let id: ElementId = ("message", 7usize).into();
+        let first = cx.update(|cx| cache.prepare(id.clone(), "Original **source**".into(), cx));
+        for _ in 0..10 {
+            let again = cx.update(|cx| cache.prepare(id.clone(), "Original **source**".into(), cx));
+            assert_eq!(first.entity_id(), again.entity_id());
+        }
+        assert_eq!(
+            cache.created, 1,
+            "revisiting a viewport must not reparse it"
+        );
+        let changed = cx.update(|cx| cache.prepare(id.clone(), "Revised **source**".into(), cx));
+        assert_eq!(first.entity_id(), changed.entity_id());
+        cx.run_until_parked();
+        changed.update(cx, |state, cx| state.select_all(cx));
+        assert_eq!(
+            changed.read_with(cx, |state, _| state.selected_text()),
+            "Revised source"
+        );
+        for i in 0..CAPACITY * 3 {
+            cx.update(|cx| cache.prepare(("other", i).into(), format!("Message {i}").into(), cx));
+            assert!(cache.len() <= CAPACITY);
+        }
+        assert!(
+            cache.entity(&id).is_none(),
+            "old viewport states are evicted"
+        );
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+        let reset = cx.update(|cx| cache.prepare(id, "Original **source**".into(), cx));
+        assert_ne!(
+            first.entity_id(),
+            reset.entity_id(),
+            "another thread cannot inherit selection state"
+        );
+    }
+}
 #[derive(Default)]
 pub(super) struct Cache {
     entries: HashMap<ElementId, Entry>,
