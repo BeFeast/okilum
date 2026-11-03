@@ -241,27 +241,31 @@ pub(super) fn decorate(
             let reader = reader.clone();
             move |window, cx| metadata::tooltip(reader.clone(), target.clone(), window, cx)
         })
-        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+        // A rendered block must claim its own commands before the enclosing
+        // editor arms a second, native context menu for the same press.
+        .capture_any_mouse_down(move |event, window, cx| {
+            let command = match event.button {
+                MouseButton::Right => None,
+                MouseButton::Left
+                    if open_modifier(platform::labels::Os::CURRENT, event.modifiers) =>
+                {
+                    Some(Command::Open)
+                }
+                _ => return,
+            };
             cx.stop_propagation();
-            let target = target.clone();
-            diagnostics("image right press");
-            let result = menu_reader.update(cx, |reader, cx| reader.image_menu(target, window, cx));
-            diagnostics(format_args!("image right dispatched={}", result.is_ok()));
-        })
-        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-            if open_modifier(platform::labels::Os::CURRENT, event.modifiers) {
-                cx.stop_propagation();
-                let _ = reader.update(cx, |reader, cx| {
-                    reader.image_command(
-                        &ImageCommand {
-                            target: open.clone(),
-                            command: Command::Open,
-                        },
-                        window,
-                        cx,
-                    )
-                });
-            }
+            let target = if command.is_some() {
+                open.clone()
+            } else {
+                target.clone()
+            };
+            let result = menu_reader.update(cx, |reader, cx| match command {
+                Some(command) => {
+                    reader.image_command(&ImageCommand { target, command }, window, cx)
+                }
+                None => reader.image_menu(target, window, cx),
+            });
+            diagnostics(format_args!("image press dispatched={}", result.is_ok()));
         })
         .into_any_element()
 }
