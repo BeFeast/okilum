@@ -8281,7 +8281,10 @@ mod quick_view_tests {
         let root = temp.path().join("notes");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("start.md"), "# Vault positive control\n").unwrap();
-        cx.update(crate::test_init);
+        cx.update(|cx| {
+            crate::test_init(cx);
+            reader_open::install(cx);
+        });
         for (name, text) in [
             ("plain.txt", "Literal text\n"),
             ("table.csv", "a,b\n1,2\n"),
@@ -8329,7 +8332,7 @@ mod quick_view_tests {
             for single_file in [false, true] {
                 reader.update_in(visual, |r, window, cx| r.switch_window_mode(window, cx));
                 visual.run_until_parked();
-                reader.read_with(visual, |r, _| {
+                reader.read_with(visual, |r, cx| {
                     assert_eq!(r.single_file, single_file, "{name}: mode actually switches");
                     assert_eq!(r.selected_file(), name);
                     assert_eq!(
@@ -8338,6 +8341,20 @@ mod quick_view_tests {
                         "viewport/filter owners stay alive"
                     );
                     assert_eq!(r.searcher.is_some(), !single_file);
+                    let target = if single_file {
+                        reader_update_restart::Window::File {
+                            path: r.vault_root.join(name),
+                        }
+                    } else {
+                        reader_update_restart::Window::Vault {
+                            root: r.vault_root.clone(),
+                            note: Some(name.into()),
+                        }
+                    };
+                    assert!(
+                        reader_update_restart::capture(cx).contains(&target),
+                        "update restart retains the selected typed file and explicit mode"
+                    );
                 });
             }
         }

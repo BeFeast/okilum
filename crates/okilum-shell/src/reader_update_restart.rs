@@ -35,7 +35,7 @@ pub(crate) fn capture(cx: &App) -> Vec<Window> {
             } else {
                 Window::Vault {
                     root: reader.vault_root.clone(),
-                    note: Some(reader.current_rel.clone()).filter(|note| !note.is_empty()),
+                    note: Some(reader.selected_file().to_owned()).filter(|note| !note.is_empty()),
                 }
             })
         })
