@@ -35,7 +35,8 @@ impl Reader {
                 .tree_rules_source
                 .as_ref()
                 .is_some_and(|(source, epoch)| {
-                    Arc::ptr_eq(source, &self.vault) && *epoch == self.source_publication_epoch
+                    source.ptr_eq(&Arc::downgrade(&self.vault))
+                        && *epoch == self.source_publication_epoch
                 })
         {
             return;
@@ -54,7 +55,9 @@ impl Reader {
                 // A different inventory/root supersedes this read. At most one
                 // worker runs; coalesce changes into one follow-up on completion.
                 if Arc::ptr_eq(&this.vault, &vault) && this.source_publication_epoch == epoch {
-                    this.tree_rules_source = Some((vault, epoch));
+                    // This cache must not retain the full graph after a switch
+                    // to single-file mode (the reader_loading release controls).
+                    this.tree_rules_source = Some((Arc::downgrade(&vault), epoch));
                     this.tree.set_agent_shims(shims);
                     cx.notify();
                 }
