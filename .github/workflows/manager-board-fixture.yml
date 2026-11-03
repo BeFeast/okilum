@@ -3,7 +3,7 @@
 name: manager-board-fixture
 on:
   push:
-    branches: ['agent-checks/**']
+    branches: ['perf-fixture/**']
     paths:
       - '.github/workflows/manager-board-fixture.yml'
       - 'scripts/perf/manager-board/**'
@@ -31,6 +31,7 @@ jobs:
             libfontconfig-dev libfreetype-dev libxcb1-dev
           printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/cache/restore@v4
+        id: native-cache
         with:
           path: |
             ~/.cargo/registry/
@@ -59,3 +60,13 @@ jobs:
           name: manager-board-fixture-${{ github.sha }}
           path: ${{ runner.temp }}/manager-board-fixture.tar.gz
           retention-days: 14
+      - uses: actions/cache/save@v4
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}

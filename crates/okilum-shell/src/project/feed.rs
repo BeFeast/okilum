@@ -14,6 +14,7 @@ mod details;
 mod groups;
 mod message_actions;
 mod rich_cache;
+mod viewport_paint;
 
 #[derive(Clone, PartialEq)]
 struct Message {
@@ -805,6 +806,7 @@ impl Render for Feed {
             self.scroller.clone(),
             move |index, _, cx| {
                 let row = entity.update(cx, |feed, cx| feed.row(index, cx));
+                let row = viewport_paint::RowPaint::new(row).into_any_element();
                 if index != 0 {
                     return row;
                 }

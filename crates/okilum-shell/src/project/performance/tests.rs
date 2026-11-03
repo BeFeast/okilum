@@ -106,6 +106,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         "positive control: cached Board retains Manager status/progress publications"
     );
     let feed = project.read_with(visual, |project, _| project.feed.clone());
+    let chrome = project.read_with(visual, |project, _| project.chrome.clone());
     // Reader-mounted typing must keep the existing inner Feed cache (#2410).
     // Wrapping all of Manager in another cached view forces a subtree refresh
     // and silently defeats that boundary, unlike a standalone ProjectView test.
@@ -177,6 +178,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     );
     let start = feed.read_with(visual, |feed, cx| feed.performance_scroll_position(cx));
     for _ in 0..6 {
+        chrome.read_with(visual, |chrome, _| chrome.render_calls.set(0));
         board.read_with(visual, |board, _| {
             board.card_calls.set(0);
             board.frame_work.borrow_mut().clear();
@@ -196,6 +198,11 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
                 "Manager scrolling must not rebuild Board cards"
             )
         });
+        assert_eq!(
+            chrome.read_with(visual, |chrome, _| chrome.render_calls.get()),
+            0,
+            "Manager scrolling must not rebuild fixed identity/navigation chrome"
+        );
         feed.read_with(visual, |feed, _| {
             assert!(
                 feed.row_calls.get() <= 96,

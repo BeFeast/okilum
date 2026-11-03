@@ -12,7 +12,7 @@ Build native artifacts only in an approved hardware build slot; never run Cargo
 on maestro except fmt. Prepare **and verify** the unchanged vendor patch stack.
 The `manager-board-fixture` GitHub workflow also builds the exact committed
 release artifact with source/binary hashes (manual dispatch, or relevant
-`agent-checks/**` pushes). It builds an artifact, not an acceptance verdict.
+`perf-fixture/**` pushes). It builds an artifact, not an acceptance verdict.
 The native reference uses the shipped release optimization profile:
 
 ```
