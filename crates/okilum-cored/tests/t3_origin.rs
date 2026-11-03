@@ -1,4 +1,5 @@
 //! Production CLI startup must never manufacture a historical T3 origin.
+#![cfg(unix)]
 use anyhow::Result;
 use okilum_brain::{
     application::{Application, ApplicationConfig, T3Settings},

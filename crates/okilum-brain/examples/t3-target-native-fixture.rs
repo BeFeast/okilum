@@ -1,20 +1,30 @@
 //! Synthetic native acceptance fixture using the production Runner and service.
 //! Creates a fresh isolated directory only; never accepts an existing brain.
+#[cfg(unix)]
 use anyhow::{ensure, Result};
+#[cfg(unix)]
 use okilum_brain::{
     application::{Application, ApplicationConfig, T3Settings},
     *,
 };
+#[cfg(unix)]
 use okilum_core::source::WriteBoundary;
+#[cfg(unix)]
 use serde_json::json;
+#[cfg(unix)]
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::{collections::BTreeMap, fs, net::TcpListener, path::PathBuf};
 
+#[cfg(unix)]
 const WHEN: &str = "2026-10-03T00:00:00Z";
+#[cfg(unix)]
 fn id(n: u32) -> String {
     format!("00000000-0000-4000-8000-{n:012}")
 }
+#[cfg(unix)]
 struct Seed;
+#[cfg(unix)]
 impl Adapter for Seed {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
@@ -40,6 +50,7 @@ impl Adapter for Seed {
         anyhow::bail!("seed adapter has no transport")
     }
 }
+#[cfg(unix)]
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     ensure!(
@@ -199,4 +210,9 @@ fn main() -> Result<()> {
     )?;
     println!("{}", root.join("fixture.json").display());
     service::serve_application(listener, runner, adapters, app)
+}
+
+#[cfg(not(unix))]
+fn main() -> anyhow::Result<()> {
+    anyhow::bail!("The AI Brain source-store runtime is only available on Unix")
 }

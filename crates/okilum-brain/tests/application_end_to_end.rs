@@ -1,4 +1,5 @@
 //! Independent application acceptance using real transports and synthetic providers.
+#![cfg(unix)]
 #[path = "../test_support/http_fixture.rs"]
 mod http_fixture;
 use base64::{engine::general_purpose::STANDARD, Engine};

@@ -264,3 +264,22 @@ fn dash_leading_names_stay_usable_through_dot_slash() {
     assert_indexed(&out, &s.cwd.join("-index"));
     assert!(!dash_vault.join(".okilum-index").exists());
 }
+
+#[cfg(not(unix))]
+#[test]
+fn unsupported_brain_refuses_before_creating_state_but_reader_still_works() {
+    let fixture = Sandbox::new();
+    let result = fixture.run(&["brain", "--vault", "vault"], &[]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("only available on Unix"));
+    assert!(result.stdout.is_empty());
+    assert!(
+        fixture.strays().is_empty(),
+        "unsupported runtime must not write state"
+    );
+    let result = fixture.run(&["index", "--vault", "vault"], &[]);
+    assert!(
+        result.status.success(),
+        "read-only reader still works: {result:?}"
+    );
+}

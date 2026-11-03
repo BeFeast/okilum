@@ -28,7 +28,7 @@ USAGE:
     `index` builds the search index and exits.
     `mcp`   serves the Model Context Protocol (JSON-RPC over stdio) instead —
             the same operations as tools, for agent clients.
-    `brain` serves the separate ai-brain/v1 JSON-lines service on a loopback
+    `brain` (Unix only) serves the separate ai-brain/v1 JSON-lines service on a loopback
             TCP address (docs/ai-brain-service.md). It is not part of the
             read-only reader protocol and takes its own options.
 
@@ -44,7 +44,10 @@ const INDEX_DIR_NAME: &str = ".okilum-index";
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|arg| arg == "brain") {
+        #[cfg(unix)]
         return okilum_brain::service::run_cli(&args[2..]);
+        #[cfg(not(unix))]
+        anyhow::bail!("The AI Brain source-store runtime is only available on Unix");
     }
     let mut vault_root = std::env::var_os("OKILUM_VAULT").map(PathBuf::from);
     let mut index_dir_arg = std::env::var_os("OKILUM_INDEX_DIR").map(PathBuf::from);

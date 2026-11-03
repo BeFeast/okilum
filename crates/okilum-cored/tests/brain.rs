@@ -1,5 +1,6 @@
 //! A real backend child survives client disconnect, and the next process reads
 //! the same durable goal/source state. No installed server or personal vault.
+#![cfg(unix)]
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;

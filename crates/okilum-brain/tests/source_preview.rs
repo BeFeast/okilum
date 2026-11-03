@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use base64::{engine::general_purpose::STANDARD, Engine};
 use okilum_brain::{preview::source_preview, Runner, RunnerConfig};
 use okilum_core::{render, source::WriteBoundary, Vault};
