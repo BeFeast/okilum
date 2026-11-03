@@ -39,7 +39,8 @@ shell. Terminal.app only accepts shell text, so each wrapper/argv word is
 POSIX-quoted and passed as AppleScript argv, never embedded in AppleScript.
 Windows passes only fixed switches and an encoded PowerShell program across
 wt/cmd parsing: JSON carries argv/directory as base64 data, then the program
-uses Set-Location -LiteralPath or argv invocation with `&`, never eval.
+uses Set-Location -LiteralPath or ProcessStartInfo with explicit Windows argv
+quoting, never eval. This also avoids PowerShell 5 stripping embedded quotes.
 Process launch/wait runs outside the UI and shared worker pool, with bounded
 stderr retention and child reaping. No discovery connects SSH or starts a
 terminal, and no terminal is embedded.
