@@ -1377,6 +1377,7 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
         assert_eq!(board.projection_time(), 100);
         assert!(board.problem(now()).unwrap().contains("HTTP 503"));
         board.snapshot.forgejo.error = None;
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();

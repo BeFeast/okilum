@@ -1,6 +1,7 @@
 use super::*;
 use ::core::prelude::v1::test;
 use gpui::{TestAppContext, VisualTestContext};
+use std::collections::BTreeMap;
 
 fn binding() -> Binding {
     Binding::parse("version: 1\ntitle: Synthetic filter fixture\nissues:\n  - {number: 123, expected: 'Исправить поиск', executor: Editing}\n  - {number: 456, expected: 'Tester report', executor: Tests}\n  - {number: 789, expected: 'An unlabelled task', executor: Editing}\n").unwrap()
@@ -167,6 +168,7 @@ fn issue2532_native_chip_click_search_escape_and_live_counts(cx: &mut TestAppCon
             .unwrap()
             .labels
             .push(okilum_t3::board::IssueLabel { name: "bug".into() });
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();

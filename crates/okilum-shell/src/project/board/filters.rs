@@ -3,7 +3,7 @@
 use super::*;
 use okilum_t3::board::{Issue, Scope};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 mod ui;
 pub(super) use ui::Controls;
@@ -158,40 +158,29 @@ pub(super) struct Projection {
     pub executors: BTreeSet<String>,
 }
 struct Cached {
-    binding: Binding,
-    issues: BTreeMap<u64, Issue>,
-    threads: Vec<okilum_t3::ThreadSummary>,
-    locals: Vec<okilum_t3::board::local::Card>,
     model: Model,
-    discovered: bool,
-    offline: bool,
     expires: u64,
     projection: Arc<Projection>,
 }
+/// Source publication invalidates this cache at the existing read completion
+/// points. Render never scans or clones a source snapshot to detect changes.
 #[derive(Default)]
 pub(super) struct Cache(Option<Cached>);
 impl Cache {
     pub fn invalidate(&mut self) {
         self.0 = None;
     }
-    fn matches(&self, board: &Board, binding: &Binding, at: u64) -> bool {
-        self.0.as_ref().is_some_and(|c| {
-            c.binding == *binding
-                && c.issues == board.snapshot.forgejo.value
-                && c.threads == board.snapshot.t3.value
-                && c.locals == board.local_cards.value.cards
-                && c.model == board.filter
-                && c.discovered == board.snapshot.forgejo.last_success.is_some()
-                && c.offline == board.snapshot.forgejo.error.is_some()
-                && at < c.expires
-        })
+    fn matches(&self, model: &Model, at: u64) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|c| c.model == *model && at < c.expires)
     }
 }
 impl Board {
     pub(super) fn filtered_projection(&mut self) -> Arc<Projection> {
         let binding = self.binding.as_ref().expect("configured Board");
         let at = now();
-        if !self.filter_cache.matches(self, binding, at) {
+        if !self.filter_cache.matches(&self.filter, at) {
             let mut projected = if self.snapshot.forgejo.last_success.is_some() {
                 okilum_t3::board::live::project(
                     binding,
@@ -273,13 +262,7 @@ impl Board {
                 expires = expires.min(at.saturating_add(15));
             }
             self.filter_cache.0 = Some(Cached {
-                binding: binding.clone(),
-                issues: self.snapshot.forgejo.value.clone(),
-                threads: self.snapshot.t3.value.clone(),
-                locals: self.local_cards.value.cards.clone(),
                 model: self.filter.clone(),
-                discovered: self.snapshot.forgejo.last_success.is_some(),
-                offline: self.snapshot.forgejo.error.is_some(),
                 expires,
                 projection: Arc::new(result),
             });

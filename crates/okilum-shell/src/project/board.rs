@@ -220,6 +220,7 @@ impl Board {
                                         }
                                     }
                                 }
+                                this.filter_cache.invalidate();
                                 this.binding = binding;
                                 this.binding_read = Some(now());
                                 this.binding_error = None;
@@ -254,6 +255,7 @@ impl Board {
         }
         self.snapshot.invalidate();
         self.snapshot.t3 = Source::default();
+        self.filter_cache.invalidate();
         self.delivery_loading = false;
         self.notes_loading = false;
         self.manager = Some(manager);
@@ -334,6 +336,7 @@ impl Board {
                         .await;
                     let _ = this.update_in(cx, |this, window, cx| {
                         this.snapshot.live_issues(&forgejo_ticket, result, now());
+                        this.filter_cache.invalidate();
                         if this.snapshot.matches(&forgejo_ticket) {
                             this.refresh_delivery(forgejo_ticket.clone(), window, cx);
                         }
@@ -348,6 +351,7 @@ impl Board {
         // report a transport failure for a source the Board does not use.
         if !needs_threads {
             self.snapshot.threads(&ticket, Ok(Vec::new()), now());
+            self.filter_cache.invalidate();
             cx.notify();
             return;
         }
@@ -397,6 +401,7 @@ impl Board {
                     let _ = this.update_in(cx, |this, _, cx| {
                         let previous = this.snapshot.t3.error.clone();
                         this.snapshot.threads(&ticket, result, now());
+                        this.filter_cache.invalidate();
                         if this.snapshot.t3.error != previous {
                             if let Some(detail) = &this.snapshot.t3.error {
                                 eprintln!("Board T3 error: {detail}");
@@ -1105,8 +1110,7 @@ impl Render for Board {
                 .iter()
                 .map(|index| &self.local_cards.value.cards[*index]);
             let count = counts[column as usize];
-            // Never fold a lane that actually has a rendered card, even if a
-            // delivery freshness boundary changed since the count snapshot.
+            // Counts and membership come from the same cached projection.
             if column != Column::Verified && self.columns.collapsed(column, count) {
                 compact = compact.child(self.expand_empty_column(column, cx));
                 collapsed += 1;

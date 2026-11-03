@@ -29,6 +29,7 @@ fn loaded(board: &Entity<Board>, visual: &mut VisualTestContext) {
     board.update(visual, |board, cx| {
         board.local_loading = false;
         board.local_cards.last_success = Some(now());
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -74,6 +75,7 @@ fn loading_is_not_empty_and_refresh_does_not_unfold_completed_empty_columns(
             } else {
                 board.snapshot.invalidate();
             }
+            board.filter_cache.invalidate();
             cx.notify();
         });
         visual.run_until_parked();
@@ -113,6 +115,7 @@ fn explicit_empty_expansion_survives_cards_and_freed_space_goes_to_nonempty_lane
                 details: String::new(),
                 state: okilum_t3::board::local::State::Done,
             });
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -133,6 +136,7 @@ fn explicit_empty_expansion_survives_cards_and_freed_space_goes_to_nonempty_lane
     assert!(visual.debug_bounds("board-collapse-empty-Checks").is_some());
     board.update(visual, |board, cx| {
         board.local_cards.value.cards.clear();
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -147,6 +151,7 @@ fn explicit_empty_expansion_survives_cards_and_freed_space_goes_to_nonempty_lane
     for _ in 0..2 {
         board.update(visual, |board, cx| {
             board.local_loading = true;
+            board.filter_cache.invalidate();
             cx.notify();
         });
         visual.run_until_parked();
@@ -193,6 +198,7 @@ fn unresolved_card_problems_are_not_treated_as_an_empty_board(cx: &mut TestAppCo
             .value
             .problems
             .push("Local card could not be parsed".into());
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -210,6 +216,7 @@ fn unresolved_card_problems_are_not_treated_as_an_empty_board(cx: &mut TestAppCo
                 number: Some(17),
                 detail: "Missing expected result".into(),
             });
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -227,6 +234,7 @@ fn annotation_free_repository_failure_is_unknown_until_live_discovery_succeeds(
     board.update(visual, |board, cx| {
         board.binding.as_mut().unwrap().repository = "https://forgejo.example/team/project".into();
         board.snapshot.forgejo.error = Some("HTTP 503".into());
+        board.filter_cache.invalidate();
         cx.notify();
     });
     loaded(&board, visual);
@@ -238,6 +246,7 @@ fn annotation_free_repository_failure_is_unknown_until_live_discovery_succeeds(
     assert!(visual.debug_bounds("board-expand-empty-Queue").is_none());
     board.update(visual, |board, cx| {
         board.snapshot.forgejo.accept(Ok(Default::default()), now());
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -274,6 +283,7 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
         board.local_cards.last_success = Some(now());
         board.delivery_loading = true;
         board.columns.invalidate();
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -283,6 +293,7 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
     );
     board.update(visual, |board, cx| {
         board.delivery.config.accept(Ok(None), now());
+        board.filter_cache.invalidate();
         cx.notify();
     });
     for mode in [
@@ -296,6 +307,7 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
         for width in [800., 1600.] {
             board.update(visual, |board, cx| {
                 board.columns.invalidate();
+                board.filter_cache.invalidate();
                 cx.notify();
             });
             visual.simulate_resize(size(px(width), px(900.)));
@@ -331,6 +343,7 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
             merged_at: None,
             checks: "pending".into(),
         });
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -341,6 +354,7 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
     assert!(visual.debug_bounds("board-expand-42").is_some());
     board.update(visual, |board, cx| {
         board.snapshot.forgejo.accept(Err("HTTP 503".into()), now());
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();

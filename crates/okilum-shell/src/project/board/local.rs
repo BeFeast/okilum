@@ -102,6 +102,7 @@ impl Board {
                         }
                         let previous = this.local_cards.error.clone();
                         this.local_cards.accept(result, now());
+                        this.filter_cache.invalidate();
                         this.local_loading = false;
                         if this.local_cards.error != previous {
                             if let Some(error) = &this.local_cards.error {
@@ -219,6 +220,7 @@ impl Board {
                                     this.local_loading = false;
                                     this.local_cards
                                         .accept(Ok(session.projection.clone()), now());
+                                    this.filter_cache.invalidate();
                                     editor.session = session;
                                     editor.mode = Mode::List;
                                     editor.undo = if removed { previous } else { None };

@@ -26,6 +26,7 @@ pub(super) fn open(cx: &mut App) -> bool {
             board.binding = Some(Binding::parse(r#"
 version: 1
 title: Synthetic Board
+repository: https://example.invalid/synthetic/board
 issues:
   - {number: 123, expected: 'Поиск по задачам на русском', executor: Editing}
   - {number: 456, expected: 'Tester report: keep the Board responsive', executor: Tests}
