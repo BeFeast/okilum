@@ -55,7 +55,9 @@ pub(crate) fn enter_managed_appimage() {
         return;
     };
     let source = PathBuf::from(source);
-    let target = match okilum_appimage::installation::install(Path::new(&home), &source) {
+    // A non-numeric (development) build never replaces a known managed build.
+    let build = env!("OKILUM_BUILD_VERSION").parse().unwrap_or(0);
+    let target = match okilum_appimage::installation::install(Path::new(&home), &source, build) {
         Ok(target) => target,
         Err(error) => {
             eprintln!("AppImage installation: {error:#}");
@@ -1119,6 +1121,9 @@ mod tests {
             "crates/okilum-shell/src/reader_settings_sync/linux_runtime.rs",
             2,
         ),
+        // Records the managed AppImage build beside
+        // ~/.local/share/okilum/Okilum.AppImage, removed by installation::remove.
+        ("crates/okilum-shell/src/updater/appimage.rs", 1),
         // Moves notes to the system trash; not an app-owned location.
         ("crates/okilum-shell/src/reader_trash_fs.rs", 2),
         ("crates/okilum-shell/src/workspace.rs", 3),

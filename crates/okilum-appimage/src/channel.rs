@@ -1,7 +1,11 @@
 //! One-time channel discovery from signed publication identity, never from a URL name.
 use crate::{descriptor, Release};
 use anyhow::{ensure, Context, Result};
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
@@ -48,9 +52,24 @@ fn prepared_preference(path: &Path, channel: Channel) -> Result<tempfile::NamedT
     Ok(file)
 }
 
-/// Only an explicit Settings action may replace an existing choice.
+/// Marks the saved channel as chosen in Settings. The preference file keeps
+/// its original `beta`/`stable` bytes so older builds still read it (#2455).
+fn explicit_marker(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".explicit");
+    path.with_file_name(name)
+}
+
+fn explicit(path: &Path) -> bool {
+    fs::symlink_metadata(explicit_marker(path)).is_ok_and(|m| m.is_file())
+}
+
+/// Only an explicit Settings action may replace an explicit choice.
 pub fn save(path: &Path, channel: Channel) -> Result<()> {
     prepared_preference(path, channel)?.persist(path)?;
+    let marker = explicit_marker(path);
+    let file = fs::File::create(&marker)?;
+    file.sync_all()?;
     Ok(())
 }
 
@@ -66,8 +85,23 @@ fn resolve_with(
     source: &str,
     mut fetch: impl FnMut(&str, &str) -> Result<Release>,
 ) -> Result<Channel> {
-    if let Some(saved) = read(path)? {
-        return Ok(saved);
+    let saved = read(path)?;
+    match saved {
+        // A Settings choice always wins; an automatic Beta never needs network.
+        Some(saved) if saved == Channel::Beta || explicit(path) => return Ok(saved),
+        // An automatic Stable (#2369 discovery, or a pre-#2369 default) is
+        // re-evaluated: a beta tester whose build was promoted got `stable`
+        // saved, and a beta downloaded later must not stay on Stable (#2455).
+        Some(saved) => {
+            return Ok(match beta_only(current, source, &mut fetch) {
+                Ok(true) if !explicit(path) => {
+                    prepared_preference(path, Channel::Beta)?.persist(path)?;
+                    Channel::Beta
+                }
+                _ => saved,
+            })
+        }
+        None => {}
     }
     let stable = fetch("okilum/linux/stable/latest.json", "stable")?;
     stable.validate("stable")?;
@@ -101,6 +135,26 @@ fn resolve_with(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Whether the running build is newer than signed Stable and its immutable
+/// archive proves this exact beta build/source was published.
+fn beta_only(
+    current: u64,
+    source: &str,
+    fetch: &mut impl FnMut(&str, &str) -> Result<Release>,
+) -> Result<bool> {
+    let stable = fetch("okilum/linux/stable/latest.json", "stable")?;
+    stable.validate("stable")?;
+    if current <= stable.build {
+        return Ok(false);
+    }
+    let beta = fetch(
+        &format!("okilum/linux/builds/{current}/release.json"),
+        "beta",
+    )?;
+    beta.validate("beta")?;
+    Ok(beta.build == current && beta.source == source)
 }
 
 #[cfg(test)]
@@ -181,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_preference_unchanged_without_network() {
+    fn explicit_preference_unchanged_without_network() {
         for channel in [Channel::Stable, Channel::Beta] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("appimage-update-channel");
@@ -277,5 +331,94 @@ mod tests {
         })
         .is_err());
         assert_eq!(fs::read_to_string(path).unwrap(), "invalid");
+    }
+
+    fn beta_feed(channel: &str) -> Result<Release> {
+        Ok(release(
+            channel,
+            if channel == "stable" { 7538 } else { 7539 },
+        ))
+    }
+
+    #[test]
+    fn automatic_beta_survives_promotion_without_network() {
+        // Installed beta N, N promoted to Stable, updated to N+1: still Beta.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("appimage-update-channel");
+        assert_eq!(
+            resolve_with(&path, 7539, &"a".repeat(40), |_, channel| {
+                Ok(release(
+                    channel,
+                    if channel == "stable" { 7538 } else { 7539 },
+                ))
+            })
+            .unwrap(),
+            Channel::Beta
+        );
+        assert!(!explicit(&path));
+        for current in [7539, 7540, 7541] {
+            assert_eq!(
+                resolve_with(&path, current, &"a".repeat(40), |_, _| {
+                    panic!("Automatic Beta must not depend on Stable")
+                })
+                .unwrap(),
+                Channel::Beta
+            );
+        }
+        assert_eq!(fs::read_to_string(path).unwrap(), "beta");
+    }
+
+    #[test]
+    fn automatic_stable_moves_to_beta_for_a_downloaded_beta_only_build() {
+        // #2455: beta 7538 discovered as Stable after promotion; the tester then
+        // downloaded beta 7539 by hand and must see betas and beta notes.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("appimage-update-channel");
+        fs::write(&path, "stable").unwrap(); // legacy/automatic, no marker
+        assert_eq!(
+            resolve_with(&path, 7539, &"a".repeat(40), |_, c| beta_feed(c)).unwrap(),
+            Channel::Beta
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "beta");
+        assert!(!explicit(&path));
+    }
+
+    #[test]
+    fn automatic_stable_on_a_promoted_or_unproven_build_stays_stable() {
+        for (current, fault) in [(7538, false), (7539, true)] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("appimage-update-channel");
+            fs::write(&path, "stable").unwrap();
+            assert_eq!(
+                resolve_with(&path, current, &"a".repeat(40), |_, channel| {
+                    if fault && channel == "beta" {
+                        anyhow::bail!("Offline")
+                    }
+                    Ok(release(
+                        channel,
+                        if channel == "stable" { 7538 } else { current },
+                    ))
+                })
+                .unwrap(),
+                Channel::Stable
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), "stable");
+        }
+    }
+
+    #[test]
+    fn explicit_stable_is_kept_on_a_beta_only_build() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("appimage-update-channel");
+        save(&path, Channel::Stable).unwrap();
+        assert!(explicit(&path));
+        assert_eq!(
+            resolve_with(&path, 7539, &"a".repeat(40), |_, _| {
+                panic!("Explicit choice must bypass discovery")
+            })
+            .unwrap(),
+            Channel::Stable
+        );
+        assert_eq!(fs::read(path).unwrap(), b"stable");
     }
 }

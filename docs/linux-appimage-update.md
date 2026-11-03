@@ -17,6 +17,21 @@ channel selected. Discovery never downloads an application payload; the normal
 update path still accepts only builds strictly newer than the running build.
 An ordinary Linux package continues to use its package manager.
 
+Only a Settings choice is explicit (#2455): it also writes
+`appimage-update-channel.explicit`; the preference bytes stay `beta`/`stable` so
+older builds still read them. An automatic Beta is kept without network. An
+automatic Stable (discovery, or a file without the marker) is re-checked on every
+update check: a running build newer than signed Stable whose immutable archive
+proves this exact beta build/source moves to Beta. That covers a beta tester
+whose build was promoted before first discovery and a beta downloaded by hand.
+
+The managed install `~/.local/share/okilum/Okilum.AppImage` records its build in
+`.appimage-build` (written on install, on a managed launch and after an applied
+update's startup confirmation). An AppImage launched from another path replaces
+the managed copy only when it is strictly newer or the installed build is
+unknown; otherwise it just execs the managed copy. A launcher pinned to an old
+download therefore can no longer undo self-updates (#2455).
+
 The updater downloads `https://updates.befeast.com/okilum/linux/{beta,stable}/latest.json`
 and its detached signature. The public key is the existing Linux authority
 `7FFE9F27ECC8E253E45BAEA08AACBFB2C9E47882`, compiled into the updater. Gpgv is bundled
