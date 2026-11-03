@@ -205,7 +205,7 @@ print(g.find('apikey').text)
                     return Err(std::io::Error::last_os_error());
                 }
                 if libc::getppid() != parent {
-                    return Err(std::io::Error::other("fixture parent exited"));
+                    return Err(std::io::Error::from_raw_os_error(libc::ECHILD));
                 }
                 Ok(())
             });
