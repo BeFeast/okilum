@@ -1,6 +1,7 @@
 //! End-to-end regression checks use only the pre-existing Reader API, so the
 //! same tests can be compiled against main as a negative control.
 use super::*;
+use ::core::prelude::v1::test;
 
 struct Fixture<'a> {
     reader: Entity<Reader>,
@@ -92,6 +93,18 @@ fn issue1588_line_click_and_inline_nested_expansion(cx: &mut TestAppContext) {
         .visual
         .debug_bounds("agent-line-not-an-import.md")
         .is_none());
+    let label = f
+        .visual
+        .debug_bounds("agent-line-imports/rules.md")
+        .unwrap();
+    let disclosure = f
+        .visual
+        .debug_bounds("agent-disclosure-imports/rules.md")
+        .unwrap();
+    assert!(
+        (label.center().y - disclosure.center().y).abs() <= px(4.),
+        "the disclosure and @path are on the same document line"
+    );
     f.click("agent-disclosure-imports/rules.md");
     let line = f
         .visual
@@ -210,4 +223,21 @@ fn issue1588_source_command_click_and_live_preview_disclosure(cx: &mut TestAppCo
         .visual
         .debug_bounds("agent-expanded-imports/rules.md")
         .is_some());
+}
+
+#[gpui::test]
+fn issue1588_imported_task_queries_have_no_editing_authority(cx: &mut TestAppContext) {
+    let mut f = open(cx, "project/AGENTS.md");
+    let imported = "```tasks\nnot done\n```\n";
+    let path = f.root.join("project/imports/rules.md");
+    std::fs::write(&path, imported).unwrap();
+    f.draw();
+    f.click("agent-disclosure-imports/rules.md");
+    assert!(
+        f.visual.debug_bounds("reader-code-language-0").is_some(),
+        "positive control: imported task query is visible as a read-only code block"
+    );
+    assert!(f.visual.debug_bounds("tasks-empty").is_none());
+    assert!(f.visual.debug_bounds("tasks-unavailable").is_none());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), imported);
 }
