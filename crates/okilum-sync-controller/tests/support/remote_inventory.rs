@@ -243,11 +243,14 @@ fn managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes()
         pair.target.home.clone(),
         pair._root.path().to_owned(),
     ] {
+        let error = pair
+            .second
+            .preview_remote_vault(pair.peer, &id, &here)
+            .err()
+            .context("accepted private-state overlap")?;
         assert!(
-            pair.second
-                .preview_remote_vault(pair.peer, &id, &here)
-                .is_err(),
-            "accepted private-state overlap: {here:?}"
+            error.to_string().contains("overlaps operational state"),
+            "{here:?}: {error:#}"
         );
     }
     let empty = pair._root.path().join("empty-inspection");

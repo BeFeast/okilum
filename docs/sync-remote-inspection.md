@@ -123,8 +123,10 @@ bindings, root/policy substitution, missing pages, reordered chunks, unsafe tree
 entries, oversize inventories and frames that would exceed the wire budget.
 
 Hardening regressions (#2512) also use an authenticated wire request with a
-deterministic delayed inspection boundary. A positive control proves that
-inspection reached the boundary, then a second peer inspection, actual pairing
+deterministic delayed inspection boundary. The real-runtime acceptance also
+completes concurrent previews and exact binary reads through two separately
+approved signers without invalidating either capability. A positive control
+proves that inspection reached the boundary, then a second peer inspection, actual pairing
 redemption and controller/cache lock acquisition must finish while it is held.
 Cache tests cover peer/vault isolation, admission reservations, limits and
 expired-allocation release. All four response kinds are encrypted and decoded
