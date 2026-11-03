@@ -1706,6 +1706,16 @@ impl Settings {
                                         })),
                                 ),
                         )
+                        .child(v_flex().gap_2().children(updater::Mode::ALL.map(|mode| {
+                            Button::new(SharedString::from(format!("settings-update-mode-{mode:?}")))
+                                .debug_selector(move || format!("settings-update-mode-{mode:?}"))
+                                .ghost()
+                                .label(mode.label())
+                                .selected(updater::mode() == mode)
+                                .on_click(move |_, _, cx| updater::set_mode(mode, cx))
+                        })))
+                        .child(div().text_sm().text_color(p.text_muted)
+                            .child("Downloaded updates are installed only when you choose Restart now."))
                         .children(update_status_row("settings", cx))
                         .child(div().text_sm().text_color(p.text_muted).child(match beta {
                             Some(true) => "Beta selected — preview new features and fixes.",
@@ -2112,22 +2122,27 @@ pub(crate) fn render_update_status(
                     )
                 })
             })
-            .when(updater::can_cancel_update(), |row| {
-                row.child(
-                    Button::new(SharedString::from(format!("{id}-cancel-update")))
-                        .debug_selector(move || format!("{id}-cancel-update"))
-                        .ghost()
-                        .small()
-                        .label("Cancel update")
-                        .on_click(|_, _, _| updater::cancel_update()),
-                )
-            })
+            .when(
+                matches!(status, updater::status::CheckStatus::Downloading(_))
+                    || updater::can_cancel_update(),
+                |row| {
+                    row.child(
+                        Button::new(SharedString::from(format!("{id}-cancel-update")))
+                            .debug_selector(move || format!("{id}-cancel-update"))
+                            .ghost()
+                            .small()
+                            .label("Cancel update")
+                            .on_click(|_, _, _| updater::cancel_update()),
+                    )
+                },
+            )
             .when(available, |row| {
                 row.child(
                     Button::new(SharedString::from(format!("{id}-install-update")))
                         .ghost()
                         .small()
-                        .label("Install Update…")
+                        .debug_selector(move || format!("{id}-install-update"))
+                        .label("Download update")
                         .on_click(|_, _, _| updater::install_update()),
                 )
             })

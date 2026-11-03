@@ -20,7 +20,7 @@ import release_notes
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS / 'updater'))
-from release import R2, Forgejo, promote as promote_macos
+from release import R2, Forgejo, promote as promote_macos, update_forgejo_notes
 import appcast
 
 
@@ -323,7 +323,8 @@ def promote_mac_only(store, build, supersede_pending=False, forgejo=None):
     store.put(pending_key, catalog.encode(release), 'application/json', 'no-cache')
     # Notes and preflight must use the same exact appcast snapshot.
     notes_store = SimpleNamespace(call=lambda method, key: raw if key == 'okilum/appcast.xml' else store.call(method, key))
-    stable_notes = release_notes.prepare_stable(notes_store, forgejo or Forgejo(), 'macos', build, source)
+    forgejo = forgejo or Forgejo()
+    stable_notes = release_notes.prepare_stable(notes_store, forgejo, 'macos', build, source)
     release_notes.record(store, stable_notes)
     # Stable uses the same canonical notes as the in-app build history.
     appcast.promote(tree, SimpleNamespace(build=build, notes_json=json.dumps(stable_notes)))
@@ -333,6 +334,7 @@ def promote_mac_only(store, build, supersede_pending=False, forgejo=None):
     store.put('okilum/macos/latest.zip', files['Okilum-macos.zip'], 'application/zip', 'no-cache')
     store.put('okilum/macos/stable/Okilum.dmg', files[f'Okilum-0.1.{build}.dmg'],
               'application/x-apple-diskimage', 'no-cache')
+    update_forgejo_notes(forgejo, build, stable_notes)
     store.put(key, catalog.encode(release), 'application/json', 'no-cache')
     print(f'Published Mac Stable only: {build}')
 

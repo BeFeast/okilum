@@ -17,6 +17,13 @@ pub(super) enum Trigger {
     Focus,
     /// Explicit checks/channel changes retain their existing immediate behavior.
     Manual,
+    Download,
+}
+
+impl Trigger {
+    pub(super) fn manual(self) -> bool {
+        matches!(self, Self::Manual | Self::Download)
+    }
 }
 
 pub(super) struct Schedule {
@@ -35,7 +42,7 @@ impl Schedule {
     /// `now` is an injected monotonic clock. `start` atomically claims the
     /// platform's single-flight guard and returns false if it is busy. A
     /// rejected attempt must not postpone a due check or erase its last error.
-    /// `enabled` is the single policy gate for a future Updates mode (#2467).
+    /// `enabled` is the policy gate; callers allow explicit actions in Off mode.
     pub(super) fn run(
         &mut self,
         now: Duration,
@@ -47,7 +54,7 @@ impl Schedule {
         if !enabled {
             return false;
         }
-        if !matches!(trigger, Trigger::Manual)
+        if !trigger.manual()
             && (self
                 .last_started
                 .is_some_and(|last| now.saturating_sub(last) < THROTTLE)

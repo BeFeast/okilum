@@ -90,6 +90,8 @@ impl PaletteSection {
 #[derive(Clone, Debug)]
 pub(super) enum PaletteItem {
     SwitchWindowMode,
+    CopyAsMarkdown,
+    CopyWithFormatting,
     OpenTerminal,
     TerminalSettings,
     /// A Pinned or Recent note or folder, as the title-bar menus list it.
@@ -523,6 +525,7 @@ fn visible_context(
 
 pub(super) struct Palette {
     pub open: bool,
+    read_copy: Option<reader_read_menu::Snapshot>,
     full_text: bool,
     /// Agent files are hidden unless this chip view asks for them (#1589).
     /// Transient: never persisted, reset by every explicit open.
@@ -579,6 +582,7 @@ impl Palette {
             });
         Self {
             open: false,
+            read_copy: None,
             full_text: false,
             scope: AgentSearch::default(),
             result_query: String::new(),
@@ -647,6 +651,10 @@ impl Reader {
         self.close_nav_menu(window, cx);
         self.close_project_switcher(window, cx);
         self.shortcut_sheet.open = false;
+        self.quick_open.read_copy = self
+            .read_copy_available()
+            .then(|| reader_read_menu::snapshot(self, cx))
+            .flatten();
         self.quick_open.open = true;
         self.quick_open.full_text = full_text;
         self.quick_open.scope.open();
@@ -674,6 +682,7 @@ impl Reader {
     pub(super) fn close_quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_hover(cx);
         self.quick_open.open = false;
+        self.quick_open.read_copy = None;
         self.quick_open.accept_when_ready = None;
         self.quick_open.invalidate();
         self.restore_document_focus(window, cx);
@@ -767,6 +776,8 @@ impl Reader {
         let key = match item {
             PaletteItem::Note(entry) => entry.path.clone(),
             PaletteItem::Project(row) => row.project.folder.to_string_lossy().into_owned(),
+            PaletteItem::CopyAsMarkdown => "copy-as-markdown".into(),
+            PaletteItem::CopyWithFormatting => "copy-with-formatting".into(),
             PaletteItem::SwitchWindowMode => "switch-window-mode".into(),
             PaletteItem::OpenTerminal => "open-terminal".into(),
             PaletteItem::TerminalSettings => "terminal-settings".into(),
@@ -853,6 +864,21 @@ impl Reader {
         }
         let sections = &palette.sections;
         let mut items = Vec::new();
+        if self.read_copy_available() {
+            let query = palette.query.trim().to_lowercase();
+            if !query.is_empty() {
+                for (label, item) in [
+                    ("copy as markdown", PaletteItem::CopyAsMarkdown),
+                    ("copy with formatting", PaletteItem::CopyWithFormatting),
+                ] {
+                    if label.contains(&query)
+                        && (!matches!(item, PaletteItem::CopyWithFormatting) || !self.use_html)
+                    {
+                        items.push((PaletteSection::Files, item));
+                    }
+                }
+            }
+        }
         if !self.selected_file().is_empty()
             && !palette.query.trim().is_empty()
             && self
@@ -1217,6 +1243,14 @@ impl Reader {
             return;
         };
         match item {
+            PaletteItem::CopyAsMarkdown | PaletteItem::CopyWithFormatting => {
+                let formatted = matches!(item, PaletteItem::CopyWithFormatting);
+                let snapshot = self.quick_open.read_copy.take();
+                self.close_quick_open(window, cx);
+                if let Some(snapshot) = snapshot {
+                    snapshot.copy_format(formatted, window, cx);
+                }
+            }
             PaletteItem::SwitchWindowMode => {
                 self.close_quick_open(window, cx);
                 self.switch_window_mode(window, cx);
@@ -1618,6 +1652,32 @@ impl Reader {
                                     .flex_none()
                                     .when(active, |d| d.child(Icon::new(IconName::Check).small())),
                             )
+                            .into_any_element()
+                    }
+                    PaletteItem::CopyAsMarkdown | PaletteItem::CopyWithFormatting => {
+                        let markdown = matches!(items[*ix].1, PaletteItem::CopyAsMarkdown);
+                        section_row(*ix)
+                            .debug_selector(move || {
+                                if markdown {
+                                    "palette-copy-markdown"
+                                } else {
+                                    "palette-copy-formatted"
+                                }
+                                .into()
+                            })
+                            .h(px(30.))
+                            .text_sm()
+                            .child(div().flex_1().child(if markdown {
+                                "Copy as Markdown"
+                            } else {
+                                "Copy with formatting"
+                            }))
+                            .when(markdown, |row| {
+                                row.child(reader_shortcuts::all_shortcuts(
+                                    &reader_read_menu::CopyAsMarkdown,
+                                    cx,
+                                ))
+                            })
                             .into_any_element()
                     }
                     PaletteItem::SwitchWindowMode => section_row(*ix)
@@ -3108,6 +3168,8 @@ canaryhidden [[Target]]",
                 let what = match item {
                     PaletteItem::Note(entry) => entry.path.clone(),
                     PaletteItem::Project(row) => row.project.name.clone(),
+                    PaletteItem::CopyAsMarkdown => "Copy as Markdown".into(),
+                    PaletteItem::CopyWithFormatting => "Copy with formatting".into(),
                     PaletteItem::SwitchWindowMode => v.window_mode_label().into(),
                     PaletteItem::OpenTerminal => "Open terminal".into(),
                     PaletteItem::TerminalSettings => "Terminal settings".into(),

@@ -13,6 +13,7 @@ use velopack::{bundle::Manifest, sources::UpdateSource, VelopackAsset, VelopackA
 pub struct Source {
     base: url::Url,
     version: String,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl Source {
     pub fn new(base: &str, version: &str) -> Result<Self> {
@@ -21,7 +22,23 @@ impl Source {
         Ok(Self {
             base,
             version: version.into(),
+            cancelled: Default::default(),
         })
+    }
+    /// Shared with the shell's single-flight download session.
+    pub fn with_cancellation(
+        mut self,
+        token: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.cancelled = token;
+        self
+    }
+    fn check_cancelled(&self) -> Result<()> {
+        ensure!(
+            !self.cancelled.load(std::sync::atomic::Ordering::Acquire),
+            "Update download cancelled"
+        );
+        Ok(())
     }
     fn response(&self, url: &url::Url) -> Result<reqwest::blocking::Response> {
         let response = crate::client(url.as_str(), &self.version, Duration::from_secs(300))?
@@ -83,33 +100,44 @@ impl Source {
             .map_err(|_| anyhow::anyhow!("Feed URL cannot hold package paths"))?
             .pop_if_empty()
             .push(&asset.FileName);
+        self.check_cancelled()?;
         let mut response = self.response(&url)?;
         let mut file = File::create(local_file)?;
-        let mut count = 0u64;
-        let mut buffer = [0u8; 64 * 1024];
-        if let Some(sender) = &progress {
-            let _ = sender.send(0);
-        }
-        loop {
-            let read = response.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            count += read as u64;
-            ensure!(count <= asset.Size, "Package exceeds its declared size");
-            file.write_all(&buffer[..read])?;
+        let result = (|| -> Result<()> {
+            let mut count = 0u64;
+            let mut buffer = [0u8; 64 * 1024];
             if let Some(sender) = &progress {
-                let percent =
-                    ((count as u128 * 100) / u128::from(asset.Size.max(1))).min(100) as i16;
-                let _ = sender.send(percent);
+                let _ = sender.send(0);
             }
+            loop {
+                self.check_cancelled()?;
+                let read = response.read(&mut buffer)?;
+                self.check_cancelled()?;
+                if read == 0 {
+                    break;
+                }
+                count += read as u64;
+                ensure!(count <= asset.Size, "Package exceeds its declared size");
+                file.write_all(&buffer[..read])?;
+                if let Some(sender) = &progress {
+                    let percent =
+                        ((count as u128 * 100) / u128::from(asset.Size.max(1))).min(100) as i16;
+                    let _ = sender.send(percent);
+                }
+            }
+            ensure!(
+                count == asset.Size,
+                "Incomplete package: expected {} bytes, received {count}",
+                asset.Size
+            );
+            file.flush()?;
+            Ok(())
+        })();
+        drop(file);
+        if result.is_err() {
+            let _ = std::fs::remove_file(local_file);
         }
-        ensure!(
-            count == asset.Size,
-            "Incomplete package: expected {} bytes, received {count}",
-            asset.Size
-        );
-        file.flush()?;
+        result?;
         // UpdateManager verifies SHA256 and size before renaming the partial package.
         Ok(())
     }
@@ -182,7 +210,67 @@ mod tests {
         Source {
             base,
             version: version.into(),
+            cancelled: Default::default(),
         }
+    }
+    #[test]
+    fn cancel_during_package_stream_removes_partial_and_next_download_restarts() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        let token = Arc::new(AtomicBool::new(false));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/updates", listener.local_addr().unwrap());
+        let (release, wait) = std::sync::mpsc::channel();
+        let task = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 131072\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            socket.write_all(&vec![42; 4096]).unwrap();
+            // Hold the remainder until a real progress event cancels the transfer.
+            wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            let _ = socket.write_all(&vec![42; 131072 - 4096]);
+        });
+        let source = fixture_source(&url, "test").with_cancellation(token.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("package.partial");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = thread::spawn(move || {
+            for p in rx {
+                if p > 0 {
+                    token.store(true, Ordering::Release);
+                    release.send(()).unwrap();
+                    return;
+                }
+            }
+            panic!("positive control: no transferred-byte progress event");
+        });
+        let error = source
+            .download_release_entry(&asset("app.nupkg", 131072), &file, Some(tx))
+            .unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        cancel.join().unwrap();
+        task.join().unwrap();
+        assert!(!file.exists(), "cancel removes the partial package");
+        let (url, task) = server(200, b"retry".to_vec(), "");
+        fixture_source(&url, "test")
+            .download_release_entry(&asset("app.nupkg", 5), &file, None)
+            .unwrap();
+        assert_eq!(std::fs::read(file).unwrap(), b"retry");
+        task.join().unwrap();
     }
     #[test]
     fn production_constructor_rejects_plaintext_feed_downgrade() {

@@ -1,4 +1,4 @@
-//! Installed Windows releases: download in the background, apply on next launch.
+//! Installed Windows releases: policy-controlled download, explicit guarded restart.
 //! Installation ID BeFeast.Okilum deliberately differs from Reader state `okilum`.
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -166,21 +166,10 @@ fn discard(asset: &velopack::VelopackAsset) {
     forget_verified();
 }
 
-/// Before `VelopackApp::run`: whether it may apply a pending package now. Only
-/// a package checked against the channel the install follows today (#1318).
+/// Ordinary startup never authorizes an installation (#2467). Explicit
+/// Restart uses wait_exit_then_apply_updates after channel/editor guards.
 pub(crate) fn apply_pending_at_start() -> bool {
-    let Ok(manager) = manager() else {
-        return true;
-    };
-    let Some(pending) = manager.get_update_pending_restart() else {
-        return true;
-    };
-    let record = verified_path().and_then(|path| std::fs::read_to_string(path).ok());
-    super::windows_feed::may_apply_at_start(
-        package_sha256(&pending).as_deref(),
-        record.as_deref(),
-        beta(),
-    )
+    false
 }
 
 /// The installed package's version from `current/sq.version` (#1319). Read
@@ -202,10 +191,17 @@ fn manager() -> Result<UpdateManager, velopack::Error> {
 }
 
 fn manager_for(beta: bool) -> Result<UpdateManager, velopack::Error> {
+    manager_with_token(beta, Default::default())
+}
+fn manager_with_token(
+    beta: bool,
+    token: std::sync::Arc<AtomicBool>,
+) -> Result<UpdateManager, velopack::Error> {
     let (url, channel) = super::windows_feed::endpoint(beta);
     UpdateManager::new(
         okilum_http::updates::Source::new(&url, env!("OKILUM_RELEASE_VERSION"))
-            .map_err(|error| velopack::Error::Other(format!("{error:#}")))?,
+            .map_err(|error| velopack::Error::Other(format!("{error:#}")))?
+            .with_cancellation(token),
         Some(UpdateOptions {
             ExplicitChannel: Some(channel.into()),
             MaximumDeltasBeforeFallback: 10,
@@ -231,7 +227,7 @@ fn settings() -> bool {
 
 pub(super) fn start() {
     if settings() {
-        super::check();
+        super::startup_check();
     }
 }
 
@@ -269,7 +265,7 @@ pub(super) fn set_beta(value: bool) {
     }
 }
 
-pub(super) fn check() -> bool {
+pub(super) fn check(download: bool) -> bool {
     if !available() {
         return false;
     }
@@ -281,33 +277,44 @@ pub(super) fn check() -> bool {
     // HTTP and package IO never block the GPUI/UI thread or vault preparation.
     // A manual check reports inline, never in a message box (#995).
     std::thread::spawn(move || {
-        let result = check_and_download();
+        let result = check_and_download(download);
         // Download/preparation failures stay visible even for background checks.
-        status::set(match result {
-            Ok(_) if ready() => CheckStatus::Ready,
-            Ok(UP_TO_DATE) => CheckStatus::UpToDate(std::time::SystemTime::now()),
-            Ok(note) => CheckStatus::Note(note.into()),
-            Err(error) => {
-                crate::reader_diagnostics::network_failure("Windows update", &error);
-                CheckStatus::Failed(format!(
-                    "{}. Your current version is unchanged.",
-                    error
-                        .to_string()
-                        .lines()
-                        .next()
-                        .unwrap_or("Update failed")
-                        .trim_end_matches('.')
-                ))
+        super::policy::DOWNLOAD.finish(|cancelled| {
+            if cancelled {
+                if let Ok(manager) = manager() {
+                    if let Some(asset) = manager.get_update_pending_restart() {
+                        discard(&asset);
+                    }
+                }
+                state().lock().unwrap().observe(None);
+                status::set(CheckStatus::Note(
+                    "Update cancelled. Nothing was installed.".into(),
+                ));
+                return;
             }
+            status::set(match result {
+                Ok(status) => status,
+                Err(error) => {
+                    crate::reader_diagnostics::network_failure("Windows update", &error);
+                    CheckStatus::Failed(format!(
+                        "{}. Your current version is unchanged.",
+                        error
+                            .to_string()
+                            .lines()
+                            .next()
+                            .unwrap_or("Update failed")
+                            .trim_end_matches('.')
+                    ))
+                }
+            });
         });
         BUSY.store(false, Ordering::Release);
     });
     true
 }
 
-const UP_TO_DATE: &str = "You are up to date on the selected channel.";
-
-fn check_and_download() -> anyhow::Result<&'static str> {
+fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStatus> {
+    use super::status::CheckStatus;
     let manager = manager()?;
     if let Some(asset) = manager.get_update_pending_restart() {
         // Applied only if the current channel's feed lists it (#1318). A feed
@@ -323,21 +330,32 @@ fn check_and_download() -> anyhow::Result<&'static str> {
         if listed {
             record_verified(&sha256);
             state().lock().unwrap().observe(Some(identity(&asset)));
-            return Ok("Update ready. Choose Restart to update.");
+            return Ok(CheckStatus::Ready);
         }
         discard(&asset);
         state().lock().unwrap().observe(None);
     }
     match manager.check_for_updates()? {
         UpdateCheck::UpdateAvailable(update) => {
-            use super::status::{self, CheckStatus};
+            use super::status;
+            if !download {
+                return Ok(CheckStatus::Available(
+                    update.TargetFullRelease.Version.clone(),
+                ));
+            }
+            let token = super::policy::DOWNLOAD.begin();
+            let manager = manager_with_token(beta(), token.clone())?;
             status::set(CheckStatus::Downloading(Some(0)));
             let (send, receive) = std::sync::mpsc::channel::<i16>();
             // Join before Ready/Failed so a late progress event cannot replace it.
             std::thread::scope(|scope| {
                 let progress = scope.spawn(move || {
                     for percent in receive {
-                        status::set(CheckStatus::Downloading(Some(percent.clamp(0, 100) as u8)));
+                        if !token.load(Ordering::Acquire) {
+                            status::set(CheckStatus::Downloading(
+                                Some(percent.clamp(0, 100) as u8),
+                            ));
+                        }
                     }
                 });
                 let result = manager.download_updates(&update, Some(send));
@@ -357,12 +375,12 @@ fn check_and_download() -> anyhow::Result<&'static str> {
                 pending.is_some(),
                 "The downloaded package is no longer available. Check for updates again."
             );
-            Ok("Update ready. Choose Restart to update.")
+            Ok(CheckStatus::Ready)
         }
-        UpdateCheck::NoUpdateAvailable => Ok(UP_TO_DATE),
-        UpdateCheck::RemoteIsEmpty => {
-            Ok("No release has been published on the selected channel yet.")
-        }
+        UpdateCheck::NoUpdateAvailable => Ok(CheckStatus::UpToDate(std::time::SystemTime::now())),
+        UpdateCheck::RemoteIsEmpty => Ok(CheckStatus::Note(
+            "No release has been published on the selected channel yet.".into(),
+        )),
     }
 }
 

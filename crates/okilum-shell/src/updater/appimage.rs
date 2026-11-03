@@ -77,11 +77,11 @@ pub(super) fn start() {
         return;
     }
     if packaged() && std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_none() {
-        super::check();
+        super::startup_check();
     }
 }
-pub(super) fn check() -> bool {
-    if !packaged()
+pub(super) fn check(download: bool) -> bool {
+    if ready() || !packaged()
         // A focus event can arrive before the receipt writer. Do not recover
         // an update that this process has not yet confirmed (#2387/#2455).
         || (std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_some()
@@ -93,7 +93,7 @@ pub(super) fn check() -> bool {
         return false;
     }
     status::set(CheckStatus::Checking);
-    std::thread::spawn(|| {
+    std::thread::spawn(move || {
         let result = (|| -> anyhow::Result<()> {
             okilum_appimage::recover_interrupted()?;
             let target = okilum_appimage::Target::detect()?;
@@ -112,15 +112,44 @@ pub(super) fn check() -> bool {
             let beta = chosen == Channel::Beta;
             match okilum_appimage::check(beta, current, &verifier)? {
                 Some(release) => {
-                    status::set(CheckStatus::Note(format!(
-                        "Downloading Okilum {}…",
-                        release.version
-                    )));
-                    let staged =
-                        okilum_appimage::Staged::prepare(target, release, beta, &verifier)?;
-                    *PENDING.lock().unwrap() = Some(staged);
-                    ANNOUNCE.store(true, Ordering::SeqCst);
-                    status::set(CheckStatus::Ready);
+                    if !download {
+                        status::set(CheckStatus::Available(release.version.clone()));
+                        return Ok(());
+                    }
+                    let token = super::policy::DOWNLOAD.begin();
+                    status::set(CheckStatus::Downloading(Some(0)));
+                    let staged = okilum_appimage::Staged::prepare_cancellable(
+                        target,
+                        release,
+                        beta,
+                        &verifier,
+                        &token,
+                        |percent| {
+                            if !token.load(Ordering::Acquire) {
+                                status::set(CheckStatus::Downloading(Some(percent)));
+                            }
+                        },
+                    );
+                    super::policy::DOWNLOAD.finish(|cancelled| {
+                        if cancelled {
+                            // Drop the unarmed stage before releasing BUSY.
+                            drop(staged);
+                            status::set(CheckStatus::Note(
+                                "Update cancelled. Nothing was installed.".into(),
+                            ));
+                        } else {
+                            match staged {
+                                Ok(staged) => {
+                                    *PENDING.lock().unwrap() = Some(staged);
+                                    ANNOUNCE.store(true, Ordering::SeqCst);
+                                    status::set(CheckStatus::Ready);
+                                }
+                                Err(error) => status::set(CheckStatus::Failed(format!(
+                                    "{error}. The original AppImage has been retained."
+                                ))),
+                            }
+                        }
+                    });
                 }
                 None => {
                     status::set(CheckStatus::UpToDate(std::time::SystemTime::now()));
@@ -230,7 +259,7 @@ mod sprint_tests {
         assert!(!packaged());
         assert!(!crate::updater::available());
         start();
-        check();
+        check(true);
         confirm_startup();
         assert_eq!(status::generation(), generation);
         assert!(!ready());
