@@ -25,6 +25,8 @@ pub(crate) struct Board {
     snapshot: Snapshot,
     manager: Option<Entity<ProjectView>>,
     _manager_observer: Option<Subscription>,
+    #[cfg(target_os = "linux")]
+    _manager_feed_observer: Option<Subscription>,
     active: bool,
     ticker: Option<Task<()>>,
     focus: FocusHandle,
@@ -138,6 +140,8 @@ impl Board {
             snapshot: Snapshot::new(owner),
             manager: None,
             _manager_observer: None,
+            #[cfg(target_os = "linux")]
+            _manager_feed_observer: None,
             active: false,
             ticker: None,
             focus: cx.focus_handle(),
@@ -272,19 +276,18 @@ impl Board {
         // This sibling is now cached: retain the live progress/status updates
         // that previously arrived incidentally through Reader redraws.
         #[cfg(target_os = "linux")]
-        let publication = |manager: &ProjectView, cx: &App| {
+        let publication = |manager: &ProjectView| {
             (
                 manager.identity.clone(),
                 manager.chat.as_ref().map(|chat| chat.thread_id.clone()),
-                manager.feed.read(cx).typed_revision(),
             )
         };
         #[cfg(target_os = "linux")]
-        let mut last_publication = publication(manager.read(cx), cx);
+        let mut last_publication = publication(manager.read(cx));
         self._manager_observer = Some(cx.observe(&manager, move |_, manager, cx| {
             #[cfg(target_os = "linux")]
             {
-                let next = publication(manager.read(cx), cx);
+                let next = publication(manager.read(cx));
                 if next == last_publication {
                     return;
                 }
@@ -294,6 +297,18 @@ impl Board {
             // Identity and timeline publications still invalidate live cards.
             cx.notify();
         }));
+        #[cfg(target_os = "linux")]
+        {
+            let feed = manager.read(cx).feed.clone();
+            let mut revision = feed.read(cx).typed_revision();
+            self._manager_feed_observer = Some(cx.observe(&feed, move |_, feed, cx| {
+                let next = feed.read(cx).typed_revision();
+                if next != revision {
+                    revision = next;
+                    cx.notify();
+                }
+            }));
+        }
         self.manager = Some(manager);
         if self.active {
             self.refresh(window, cx);

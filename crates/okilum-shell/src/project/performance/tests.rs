@@ -133,6 +133,23 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         0,
         "composer typing must not rebuild sibling Board cards"
     );
+    let renders = board.read_with(visual, |board, _| board.render_calls.get());
+    project.update(visual, |project, cx| {
+        // Native reply batches can publish only Feed without notifying Project.
+        project.feed.update(cx, |feed, cx| feed.apply_native(Changes {
+            rows: vec![Arc::new(TurnRow {
+                key: RowKey { thread: "mcp:fixture-manager".into(), item: "item-199-5".into() },
+                local: true,
+                item: Arc::new(json!({"id":"item-199-5","threadId":"mcp:fixture-manager","ordinal":1199,"type":"assistant_message","status":"completed","runId":"run-199","text":format!("## Updated synthetic progress\n\n{}", "A realistic paragraph wraps within the Manager reading column. ".repeat(8))})),
+            })],
+            ..Default::default()
+        }, &[], cx));
+    });
+    visual.run_until_parked();
+    assert!(
+        board.read_with(visual, |board, _| board.render_calls.get()) > renders,
+        "cached Board must observe a real Feed source publication without a parent notify"
+    );
     // Native probes settle the pointer before timing. Match that here: GPUI
     // deliberately refreshes every cached view when keyboard modality changes
     // back to mouse after the Escape check above.
