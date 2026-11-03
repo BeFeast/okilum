@@ -138,8 +138,9 @@ check=75s. The suite then ran for more than 394s with all reported tests passing
 before the fifteen-minute `check` deadline killed it. The hosted 258.19s runtime
 is from different hardware and cannot size this runner's budget.
 
-`check` retains every pre-#2434 command and its fifteen-minute timeout. The new
-`shell-full` job queues after `check`, owns a separate twenty-minute execution
+`check` retains every pre-#2434 command. The initial fifteen-minute check
+and twenty-minute shell budgets described here are superseded by the additive
+watchdog budgets below. `shell-full` queues after `check`, owns a separate execution
 budget, and uses the existing fast runner, slot locks, stable sources, compiler
 flags and three compiler workers. Its locked `cargo test --no-run` command resolves
 test dependencies even if it gets a different slot. Inventory and the unfiltered
@@ -172,34 +173,53 @@ a successful command cannot leave background children running. Logs contain one
 plus start/end lines with actual elapsed seconds. Cleanup that needs KILL after a
 parent has already exited emits `TEST_GROUP_KILL` with the group and limit.
 
-Compilation and execution have separate shell budgets; the enclosing deadlines
-include compilation/downloads and leave room below the unchanged job
-ceilings (check 15 min, shell-full 20 min, sync-source-sharing 15 min):
+Compilation and execution have separate shell budgets. Every enclosing deadline
+covers the sum of its children plus 60 s setup/cleanup overhead; job ceilings
+cover all bounded steps plus 90 s checkout/toolchain/final-cleanup margin.
+Job ceilings are now check 45 min, shell-full 35 min, sync-source-sharing 30 min.
+These are ceilings for slow progressing work; a hung phase is still killed by
+its own original deadline plus at most 30 s cleanup:
 
 | Scope | Limit | Basis / margin |
 | --- | ---: | --- |
 | CI tooling Python discovery | 180 s | Recent green baldr runs: 45.595–81.114 s; current main run 21861 was still progressing when its old 120 s step expired. Step ceiling is now 4 min, including the 30 s cleanup grace. |
 | Releases / updater Python discovery | 90 s each | Recent green runs: at most 4.802 / 0.107 s; existing 2 min step ceilings retained. |
-| Entire fast-local check / locked fast.sh | 720 / 660 s | Current-head check 409 / 407 s (21840); main core-invalidation trials above reached 570.45 s. Locked budget adds ~90 s to that larger sample; outer adds 60 s for slot/source/cache setup. |
-| Check build / workspace test compilation | 540 s each | Loaded build 300 s in 20289; workspace check 324.35 s in the main probe above. Margins 240 / 215 s. The shared gate still bounds their sum. |
+| Entire fast-local check / locked fast.sh | 2100 / 2040 s | 300 + 540 + 540 + 120 + 120 + optional 360 = 1980 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. Optional Live Preview is included conservatively. |
+| Check build / workspace test compilation | 540 s each | Loaded build 300 s in 20289; workspace check 324.35 s in the main probe above. Margins 240 / 215 s. Both phases may consume their full limits. |
 | Channel tests (including compilation) | 300 s | Cold appimage dependency variant took 126.62 s in the main probe; recent warm phases 0–4 s. |
 | Paste inventory / paste tests | 120 s each | Recent green Cargo compilation/listing at most 1.11 s; parsing execution at most 0.07 s. These small commands retain their existing caps. |
-| Entire fast-local shell / locked shell-full.sh | 1140 / 1110 s | Longest of twelve successful PR samples: 1044.19 s from slot admission to tests complete (21766), including 236 s compile/list + 805 s execution. |
-| Shell compilation only | 840 s | Historical 335 s compile (20932), recent successful compile/list 180–307 s, and normal compilation censored at 360 s by the broken watchdog (21840). At least 2.5x the complete 335 s measurement; no execution timer runs during compilation. |
+| Entire fast-local shell / locked shell-full.sh | 1980 / 1920 s | 840 + 30 + 990 = 1860 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. The 35 min job adds 120 s for setup and cleanup. |
+| Shell compilation only | 840 s | Historical 335 s compile (20932), recent successful compile/list 180–307 s, and normal compilation censored at 360 s by the broken watchdog (21840). Run 21877 completed compilation in 503.870 s, leaving 336 s headroom; no execution timer runs during compilation. |
 | Shell inventory only / unfiltered execution | 30 / 990 s | Inventory after Cargo's finished marker: 0.119–0.368 s; successful execution phases 445–805 s. Runtime margin is 185 s above the loaded maximum. Neither command invokes Cargo. |
-| Entire sync-local entrypoint | 840 s | Bounds lock, vendor preparation and both groups together below the 15 min job ceiling. |
+| Entire sync-local entrypoint | 1440 s | 600 s lock + 120 s setup + 60 s verification + 480 s sharing + 120 s policy = 1380 s, plus 60 s overhead. The 30 min job reserves 360 s beyond the group. |
 | Sync target lock / vendor setup / verification | 600 / 120 / 60 s | Preserve the existing lock wait for concurrent jobs; the outer scope bounds the combined wait/setup/tests. |
 | Sync source sharing (two concurrent trials) | 480 s | See same-runner measurements below; nearly 2x the longest complete observed sync step. |
 | Sync network policy | 120 s | ~51 s test execution in the measured loaded run, plus compile/setup margin. |
 
-Budgets are ceilings, not additive reservations. A shell compile near its own
-840 s cap cannot also consume the full 990 s runtime allowance inside a 20 min
-job. The locked shell cap leaves 30 s for descendant cleanup before the outer
-1140 s cap; that outer cap plus its 30 s grace leaves 30 s below the job ceiling
-for checkout/toolchain preparation. The known 1044 s green run fits; the old
-1020 s cap did not. An arbitrarily cold build plus a slow suite can still exceed
-the unchanged job ceiling. This change does not claim a performance improvement
-or a fleet p95 from these observational samples.
+Run [21877](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21877/jobs/1/attempt/1)
+exposed the old non-additive design: compilation completed in 503.870 s, listing
+in 0.246 s, and unfiltered tests were still progressing after ~596 s when the
+1110 s aggregate watchdog expired. Their own 990 s deadline had not fired.
+That aggregate cap is removed by resizing, rather than tightening any phase.
+The slowest measured green test execution remains 805 s (run 21766), so 990 s
+retains 185 s (23%) headroom. Compilation retains 336 s above the loaded 504 s
+measurement. These observations do not establish a fleet p95.
+
+`test_fast_budgets.py` parses the actual workflow and scripts, follows both
+fast-local modes and the sync wrapper, includes the sync lock wait and optional
+Live Preview, and enforces each aggregate >= sum(children) + 60 s. Step ceilings
+include the supervisor's 30 s cleanup; job ceilings include all bounded steps
+and another 90 s for setup/final cleanup. Mutation controls reject the old
+aggregate limits, growth of every child phase/lock, and insufficient step/job
+ceilings. The invariant test fails against the pre-fix limits.
+
+The check job's current bounded steps consume 4 + 2 + 2 min Python step ceilings
+plus 2100 + 30 s for fast-local, leaving 90 s in 45 min. If #2536's three 5 min
+Python steps land second, the same invariant requires raising check to 55 min;
+its certification checkout/concurrency lines are independent of this fix.
+The historical host-level 20 min runner setting above is not changed by this PR.
+If it is still enforced, it can truncate the larger workflow budgets and must be
+adjusted by the runner owner; phase watchdogs remain independent of that setting.
 
 ### Resizing evidence, PR #2510
 

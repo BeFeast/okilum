@@ -478,8 +478,8 @@ class WorkflowContract(unittest.TestCase):
         self.assertEqual(data['jobs']['shell-full']['needs'], ['check'])
         # Certification and PR admission share the same bounded test entrypoints.
         for name, command in [
-            ('check', 'fast-local-check 720 bash scripts/ci/fast-local.sh'),
-            ('shell-full', 'fast-local-shell-full 1140 bash scripts/ci/fast-local.sh shell-full'),
+            ('check', 'fast-local-check 2100 bash scripts/ci/fast-local.sh'),
+            ('shell-full', 'fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full'),
         ]:
             step = data['jobs'][name]['steps'][-1]
             self.assertNotIn('if', step)

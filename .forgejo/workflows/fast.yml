@@ -18,8 +18,8 @@ jobs:
     # Dedicated warm runner for main certification only.
     # Workers validate their own exact HEAD through GitHub agent checks.
     runs-on: fast-linux
-    # Core changes rebuild the desktop AND workspace test targets (#2378).
-    timeout-minutes: 15
+    # Additive phase budgets, Python steps, setup and descendant cleanup.
+    timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -78,16 +78,15 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/test-group.sh fast-local-check 720 bash scripts/ci/fast-local.sh
+          bash scripts/ci/test-group.sh fast-local-check 2100 bash scripts/ci/fast-local.sh
 
   shell-full:
     # Full runtime coverage never occupies a PR admission slot.
     needs: [check]
     runs-on: fast-linux
-    # Run 20932: test compilation 335s + >394s execution before check timed out.
-    # Give this job the runner's full 20m ceiling; record two loaded runs before
-    # adding its reporting context to main protection (docs/fast-runner.md).
-    timeout-minutes: 20
+    # 840s compile + 30s list + 990s tests + nested setup/cleanup margins.
+    # Run 21877 compiled for 504s before progressing tests lost their budget.
+    timeout-minutes: 35
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -137,7 +136,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/test-group.sh fast-local-shell-full 1140 bash scripts/ci/fast-local.sh shell-full
+          bash scripts/ci/test-group.sh fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full
 
   certification-status:
     # Beta gates on check alone: report and dispatch as soon as it finishes,
@@ -183,7 +182,7 @@ jobs:
     needs: [check]
     if: inputs.certification_source == ''
     runs-on: fast-linux
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
@@ -203,7 +202,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/test-group.sh sync-local 840 bash scripts/ci/sync-source-sharing-fast.sh
+          bash scripts/ci/test-group.sh sync-local 1440 bash scripts/ci/sync-source-sharing-fast.sh
       - name: Reject and reap surviving job fixture daemons
         if: always()
         run: |

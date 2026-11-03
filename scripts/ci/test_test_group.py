@@ -128,17 +128,17 @@ class TestGroup(unittest.TestCase):
                 lock = root / '.cache/okilum-sync-source-sharing/gate.lock'
                 self.assertEqual(subprocess.run(['flock', '-n', str(lock), 'true']).returncode, 0)
 
-    def test_workflow_bounds_setup_and_keeps_job_budgets(self):
+    def test_workflow_bounds_setup_with_additive_job_budgets(self):
         workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         for command in [
-            'fast-local-check 720 bash scripts/ci/fast-local.sh',
-            'fast-local-shell-full 1140 bash scripts/ci/fast-local.sh shell-full',
-            'sync-local 840 bash scripts/ci/sync-source-sharing-fast.sh',
+            'fast-local-check 2100 bash scripts/ci/fast-local.sh',
+            'fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full',
+            'sync-local 1440 bash scripts/ci/sync-source-sharing-fast.sh',
         ]:
             self.assertIn('bash scripts/ci/test-group.sh ' + command, workflow)
-        self.assertIn('timeout-minutes: 15', workflow.split('  check:', 1)[1].split('  shell-full:', 1)[0])
-        self.assertIn('timeout-minutes: 20', workflow.split('  shell-full:', 1)[1].split('  sync-source-sharing:', 1)[0])
-        self.assertIn('timeout-minutes: 15', workflow.split('  sync-source-sharing:', 1)[1])
+        self.assertIn('timeout-minutes: 45', workflow.split('  check:', 1)[1].split('  shell-full:', 1)[0])
+        self.assertIn('timeout-minutes: 35', workflow.split('  shell-full:', 1)[1].split('  sync-source-sharing:', 1)[0])
+        self.assertIn('timeout-minutes: 30', workflow.split('  sync-source-sharing:', 1)[1])
 
 
 if __name__ == '__main__':
