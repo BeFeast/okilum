@@ -1006,7 +1006,7 @@ impl Actions {
         use crate::note_paste::offer::PasteOffer;
         let offer = cx
             .try_global::<crate::note_paste::ManagedNoteClipboard>()
-            .and_then(|clipboard| clipboard.0.read_chat_offer().ok());
+            .and_then(|clipboard| clipboard.0.read_chat_offer_in_command(cx).ok());
         let sources = match offer {
             Some(PasteOffer::Files(paths)) => Some(
                 paths

@@ -59,3 +59,22 @@ Preview failure keeps the completed attachment and text intact and offers
 **Retry preview**; it never uploads again. Preview caches are scoped to the
 exact draft row, project/thread generation and native client. Unfinished local
 sources show **Needs reselect** with **Select again** and **Remove**.
+
+Linux chat clipboard reads run in the paste action so GPUI can supply self-owned
+pixels/files and unsupported-compositor fallbacks. Explicit `text/uri-list` and
+GNOME `x-special/gnome-copied-files` flavors attach files; plain pasted paths stay
+text. PNG, JPEG, GIF and WebP inputs retain their original encoded bytes from
+preview through upload and Retry. Unsupported image formats are rejected visibly
+instead of being transcoded or uploaded as generic files. Oversized images name
+the 10 MiB limit before requesting an upload URL.
+
+`project::native::actions::image_delivery_tests` drives the actual chooser button, screenshot
+paste, typed copied-file paste and file-drop handlers through binary HTTP upload
+and native Send. Its fixture provider resolves the dispatched asset ID to the
+captured upload body. Retry changes the external source file and verifies that
+the original captured bytes reach the provider once. Reopened acknowledged
+journals and connection refresh do not upload or dispatch again. Real T3/native
+Linux acceptance uses `scripts/qa/manager-image-provider.py` in an isolated profile;
+its receipts hash the bytes received at the provider's stdio boundary, separately
+from the upload proxy and history downloads. Never configure it in a working T3
+profile or pass it a real model session.

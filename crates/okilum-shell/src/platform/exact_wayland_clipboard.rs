@@ -131,6 +131,12 @@ pub(super) fn receive_selection(
         if mimes.iter().any(|mime| mime == "text/uri-list") {
             requested.push("text/uri-list");
         }
+        if mimes
+            .iter()
+            .any(|mime| mime == "x-special/gnome-copied-files")
+        {
+            requested.push("x-special/gnome-copied-files");
+        }
         if let Some(image) = [
             "image/png",
             "image/jpeg",
