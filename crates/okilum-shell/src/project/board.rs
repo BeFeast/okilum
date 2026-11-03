@@ -852,6 +852,9 @@ impl Board {
                     .w_full()
                     .min_w_0()
                     .h_auto()
+                    // The title owns a complete full-width block. Do not ask
+                    // flexbox for its min-content height before the real width.
+                    .block()
                     .p_3()
                     .child(
                         // Natural block flow needs one width-constrained pass;
