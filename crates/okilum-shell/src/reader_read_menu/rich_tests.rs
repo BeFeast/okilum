@@ -193,13 +193,19 @@ fn markdown_copy_uses_a_partial_rendered_selection_instead_of_the_document(
     f.pick("read-menu-Copy as Markdown");
     assert_eq!(f.clipboard(), markdown);
     select(&mut f);
+    f.visual.simulate_keystrokes("secondary-c");
+    f.visual.run_until_parked();
+    let plain_copy = f.clipboard();
+    // The existing keyboard Copy trims the renderer's final block separator;
+    // the explicit context-menu snapshot intentionally keeps it.
+    assert_eq!(plain_copy, plain.trim_end_matches('\n'));
     f.seed_clipboard();
     f.visual.simulate_keystrokes("secondary-shift-c");
     f.visual.run_until_parked();
     assert_eq!(f.clipboard(), markdown);
     f.visual.simulate_keystrokes("secondary-c");
     f.visual.run_until_parked();
-    assert_eq!(f.clipboard(), plain);
+    assert_eq!(f.clipboard(), plain_copy);
     select(&mut f);
     f.palette_copy(false);
     assert_eq!(f.clipboard(), markdown);
@@ -218,13 +224,17 @@ fn markdown_shortcut_and_palette_match_menu_and_plain_copy_stays_plain(cx: &mut 
 
     f.select_all();
     f.focus_text();
+    f.visual.simulate_keystrokes("secondary-c");
+    f.visual.run_until_parked();
+    let plain_copy = f.clipboard();
+    assert_eq!(plain_copy, plain.trim_end_matches('\n'));
     f.seed_clipboard();
     f.visual.simulate_keystrokes("secondary-shift-c");
     f.visual.run_until_parked();
     assert_eq!(f.clipboard(), markdown);
     f.visual.simulate_keystrokes("secondary-c");
     f.visual.run_until_parked();
-    assert_eq!(f.clipboard(), plain);
+    assert_eq!(f.clipboard(), plain_copy);
 
     f.select_all();
     f.seed_clipboard();
