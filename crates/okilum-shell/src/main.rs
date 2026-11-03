@@ -8442,11 +8442,10 @@ impl Render for Reader {
             .children(sheet_layer)
             .children(dialog_layer)
             .children(notification_layer)
-            .children(
-                self.file_menu
-                    .as_ref()
-                    .map(|(menu, position)| anchored().position(*position).child(menu.clone())),
-            )
+            .children(self.file_menu.as_ref().map(|(menu, position)| {
+                deferred(anchored().position(*position).child(menu.clone()))
+                    .with_priority(gpui_base::POPUP_PRIORITY)
+            }))
             .children(self.render_title_nav_overlay(cx))
             .map(|view| {
                 #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
