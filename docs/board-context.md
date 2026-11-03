@@ -61,7 +61,7 @@ time accompany every timestamped row; note times are the file modification time,
 confirmed build times use publication time, and reports use creation time.
 
 The shell recomputes this projection when source snapshots or binding change.
-Board shows at most four cards initially, with explicit expansion for the rest.
+Board shows at most four cards initially, with explicit paging for the rest.
 An empty projection has no waiting heading or strip. Context source failures show
 one quiet line, retaining successful source values; a failed first read never
 masquerades as an empty waiting group. Next stage remains independently collapsed.

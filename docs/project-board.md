@@ -150,7 +150,7 @@ The **Ждёт тебя** strip (#2533) precedes the columns and contains Реш
 (existing exact-build scenario notes, build label and optional video), and Новое
 (unanswered from-tester/from-oleg reports younger than 24 hours). The optional
 `questions_note` belongs in `ops/board-context.toml`; see [the binding and rules](board-context.md#waiting-for-you-2533).
-The strip initially renders up to four compact cards, with explicit expansion.
+The strip initially renders up to four compact cards, with explicit paging.
 Empty means no group; source failure retains the last snapshot and shows one quiet
 line. Projection work runs on snapshot changes and reuses the existing refresh,
 not a new per-frame scan or poller. Item/stage colours and richer live-agent

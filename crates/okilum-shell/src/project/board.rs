@@ -47,7 +47,7 @@ pub(crate) struct Board {
     next_stage_open: bool,
     columns: columns::State,
     waiting: okilum_t3::board::waiting::Projection,
-    waiting_expanded: bool,
+    waiting_page: usize,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -152,7 +152,7 @@ impl Board {
             next_stage_open: false,
             columns: columns::State::default(),
             waiting: Default::default(),
-            waiting_expanded: false,
+            waiting_page: 0,
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
