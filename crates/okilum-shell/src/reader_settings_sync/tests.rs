@@ -10,8 +10,8 @@ use crate::{
 };
 use ::core::prelude::v1::test;
 use gpui::{
-    point, px, size, AppContext, ClickEvent, Context, Modifiers, ScrollHandle, TestAppContext,
-    VisualTestContext, Window,
+    point, px, size, AppContext, ClickEvent, Context, Focusable, Modifiers, ScrollHandle,
+    TestAppContext, VisualTestContext, Window,
 };
 use gpui_component::{input::InputState, Root};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
