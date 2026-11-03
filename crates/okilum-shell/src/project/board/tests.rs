@@ -1317,6 +1317,18 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
         visual.debug_bounds("board-live-status").is_some(),
         "source failure has a quiet inline status, not only a popover"
     );
+    let center = visual.debug_bounds("project-board").unwrap();
+    let status = visual.debug_bounds("board-live-status").unwrap();
+    let columns = visual.debug_bounds("board-columns").unwrap();
+    assert!(
+        columns.top() <= center.top() + px(20.),
+        "source error must not restore a header above the Board"
+    );
+    assert!(
+        status.bottom() <= center.bottom() && status.top() >= center.bottom() - px(32.),
+        "quiet source line remains at the visible lower edge"
+    );
+
     board.update(visual, |board, cx| {
         assert_eq!(board.projection_time(), 100);
         assert!(board.problem(now()).unwrap().contains("HTTP 503"));
