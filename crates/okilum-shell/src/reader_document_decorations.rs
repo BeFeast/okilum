@@ -46,7 +46,13 @@ pub(super) fn install(
             for (index, link) in links.into_iter().enumerate() {
                 column =
                     column.child(node.render_part(&format!("part-{index}"), |s| s, window, cx));
-                let label = node.render_part(&format!("directive-{index}"), |s| s, window, cx);
+                let link_color = brand::palette(cx).link;
+                let label = node.render_part(
+                    &format!("directive-{index}"),
+                    |s| s.with_foreground(link_color),
+                    window,
+                    cx,
+                );
                 if let Some((entity, link)) = entity.as_ref().zip(link) {
                     column = column.child(render_line(
                         entity.read(cx),
@@ -88,7 +94,9 @@ fn parse(
     );
     let imports: Vec<_> = all
         .iter()
-        .filter(|import| base <= import.line.start && import.line.end <= base + source.len())
+        .filter(|import| {
+            base <= import.target_bytes.start && import.target_bytes.end <= base + source.len()
+        })
         .collect();
     if imports.is_empty() {
         return None;
@@ -109,7 +117,7 @@ fn parse(
         .markdown(source.to_owned());
     let mut cursor = 0;
     for (index, import) in imports.iter().enumerate() {
-        let start = import.line.start - base;
+        let start = import.line.start.saturating_sub(base);
         let end = import.line.end - base;
         result = result
             .markdown_part(format!("part-{index}"), source[cursor..start].to_owned())
