@@ -4,7 +4,29 @@ use gpui::{TestAppContext, VisualTestContext};
 use std::collections::BTreeMap;
 
 fn binding() -> Binding {
-    Binding::parse("version: 1\ntitle: Synthetic filter fixture\nissues:\n  - {number: 123, expected: 'Исправить поиск', executor: Editing}\n  - {number: 456, expected: 'Tester report', executor: Tests}\n  - {number: 789, expected: 'An unlabelled task', executor: Editing}\n").unwrap()
+    let binding = Binding::parse(
+        r#"
+version: 1
+title: Synthetic filter fixture
+repository: https://example.invalid/synthetic/board
+issues:
+  - {number: 123, expected: 'Исправить поиск', executor: Editing}
+  - {number: 456, expected: 'Tester report', executor: Tests}
+  - {number: 789, expected: 'An unlabelled task', executor: Editing}
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        binding.issues.len(),
+        3,
+        "the fixture must exercise actual issue scopes"
+    );
+    assert!(
+        binding.card_problems.is_empty(),
+        "invalid fixture: {:?}",
+        binding.card_problems
+    );
+    binding
 }
 fn issues() -> BTreeMap<u64, Issue> {
     [(123, "Исправить ПОИСК", vec!["from-oleg", "bug", "epic: board"]),
