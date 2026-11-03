@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       hourly_source:
-        description: 'Internal source-pinned hourly retry; revalidated against green main'
+        description: 'Internal source-pinned hourly retry; certified first-parent main source'
         required: false
         default: ''
       full_acceptance:
@@ -27,10 +27,10 @@ on:
         required: false
         default: ''
 
-# Cancel superseded hourly runs; explicit signing/archive runs remain isolated.
+# Queue each certified source independently; scheduled coordinators stay short.
 concurrency:
-  group: macos-beta-${{ (github.event_name == 'schedule' || inputs.hourly_source != '') && 'hourly' || github.run_id }}
-  cancel-in-progress: true
+  group: macos-beta-${{ inputs.hourly_source || (github.event_name == 'schedule' && 'hourly') || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   select:
@@ -86,7 +86,7 @@ jobs:
           # The temporary approved M4 window must not follow the workday hosted lane.
           # After expiry the original daily/manual routing is unchanged.
           MACOS_LANE: ${{ steps.select.outputs.local == 'true' && 'local' || vars.OKILUM_MACOS_LANE }}
-          PRODUCT_SOURCE: ${{ inputs.source }}
+          PRODUCT_SOURCE: ${{ inputs.source || steps.select.outputs.source }}
         run: python3 scripts/releases/macos-hosted.py route
 
   release:
@@ -261,6 +261,7 @@ jobs:
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
           PRODUCT_SOURCE: ${{ needs.select.outputs.source }}
+          HOURLY_SOURCE: ${{ inputs.hourly_source || (github.event_name == 'schedule' && needs.select.outputs.source) || '' }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
           OKILUM_SIGNING_IDENTITY: ${{ vars.OKILUM_SIGNING_IDENTITY }}
           OKILUM_NOTARY_PROFILE: ${{ vars.OKILUM_NOTARY_PROFILE }}
@@ -281,7 +282,7 @@ jobs:
 
   shipping-status:
     needs: [select, release, hosted-artifact]
-    if: always() && needs.select.outputs.build == 'true' && needs.select.outputs.source == github.sha && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: always() && needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: bridge
     timeout-minutes: 2
     steps:

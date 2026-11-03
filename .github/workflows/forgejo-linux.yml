@@ -38,7 +38,7 @@ jobs:
           else python3 scripts/releases/hourly_beta.py linux; fi
 
   linux-checks:
-    if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-')) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     # The vendored gpui-kit tests (scripts/ci/vendor-tests.sh) add ~25 min when they run.
     timeout-minutes: 90
@@ -198,4 +198,4 @@ jobs:
         env:
           CHECKS: ${{ needs.linux-checks.result }}
           APPIMAGE: ${{ needs.appimage.result }}
-        run: python3 scripts/ci/gate-step.py --name 'Run full Linux gate' -- bash -ec 'if [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then test "$CHECKS" = skipped; else test "$CHECKS" = success; fi; test "$APPIMAGE" = success'
+        run: python3 scripts/ci/gate-step.py --name 'Run full Linux gate' -- bash -ec 'if { [ "$GITHUB_REF" = refs/heads/main ] || [[ "$GITHUB_REF" = refs/heads/forgejo-linux-pr/hourly-* ]]; } && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then test "$CHECKS" = skipped; else test "$CHECKS" = success; fi; test "$APPIMAGE" = success'

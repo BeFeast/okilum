@@ -28,6 +28,15 @@ class IndependentAcceptance(unittest.TestCase):
             with self.assertRaises(ValueError):
                 handoff.accepted(receipt['run'], receipt['jobs'], SOURCE)
 
+    def test_exact_hourly_source_ref_retains_immutable_run_job_and_artifact_sha(self):
+        receipt, _, _, _ = evidence()
+        receipt['run']['head_branch'] = 'forgejo-linux-pr/hourly-' + SOURCE
+        handoff.accepted(receipt['run'], receipt['jobs'], SOURCE)
+        handoff.artifact.artifact_identity(receipt['artifact'], receipt['run'], SOURCE)
+        for branch in ['forgejo-linux-pr/hourly-' + 'b' * 40, 'forgejo-linux-pr/1']:
+            with self.assertRaises(ValueError):
+                handoff.accepted(dict(receipt['run'], head_branch=branch), receipt['jobs'], SOURCE)
+
     def test_appimage_smoke_survives_failed_linux_aggregate(self):
         receipt, _, _, _ = evidence()
         receipt['run']['conclusion'] = 'failure'
