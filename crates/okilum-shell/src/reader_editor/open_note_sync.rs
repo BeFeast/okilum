@@ -333,7 +333,7 @@ mod tests {
                 let editor = reader.read_with(visual, |r, _| input(r));
                 let caret = original.find("line 40").unwrap();
                 editor.update(visual, |i, cx| {
-                    i.set_selected_range(caret..caret, cx);
+                    i.set_selected_range(caret + 4..caret, cx);
                     i.scroll_line_to_top(35, cx);
                 });
                 visual.run_until_parked();
@@ -348,7 +348,12 @@ mod tests {
                     input(r).read(cx).value().contains("remote line")
                 });
                 editor.read_with(visual, |i, _| {
-                    assert_eq!(i.cursor(), caret, "clean refresh retains the cursor");
+                    assert_eq!(
+                        i.cursor(),
+                        caret,
+                        "clean refresh retains the cursor and selection direction"
+                    );
+                    assert_eq!(i.selected_range(), caret..caret + 4);
                     assert_eq!(i.scroll_offset(), scroll, "clean refresh retains scroll");
                 });
                 reader.read_with(visual, |r, _| {
