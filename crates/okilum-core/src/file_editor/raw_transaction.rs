@@ -93,6 +93,7 @@ impl FileEditor {
                 path: path.clone(),
                 base: String::from_utf8_lossy(&current).into_owned().into(),
                 text: String::from_utf8_lossy(proposed).into_owned().into(),
+                pending_input: false,
             },
             directory,
             on_disk: None,

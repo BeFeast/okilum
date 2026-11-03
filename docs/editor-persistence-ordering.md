@@ -4,7 +4,10 @@ Issue #2404 is the persistence/lifecycle slice of #1621. The input revision is
 canonical. FileEditor retains its immutable Rope together with a shared immutable
 base; copying a draft or a saving handle does not copy either note's bytes.
 Contiguous UTF-8 is materialized at the worker persistence boundary. Recovery JSON
-is backwards compatible, including authored BOM and CRLF bytes.
+keeps the existing fields and adds an optional pending-input flag (absent means
+legacy acknowledged semantics), preserving authored BOM and CRLF bytes. A pending
+Undo equal to its old base remains a recovery intent while an older save may
+publish another revision; it is never pruned as an acknowledged journal.
 
 Each input mutation (including native silent Undo/Redo and IME mutations) replaces
 the pending recovery task and assigns a monotonically increasing generation.
@@ -46,10 +49,16 @@ the menu, not on every editor notification.
 Regression coverage includes reverse recovery completion, canonical save races,
 a late pre-save journal writer, typing during publication, failed recovery/retry,
 close/quit before debounce, crash-style reopen and exact BOM/CRLF bytes. The
-foreground allocator gate observes actual allocations, including the legacy
-String path, at 25 KB, 130 KB and 1 MiB. It requires a bounded largest allocation
+foreground allocator gate scopes actual editor persistence, menu-observer and
+outline snapshot entry points, including the legacy String path, at 25 KB, 130 KB and 1 MiB. It requires a bounded largest allocation
 and total allocated bytes, bounds foreground deallocation calls, and requires a positive control that materializes the
 same native input. The same test is overlaid on the pinned origin/main source for
 a real negative-control run. Core revision counters independently establish no
 flattening/scanning while queuing/copying shared snapshots. These are deterministic
 work bounds, not end-to-end latency measurements or #2405 own-save receipts.
+
+The scoped allocator excludes GPUI test-executor scheduling trace allocations.
+The initial whole-App update probe reported a constant 1.59–1.61 MB per simulated
+update at all three sizes, including a 461448-byte allocation independent of note size. That
+probe included the native input and GPUI executor and did not isolate persistence work; scoped legacy overlays and explicit
+direction-scan counters provide the positive controls for the part-2 boundary.

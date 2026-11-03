@@ -14,7 +14,7 @@ mod paste_jobs;
 mod status;
 mod tables;
 #[cfg(test)]
-mod work;
+pub(crate) mod work;
 mod writing_modes;
 use super::*;
 use crate::platform::labels::Os;
@@ -130,6 +130,7 @@ pub(super) struct Editing {
     save_failed: bool,
     protecting: bool,
     recovery_epoch: u64,
+    draft_stamp: gpui_component::input::projection::SourceStamp,
     recovery_task: Option<Task<()>>,
     save_pending: bool,
     /// The text an autosave is writing on a worker (#1353).
@@ -368,6 +369,7 @@ impl Editing {
             save_failed,
             protecting,
             recovery_epoch,
+            draft_stamp,
             recovery_task,
             save_pending,
             autosaving,
@@ -402,6 +404,7 @@ impl Editing {
             save_failed,
             protecting,
             recovery_epoch,
+            draft_stamp,
             recovery_task,
             save_pending,
             autosaving,
@@ -792,6 +795,8 @@ impl Reader {
             }
         });
         let changed = cx.subscribe(&input, move |this, input, mutation: &SourceMutation, cx| {
+            #[cfg(test)]
+            let _work = work::scope();
             let Some(editing) = &mut this.editing else {
                 return;
             };
@@ -805,7 +810,10 @@ impl Reader {
                 snapshot.text.id(),
             );
             // Retain the exact native revision, including silent Undo/Redo/IME.
-            let write = if mutation.reason
+            editing.draft_stamp = snapshot.stamp;
+            let write = if editing.store.snapshot().same(&value) {
+                editing.store.recovery_write()
+            } else if mutation.reason
                 == gpui_component::input::projection::SourceMutationReason::Reset
             {
                 editing.store.queue_reset_snapshot(value.clone())
@@ -956,7 +964,7 @@ impl Reader {
                 this.save_source(cx);
             }
         });
-        if store.dirty() {
+        if store.has_pending_revision() {
             reader_toast::transient("Unsaved changes restored", window, cx);
         }
         // A click on a Live Preview task checkbox is one source edit and one
@@ -1072,6 +1080,7 @@ impl Reader {
             save_failed: false,
             protecting: false,
             recovery_epoch: 0,
+            draft_stamp: input.read(cx).source_stamp(),
             recovery_task: None,
             save_pending: false,
             autosaving: None,
@@ -1434,6 +1443,7 @@ impl Reader {
         let snapshot = editing.input.read(cx).source_snapshot();
         let text =
             DraftText::from_identified_rope(snapshot.text.rope().clone(), snapshot.text.id());
+        editing.draft_stamp = snapshot.stamp;
         editing.store.queue_snapshot(text);
         let source_changed = editing.store.dirty();
         let draft = editing.store.flush_draft();
@@ -1553,6 +1563,9 @@ impl Reader {
             .update(cx, |input, cx| input.marked_text_range(window, cx))
             .is_some()
         {
+            return;
+        }
+        if !editing.store.has_pending_revision() {
             return;
         }
         let text = editing.store.snapshot();
@@ -2431,6 +2444,8 @@ fn image_embed_start(source: &str) -> Option<usize> {
 /// fenced code blocks, fences included, and table rows (S6c, #1034). A
 /// right-to-left comment in code or a Hebrew table cell must not move its line.
 fn direction_exempt_lines(source: &str) -> Vec<std::ops::Range<usize>> {
+    #[cfg(test)]
+    work::inspect(source.len());
     let mut lines: Vec<std::ops::Range<usize>> = Vec::new();
     let mut push = |line: std::ops::Range<usize>| match lines.last_mut() {
         Some(last) if last.end >= line.start => last.end = last.end.max(line.end),
@@ -2736,10 +2751,13 @@ impl Reader {
             .is_some_and(|status| status.dirty)
     }
 
-    pub(super) fn source_is_dirty(&self, _cx: &App) -> bool {
-        self.editing
-            .as_ref()
-            .is_some_and(|e| e.store.has_pending_revision() || e.conflict_detected || e.protecting)
+    pub(super) fn source_is_dirty(&self, cx: &App) -> bool {
+        self.editing.as_ref().is_some_and(|e| {
+            e.store.has_pending_revision()
+                || e.input.read(cx).source_stamp() != e.draft_stamp
+                || e.conflict_detected
+                || e.protecting
+        })
     }
     pub(super) fn check_move_editors(
         &self,
@@ -5737,6 +5755,7 @@ mod autosave_tests {
             if measured.largest >= 16 * 1024
                 || measured.bytes >= 128 * 1024
                 || measured.frees >= 512
+                || measured.inspected >= 16 * 1024
                 || notified.get() != 0
             {
                 violations.push((bytes, measured, notified.get()));
@@ -5744,7 +5763,10 @@ mod autosave_tests {
             // Positive control runs the legacy value/String snapshot operation
             // under the same allocator; it must exceed the key's bound.
             work::reset();
-            let flat = input.read_with(visual, |i, _| i.value().to_string());
+            let flat = input.read_with(visual, |i, _| {
+                let _work = work::scope();
+                i.value().to_string()
+            });
             let control = work::take();
             assert!(
                 control.largest >= bytes && control.bytes >= 2 * bytes && control.frees > 0,
@@ -5803,6 +5825,7 @@ mod autosave_tests {
         // Keep Draft closes immediately, before the recovery timer can run.
         f.reader
             .update_in(visual, |r, window, cx| r.park_source(window, cx));
+        visual.run_until_parked();
         let recovered = FileEditor::open(&f.file, &path).unwrap();
         assert_eq!(recovered.text(), text);
         assert_eq!(on_disk(&f), "\u{feff}base\r\n");

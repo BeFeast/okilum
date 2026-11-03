@@ -56,6 +56,8 @@ impl Reader {
         let mut cache = self.draft_outline.cache.take().unwrap_or_default();
         self.draft_outline.worker = Some(cx.spawn(async move |this, cx| loop {
             let Ok(Some((input, stamp, source))) = this.update(cx, |this, cx| {
+                #[cfg(test)]
+                let _work = crate::reader_editor::work::scope();
                 let Some(editing) = &this.editing else {
                     this.draft_outline.worker = None;
                     return None;

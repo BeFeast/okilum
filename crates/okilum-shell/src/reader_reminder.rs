@@ -268,6 +268,8 @@ impl MenuFacts {
         markdown: bool,
         cx: &Context<Reader>,
     ) {
+        #[cfg(test)]
+        let _work = crate::reader_editor::work::scope();
         let state = input.read(cx);
         #[cfg(any(unix, windows))]
         let date = {

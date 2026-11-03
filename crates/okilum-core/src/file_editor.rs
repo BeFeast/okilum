@@ -165,6 +165,10 @@ struct Draft {
     base: Text,
     #[serde(with = "draft_text")]
     text: Text,
+    // Equal bytes can still be a newer input intent: Undo to the original
+    // base must survive an older in-flight save publishing another revision.
+    #[serde(default)]
+    pending_input: bool,
 }
 
 // Keep the existing JSON recovery format. Flatten only at the persistence
@@ -240,6 +244,7 @@ struct JournalWrites {
 
 #[derive(Default)]
 struct SaveOrder {
+    latest_requested: u64,
     saved: Option<(Text, Option<DiskStamp>, u64)>,
 }
 
@@ -329,7 +334,7 @@ impl FileEditor {
             Err(error) => return Err(error.into()),
         };
         let draft: Draft = serde_json::from_slice(&bytes)?;
-        if draft.path != path || draft.text == draft.base {
+        if draft.path != path || (!draft.pending_input && draft.text == draft.base) {
             return Ok(false);
         }
         match fs::read_to_string(path) {
@@ -378,7 +383,7 @@ impl FileEditor {
         match fs::read(state.join(format!("{key}.json"))) {
             Ok(bytes) => {
                 let draft: Draft = serde_json::from_slice(&bytes)?;
-                if draft.path != path || draft.text != draft.base {
+                if draft.path != path || draft.pending_input || draft.text != draft.base {
                     bail!("The destination has a saved recovery draft. Choose another name; the draft has been preserved");
                 }
             }
@@ -435,11 +440,12 @@ impl FileEditor {
             if draft.path != path {
                 bail!("Recovery draft belongs to another file");
             }
-            if draft.text == draft.base {
+            if (!draft.pending_input && draft.text == draft.base) || draft.text == base {
                 let draft = Draft {
                     path,
                     text: base.clone(),
                     base,
+                    pending_input: false,
                 };
                 (draft, true)
             } else {
@@ -451,6 +457,7 @@ impl FileEditor {
                 path,
                 text: base.clone(),
                 base,
+                pending_input: false,
             };
             (draft, true)
         };
@@ -484,7 +491,9 @@ impl FileEditor {
     /// Constant-time UI hint. A distinct revision may be an Undo back to the
     /// base; exact byte equality is established by the save/recovery worker.
     pub fn has_pending_revision(&self) -> bool {
-        self.raw_transaction.is_some() || !self.draft.base.same(&self.draft.text)
+        self.raw_transaction.is_some()
+            || self.draft.pending_input
+            || !self.draft.base.same(&self.draft.text)
     }
     pub fn current(&self) -> Result<String> {
         Ok(self.read_current()?.0)
@@ -537,6 +546,7 @@ impl FileEditor {
     /// Retain the native immutable Rope revision without copying/scanning text.
     pub fn queue_snapshot(&mut self, text: Text) -> DraftWrite {
         self.draft.text = text;
+        self.draft.pending_input = true;
         self.advance_generation();
         self.pending_write()
     }
@@ -544,10 +554,16 @@ impl FileEditor {
     /// Establish exact equality here so a clean reload does not appear edited
     /// merely because the native buffer has a different revision identity.
     pub fn queue_reset_snapshot(&mut self, text: Text) -> DraftWrite {
+        let unchanged = !self.draft.pending_input && self.draft.text == text;
         if self.draft.base == text {
             self.draft.base = text.clone();
         }
-        self.queue_snapshot(text)
+        let mut write = self.queue_snapshot(text);
+        if unchanged {
+            self.draft.pending_input = false;
+            write.draft.pending_input = false;
+        }
+        write
     }
     pub fn snapshot(&self) -> Text {
         self.draft.text.clone()
@@ -574,6 +590,9 @@ impl FileEditor {
     }
     pub fn flush_draft(&self) -> Result<()> {
         self.persist()
+    }
+    pub fn recovery_write(&self) -> DraftWrite {
+        self.pending_write()
     }
     pub fn set_text(&mut self, text: String) -> Result<()> {
         self.queue_text(text).persist()
@@ -608,7 +627,7 @@ impl FileEditor {
         }
         let (current, stamp) = self.read_current()?;
         let current: Text = current.into();
-        if self.dirty() {
+        if self.dirty() || self.draft.pending_input {
             if current == self.draft.base {
                 self.on_disk = stamp;
             }
@@ -625,12 +644,14 @@ impl FileEditor {
             let mut write = self.pending_write();
             write.draft.base = current.clone();
             write.draft.text = current.clone();
+            write.draft.pending_input = false;
             // Keep the conflict baseline paired with the visible source until
             // recovery persistence succeeds. A failed refresh must not authorize
             // saving the old visible text over the external version.
             write.persist()?;
             self.draft.base = current.clone();
             self.draft.text = current;
+            self.draft.pending_input = false;
             self.base_generation = self.generation;
         }
         self.on_disk = stamp;
@@ -638,14 +659,26 @@ impl FileEditor {
     }
 
     pub fn reload(&mut self) -> Result<()> {
+        let writes = self.writes.clone();
+        let mut order = writes
+            .save
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Save worker failed; draft retained"))?;
         let (current, stamp) = self.read_current()?;
         let current: Text = current.into();
         self.advance_generation();
+        order.latest_requested = self.generation;
+        let mut write = self.pending_write();
+        write.draft.base = current.clone();
+        write.draft.text = current.clone();
+        write.draft.pending_input = false;
+        write.persist()?;
         self.base_generation = self.generation;
         self.draft.base = current.clone();
         self.draft.text = current;
+        self.draft.pending_input = false;
         self.on_disk = stamp;
-        self.persist()
+        Ok(())
     }
     /// Explicit Keep mine uses the exact version displayed in the conflict UI.
     pub fn keep_mine(&mut self, reviewed: &str) -> Result<Save> {
@@ -688,14 +721,32 @@ impl FileEditor {
     /// `saved_as_queued` with the stamp the saving copy left (`disk_stamp`),
     /// so the next refresh does not read back the text just written.
     pub fn saved_as_queued_at(&mut self, text: String, stamp: Option<DiskStamp>) -> DraftWrite {
-        self.saved_snapshot_queued_at(text.into(), stamp)
+        let text = if self.draft.text == text {
+            self.draft.text.clone()
+        } else {
+            text.into()
+        };
+        self.saved_snapshot_queued_at(text, stamp)
     }
     pub fn saved_snapshot_queued_at(&mut self, text: Text, stamp: Option<DiskStamp>) -> DraftWrite {
+        self.draft.pending_input = !text.same(&self.draft.text);
         self.draft.base = text;
         self.on_disk = stamp;
         self.advance_generation();
         self.base_generation = self.generation;
         self.pending_write()
+    }
+    fn acknowledge_saved(&mut self, stamp: Option<DiskStamp>) -> Result<()> {
+        let previous_base = std::mem::replace(&mut self.draft.base, self.draft.text.clone());
+        self.draft.pending_input = false;
+        self.retire_snapshot_writes();
+        if let Err(error) = self.persist() {
+            self.draft.base = previous_base;
+            self.draft.pending_input = true;
+            return Err(error);
+        }
+        self.on_disk = stamp;
+        Ok(())
     }
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
         let writes = self.writes.clone();
@@ -703,6 +754,10 @@ impl FileEditor {
             .save
             .lock()
             .map_err(|_| anyhow::anyhow!("Save worker failed; draft retained"))?;
+        if self.generation < order.latest_requested {
+            return Ok(Save::Conflict);
+        }
+        order.latest_requested = self.generation;
         if let Some((base, stamp, generation)) = &order.saved {
             if *generation > self.generation {
                 return Ok(Save::Conflict);
@@ -723,7 +778,7 @@ impl FileEditor {
     #[cfg(unix)]
     fn save_before_exchange_locked(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
         self.refuse_unresolved_link_recovery()?;
-        if !self.dirty() {
+        if !self.dirty() && !self.draft.pending_input {
             self.directory.validate(self.draft.path.parent().unwrap())?;
             // Undo or a clean explicit Save can have equal bytes in distinct
             // native revisions. Publish the worker's equality proof by sharing
@@ -741,10 +796,7 @@ impl FileEditor {
         }
         if current == self.proposed_bytes() {
             self.directory.validate(self.draft.path.parent().unwrap())?;
-            self.draft.base = self.draft.text.clone();
-            self.retire_snapshot_writes();
-            self.on_disk = Some(DiskStamp::of(&metadata));
-            self.persist()?;
+            self.acknowledge_saved(Some(DiskStamp::of(&metadata)))?;
             return Ok(Save::Saved);
         }
         if current != self.base_bytes() {
@@ -881,13 +933,8 @@ impl FileEditor {
             return Ok(outcome);
         }
         let stamp = DiskStamp::of(&temp.metadata().context(UnconfirmedSave::Published)?);
-        let previous_base = std::mem::replace(&mut self.draft.base, self.draft.text.clone());
-        self.retire_snapshot_writes();
-        if let Err(error) = self.persist() {
-            self.draft.base = previous_base;
-            return Err(error.context(UnconfirmedSave::Published));
-        }
-        self.on_disk = Some(stamp);
+        self.acknowledge_saved(Some(stamp))
+            .context(UnconfirmedSave::Published)?;
         self.forget_link_recovery(&history);
         // Cleanup is best effort; a retention error never reverses a saved note.
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
@@ -1143,7 +1190,7 @@ impl FileEditor {
     }
     #[cfg(windows)]
     fn save_before_exchange_locked(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
-        if !self.dirty() {
+        if !self.dirty() && !self.draft.pending_input {
             self.directory.validate(self.draft.path.parent().unwrap())?;
             // Undo or a clean explicit Save can have equal bytes in distinct
             // native revisions. Publish the worker's equality proof by sharing
@@ -1160,9 +1207,7 @@ impl FileEditor {
             return Ok(Save::Conflict);
         }
         if current == self.proposed_bytes() {
-            self.draft.base = self.draft.text.clone();
-            self.retire_snapshot_writes();
-            self.persist()?;
+            self.acknowledge_saved(None)?;
             return Ok(Save::Saved);
         }
         let directory = self.directory.pin()?;
@@ -1201,10 +1246,7 @@ impl FileEditor {
             return Ok(Save::Saved);
         }
         crate::source_history::Preimage::finish_windows(&history, &directory, preimage_identity)?;
-        self.draft.base = self.draft.text.clone();
-        self.retire_snapshot_writes();
-        self.on_disk = None;
-        self.persist()?;
+        self.acknowledge_saved(None)?;
         let _ = crate::source_history::prune(self.journal.parent().unwrap());
         Ok(Save::Saved)
     }
@@ -2561,6 +2603,21 @@ mod persistence_order_tests {
     }
 
     #[test]
+    fn issue2404_reload_supersedes_a_save_copy_that_has_not_started() {
+        let (_dir, path, state, mut editor) = fixture();
+        editor.set_text("older save".into()).unwrap();
+        let mut older = editor.save_copy().unwrap();
+        editor.reload().unwrap();
+        assert_eq!(older.save().unwrap(), Save::Conflict);
+        assert_eq!(fs::read(&path).unwrap(), "\u{feff}base\r\n".as_bytes());
+        drop(older);
+        drop(editor);
+        assert!(!FileEditor::open(&path, &state)
+            .unwrap()
+            .has_pending_revision());
+    }
+
+    #[test]
     fn issue2404_clean_save_shares_the_equal_native_revision_after_undo() {
         let (_dir, _path, _state, mut editor) = fixture();
         let source = Text::from_rope(ropey::Rope::from_str("\u{feff}base\r\n"));
@@ -2592,5 +2649,60 @@ mod persistence_order_tests {
             assert!(take_work().flattened_bytes >= bytes - 7);
             pending.persist().unwrap();
         }
+    }
+}
+
+// Kept self-contained so the same crash regression can be overlaid on the
+// pre-fix source as a real data-loss positive control.
+#[cfg(test)]
+mod issue2404_crash_revert_control {
+    use super::*;
+    #[test]
+    fn process_exit_after_older_save_restores_latest_undo() {
+        const CHILD: &str = "OKILUM_2404_CRASH_REVERT_FIXTURE";
+        const BASE: &str = "\u{feff}original שלום\r\n";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(root);
+            let mut editor = FileEditor::open(&root.join("note.md"), &root.join("state")).unwrap();
+            editor
+                .set_text("\u{feff}older save snapshot\r\n".into())
+                .unwrap();
+            let mut older = editor.save_copy().unwrap();
+            // The latest input is an Undo to the original base: byte equality
+            // must not make it disposable while this older save may publish.
+            editor.queue_text(BASE.into()).persist().unwrap();
+            assert_eq!(older.save().unwrap(), Save::Saved);
+            std::process::exit(0);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        let state = dir.path().join("state");
+        fs::write(&path, BASE).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "file_editor::issue2404_crash_revert_control::process_exit_after_older_save_restores_latest_undo"])
+            .env(CHILD, dir.path()).status().unwrap();
+        assert!(status.success(), "crash writer positive control must run");
+        let offered = FileEditor::has_unsaved_draft(&path, &state).unwrap();
+        let mut recovered = FileEditor::open(&path, &state).unwrap();
+        assert_eq!(
+            recovered.text(),
+            BASE,
+            "latest typed Undo must survive an older save and process exit"
+        );
+        assert!(offered, "equal-base input intent is still recoverable");
+        assert_eq!(recovered.refresh_from_disk().unwrap(), Save::Conflict);
+        assert_eq!(
+            recovered.text(),
+            BASE,
+            "refresh must not replace the pending Undo"
+        );
+        assert_eq!(recovered.save().unwrap(), Save::Conflict);
+        assert_eq!(
+            recovered
+                .keep_mine("\u{feff}older save snapshot\r\n")
+                .unwrap(),
+            Save::Saved
+        );
+        assert_eq!(fs::read(&path).unwrap(), BASE.as_bytes());
     }
 }

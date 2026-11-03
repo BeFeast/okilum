@@ -4,16 +4,47 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Work {
+pub(crate) struct Work {
     pub bytes: usize,
     pub largest: usize,
     pub frees: usize,
+    pub inspected: usize,
 }
-thread_local! { static WORK: Cell<Option<Work>> = const { Cell::new(None) }; }
+thread_local! {
+    static WORK: Cell<Option<Work>> = const { Cell::new(None) };
+    static DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+// A whole App update includes native input and GPUI test-executor bookkeeping.
+// Scope app editor/persistence entry points to match this issue's layer. The
+// same scopes are overlaid on origin/main; actual allocations are intercepted.
+pub(crate) struct Scope;
+pub(crate) fn scope() -> Scope {
+    DEPTH.with(|d| d.set(d.get() + 1));
+    Scope
+}
+impl Drop for Scope {
+    fn drop(&mut self) {
+        DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+pub(crate) fn inspect(bytes: usize) {
+    if DEPTH.with(|d| d.get()) == 0 {
+        return;
+    }
+    WORK.with(|slot| {
+        if let Some(mut work) = slot.get() {
+            work.inspected += bytes;
+            slot.set(Some(work));
+        }
+    });
+}
 struct Meter;
 #[global_allocator]
 static ALLOCATOR: Meter = Meter;
 fn charge(bytes: usize) {
+    if !DEPTH.try_with(|d| d.get() > 0).unwrap_or(false) {
+        return;
+    }
     let _ = WORK.try_with(|slot| {
         if let Some(mut work) = slot.get() {
             work.bytes += bytes;
@@ -32,12 +63,14 @@ unsafe impl GlobalAlloc for Meter {
         unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let _ = WORK.try_with(|slot| {
-            if let Some(mut work) = slot.get() {
-                work.frees += 1;
-                slot.set(Some(work));
-            }
-        });
+        if DEPTH.try_with(|d| d.get() > 0).unwrap_or(false) {
+            let _ = WORK.try_with(|slot| {
+                if let Some(mut work) = slot.get() {
+                    work.frees += 1;
+                    slot.set(Some(work));
+                }
+            });
+        }
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
@@ -45,9 +78,9 @@ unsafe impl GlobalAlloc for Meter {
         unsafe { System.realloc(ptr, layout, size) }
     }
 }
-pub(super) fn reset() {
+pub(crate) fn reset() {
     WORK.with(|s| s.set(Some(Work::default())));
 }
-pub(super) fn take() -> Work {
+pub(crate) fn take() -> Work {
     WORK.with(|s| s.replace(None).unwrap())
 }

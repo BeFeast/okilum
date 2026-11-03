@@ -826,6 +826,8 @@ struct RecoveryDraft {
     path: PathBuf,
     base: String,
     text: String,
+    #[serde(default)]
+    pending_input: bool,
 }
 
 // Acknowledged journals with a surviving source are not unsaved drafts. Expire
@@ -859,6 +861,7 @@ fn prune_clean_journals(drafts: &Path, now: u64) -> Result<()> {
                 Sha256::digest(draft.path.as_os_str().as_encoded_bytes())
             );
             if path.file_stem().is_none_or(|stem| stem != key.as_str())
+                || draft.pending_input
                 || draft.text != draft.base
                 || source_missing(&draft.path)
             {
@@ -906,7 +909,9 @@ pub fn drafts(drafts: &Path, root: &Path) -> Result<Listing> {
         match loaded {
             Ok(draft)
                 if draft.path.starts_with(&root)
-                    && (draft.text != draft.base || source_missing(&draft.path))
+                    && (draft.pending_input
+                        || draft.text != draft.base
+                        || source_missing(&draft.path))
                     && fs::read_to_string(&draft.path).map_or(true, |disk| disk != draft.text) =>
             {
                 let created = fs::metadata(&path)?
@@ -2001,5 +2006,41 @@ mod displaced_listing_tests {
             fs::read_to_string(&displaced).unwrap(),
             "unexpected displaced version"
         );
+    }
+}
+
+#[cfg(test)]
+mod pending_input_tests {
+    use super::*;
+    #[test]
+    fn equal_base_input_intent_is_listed_and_never_pruned_as_acknowledged() {
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("note.md");
+        let state = root.join("drafts");
+        fs::create_dir(&state).unwrap();
+        fs::write(&path, "older canonical save").unwrap();
+        let key = format!("{:x}", Sha256::digest(path.as_os_str().as_encoded_bytes()));
+        let journal = state.join(format!("{key}.json"));
+        let mut draft = serde_json::json!({"path": path, "base": "latest Undo", "text": "latest Undo", "pending_input": true});
+        fs::write(&journal, serde_json::to_vec(&draft).unwrap()).unwrap();
+        assert!(drafts(&state, &root)
+            .unwrap()
+            .versions
+            .iter()
+            .any(|v| v.text == "latest Undo" && v.protected));
+        prune_clean_journals(&state, u64::MAX).unwrap();
+        assert!(
+            journal.exists(),
+            "pending input cannot expire as a clean journal"
+        );
+        // Legacy acknowledged equal-base journals retain their established
+        // meaning: a later external canonical edit wins, and pruning is allowed.
+        draft.as_object_mut().unwrap().remove("pending_input");
+        fs::write(&journal, serde_json::to_vec(&draft).unwrap()).unwrap();
+        assert!(drafts(&state, &root).unwrap().versions.is_empty());
+        prune_clean_journals(&state, u64::MAX).unwrap();
+        assert!(!journal.exists(), "legacy clean-journal positive control");
     }
 }
