@@ -11,7 +11,6 @@ use std::{
 };
 
 pub struct PreparedCopy {
-    admission: okilum_write_authority::WriterLease,
     parent: PathBuf,
     chosen_parent: PathBuf,
     name: OsString,
@@ -26,6 +25,9 @@ pub struct PreparedCopy {
     _folder: crate::windows_files::Directory,
     #[cfg(windows)]
     file: Option<tempfile::NamedTempFile>,
+    // Fields drop in declaration order. Release admission after Windows staging
+    // cleanup; the explicit Unix Drop implementation also runs before release.
+    admission: okilum_write_authority::WriterLease,
 }
 
 impl PreparedCopy {
