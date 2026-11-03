@@ -1356,6 +1356,42 @@ mod tests {
     }
 
     #[gpui::test]
+    fn window_mode_switch_keeps_deleted_editor_on_cancel_and_failed_recovery(
+        cx: &mut TestAppContext,
+    ) {
+        let (temp, root) = vault();
+        let (reader, visual) = open(cx, &root, temp.path());
+        let latest = "# Latest unsaved mode-switch draft\n";
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_source(window, cx);
+            r.editing.as_ref().unwrap().set_value(latest, window, cx);
+        });
+        std::fs::remove_file(root.join("Start.md")).unwrap();
+        // Do not deliver the watcher: the transition itself must detect deletion.
+        reader.update_in(visual, |r, window, cx| r.switch_window_mode(window, cx));
+        visual.run_until_parked();
+        assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
+        click(visual, "deleted-note-cancel");
+        reader.read_with(visual, |r, cx| {
+            assert!(!r.single_file);
+            assert_eq!(r.source_text(cx).as_deref(), Some(latest));
+        });
+        let journal = temp.path().join("state/editor-drafts");
+        std::fs::rename(&journal, temp.path().join("saved-drafts")).unwrap();
+        std::fs::write(&journal, "blocked").unwrap();
+        reader.update_in(visual, |r, window, cx| r.switch_window_mode(window, cx));
+        visual.run_until_parked();
+        click(visual, "deleted-note-dont-save");
+        reader.read_with(visual, |r, cx| {
+            assert!(!r.single_file);
+            assert_eq!(r.current_rel, "Start.md");
+            assert_eq!(r.source_text(cx).as_deref(), Some(latest));
+            assert!(r.editing.is_some());
+        });
+        assert!(!root.join("Start.md").exists());
+    }
+
+    #[gpui::test]
     fn dont_save_cannot_leave_when_latest_recovery_write_fails(cx: &mut TestAppContext) {
         let (temp, root) = vault();
         let (reader, visual) = open(cx, &root, temp.path());

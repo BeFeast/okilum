@@ -3461,6 +3461,86 @@ mod entry_tests {
         assert_eq!(cx.windows().len(), 3, "no start screen next to them");
     }
 
+    #[gpui::test]
+    fn switching_one_duplicate_to_quick_keeps_the_other_vault_session(cx: &mut TestAppContext) {
+        use super::super::{reader_open_windows, Opts};
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("notes");
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "# Shared vault\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            install(cx);
+            reader_open_windows::install(state.clone(), cx);
+            open_window(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("note.md".into()),
+                    session_directory: Some(state.clone()),
+                    cache_base_override: Some(fixture.path().join("cache")),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        cx.run_until_parked();
+        let source = cx.update(|cx| reader_of(&root, cx).unwrap().upgrade().unwrap());
+        let weak_source = source.downgrade();
+        cx.update(|cx| duplicate_window(weak_source, Some("note.md".into()), cx).detach());
+        for _ in 0..60 {
+            cx.run_until_parked();
+            if cx.update(|cx| readers(cx).len() == 2) {
+                break;
+            }
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+        }
+        let (other, session, searcher) = cx.update(|cx| {
+            let all = readers(cx);
+            assert_eq!(all.len(), 2, "positive control: a real duplicate window");
+            let other = all.into_iter().find(|reader| *reader != source).unwrap();
+            let session = source.read(cx).shared_session.clone().unwrap();
+            assert!(std::sync::Arc::ptr_eq(
+                other.read(cx).shared_session.as_ref().unwrap(),
+                &session
+            ));
+            let searcher = other.read(cx).searcher.clone().unwrap();
+            (other, session, searcher)
+        });
+        cx.update(|cx| {
+            source
+                .read(cx)
+                .reader_window
+                .update(cx, |_, window, cx| {
+                    source.update(cx, |reader, cx| reader.switch_window_mode(window, cx));
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let source = source.read(cx);
+            assert!(source.single_file);
+            assert!(source.shared_session.is_none() && source.searcher.is_none());
+            let other = other.read(cx);
+            assert!(!other.single_file);
+            assert!(std::sync::Arc::ptr_eq(
+                other.shared_session.as_ref().unwrap(),
+                &session
+            ));
+            assert!(std::sync::Arc::ptr_eq(
+                other.searcher.as_ref().unwrap(),
+                &searcher
+            ));
+            assert_eq!(other.current_rel, "note.md");
+            let saved = reader_open_windows::load_session_windows(&state);
+            assert_eq!(saved.len(), 2);
+            assert_eq!(saved.iter().filter(|(_, quick)| *quick).count(), 1);
+        });
+    }
+
     /// #1357: «Create a new vault…» names a folder in the save dialog,
     /// creates it and opens it as a vault.
     #[gpui::test]

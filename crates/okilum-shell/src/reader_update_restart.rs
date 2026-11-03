@@ -1,4 +1,4 @@
-//! Exact update relaunch targets. Ordinary startup still records vaults only.
+//! Exact update relaunch targets, independent of the ordinary saved session.
 use crate::{reader_open, reader_startup, Opts};
 use gpui::{App, Task};
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ pub(crate) fn capture(cx: &App) -> Vec<Window> {
             } else {
                 Window::Vault {
                     root: reader.vault_root.clone(),
-                    note: Some(reader.current_rel.clone()).filter(|note| !note.is_empty()),
+                    note: Some(reader.selected_file().to_owned()).filter(|note| !note.is_empty()),
                 }
             })
         })
@@ -302,6 +302,20 @@ mod tests {
             opts
         });
         cx.run_until_parked();
+        // A stale ordinary session cannot override explicit update-restart modes.
+        // In particular each vault restore starts at index zero of its own list.
+        std::fs::create_dir_all(base.session_directory.as_ref().unwrap()).unwrap();
+        std::fs::write(
+            base.session_directory
+                .as_ref()
+                .unwrap()
+                .join("open-windows.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "roots": [&root], "notes": ["A.md"], "single_file": [true]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let finished = std::rc::Rc::new(std::cell::Cell::new(None));
         cx.update(|cx| {
             let finished = finished.clone();

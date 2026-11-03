@@ -364,6 +364,7 @@ actions!(
         Dismiss,
         QuickOpen,
         FullTextSearch,
+        SwitchWindowMode,
         RecentOlder,
         RecentNewer,
         PaletteNext,
@@ -3950,15 +3951,7 @@ impl Reader {
                                 .label("Open folder as vault")
                                 .small()
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.start_loading(
-                                        Opts {
-                                            vault: Some(this.vault_root.clone()),
-                                            note: Some(this.current_rel.clone()),
-                                            ..Default::default()
-                                        },
-                                        window,
-                                        cx,
-                                    );
+                                    this.switch_window_mode(window, cx);
                                 })),
                         )
                     })
@@ -3968,6 +3961,7 @@ impl Reader {
                         self.vault_root.clone(),
                         self.selected_file().to_owned(),
                         self.sidebar.show_hidden,
+                        self.window_mode_label(),
                         cx.entity().downgrade(),
                         cx,
                     ))
@@ -6943,6 +6937,7 @@ fn reader_more_menu(
     vault: PathBuf,
     _selected: String,
     show_hidden: bool,
+    mode_label: &'static str,
     reader: WeakEntity<Reader>,
     cx: &App,
 ) -> impl IntoElement {
@@ -7033,6 +7028,7 @@ fn reader_more_menu(
             .separator()
             .menu("Open file…", Box::new(reader_open::OpenFile))
             .menu("Open folder…", Box::new(reader_open::OpenFolder))
+            .menu(mode_label, Box::new(SwitchWindowMode))
             .menu("New Window", Box::new(reader_open::NewWindow))
             .separator()
             .item(
@@ -7794,6 +7790,9 @@ impl Render for Reader {
             ))
             .on_action(cx.listener(|this, _: &QuickOpen, window, cx| {
                 this.open_quick_open(false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &SwitchWindowMode, window, cx| {
+                this.switch_window_mode(window, cx);
             }))
             .on_action(cx.listener(|this, _: &FullTextSearch, window, cx| {
                 this.open_quick_open(true, window, cx)

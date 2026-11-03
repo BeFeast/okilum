@@ -62,6 +62,7 @@ mod tests {
                     PathBuf::new(),
                     String::new(),
                     false,
+                    self.reader.read(cx).window_mode_label(),
                     self.reader.downgrade(),
                     cx,
                 ))
