@@ -220,6 +220,7 @@ pub(super) fn decorate(
     let Some(entity) = reader.upgrade() else {
         return element;
     };
+    let menu_open = entity.read(cx).file_menu.is_some();
     let target = Target::captured(entity.read(cx), Some(url));
     let open = target.clone();
     let menu_reader = reader.clone();
@@ -236,10 +237,12 @@ pub(super) fn decorate(
                     .child(path)
             }))
         })
-        .tooltip({
-            let target = target.clone();
-            let reader = reader.clone();
-            move |window, cx| metadata::tooltip(reader.clone(), target.clone(), window, cx)
+        .when(!menu_open, |el| {
+            el.tooltip({
+                let target = target.clone();
+                let reader = reader.clone();
+                move |window, cx| metadata::tooltip(reader.clone(), target.clone(), window, cx)
+            })
         })
         // A rendered block must claim its own commands before the enclosing
         // editor arms a second, native context menu for the same press.
