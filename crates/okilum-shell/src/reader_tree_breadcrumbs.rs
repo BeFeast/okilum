@@ -705,6 +705,46 @@ mod tests {
             cx.notify();
         });
         visual.run_until_parked();
+        reader.update(visual, |view, cx| {
+            view.tree.set_show_hidden(true);
+            view.sidebar.show_hidden = true;
+            view.refresh_tree_rules(cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert!(
+                view.tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == "Project/CLAUDE.md")
+                    .unwrap()
+                    .agent_shim
+            )
+        });
+        std::fs::write(vault.join("Project/CLAUDE.md"), "# Own rules\n").unwrap();
+        reader.update(visual, |view, cx| {
+            // Source-only changes can reuse the same inventory Arc.
+            view.source_publication_epoch += 1;
+            view.refresh_tree_rules(cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert!(
+                !view
+                    .tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == "Project/CLAUDE.md")
+                    .unwrap()
+                    .agent_shim
+            )
+        });
+        reader.update(visual, |view, cx| {
+            view.tree.set_show_hidden(false);
+            view.sidebar.show_hidden = false;
+            cx.notify();
+        });
+        visual.run_until_parked();
         for enabled in [true, false] {
             let toggle = visual.debug_bounds("sidebar-show-hidden").unwrap();
             visual.simulate_click(toggle.center(), Modifiers::default());
