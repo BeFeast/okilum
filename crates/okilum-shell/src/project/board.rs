@@ -271,7 +271,29 @@ impl Board {
         self.notes_loading = false;
         // This sibling is now cached: retain the live progress/status updates
         // that previously arrived incidentally through Reader redraws.
-        self._manager_observer = Some(cx.observe(&manager, |_, _, cx| cx.notify()));
+        #[cfg(target_os = "linux")]
+        let publication = |manager: &ProjectView, cx: &App| {
+            (
+                manager.identity.clone(),
+                manager.chat.as_ref().map(|chat| chat.thread_id.clone()),
+                manager.feed.read(cx).typed_revision(),
+            )
+        };
+        #[cfg(target_os = "linux")]
+        let mut last_publication = publication(manager.read(cx), cx);
+        self._manager_observer = Some(cx.observe(&manager, move |_, manager, cx| {
+            #[cfg(target_os = "linux")]
+            {
+                let next = publication(manager.read(cx), cx);
+                if next == last_publication {
+                    return;
+                }
+                last_publication = next;
+            }
+            // Draft/cursor/composer notifications are not Board source changes.
+            // Identity and timeline publications still invalidate live cards.
+            cx.notify();
+        }));
         self.manager = Some(manager);
         if self.active {
             self.refresh(window, cx);

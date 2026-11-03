@@ -96,13 +96,43 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         );
     });
     let renders = board.read_with(visual, |board, _| board.render_calls.get());
-    project.update(visual, |_, cx| cx.notify());
+    project.update(visual, |project, cx| {
+        project.identity.as_mut().unwrap().environment_id = "fixture-updated".into();
+        cx.notify();
+    });
     visual.run_until_parked();
     assert!(
         board.read_with(visual, |board, _| board.render_calls.get()) > renders,
         "positive control: cached Board retains Manager status/progress publications"
     );
     let feed = project.read_with(visual, |project, _| project.feed.clone());
+    // Reader-mounted typing must keep the existing inner Feed cache (#2410).
+    // Wrapping all of Manager in another cached view forces a subtree refresh
+    // and silently defeats that boundary, unlike a standalone ProjectView test.
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    feed.read_with(visual, |feed, _| feed.row_calls.set(0));
+    board.read_with(visual, |board, _| board.card_calls.set(0));
+    visual.simulate_keystrokes("y");
+    visual.run_until_parked();
+    assert!(
+        project.read_with(visual, |project, cx| project
+            .compose
+            .read(cx)
+            .value()
+            .ends_with("xy")),
+        "positive control: real composer typing"
+    );
+    assert_eq!(
+        feed.read_with(visual, |feed, _| feed.row_calls.get()),
+        0,
+        "composer typing must not rebuild history"
+    );
+    assert_eq!(
+        board.read_with(visual, |board, _| board.card_calls.get()),
+        0,
+        "composer typing must not rebuild sibling Board cards"
+    );
     // Native probes settle the pointer before timing. Match that here: GPUI
     // deliberately refreshes every cached view when keyboard modality changes
     // back to mouse after the Escape check above.

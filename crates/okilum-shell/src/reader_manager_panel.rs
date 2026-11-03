@@ -842,14 +842,7 @@ impl Reader {
             .is_some_and(|p| p.manager == Manager::NotStarted)
         {
             if let Some(project) = &self.project {
-                return div()
-                    .size_full()
-                    .child(
-                        project
-                            .clone()
-                            .cached(StyleRefinement::default().size_full()),
-                    )
-                    .into_any_element();
+                return div().size_full().child(project.clone()).into_any_element();
             }
         }
         #[cfg(target_os = "macos")]
@@ -858,14 +851,7 @@ impl Reader {
         }
         #[cfg(not(target_os = "macos"))]
         if let Some(project) = &self.project {
-            return div()
-                .size_full()
-                .child(
-                    project
-                        .clone()
-                        .cached(StyleRefinement::default().size_full()),
-                )
-                .into_any_element();
+            return div().size_full().child(project.clone()).into_any_element();
         }
         let _ = cx;
         div().p_4().child("Loading manager…").into_any_element()
