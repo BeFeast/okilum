@@ -87,6 +87,20 @@ jobs:
         run: |
           cargo fmt --check
           cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
+      - name: Issue 2446 same-runner red green stress
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: |
+          source scripts/ci/test-nofile.sh
+          python3 scripts/ci/investigation-stress-evidence.py
+      - name: Upload issue 2446 stress evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: investigation-stress-evidence
+          path: |
+            investigation-stress-evidence/*.log
+            investigation-stress-evidence/summary.json
       - name: Run complete okilum-core suite offline
         env:
           CARGO_NET_OFFLINE: 'true'
