@@ -48,7 +48,7 @@ pub(super) struct ImageCommand {
 pub(super) fn open_modifier(os: platform::labels::Os, modifiers: Modifiers) -> bool {
     match os {
         platform::labels::Os::Mac => modifiers.platform,
-        _ => modifiers.control,
+        _ => modifiers.control || modifiers.platform,
     }
 }
 
@@ -734,7 +734,7 @@ mod tests {
                         ..Default::default()
                     }
                 ),
-                os == platform::labels::Os::Mac
+                true
             );
             assert_eq!(
                 open_modifier(
