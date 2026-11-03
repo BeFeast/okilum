@@ -178,8 +178,16 @@ existing stage-state line. The expected result and issue/PR/build/note/Discuss
 actions are inside the expanded card. Related-note navigation retains the same one-action return to Board. Escape
 still collapses the card. Refresh is automatic and silent.
 There is no new source poll, execution inference, delivery claim or status mapping.
-The human-attention lane, item/stage colours and richer live-agent presentation
-remain separate product work; this slice adds none of them.
+The **Ждёт тебя** strip (#2533) precedes the columns and contains Решить (explicit
+`questions_note` Open bullets and existing unresolved context decisions), Попробуй
+(existing exact-build scenario notes, build label and optional video), and Новое
+(unanswered from-tester/from-oleg reports younger than 24 hours). The optional
+`questions_note` belongs in `ops/board-context.toml`; see [the binding and rules](board-context.md#waiting-for-you-2533).
+The strip initially renders up to four compact cards, with explicit expansion.
+Empty means no group; source failure retains the last snapshot and shows one quiet
+line. Projection work runs on snapshot changes and reuses the existing refresh,
+not a new per-frame scan or poller. Item/stage colours and richer live-agent
+presentation retain their existing independent sources.
 
 ## Accepted look, push 1
 
