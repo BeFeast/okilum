@@ -16,7 +16,13 @@ impl Controller {
                 .all(|c| matches!(c, std::path::Component::Normal(_))),
             "invalid note path"
         );
+        ensure!(root.canonicalize()? == root, "vault root redirected");
         let file = root.join(path);
+        ensure!(
+            file.parent().unwrap().canonicalize()? == file.parent().unwrap()
+                && std::fs::symlink_metadata(&file)?.is_file(),
+            "note path redirected"
+        );
         ensure!(
             std::fs::read_to_string(&file)? == reviewed,
             "conflict changed"
@@ -46,7 +52,7 @@ impl Controller {
         if local["version"].is_null()
             || local["version"] != global["version"]
             || global["deleted"] == true
-            || local["size"].as_u64() != Some(reviewed.len() as u64)
+            || !matches_reviewed_bytes(local, global, reviewed.as_bytes())
         {
             return Ok(None);
         }
@@ -59,6 +65,49 @@ impl Controller {
         self.check()?;
         Ok(name)
     }
+}
+
+/// Syncthing v2.1.x exposes SHA-256(concatenated block SHA-256 hashes).
+/// Its REST response omits rawBlockSize, so check the supported block sizes
+/// against the reported count. Size/mtime alone cannot identify a same-size
+/// external write that Syncthing has not scanned yet.
+fn matches_reviewed_bytes(
+    local: &serde_json::Value,
+    global: &serde_json::Value,
+    bytes: &[u8],
+) -> bool {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use sha2::{Digest, Sha256};
+    if local["size"].as_u64() != Some(bytes.len() as u64)
+        || local["blocksHash"] != global["blocksHash"]
+    {
+        return false;
+    }
+    let Some(hash) = local["blocksHash"]
+        .as_str()
+        .and_then(|h| STANDARD.decode(h).ok())
+    else {
+        return false;
+    };
+    let Some(count) = local["numBlocks"].as_u64().filter(|n| *n > 0) else {
+        return false;
+    };
+    (17..=24).any(|power| {
+        let block_size = 1usize << power;
+        if bytes.len().div_ceil(block_size).max(1) as u64 != count {
+            return false;
+        }
+        let mut digest = Sha256::new();
+        if bytes.is_empty() {
+            digest.update(Sha256::digest([]));
+        } else {
+            for block in bytes.chunks(block_size) {
+                digest.update(Sha256::digest(block));
+            }
+        }
+        let actual: [u8; 32] = digest.finalize().into();
+        actual.as_slice() == hash.as_slice()
+    })
 }
 
 fn origin_name(config: &serde_json::Value, short: Option<&str>, local: &str) -> Option<String> {
@@ -86,6 +135,26 @@ fn origin_name(config: &serde_json::Value, short: Option<&str>, local: &str) -> 
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn issue2486_origin_rejects_unscanned_same_size_content() {
+        let one = json!({"size":12, "numBlocks":1, "blocksHash":"TySb+a4YDBNk45oMorddvkviK/qHGlJanSTJWfALCGc="});
+        assert!(matches_reviewed_bytes(&one, &one, b"remote line\n"));
+        assert!(
+            !matches_reviewed_bytes(&one, &one, b"edited line\n"),
+            "equal size is not a content witness"
+        );
+        let two = json!({"size":131073, "numBlocks":2, "blocksHash":"Fj8vzIwO2Pex2hFd7Nm+U/aHGlR9X5DbHjJGkZVd2NY="});
+        assert!(matches_reviewed_bytes(&two, &two, &vec![b'a'; 131073]));
+        let mut unknown = one.clone();
+        unknown["blocksHash"] = serde_json::Value::Null;
+        assert!(!matches_reviewed_bytes(
+            &unknown,
+            &unknown,
+            b"remote line\n"
+        ));
+        assert!(!matches_reviewed_bytes(&one, &unknown, b"remote line\n"));
+    }
+
     #[test]
     fn issue2486_origin_requires_one_named_remote_device() {
         let config = json!({"devices":[{"deviceID":"AAAAAAA-LOCAL", "name":"Desktop"}, {"deviceID":"BBBBBBB-REMOTE", "name":"Laptop"}]});
