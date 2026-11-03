@@ -806,7 +806,7 @@ impl Reader {
                 filter,
             ),
             &query,
-            aliases,
+            &aliases,
         );
         pinned.truncate(PINNED_SHOWN);
         let current = self.selected_file();
@@ -823,7 +823,7 @@ impl Reader {
                 filter,
             ),
             &query,
-            aliases,
+            &aliases,
         );
         recent.truncate(reader_sidebar::RECENT_SHOWN);
         let (projects, any_project) = if self.single_file || filter == FileFilter::AgentFiles {
@@ -1072,7 +1072,7 @@ impl Reader {
                 let rows = okilum_core::quick_open::search_named_first(
                     &files,
                     &titles,
-                    vault.aliases(),
+                    &vault.aliases(),
                     &query,
                     &recent,
                     &first,

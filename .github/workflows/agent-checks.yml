@@ -4,6 +4,11 @@ on:
   push:
     branches: ['agent-checks/**', 'agent-checks-benchmark/**']
   workflow_dispatch:
+    inputs:
+      publication_baseline:
+        description: 'Optional public main SHA for same-host editor publication controls'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -32,6 +37,7 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
           printf 'source=%s\ncpus=%s\n' "$OKILUM_SOURCE_COMMIT" "$(nproc)"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           lscpu
           free -h
       - name: Install system libraries
@@ -118,6 +124,17 @@ jobs:
         env:
           CARGO_NET_OFFLINE: 'true'
         run: tini -s -- bash scripts/ci/linux-rust-tests.sh
+      - name: Compare editor publication with pinned main on this host
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.publication_baseline != '' }}
+        env:
+          PUBLICATION_BASELINE: ${{ inputs.publication_baseline }}
+          TMPDIR: ${{ runner.temp }}
+          CARGO_NET_OFFLINE: 'true'
+        run: |
+          source scripts/ci/test-nofile.sh
+          [[ "$PUBLICATION_BASELINE" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags https://github.com/BeFeast/okilum.git "$PUBLICATION_BASELINE"
+          python3 scripts/perf/editor/publication-controls.py "$PUBLICATION_BASELINE"
       - name: Save Rust downloads and target cache
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4

@@ -37,6 +37,12 @@ class VerdictTests(unittest.TestCase):
             'Warm Linux Rust suites offline')]
         self.assertEqual(helper.verdict(info, SHA, benchmark=True), 0)
 
+    def test_requested_publication_control_is_a_required_successful_step(self):
+        data = receipt()
+        self.assertEqual(helper.verdict(data, SHA, publication_controls=True), 75)
+        data["jobs"][0]["steps"].append(dict(name="Compare editor publication with pinned main on this host", conclusion="success"))
+        self.assertEqual(helper.verdict(data, SHA, publication_controls=True), 0)
+
     def test_other_head_or_missing_tests_cannot_pass(self):
         self.assertEqual(helper.verdict(receipt(), "b" * 40), 75)
         for index in range(4):

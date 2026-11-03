@@ -3,6 +3,8 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+mod publication;
+pub use publication::Aliases;
 pub mod warm;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -429,7 +431,7 @@ pub struct Note {
     pub title: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Backlink {
     pub path: String,
     pub title: String,
@@ -534,10 +536,11 @@ pub enum Discovery {
     Unreadable,
 }
 
-#[derive(Clone)]
 pub struct Vault {
     /// Explicit quick-view scope: direct document links can be checked without a recursive inventory.
     pub single_file: bool,
+    publication: std::sync::OnceLock<publication::Publication>,
+    publication_id: u64,
     /// No entries were skipped during enumeration or source reads.
     pub inventory_complete: bool,
     /// Enumeration has finished, including a usable partial inventory.
@@ -577,6 +580,30 @@ pub struct Vault {
 }
 
 impl Vault {
+    /// Worker-only equality of the published graph, excluding memoized OS
+    /// lookups. Source bytes live in Snapshot, never in this inventory.
+    fn same_inventory(&self, other: &Self) -> bool {
+        self.root == other.root
+            && self.single_file == other.single_file
+            && self.inventory_complete == other.inventory_complete
+            && self.inventory_scanned == other.inventory_scanned
+            && self.unreadable == other.unreadable
+            && self.cloud_placeholders == other.cloud_placeholders
+            && self
+                .notes
+                .iter()
+                .map(|n| (&n.path, &n.title))
+                .eq(other.notes.iter().map(|n| (&n.path, &n.title)))
+            && self.entries == other.entries
+            && self.suffix_map == other.suffix_map
+            && self.path_map == other.path_map
+            && self.asset_map == other.asset_map
+            && self.occupied_paths == other.occupied_paths
+            && self.non_directory_paths == other.non_directory_paths
+            && self.symlink_paths == other.symlink_paths
+            && self.graph_root == other.graph_root
+    }
+
     pub fn scan(root: &Path) -> Result<Vault> {
         Self::scan_with(root, &mut |_, _| Ok(()))
     }
@@ -819,6 +846,8 @@ impl Vault {
 
         Ok(Vault {
             single_file: false,
+            publication: Default::default(),
+            publication_id: publication::next_id(),
             inventory_complete,
             inventory_scanned: true,
             unreadable,
@@ -981,6 +1010,8 @@ impl Vault {
     pub fn from_note_paths(paths: impl IntoIterator<Item = String>) -> Self {
         let mut vault = Self {
             single_file: false,
+            publication: Default::default(),
+            publication_id: publication::next_id(),
             inventory_complete: false,
             inventory_scanned: false,
             unreadable: Vec::new(),
@@ -1035,12 +1066,14 @@ impl Vault {
     /// Publish a successfully created canonical note before watcher delivery.
     /// Updates only identity; the watcher still owns derived content/backlinks.
     pub fn register_created_note(&mut self, path: &str) {
+        self.freeze_publication();
         self.set_note_identity(&note_path(Path::new(path)), true);
     }
 
     /// Publish a completed local directory creation, including any new parents,
     /// before a lazy folder refresh replaces the visible tree (#1823).
     pub fn register_created_directory(&mut self, path: &str) {
+        self.freeze_publication();
         for directory in Path::new(path)
             .ancestors()
             .take_while(|path| !path.as_os_str().is_empty())
@@ -1159,6 +1192,9 @@ impl Vault {
     /// by suffix instead would answer with whichever unrelated note happened to
     /// end in `ops/signoff`.
     pub fn resolve_from(&self, target: &str, from_note: &str) -> Resolution {
+        if let Some(graph) = self.published_graph() {
+            return self.resolve_published(target, from_note, &graph.alias_map);
+        }
         match self.resolve_from_ref(target, from_note) {
             ResolutionRef::Resolved(path) => Resolution::Resolved {
                 path: path.to_owned(),
@@ -1171,7 +1207,7 @@ impl Vault {
     }
 
     /// Same identity rules as `resolve_from`, with borrowed candidate storage.
-    pub fn resolve_from_ref(&self, target: &str, from_note: &str) -> ResolutionRef<'_> {
+    fn resolve_from_ref(&self, target: &str, from_note: &str) -> ResolutionRef<'_> {
         let _phase = crate::open_diagnostics::phase("wiki_index_lookup");
         let t = target.split(['#', '^']).next().unwrap_or("").trim();
         let key = t.to_lowercase();
@@ -1196,8 +1232,8 @@ impl Vault {
     }
 
     /// Authored aliases, keyed by canonical path. No filesystem I/O.
-    pub fn aliases(&self) -> &std::collections::BTreeMap<String, Vec<String>> {
-        &self.aliases
+    pub fn aliases(&self) -> Aliases<'_> {
+        self.alias_view()
     }
 
     fn rebuild_alias_map(&mut self) {
@@ -1519,6 +1555,9 @@ impl Vault {
     /// files and non-directory ancestors), since they can block fallback.
     /// This reads only the captured inventory, never canonical file contents.
     pub fn link_inventory_revision(&self) -> String {
+        if let Some(graph) = self.published_graph() {
+            return graph.inventory_revision.clone();
+        }
         use sha2::{Digest, Sha256};
         let sorted = |paths: &HashSet<String>| {
             let mut paths: Vec<_> = paths.iter().cloned().collect();
@@ -1542,6 +1581,9 @@ impl Vault {
     /// Backlinks to `rel`, grouped by source note (path order) and in
     /// source-line order within each note. Uncapped (#25).
     pub fn backlinks(&self, rel: &str) -> Vec<Backlink> {
+        if let Some(graph) = self.published_graph() {
+            return graph.backlinks.get(rel).cloned().unwrap_or_default();
+        }
         self.backlink_map.get(rel).cloned().unwrap_or_default()
     }
 

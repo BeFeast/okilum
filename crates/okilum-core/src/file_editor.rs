@@ -240,6 +240,14 @@ struct JournalWrites {
     // Save/close waits for an in-flight autosave and adopts only its confirmed
     // base. A late older worker can never publish over a newer Save.
     save: Mutex<SaveOrder>,
+    // Separate short lock: observing publication never waits for canonical I/O.
+    receipt: Mutex<Option<SaveReceipt>>,
+}
+
+struct SaveReceipt {
+    digest: [u8; 32],
+    base: Text,
+    generation: u64,
 }
 
 #[derive(Default)]
@@ -252,6 +260,8 @@ struct SaveOrder {
 /// every queued write ends; a new session can never race an old journal writer.
 pub struct DraftWrite {
     draft: Draft,
+    // Acknowledgement retires the old base on the journal worker, not the UI.
+    retired: Vec<Text>,
     journal: PathBuf,
     writes: Arc<JournalWrites>,
     generation: u64,
@@ -313,6 +323,14 @@ pub(crate) fn lock_busy(error: &anyhow::Error) -> bool {
 pub enum Save {
     Saved,
     Conflict,
+}
+
+/// Fully prepared on a worker; foreground adoption never reads/materializes source.
+pub struct PublicationRefresh {
+    pub editor: FileEditor,
+    pub outcome: Save,
+    pub conflict: Option<String>,
+    pub replacement: Option<String>,
 }
 
 impl FileEditor {
@@ -536,6 +554,18 @@ impl FileEditor {
     }
     /// The stamp of the file this editor last saw holding its base, for
     /// handing a worker's save back to the UI editor (`saved_as_queued_at`).
+    /// Exact committed bytes, checked against a worker-observed publication.
+    /// A watcher hint or a matching timestamp alone never proves an own save.
+    pub fn owns_publication(&self, digest: &[u8; 32]) -> bool {
+        self.writes.receipt.lock().is_ok_and(|receipt| {
+            receipt.as_ref().is_some_and(|receipt| {
+                &receipt.digest == digest
+                    && (self.draft.base.same(&receipt.base)
+                        || receipt.generation >= self.base_generation)
+            })
+        })
+    }
+
     pub fn disk_stamp(&self) -> Option<DiskStamp> {
         self.on_disk
     }
@@ -600,6 +630,7 @@ impl FileEditor {
     fn pending_write(&self) -> DraftWrite {
         DraftWrite {
             draft: self.draft.clone(),
+            retired: Vec::new(),
             journal: self.journal.clone(),
             writes: self.writes.clone(),
             generation: self.generation,
@@ -621,6 +652,42 @@ impl FileEditor {
     /// Coarse/network filesystems and the current tick additionally compare a
     /// bounded fingerprint against that exact base, including after own saves.
     pub fn refresh_from_disk(&mut self) -> Result<Save> {
+        self.refresh_from_disk_inner(false)
+    }
+
+    /// Renew observation ownership after a superseded refresh reserved a newer
+    /// journal generation. This never adopts its base or authorizes a save.
+    pub fn publication_copy(&mut self) -> Result<Self> {
+        self.generation = self.writes.generation.load(Ordering::Acquire);
+        self.save_copy()
+    }
+
+    /// Background publication refresh. A stale read cannot supersede newer
+    /// typing/recovery. Only this worker's generation may publish its journal.
+    pub fn refresh_publication(mut self) -> Result<Option<PublicationRefresh>> {
+        let original = self.snapshot().id();
+        if self.writes.generation.load(Ordering::Acquire) != self.generation {
+            return Ok(None);
+        }
+        let result = self.refresh_from_disk_inner(true)?;
+        if self.writes.generation.load(Ordering::Acquire) != self.generation {
+            return Ok(None);
+        }
+        let conflict = if result == Save::Conflict {
+            Some(self.current()?)
+        } else {
+            None
+        };
+        let replacement = (self.snapshot().id() != original).then(|| self.text().to_owned());
+        Ok(Some(PublicationRefresh {
+            editor: self,
+            outcome: result,
+            conflict,
+            replacement,
+        }))
+    }
+
+    fn refresh_from_disk_inner(&mut self, guarded: bool) -> Result<Save> {
         self.directory.validate(self.draft.path.parent().unwrap())?;
         if self.on_disk.is_some() && self.stamp_now()? == self.on_disk {
             return Ok(Save::Saved);
@@ -640,7 +707,24 @@ impl FileEditor {
             );
         }
         if current != self.draft.base {
-            self.advance_generation();
+            if guarded {
+                if self
+                    .writes
+                    .generation
+                    .compare_exchange(
+                        self.generation,
+                        self.generation + 1,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_err()
+                {
+                    return Ok(Save::Saved);
+                }
+                self.generation += 1;
+            } else {
+                self.advance_generation();
+            }
             let mut write = self.pending_write();
             write.draft.base = current.clone();
             write.draft.text = current.clone();
@@ -730,11 +814,13 @@ impl FileEditor {
     }
     pub fn saved_snapshot_queued_at(&mut self, text: Text, stamp: Option<DiskStamp>) -> DraftWrite {
         self.draft.pending_input = !text.same(&self.draft.text);
-        self.draft.base = text;
+        let retired = std::mem::replace(&mut self.draft.base, text);
         self.on_disk = stamp;
         self.advance_generation();
         self.base_generation = self.generation;
-        self.pending_write()
+        let mut write = self.pending_write();
+        write.retired.push(retired);
+        write
     }
     fn acknowledge_saved(&mut self, stamp: Option<DiskStamp>) -> Result<()> {
         let previous_base = std::mem::replace(&mut self.draft.base, self.draft.text.clone());
@@ -772,6 +858,14 @@ impl FileEditor {
         let result = self.save_before_exchange_locked(before_exchange);
         if matches!(result, Ok(Save::Saved)) {
             order.saved = Some((self.draft.base.clone(), self.on_disk, requested_generation));
+            let receipt = SaveReceipt {
+                digest: Sha256::digest(self.base_bytes()).into(),
+                base: self.draft.base.clone(),
+                generation: requested_generation,
+            };
+            let retired =
+                std::mem::replace(&mut *self.writes.receipt.lock().unwrap(), Some(receipt));
+            drop(retired); // Never destroy a full old Rope while holding the UI receipt lock.
         }
         result
     }
@@ -2479,6 +2573,71 @@ mod persistence_order_tests {
         fs::write(&path, "\u{feff}base\r\n").unwrap();
         let editor = FileEditor::open(&path, &state).unwrap();
         (dir, path, state, editor)
+    }
+
+    #[test]
+    fn issue2405_receipt_requires_confirmed_exact_bytes_and_survives_worker_adoption() {
+        let (_dir, path, _state, mut editor) = fixture();
+        let bytes = "\u{feff}saved\r\n";
+        let digest: [u8; 32] = Sha256::digest(bytes.as_bytes()).into();
+        assert!(!editor.owns_publication(&digest));
+        editor.queue_text(bytes.into());
+        let mut worker = editor.save_copy().unwrap();
+        assert!(
+            !editor.owns_publication(&digest),
+            "queued text is not a receipt"
+        );
+        assert_eq!(worker.save().unwrap(), Save::Saved);
+        assert!(
+            editor.owns_publication(&digest),
+            "receipt arrives before UI adopts worker"
+        );
+        assert!(!editor.owns_publication(&Sha256::digest(b"different").into()));
+        assert_eq!(fs::read(&path).unwrap(), bytes.as_bytes());
+        fs::write(&path, "external reload").unwrap();
+        editor.reload().unwrap();
+        assert!(
+            !editor.owns_publication(&digest),
+            "reload revokes an older save receipt"
+        );
+    }
+
+    #[test]
+    fn issue2405_superseded_refresh_reservation_does_not_strand_the_ui_generation() {
+        let (_dir, path, state, mut editor) = fixture();
+        let first = editor.publication_copy().unwrap();
+        fs::write(&path, "first external").unwrap();
+        let stale = first.refresh_publication().unwrap().unwrap();
+        // Supersede the completed worker before its foreground adoption. Its
+        // journal reservation is newer than the still-visible editor's generation.
+        fs::write(&path, "latest external").unwrap();
+        let second = editor.publication_copy().unwrap();
+        let latest = second
+            .refresh_publication()
+            .unwrap()
+            .expect("refresh must converge, not retry forever");
+        assert_eq!(latest.editor.text(), "latest external");
+        assert_eq!(latest.outcome, Save::Saved);
+        drop(stale);
+        drop(editor);
+        drop(latest);
+        assert_eq!(
+            FileEditor::open(&path, &state).unwrap().text(),
+            "latest external"
+        );
+    }
+
+    #[test]
+    fn issue2405_stale_refresh_cannot_publish_over_new_input_or_recovery() {
+        let (_dir, path, state, mut editor) = fixture();
+        let stale = editor.save_copy().unwrap();
+        editor.queue_text("latest input".into()).persist().unwrap();
+        fs::write(&path, "external").unwrap();
+        assert!(stale.refresh_publication().unwrap().is_none());
+        drop(editor);
+        let recovered = FileEditor::open(&path, &state).unwrap();
+        assert_eq!(recovered.text(), "latest input");
+        assert!(recovered.dirty());
     }
 
     #[test]

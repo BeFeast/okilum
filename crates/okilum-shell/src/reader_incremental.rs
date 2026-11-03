@@ -110,6 +110,8 @@ impl Reader {
         let mut tasks = self.tasks_index.clone().unwrap_or_default();
         let mut projects = (*self.projects).clone();
         let workbench = self.workbench.clone();
+        let previous_vault = self.vault.clone();
+        let previous_titles = self.backlink_titles.clone();
         let task = cx.background_executor().spawn(async move {
             #[cfg(test)]
             if let Some(hold) = hold { let _ = hold.recv().await; }
@@ -140,7 +142,8 @@ impl Reader {
                 Arc::new(forked.map_err(|error| error.context("Fork the search session"))?)
             };
             let mut sources = std::collections::HashMap::new();
-            let mut titles = std::collections::HashMap::new();
+            let mut titles = (*previous_titles).clone();
+            for path in &batch.removed { titles.remove(path); }
             let mut documents = Vec::new();
             let mut removed: Vec<_> = batch.removed.iter().cloned().collect();
             for path in &batch.affected {
@@ -158,7 +161,16 @@ impl Reader {
             }
             worker_cancel.check()?;
             working.store(false, std::sync::atomic::Ordering::Release);
-            let published = Arc::new(state.vault.clone());
+            let titles = Arc::new(titles);
+            let published = if previous_vault.publish_semantics(&state.vault) {
+                previous_vault
+            } else { Arc::new(state.vault.clone()) };
+            let sources: reader_publication::Sources = sources.into_iter()
+                .map(|(path, raw)| {
+                    let verified = !state.vault.unreadable.iter().any(|entry| entry.path == state.vault.root.join(&path))
+                        && !state.vault.cloud_placeholders.iter().any(|entry| *entry == state.vault.root.join(&path));
+                    (path, reader_publication::Source::new(raw, verified, 0))
+                }).collect();
             let inventory = Arc::new(okilum_core::quick_open::inventory(
                 state.vault.notes.clone(),
                 &state.vault.entries,
@@ -181,6 +193,9 @@ impl Reader {
                     if this.vault_root != root || this.incremental_epoch != epoch {
                         return None;
                     }
+                    let publish_started = std::time::Instant::now();
+                    #[cfg(test)]
+                    let _work = reader_editor::work::scope();
                     match result {
                         Ok((
                             state,
@@ -195,11 +210,15 @@ impl Reader {
                             inventory,
                             candidates,
                         )) => {
+                            this.source_publication_epoch = this.source_publication_epoch.wrapping_add(1);
                             this.tasks_index = Some(tasks);
                             #[cfg(any(unix, windows))]
                             this.reminder_tick(cx);
                             this.projects = projects;
                             this.publish_workbench(workbench, cx);
+                            let graph_changed = !Arc::ptr_eq(&this.vault, &published) || this.vault_publication_revision != published.publication_identity();
+                            this.vault_publication_revision = published.publication_identity();
+                            if graph_changed { this.invalidate_links(); }
                             this.vault = published;
                             this.searcher = Some(searcher.clone());
                             #[cfg(any(unix, windows))]
@@ -208,11 +227,7 @@ impl Reader {
                             }
                             #[cfg(not(any(unix, windows)))]
                             let _ = candidates;
-                            let known = Arc::make_mut(&mut this.backlink_titles);
-                            for path in &batch.removed {
-                                known.remove(path);
-                            }
-                            known.extend(titles);
+                            this.backlink_titles = titles;
                             this.set_backlinks(this.vault.backlinks(&this.current_rel), false);
                             if batch.topology_changed {
                                 this.sync_tree();
@@ -222,15 +237,17 @@ impl Reader {
                             if sources.contains_key(&this.current_rel)
                                 || batch.removed.contains(&this.current_rel)
                             {
-                                this.reconcile_inventory_document(&sources, window, cx);
-                            } else {
-                                this.refresh_link_preparation(cx);
+                                this.reconcile_source_publication(sources.get(&this.current_rel).cloned().as_ref(), graph_changed, window, cx);
                             }
+                            // Heading/body changes can invalidate target evidence
+                            // even when aliases/backlink contexts are unchanged.
+                            this.refresh_link_preparation(cx);
+                            if graph_changed { this.refresh_link_complete(window, cx); }
                             if this.link_notice.as_deref() == Some("Updating search data…") {
                                 this.link_notice = None;
                             }
                             if let Some(trace) = &publish_trace {
-                                trace.event("incremental_ui_publish", serde_json::json!({"duration_ms":requested.elapsed().as_secs_f64()*1000.,"epoch":epoch}));
+                                trace.event("incremental_ui_publish", serde_json::json!({"duration_ms":publish_started.elapsed().as_secs_f64()*1000.,"queued_duration_ms":requested.elapsed().as_secs_f64()*1000.,"epoch":epoch}));
                             }
                             cx.notify();
                             Some((state, searcher, !batch.affected.is_empty() || batch.topology_changed, !batch.affected.is_empty()))
@@ -355,6 +372,119 @@ impl Reader {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[gpui::test]
+    fn issue2405_semantic_own_save_keeps_aliases_backlinks_and_titles_current(
+        cx: &mut TestAppContext,
+    ) {
+        for shared in [false, true] {
+            cx.update(|cx| {
+                crate::test_init(cx);
+                bind_keys(cx);
+            });
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("vault");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(
+                root.join("note.md"),
+                "---\naliases: [Before]\n---\n# Old title\n\n[[Old]]\n",
+            )
+            .unwrap();
+            std::fs::write(root.join("ref.md"), "[[Before]] [[After]]").unwrap();
+            std::fs::write(root.join("Old.md"), "old target").unwrap();
+            std::fs::write(root.join("New.md"), "new target").unwrap();
+            let mut entity = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let reader = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: Some(root.clone()),
+                            note: Some("note.md".into()),
+                            index_dir: Some(temp.path().join("cache")),
+                            session_directory: Some(temp.path().join("state")),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                entity = Some(reader.clone());
+                Root::new(reader, window, cx)
+            });
+            let reader = entity.unwrap();
+            visual.run_until_parked();
+            let original = reader.update_in(visual, |r, window, cx| {
+                if shared {
+                    assert!(r.share_session().is_some());
+                }
+                r.toggle_source(window, cx);
+                r.editing.as_ref().unwrap().set_value(
+                    "---\naliases: [After]\n---\n# New title\n\n[[New]]\n",
+                    window,
+                    cx,
+                );
+                let original = r.vault.clone();
+                assert!(r.save_source(cx));
+                original
+            });
+            visual.run_until_parked();
+            if shared {
+                reader.update_in(visual, |r, window, cx| r.poll_shared_session(window, cx));
+                visual.run_until_parked();
+            }
+            reader.read_with(visual, |r, _| {
+                assert!(
+                    Arc::ptr_eq(&original, &r.vault),
+                    "semantic own saves keep the inventory Arc"
+                );
+                assert_eq!(r.vault.resolve("After").path(), Some("note.md"));
+                assert!(r.vault.resolve("Before").path().is_none());
+                assert!(r.vault.backlinks("Old.md").is_empty());
+                assert_eq!(r.vault.backlinks("New.md").len(), 1);
+                assert_eq!(
+                    r.vault.backlinks("note.md").len(),
+                    1,
+                    "alias referrer is reparsed"
+                );
+                assert_eq!(
+                    r.backlink_titles.get("note.md").map(String::as_str),
+                    Some("New title")
+                );
+            });
+            let (generation, stamp) = reader.update_in(visual, |r, window, cx| {
+                let generation = r.loading.as_ref().unwrap().generation;
+                let stamp = r.editing.as_ref().unwrap().input().read(cx).source_stamp();
+                r.refresh_inventory(
+                    okilum_core::Changes {
+                        rescan: true,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                if shared {
+                    r.poll_shared_session(window, cx);
+                }
+                (generation, stamp)
+            });
+            visual.run_until_parked();
+            reader.read_with(visual, |r, cx| {
+                assert!(
+                    r.loading.as_ref().unwrap().generation > generation,
+                    "positive control: full reconciliation ran"
+                );
+                assert!(
+                    Arc::ptr_eq(&original, &r.vault),
+                    "full reconciliation also retains unchanged inventory ownership"
+                );
+                assert_eq!(
+                    r.editing.as_ref().unwrap().input().read(cx).source_stamp(),
+                    stamp,
+                    "full own-save echoes never reset native input/Undo"
+                );
+            });
+        }
+    }
 
     #[gpui::test]
     fn explicit_save_updates_search_backlinks_without_loading_and_keeps_immutable_base(

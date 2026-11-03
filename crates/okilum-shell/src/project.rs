@@ -684,12 +684,17 @@ impl ProjectView {
         }
         agent_skills::bind(self, reader.downgrade(), root.clone());
         self.resource_vault = Some(root.clone());
+        let mut publication_epoch = reader.read(cx).source_publication_epoch;
         self._resource_observer = Some(cx.observe(reader, move |this, reader, cx| {
             let reader = reader.read(cx);
-            if reader.vault_root != root || Arc::ptr_eq(&published, &reader.vault) {
+            if reader.vault_root != root
+                || (Arc::ptr_eq(&published, &reader.vault)
+                    && publication_epoch == reader.source_publication_epoch)
+            {
                 return;
             }
             published = reader.vault.clone();
+            publication_epoch = reader.source_publication_epoch;
             agent_skills::published(this, cx);
             // A publication represents a reconciled source batch; rebuild rather
             // than infer which imported/renamed source influenced the stack.

@@ -126,6 +126,7 @@ pub(super) struct Candidate {
 pub(super) struct Index {
     vault: Arc<Vault>,
     show_hidden: bool,
+    resolution: (u64, u64),
     /// (lowercase title, lowercase path without `.md`, title length, vault index)
     notes: std::sync::OnceLock<Vec<(String, String, usize, usize)>>,
 }
@@ -133,6 +134,7 @@ pub(super) struct Index {
 impl Index {
     pub(super) fn new(vault: Arc<Vault>, show_hidden: bool) -> Self {
         Self {
+            resolution: vault.resolution_identity(),
             vault,
             show_hidden,
             notes: Default::default(),
@@ -140,7 +142,9 @@ impl Index {
     }
 
     fn current(&self, vault: &Arc<Vault>, show_hidden: bool) -> bool {
-        Arc::ptr_eq(&self.vault, vault) && self.show_hidden == show_hidden
+        Arc::ptr_eq(&self.vault, vault)
+            && self.resolution == vault.resolution_identity()
+            && self.show_hidden == show_hidden
     }
 
     /// The best matches for `query`, written from the note at `from`.
@@ -213,8 +217,8 @@ pub(super) fn target_for(vault: &Vault, path: &str, from: &str) -> String {
         let start = name[..at].rfind('/').map_or(0, |slash| slash + 1);
         let suffix = &name[start..];
         if matches!(
-            vault.resolve_from_ref(suffix, from),
-            okilum_core::vault::ResolutionRef::Resolved(found) if found == path
+            vault.resolve_from(suffix, from),
+            okilum_core::vault::Resolution::Resolved { path: found } if found == path
         ) {
             return suffix.to_owned();
         }
@@ -463,18 +467,20 @@ fn enrich_bound(
     query: &LinkQuery,
     items: Vec<Candidate>,
 ) -> Enriched {
-    use okilum_core::{document_links::HeadingInventory, vault::ResolutionRef};
+    use okilum_core::{document_links::HeadingInventory, vault::Resolution};
     let Kind::Heading(target) = &query.kind else {
         return Enriched {
             rows: items,
             heading: None,
         };
     };
+    let resolved;
     let path = if target.is_empty() {
         from
     } else {
-        match vault.resolve_from_ref(target, from) {
-            ResolutionRef::Resolved(path) => path,
+        resolved = vault.resolve_from(target, from);
+        match &resolved {
+            Resolution::Resolved { path } => path.as_str(),
             _ => return Enriched::default(),
         }
     };
@@ -774,7 +780,7 @@ impl Reader {
     }
 
     /// Recompute the list after the text or the caret changed.
-    pub(super) fn refresh_link_complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_link_complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(test)]
         let _timing = RefreshTiming(std::time::Instant::now());
         let emoji = reader_ui_state::emoji_completion(cx);
@@ -882,6 +888,7 @@ impl Reader {
         publish(state, query.clone(), Vec::new());
         {
             let expected_vault = self.vault.clone();
+            let expected_publication = self.source_publication_epoch;
             let vault = expected_vault.clone();
             let from_expected = from.clone();
             let index = state.index.as_ref().unwrap().clone();
@@ -930,6 +937,7 @@ impl Reader {
                     .await;
                 let _ = this.update_in_own_window(cx, |this, window, cx| {
                     if !Arc::ptr_eq(&this.vault, &expected_vault)
+                        || this.source_publication_epoch != expected_publication
                         || this.current_rel != from_expected
                     {
                         return;
@@ -1033,6 +1041,7 @@ impl Reader {
         editing.link_complete.metadata_page = Some(page.clone());
         let input_entity = editing.input.clone();
         let expected_vault = self.vault.clone();
+        let expected_publication = self.source_publication_epoch;
         let cache = editing.link_complete.metadata_cache.clone();
         editing.link_complete.metadata_task = Some(cx.spawn(async move |this, cx| {
             let request = page.clone();
@@ -1055,6 +1064,7 @@ impl Reader {
                     reader_ui_state::emoji_completion(cx),
                 );
                 if Arc::ptr_eq(&this.vault, &expected_vault)
+                    && this.source_publication_epoch == expected_publication
                     && this.current_rel == page.from
                     && this.sidebar.show_hidden == page.show_hidden
                     && current == page.seen
@@ -1238,6 +1248,7 @@ impl Reader {
             let query = open.query.clone();
             let target = item.target.clone();
             let vault = self.vault.clone();
+            let expected_publication = self.source_publication_epoch;
             let from = self.current_rel.clone();
             let show_hidden = self.sidebar.show_hidden;
             let input_entity = input.clone();
@@ -1258,6 +1269,7 @@ impl Reader {
                     .await;
                 let _ = this.update_in_own_window(cx, |reader, window, cx| {
                     if !Arc::ptr_eq(&reader.vault, &vault)
+                        || reader.source_publication_epoch != expected_publication
                         || reader.current_rel != from
                         || reader.sidebar.show_hidden != show_hidden
                     {
@@ -1847,8 +1859,8 @@ mod tests {
         // Every written target resolves back to the chosen note (positive control).
         for c in &found {
             assert!(matches!(
-                v.resolve_from_ref(&c.target, "Work/Solo.md"),
-                okilum_core::vault::ResolutionRef::Resolved(p) if p == c.path
+                v.resolve_from(&c.target, "Work/Solo.md"),
+                okilum_core::vault::Resolution::Resolved { path: p } if p == c.path
             ));
         }
     }
