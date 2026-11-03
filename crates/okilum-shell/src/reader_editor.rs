@@ -729,7 +729,7 @@ impl Reader {
                 .as_ref()
                 .is_some_and(|editing| editing.input == input)
             {
-                this.refresh_link_complete(cx);
+                this.refresh_link_complete(window, cx);
             }
         });
         let changed = cx.subscribe(&input, move |this, input, _: &SourceMutation, cx| {
@@ -923,6 +923,7 @@ impl Reader {
                                 .table_grid
                                 .update(cx, |grid, cx| grid.claim_paste_edit(stamp, window, cx));
                         }
+                        this.suppress_pasted_completion(cx);
                         eprintln!("Paste: inserted {bytes} bytes");
                         // A file too large to copy was linked where it is; say so.
                         let notice = paste_notice.lock().ok().and_then(|mut slot| slot.take());
