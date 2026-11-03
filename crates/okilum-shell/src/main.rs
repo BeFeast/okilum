@@ -7787,10 +7787,7 @@ impl Render for Reader {
                 && !self.shortcut_sheet.open
             {
                 "Reader ReaderHistory"
-            } else if self.editing.is_none()
-                && self.file_preview.is_none()
-                && !self.selected_file().is_empty()
-            {
+            } else if self.read_copy_available() {
                 "Reader ReaderRead"
             } else {
                 READER_CONTEXT

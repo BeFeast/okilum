@@ -7,13 +7,30 @@ gpui::actions!(reader_read_menu, [CopyAsMarkdown, CopyWithFormatting]);
 pub(super) const COPY_MARKDOWN_KEY: &str = "secondary-shift-c";
 
 impl Reader {
+    pub(super) fn read_copy_available(&self) -> bool {
+        self.editing.is_none()
+            && self.file_preview.is_none()
+            && !self.selected_file().is_empty()
+            && !self.typed_navigation.active.get()
+            && !self.tree_preview.is_open()
+            && self
+                .active_timeline()
+                .is_none_or(|timeline| timeline.selected.is_none())
+    }
+
     pub(super) fn copy_read_markdown(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.read_copy_available() {
+            return;
+        }
         if let Some(snapshot) = snapshot(self, cx) {
             snapshot.copy_format(false, window, cx);
         }
     }
 
     pub(super) fn copy_read_formatted(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.read_copy_available() {
+            return;
+        }
         if let Some(snapshot) = snapshot(self, cx) {
             snapshot.copy_format(true, window, cx);
         }

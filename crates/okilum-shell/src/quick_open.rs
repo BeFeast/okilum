@@ -651,7 +651,10 @@ impl Reader {
         self.close_nav_menu(window, cx);
         self.close_project_switcher(window, cx);
         self.shortcut_sheet.open = false;
-        self.quick_open.read_copy = reader_read_menu::snapshot(self, cx);
+        self.quick_open.read_copy = self
+            .read_copy_available()
+            .then(|| reader_read_menu::snapshot(self, cx))
+            .flatten();
         self.quick_open.open = true;
         self.quick_open.full_text = full_text;
         self.quick_open.scope.open();
@@ -861,8 +864,7 @@ impl Reader {
         }
         let sections = &palette.sections;
         let mut items = Vec::new();
-        if self.editing.is_none() && self.file_preview.is_none() && !self.selected_file().is_empty()
-        {
+        if self.read_copy_available() {
             let query = palette.query.trim().to_lowercase();
             if !query.is_empty() {
                 for (label, item) in [
