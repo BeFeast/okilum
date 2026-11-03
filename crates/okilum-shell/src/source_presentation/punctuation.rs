@@ -25,55 +25,182 @@ pub(super) fn replacements(
     })
 }
 
-/// Production supplies the already retained canonical source index. Quote
-/// admission must not segment every unchanged prose paragraph on each key.
+/// Immutable lexical summaries keep paragraph-wide quote/language decisions
+/// separate from source inspection. An edit re-lexes complete changed logical
+/// lines; pairing the cached events never reads unchanged source bytes.
+#[derive(Clone)]
+pub(super) struct Inventory {
+    rows: Vec<Row>,
+}
+#[derive(Clone)]
+struct Row {
+    range: Range<usize>,
+    blank: bool,
+    russian: Vec<Range<usize>>,
+    events: Vec<Event>,
+}
+#[derive(Clone)]
+struct Event {
+    range: Range<usize>,
+    context: Range<usize>,
+    boundary: bool,
+    kind: EventKind,
+}
+#[derive(Clone, Copy)]
+enum EventKind {
+    Fixed(&'static str),
+    Open(char),
+    Close(char),
+}
+impl Inventory {
+    pub(super) fn new(
+        source: &str,
+        origin: usize,
+        boundary: impl Fn(&Range<usize>) -> bool,
+    ) -> Self {
+        let mut at = origin;
+        let rows = source
+            .split_inclusive('\n')
+            .map(|line| {
+                let row = lex(line, at, &boundary);
+                at += line.len();
+                row
+            })
+            .collect();
+        Self { rows }
+    }
+    pub(super) fn remap(
+        &self,
+        old_lines: Range<usize>,
+        new_lines: &str,
+        edit: &okilum_core::source_projection::revision::Edit,
+        boundary: impl Fn(&Range<usize>) -> bool,
+    ) -> Self {
+        let mut rows: Vec<_> = self
+            .rows
+            .iter()
+            .filter(|r| r.range.end <= old_lines.start)
+            .cloned()
+            .collect();
+        rows.extend(Self::new(new_lines, old_lines.start, boundary).rows);
+        rows.extend(
+            self.rows
+                .iter()
+                .filter(|r| r.range.start >= old_lines.end)
+                .map(|r| {
+                    let map = |r: &Range<usize>| edit.forward(r.start)..edit.forward(r.end);
+                    Row {
+                        range: map(&r.range),
+                        blank: r.blank,
+                        russian: r.russian.iter().map(map).collect(),
+                        events: r
+                            .events
+                            .iter()
+                            .map(|e| Event {
+                                range: map(&e.range),
+                                context: map(&e.context),
+                                ..e.clone()
+                            })
+                            .collect(),
+                    }
+                }),
+        );
+        Self { rows }
+    }
+    pub(super) fn shifted(&self, map: impl Fn(usize) -> usize) -> Self {
+        let range = |r: &Range<usize>| map(r.start)..map(r.end);
+        Self {
+            rows: self
+                .rows
+                .iter()
+                .map(|r| Row {
+                    range: range(&r.range),
+                    blank: r.blank,
+                    russian: r.russian.iter().map(range).collect(),
+                    events: r
+                        .events
+                        .iter()
+                        .map(|e| Event {
+                            range: range(&e.range),
+                            context: range(&e.context),
+                            ..e.clone()
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+    pub(super) fn replacements(
+        &self,
+        eligible: impl Fn(&Range<usize>) -> bool,
+    ) -> Vec<(Range<usize>, &'static str)> {
+        let mut out = Vec::new();
+        for paragraph in self.rows.split(|r| r.blank) {
+            let russian = paragraph
+                .iter()
+                .any(|row| row.russian.iter().any(&eligible));
+            let mut double = None;
+            let mut single = None;
+            for event in paragraph.iter().flat_map(|r| &r.events) {
+                let admitted = event.boundary && eligible(&event.range) && eligible(&event.context);
+                match event.kind {
+                    EventKind::Fixed(glyph) if admitted => out.push((event.range.clone(), glyph)),
+                    EventKind::Open(ch) => {
+                        let pending = if ch == '"' { &mut double } else { &mut single };
+                        *pending = Some((event.range.clone(), admitted));
+                    }
+                    EventKind::Close(ch) => {
+                        let pending = if ch == '"' { &mut double } else { &mut single };
+                        if let Some((open, true)) = pending.take() {
+                            if admitted {
+                                let (left, right) = if ch == '\'' {
+                                    ("‘", "’")
+                                } else if russian {
+                                    ("«", "»")
+                                } else {
+                                    ("“", "”")
+                                };
+                                out.push((open, left));
+                                out.push((event.range.clone(), right));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.sort_by_key(|(range, _)| range.start);
+        out
+    }
+}
+
+/// Production supplies the retained canonical source boundary index.
+#[cfg(test)]
 pub(super) fn replacements_indexed(
     source: &str,
     eligible: impl Fn(&Range<usize>) -> bool,
     boundary: impl Fn(&Range<usize>) -> bool,
 ) -> Vec<(Range<usize>, &'static str)> {
-    let mut out = Vec::new();
-    if !source.contains(['"', '\'']) && !source.contains("--") && !source.contains("...") {
-        return out;
-    }
-    // A blank line resets language and quote pairing, including CRLF notes.
-    let mut paragraph = 0;
-    let mut at = 0;
-    for line in source.split_inclusive('\n') {
-        if line.trim().is_empty() {
-            scan(source, paragraph..at, &eligible, &boundary, &mut out);
-            paragraph = at + line.len();
-        }
-        at += line.len();
-    }
-    scan(
-        source,
-        paragraph..source.len(),
-        &eligible,
-        &boundary,
-        &mut out,
-    );
-    out.sort_by_key(|(range, _)| range.start);
-    out
+    Inventory::new(source, 0, boundary).replacements(eligible)
 }
 
-fn scan(
-    source: &str,
-    paragraph: Range<usize>,
-    eligible: &impl Fn(&Range<usize>) -> bool,
-    boundary: &impl Fn(&Range<usize>) -> bool,
-    out: &mut Vec<(Range<usize>, &'static str)>,
-) {
-    let text = &source[paragraph.clone()];
-    let russian = text.char_indices().any(|(at, ch)| {
-        (('а'..='я').contains(&ch) || ('А'..='Я').contains(&ch) || ch == 'ё' || ch == 'Ё')
-            && eligible(&(paragraph.start + at..paragraph.start + at + ch.len_utf8()))
-    });
-    let mut double = None;
-    let mut single = None;
-    let mut at = paragraph.start;
-    while at < paragraph.end {
-        let tail = &source[at..paragraph.end];
+fn lex(source: &str, origin: usize, boundary: &impl Fn(&Range<usize>) -> bool) -> Row {
+    let global = |r: Range<usize>| origin + r.start..origin + r.end;
+    let mut row = Row {
+        range: origin..origin + source.len(),
+        blank: source.trim().is_empty(),
+        russian: source
+            .char_indices()
+            .filter(|(_, ch)| {
+                ('а'..='я').contains(ch) || ('А'..='Я').contains(ch) || *ch == 'ё' || *ch == 'Ё'
+            })
+            .map(|(at, ch)| global(at..at + ch.len_utf8()))
+            .collect(),
+        events: Vec::new(),
+    };
+    let mut at = 0;
+    while at < source.len() {
+        let tail = &source[at..];
         let ch = tail.chars().next().unwrap();
         let escaped = source[..at]
             .bytes()
@@ -93,68 +220,45 @@ fn scan(
         };
         let range = at..at + len;
         if !escaped {
-            if let Some(glyph) = glyph {
-                if eligible(&range) {
-                    out.push((range, glyph));
-                }
+            let event = if let Some(glyph) = glyph {
+                Some((EventKind::Fixed(glyph), range.clone(), true))
             } else if ch == '"' || ch == '\'' {
-                // Check the complete canonical source, never a suffix starting
-                // at the quote that could hide an attached mark or joiner.
-                let admitted = eligible(&range) && boundary(&range);
-                // Bidi formatting controls affect visual order, not quote
-                // boundaries. Keep every authored byte and pair in logical
-                // source order, including isolates around embedded LTR text.
-                let before = source[paragraph.start..at]
+                let admitted = boundary(&global(range.clone()));
+                let before = source[..at]
                     .graphemes(true)
                     .rev()
                     .find(|cluster| !cluster.chars().all(direction_control))
                     .and_then(|cluster| cluster.chars().next());
-                let after = source[at + len..paragraph.end]
-                    .chars()
-                    .find(|c| !direction_control(*c));
+                let after = source[at + len..].chars().find(|c| !direction_control(*c));
                 let contraction = (ch == '\'')
-                    .then(|| contraction_context(source, &paragraph, &range))
+                    .then(|| contraction_context(source, &(0..source.len()), &range))
                     .flatten();
                 if let Some(context) = contraction {
-                    // Context must belong to the same approved prose span.
-                    // The replacement itself covers only the ASCII apostrophe,
-                    // never a neighbouring letter, mark or bidi control.
-                    if admitted && eligible(&context) {
-                        out.push((range, "’"));
-                    }
+                    Some((EventKind::Fixed("’"), context, admitted))
+                } else if before.is_none_or(|c| !c.is_alphanumeric() && c != '"' && c != '\'')
+                    && after.is_some_and(|c| !c.is_whitespace())
+                {
+                    Some((EventKind::Open(ch), range.clone(), admitted))
+                } else if before.is_some_and(|c| !c.is_whitespace()) {
+                    Some((EventKind::Close(ch), range.clone(), admitted))
                 } else {
-                    let pending = if ch == '"' { &mut double } else { &mut single };
-                    if before.is_none_or(|c| !c.is_alphanumeric() && c != '"' && c != '\'')
-                        && after.is_some_and(|c| !c.is_whitespace())
-                    {
-                        // Keep a rejected opener until its closer: dropping it
-                        // could let that closer start a different, partial pair.
-                        *pending = Some((range, admitted));
-                    } else if before.is_some_and(|c| !c.is_whitespace()) {
-                        if let Some((open, open_admitted)) = pending.take() {
-                            // A pair is one decoration decision. Never emit an
-                            // opener if its closer splits an authored cluster
-                            // or lies in excluded source (and vice versa).
-                            if !open_admitted || !admitted {
-                                at += len;
-                                continue;
-                            }
-                            let (left, right) = if ch == '\'' {
-                                ("‘", "’")
-                            } else if russian {
-                                ("«", "»")
-                            } else {
-                                ("“", "”")
-                            };
-                            out.push((open, left));
-                            out.push((range, right));
-                        }
-                    }
+                    None
                 }
+            } else {
+                None
+            };
+            if let Some((kind, context, boundary)) = event {
+                row.events.push(Event {
+                    range: global(range),
+                    context: global(context),
+                    boundary,
+                    kind,
+                });
             }
         }
         at += len;
     }
+    row
 }
 
 /// The adjacent logical word clusters, including intervening bidi controls.
@@ -202,6 +306,50 @@ mod tests {
         }
         text
     }
+    #[test]
+    fn cached_lines_preserve_cross_line_quotes_and_paragraph_language() {
+        let original =
+            "Begin \"Hello\r\nworld\" -- ...\r\nРусский isn't changed.\r\n\r\nEnd \"English\".";
+        assert_eq!(
+            shown(original, |_| true),
+            "Begin «Hello\r\nworld» — …\r\nРусский isn’t changed.\r\n\r\nEnd “English”."
+        );
+        for replacement in ["English", "Новый", "e\u{301}", "\"next\"", "new\r\nline"] {
+            let start = original.find("Русский").unwrap();
+            let end = start + "Русский".len();
+            let changed = original.replacen("Русский", replacement, 1);
+            let old_lines = start..start + original[start..].find('\n').unwrap() + 1;
+            let new_end = old_lines.end - (end - start) + replacement.len();
+            let bounds = |text: &str| {
+                text.grapheme_indices(true)
+                    .map(|(at, _)| at)
+                    .chain(std::iter::once(text.len()))
+                    .collect::<Vec<_>>()
+            };
+            let old_bounds = bounds(original);
+            let new_bounds = bounds(&changed);
+            let inventory = Inventory::new(original, 0, |r| {
+                old_bounds.contains(&r.start) && old_bounds.contains(&r.end)
+            });
+            let edit = okilum_core::source_projection::revision::Edit {
+                previous: 1,
+                old: start..end,
+                inserted: replacement.len(),
+            };
+            let next = inventory.remap(
+                old_lines.clone(),
+                &changed[old_lines.start..new_end],
+                &edit,
+                |r| new_bounds.contains(&r.start) && new_bounds.contains(&r.end),
+            );
+            assert_eq!(
+                next.replacements(|_| true),
+                replacements(&changed, |_| true),
+                "{replacement:?}"
+            );
+        }
+    }
+
     #[test]
     fn english_russian_and_contractions_keep_authored_bytes() {
         let source = "\"Привет\" -- ...";

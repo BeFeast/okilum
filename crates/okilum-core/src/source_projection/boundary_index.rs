@@ -42,6 +42,7 @@ impl Index {
         Self(join(root, leaf(&text[start..])))
     }
 
+    #[cfg(test)]
     pub(crate) fn update(&self, old: &str, new: &str) -> Self {
         if old == new {
             return self.clone();
@@ -71,6 +72,26 @@ impl Index {
         let (_, right) = split(rest, old.len() - tail - start);
         Self(join(
             join(left, Self::new(&new[start..new.len() - tail]).0),
+            right,
+        ))
+    }
+
+    pub(crate) fn update_edit(
+        &self,
+        old: &super::revision::Text,
+        new: &super::revision::Text,
+        edit: &super::revision::Edit,
+    ) -> Self {
+        if old.same(new) {
+            return self.clone();
+        }
+        let start = old.line_bounds(edit.old.start).start;
+        let end = old.line_bounds(edit.old.end).end;
+        let new_end = end - edit.old.end + edit.new_end();
+        let (left, rest) = split(self.0.clone(), start);
+        let (_, right) = split(rest, end - start);
+        Self(join(
+            join(left, Self::new(&new.slice(start..new_end)).0),
             right,
         ))
     }

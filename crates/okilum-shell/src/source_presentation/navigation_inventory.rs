@@ -45,8 +45,7 @@ impl Input {
     fn same(&self, other: &Self) -> bool {
         self.binding == other.binding
             && self.source.stamp == other.source.stamp
-            && (Arc::ptr_eq(&self.source.text, &other.source.text)
-                || self.source.text == other.source.text)
+            && (self.source.text.same(&other.source.text) || self.source.text == other.source.text)
     }
 }
 

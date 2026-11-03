@@ -8,7 +8,7 @@ fn source(generation: u64, text: &str) -> SourceSnapshot {
             document: 77,
             generation,
         },
-        text: Arc::from(text),
+        text: gpui_component::input::projection::SourceText::from(text),
     }
 }
 fn publication(source: &SourceSnapshot, active: &ActiveSource) -> Publication {
@@ -123,7 +123,7 @@ fn trait_lease_refuses_changed_bytes_stamps_full_active_and_foreign_publication(
     for other in [
         SourceSnapshot {
             stamp: source.stamp,
-            text: Arc::from("# changed\n\nend\n"),
+            text: gpui_component::input::projection::SourceText::from("# changed\n\nend\n"),
         },
         SourceSnapshot {
             stamp: SourceStamp {

@@ -10,7 +10,16 @@ suite() {
     "$@" || failed=1
 }
 suite cargo test -p okilum-appimage --all-features --no-fail-fast
-suite cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-fail-fast
+# Run the source/input acceptance groups independently, so an unrelated native
+# task abort cannot hide their verdict behind an unfinished full shell binary.
+suite cargo test --locked -p okilum-shell --bin okilum source_presentation:: -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum input_anchor_tests:: -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum reader_editor::tables::grid:: -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum reader_editor::lists::key_tests:: -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum reader_outline::tests::draft_1320_ -- --nocapture
+# Preserve assertion diagnostics even if a later native task aborts the process.
+suite cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-fail-fast -- --nocapture
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.
 suite cargo test --locked -p okilum-core --lib unix_publish:: --no-fail-fast
 suite cargo test --locked -p okilum-core --lib file_editor::network_save_tests:: --no-fail-fast

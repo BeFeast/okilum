@@ -91,7 +91,7 @@ impl ProjectionProvider for PreparedProvider {
         // No parse, lookup, authority creation, reveal preparation or indexing.
         // Epoch is owned separately by native ProjectionSession::compose/pin.
         (source.stamp == self.projection.source.stamp
-            && (Arc::ptr_eq(&source.text, &self.projection.source.text)
+            && (source.text.same(&self.projection.source.text)
                 || source.text == self.projection.source.text)
             && active == &self.active)
             .then(|| self.projection.clone() as Arc<dyn SourceProjection>)
@@ -147,7 +147,7 @@ impl SourceProjection for PreparedProjection {
     }
     fn source_boundary(&self, current: &SourceSnapshot, offset: SourceByte) -> Option<bool> {
         if current.stamp != self.source.stamp
-            || (!Arc::ptr_eq(&current.text, &self.source.text) && current.text != self.source.text)
+            || (!current.text.same(&self.source.text) && current.text != self.source.text)
         {
             return None;
         }

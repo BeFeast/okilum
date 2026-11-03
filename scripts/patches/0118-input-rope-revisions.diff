@@ -1,0 +1,749 @@
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+index ce7d65ea..cd748dbd 100644
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -30,6 +30,7 @@ use super::{
+
+ /// Map a current source anchor into the last displayed revision. Positions in
+ /// the replacement map to its old start; unchanged suffixes retain exact bytes.
++#[cfg(test)]
+ fn previous_source_anchor(old: &str, new: &str, offset: usize) -> Option<usize> {
+     if !new.is_char_boundary(offset) { return None; }
+     if old == new { return Some(offset); }
+@@ -2033,20 +2034,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                 && last.presentation_epoch == initial.presentation_epoch() {
+                 return None;
+             }
+-            let previous = last.source_for_anchor(initial.source_stamp())?;
+-            let current_text = initial.text.to_string();
+-            // An edit holds the row where it starts: the rows above it keep
+-            // their place whatever changed height there while the edit was
+-            // laid out (a block drawn raw, a heading's scale), and the caret
+-            // moves on from that row as it would in Source. Holding the caret
+-            // instead scrolled the note by a row on every Enter (#1096), and
+-            // without any anchor an Enter below a tall block jumped (#1621).
+-            if previous.as_ref() != current_text.as_str() {
+-                let mut start = previous.bytes().zip(current_text.bytes())
+-                    .take_while(|(a, b)| a == b).count();
+-                while !previous.is_char_boundary(start) || !current_text.is_char_boundary(start) {
+-                    start -= 1;
+-                }
++            if last.source_stamp.document != initial.source_stamp().document { return None; }
++            let current = initial.source_snapshot();
++            let edit = current.text.edit_steps(current.stamp.generation.checked_sub(last.source_stamp.generation)?)?;
++            // S1: hold the edit's old source row. S2 maps the caret or first
++            // visible source row with the same revision-bound receipt.
++            if !edit.old.is_empty() || edit.inserted != 0 {
++                let start = edit.old.start;
+                 if let Some(offset) = last.project(start, ConcealBias::Left) {
+                     let mut y = last.visible_top;
+                     for (line, line_start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
+@@ -2066,7 +2060,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                 }
+             }
+             let current_offset = initial.cursor();
+-            let old_offset = previous_source_anchor(&previous, &current_text, current_offset)?;
++            let old_offset = edit.backward(current_offset);
+             let offset = last.project(old_offset, ConcealBias::Right)?;
+             let mut y = last.visible_top;
+             for (line, start) in last.lines.iter().zip(&last.visible_line_byte_offsets) {
+@@ -2094,7 +2088,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+                     let screen_y = y + initial.scroll_handle.offset().y;
+                     if screen_y >= px(0.) && screen_y < bounds.size.height {
+                         let old = last.source(projected, ConcealBias::Right)?;
+-                        let current = previous_source_anchor(&current_text, &previous, old)?;
++                        let current = edit.forward(old);
+                         anchor_kind = "row";
+                         return Some((current, y, false));
+                     }
+@@ -2312,7 +2306,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             .projection
+             .current
+             .as_ref()
+-            .map(|p| Rope::from(p.text()));
++            .map(|p| p.text_rope());
+         let display_text = projected_rope.as_ref().unwrap_or(display_text);
+         let line_height = window.line_height();
+         let rows = frame_rows.unwrap_or_else(|| RowMetrics::uniform(line_height));
+@@ -2672,7 +2666,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
+             state.source_stamp(),
+             last_layout.text_align == TextAlign::Left,
+             &state.marker_source_cache,
+-            |text| state.text == text,
++            |text| state.projection.source_text.as_ref().is_some_and(|current| current.same(text)),
+         );
+         let marker_rows = marker_source.as_ref().map(|source|
+             super::marker_paint::prepare(&last_layout, source, &state.projection.active)
+@@ -4102,7 +4096,7 @@ mod projection_run_tests {
+                     document: 3,
+                     generation: 7,
+                 },
+-                text: Arc::from(text),
++                text: crate::input::projection::SourceText::from(text),
+             },
+             // Unsorted overlaps: original provider order determines overrides.
+             styles: vec![
+@@ -4183,7 +4177,7 @@ mod projection_run_tests {
+                     document: 5,
+                     generation: 2,
+                 },
+-                text: Arc::from(text.as_str()),
++                text: crate::input::projection::SourceText::from(text.as_str()),
+             },
+             styles,
+         };
+@@ -4233,7 +4227,7 @@ mod projection_run_tests {
+                     document: 1,
+                     generation: 0,
+                 },
+-                text: Arc::from(text),
++                text: crate::input::projection::SourceText::from(text),
+             },
+             styles: vec![ProjectionStyle {
+                 range: ProjectedByte(3)..ProjectedByte(5),
+diff --git a/crates/base/src/input/base/layout.rs b/crates/base/src/input/base/layout.rs
+index 9abbca2d..403b2203 100644
+--- a/crates/base/src/input/base/layout.rs
++++ b/crates/base/src/input/base/layout.rs
+@@ -1,4 +1,6 @@
+-use std::{borrow::Cow, ops::Range, rc::Rc};
++use std::{ops::Range, rc::Rc};
++#[cfg(test)]
++use std::borrow::Cow;
+
+ use gpui::{Bounds, Half, Pixels, ShapedLine, TextAlign, px};
+
+@@ -399,6 +401,7 @@ pub(super) struct LastLayout {
+     pub(super) projection: Option<PinnedProjection>,
+     // Cheap persistent source clone bound to this exact painted layout. Needed
+     // when projection is absent during conservative Live Preview fallback.
++    #[allow(dead_code)] // Retained by the legacy anchor positive control.
+     pub(super) anchor_source: Option<ropey::Rope>,
+     pub(super) source_stamp: SourceStamp,
+     pub(super) presentation_epoch: u64,
+@@ -431,6 +434,7 @@ impl LastLayout {
+         self.rows.row_height(self.rows.row_at(y))
+     }
+
++    #[cfg(test)]
+     pub(super) fn source_for_anchor(&self, current: SourceStamp) -> Option<Cow<'_, str>> {
+         if self.source_stamp.document != current.document {
+             return None;
+@@ -456,7 +460,7 @@ impl LastLayout {
+         match &self.projection {
+             Some(p) => {
+                 let clipped =
+-                    super::projection_layout::clip_hit_offset(p.projection.text(), offset, bias)?;
++                    p.projection.clip_hit(offset, bias)?;
+                 p.projection
+                     .to_source(ProjectedByte(clipped), bias)
+                     .map(|v| v.0)
+diff --git a/crates/base/src/input/base/marker_paint.rs b/crates/base/src/input/base/marker_paint.rs
+index 69cbfd8d..7f688175 100644
+--- a/crates/base/src/input/base/marker_paint.rs
++++ b/crates/base/src/input/base/marker_paint.rs
+@@ -72,7 +72,7 @@ pub(super) fn source_for_markers(
+     current: SourceStamp,
+     aligned: bool,
+     cache: &RefCell<Option<Arc<MarkerSource>>>,
+-    matches_source: impl FnOnce(&str) -> bool,
++    matches_source: impl FnOnce(&crate::input::projection::SourceText) -> bool,
+ ) -> Option<Arc<MarkerSource>> {
+     let pin = pin?;
+     if !aligned
+@@ -89,7 +89,7 @@ pub(super) fn source_for_markers(
+     if let Some(cached) = cache.borrow().as_ref() {
+         // The session verifies provider bytes on compose; retain a separate
+         // exact-byte check here before admitting a new immutable source Arc.
+-        if cached.snapshot.stamp == current && Arc::ptr_eq(&cached.snapshot.text, &source.text) {
++        if cached.snapshot.stamp == current && cached.snapshot.text.same(&source.text) {
+             return Some(cached.clone());
+         }
+     }
+@@ -662,7 +662,7 @@ mod tests {
+     fn marker_boundary_queries_reuse_exact_mapping_with_canonical_fallback() {
+         let source = SourceSnapshot {
+             stamp: SourceStamp { document: 73, generation: 5 },
+-            text: Arc::from("- e\u{301} 🧠\r\n"),
++            text: crate::input::projection::SourceText::from("- e\u{301} 🧠\r\n"),
+         };
+         let markers = vec![ProjectionMarker {
+             range: SourceByte(0)..SourceByte(1),
+@@ -698,7 +698,7 @@ mod tests {
+         for indexed in [
+             SourceSnapshot { stamp: SourceStamp { document: 74, ..source.stamp }, ..source.clone() },
+             SourceSnapshot { stamp: SourceStamp { generation: 6, ..source.stamp }, ..source.clone() },
+-            SourceSnapshot { text: Arc::from("- different bytes"), ..source.clone() },
++            SourceSnapshot { text: crate::input::projection::SourceText::from("- different bytes"), ..source.clone() },
+         ] {
+             let stale = PinnedProjection { projection: fixture(indexed), ..pin.clone() };
+             SOURCE_INDEX_BUILDS.with(|count| count.set(0));
+@@ -736,7 +736,7 @@ mod tests {
+         };
+         let source = SourceSnapshot {
+             stamp,
+-            text: Arc::from("- item\n"),
++            text: crate::input::projection::SourceText::from("- item\n"),
+         };
+         let pin = |markers| PinnedProjection {
+             stamp: layout,
+@@ -795,7 +795,7 @@ mod tests {
+             projection: Arc::new(Fixture {
+                 source: SourceSnapshot {
+                     stamp,
+-                    text: Arc::from("- wrong bytes"),
++                    text: crate::input::projection::SourceText::from("- wrong bytes"),
+                 },
+                 markers: present.projection.markers().to_vec(),
+             }),
+@@ -828,7 +828,7 @@ mod tests {
+         assert_eq!(calls.get(), 2, "new source generation must revalidate");
+         assert!(!Arc::ptr_eq(&captured, &new_revision));
+         assert!(
+-            Arc::ptr_eq(&captured.snapshot.text, &source.text),
++            captured.snapshot.text.same(&source.text),
+             "reuse allocation"
+         );
+         assert!(
+diff --git a/crates/base/src/input/base/movement.rs b/crates/base/src/input/base/movement.rs
+index 9db7eb58..cf34e706 100644
+--- a/crates/base/src/input/base/movement.rs
++++ b/crates/base/src/input/base/movement.rs
+@@ -181,7 +181,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         cx: &mut Context<Self>,
+     ) -> Option<(usize, bool, gpui::Pixels)> {
+         use super::projection::{
+-            LayoutStamp, PinnedProjection, SourceByte, SourceSnapshot, WrapAffinity,
++            LayoutStamp, PinnedProjection, SourceByte, WrapAffinity,
+         };
+         let last = self.last_layout.as_ref()?;
+         let provider = self.projection.provider.as_ref()?;
+@@ -195,10 +195,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         {
+             return None;
+         }
+-        let source = SourceSnapshot {
+-            stamp: self.source_stamp(),
+-            text: std::sync::Arc::from(self.text.to_string()),
+-        };
++        let source = self.source_snapshot();
+         let compose = |active: &super::projection::ActiveSource| {
+             let projection = provider.compose(&source, active)?;
+             (projection.source().stamp == source.stamp && projection.source().text == source.text)
+@@ -316,7 +313,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         let final_projection = compose(&active)?;
+         // An arbitrary provider may change more than block reveal. Never accept
+         // a hit if its final active state would use different bytes or metrics.
+-        if final_projection.text() != revealed.text()
++        if final_projection.text_rope() != revealed.text_rope()
+             || final_projection.styles() != revealed.styles()
+         {
+             return None;
+@@ -352,11 +349,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+             },
+             last,
+         )?;
+-        let displayed = super::projection_layout::clip_hit_offset(
+-            projection.text(),
+-            start + index,
+-            ConcealBias::Right,
+-        )?;
++        let displayed = projection.clip_hit(start + index, ConcealBias::Right)?;
+         let source = projection.to_source(
+             super::projection::ProjectedByte(displayed),
+             ConcealBias::Right,
+@@ -373,7 +366,7 @@ impl<M: InputModeKind> InputBaseState<M> {
+         rtl_at: &dyn Fn(usize) -> bool,
+         window: &Window,
+     ) -> Option<(usize, super::display_map::LineLayout)> {
+-        let displayed = ropey::Rope::from(projection.text());
++        let displayed = projection.text_rope();
+         let start = displayed.line_start_offset(row);
+         let text = displayed.slice_line(row).to_string();
+         let item = map.line(row)?;
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+index 15843cf6..664afe6b 100644
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -1246,6 +1246,14 @@
+         self.projection.stamp.source
+     }
+
++    pub fn source_snapshot(&self) -> crate::input::projection::SourceSnapshot {
++        crate::input::projection::SourceSnapshot {
++            stamp: self.source_stamp(),
++            text: self.projection.source_text.clone().unwrap_or_else(||
++                crate::input::projection::SourceText::from_rope(self.text.clone())),
++        }
++    }
++
+     pub fn presentation_epoch(&self) -> u64 {
+         self.projection.stamp.presentation
+     }
+@@ -1338,7 +1346,7 @@
+         }
+         if self.projection.provider.is_some() && self.text.len() <= crate::input::projection::MAX_SOURCE_BYTES {
+             self.record_layout_diagnostic(|d| d.projection_composes += 1);
+-            self.projection.compose(Arc::from(self.text.to_string()));
++            self.projection.compose_rope(&self.text);
+         } else {
+             self.projection.current = None;
+         }
+@@ -1385,7 +1393,7 @@
+             self.projection.set_active(active);
+             if !prepared && self.text.len() <= crate::input::projection::MAX_SOURCE_BYTES {
+                 self.record_layout_diagnostic(|d| d.projection_composes += 1);
+-                self.projection.compose(Arc::from(self.text.to_string()));
++                self.projection.compose_rope(&self.text);
+             }
+         }
+     }
+@@ -1393,6 +1401,7 @@
+     fn record_source_mutation(&mut self, reason: SourceMutationReason, cx: &mut Context<Self>) {
+         self.exact_clipboard.invalidate();
+         let event = self.projection.mutation(reason);
++        self.projection.source_text = Some(crate::input::projection::SourceText::from_rope(self.text.clone()));
+         let mut trace = TraceSpan::new("source_mutation", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
+         trace.outcome(match reason {
+             SourceMutationReason::Edit => "edit",
+@@ -2043,6 +2052,7 @@
+         self.text = Rope::from(self.normalize_input(&text).as_ref());
+         self.exact_clipboard.invalidate();
+         self.projection.mutation(SourceMutationReason::Reset);
++        self.projection.source_text = Some(crate::input::projection::SourceText::from_rope(self.text.clone()));
+         if let Some(diagnostics) = self.mode.diagnostics_mut() {
+             diagnostics.reset(&self.text)
+         }
+@@ -4499,6 +4509,7 @@
+             }
+         }
+
++        let preceding = self.projection.source_text.clone();
+         self.record_source_mutation(
+             if !self.emit_events {
+                 SourceMutationReason::Reset
+@@ -4515,7 +4526,12 @@
+             // the old text no longer point at anything.
+             M::reset_annotations(self);
+         } else {
+-            M::adjust_annotations(self, &range, new_text.len());
++            if self.is_multi_line() {
++            if let Some(previous) = preceding {
++                self.projection.source_text = Some(previous.edited(self.text.clone(), range.clone(), new_text.len()));
++            }
++        }
++        M::adjust_annotations(self, &range, new_text.len());
+         }
+         if mask_changed {
+             // A segment-based history entry no longer matches the masked
+@@ -4658,7 +4674,13 @@
+             }
+         }
+
++        let preceding = self.projection.source_text.clone();
+         self.record_source_mutation(SourceMutationReason::Preedit, cx);
++        if self.is_multi_line() {
++            if let Some(previous) = preceding {
++                self.projection.source_text = Some(previous.edited(self.text.clone(), range.clone(), new_text.len()));
++            }
++        }
+         M::adjust_annotations(self, &range, new_text.len());
+         if let Some(diagnostics) = self.mode.diagnostics_mut() {
+             diagnostics.reset(&self.text)
+@@ -5814,7 +5836,7 @@
+                         state.source_stamp(),
+                         true,
+                         &cache,
+-                        |text| state.text == text,
++                        |text| state.text == *text.rope(),
+                     )
+                     .expect("markers");
+                     let active = ActiveSource::default();
+@@ -6060,6 +6082,25 @@
+             v.run_until_parked();
+             v.update(|_, cx| assert_eq!(view.input.read(cx).selected_range(), 0..3));
+         }
++    }
++
++    #[gpui::test]
++    fn default_value_publishes_matching_native_source_and_edit_receipts(cx: &mut TestAppContext) {
++        cx.update(crate::init);
++        let view = InputView::build_editor(cx, |state| state.default_value("\u{feff}abc\r\n🧠"));
++        let mut v = VisualTestContext::from_window(view.window_handle.into(), cx);
++        v.update(|window, cx| view.input.update(cx, |state, cx| {
++            let before = state.source_snapshot();
++            assert_eq!(before.text.rope(), state.text(), "builder text must be the native revision");
++            assert!(!before.text.is_empty(), "nonempty constructor positive control");
++            state.replace_text_in_range(Some(1..2), "x", window, cx);
++            let after = state.source_snapshot();
++            assert_eq!(after.text.rope(), state.text());
++            let edit = after.text.edit_since(before.text.id()).expect("constructor edit receipt");
++            assert_eq!(edit.old, 3..4);
++            assert_eq!(edit.inserted, 1);
++            assert_eq!(after.text.as_ref(), "\u{feff}xbc\r\n🧠");
++        }));
+     }
+
+     #[gpui::test]
+@@ -6626,7 +6667,7 @@
+                 state.projection.current = Some(Arc::new(StrictGraphemeProjection(
+                     super::super::projection::SourceSnapshot {
+                         stamp: state.source_stamp(),
+-                        text: Arc::from(state.value().as_ref()),
++                        text: crate::input::projection::SourceText::from(state.value().as_ref()),
+                     },
+                 )));
+                 state.display_map.install_projection(
+diff --git a/crates/base/src/input/editor/display_map/display_map.rs b/crates/base/src/input/editor/display_map/display_map.rs
+index 101a36fc..f64a785a 100644
+--- a/crates/base/src/input/editor/display_map/display_map.rs
++++ b/crates/base/src/input/editor/display_map/display_map.rs
+@@ -468,7 +468,7 @@ impl DisplayMap {
+     /// Restore a saved exact-source map when toggling or revealing raw bytes.
+     /// If a caller supplied a different source, rebuild rather than reusing it.
+     fn restore_source_wrapping(&mut self, source: &Rope, cx: &mut App) -> usize {
+-        if let Some(saved) = self.source_wrap_map.take().filter(|map| map.text() == source) {
++        if let Some(saved) = self.source_wrap_map.take().filter(|map| ropey::extra::esoterica::ropes_are_instances(map.text(), source)) {
+             self.wrap_map = saved;
+             0
+         } else {
+@@ -491,11 +491,7 @@ impl DisplayMap {
+     fn source_offset(&self, offset: usize) -> usize {
+         match &self.projection {
+             Some(p) => {
+-                let clipped = crate::input::projection_layout::clip_hit_offset(
+-                    p.projection.text(),
+-                    offset,
+-                    ConcealBias::Right,
+-                )
++                let clipped = p.projection.clip_hit(offset, ConcealBias::Right)
+                 .expect("wrap offset is inside projected text");
+                 p.projection
+                     .to_source(ProjectedByte(clipped), ConcealBias::Right)
+diff --git a/crates/base/src/input/editor/display_map/projected_cache.rs b/crates/base/src/input/editor/display_map/projected_cache.rs
+index 08df61c4..99b1c322 100644
+--- a/crates/base/src/input/editor/display_map/projected_cache.rs
++++ b/crates/base/src/input/editor/display_map/projected_cache.rs
+@@ -138,7 +138,6 @@ impl ProjectedCache {
+         // Preparing twice without installing must still compare against the
+         // installed immutable projection and its original index.
+         self.pending = None;
+-        let next_text = next.text();
+         let mut text_dirty = None;
+         let retained = self.projection.as_ref().zip(self.text.as_ref())
+             .filter(|(old, _)| old.source().stamp.document == next.source().stamp.document);
+@@ -148,7 +147,29 @@ impl ProjectedCache {
+                 text_dirty = Some(DirtyRows { old: rows..rows, new: rows..rows });
+                 previous.clone()
+             }
++            Some((old, previous)) if next.display_rope().is_some() => {
++                let rope = next.display_rope().unwrap().clone();
++                let rows = previous.lines_len();
++                let new_rows = rope.lines_len();
++                text_dirty = old.display_revision().and_then(|id| next.display_edit(id)).map(|edit| {
++                    if edit.old.is_empty() && edit.inserted == 0 {
++                        return DirtyRows { old: rows..rows, new: new_rows..new_rows };
++                    }
++                    let start = previous.offset_to_point(edit.old.start).row;
++                    let old_end = previous.offset_to_point(edit.old.end);
++                    let new_end = rope.offset_to_point(edit.new_end());
++                    let suffix = (rows - old_end.row - usize::from(old_end.column != 0))
++                        .min(new_rows - new_end.row - usize::from(new_end.column != 0))
++                        .min(rows.min(new_rows) - start);
++                    DirtyRows { old: start..rows-suffix, new: start..new_rows-suffix }
++                });
++                // Missing provenance invalidates geometry, never triggers a
++                // note-wide text comparison on the native Rope path.
++                if text_dirty.is_none() { text_dirty = Some(DirtyRows { old: 0..rows, new: 0..new_rows }); }
++                rope
++            }
+             Some((old, previous)) => {
++                let next_text = next.text();
+                 let old_text = old.text();
+                 let mut prefix = old_text.bytes().zip(next_text.bytes()).inspect(|_| {
+                     #[cfg(test)]
+@@ -193,9 +214,13 @@ impl ProjectedCache {
+                 text
+             }
+             None => {
+-                #[cfg(test)]
+-                TEXT_BYTES_BUILT.with(|count| count.set(count.get() + next_text.len()));
+-                Rope::from(next_text)
++                if let Some(rope) = next.display_rope() { rope.clone() }
++                else {
++                    let next_text = next.text();
++                    #[cfg(test)]
++                    TEXT_BYTES_BUILT.with(|count| count.set(count.get() + next_text.len()));
++                    Rope::from(next_text)
++                }
+             }
+         };
+         self.pending = Some(PreparedText { projection: next, text: text.clone(), dirty: text_dirty });
+@@ -350,20 +375,19 @@ fn row_start(text: &str, row: usize) -> usize {
+         .nth(row - 1).map_or(text.len(), |(i, _)| i + 1)
+ }
+
+-fn indexed_row_start(text: &str, index: Option<&Rope>, row: usize) -> usize {
++fn indexed_row_start(projection: &dyn SourceProjection, index: Option<&Rope>, row: usize) -> usize {
+     match index {
+         Some(index) if row < index.lines_len() => index.line_start_offset(row),
+-        Some(_) => text.len(),
+-        None => row_start(text, row),
++        Some(index) => index.len(),
++        None => row_start(projection.text(), row),
+     }
+ }
+-
+-fn style_rows(text: &str, index: Option<&Rope>, styles: &[ProjectionStyle], otherwise: Range<usize>) -> Range<usize> {
++fn style_rows(projection: &dyn SourceProjection, index: Option<&Rope>, styles: &[ProjectionStyle], otherwise: Range<usize>) -> Range<usize> {
+     let Some(start) = styles.iter().map(|s| s.range.start.0).min() else { return otherwise; };
+     let end = styles.iter().map(|s| s.range.end.0).max().unwrap().max(start);
+     let row = |byte: usize| {
+-        let byte = byte.min(text.len());
+-        if let Some(index) = index { return index.offset_to_point(byte).row; }
++        if let Some(index) = index { return index.offset_to_point(byte.min(index.len())).row; }
++        let text = projection.text(); let byte = byte.min(text.len());
+         #[cfg(test)]
+         LINE_SCAN_BYTES.with(|count| count.set(count.get() + byte));
+         text.as_bytes()[..byte].iter().filter(|b| **b == b'\n').count()
+@@ -387,9 +411,9 @@ fn discover_dirty_rows(old: &dyn SourceProjection, old_rows: usize,
+     DirtyRows { old: prefix..old_rows - suffix, new: prefix..new_rows - suffix }
+     });
+     let mut dirty = text_dirty.clone();
+-    let prefix_byte = indexed_row_start(old.text(), old_index, text_dirty.old.start);
+-    let old_suffix = indexed_row_start(old.text(), old_index, text_dirty.old.end);
+-    let new_suffix = indexed_row_start(new.text(), new_index, text_dirty.new.end);
++    let prefix_byte = indexed_row_start(old, old_index, text_dirty.old.start);
++    let old_suffix = indexed_row_start(old, old_index, text_dirty.old.end);
++    let new_suffix = indexed_row_start(new, new_index, text_dirty.new.end);
+     let map_byte = |byte: usize, start: bool| {
+         // At a pure insertion boundary, a prefix style's end stays on the
+         // left while a suffix style's start moves right with its original text.
+@@ -406,8 +430,8 @@ fn discover_dirty_rows(old: &dyn SourceProjection, old_rows: usize,
+             && map_byte(a.range.end.0, false) == Some(b.range.end.0)
+             && a.font_family == b.font_family && a.bold == b.bold && a.italic == b.italic
+     });
+-    dirty.include(style_rows(old.text(), old_index, a, text_dirty.old.clone()),
+-        style_rows(new.text(), new_index, b, text_dirty.new.clone()), old_rows, new_rows);
++    dirty.include(style_rows(old, old_index, a, text_dirty.old.clone()),
++        style_rows(new, new_index, b, text_dirty.new.clone()), old_rows, new_rows);
+     let (a, b) = changed_middle(old.line_scales(), new.line_scales(), |a, b|
+         text_dirty.map_row(a.line) == Some(b.line) && a.scale == b.scale && a.hang == b.hang);
+     for item in a { dirty.include(item.line..item.line + 1, text_dirty.new.clone(), old_rows, new_rows); }
+@@ -470,7 +494,7 @@ mod tests {
+         Snapshot {
+             source: crate::input::projection::SourceSnapshot {
+                 stamp: crate::input::projection::SourceStamp { document: 9, generation: 1 },
+-                text: Arc::from(text),
++                text: crate::input::projection::SourceText::from(text),
+             }, styles: vec![], scales: vec![], indents: vec![],
+         }
+     }
+@@ -704,7 +728,7 @@ mod tests {
+                             document: 9,
+                             generation,
+                         },
+-                        text: Arc::from(format!("{prefix}{body}")),
++                        text: crate::input::projection::SourceText::from(format!("{prefix}{body}")),
+                     },
+                     prefix: prefix.len(),
+                 })
+diff --git a/crates/base/src/input/projection.rs b/crates/base/src/input/projection.rs
+index 11e0b1ce..76d07927 100644
+--- a/crates/base/src/input/projection.rs
++++ b/crates/base/src/input/projection.rs
+@@ -12,6 +12,10 @@ use std::{
+     },
+ };
+
++#[path = "source_text.rs"]
++mod source_text;
++pub use source_text::{SourceText, EditDelta, take_flattened_bytes};
++
+ /// Maximum canonical bytes admitted to native projected layout and anchoring.
+ pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+
+@@ -69,7 +73,7 @@ impl Default for ActiveSource {
+ #[derive(Clone, Debug)]
+ pub struct SourceSnapshot {
+     pub stamp: SourceStamp,
+-    pub text: Arc<str>,
++    pub text: SourceText,
+ }
+
+ /// A native click resolved against the current source layout. Consumers must
+@@ -237,6 +241,26 @@ pub trait SourceProjection: Send + Sync {
+
+     fn source(&self) -> &SourceSnapshot;
+     fn text(&self) -> &str;
++    /// Persistent display and its exact edit receipt. Legacy providers may keep
++    /// the contiguous interface; the input never discovers edits for Rope ones.
++    fn display_rope(&self) -> Option<&ropey::Rope> { None }
++    fn display_revision(&self) -> Option<u64> { None }
++    fn display_edit(&self, _previous: u64) -> Option<EditDelta> { None }
++    fn text_rope(&self) -> ropey::Rope {
++        self.display_rope().cloned().unwrap_or_else(|| ropey::Rope::from(self.text()))
++    }
++    fn clip_hit(&self, offset: usize, bias: ConcealBias) -> Option<usize> {
++        if let Some(rope) = self.display_rope() {
++            use crate::input::RopeExt as _;
++            if offset > rope.len() { return None; }
++            let row = rope.offset_to_point(offset).row;
++            let start = rope.line_start_offset(row);
++            let end = (rope.line_end_offset(row) + 1).min(rope.len());
++            let line = rope.slice(start..end).to_string();
++            return super::projection_layout::clip_hit_offset(&line, offset-start, bias).map(|at| start+at);
++        }
++        super::projection_layout::clip_hit_offset(self.text(), offset, bias)
++    }
+     fn styles(&self) -> &[ProjectionStyle];
+     fn to_projected(&self, source: SourceByte, bias: ConcealBias) -> Option<ProjectedByte>;
+     fn to_source(&self, projected: ProjectedByte, bias: ConcealBias) -> Option<SourceByte>;
+@@ -362,6 +386,7 @@ impl PinnedProjection {
+ /// Authority bookkeeping shared by native input paths, never by undo history.
+ /// Advancing either epoch has no transaction or source Change side effects.
+ pub(crate) struct ProjectionSession {
++    pub(crate) source_text: Option<SourceText>,
+     pub(crate) enabled: bool,
+     pub(crate) stamp: LayoutStamp,
+     pub(crate) active: ActiveSource,
+@@ -372,6 +397,7 @@ impl Default for ProjectionSession {
+     fn default() -> Self {
+         static NEXT_DOCUMENT: AtomicU64 = AtomicU64::new(1);
+         Self {
++            source_text: Some(SourceText::from_rope(ropey::Rope::new())),
+             enabled: false,
+             stamp: LayoutStamp {
+                 source: SourceStamp {
+@@ -414,7 +440,15 @@ impl ProjectionSession {
+             self.presentation_changed();
+         }
+     }
++    #[cfg(test)]
+     pub(crate) fn compose(&mut self, source: Arc<str>) {
++        self.compose_text(source.into());
++    }
++    pub(crate) fn compose_rope(&mut self, rope: &ropey::Rope) {
++        let text = self.source_text.get_or_insert_with(|| SourceText::from_rope(rope.clone())).clone();
++        self.compose_text(text);
++    }
++    fn compose_text(&mut self, source: SourceText) {
+         let mut trace = TraceSpan::new("provider_compose", TraceIdentity::new(self.stamp.source, self.stamp.presentation, self.current.is_some()));
+         trace.counts([self.active.anchor.0 as u64, self.active.head.0 as u64, self.active.composition.is_some() as u64, self.active.replacement.is_some() as u64]);
+         self.current = None;
+diff --git a/crates/base/src/input/source_text.rs b/crates/base/src/input/source_text.rs
+new file mode 100644
+index 00000000..916b29e5
+--- /dev/null
++++ b/crates/base/src/input/source_text.rs
+@@ -0,0 +1,110 @@
++//! Immutable native Rope revisions and bounded edit ancestry. No source mutation
++//! is inferred by comparing complete note bytes.
++use std::{ops::{Deref, Range}, sync::{Arc, OnceLock, atomic::{AtomicU64, Ordering}}};
++use ropey::Rope;
++
++#[derive(Clone, Debug)]
++pub struct SourceText(Arc<Revision>);
++#[derive(Debug)]
++struct Revision { id: u64, rope: Rope, flat: OnceLock<Arc<str>>, ancestors: Vec<EditDelta>, native: bool }
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct EditDelta { pub previous: u64, pub old: Range<usize>, pub inserted: usize }
++impl EditDelta {
++    pub fn new_end(&self) -> usize { self.old.start + self.inserted }
++    pub fn forward(&self, at: usize) -> usize {
++        if at < self.old.start { at } else if at >= self.old.end { at - self.old.end + self.new_end() } else { self.old.start }
++    }
++    pub fn backward(&self, at: usize) -> usize {
++        if at < self.old.start { at } else if at >= self.new_end() { at - self.new_end() + self.old.end } else { self.old.start }
++    }
++}
++impl SourceText {
++    pub fn from_rope(rope: Rope) -> Self { Self::revision(rope, Vec::new()) }
++    fn revision(rope: Rope, ancestors: Vec<EditDelta>) -> Self {
++        static NEXT: AtomicU64 = AtomicU64::new(1 << 63);
++        Self(Arc::new(Revision { id: NEXT.fetch_add(1, Ordering::Relaxed), rope, flat: OnceLock::new(), ancestors, native: true }))
++    }
++    pub fn edited(&self, rope: Rope, old: Range<usize>, inserted: usize) -> Self {
++        assert!(old.start <= old.end && old.end <= self.len());
++        assert_eq!(self.len() - old.len() + inserted, rope.len());
++        let edit = EditDelta { previous: self.id(), old, inserted };
++        let mut ancestors = Vec::with_capacity(32);
++        ancestors.push(edit.clone());
++        // Aggregate receipts, without retaining any old Rope or source String.
++        for ancestor in self.0.ancestors.iter().take(31) {
++            let start = ancestor.old.start.min(ancestor.backward(edit.old.start));
++            let end = ancestor.old.end.max(ancestor.backward(edit.old.end));
++            let inserted = end - start + ancestor.inserted + edit.inserted - ancestor.old.len() - edit.old.len();
++            ancestors.push(EditDelta { previous: ancestor.previous, old: start..end, inserted });
++        }
++        Self::revision(rope, ancestors)
++    }
++    pub fn is_native(&self) -> bool { self.0.native }
++    pub fn id(&self) -> u64 { self.0.id }
++    pub fn rope(&self) -> &Rope { &self.0.rope }
++    pub fn len(&self) -> usize { self.0.rope.len() }
++    pub fn is_empty(&self) -> bool { self.len() == 0 }
++    pub fn is_char_boundary(&self, at: usize) -> bool { at <= self.len() && self.0.rope.is_char_boundary(at) }
++    pub fn edit_steps(&self, steps: u64) -> Option<EditDelta> {
++        if steps == 0 { return Some(EditDelta { previous: self.id(), old: self.len()..self.len(), inserted: 0 }); }
++        self.0.ancestors.get(usize::try_from(steps).ok()?.checked_sub(1)?).cloned()
++    }
++    pub fn edit_since(&self, previous: u64) -> Option<EditDelta> {
++        if self.id() == previous { return Some(EditDelta { previous, old: self.len()..self.len(), inserted: 0 }); }
++        self.0.ancestors.iter().find(|edit| edit.previous == previous).cloned()
++    }
++    pub fn same(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
++}
++impl Deref for SourceText {
++    type Target = str;
++    fn deref(&self) -> &str { self.0.flat.get_or_init(|| { FLATTENED.with(|n|n.set(n.get()+self.len())); self.0.rope.to_string().into() }) }
++}
++impl AsRef<str> for SourceText { fn as_ref(&self) -> &str { self } }
++impl std::fmt::Display for SourceText { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self) } }
++impl PartialEq for SourceText { fn eq(&self, other: &Self) -> bool { self.same(other) || self.0.rope == other.0.rope } }
++impl Eq for SourceText {}
++impl From<Arc<str>> for SourceText {
++    fn from(text: Arc<str>) -> Self { FLATTENED.with(|n|n.set(n.get()+text.len())); let mut result = Self::from_rope(Rope::from_str(&text)); Arc::get_mut(&mut result.0).unwrap().native = false; result.0.flat.set(text).ok(); result }
++}
++impl From<&str> for SourceText { fn from(text: &str) -> Self { Self::from(Arc::<str>::from(text)) } }
++impl From<String> for SourceText { fn from(text: String) -> Self { Self::from(Arc::<str>::from(text)) } }
++
++impl PartialEq<str> for SourceText { fn eq(&self, other: &str) -> bool { self.rope() == other } }
++impl PartialEq<&str> for SourceText { fn eq(&self, other: &&str) -> bool { self.rope() == *other } }
++
++thread_local! { static FLATTENED: std::cell::Cell<usize> = const {std::cell::Cell::new(0)}; }
++pub fn take_flattened_bytes() -> usize { FLATTENED.with(|n|n.replace(0)) }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn coalesced_receipts_map_ime_undo_and_unpainted_edits() {
++        let original=SourceText::from_rope(Rope::from_str("\u{feff}ab\r\nשלום"));
++        let mut rope=original.rope().clone(); rope.remove(4..5);rope.insert(4,"中");
++        let ime=original.edited(rope,4..5,3);
++        let mut rope=ime.rope().clone();rope.insert(7,"\n");
++        let enter=ime.edited(rope,7..7,1);
++        let receipt=enter.edit_since(original.id()).unwrap();
++        assert_eq!(receipt.old,4..5);assert_eq!(receipt.inserted,4);
++        assert_eq!(receipt.forward(original.len()),enter.len());
++        assert_eq!(receipt.backward(enter.len()),original.len());
++        let mut rope=enter.rope().clone();rope.remove(4..8);rope.insert(4,"b");
++        let undo=enter.edited(rope,4..8,1);
++        assert_eq!(undo.rope(),original.rope());
++        let receipt=undo.edit_since(original.id()).unwrap();
++        assert_eq!(receipt.forward(original.len()),undo.len());
++        assert!(undo.edit_since(SourceText::from_rope(Rope::from_str("foreign")).id()).is_none());
++        assert!(!original.same(&undo),"Undo restores bytes, never a revision lease");
++    }
++    #[test]
++    fn source_snapshot_flattening_has_an_old_input_positive_control() {
++        for bytes in [25*1024,130*1024,1024*1024] {
++            let text=SourceText::from_rope(Rope::from_str(&"x".repeat(bytes)));
++            take_flattened_bytes();let _shared=text.clone();
++            assert_eq!(take_flattened_bytes(),0);
++            let _old_input=SourceText::from(Arc::<str>::from(text.rope().to_string()));
++            assert_eq!(take_flattened_bytes(),bytes);
++        }
++    }
++}

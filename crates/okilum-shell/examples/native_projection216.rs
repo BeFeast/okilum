@@ -196,10 +196,7 @@ impl Fixture {
         if editor.text().len() > okilum_core::source_classifier::MAX_BYTES {
             return None;
         }
-        Some(SourceSnapshot {
-            stamp: editor.source_stamp(),
-            text: Arc::from(editor.value().as_ref()),
-        })
+        Some(editor.source_snapshot())
     }
 
     fn publish(&mut self, provider: Arc<CachedProvider>, cx: &mut Context<Self>) -> bool {

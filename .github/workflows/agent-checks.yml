@@ -72,6 +72,11 @@ jobs:
         run: |
           cargo fetch --locked
           # vendor-tests.sh can test its independent workspace on patch changes.
+          # Resolve patched dependencies without changing the verified generated
+          # tree. The independent test invocation may resolve this lock offline.
+          vendor_lock=$(mktemp)
+          cp vendor/gpui-component/Cargo.lock "$vendor_lock"
+          trap 'cp "$vendor_lock" vendor/gpui-component/Cargo.lock; unlink "$vendor_lock"' EXIT
           cargo fetch --manifest-path vendor/gpui-component/Cargo.toml
       - name: Verify agent helper controls
         run: python3 -m unittest discover -s scripts/ci -p test_agent_checks.py

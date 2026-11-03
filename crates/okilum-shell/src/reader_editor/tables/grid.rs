@@ -9,6 +9,7 @@ use gpui_component::input::projection::{
     ConcealBias, LineIndent, LineScale, ProjectedByte, ProjectionBlock, ProjectionMarker,
     ProjectionStyle, SourceByte, SourceStamp,
 };
+use gpui_component::input::RopeExt as _;
 use gpui_component::input::{InputEvent, Redo, Textarea, TextareaState, Undo};
 use gpui_component::Sizable as _;
 
@@ -246,10 +247,7 @@ impl TableGrid {
         self.installed_epoch = None;
         self.session = self.session.wrapping_add(1);
         let session = self.session;
-        let source = SourceSnapshot {
-            stamp,
-            text: Arc::from(self.binding.as_ref().unwrap().document.as_str()),
-        };
+        let source = self.input.read(cx).source_snapshot();
         // Existing LivePreview publication remains untouched. The grid's lease
         // has its own immutable fallback, classified off the foreground thread.
         self.preparing = Some(cx.spawn(async move |this, cx| {
@@ -358,10 +356,7 @@ impl TableGrid {
         let binding = self.binding.as_ref().unwrap();
         let provider = Arc::new(GridProvider {
             base,
-            source: SourceSnapshot {
-                stamp: binding.stamp,
-                text: Arc::from(binding.document.as_str()),
-            },
+            source: self.input.read(cx).source_snapshot(),
             table: binding.table.clone(),
         });
         self.input.update(cx, |input, cx| {
@@ -980,9 +975,21 @@ impl ProjectionProvider for GridProvider {
         let to = projection
             .to_projected(SourceByte(self.table.end), ConcealBias::Right)?
             .0;
-        let text = projection.text();
-        let first = text.get(..from)?.bytes().filter(|&b| b == b'\n').count();
-        let last = text.get(..to)?.bytes().filter(|&b| b == b'\n').count() + 1;
+        let (first, last) = if let Some(text) = projection.display_rope() {
+            if from > text.len() || to > text.len() {
+                return None;
+            }
+            (
+                text.offset_to_point(from).row,
+                text.offset_to_point(to).row + 1,
+            )
+        } else {
+            let text = projection.text();
+            (
+                text.get(..from)?.bytes().filter(|&b| b == b'\n').count(),
+                text.get(..to)?.bytes().filter(|&b| b == b'\n').count() + 1,
+            )
+        };
         let mut blocks: Vec<_> = projection
             .blocks()
             .iter()
@@ -993,7 +1000,18 @@ impl ProjectionProvider for GridProvider {
             .collect();
         use std::hash::{Hash, Hasher};
         let mut hash = std::collections::hash_map::DefaultHasher::new();
-        self.source.text.get(self.table.clone())?.hash(&mut hash);
+        if self.table.start > self.table.end
+            || !self.source.text.is_char_boundary(self.table.start)
+            || !self.source.text.is_char_boundary(self.table.end)
+        {
+            return None;
+        }
+        self.source
+            .text
+            .rope()
+            .slice(self.table.clone())
+            .to_string()
+            .hash(&mut hash);
         blocks.push(ProjectionBlock {
             source: SourceByte(self.table.start)..SourceByte(self.table.end),
             lines: first..last,
@@ -1018,6 +1036,15 @@ impl SourceProjection for GridProjection {
     }
     fn text(&self) -> &str {
         self.base.text()
+    }
+    fn display_rope(&self) -> Option<&gpui_component::Rope> {
+        self.base.display_rope()
+    }
+    fn display_revision(&self) -> Option<u64> {
+        self.base.display_revision()
+    }
+    fn display_edit(&self, previous: u64) -> Option<gpui_component::input::projection::EditDelta> {
+        self.base.display_edit(previous)
     }
     fn styles(&self) -> &[ProjectionStyle] {
         self.base.styles()
@@ -1142,6 +1169,64 @@ mod projection_tests {
     use super::*;
     use ::core::prelude::v1::test;
 
+    #[test]
+    fn grid_wrapper_keeps_native_display_receipts_without_flattening_notes() {
+        use gpui_component::{
+            input::projection::{take_flattened_bytes, SourceText},
+            Rope,
+        };
+        use okilum_core::source_projection::revision::{reset_work, take_work};
+        let text = "Before **bold**\n\n| A |\n|---|\n| row |\n\nAfter\n";
+        let source = SourceSnapshot {
+            stamp: SourceStamp {
+                document: 2403,
+                generation: 1,
+            },
+            text: SourceText::from_rope(Rope::from_str(text)),
+        };
+        let table = text.find('|').unwrap()..text.find("\n\nAfter").unwrap();
+        let base: Arc<dyn ProjectionProvider> = Arc::new(CachedProvider::classify(source.clone()));
+        let active = ActiveSource::default();
+        let before = GridProvider {
+            base: base.clone(),
+            source: source.clone(),
+            table: table.clone(),
+        }
+        .compose(&source, &active)
+        .unwrap();
+        assert!(before.display_rope().is_some());
+        let revision = before.display_revision().unwrap();
+        let mut rope = source.text.rope().clone();
+        rope.remove(1..2);
+        rope.insert(1, "q");
+        let edited = SourceSnapshot {
+            stamp: SourceStamp {
+                generation: 2,
+                ..source.stamp
+            },
+            text: source.text.edited(rope, 1..2, 1),
+        };
+        let provider = GridProvider {
+            base,
+            source: edited.clone(),
+            table,
+        };
+        reset_work();
+        take_flattened_bytes();
+        let after = provider.compose(&edited, &active).unwrap();
+        let work = take_work();
+        assert_eq!(take_flattened_bytes(), 0);
+        assert_eq!(work.flattened_bytes, 0);
+        assert_eq!(work.display_builds, 0);
+        assert!(after.display_edit(revision).is_some());
+        assert_eq!(before.blocks()[0].lines, after.blocks()[0].lines);
+        assert_eq!(before.blocks()[0].key, after.blocks()[0].key);
+        // Fresh uncached native text proves this probe detects a full snapshot.
+        let control = SourceText::from_rope(edited.text.rope().clone());
+        let _ = control.as_ref();
+        assert!(take_flattened_bytes() >= text.len());
+    }
+
     struct Linear(SourceSnapshot);
     impl ProjectionProvider for Linear {
         fn compose(
@@ -1191,7 +1276,9 @@ mod projection_tests {
                 document: 4,
                 generation: 2,
             },
-            text: Arc::from("Before\n\n| A | B |\n|---|---|\n| one | two |\n\nAfter"),
+            text: gpui_component::input::projection::SourceText::from(
+                "Before\n\n| A | B |\n|---|---|\n| one | two |\n\nAfter",
+            ),
         };
         let table = source.text.find('|').unwrap()..source.text.find("\n\nAfter").unwrap();
         let active = ActiveSource {
@@ -1247,7 +1334,8 @@ mod projection_tests {
             .blocks()
             .is_empty());
         stale = source.clone();
-        stale.text = Arc::from(source.text.replace("one", "new"));
+        stale.text =
+            gpui_component::input::projection::SourceText::from(source.text.replace("one", "new"));
         assert!(provider
             .compose(&stale, &active)
             .unwrap()
@@ -1454,16 +1542,19 @@ mod tests {
         });
         // Structural actions must keep the grid mounted and remain canonical
         // source transactions, rather than switching to a one-shot editor.
-        for action in [
-            TableInsertRow.boxed_clone(),
-            TableInsertColumn.boxed_clone(),
-            TableAlignCenter.boxed_clone(),
-            TableFormat.boxed_clone(),
+        // Undo recreated the focused cell: settle its dispatch tree before a
+        // user action can target that cell, including with retained geometry.
+        visual.run_until_parked();
+        for (name, action) in [
+            ("insert row", TableInsertRow.boxed_clone()),
+            ("insert column", TableInsertColumn.boxed_clone()),
+            ("align center", TableAlignCenter.boxed_clone()),
+            ("format", TableFormat.boxed_clone()),
         ] {
             visual.update(|window, cx| window.dispatch_action(action, cx));
             visual.run_until_parked();
             let changed = input.read_with(visual, |input, _| input.value().to_string());
-            assert_ne!(changed, source);
+            assert_ne!(changed, source, "{name} must reach the restored grid");
             assert!(changed.starts_with("Before\n\n"));
             assert!(changed.ends_with("\n\nAfter\n"));
             assert!(visual.debug_bounds("editable-table-grid").is_some());
