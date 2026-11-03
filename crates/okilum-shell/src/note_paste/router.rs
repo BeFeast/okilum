@@ -967,7 +967,19 @@ fn save_local_image(
             kind?.extension()
         ))
     } else {
-        files::sanitize_name(&path.file_name()?.to_string_lossy())
+        let own = &path.file_name()?.to_string_lossy();
+        // #2459: the embed/link decision reads the saved name's extension, so
+        // a name that does not carry a known image extension is given one by
+        // the content's magic bytes — the file decides, never the host.
+        let named = if extension
+            .as_deref()
+            .is_some_and(attachments::is_image_extension)
+        {
+            own.to_string()
+        } else {
+            format!("{own}.{}", kind?.extension())
+        };
+        files::sanitize_name(&named)
     };
     let folder = attachments::attachment_folder(vault_root, note_rel);
     super::image_import::save(&folder, &name, &bytes, options)

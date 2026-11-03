@@ -497,6 +497,53 @@ mod tests {
         assert_eq!(std::fs::read(&old).unwrap(), original);
     }
 
+    /// #2459: a local image whose name carries no known image extension is
+    /// named and embedded from its content's magic bytes, on every host. The
+    /// fixture lives under the crate, not the temp dir: a `/tmp` path looks
+    /// like a clipboard cache, and the cache rename (which carries the
+    /// sniffed extension) would hide the decision this pins. The route reads
+    /// no system MIME database; the sniff is the bytes alone.
+    #[test]
+    fn native_html_local_images_without_an_image_extension_embed_by_content() {
+        let fixture = tempfile::Builder::new()
+            .prefix("okilum-2459-fixture-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap();
+        for (name, saved_as) in [
+            ("source-noext", "source-noext.png"),
+            ("capture.dat", "capture.dat.png"),
+        ] {
+            let source = fixture.path().join(name);
+            let original = png();
+            std::fs::write(&source, &original).unwrap();
+            let source = std::fs::canonicalize(&source).unwrap();
+            assert!(
+                !crate::note_paste::attachments::is_clipboard_cache(&source),
+                "the fixture must not look like a clipboard manager's cache"
+            );
+            let vault = tempfile::tempdir().unwrap();
+            let attachments = vault.path().join("attachments");
+            std::fs::create_dir_all(&attachments).unwrap();
+            let html = format!(
+                "<p><img src=\"{}\"></p>",
+                url::Url::from_file_path(&source).unwrap()
+            );
+            let board = html_board(html.as_bytes(), Some(html.as_bytes()));
+            let routed = router::route(&board, &context(vault.path())).unwrap();
+            let Some(router::FollowUp::Rich { job, .. }) = routed.follow_up else {
+                panic!("local HTML image must use the existing background import");
+            };
+            let done = router::run_rich_job(job);
+            assert_eq!(done.files.len(), 1);
+            let saved = &done.files[0];
+            assert_eq!(saved.parent(), Some(attachments.as_path()));
+            assert_eq!(saved.file_name().unwrap(), saved_as);
+            assert_eq!(done.text, format!("![[{saved_as}]]"));
+            assert_eq!(std::fs::read(saved).unwrap(), original);
+            assert_eq!(std::fs::read(&source).unwrap(), original);
+        }
+    }
+
     #[test]
     fn native_html_plain_command_and_unformatted_html_keep_plain_text() {
         let root = tempfile::tempdir().unwrap();
