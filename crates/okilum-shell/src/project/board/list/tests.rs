@@ -101,8 +101,13 @@ fn list_2530_virtualises_240_rows_and_keyboard_reaches_tail_without_reprojection
     });
     visual.run_until_parked();
     let before = board.read_with(visual, |b, _| b.list.publications);
-    visual.simulate_keystrokes("down");
+    // Arrow navigation must take focus back from a toolbar control, so Enter
+    // opens the selected row rather than activating the old focused button.
+    visual.simulate_keystrokes("tab down");
     visual.run_until_parked();
+    board.update_in(visual, |board, window, _| {
+        assert!(board.focus.is_focused(window))
+    });
     assert!(visual.debug_bounds("board-list-row-240").is_some());
     assert!(visual.debug_bounds("board-list-row-1").is_none());
     board.read_with(visual, |board, _| {

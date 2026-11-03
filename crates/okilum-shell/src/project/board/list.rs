@@ -238,7 +238,7 @@ impl Board {
         }
         prepared
     }
-    fn list_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn list_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
             "up" | "down" => {
                 let prepared = self.prepare_list();
@@ -275,6 +275,7 @@ impl Board {
                         .scroll
                         .scroll_to_item(index, gpui::ScrollStrategy::Nearest);
                 }
+                self.focus.focus(window, cx);
                 cx.stop_propagation();
                 cx.notify();
             }
@@ -310,7 +311,7 @@ impl Board {
             .overflow_hidden()
             .bg(p.canvas)
             .text_color(p.text)
-            .on_key_down(cx.listener(|this, event, _, cx| this.list_key(event, cx)))
+            .on_key_down(cx.listener(|this, event, window, cx| this.list_key(event, window, cx)))
             .child(
                 h_flex()
                     .h(px(48.))
