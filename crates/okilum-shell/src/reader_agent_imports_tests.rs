@@ -198,7 +198,7 @@ fn issue1588_source_command_click_and_live_preview_disclosure(cx: &mut TestAppCo
     f.draw();
     let input = f
         .reader
-        .read_with(f.visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        .read_with(f.visual, |r, _| r.source_input().unwrap());
     let at = input.read_with(f.visual, |input, _| {
         let offset = input.value().find("@imports").unwrap();
         input
