@@ -4133,6 +4133,127 @@ mod tests {
     }
 
     #[gpui::test]
+    fn local_writer_admission_two_reader_windows_retain_drafts_and_unrelated_vault_saves(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let other = temp.path().join("other");
+        let state = temp.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        for (vault, name) in [
+            (&root, "first.md"),
+            (&root, "second.md"),
+            (&other, "other.md"),
+        ] {
+            std::fs::write(vault.join(name), "original").unwrap();
+        }
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+            reader_recovery::install(&state, None, cx);
+        });
+        let mut readers = vec![];
+        for (index, (vault, name)) in [
+            (&root, "first.md"),
+            (&root, "second.md"),
+            (&other, "other.md"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut reader = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: Some(vault.clone()),
+                            note: Some(name.into()),
+                            index_dir: Some(temp.path().join(format!("index-{index}"))),
+                            session_directory: Some(state.clone()),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let reader = reader.unwrap();
+            visual.run_until_parked();
+            reader.update_in(visual, |reader, window, cx| {
+                reader.toggle_source(window, cx);
+                assert!(
+                    reader.editing.is_some(),
+                    "real Source editor positive control"
+                );
+                reader
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .set_value("window draft", window, cx);
+            });
+            readers.push(reader);
+        }
+        let authority = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let mut hold = authority.begin_drain("reader-windows").unwrap();
+        let token = hold.token().clone();
+        assert!(hold.try_hold(&token).unwrap());
+        cx.update(|cx| assert!(!save_all(cx)));
+        for name in ["first.md", "second.md"] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(name)).unwrap(),
+                "original"
+            );
+            assert!(
+                FileEditor::has_unsaved_draft(&root.join(name), &state.join("editor-drafts"))
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(other.join("other.md")).unwrap(),
+            "window draft"
+        );
+        for reader in &readers[..2] {
+            reader.read_with(cx, |reader, cx| {
+                assert!(reader.source_is_dirty(cx));
+                assert_eq!(
+                    reader
+                        .editing
+                        .as_ref()
+                        .unwrap()
+                        .input
+                        .read(cx)
+                        .value()
+                        .as_ref(),
+                    "window draft"
+                );
+            });
+        }
+        drop(hold); // Losing the caller must not reopen publication.
+        let observed = authority.snapshot().unwrap();
+        assert_eq!(
+            observed.phase,
+            okilum_write_authority::Phase::RecoveryPending
+        );
+        cx.update(|cx| assert!(!save_all(cx)));
+        let hold = authority.recover(&observed).unwrap();
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        cx.update(|cx| assert!(save_all(cx)));
+        for name in ["first.md", "second.md"] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(name)).unwrap(),
+                "window draft"
+            );
+        }
+        cx.update(|cx| cx.shutdown());
+        drop(readers);
+    }
+
+    #[gpui::test]
     fn quit_flushes_every_editor_even_after_conflicts_and_save_errors(cx: &mut TestAppContext) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
