@@ -16,6 +16,10 @@ impl HoverProvider for SourceHover {
         _: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<Option<lsp_types::Hover>>> {
+        diagnostics(format_args!(
+            "source hover offset={offset} bytes={}",
+            text.len()
+        ));
         if text.len() > okilum_core::source_classifier::MAX_BYTES {
             return Task::ready(Ok(None));
         }
@@ -101,6 +105,10 @@ impl HoverProvider for SourceHover {
                         })
                 })
                 .unwrap_or(false);
+            diagnostics(format_args!(
+                "source hover found={} current={current}",
+                result.is_some()
+            ));
             Ok(result
                 .filter(|_| current)
                 .map(|(range, value)| lsp_types::Hover {
