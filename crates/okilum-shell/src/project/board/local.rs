@@ -255,6 +255,8 @@ impl Board {
         let expanded = self.selected_local.as_ref() == Some(&id);
         let mut view = v_flex()
             .min_w_0()
+            .min_h_0()
+            .flex_shrink_0()
             .gap_2()
             .p_3()
             .rounded_md()

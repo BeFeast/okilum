@@ -207,7 +207,13 @@ impl RenderOnce for Lane {
             .filter(|bounds| bounds.size.height > px(0.))
             .unwrap_or_else(|| Bounds::new(Point::default(), window.viewport_size()))
             .dilate(overdraw);
-        let mut root = v_flex().id(self.id).w_full().min_w_0().gap_3();
+        let mut root = v_flex()
+            .id(self.id)
+            .w_full()
+            .min_w_0()
+            .min_h_0()
+            .flex_shrink_0()
+            .gap_3();
         let mut hidden = Vec::new();
         let mut initial_y = px(0.);
         for mut card in self.cards {

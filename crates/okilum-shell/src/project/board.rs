@@ -813,6 +813,8 @@ impl Board {
             .debug_selector(move || format!("board-card-{number}"))
             .w_full()
             .min_w_0()
+            .min_h_0()
+            .flex_shrink_0()
             .gap_2()
             .border_1()
             .border_color(if stuck {
@@ -838,21 +840,17 @@ impl Board {
                     .h_auto()
                     .p_3()
                     .child(
-                        v_flex()
-                            .w_full()
-                            .min_w_0()
-                            .gap_2()
-                            .items_start()
-                            .child(meta)
-                            .child(
-                                div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .whitespace_normal()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(scope.expected.clone()),
-                            ),
+                        // Natural block flow needs one width-constrained pass;
+                        // flex intrinsic-height negotiation is redundant here.
+                        div().block().w_full().min_w_0().child(meta.mb_2()).child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .whitespace_normal()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(scope.expected.clone()),
+                        ),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_local = None;
