@@ -21,7 +21,8 @@ concurrency:
 jobs:
   macos:
     runs-on: ${{ vars.OKILUM_GITHUB_MACOS_RUNNER || 'macos-15' }} # Unset restores the free lane.
-    timeout-minutes: 40
+    # Cold release + workspace test builds exceeded the former 40m ceiling (#2442).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:

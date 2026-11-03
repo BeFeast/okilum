@@ -42,10 +42,10 @@ cargo_args=(test --release --locked --target aarch64-apple-darwin)
 # with cfg(test), because this crate has no integration-test targets.
 cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 # Compile every workspace test target, including test-only cfg branches and integration tests.
-# Core and shell tests below select exactly this package pair: the same selection
-# unifies the same features (and dev-dependencies), so they reuse these binaries.
-# Selecting one package at a time rebuilt core and shell, about 7 minutes per PR.
-SHARED=(-p okilum-core -p okilum-shell)
+# Keep the workspace selection for filtered core/shell runs too. Selecting only
+# that pair drops features from other members' dev-dependencies (e.g. Brain's
+# TLS-enabled tungstenite), rebuilding the enormous shell test binary again.
+SHARED=(--workspace)
 cargo "${cargo_args[@]}" --workspace --no-run
 
 run_tests() {
