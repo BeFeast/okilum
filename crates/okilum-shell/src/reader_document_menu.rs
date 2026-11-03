@@ -122,7 +122,7 @@ impl Reader {
             };
         let title_width = toolbar_text_width(&self.selected_title(), FontWeight::MEDIUM, window);
         #[cfg(any(unix, windows))]
-        let dirty = self.source_is_dirty(cx);
+        let dirty = self.source_indicator_dirty(cx);
         #[cfg(not(any(unix, windows)))]
         let dirty = false;
         // Reserve padding, gaps, navigation, the Read or Edit button, menu and
@@ -268,7 +268,7 @@ impl Reader {
                 if show_presentation && !is_file {
                     row = row.child(self.render_live_preview_control(labels, cx));
                 }
-                if self.source_is_dirty(cx) {
+                if dirty {
                     row = row.child(self.render_save_status(cx));
                     if show_save {
                         row = row.child(

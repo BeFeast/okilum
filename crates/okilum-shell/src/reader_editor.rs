@@ -21,7 +21,7 @@ pub(crate) use external_edit::{OpenBlockExternally, StopBlockExternally};
 use gpui_component::input::clipboard::{ClipboardPasteEvent, ClipboardReadError, PasteMode};
 use gpui_component::input::projection::{
     ActiveSource, MarkerClick, MarkerKind, ProjectionProvider, SourceClick, SourceMutation,
-    SourceProjection, SourceSnapshot,
+    SourceProjection, SourceSnapshot, SourceStamp,
 };
 use gpui_component::input::{Editor, EditorState, WrappingIndent};
 pub(crate) use writing_modes::{toggle_focus_mode, toggle_typewriter_mode};
@@ -74,8 +74,39 @@ const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 /// notice with it and leaves any other notice alone (#1376).
 const CONFLICT_NOTICE: &str = "This file changed outside Okilum.";
 
+/// Paint-only status. Destructive actions keep using source_is_dirty, which
+/// reads the current native buffer directly rather than trusting this cache.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SourceStatusKey {
+    source: SourceStamp,
+    recovery_epoch: u64,
+    saves: u64,
+    saved_at: Option<time::OffsetDateTime>,
+    disk_stamp: Option<DiskStamp>,
+    conflict: bool,
+    protecting: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SourceStatus {
+    key: SourceStatusKey,
+    store_dirty: bool,
+    dirty: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_STATUS_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn take_source_status_bytes() -> usize {
+    SOURCE_STATUS_BYTES.with(|bytes| bytes.replace(0))
+}
+
 pub(super) struct Editing {
     store: FileEditor,
+    source_status: std::cell::Cell<Option<SourceStatus>>,
     live_preview: live_preview::LivePreview,
     /// The card under an inline formula holding the caret (#1645).
     math_preview: Entity<math_preview::MathPreview>,
@@ -311,6 +342,7 @@ impl Editing {
             .update(cx, |input, cx| input.set_disabled(true, cx));
         let Self {
             store,
+            source_status: _,
             live_preview,
             math_preview,
             table_grid,
@@ -340,6 +372,7 @@ impl Editing {
         } = self;
         (store, move |store| Self {
             store,
+            source_status: Default::default(),
             live_preview,
             math_preview,
             table_grid,
@@ -369,14 +402,19 @@ impl Editing {
         })
     }
 
+    #[cfg(test)]
     fn status(&self) -> &'static str {
+        self.status_with_dirty(self.store.dirty())
+    }
+
+    fn status_with_dirty(&self, store_dirty: bool) -> &'static str {
         if self.conflict_detected {
             "Conflict"
         } else if self.save_pending || self.autosaving.is_some() {
             "Saving…"
         } else if self.save_failed {
             "Save failed"
-        } else if self.store.dirty() {
+        } else if store_dirty {
             "Edited"
         } else {
             "Saved"
@@ -966,6 +1004,7 @@ impl Reader {
         let table_watch = cx.observe(&table_grid, |_, _, cx| cx.notify());
         self.editing = Some(Editing {
             store,
+            source_status: Default::default(),
             live_preview,
             math_preview,
             table_grid,
@@ -1064,7 +1103,12 @@ impl Reader {
                 Os::CURRENT.shortcut("secondary-s")
             ),
         };
-        let tooltip = format!("{} · {}", editing.status(), tooltip);
+        let status = self.source_presentation_status(cx).unwrap();
+        let tooltip = format!(
+            "{} · {}",
+            editing.status_with_dirty(status.store_dirty),
+            tooltip
+        );
         div()
             .id("source-save-status")
             .flex_none()
@@ -1074,7 +1118,7 @@ impl Reader {
             } else {
                 brand::palette(cx).text_muted
             })
-            .child(if self.source_is_dirty(cx) { "●" } else { "" })
+            .child(if status.dirty { "●" } else { "" })
             .tooltip(move |window, cx| {
                 gpui_component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
             })
@@ -1510,6 +1554,7 @@ impl Reader {
         }
         let editing = self.editing.as_mut().unwrap();
         // A save on the UI thread came after this one started; it decided.
+        editing.source_status.set(None);
         if editing.saves != saves {
             cx.notify();
             return;
@@ -2204,6 +2249,15 @@ fn live_blocks(
                             )
                         });
                         if opened {
+                            if let Some(at) = crate::source_presentation::table_cell_offset(
+                                &source,
+                                cell.row,
+                                cell.column,
+                            ) {
+                                grid.update(cx, |grid, _| {
+                                    grid.remember_source_press(*stamp, event.position, base + at)
+                                });
+                            }
                             cx.stop_propagation();
                             return;
                         }
@@ -2545,6 +2599,48 @@ impl Reader {
                 })
             })
     }
+    /// Reuse exact status facts while only selection/presentation changes.
+    /// This cache paints the dot and Save affordance; action guards deliberately
+    /// retain their independent current-buffer check in source_is_dirty.
+    fn source_presentation_status(&self, cx: &App) -> Option<SourceStatus> {
+        let editing = self.editing.as_ref()?;
+        let input = editing.input.read(cx);
+        let key = SourceStatusKey {
+            source: input.source_stamp(),
+            recovery_epoch: editing.recovery_epoch,
+            saves: editing.saves,
+            saved_at: editing.saved_at,
+            disk_stamp: editing.store.disk_stamp(),
+            conflict: editing.conflict_detected,
+            protecting: editing.protecting,
+        };
+        if let Some(status) = editing
+            .source_status
+            .get()
+            .filter(|status| status.key == key)
+        {
+            return Some(status);
+        }
+        #[cfg(test)]
+        SOURCE_STATUS_BYTES.with(|bytes| bytes.set(bytes.get() + input.text().len()));
+        let store_dirty = editing.store.dirty();
+        let status = SourceStatus {
+            key,
+            store_dirty,
+            dirty: store_dirty
+                || key.conflict
+                || key.protecting
+                || input.text().bytes().ne(editing.store.text().bytes()),
+        };
+        editing.source_status.set(Some(status));
+        Some(status)
+    }
+
+    pub(super) fn source_indicator_dirty(&self, cx: &App) -> bool {
+        self.source_presentation_status(cx)
+            .is_some_and(|status| status.dirty)
+    }
+
     pub(super) fn source_is_dirty(&self, cx: &App) -> bool {
         self.editing.as_ref().is_some_and(|e| {
             e.store.dirty()

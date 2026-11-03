@@ -274,3 +274,36 @@ local-index approach and painted-renderer regression are incorporated into this
 common Markdown path rather than enabling its restricted prose-only grammar.
 Deterministic renderer tests prove painted 1 MiB admission and bounded shaping;
 they do not establish physical display latency or the weak-Linux/M4 frame budgets.
+
+## Rendered-block source entry (#1642)
+
+Enter or F2 on a block held after Escape opens its complete Markdown source
+selected, with the caret at the start. Typing replaces that selection; ordinary
+source Undo restores the authored bytes. F2 next to a block across whitespace
+also selects its source; elsewhere F2 retains Rename note.
+
+Pointer entry keeps the exact rendered hit instead of selecting the block. A
+table cell maps to the start of its authored cell text, including Unicode and
+escaped pipes. An ordinary first table click retains the persistent editable
+grid; the matching second press of a double-click reveals the original cell's
+source offset even if the grid repainted between presses. Image presses land on
+the embed source. Ordinary double-click word selection outside blocks is unchanged.
+
+Escape renders the source block again. Presentation transitions anchor the
+block's source row top, so revealing raw rows or restoring a tall rendered
+block does not follow the logical return caret and move the view. Block keys
+wait for IME composition and commit settling. Opening and closing do not create
+source edits or Undo transactions.
+
+An unchanged keyboard round trip uses the remembered block, return caret and
+SourceStamp. Initial adjacent entry shares the native immutable Rope SourceSnapshot;
+noncollapsed F2 rejects before source lookup. A changed revision uses current
+source and validates the block again. This is scoped to explicit block commands;
+the per-keystroke Rope/delta pipeline from #2403 is retained.
+
+The dirty dot, Save affordance and save tooltip share paint-only status facts
+for a native source revision and its recovery/save baseline. Presentation-only
+entry and return reuse those facts without copying or comparing the complete
+note again. A native edit, save acknowledgement, conflict or recovery transition
+invalidates the facts. Destructive actions retain their independent exact check
+of the current native buffer.

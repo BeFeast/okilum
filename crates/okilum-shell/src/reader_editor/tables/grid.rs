@@ -126,6 +126,9 @@ pub(in crate::reader_editor) struct TableGrid {
     installed_epoch: Option<u64>,
     session: u64,
     selected: (usize, usize),
+    /// Rendered cell hit that opened this grid; only the matching second press
+    /// may reveal source instead of selecting a word in the new cell input.
+    source_press: Option<(SourceStamp, Point<Pixels>, usize)>,
     source_history: SourceHistory,
     #[cfg(test)]
     history_dispatches: usize,
@@ -164,6 +167,7 @@ impl TableGrid {
             installed_epoch: None,
             session: 0,
             selected: (0, 0),
+            source_press: None,
             source_history: SourceHistory::default(),
             #[cfg(test)]
             history_dispatches: 0,
@@ -226,6 +230,8 @@ impl TableGrid {
         let Some(cells) = model::CellGrid::new(&document[range.clone()]) else {
             return false;
         };
+        self.input
+            .update(cx, |state, _| state.preserve_source_anchor(range.start));
         self.source_history.sync(stamp);
         self.source_history.boundary = true;
         self.binding = Some(Binding {
@@ -315,6 +321,51 @@ impl TableGrid {
         self.focus_cell(row, column, window, cx)
     }
 
+    pub(in crate::reader_editor) fn remember_source_press(
+        &mut self,
+        stamp: SourceStamp,
+        position: Point<Pixels>,
+        offset: usize,
+    ) {
+        self.source_press = Some((stamp, position, offset));
+    }
+
+    fn continue_source_press(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((stamp, position, offset)) = self.source_press.take() else {
+            return;
+        };
+        if event.button != MouseButton::Left
+            || event.click_count != 2
+            || event.modifiers != Modifiers::default()
+            || (event.position.x - position.x).abs() > px(5.)
+            || (event.position.y - position.y).abs() > px(5.)
+            || self.input.read(cx).source_stamp() != stamp
+            || !self.current(cx)
+            || self.retain_pending_cells(cx)
+            || self
+                .cells
+                .iter()
+                .flatten()
+                .any(|cell| cell.read(cx).ime_settling(cx))
+        {
+            return;
+        }
+        let anchor = self.binding.as_ref().unwrap().table.start;
+        self.input
+            .update(cx, |state, _| state.preserve_source_anchor(anchor));
+        self.close(cx);
+        self.input.update(cx, |state, cx| {
+            state.set_selected_range_preserving_view(offset..offset, anchor, cx);
+            state.focus(window, cx);
+        });
+        cx.stop_propagation();
+    }
+
     /// Reinstall only after a real presentation change (including a standard
     /// LivePreview publication); never notify continuously while idle.
     pub(in crate::reader_editor) fn sync_presentation(
@@ -359,7 +410,12 @@ impl TableGrid {
             source: self.input.read(cx).source_snapshot(),
             table: binding.table.clone(),
         });
+        let anchor = binding.table.start;
         self.input.update(cx, |input, cx| {
+            // The asynchronously prepared grid changes the block's height.
+            // Keep the visible block in place instead of anchoring the blurred
+            // source editor's old caret below the table.
+            input.preserve_source_anchor(anchor);
             input.set_projection_provider(Some(provider), cx)
         });
         self.installed_epoch = Some(self.input.read(cx).presentation_epoch());
@@ -370,6 +426,7 @@ impl TableGrid {
             return;
         }
         self.binding = None;
+        self.source_press = None;
         self.preparing = None;
         self.session = self.session.wrapping_add(1);
         let owns_presentation =
@@ -435,9 +492,10 @@ impl TableGrid {
             return false;
         };
         let state = self.input.read(cx);
-        state.is_editable()
-            && state.source_stamp() == binding.stamp
-            && state.value().as_ref() == binding.document
+        // SourceStamp includes the native input identity and every mutation,
+        // including silent IME edits. Rechecking the whole note here adds no
+        // validation and materializes it on each grid entry/return and repaint.
+        state.is_editable() && state.source_stamp() == binding.stamp
     }
 
     fn current(&self, cx: &App) -> bool {
@@ -635,6 +693,15 @@ impl TableGrid {
     }
 
     fn source_mode(&mut self, select: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .cells
+            .iter()
+            .flatten()
+            .any(|cell| cell.read(cx).ime_settling(cx))
+        {
+            cx.stop_propagation();
+            return;
+        }
         if self.retain_pending_cells(cx) {
             cx.stop_propagation();
             return;
@@ -642,16 +709,19 @@ impl TableGrid {
         let Some(range) = self.active_range(cx) else {
             return;
         };
-        let document = self.input.read(cx).value().to_string();
-        let caret = super::super::block_entry::caret_outside(&document, &range);
+        // active_range checked this binding against the current revision.
+        // F2/Esc need no whole-note source materialization.
+        let document = &self.binding.as_ref().unwrap().document;
+        let caret = super::super::block_entry::caret_outside(document, &range);
         self.close(cx);
         self.input.update(cx, |state, cx| {
             let selection = if select {
-                range.clone()
+                // Keep the caret at the block start when opening its source.
+                range.end..range.start
             } else {
                 caret.map_or_else(|| range.clone(), |at| at..at)
             };
-            state.set_selected_range(selection, cx);
+            state.set_selected_range_preserving_view(selection, range.start, cx);
             state.focus(window, cx);
         });
         cx.stop_propagation();
@@ -753,6 +823,9 @@ impl Render for TableGrid {
             .flex()
             .flex_col()
             .font_family(reader_fonts::note(cx))
+            .capture_any_mouse_down(cx.listener(|this, event, window, cx| {
+                this.continue_source_press(event, window, cx);
+            }))
             // Nested cell input handles the press first. The outer source
             // editor must not take focus or reveal the table on the bubble.
             .on_mouse_down(
@@ -1411,6 +1484,24 @@ mod tests {
             visual.debug_bounds("editable-table-grid").is_some(),
             "cell press substituted the grid"
         );
+        // The grid's keyboard exit reuses its checked immutable binding. Cell
+        // checks may read their small values; copying the note is redundant.
+        crate::reader_editor::block_entry::take_source_work_bytes();
+        visual.simulate_keystrokes("f2");
+        assert!(
+            crate::reader_editor::block_entry::take_source_work_bytes() < source.len(),
+            "F2 from the grid must not materialize the whole note"
+        );
+        let table = source.find("| A").unwrap()..source.find("\n\nAfter").unwrap();
+        input.read_with(visual, |state, _| {
+            assert_eq!(state.selected_range(), table);
+            assert_eq!(state.cursor(), table.start);
+        });
+        grid.update_in(visual, |grid, window, cx| {
+            assert!(grid.open(table, window, cx));
+            assert!(grid.focus_cell(1, 0, window, cx));
+        });
+        visual.run_until_parked();
         visual.simulate_keystrokes("shift-tab");
         visual.run_until_parked();
         visual.update(|window, cx| {

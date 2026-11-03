@@ -2178,21 +2178,444 @@ mod tests {
         );
     }
 
-    /// #1642: a double-click on a rendered table opens its source with the
-    /// whole table selected, not a word of it.
+    /// Pointer entry is exact; keyboard entry is the only select-block gesture.
+    /// Exercise every cell, including non-ASCII source before and inside it.
     #[gpui::test]
-    fn double_click_on_a_rendered_table_selects_its_source(cx: &mut TestAppContext) {
-        let note = TABLE_NOTE;
-        let table = note.find("| Name").unwrap()..note.find("| 12 |").unwrap() + "| 12 |".len();
+    fn rendered_table_clicks_and_double_clicks_keep_exact_cell_offsets(cx: &mut TestAppContext) {
+        let note = "α Intro\n\n| Name | Count |\n|---|---|\n| яблоко | 3 |\n| pear | 12 |\n\nEnd\n";
         let (_reader, input, visual, _directory) = live_fixture(cx, note);
-        let cell = visual
-            .debug_bounds("table-cell-1-0")
-            .expect("a rendered table cell");
-        press(visual, cell.center(), 2);
+        input.update(visual, |i, _| i.enable_layout_diagnostics());
+        for (count, first_press) in [(1, false), (2, false), (2, true)] {
+            for (row, col, text, selector) in [
+                (0, 0, "Name", "table-cell-0-0"),
+                (0, 1, "Count", "table-cell-0-1"),
+                (1, 0, "яблоко", "table-cell-1-0"),
+                (1, 1, "3 |", "table-cell-1-1"),
+                (2, 0, "pear", "table-cell-2-0"),
+                (2, 1, "12 |", "table-cell-2-1"),
+            ] {
+                // This short fixture must expose the reference paragraph. The
+                // source bounds API cannot prove stability for an offscreen row.
+                input.update(visual, |i, cx| {
+                    i.set_scroll_offset(point(px(0.), px(0.)), cx)
+                });
+                block_draw(visual);
+                let cell = visual
+                    .debug_bounds(selector)
+                    .expect("positive control: the target cell is rendered");
+                let reference =
+                    input.read_with(visual, |i, _| i.range_to_bounds(&(0..0)).unwrap().origin);
+                input.read_with(visual, |i, _| {
+                    assert!(
+                        i.input_bounds().contains(&reference),
+                        "positive control: reference paragraph is visible"
+                    )
+                });
+                // Include both actual presses with the grid repainted between
+                // them, as well as the direct double-click event.
+                if first_press {
+                    input.read_with(visual, |i, _| i.take_layout_frames());
+                    press(visual, cell.center(), 1);
+                    block_draw(visual);
+                    assert!(
+                        visual.debug_bounds("editable-table-grid").is_some(),
+                        "positive control: the first press opened the persistent grid"
+                    );
+                    input.read_with(visual, |i, _| {
+                        let frames = i.take_layout_frames();
+                        assert!(
+                            !frames.is_empty(),
+                            "positive control: grid adoption drew frames"
+                        );
+                        assert!(
+                            frames.iter().all(|frame| frame.scroll_delta.abs() < 0.5),
+                            "grid adoption retains the view: {frames:?}"
+                        );
+                        assert_eq!(
+                            i.range_to_bounds(&(0..0)).unwrap().origin,
+                            reference,
+                            "first grid press, cell {row}/{col}: paragraph stays put"
+                        )
+                    });
+                }
+                // Modified single clicks use the source hook; ordinary single
+                // clicks retain the persistent table grid's existing contract.
+                press_with_modifiers(
+                    visual,
+                    cell.center(),
+                    count,
+                    Modifiers {
+                        control: count == 1,
+                        ..Default::default()
+                    },
+                );
+                block_draw(visual);
+                input.read_with(visual, |i, _| {
+                    let at = note.find(text).unwrap();
+                    assert_eq!(
+                        i.selected_range(),
+                        at..at,
+                        "click {count}, cell {row}/{col}"
+                    );
+                    assert_eq!(i.value().as_ref(), note);
+                    assert_eq!(
+                        i.range_to_bounds(&(0..0)).unwrap().origin,
+                        reference,
+                        "click {count}, first_press={first_press}, cell {row}/{col}: paragraph above stays put"
+                    );
+                });
+                assert!(visual.debug_bounds(selector).is_none());
+                visual.simulate_keystrokes("escape");
+                block_draw(visual);
+                assert_eq!(
+                    visual.debug_bounds(selector),
+                    Some(cell),
+                    "return restores the exact rendered geometry"
+                );
+            }
+        }
+    }
+
+    /// The full Reader key routing, provider and GPUI layout participate. Each
+    /// absence check has a rendered/source/focus or source-edit positive control.
+    #[gpui::test]
+    fn enter_and_f2_select_rendered_block_contents_without_source_work_or_layout_shift(
+        cx: &mut TestAppContext,
+    ) {
+        let tall_table = format!(
+            "| Name | Count |\n|---|---|\n{}",
+            (0..30)
+                .map(|i| format!("| row {i} | {i} |\n"))
+                .collect::<String>()
+        )
+        .trim_end()
+        .to_owned();
+        for source in [
+            "| Name | Count |\n|---|---|\n| pear | 12 |",
+            "![[missing-picture.png]]",
+            "> [!note] Title\n> callout body",
+            tall_table.as_str(),
+        ] {
+            let prefix = format!("{}Above marker α\n\n", "Earlier paragraph\n\n".repeat(30));
+            let note = format!("{prefix}{source}\n\n{}", "End of note\n\n".repeat(30));
+            let reference_at = note.find("Above marker").unwrap();
+            let reference_line = note[..reference_at].bytes().filter(|&b| b == b'\n').count();
+            let block = note.find(source).unwrap()..note.find(source).unwrap() + source.len();
+            let (reader, input, visual, _directory) = live_fixture(cx, &note);
+            let stamp = input.read_with(visual, |i, _| i.source_stamp());
+            input.update(visual, |i, cx| {
+                i.set_selected_range(block.start..block.start, cx)
+            });
+            block_draw(visual);
+            visual.simulate_keystrokes("escape");
+            block_draw(visual);
+            let held = reader.read_with(visual, |r, cx| r.valid_block_focus(cx).unwrap());
+            assert_eq!(
+                held.block, block,
+                "positive control: Esc holds the rendered block"
+            );
+            // Explicitly expose the reference source row: an offscreen range
+            // is not evidence of stable painted geometry.
+            input.update(visual, |i, cx| i.scroll_line_to_top(reference_line, cx));
+            block_draw(visual);
+            input.read_with(visual, |i, _| {
+                assert!(
+                    i.visible_row_range().unwrap().contains(&reference_line),
+                    "positive control: the actual reference source row is laid out"
+                );
+                assert!(i.input_bounds().contains(
+                    &i.range_to_bounds(&(reference_at..reference_at))
+                        .unwrap()
+                        .origin
+                ));
+            });
+            let reference = input.read_with(visual, |i, _| {
+                i.range_to_bounds(&(reference_at..reference_at))
+                    .unwrap()
+                    .origin
+            });
+            let scroll = input.read_with(visual, |i, _| i.scroll_offset());
+            assert!(
+                scroll.y < px(-200.),
+                "positive control: the editor is scrolled"
+            );
+            for key in ["enter", "f2", "enter"] {
+                crate::reader_editor::block_entry::take_source_work_bytes();
+                visual.simulate_keystrokes(key);
+                block_draw(visual);
+                assert_eq!(
+                    crate::reader_editor::block_entry::take_source_work_bytes(),
+                    0,
+                    "{key}: presentation entry retains native Rope source"
+                );
+                input.read_with(visual, |i, _| {
+                    assert_eq!(i.selected_range(), block, "{key}: whole {source} selected");
+                    assert_eq!(i.cursor(), block.start);
+                    assert_eq!(i.source_stamp(), stamp, "entry changes no authored bytes");
+                    assert_eq!(
+                        i.range_to_bounds(&(reference_at..reference_at))
+                            .unwrap()
+                            .origin,
+                        reference
+                    );
+                });
+                crate::reader_editor::block_entry::take_source_work_bytes();
+                visual.simulate_keystrokes("escape");
+                block_draw(visual);
+                assert_eq!(
+                    crate::reader_editor::block_entry::take_source_work_bytes(),
+                    0,
+                    "Escape retains native Rope source"
+                );
+                reader.read_with(visual, |r, cx| {
+                    assert_eq!(r.valid_block_focus(cx), Some(held.clone()))
+                });
+                input.read_with(visual, |i, _| {
+                    assert_eq!(i.selected_range(), held.caret..held.caret);
+                    assert_eq!(
+                        i.range_to_bounds(&(reference_at..reference_at))
+                            .unwrap()
+                            .origin,
+                        reference
+                    );
+                    assert_eq!(i.value().as_ref(), note);
+                });
+            }
+            visual.simulate_keystrokes("enter");
+            block_draw(visual);
+            visual.simulate_input("R");
+            block_draw(visual);
+            input.read_with(visual, |i, _| {
+                assert_eq!(i.value().as_ref(), note.replacen(source, "R", 1))
+            });
+            #[cfg(target_os = "macos")]
+            visual.simulate_keystrokes("cmd-z");
+            #[cfg(not(target_os = "macos"))]
+            visual.simulate_keystrokes("ctrl-z");
+            block_draw(visual);
+            input.read_with(visual, |i, _| {
+                assert_eq!(i.value().as_ref(), note, "Undo restores exact source")
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn block_round_trip_retains_typewriter_view_and_arrow_resumes_follow(cx: &mut TestAppContext) {
+        let source = "![[missing-picture.png]]";
+        let note = format!(
+            "{}Above marker α\n\n{source}\n\nAfter marker\n\n{}",
+            "Earlier paragraph\n\n".repeat(40),
+            "Later paragraph\n\n".repeat(40),
+        );
+        let block = note.find(source).unwrap()..note.find(source).unwrap() + source.len();
+        let reference = note.find("Above marker").unwrap();
+        let (reader, input, visual, directory) = live_fixture(cx, &note);
+        visual.update(|_, cx| {
+            reader_ui_state::install(&directory.path().join("writing-state"), cx);
+            reader_ui_state::set_typewriter_mode(true, cx);
+        });
+        input.update(visual, |state, cx| {
+            state.set_selected_range(block.start..block.start, cx)
+        });
         block_draw(visual);
-        input.read_with(visual, |input, _| {
-            assert_eq!(input.selected_range(), table.clone());
-            assert_eq!(input.value().as_ref(), note);
+        let position = |visual: &mut VisualTestContext| {
+            input.read_with(visual, |state, _| {
+                assert!(
+                    state.is_typewriter(),
+                    "positive control: continuous centring is enabled"
+                );
+                let position = state
+                    .range_to_bounds(&(reference..reference))
+                    .unwrap()
+                    .origin;
+                assert!(
+                    state.input_bounds().contains(&position),
+                    "positive control: the unchanged reference is visible"
+                );
+                assert!(
+                    state.scroll_offset().y < px(-200.),
+                    "the editor is scrolled"
+                );
+                position
+            })
+        };
+        let before = position(visual);
+        visual.simulate_keystrokes("escape");
+        block_draw(visual);
+        assert!(
+            reader.read_with(visual, |r, cx| r.valid_block_focus(cx).is_some()),
+            "Escape holds the rendered block"
+        );
+        assert_eq!(
+            position(visual),
+            before,
+            "Escape preserves an actively followed view"
+        );
+        for key in ["enter", "f2"] {
+            crate::reader_editor::block_entry::take_source_work_bytes();
+            visual.simulate_keystrokes(key);
+            block_draw(visual);
+            assert_eq!(
+                input.read_with(visual, |state, _| state.selected_range()),
+                block
+            );
+            assert_eq!(position(visual), before, "{key}: retain the view");
+            visual.simulate_keystrokes("escape");
+            block_draw(visual);
+            assert_eq!(position(visual), before);
+            assert_eq!(
+                crate::reader_editor::block_entry::take_source_work_bytes(),
+                0,
+                "typewriter block transitions do no whole-note source work"
+            );
+        }
+        // A real caret movement ends the presentation pause. The fixture is
+        // far from either document edge, so centring must visibly move it.
+        let held_scroll = input.read_with(visual, |state, _| state.scroll_offset());
+        visual.simulate_keystrokes("right");
+        block_draw(visual);
+        input.read_with(visual, |state, _| {
+            assert!(state.is_typewriter());
+            assert!(
+                (state.scroll_offset().y - held_scroll.y).abs() > px(1.),
+                "positive control: arrow movement resumes typewriter centring"
+            );
+            let caret = state.cursor();
+            let bounds = state.range_to_bounds(&(caret..caret)).unwrap();
+            assert!(state.input_bounds().contains(&bounds.origin));
+            assert!(
+                (bounds.center().y - state.input_bounds().center().y).abs() < px(32.),
+                "the moved caret is centred again"
+            );
+        });
+        input.read_with(visual, |state, _| assert_eq!(state.value().as_ref(), note));
+        visual.update(|_, cx| reader_ui_state::set_typewriter_mode(false, cx));
+    }
+
+    #[gpui::test]
+    fn block_status_reuses_paint_facts_and_observes_native_edits_before_save(
+        cx: &mut TestAppContext,
+    ) {
+        let note = "Intro\n\n![[missing-picture.png]]\n\nEnd\n";
+        let (reader, input, visual, directory) = live_fixture(cx, note);
+        reader.read_with(visual, |r, cx| assert!(!r.source_indicator_dirty(cx)));
+        crate::reader_editor::block_entry::take_source_work_bytes();
+        block_draw(visual);
+        reader.read_with(visual, |r, cx| assert!(!r.source_indicator_dirty(cx)));
+        assert_eq!(
+            crate::reader_editor::block_entry::take_source_work_bytes(),
+            0,
+            "unchanged paint does neither source copies nor status comparisons"
+        );
+        reader.update_in(visual, |r, window, cx| {
+            input.update(cx, |state, cx| {
+                assert!(state.replace_source_range(0..5, "Changed", window, cx));
+            });
+            // Query before the deferred SourceMutation subscriber adopts text.
+            assert!(
+                r.source_indicator_dirty(cx),
+                "native revision is already dirty"
+            );
+            assert!(r.source_is_dirty(cx), "the independent action guard agrees");
+        });
+        assert!(
+            crate::reader_editor::block_entry::take_source_work_bytes() >= note.len(),
+            "positive control: a new authored revision performs exact status work"
+        );
+        block_draw(visual);
+        reader.update_in(visual, |r, _, cx| {
+            let stamp = input.read(cx).source_stamp();
+            assert!(r.source_indicator_dirty(cx));
+            assert!(r.save_source(cx));
+            assert_eq!(
+                input.read(cx).source_stamp(),
+                stamp,
+                "Save changes only the baseline"
+            );
+            assert!(
+                !r.source_indicator_dirty(cx),
+                "the saved baseline invalidates paint facts"
+            );
+            assert!(!r.source_is_dirty(cx));
+        });
+        block_draw(visual);
+        #[cfg(target_os = "macos")]
+        visual.simulate_keystrokes("cmd-z");
+        #[cfg(not(target_os = "macos"))]
+        visual.simulate_keystrokes("ctrl-z");
+        block_draw(visual);
+        reader.read_with(visual, |r, cx| {
+            assert!(
+                r.source_indicator_dirty(cx),
+                "Undo differs from the saved baseline"
+            );
+            assert!(r.source_is_dirty(cx));
+            assert_eq!(input.read(cx).value().as_ref(), note);
+        });
+        let saved = std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap();
+        assert_eq!(saved, note.replacen("Intro", "Changed", 1));
+    }
+
+    #[gpui::test]
+    fn block_keys_leave_ime_composition_and_commit_settle_alone(cx: &mut TestAppContext) {
+        let note = "Intro\n\n![[missing.png]]\n\nEnd\n";
+        let (reader, input, visual, _directory) = live_fixture(cx, note);
+        input.update(visual, |i, cx| i.set_selected_range(5..5, cx));
+        visual.simulate_keystrokes("f2");
+        block_draw(visual);
+        assert!(
+            !input.read_with(visual, |i, _| i.selected_range().is_empty()),
+            "positive control: F2 opens the image without an IME"
+        );
+        visual.simulate_keystrokes("escape");
+        block_draw(visual);
+        input.update_in(visual, |i, window, cx| {
+            i.replace_and_mark_text_in_range(None, "か", None, window, cx);
+        });
+        block_draw(visual);
+        for composing in [true, false] {
+            let before =
+                input.read_with(visual, |i, _| (i.value().to_string(), i.selected_range()));
+            visual.simulate_keystrokes("f2");
+            reader.update_in(visual, |r, _, cx| {
+                r.enter_focused_block(
+                    &gpui_component::input::Enter {
+                        secondary: false,
+                        shift: false,
+                    },
+                    cx,
+                );
+                assert!(r.close_rendered_block(cx));
+            });
+            block_draw(visual);
+            input.read_with(visual, |i, cx| {
+                assert_eq!(i.ime_composing(), composing);
+                assert!(i.ime_settling(cx));
+                assert_eq!((i.value().to_string(), i.selected_range()), before);
+            });
+            assert!(reader.read_with(visual, |r, _| r.renaming.is_none()));
+            if composing {
+                input.update_in(visual, |i, window, cx| {
+                    let marked = i.marked_text_range(window, cx);
+                    assert!(marked.is_some(), "positive control: real preedit");
+                    i.replace_text_in_range(marked, "漢", window, cx);
+                });
+                block_draw(visual);
+            }
+        }
+        visual.executor().advance_clock(
+            super::super::ime_guard::IME_SETTLE + std::time::Duration::from_millis(100),
+        );
+        visual.simulate_keystrokes("f2");
+        block_draw(visual);
+        input.read_with(visual, |i, _| {
+            let text = i.value();
+            let start = text.find("![[").unwrap();
+            assert_eq!(
+                i.selected_range(),
+                start..start + "![[missing.png]]".len(),
+                "positive control: F2 works again after settle"
+            );
         });
     }
 
