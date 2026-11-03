@@ -45,6 +45,13 @@ pub(super) struct ImageCommand {
     command: Command,
 }
 
+pub(super) fn open_modifier(os: platform::labels::Os, modifiers: Modifiers) -> bool {
+    match os {
+        platform::labels::Os::Mac => modifiers.platform,
+        _ => modifiers.control,
+    }
+}
+
 fn reveal_label(os: platform::labels::Os) -> &'static str {
     match os {
         platform::labels::Os::Mac => "Show in Finder",
@@ -99,14 +106,13 @@ impl Target {
             })
     }
     fn entries(&self) -> Vec<(&'static str, Command, bool)> {
+        self.entries_for(platform::labels::Os::CURRENT)
+    }
+    fn entries_for(&self, os: platform::labels::Os) -> Vec<(&'static str, Command, bool)> {
         let available = self.url.is_some();
         let mut entries = Vec::new();
         if self.local.is_some() || !available {
-            entries.push((
-                reveal_label(platform::labels::Os::CURRENT),
-                Command::Reveal,
-                !available,
-            ));
+            entries.push((reveal_label(os), Command::Reveal, !available));
         }
         entries.push((
             if self.local.is_none() && available {
@@ -144,27 +150,27 @@ impl Target {
         entries
     }
     fn is_image(&self) -> bool {
-        self.local
-            .as_ref()
-            .and_then(|path| path.extension())
-            .and_then(|ext| ext.to_str())
-            .is_none_or(|ext| {
-                matches!(
-                    ext.to_ascii_lowercase().as_str(),
-                    "png"
-                        | "jpg"
-                        | "jpeg"
-                        | "gif"
-                        | "webp"
-                        | "svg"
-                        | "bmp"
-                        | "heic"
-                        | "heif"
-                        | "tiff"
-                        | "tif"
-                        | "avif"
-                )
-            })
+        self.local.as_ref().is_none_or(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "png"
+                            | "jpg"
+                            | "jpeg"
+                            | "gif"
+                            | "webp"
+                            | "svg"
+                            | "bmp"
+                            | "heic"
+                            | "heif"
+                            | "tiff"
+                            | "tif"
+                            | "avif"
+                    )
+                })
+        })
     }
     fn reference(
         reader: &Reader,
@@ -230,12 +236,7 @@ pub(super) fn decorate(
             let _ = menu_reader.update(cx, |reader, cx| reader.image_menu(target, window, cx));
         })
         .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-            let modified = if cfg!(target_os = "macos") {
-                event.modifiers.platform
-            } else {
-                event.modifiers.control || event.modifiers.platform
-            };
-            if modified {
+            if open_modifier(platform::labels::Os::CURRENT, event.modifiers) {
                 cx.stop_propagation();
                 let _ = reader.update(cx, |reader, cx| {
                     reader.image_command(
@@ -707,7 +708,33 @@ mod tests {
             platform::labels::Os::Windows,
             platform::labels::Os::Linux,
         ] {
-            assert!(!reveal_label(os).is_empty());
+            assert!(file
+                .entries_for(os)
+                .contains(&(reveal_label(os), Command::Reveal, false)));
+            assert!(file
+                .entries_for(os)
+                .contains(&("Copy path", Command::CopyRelative, false)));
+            assert!(!open_modifier(os, Modifiers::default()));
+            assert_eq!(
+                open_modifier(
+                    os,
+                    Modifiers {
+                        platform: true,
+                        ..Default::default()
+                    }
+                ),
+                os == platform::labels::Os::Mac
+            );
+            assert_eq!(
+                open_modifier(
+                    os,
+                    Modifiers {
+                        control: true,
+                        ..Default::default()
+                    }
+                ),
+                os != platform::labels::Os::Mac
+            );
         }
     }
 
