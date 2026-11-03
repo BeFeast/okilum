@@ -1,0 +1,88 @@
+name: reader-relaunch-controls
+on:
+  push:
+    branches: ['qa/2517-relaunch-controls']
+permissions:
+  contents: read
+jobs:
+  controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '3'
+      RAYON_NUM_THREADS: '3'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record runner and fixture filesystem
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          uname -a
+          lscpu
+          free -h
+          findmnt -T "$RUNNER_TEMP"
+      - name: Install system libraries
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh build-essential cmake pkg-config curl git mold zstd gnupg gpgv tini libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev
+      - name: Restore dependency cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: reader-relaunch-controls-v1
+          restore-keys: |
+            agent-v1-Linux-
+      - name: Compare base and PR on this VM
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/relaunch-controls"
+          mkdir -p "$evidence"
+          git fetch --no-tags origin c41fdfa5ec044490024e51e5961649eda5137cea 0de3e47daa899858b5b323ffaa222df111cc9e71
+          source scripts/ci/test-nofile.sh
+          rustc -Vv
+          tests=(
+            reader_loading::tests::persisted_relaunch_with_small_source_batch_refreshes_graph_and_search
+            reader_loading::tests::second_unchanged_relaunch_reuses_sources_and_graph
+            reader_loading::tests::second_unchanged_relaunch_after_topology_delta_reuses_sources_and_graph
+          )
+          for variant in base head; do
+            case "$variant" in
+              base) revision=c41fdfa5ec044490024e51e5961649eda5137cea ;;
+              head) revision=0de3e47daa899858b5b323ffaa222df111cc9e71 ;;
+            esac
+            git checkout --detach "$revision"
+            test "$(git rev-parse HEAD)" = "$revision"
+            export OKILUM_SOURCE_COMMIT="$revision"
+            scripts/vendor-setup.sh
+            scripts/vendor-setup.sh --verify
+            cargo test --locked -p okilum-shell --bin okilum -- --list | tee "$evidence/$variant-inventory.txt"
+            for test_name in "${tests[@]}"; do
+              grep -Fx "$test_name: test" "$evidence/$variant-inventory.txt"
+            done
+            for repetition in 1 2 3; do
+              echo "CONTROL_START variant=$variant revision=$revision repetition=$repetition"
+              result=0
+              cargo test --offline --locked -p okilum-shell --bin okilum -- --test-threads=4 2>&1 | tee "$evidence/$variant-$repetition.log" || result=$?
+              echo "CONTROL_END variant=$variant revision=$revision repetition=$repetition status=$result" | tee -a "$evidence/results.txt"
+              for test_name in "${tests[@]}"; do
+                grep -F "test $test_name ..." "$evidence/$variant-$repetition.log"
+              done
+            done
+          done
+      - name: Upload source-pinned control evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reader-relaunch-controls
+          path: ${{ runner.temp }}/relaunch-controls/
+          if-no-files-found: error
