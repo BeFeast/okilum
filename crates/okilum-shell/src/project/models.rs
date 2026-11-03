@@ -32,6 +32,7 @@ pub(super) struct PickerUi {
     preferences: Option<preferences::Prefs>,
     preferences_origin: Option<String>,
     overlay: Option<gpui_base::DeferredPopover>,
+    dismissal: Option<Subscription>,
     #[cfg(any(test, feature = "project-ui-harness"))]
     painted_surface: std::rc::Rc<std::cell::Cell<Option<SurfacePaint>>>,
     #[cfg(test)]
@@ -65,8 +66,34 @@ impl ProjectView {
         }
         self.model_open = false;
         self.model_ui.overlay.take();
+        self.model_ui.dismissal.take();
         self.compose.update(cx, |input, cx| input.focus(window, cx));
         cx.notify();
+    }
+
+    fn ensure_model_dismissal(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.model_ui.dismissal.is_some() {
+            return;
+        }
+        let owner = window.window_handle();
+        let weak = cx.weak_entity();
+        // A deferred popup's search input can resolve toolkit/Reader actions
+        // before low-level listeners on the Manager. Own plain Escape at app
+        // dispatch, scoped to this window and the open popup's lifetime.
+        self.model_ui.dismissal = Some(cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle() != owner
+                || event.keystroke.key != "escape"
+                || event.keystroke.modifiers != Modifiers::default()
+            {
+                return;
+            }
+            let _ = weak.update(cx, |view, cx| {
+                if view.model_open {
+                    view.close_models(window, cx);
+                    cx.stop_propagation();
+                }
+            });
+        }));
     }
 
     fn load_model_preferences(&mut self) {
@@ -476,6 +503,7 @@ impl ProjectView {
             );
         }
         self.model_open = true;
+        self.ensure_model_dismissal(window, cx);
         self.model_ui
             .panel_width
             .set((window.viewport_size().width - px(48.)).max(px(0.)));
@@ -621,6 +649,7 @@ impl ProjectView {
                             }
                             if applying {
                                 this.model_open = true;
+                                this.ensure_model_dismissal(window, cx);
                                 this.model_ui.overlay.get_or_insert_with(||gpui_base::GlobalState::register_deferred_popover(cx));
                                 if let Some(input) = &this.model_ui.search {
                                     input.update(cx, |input, cx| input.focus(window, cx));
@@ -757,16 +786,6 @@ impl ProjectView {
                 .on_prepaint(gpui_base::GlobalState::record_native_overlay)
                 .tab_group()
                 .key_context("ManagerModels")
-                .on_action(
-                    cx.listener(|this, _: &crate::DismissManagerModel, window, cx| {
-                        if this.model_open {
-                            this.close_models(window, cx);
-                            cx.stop_propagation();
-                        } else {
-                            cx.propagate();
-                        }
-                    }),
-                )
                 // Reader's Escape binding dispatches Dismiss before low-level
                 // key listeners. Own it inside this deferred popup so it cannot
                 // dismiss background Reader UI or trap focus in model search.

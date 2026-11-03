@@ -41,6 +41,8 @@ pub(super) fn collect(cx: &mut App) {
         return;
     }
     gpui::profiler::set_trace_enabled(true);
+    cx.intercept_keystrokes(|event, _, _| eprintln!("QA KEY {event:?}"))
+        .detach();
     let mut collector = gpui::profiler::FrameTimingCollector::new();
     cx.spawn(async move |_cx| {
         loop {
