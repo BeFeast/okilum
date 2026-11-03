@@ -1,5 +1,5 @@
 use super::*;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
@@ -285,6 +285,7 @@ fn appimage_chain_uses_embedded_builds_and_rejects_publication_scale() {
 
 /// One scripted reply per accepted connection. `Connection: close` gives every
 /// notes request its own connection, so counts are exact (#2451).
+#[derive(Clone)]
 struct Reply {
     status: u16,
     body: Vec<u8>,
@@ -327,7 +328,9 @@ impl Reply {
 }
 
 /// A local HTTP responder: connection N is answered by script entry N and the
-/// last entry repeats. No real network and no real feeds are involved (#2451).
+/// last entry repeats. Each connection is served on its own thread so a hung
+/// reply never delays the next request. No real network and no real feeds are
+/// involved (#2451).
 struct FakeServer {
     url: String,
     requests: Arc<AtomicUsize>,
@@ -341,10 +344,26 @@ impl FakeServer {
         listener.set_nonblocking(true).unwrap();
         let requests = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
+        let script = Arc::new(script);
         let handle = std::thread::spawn({
             let requests = requests.clone();
             let stop = stop.clone();
-            move || serve(&listener, &script, &requests, &stop)
+            let script = script.clone();
+            move || {
+                while !stop.load(Ordering::SeqCst) {
+                    let Ok((socket, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    };
+                    let index = requests.fetch_add(1, Ordering::SeqCst);
+                    let Some(reply) = script.get(index).or_else(|| script.last()) else {
+                        continue;
+                    };
+                    let reply = reply.clone();
+                    let stop = stop.clone();
+                    std::thread::spawn(move || respond(socket, &reply, &stop));
+                }
+            }
         });
         Self {
             url,
@@ -376,50 +395,40 @@ impl Drop for FakeServer {
         self.handle.take().unwrap().join().unwrap();
     }
 }
-fn serve(listener: &TcpListener, script: &[Reply], requests: &AtomicUsize, stop: &AtomicBool) {
-    while !stop.load(Ordering::SeqCst) {
-        let Ok((mut socket, _)) = listener.accept() else {
-            std::thread::sleep(Duration::from_millis(2));
-            continue;
-        };
-        let index = requests.fetch_add(1, Ordering::SeqCst);
-        let Some(reply) = script.get(index).or_else(|| script.last()) else {
-            continue;
-        };
-        socket
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        let mut chunk = [0u8; 2048];
-        let mut received = Vec::new();
-        while !received.ends_with(b"\r\n\r\n") && received.len() < 2048 {
-            match socket.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => received.extend_from_slice(&chunk[..read]),
-            }
+fn respond(mut socket: TcpStream, reply: &Reply, stop: &AtomicBool) {
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut chunk = [0u8; 2048];
+    let mut received = Vec::new();
+    while !received.ends_with(b"\r\n\r\n") && received.len() < 2048 {
+        match socket.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => received.extend_from_slice(&chunk[..read]),
         }
-        // Sleep in slices so drop() can end a long delay promptly.
-        let mut waited = Duration::ZERO;
-        while waited < reply.delay && !stop.load(Ordering::SeqCst) {
-            let slice = Duration::from_millis(10).min(reply.delay - waited);
-            std::thread::sleep(slice);
-            waited += slice;
-        }
-        if reply.hang || stop.load(Ordering::SeqCst) {
-            continue;
-        }
-        let reason = match reply.status {
-            200 => "OK",
-            404 => "Not Found",
-            _ => "Unavailable",
-        };
-        let _ = write!(
-            socket,
-            "HTTP/1.1 {} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            reply.status,
-            reply.body.len()
-        );
-        let _ = socket.write_all(&reply.body);
     }
+    // Sleep in slices so drop() can end a long delay promptly.
+    let mut waited = Duration::ZERO;
+    while waited < reply.delay && !stop.load(Ordering::SeqCst) {
+        let slice = Duration::from_millis(10).min(reply.delay - waited);
+        std::thread::sleep(slice);
+        waited += slice;
+    }
+    if reply.hang || stop.load(Ordering::SeqCst) {
+        return;
+    }
+    let reason = match reply.status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Unavailable",
+    };
+    let _ = write!(
+        socket,
+        "HTTP/1.1 {} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        reply.status,
+        reply.body.len()
+    );
+    let _ = socket.write_all(&reply.body);
 }
 
 fn test_profile(url: &str, attempts: usize) -> Profile {
