@@ -194,7 +194,7 @@ impl Board {
                                 }),
                         );
                     }
-                    menu
+                    menu.scrollable(true)
                 }),
         );
         for (index, name) in self.filter.labels.iter().enumerate() {
