@@ -1248,8 +1248,10 @@ fn reader_plugins(
     sel_format: SelectionFormat,
     states: prepared_links::States,
     identities: &[okilum_core::document_links::prepared::LinkIdentity],
+    decorate_document: bool,
 ) -> TextView {
-    reader_plugins_at(
+    let documents_entity = entity.clone();
+    let view = reader_plugins_at(
         MarkdownScope::default(),
         root,
         view,
@@ -1257,7 +1259,12 @@ fn reader_plugins(
         sel_format,
         states,
         identities,
-    )
+    );
+    if decorate_document {
+        reader_document_decorations::install(view, documents_entity, None)
+    } else {
+        view
+    }
 }
 
 #[derive(Default)]
@@ -1285,7 +1292,6 @@ fn reader_plugins_at(
         Arc::new(std::collections::BTreeSet::new())
     };
     let hover_entity = entity.clone();
-    let hover_entity_for_documents = entity.clone();
     let tasks_entity = entity.clone();
     let image_actions = entity.clone();
     let view = markdown_plugins_at(
@@ -1344,11 +1350,7 @@ fn reader_plugins_at(
         });
     })
     .link_presentation(move |url| reader_hover::link_presentation(url, &states, &missing_cards));
-    reader_document_decorations::install(
-        reader_tasks::plugins(view, tasks_entity),
-        hover_entity_for_documents,
-        None,
-    )
+    reader_tasks::plugins(view, tasks_entity)
 }
 
 type MarkdownLinkHandler = Arc<dyn Fn(&str, &ClickEvent, &mut Window, &mut App) + Send + Sync>;
@@ -2612,6 +2614,7 @@ impl Reader {
             self.sel_format,
             self.link_presentations.clone(),
             &self.link_identities,
+            self.agent_document_enabled(cx),
         );
         {
             let _phase = reader_diagnostics::phase(cx, "note_open_set_text");
@@ -5586,6 +5589,7 @@ impl Reader {
                                     self.sel_format,
                                     self.link_presentations.clone(),
                                     &self.link_identities,
+                                    self.agent_document_enabled(cx),
                                 )
                                 .table_actions(
                                     move |data, _, _| {
@@ -5631,6 +5635,7 @@ impl Reader {
             self.sel_format,
             self.link_presentations.clone(),
             &self.link_identities,
+            false,
         );
         let markdown = markdown.to_owned();
         let sel_format = self.sel_format;
@@ -5738,6 +5743,7 @@ impl Reader {
                                 self.sel_format,
                                 self.link_presentations.clone(),
                                 &self.link_identities,
+                                false,
                             )),
                         ),
                 )
@@ -7428,7 +7434,10 @@ impl Reader {
     }
 
     fn render_agent_document(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.project_navigation.board_visible {
+        if self.project_navigation.board_visible
+            || self.project_navigation.section != reader_project_navigation::Section::Reader
+            || (self.project_open && self.project_navigation.active.is_none())
+        {
             return None;
         }
         let current = self.agent_document.as_ref()?;
@@ -7436,6 +7445,7 @@ impl Reader {
         let expanded = current.expand_all;
         let mut panel = v_flex()
             .id("agent-document-context")
+            .debug_selector(|| "agent-document-context".into())
             .w_full()
             .max_h(px(160.))
             .overflow_y_scroll()

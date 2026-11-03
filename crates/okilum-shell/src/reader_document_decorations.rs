@@ -30,25 +30,33 @@ pub(super) fn install(
                 return div().into_any_element();
             };
             let entity = reader.upgrade();
-            let this = entity.as_ref().map(|entity| entity.read(cx));
-            let current = this.and_then(|this| this.agent_document.as_ref());
-            let origin = current.map(|current| {
-                source
-                    .clone()
-                    .unwrap_or_else(|| current.root.join(&current.path))
-            });
+            let links: Vec<_> = data
+                .directives
+                .iter()
+                .map(|directive| {
+                    let this = entity.as_ref()?.read(cx);
+                    let current = this.agent_document.as_ref()?;
+                    let origin = source
+                        .clone()
+                        .unwrap_or_else(|| current.root.join(&current.path));
+                    find_link(current, &origin, directive)
+                })
+                .collect();
             let mut column = v_flex().w_full();
-            for (index, directive) in data.directives.iter().enumerate() {
+            for (index, link) in links.into_iter().enumerate() {
                 column =
                     column.child(node.render_part(&format!("part-{index}"), |s| s, window, cx));
-                if let Some((this, link)) = this.zip(
-                    current
-                        .zip(origin.as_ref())
-                        .and_then(|(current, origin)| find_link(current, origin, directive)),
-                ) {
-                    column = column.child(render_line(this, link, reader.clone(), cx));
+                let label = node.render_part(&format!("directive-{index}"), |s| s, window, cx);
+                if let Some((entity, link)) = entity.as_ref().zip(link) {
+                    column = column.child(render_line(
+                        entity.read(cx),
+                        link,
+                        reader.clone(),
+                        Some(label),
+                        cx,
+                    ));
                 } else {
-                    column = column.child(format!("@{}", directive.target));
+                    column = column.child(label);
                 }
             }
             column
@@ -74,14 +82,17 @@ fn parse(
     let base = node.position()?.start.offset;
     // The whole fragment proves fence/indent exclusion; parsing only the
     // paragraph could turn an indented or nested code example into a directive.
-    let imports: Vec<_> = okilum_core::agent_imports::parse(cx.source())
-        .into_iter()
+    let all = okilum_core::agent_imports::parse_bounded(
+        cx.source(),
+        okilum_core::agent_imports::Limits::default().imports,
+    );
+    let imports: Vec<_> = all
+        .iter()
         .filter(|import| base <= import.line.start && import.line.end <= base + source.len())
         .collect();
     if imports.is_empty() {
         return None;
     }
-    let all = okilum_core::agent_imports::parse(cx.source());
     let directives = imports
         .iter()
         .map(|import| Directive {
@@ -100,7 +111,9 @@ fn parse(
     for (index, import) in imports.iter().enumerate() {
         let start = import.line.start - base;
         let end = import.line.end - base;
-        result = result.markdown_part(format!("part-{index}"), source[cursor..start].to_owned());
+        result = result
+            .markdown_part(format!("part-{index}"), source[cursor..start].to_owned())
+            .plain_part(format!("directive-{index}"), source[start..end].to_owned());
         cursor = end;
     }
     Some(result.markdown_part(
@@ -181,6 +194,7 @@ pub(super) fn render_line(
     this: &Reader,
     link: ImportLink,
     reader: WeakEntity<Reader>,
+    label: Option<AnyElement>,
     cx: &App,
 ) -> AnyElement {
     let Some(current) = &this.agent_document else {
@@ -198,65 +212,76 @@ pub(super) fn render_line(
     let id = format!("{}:{}", link.source.display(), link.import.line.start);
     let selector = format!("agent-line-{}", link.import.target);
     let toggle_selector = format!("agent-disclosure-{}", link.import.target);
-    let mut column = v_flex().w_full().child(
-        h_flex()
-            .gap_1()
-            .child(
-                Button::new(SharedString::from(format!("import-fold-{id}")))
-                    .ghost()
-                    .xsmall()
-                    .icon(if expanded {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    })
-                    .tooltip(if expanded {
-                        "Collapse import"
-                    } else {
-                        "Expand import (read-only)"
-                    })
-                    .debug_selector(move || toggle_selector.clone())
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        let _ = toggle_reader.update(cx, |this, cx| {
-                            this.sync_agent_document(cx);
-                            let Some(current) = &mut this.agent_document else {
-                                return;
-                            };
-                            if !Arc::ptr_eq(&token, &current.token) {
-                                return;
-                            }
-                            if !current.expanded_lines.remove(&key) {
-                                current.expanded_lines.insert(key.clone());
-                            }
-                            if !current.imports.expanded() {
-                                current.imports.set_expanded(true);
-                                this.prepare_agent_document(cx);
-                            }
-                            cx.notify();
-                        });
-                    }),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(format!("import-open-{id}")))
-                    .debug_selector(move || selector.clone())
-                    .cursor_pointer()
-                    .text_color(brand::palette(cx).link)
-                    .child(format!("@{}", link.import.target))
-                    .on_click(move |_, window, cx| {
-                        cx.stop_propagation();
-                        let _ = open_reader.update(cx, |this, cx| {
-                            this.open_agent_import(
-                                open_token.clone(),
-                                open_link.clone(),
-                                window,
-                                cx,
-                            )
-                        });
-                    }),
-            ),
-    );
+    let mut column = v_flex()
+        .id(SharedString::from(format!("import-inline-{id}")))
+        // Keep the read-only import's controls/selection out of the host
+        // editor's reveal-on-press path. Moving the caret into the directive
+        // by keyboard still exposes its canonical source as usual.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .w_full()
+        .child(
+            h_flex()
+                .gap_1()
+                .child(
+                    Button::new(SharedString::from(format!("import-fold-{id}")))
+                        .ghost()
+                        .xsmall()
+                        .icon(if expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .tooltip(if expanded {
+                            "Collapse import"
+                        } else {
+                            "Expand import (read-only)"
+                        })
+                        .debug_selector(move || toggle_selector.clone())
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            let _ = toggle_reader.update(cx, |this, cx| {
+                                this.sync_agent_document(cx);
+                                let Some(current) = &mut this.agent_document else {
+                                    return;
+                                };
+                                if !Arc::ptr_eq(&token, &current.token) {
+                                    return;
+                                }
+                                if !current.expanded_lines.remove(&key) {
+                                    current.expanded_lines.insert(key.clone());
+                                }
+                                if !current.imports.expanded() {
+                                    current.imports.set_expanded(true);
+                                    this.prepare_agent_document(cx);
+                                }
+                                cx.notify();
+                            });
+                        }),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("import-open-{id}")))
+                        .debug_selector(move || selector.clone())
+                        .cursor_pointer()
+                        .text_color(brand::palette(cx).link)
+                        .child(label.unwrap_or_else(|| {
+                            div()
+                                .child(format!("@{}", link.import.target))
+                                .into_any_element()
+                        }))
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            let _ = open_reader.update(cx, |this, cx| {
+                                this.open_agent_import(
+                                    open_token.clone(),
+                                    open_link.clone(),
+                                    window,
+                                    cx,
+                                )
+                            });
+                        }),
+                ),
+        );
     if let Err(error) = &link.destination {
         column = column.child(
             div()
@@ -279,6 +304,7 @@ pub(super) fn render_line(
                         SelectionFormat::default(),
                         this.link_presentations.clone(),
                         &this.link_identities,
+                        false,
                     );
                     install(view, reader, Some(imported.path.clone()))
                         .style(reader_text_zoom::document_style(cx))

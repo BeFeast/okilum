@@ -270,7 +270,8 @@ impl Reader {
                             r.sel_format,
                             states.clone(),
                             &r.link_identities,
-                        );
+                        false,
+);
                         let content = cx.new(|cx| {
                             let mut text = TextViewState::markdown("", cx)
                                 .scrollable(true)
@@ -579,7 +580,8 @@ impl Reader {
                                     self.sel_format,
                                     t.states.clone(),
                                     &self.link_identities,
-                                ),
+                                false,
+),
                             ),
                         )
                     },
