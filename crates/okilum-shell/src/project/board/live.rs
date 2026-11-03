@@ -38,6 +38,14 @@ impl Agent<'_> {
     pub fn working(&self) -> bool {
         self.state == State::Working
     }
+    /// Compact row state; the full label keeps the source age in the tooltip.
+    pub fn state_label(&self) -> &'static str {
+        if self.thread.status == "failed" {
+            "failed"
+        } else {
+            self.state.label()
+        }
+    }
     pub fn label(&self) -> String {
         let mut label = self.state.label().to_owned();
         if self.thread.status == "failed" {

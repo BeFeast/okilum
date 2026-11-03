@@ -659,8 +659,8 @@ impl Board {
         } else {
             agent
                 .as_ref()
-                .map(|a| a.label())
-                .unwrap_or_else(|| self.delivery_column(scope).label().into())
+                .map(|a| a.state_label().to_owned())
+                .unwrap_or_default()
         };
 
         row = row.child(
