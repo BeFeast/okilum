@@ -158,6 +158,8 @@ class Publication(unittest.TestCase):
         self.original = (self.directory / 'provenance.json').read_bytes()
         self.store = Store(); self.key = Key()
         self.client = Mock()
+        guard = patch('subprocess.run', return_value=Mock(returncode=0))
+        guard.start(); self.addCleanup(guard.stop)
         self.range = patch.object(publisher.release_notes, 'merged_items', return_value=[])
         self.range.start(); self.addCleanup(self.range.stop)
 

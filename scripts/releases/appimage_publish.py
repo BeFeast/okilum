@@ -90,6 +90,15 @@ def publish(store, key, tmp, directory, source, receipt, publication_build, arch
             raise ValueError('Conflicting beta identity for the same AppImage build')
         if current['build'] > build:
             archive_only = True
+        if not archive_only and client is not None and current['source'] != source:
+            import subprocess
+            relation = subprocess.run(['git', 'merge-base', '--is-ancestor', current['source'], source],
+                                      capture_output=True, timeout=30)
+            if relation.returncode != 0:
+                archive_only = True
+        if not archive_only and current['source'] == source and current['build'] != build:
+            print('AppImage source already published; no duplicate beta')
+            return current
     notes = None if archive_only else release_notes.prepare_appimage(store, client, build, source)
     # Preflight every immutable conflict and verify reused signatures before ANY write.
     values = {artifact.IMAGE: image, 'provenance.json': original, 'release.json': encoded}

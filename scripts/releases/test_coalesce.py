@@ -38,7 +38,7 @@ class LinuxWorkflow(unittest.TestCase):
         self.assertIn('  workflow_dispatch:', workflow)
         self.assertIn('runs-on: bridge', workflow)
         # The release checkout builds the commit select chose (main tip on a tick).
-        self.assertIn("(inputs.source != '' || github.event_name == 'schedule') && needs.select.outputs.source", workflow)
+        self.assertIn("(inputs.source != '' || inputs.hourly_source != '' || github.event_name == 'schedule') && needs.select.outputs.source", workflow)
         self.assertIn('python3 scripts/releases/coalesce.py linux', workflow)
         # Arch must honor freeze/coalescing, skip AppImage-only dispatches, and retain
         # PR-lane routing. Match the release job's entire condition so a guard
@@ -53,7 +53,7 @@ class LinuxWorkflow(unittest.TestCase):
              "github.event.pull_request.head.repo.full_name != github.repository || "
              "vars.OKILUM_PR_LANE == 'local')"],
         )
-        self.assertIn('cancel-in-progress: true', workflow)
+        self.assertIn('cancel-in-progress: false', workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch linux', workflow)
 
 
@@ -149,8 +149,8 @@ class MacPublicationTests(unittest.TestCase):
                       "          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
                       "          FORGEJO_URL: ${{ github.server_url }}\n"
                       "        run: python3 scripts/releases/publication.py dispatch macos\n", hosted)
-        self.assertIn("(github.event_name == 'schedule' || inputs.hourly_source != '') && 'hourly' || github.run_id", workflow)
-        self.assertIn('cancel-in-progress: true', workflow)
+        self.assertIn("inputs.hourly_source || (github.event_name == 'schedule' && 'hourly') || github.run_id", workflow)
+        self.assertIn('cancel-in-progress: false', workflow)
         self.assertIn('FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}', workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch macos', workflow)
         self.assertLess(workflow.index('id: select'), workflow.index('id: route'))

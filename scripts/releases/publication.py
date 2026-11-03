@@ -116,6 +116,16 @@ def built_source(root, platform, run):
     publication artifact; artifacts without the file come from ordinary builds.
     """
     if platform not in SOURCE_FOLDER:
+        if platform == 'macos' and (run['trigger_event'] == 'schedule' or preview_inputs(run).get('hourly_source')):
+            marker = root / 'macos' / 'release.json'
+            if not marker.exists():
+                return run['commit_sha']
+            metadata = json.loads(marker.read_bytes())
+            source = metadata['SOURCE_SHA']
+            if source != run['commit_sha']:
+                subprocess.run(['git', 'merge-base', '--is-ancestor', source, 'origin/main'],
+                               check=True, capture_output=True, timeout=30)
+            return source
         return run['commit_sha']
     marker = root / SOURCE_FOLDER[platform] / SOURCE_FILE
     if not marker.exists():
@@ -194,7 +204,8 @@ def publish(client, platform, run_id):
         # An explicit older commit is archived for promotion and never moves the beta feed.
         # A scheduled tick also differs from its run's commit: it builds main's tip, which
         # is newer than the tick's snapshot, so it publishes to beta as usual.
-        archive_only = source != run['commit_sha'] and run['trigger_event'] == 'workflow_dispatch'
+        archive_only = (source != run['commit_sha'] and run['trigger_event'] == 'workflow_dispatch'
+                        and preview_inputs(run).get('hourly_source') != source)
         if not archive_only and published_build(R2(), platform) > build:
             print(f'Newer {platform} build already published: nothing changed')
             return
@@ -205,8 +216,23 @@ def publish(client, platform, run_id):
             return
         if preview:
             preview = validate_preview(client, platform, run)
-        env = {**os.environ, 'GITHUB_SHA': run['commit_sha'],
+        env = {**os.environ, 'GITHUB_SHA': source,
                'GITHUB_RUN_NUMBER': str(run['index_in_repo'])}
+        hourly = bool(preview_inputs(run).get('hourly_source'))
+        if hourly:
+            if source != preview_inputs(run)['hourly_source']:
+                raise ValueError('Hourly artifact source differs from the requested source')
+            import hourly_beta
+            hourly_beta.main_source(source)
+            if not hourly_beta.green(source)[0]:
+                raise ValueError('Hourly publication source is no longer certified green')
+            previous = release_notes.predecessor(R2(), platform)
+            if previous and previous['source'] != source:
+                relation = subprocess.run(['git', 'merge-base', '--is-ancestor', previous['source'], source],
+                                          capture_output=True, timeout=30)
+                if relation.returncode != 0:
+                    print('Newer beta source already published: nothing changed')
+                    return
         # Capture the same-platform beta predecessor before ANY publisher writes.
         # Sidecars never alter descriptor, artifact, signing or promotion contracts.
         notes = (release_notes.prepare_preview(R2(), preview, build, source) if preview

@@ -55,7 +55,7 @@ def accepted(run, jobs, source):
     if (not re.fullmatch('[0-9a-f]{40}', source)
             or run.get('repository', {}).get('full_name') != artifact.REPOSITORY
             or run.get('path') != artifact.WORKFLOW or run.get('head_sha') != source
-            or run.get('head_branch') != 'main' or run.get('event') not in ('push', 'schedule', 'workflow_dispatch')
+            or run.get('head_branch') not in ('main', 'forgejo-linux-pr/hourly-' + source) or run.get('event') not in ('push', 'schedule', 'workflow_dispatch')
             or type(run.get('run_attempt')) is not int or run['run_attempt'] != 1
             or type(run.get('run_number')) is not int or run['run_number'] <= 0):
         raise ValueError('Expected original main AppImage producer')
@@ -121,7 +121,7 @@ def original_main_producer(api, source, runs):
     if runs.get('total_count', len(runs['workflow_runs'])) != len(runs['workflow_runs']):
         raise ValueError('Incomplete producer listing')
     matches = [run for run in runs['workflow_runs'] if run.get('head_sha') == source
-               and run.get('path') == artifact.WORKFLOW and run.get('head_branch') == 'main']
+               and run.get('path') == artifact.WORKFLOW and run.get('head_branch') in ('main', 'forgejo-linux-pr/hourly-' + source)]
     if not matches:
         raise ReuseUnavailable('no-exact-main-producer')
     if len({run['id'] for run in matches}) != len(matches):

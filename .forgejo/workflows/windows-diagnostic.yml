@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       hourly_source:
-        description: 'Internal source-pinned hourly retry; revalidated against green main'
+        description: 'Internal source-pinned hourly retry; certified first-parent main source'
         required: false
         default: ''
       cache-benchmark:
@@ -23,8 +23,8 @@ on:
         default: ''
 
 concurrency:
-  group: windows-beta-${{ (github.event_name == 'schedule' || inputs.hourly_source != '') && 'hourly' || github.run_id }}
-  cancel-in-progress: true
+  group: windows-beta-${{ inputs.hourly_source || (github.event_name == 'schedule' && 'hourly') || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   select:
@@ -75,7 +75,7 @@ jobs:
         with:
           # An explicit older main commit (#1040) or a scheduled tick (main tip, chosen by
           # select) sets the checkout; manual and pull-request runs keep the default ref.
-          ref: ${{ (inputs.source != '' || github.event_name == 'schedule') && needs.select.outputs.source || '' }}
+          ref: ${{ (inputs.source != '' || inputs.hourly_source != '' || github.event_name == 'schedule') && needs.select.outputs.source || '' }}
           persist-credentials: false
       - name: Install cross-build tools
         run: |
@@ -263,7 +263,7 @@ jobs:
         with:
           # A re-sign packages with this workflow's scripts (the signer backends evolve); its
           # payload and recorded source are those of the build being re-signed.
-          ref: ${{ inputs.source != '' && needs.select.outputs.resign == '' && needs.select.outputs.source || '' }}
+          ref: ${{ needs.select.outputs.resign == '' && needs.select.outputs.source || '' }}
           persist-credentials: false
       - name: Receive the unsigned payload
         uses: https://code.forgejo.org/actions/download-artifact@v3
@@ -336,7 +336,7 @@ jobs:
 
   shipping-status:
     needs: [select, release, resign, package, windows-release-github]
-    if: always() && needs.select.outputs.build == 'true' && needs.select.outputs.source == github.sha && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: always() && needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: bridge
     timeout-minutes: 2
     steps:

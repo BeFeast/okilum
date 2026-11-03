@@ -6,16 +6,34 @@ No build/signing credentials are needed on GitHub.
 
 ## Build cadence and manual builds
 
-Linux builds every merge to `main`. macOS and Windows build the newest `main`
-once an hour (the UTC hour boundary), skipping an already-published source.
-Mac/Windows have no push trigger: a scheduled/manual run finishes its selected
-main snapshot even if new merges arrive. macOS runs daily at 10:30 UTC; Windows runs hourly. No runner sleeps between ticks.
-To get an urgent **Mac build now** or **Windows build now**, dispatch the respective
-`macos-release` or `windows-release` workflow on `main`; this bypasses the window.
-Manual branch builds publish nothing. Windows PR cross-compilation still runs.
-Scheduled starts can be delayed by runner queues; the source run number, rather
-than the publication time, remains the build version. Rapid merges can supersede
-a build before publication; the next scheduled tick or manual build uses newest main.
+All three beta workflows tick at :17 UTC. The Linux coordinator requests at most
+one automatic fast certification per UTC hour. Both fast suites compile and test
+the requested product checkout, independently of the workflow snapshot or
+subsequent main merges. Beta is gated by `fast / check` alone: its status is
+reported the moment `check` finishes, and a green `check` immediately dispatches
+all three source-pinned release workflows; the next tick recovers missed
+dispatches. `fast / shell-full` is reported separately on the same source for
+Stable; a red, pending or timed-out full suite never holds Beta (03.11: CI never
+gates development).
+
+Each platform selects the newest certified green **first-parent main** commit
+ahead of its own actual beta feed. PR statuses and archive descriptors do not
+count. A source already published, or behind the feed, cannot start another beta.
+Scheduled runs only coordinate; builds use a per-source queue and finish while
+main moves. Existing protected publication locks serialize feed writes and
+recheck source/build ordering and duplicate sources after artifact transfer.
+
+Linux retains exact run/job/artifact SHA provenance by creating a write-once
+GitHub branch `forgejo-linux-pr/hourly-<source>`. Its push starts the producer;
+existing completed or active producers are reused. A mismatched existing ref is
+an error, never force-updated. Mac and Windows use the selected product source
+with separately validated delivery tooling. Shipping status context names stay
+unchanged and are explicitly reported on the beta source, preserving the 09:00
+Stable selector. Signing, channels and Stable promotion are unchanged.
+
+Manual branch builds publish nothing. Explicit older-source archive and Windows
+re-sign requests retain their existing routes. An urgent main workflow dispatch
+uses the same certification and feed admission as hourly work.
 
 Release compilation uses pinned sccache with the existing private S3 cache when
 credentials are available, otherwise the ordinary compiler. Arch/Windows cache

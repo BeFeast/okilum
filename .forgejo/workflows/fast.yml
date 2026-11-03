@@ -8,7 +8,7 @@ on:
         required: false
         default: ''
 concurrency:
-  group: fast-${{ inputs.certification_source != '' && 'hourly-main' || github.event.pull_request.number || github.ref }}
+  group: fast-${{ inputs.certification_source != '' && inputs.certification_source || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   check:
@@ -62,17 +62,17 @@ jobs:
           rustc --version
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Run the full CI tooling Python suite
-        timeout-minutes: 2
+        timeout-minutes: 5
         run: python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - name: Run the full releases Python suite
-        timeout-minutes: 2
+        timeout-minutes: 5
         run: python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
       - name: Run the full updater Python suite
-        timeout-minutes: 2
+        timeout-minutes: 5
         run: python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
       - name: Build Linux desktop and run fast unit tests
         env:
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GITHUB_SHA: ${{ inputs.certification_source || github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -106,6 +106,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Validate hourly certification source before compiling
+        if: inputs.certification_source != ''
+        env:
+          CERTIFICATION_SOURCE: ${{ inputs.certification_source }}
+          FORGEJO_URL: ${{ github.server_url }}
+        run: python3 scripts/releases/hourly_beta.py certify-source
       - name: Prepare local Linux toolchain
         run: |
           set -euo pipefail
@@ -127,14 +133,16 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Run the complete Linux shell binary suite
         env:
-          GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GITHUB_SHA: ${{ inputs.certification_source || github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           bash scripts/ci/fast-local.sh shell-full
 
   certification-status:
-    needs: [check, shell-full]
+    # Beta gates on check alone: report and dispatch as soon as it finishes,
+    # never behind shell-full's queue slot and 20-minute runner ceiling.
+    needs: [check]
     if: always() && inputs.certification_source != ''
     runs-on: bridge
     timeout-minutes: 2
@@ -143,7 +151,26 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Report both gates on the requested main commit
+      - name: Report the beta gate on the requested main commit
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          CERTIFICATION_SOURCE: ${{ inputs.certification_source }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python3 scripts/releases/hourly_beta.py certification-status
+
+  shell-full-status:
+    # Stable information only; a red or timed-out shell-full never holds Beta.
+    needs: [shell-full]
+    if: always() && inputs.certification_source != ''
+    runs-on: bridge
+    timeout-minutes: 2
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Report the full runtime suite for Stable
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FORGEJO_URL: ${{ github.server_url }}

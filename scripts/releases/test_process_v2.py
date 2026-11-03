@@ -50,7 +50,7 @@ class ProcessV2(unittest.TestCase):
             data = workflow(f'.forgejo/workflows/{file}.yml')
             self.assertEqual(set(data['on']), {'schedule', 'workflow_dispatch'})
             self.assertEqual(data['on']['schedule'], [{'cron': '17 * * * *'}])
-            self.assertEqual(data['concurrency']['cancel-in-progress'], 'true')
+            self.assertEqual(data['concurrency']['cancel-in-progress'], 'false')
             self.assertIn('github.run_id', data['concurrency']['group'])
         windows = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.hourly_source == '' && vars.OKILUM_WINDOWS_SIGN_BACKEND", windows)
