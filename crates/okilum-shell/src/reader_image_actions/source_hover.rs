@@ -293,6 +293,24 @@ mod tests {
                     .into()
             )
         );
+        reader.update(visual, |reader, cx| reader.open_source_find(cx));
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| {
+            assert!(
+                input.lsp().hover_provider.is_some(),
+                "Find exposes Source hover"
+            )
+        });
+        reader.update_in(visual, |reader, window, cx| {
+            reader.open_live_preview(window, cx)
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |input, _| {
+            assert!(
+                input.lsp().hover_provider.is_none(),
+                "Live restores projection after Find"
+            )
+        });
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_live_preview(window, cx)
         });
