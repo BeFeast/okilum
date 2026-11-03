@@ -459,3 +459,83 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
     assert!(visual.debug_bounds("board-list-count-Queue-2").is_some());
     assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
 }
+
+/// #2548: exercise the production row and pill builders, including their actual
+/// truncation bounds, rather than a label styled only for the test.
+#[gpui::test]
+fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(1));
+    let glyphs = "Jumpy query: g j p q y · у р д щ";
+    let title = glyphs.repeat(12);
+    board.update(visual, |board, cx| {
+        board.binding.as_mut().unwrap().issues[0].agent_thread_id = Some("glyph-agent".into());
+        let issue = serde_json::from_value(serde_json::json!({
+            "number": 1, "state": "open", "title": title,
+            "labels": [{"name": "bug"}, {"name": "epic: g j p q y у р д щ"}]
+        }))
+        .unwrap();
+        board.snapshot.forgejo.value.insert(1, issue);
+        board.snapshot.forgejo.last_success = Some(now());
+        board.snapshot.t3.value = vec![serde_json::from_value(serde_json::json!({
+            "threadId": "glyph-agent", "status": "running", "activeRunId": "glyph-run",
+            "providerInstanceId": "codex", "model": "synthetic", "runtimeMode": "full-access"
+        }))
+        .unwrap()];
+        board.list.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for width in [1200., 900.] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        let row = visual
+            .debug_bounds("board-list-row-1")
+            .expect("positive control: issue rendered");
+        assert_eq!(row.size.height, px(HEIGHT));
+        let mut measured = 0;
+        for (selector, font_size, weight) in [
+            ("board-list-title-1", 13., FontWeight::NORMAL),
+            ("board-state-1", 12., FontWeight::NORMAL),
+            (
+                "board-pill-label-epic: g j p q y у р д щ",
+                12.,
+                FontWeight::NORMAL,
+            ),
+            ("board-list-group-label-Working", 13., FontWeight::SEMIBOLD),
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            let required = visual.update(|_, cx| {
+                let mut descriptor = gpui::font(brand::SANS_FONT);
+                descriptor.weight = weight;
+                let font = cx.text_system().resolve_font(&descriptor);
+                cx.text_system().ascent(font, px(font_size))
+                    + cx.text_system().descent(font, px(font_size))
+            });
+            assert!(
+                bounds.size.height >= required,
+                "{selector}: {:?} line box must fit ascent + descent {required:?}",
+                bounds.size.height
+            );
+            if selector != "board-list-group-label-Working" {
+                assert!(
+                    bounds.top() >= row.top() && bounds.bottom() <= row.bottom(),
+                    "{selector} must fit inside the 38 px row"
+                );
+            }
+            measured += 1;
+        }
+        assert_eq!(
+            measured, 4,
+            "positive control: title, state, pill and group all measured"
+        );
+        let title_bounds = visual.debug_bounds("board-list-title-1").unwrap();
+        assert!(
+            title_bounds.size.width > px(0.) && title_bounds.size.width < px(600.),
+            "positive control: the long title has a constrained ellipsis box"
+        );
+    }
+}
