@@ -5133,6 +5133,7 @@ fn write_export(
         .parent()
         .filter(|directory| !directory.as_os_str().is_empty())
         .context("the destination has no folder")?;
+    let _admission = okilum_write_authority::operation_for_path(path)?;
     let mut file = tempfile::NamedTempFile::new_in(directory)?;
     let written = {
         let mut out = std::io::BufWriter::new(file.as_file_mut());

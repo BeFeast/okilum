@@ -730,6 +730,7 @@ pub fn ide_code_block(hint: &VsCodeHint, plain: &str) -> Option<String> {
 /// Converted rich text ready to insert (not yet fitted to the caret).
 #[derive(Debug, Default)]
 pub struct RichText {
+    pub admission: Option<okilum_write_authority::WriterLease>,
     /// [`Route::IdeCode`] for all-monospace code, else [`Route::RichText`].
     pub route: Option<Route>,
     pub markdown: String,
@@ -812,7 +813,13 @@ fn rich_text_with(
     if converted.markdown.trim().is_empty() {
         return None;
     }
+    let admission = okilum_write_authority::Authority::for_root(vault_root)
+        .and_then(|a| a.admit())
+        .ok();
+    let _admission = admission.as_ref().and_then(|a| a.enter().ok());
+    let admitted = _admission.is_some();
     let mut rich = RichText {
+        admission,
         route: Some(Route::RichText),
         block: converted.block,
         ..RichText::default()
@@ -833,12 +840,16 @@ fn rich_text_with(
                 }
             }
             AssetSource::Data { mime, bytes } => {
-                let saved = save_data_image(&mime, bytes, vault_root, note_rel, stamp, options);
+                let saved = admitted
+                    .then(|| save_data_image(&mime, bytes, vault_root, note_rel, stamp, options))
+                    .flatten();
                 let text = rich.account(saved, &asset.alt);
                 markdown = markdown.replacen(&asset.placeholder, &text, 1);
             }
             AssetSource::LocalFile(path) => {
-                let saved = save_local_image(&path, vault_root, note_rel, stamp, options);
+                let saved = admitted
+                    .then(|| save_local_image(&path, vault_root, note_rel, stamp, options))
+                    .flatten();
                 let text = rich.account(saved, &asset.alt);
                 markdown = markdown.replacen(&asset.placeholder, &text, 1);
             }
@@ -1060,10 +1071,6 @@ pub struct RichJobDone {
 /// Convert large rich text off the UI thread: steps 3, 5, 6 and 7 for it,
 /// with its `data:` and `file://` images saved.
 pub fn run_rich_job(job: RichJob) -> RichJobDone {
-    let admission = okilum_write_authority::Authority::for_root(&job.vault_root)
-        .and_then(|a| a.admit())
-        .ok();
-    let _admission = admission.as_ref().and_then(|a| a.enter().ok());
     let started = Instant::now();
     let rich = if job.html.is_empty() {
         None
@@ -1084,7 +1091,7 @@ pub fn run_rich_job(job: RichJob) -> RichJobDone {
     let convert_ms = started.elapsed().as_secs_f64() * 1000.0;
     if let Some(rich) = rich {
         return RichJobDone {
-            admission,
+            admission: rich.admission,
             text: rich.markdown,
             block: rich.block,
             markdown: true,
