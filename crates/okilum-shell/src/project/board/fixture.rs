@@ -1,7 +1,7 @@
 //! Isolated native screenshot fixture; never reads real project files or sources.
 use super::*;
 
-pub(super) fn open(cx: &mut App) -> bool {
+pub(in super::super) fn open(cx: &mut App) -> bool {
     let Ok(mode) = std::env::var("OKILUM_BOARD_UI_FIXTURE") else {
         return false;
     };
