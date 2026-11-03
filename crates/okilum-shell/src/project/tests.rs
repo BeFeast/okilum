@@ -578,7 +578,7 @@ fn projects_section_is_the_shared_picker_with_quiet_skips_and_row_warnings(
         .expect("the shared picker is the Projects surface");
     assert!(
         picker.origin.x - section.origin.x < px(40.),
-        "left-aligned, not centered: {picker:?} in {section:?}"
+        "left-aligned, not centered: {picker:?} after selecting {selector}"
     );
     for selector in [
         "project-section-0",
@@ -1704,5 +1704,43 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
         let open = visual.debug_bounds("project-open-t3").unwrap();
         assert_eq!(title.left() - header.left(), px(design::INSET));
         assert_eq!(header.right() - open.right(), px(design::INSET));
+
+        // #2463 was the identity heading plus a section tab also labelled
+        // Manager. Selectors use each button's actual rendered label, so
+        // restoring that label fails this check even with only one title node.
+        // Exercise every section through its real button, including the return
+        // to Chat: Rules/Skills must remain usable without repeating identity.
+        for (selector, section) in [
+            ("project-section-label-Rules", ProjectSection::Rules),
+            ("project-section-label-Skills", ProjectSection::Skills),
+            ("project-section-label-Chat", ProjectSection::Manager),
+        ] {
+            let tab = visual.debug_bounds(selector).expect("visible section tab");
+            visual.simulate_click(tab.center(), Modifiers::default());
+            visual.run_until_parked();
+            reader.read_with(visual, |reader, cx| {
+                assert!(reader.project.as_ref().unwrap().read(cx).section == section);
+            });
+            assert!(
+                visual.debug_bounds("project-manager-title").is_some(),
+                "positive control: the Manager identity is mounted after selecting {selector}"
+            );
+            assert!(
+                visual
+                    .debug_bounds("project-section-label-Manager")
+                    .is_none(),
+                "Manager identity must not be repeated by section navigation after selecting {selector}"
+            );
+            for selector in [
+                "project-section-label-Chat",
+                "project-section-label-Rules",
+                "project-section-label-Skills",
+            ] {
+                assert!(
+                    visual.debug_bounds(selector).is_some(),
+                    "visible {selector}"
+                );
+            }
+        }
     }
 }
