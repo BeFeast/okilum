@@ -174,6 +174,25 @@ fn project_settings_connections_and_per_device_overrides_are_resolved_without_la
         initial_for_project(&project, &state).unwrap().argv,
         ["ssh", "manifest-host"]
     );
+    // A local project does not inherit an unrelated app connection, even if
+    // the cached Project still names its old remote alias.
+    std::fs::write(
+        &manifest,
+        "kind: knowledge\nexecution: {source_checkout: /new-checkout}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        initial_for_project(&project, &state)
+            .unwrap()
+            .directory
+            .as_deref(),
+        Some("/new-checkout")
+    );
+    std::fs::write(
+        &manifest,
+        "kind: knowledge\nexecution: {terminal_command: 'ssh manifest-host'}\n",
+    )
+    .unwrap();
     let setting = setting_file(&area, &state);
     std::fs::create_dir_all(setting.parent().unwrap()).unwrap();
     std::fs::write(&setting, serde_json::to_vec("ssh device-host").unwrap()).unwrap();
