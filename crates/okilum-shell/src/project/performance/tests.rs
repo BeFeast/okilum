@@ -291,15 +291,31 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     visual.update(|window, cx| window.focus(&focus, cx));
     visual.run_until_parked();
     board.read_with(visual, |board, _| board.render_calls.set(0));
-    visual.simulate_keystrokes("space");
+    let key = gpui::Keystroke::parse("space").unwrap();
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: key.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    visual.simulate_event(gpui::KeyUpEvent { keystroke: key });
     visual.run_until_parked();
     assert!(
         board.read_with(visual, |board, _| board.render_calls.get()) > 0,
         "positive control: Space activates the real disclosure button"
     );
-    assert!(visual.debug_bounds("board-discuss-1").is_none());
-    visual.simulate_keystrokes("enter");
+    assert_eq!(board.read_with(visual, |board, _| board.selected), None);
+    visual.update(|window, _| window.refresh());
     visual.run_until_parked();
+    assert!(visual.debug_bounds("board-discuss-1").is_none());
+    let key = gpui::Keystroke::parse("enter").unwrap();
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: key.clone(),
+        is_held: false,
+        prefer_character_input: false,
+    });
+    visual.simulate_event(gpui::KeyUpEvent { keystroke: key });
+    visual.run_until_parked();
+    assert_eq!(board.read_with(visual, |board, _| board.selected), Some(1));
     assert!(
         visual.debug_bounds("board-discuss-1").is_some(),
         "Enter retains keyboard disclosure and its actions"
