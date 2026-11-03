@@ -49,6 +49,31 @@ pub fn is_agent_file(path: &str) -> bool {
     AGENT_FILE_NAMES.contains(&name)
 }
 
+/// Shims are tiny provider files containing only a local AGENTS.md import.
+/// Keep this content classification separate from the broader visibility rule.
+pub const AGENT_SHIM_MAX_BYTES: u64 = 4096;
+
+pub fn is_agent_shim(path: &str, source: &str) -> bool {
+    matches!(path.rsplit('/').next(), Some("CLAUDE.md" | "GEMINI.md"))
+        && source.len() as u64 <= AGENT_SHIM_MAX_BYTES
+        && matches!(
+            source.trim().trim_start_matches('\u{feff}').trim(),
+            "@AGENTS.md" | "@./AGENTS.md"
+        )
+}
+
+/// Worker-only bounded read. Even a file growing after metadata inspection
+/// consumes at most 4097 bytes, never its entire body.
+pub fn read_agent_shim(path: &str, reader: impl std::io::Read) -> bool {
+    use std::io::Read as _;
+    let mut source = String::new();
+    reader
+        .take(AGENT_SHIM_MAX_BYTES + 1)
+        .read_to_string(&mut source)
+        .is_ok()
+        && is_agent_shim(path, &source)
+}
+
 /// Which files the search palettes list. Transient: every explicit open starts
 /// from [`FileFilter::Default`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -224,6 +249,45 @@ pub fn matched_text(html: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn issue1587_shims_require_only_a_local_agents_import() {
+        for source in [
+            "@AGENTS.md",
+            "@./AGENTS.md",
+            " \r\n\u{feff}  @./AGENTS.md \r\n ",
+            "\u{feff}@AGENTS.md\n",
+        ] {
+            for path in ["CLAUDE.md", "Project/GEMINI.md"] {
+                assert!(is_agent_shim(path, source), "{path}: {source:?}");
+            }
+        }
+        for source in [
+            "",
+            "# Own rules",
+            "@AGENTS.md\nOwn rules",
+            "@../AGENTS.md",
+            "@agents.md",
+            "@AGENTS.md\n@AGENTS.md",
+            "@ AGENTS.md",
+            "@AGENTS.md # comment",
+        ] {
+            assert!(!is_agent_shim("CLAUDE.md", source), "{source:?}");
+        }
+        for path in ["AGENTS.md", "my-CLAUDE.md", "claude.md", "CLAUDE.md.bak"] {
+            assert!(!is_agent_shim(path, "@AGENTS.md"));
+        }
+    }
+
+    #[test]
+    fn issue1587_two_megabyte_provider_file_read_is_bounded() {
+        let body = vec![b' '; 2 * 1024 * 1024];
+        let mut reader = std::io::Cursor::new(body);
+        assert!(!read_agent_shim("CLAUDE.md", &mut reader));
+        assert_eq!(reader.position(), AGENT_SHIM_MAX_BYTES + 1);
+        assert!(read_agent_shim("CLAUDE.md", "@AGENTS.md\r\n".as_bytes()));
+        assert!(!read_agent_shim("CLAUDE.md", [0xff].as_slice()));
+    }
+
     #[test]
     fn ranks_whole_vault_names_paths_unicode_and_recent() {
         let notes: Vec<_> = (0..5000)
