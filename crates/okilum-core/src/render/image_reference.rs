@@ -101,7 +101,16 @@ pub fn references(source: &str, vault: &Vault, from: &str) -> Vec<ImageReference
             if let Some(target) = target {
                 images.push(ImageReference {
                     range,
-                    url: resolve(&target, vault, &resolver, from),
+                    url: if vault.paths_complete() {
+                        let resolved = resolver.resolve(base, true, from);
+                        (resolved.status == "attachment")
+                            .then(|| resolved.candidates.first())
+                            .flatten()
+                            .and_then(|path| url::Url::from_file_path(vault.root.join(path)).ok())
+                            .map(String::from)
+                    } else {
+                        resolve(&target, vault, &resolver, from)
+                    },
                     target,
                 });
             }
@@ -198,6 +207,34 @@ mod tests {
             "{rendered}"
         );
         assert!(!root.join("missing.zip").exists());
+    }
+
+    #[test]
+    fn issue1622_wiki_file_embeds_keep_root_identity_while_markdown_is_relative() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("notes")).unwrap();
+        for path in ["manual.pdf", "notes/manual.pdf"] {
+            std::fs::write(root.join(path), "synthetic").unwrap();
+        }
+        let vault = Vault::scan(&root).unwrap();
+        let source = "![[manual.pdf]]\n\n![local](manual.pdf)\n";
+        let refs = references(source, &vault, "notes/current.md");
+        assert_eq!(refs.len(), 2);
+        let wiki = url::Url::from_file_path(root.join("manual.pdf"))
+            .unwrap()
+            .to_string();
+        let markdown = url::Url::from_file_path(root.join("notes/manual.pdf"))
+            .unwrap()
+            .to_string();
+        assert_eq!(refs[0].url.as_deref(), Some(wiki.as_str()));
+        assert_eq!(refs[1].url.as_deref(), Some(markdown.as_str()));
+        let rendered =
+            crate::render::reader_document_from_source(&vault, "notes/current.md", source).rendered;
+        assert!(
+            rendered.find(&wiki).unwrap() < rendered.find(&markdown).unwrap(),
+            "{rendered}"
+        );
     }
 
     #[test]
