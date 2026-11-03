@@ -39,6 +39,7 @@ pub(crate) struct Board {
     scroll: ScrollHandle,
     presentation: Option<Arc<presentation::State>>,
     _presentation_invalidation: Subscription,
+    geometry: Entity<virtual_cards::Geometry>,
     height_refinement_pending: bool,
     resizing: bool,
     verified_open: bool,
@@ -142,6 +143,7 @@ impl Board {
         cx: &mut Context<Self>,
     ) -> Self {
         let owner = area.to_string_lossy().into_owned();
+        let geometry = cx.new(|_| virtual_cards::Geometry);
         let presentation_invalidation = cx.observe(&cx.entity(), |this, _, _| {
             this.presentation = None;
         });
@@ -167,6 +169,7 @@ impl Board {
             scroll: ScrollHandle::new(),
             presentation: None,
             _presentation_invalidation: presentation_invalidation,
+            geometry,
             height_refinement_pending: false,
             resizing: false,
             verified_open: false,
@@ -1479,6 +1482,21 @@ impl Render for Board {
                     .text_size(px(12.))
                     .text_color(colors.text_muted)
                     .child(line),
+            )
+            .into_any_element();
+        let root = div()
+            .relative()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .child(root)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size(px(1.))
+                    .child(self.geometry.clone()),
             )
             .into_any_element();
         #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]

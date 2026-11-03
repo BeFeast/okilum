@@ -7,6 +7,15 @@ use gpui::{
     Style,
 };
 
+/// A rendered geometry leaf invalidates its Board ancestor without publishing
+/// a source change. Its transparent viewport slot remains mounted when scrolling.
+pub(super) struct Geometry;
+impl Render for Geometry {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full()
+    }
+}
+
 pub(super) struct Height {
     value: Pixels,
     focused: Option<FocusHandle>,
@@ -190,7 +199,7 @@ impl Lane {
             window.defer(cx, move |_, cx| {
                 let _ = board.update(cx, |board, cx| {
                     board.height_refinement_pending = false;
-                    cx.notify();
+                    board.geometry.update(cx, |_, cx| cx.notify());
                 });
             });
         }
