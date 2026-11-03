@@ -14,8 +14,7 @@ fn header(files: usize, bytes: usize) -> Header {
             reader: "reader".into(),
             vault: "vault".into(),
             remote: true,
-            root: "/fixture".into(),
-            root_identity: (1, 2),
+            root_binding: "opaque fixture".into(),
             device: "device".into(),
             certificate: "certificate".into(),
             config: "config".into(),
@@ -66,7 +65,7 @@ fn complete_pages_are_required_and_mixed_bindings_fail_closed() -> Result<()> {
     forged[1].binding.pair = Uuid::new_v4();
     forged[2].binding.owner = "another computer".into();
     forged[3].binding.reader = "another reader".into();
-    forged[4].binding.root_identity = (3, 4);
+    forged[4].binding.root_binding = "another opaque root".into();
     forged[5].binding.policy = "other excludes".into();
     forged[6].binding.generation = Uuid::new_v4();
     forged[7].binding.started = "restarted".into();
@@ -234,12 +233,10 @@ fn oversized_inventories_are_errors_not_truncated_success() -> Result<()> {
 fn unapproved_peers_and_vaults_fail_before_any_filesystem_access() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let controller = Controller::open(temp.path().join("controller"), vec![])?;
-    let mut db = controller.shared.db.lock().unwrap();
     let scope = Uuid::new_v4();
     let signer = wire::public(&wire::random()?)?;
     assert!(controller
         .inspect_request(
-            &db,
             scope,
             &signer,
             Request::Open {
@@ -247,7 +244,7 @@ fn unapproved_peers_and_vaults_fail_before_any_filesystem_access() -> Result<()>
             }
         )
         .is_err());
-    db.peers.insert(
+    controller.shared.db.lock().unwrap().peers.insert(
         scope,
         Paired {
             peer: Peer {
@@ -265,7 +262,6 @@ fn unapproved_peers_and_vaults_fail_before_any_filesystem_access() -> Result<()>
     );
     assert!(controller
         .inspect_request(
-            &db,
             scope,
             &signer,
             Request::Open {
@@ -275,7 +271,6 @@ fn unapproved_peers_and_vaults_fail_before_any_filesystem_access() -> Result<()>
         .is_err());
     assert!(controller
         .inspect_request(
-            &db,
             scope,
             &[9; 32],
             Request::Open {
@@ -292,9 +287,8 @@ fn full_validation_detects_changed_bytes_even_if_metadata_revision_collides() ->
     let root = Arc::new(tree::open_root(temp.path())?);
     fs::write(temp.path().join("note.md"), b"positive control")?;
     let mut binding = header(1, 16).binding;
-    binding.root = temp.path().to_owned();
     binding.policy = tree::policy(&root)?;
-    let mut original = local(binding, root.clone())?;
+    let mut original = local(binding, temp.path().to_owned(), root.clone())?;
     let good = Tree::collect(&root, temp.path(), true)?;
     assert!(original.matches(&good, true));
     fs::write(temp.path().join("note.md"), b"negative control")?;
@@ -304,5 +298,290 @@ fn full_validation_detects_changed_bytes_even_if_metadata_revision_collides() ->
     original.tree.stamps = changed.stamps.clone();
     assert!(original.matches(&changed, false));
     assert!(!original.matches(&changed, true));
+    Ok(())
+}
+
+fn source(path: &Path) -> ExistingVault {
+    ExistingVault {
+        daemon: daemon::DaemonIdentity {
+            config_file: path.join("prepared/syncthing/config.xml"),
+            device_id: "device".into(),
+            certificate_hash: "certificate".into(),
+        },
+        version: daemon::CLIENT_VERSION.into(),
+        folder_id: "vault".into(),
+        path: path.into(),
+        label: "Vault".into(),
+        paused: false,
+        folder_type: "sendreceive".into(),
+        peers: vec![],
+        root_identity: Some((1, 2)),
+    }
+}
+fn stored(path: &Path, peer: Uuid, vault: &str) -> Result<Stored> {
+    let root = Arc::new(tree::open_root(path)?);
+    let mut b = header(0, 0).binding;
+    b.pair = peer;
+    b.vault = vault.into();
+    b.policy = tree::policy(&root)?;
+    Ok(Stored {
+        local: local(b, path.into(), root)?,
+        source: source(path),
+        expires: Instant::now() + Duration::from_secs(LIFETIME_SECONDS),
+    })
+}
+#[test]
+fn cache_is_peer_vault_revision_scoped_bounded_and_reaps_expired_bytes() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    fs::write(temp.path().join("note.md"), b"cache positive control")?;
+    let mut cache = Cache::default();
+    let a = Uuid::new_v4();
+    let b = Uuid::new_v4();
+    cache.admit(a, Some("vault"))?;
+    assert!(cache.admit(a, Some("vault")).is_err());
+    cache.admit(b, Some("vault"))?;
+    let first = cache.insert(stored(temp.path(), a, "vault")?);
+    let second = cache.insert(stored(temp.path(), b, "vault")?);
+    cache.busy.clear();
+    let same = stored(temp.path(), a, "vault")?;
+    // A stable binding and revision reuses the original capability.
+    let mut same = same;
+    same.local.header.binding = first.binding.clone();
+    assert_eq!(cache.insert(same), first);
+    assert_eq!(cache.entries.len(), 2);
+    assert_eq!(
+        cache.entries[&(b, "vault".into(), second.revision.clone())]
+            .local
+            .header,
+        second
+    );
+    cache.admit(a, Some("other"))?;
+    cache.insert(stored(temp.path(), a, "other")?);
+    cache.busy.clear();
+    assert!(cache.admit(a, Some("third")).is_err());
+    let c = Uuid::new_v4();
+    cache.admit(c, Some("vault"))?;
+    assert!(
+        cache.admit(Uuid::new_v4(), Some("vault")).is_err(),
+        "open reservations must count toward memory bound"
+    );
+    cache.insert(stored(temp.path(), c, "vault")?);
+    cache.busy.clear();
+    assert!(cache.admit(Uuid::new_v4(), Some("vault")).is_err());
+    for stored in cache.entries.values_mut() {
+        Arc::get_mut(stored).unwrap().expires = Instant::now();
+    }
+    let weak = Arc::downgrade(cache.entries.values().next().unwrap());
+    cache.prune();
+    assert!(cache.entries.is_empty());
+    assert!(weak.upgrade().is_none(), "expired allocation retained");
+    cache.admit(a, Some("vault"))?;
+    Ok(())
+}
+#[test]
+fn paused_receiving_and_missing_folder_state_are_explicit_refusals() -> Result<()> {
+    use serde_json::json;
+    inspectable(&json!({"paused":false,"type":"sendreceive"}))?;
+    for folder in [
+        json!({"paused":true,"type":"sendreceive"}),
+        json!({"paused":false,"type":"receiveonly"}),
+        json!({"paused":false,"type":"sendonly"}),
+        json!({}),
+    ] {
+        assert!(inspectable(&folder).is_err());
+    }
+    Ok(())
+}
+#[test]
+fn opaque_binding_frames_hide_local_paths_usernames_and_raw_identity() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("home/private-user/vault");
+    fs::create_dir_all(&path)?;
+    let root = tree::open_root(&path)?;
+    let key = wire::random()?;
+    let mut h = header(1, 1);
+    let scope = h.binding.pair;
+    let opaque = opaque_root(&key, scope, &path, &root)?;
+    assert_eq!(opaque_root(&key, scope, &path, &root)?, opaque);
+    assert_ne!(opaque_root(&wire::random()?, scope, &path, &root)?, opaque);
+    assert_ne!(opaque_root(&key, Uuid::new_v4(), &path, &root)?, opaque);
+    h.binding.root_binding = opaque;
+    let responses = [
+        Response::Open { header: h.clone() },
+        page(&h, 0, &entries()[..1]),
+        Response::Content {
+            header: h.clone(),
+            index: 0,
+            offset: 0,
+            sha256: wire::fingerprint(b"x"),
+            hex: wire::hex(b"x"),
+        },
+        Response::Valid { header: h.clone() },
+    ];
+    for response in responses {
+        let frame = wire::seal(scope, &key, &key, &response)?;
+        let (opened, _): (Response, _) = wire::open(frame, &key, Some(&wire::public(&key)?))?;
+        let clear = serde_json::to_string(&opened)?;
+        assert!(
+            clear.contains("root_binding"),
+            "positive frame decoding control"
+        );
+        assert!(!clear.contains(path.to_str().unwrap()));
+        assert!(!clear.contains("private-user"));
+        assert!(!clear.contains("root_identity"));
+        assert!(!clear.contains("\"root\""));
+    }
+    Ok(())
+}
+#[test]
+fn destination_overlap_is_refused_in_both_directions_before_runtime_access() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let state = temp.path().join("state");
+    fs::create_dir_all(state.join("nested"))?;
+    let ordinary = temp.path().join("ordinary");
+    fs::create_dir(&ordinary)?;
+    disjoint(&ordinary, &state)?;
+    for path in [&state, &state.join("nested"), &temp.path().to_owned()] {
+        assert!(disjoint(path, &state).is_err());
+    }
+    let controller = Controller::open(&state, vec![])?;
+    for path in [&state, &state.join("nested"), &temp.path().to_owned()] {
+        let error = controller
+            .preview_remote_vault(Uuid::new_v4(), "vault", path)
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().contains("overlaps operational state"),
+            "{error:#}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn slow_inspection_does_not_block_second_peer_pairing_or_controller_locks() -> Result<()> {
+    use std::sync::mpsc;
+    let temp = tempfile::tempdir()?;
+    let server = Controller::open(temp.path().join("server"), vec![])?;
+    let offer = server
+        .begin_pairing_at("Server", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
+        .offer_url
+        .unwrap();
+    let endpoint = decode_url(&offer)?.endpoint;
+    let server_public = wire::public(&server.shared.db.lock().unwrap().seed)?;
+    let clients = [
+        Controller::open(temp.path().join("first"), vec![])?,
+        Controller::open(temp.path().join("second"), vec![])?,
+    ];
+    let ids = [Uuid::new_v4(), Uuid::new_v4()];
+    let keys: [[u8; 32]; 2] = [wire::random()?, wire::random()?];
+    {
+        let mut db = server.shared.db.lock().unwrap();
+        db.attached
+            .push(source(&temp.path().join("unavailable-vault")));
+        for i in 0..2 {
+            db.peers.insert(
+                ids[i],
+                Paired {
+                    peer: Peer {
+                        id: ids[i],
+                        name: format!("Client {i}"),
+                        device_id: "fixture".into(),
+                    },
+                    public: wire::public(&clients[i].shared.db.lock().unwrap().seed)?,
+                    key: keys[i],
+                    endpoint,
+                    allowed: vec!["vault".into()],
+                    syncthing_device: Some("approved".into()),
+                    addresses: vec![],
+                },
+            );
+        }
+    }
+    let (entered, observed) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let released = Mutex::new(released);
+    *server.shared.inspection_hook.lock().unwrap() = Some(Arc::new(move |id| {
+        entered.send(id).unwrap();
+        if id == ids[0] {
+            // Deterministic slow-I/O boundary, after actual wire auth/admission.
+            // Timeout also releases the worker if an assertion fails.
+            let _ = released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+        }
+    }));
+    let first = clients[0].clone();
+    let public = server_public.clone();
+    let slow = thread::spawn(move || {
+        first.call(
+            endpoint,
+            ids[0],
+            &keys[0],
+            &public,
+            Operation::Inspect {
+                request: Request::Open {
+                    vault: "vault".into(),
+                },
+            },
+        )
+    });
+    assert_eq!(
+        observed.recv_timeout(Duration::from_secs(1))?,
+        ids[0],
+        "positive control: inspection really entered slow boundary"
+    );
+    let second = clients[1].clone();
+    let public = server_public.clone();
+    let server_clone = server.clone();
+    let third = Controller::open(temp.path().join("pairing"), vec![])?;
+    let (done, result) = mpsc::channel();
+    let progress = thread::spawn(move || {
+        let work = (|| -> Result<()> {
+            assert!(
+                server_clone.shared.db.try_lock().is_ok(),
+                "db held during inspection"
+            );
+            assert!(
+                server_clone.shared.inventory.try_lock().is_ok(),
+                "cache held during inspection"
+            );
+            server_clone.snapshot()?;
+            assert!(matches!(
+                second.call(
+                    endpoint,
+                    ids[1],
+                    &keys[1],
+                    &public,
+                    Operation::Inspect {
+                        request: Request::Open {
+                            vault: "vault".into()
+                        }
+                    }
+                )?,
+                Reply::Error { .. }
+            ));
+            third.redeem(&offer, "New computer")?;
+            assert!(server_clone.snapshot()?.pending.is_some());
+            Ok(())
+        })();
+        done.send(work).unwrap();
+    });
+    let outcome = result.recv_timeout(Duration::from_secs(2));
+    release.send(())?;
+    progress.join().unwrap();
+    assert!(matches!(slow.join().unwrap()?, Reply::Error { .. }));
+    outcome??;
+    assert_eq!(
+        observed.recv_timeout(Duration::from_secs(1))?,
+        ids[1],
+        "second inspection must really be admitted, not merely rejected by the worker limit"
+    );
+    assert!(
+        server.shared.inventory.lock().unwrap().busy.is_empty(),
+        "failed requests leaked peer permits"
+    );
+    server.shutdown();
     Ok(())
 }

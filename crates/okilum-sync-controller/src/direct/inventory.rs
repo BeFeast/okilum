@@ -7,14 +7,16 @@ use std::{fs::File, time::Instant};
 mod tree;
 use tree::Tree;
 
-/// Bounds are refusals, never successful truncation. One server snapshot is kept
-/// in memory; starting another inspection invalidates the previous capability.
+/// Bounds are refusals, never successful truncation. Snapshots are peer-isolated.
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_FILES: usize = 16_384;
 pub const PAGE_FILES: usize = 4;
 /// Hex encoding keeps even worst-case nested JSON below the existing wire bound.
 pub const CHUNK_BYTES: usize = 4096;
 const LIFETIME_SECONDS: u64 = 120;
+const MAX_SNAPSHOTS: usize = 4;
+const MAX_PEER_SNAPSHOTS: usize = 2;
+const MAX_ACTIVE: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,8 +26,7 @@ struct Binding {
     reader: String,
     vault: String,
     remote: bool,
-    root: PathBuf,
-    root_identity: (u64, u64),
+    root_binding: String,
     device: String,
     certificate: String,
     config: String,
@@ -92,6 +93,7 @@ pub(super) enum Response {
     },
 }
 struct Local {
+    path: PathBuf,
     header: Header,
     entries: Vec<Entry>,
     tree: Tree,
@@ -104,10 +106,116 @@ impl Local {
             && (!content || fresh.files == self.tree.files)
     }
 }
-pub(super) struct Stored {
+struct Stored {
     local: Local,
     source: ExistingVault,
     expires: Instant,
+}
+type CacheKey = (Uuid, String, String);
+#[derive(Default)]
+pub(super) struct Cache {
+    entries: BTreeMap<CacheKey, Arc<Stored>>,
+    busy: BTreeMap<Uuid, Option<String>>,
+}
+impl Cache {
+    pub(super) fn prune(&mut self) {
+        self.entries
+            .retain(|_, stored| stored.expires > Instant::now());
+    }
+    fn admit(&mut self, peer: Uuid, vault: Option<&str>) -> Result<()> {
+        self.prune();
+        ensure!(
+            !self.busy.contains_key(&peer),
+            "inspection already in progress for computer"
+        );
+        ensure!(
+            self.busy.len() < MAX_ACTIVE,
+            "inspection concurrency limit reached"
+        );
+        if let Some(vault) = vault {
+            let existing = self
+                .entries
+                .keys()
+                .any(|(p, v, _)| *p == peer && v == vault);
+            let reservations = self
+                .busy
+                .iter()
+                .filter(|(p, v)| {
+                    v.as_ref().is_some_and(|v| {
+                        !self
+                            .entries
+                            .keys()
+                            .any(|(owner, name, _)| owner == *p && name == v)
+                    })
+                })
+                .count();
+            ensure!(
+                existing || self.entries.len() + reservations < MAX_SNAPSHOTS,
+                "inventory cache full; wait for expiry"
+            );
+            ensure!(
+                existing
+                    || self.entries.keys().filter(|(p, _, _)| *p == peer).count()
+                        < MAX_PEER_SNAPSHOTS,
+                "computer inventory limit reached; wait for expiry"
+            );
+        }
+        self.busy.insert(peer, vault.map(str::to_owned));
+        Ok(())
+    }
+    fn insert(&mut self, stored: Stored) -> Header {
+        let h = &stored.local.header;
+        let key = (h.binding.pair, h.binding.vault.clone(), h.revision.clone());
+        // Reuse unchanged capabilities; refresh never evicts another peer/vault.
+        if let Some(current) = self.entries.get(&key) {
+            if current.local.header.binding == h.binding && current.expires > Instant::now() {
+                return current.local.header.clone();
+            }
+        }
+        self.entries
+            .retain(|(p, v, _), _| *p != key.0 || *v != key.1);
+        let header = h.clone();
+        self.entries.insert(key, Arc::new(stored));
+        header
+    }
+}
+struct Permit {
+    shared: Arc<Shared>,
+    peer: Uuid,
+}
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.shared
+            .inventory
+            .lock()
+            .unwrap()
+            .busy
+            .remove(&self.peer);
+    }
+}
+fn disjoint(root: &Path, state: &Path) -> Result<()> {
+    let state = state.canonicalize()?;
+    ensure!(
+        !root.starts_with(&state) && !state.starts_with(root),
+        "inspection directory overlaps operational state"
+    );
+    Ok(())
+}
+fn inspectable(folder: &serde_json::Value) -> Result<()> {
+    ensure!(
+        folder["paused"] == false,
+        "paused vault cannot be inspected"
+    );
+    ensure!(
+        folder["type"] == "sendreceive",
+        "inspection requires a promoted sendreceive vault"
+    );
+    Ok(())
+}
+fn opaque_root(key: &[u8; 32], pair: Uuid, path: &Path, root: &File) -> Result<String> {
+    let bytes = serde_json::to_vec(&(pair, path, tree::identity(root)?))?;
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    Ok(wire::hex(ring::hmac::sign(&key, &bytes).as_ref()))
 }
 /// Complete inspection with the ordinary Plan classification. The Plan remains
 /// an observation: callers must revalidate, and #2506 must acquire writer fencing
@@ -139,8 +247,8 @@ fn manifest(tree: &Tree) -> Vec<Entry> {
         })
         .collect()
 }
-fn local(header_binding: Binding, root: Arc<File>) -> Result<Local> {
-    let tree = Tree::collect(&root, &header_binding.root, true)?;
+fn local(header_binding: Binding, path: PathBuf, root: Arc<File>) -> Result<Local> {
+    let tree = Tree::collect(&root, &path, true)?;
     ensure!(
         tree.policy == header_binding.policy,
         "ignore policy changed during inspection"
@@ -156,6 +264,7 @@ fn local(header_binding: Binding, root: Arc<File>) -> Result<Local> {
         bytes: entries.iter().map(|e| e.size).sum(),
     };
     Ok(Local {
+        path,
         header,
         entries,
         tree,
@@ -176,9 +285,17 @@ impl Controller {
     }
     fn inspection_call(&self, id: Uuid, request: Request) -> Result<Response> {
         let peer = self.inspection_peer(id)?;
-        match self.call(peer.endpoint, id, &peer.key, &peer.public, Operation::Inspect { request })? {
+        match self.call(
+            peer.endpoint,
+            id,
+            &peer.key,
+            &peer.public,
+            Operation::Inspect { request },
+        )? {
             Reply::Inspection { response } => Ok(response),
-            _ => anyhow::bail!("inspection unavailable or stale; review authorization, runtime and vault, then refresh"),
+            _ => anyhow::bail!(
+                "inspection unavailable or stale; review authorization, runtime and vault, then refresh"
+            ),
         }
     }
     /// Inspect a remote authorized vault against an existing non-empty ordinary
@@ -186,9 +303,10 @@ impl Controller {
     /// Blocking IO: run outside the UI thread, like the other direct operations.
     pub fn preview_remote_vault(&self, peer: Uuid, vault: &str, here: &Path) -> Result<Preview> {
         self.check()?;
+        let canonical = here.canonicalize()?;
+        disjoint(&canonical, &self.shared.state)?;
         let paired = self.inspection_peer(peer)?;
         let root = Arc::new(tree::open_root(here)?);
-        let canonical = here.canonicalize()?;
         let configs = self.configuration_paths()?;
         ensure!(
             configs.len() == 1,
@@ -201,6 +319,7 @@ impl Controller {
             .parent()
             .and_then(Path::parent)
             .context("managed state missing")?;
+        disjoint(&canonical, prepared)?;
         ensure!(
             daemon::managed_identity(prepared)? == daemon,
             "managed runtime changed"
@@ -222,7 +341,11 @@ impl Controller {
             &root,
             &daemon,
         )?;
-        let here = local(binding, root)?;
+        let here = local(binding, canonical, root)?;
+        ensure!(
+            !here.entries.is_empty(),
+            "inspection requires a non-empty local directory"
+        );
         let Response::Open { header } = self.inspection_call(
             peer,
             Request::Open {
@@ -363,12 +486,12 @@ impl Controller {
             &b.reader,
             &b.vault,
             b.remote,
-            &b.root,
+            &local.path,
             &local.root,
             daemon,
         )?;
         ensure!(current == *b, "inspection binding changed");
-        let fresh = Tree::collect(&local.root, &b.root, content)?;
+        let fresh = Tree::collect(&local.root, &local.path, content)?;
         ensure!(
             local.matches(&fresh, content),
             "inventory changed; refresh preview"
@@ -402,8 +525,15 @@ impl Controller {
             api.version()?["version"] == daemon::CLIENT_VERSION,
             "inspection requires the pinned managed runtime"
         );
-        let config = digest(&api.config()?)?;
+        let config = api.config()?;
         if remote {
+            let folder = config["folders"]
+                .as_array()
+                .context("runtime folders missing")?
+                .iter()
+                .find(|f| f["id"] == vault)
+                .context("authorized vault unavailable")?;
+            inspectable(folder)?;
             let ignores = api.ignores(vault)?;
             let lines = ignores["ignore"]
                 .as_array()
@@ -429,38 +559,71 @@ impl Controller {
             reader: reader.into(),
             vault: vault.into(),
             remote,
-            root: path.into(),
-            root_identity: tree::identity(root)?,
+            root_binding: opaque_root(&self.shared.inventory_key, pair, path, root)?,
             device: daemon.device_id.clone(),
             certificate: daemon.certificate_hash.clone(),
-            config,
+            config: digest(&config)?,
             generation: self.shared.observation_generation,
             started,
             policy: tree::policy(root)?,
         })
     }
-    pub(super) fn inspect_request(
+    fn inspection_authority(
         &self,
-        db: &Database,
         scope: Uuid,
         signer: &[u8],
-        request: Request,
-    ) -> Result<Response> {
-        self.check()?;
+        vault: &str,
+    ) -> Result<(ExistingVault, [u8; 32])> {
+        let db = self.shared.db.lock().unwrap();
         let peer = db.peers.get(&scope).context("computer not approved")?;
         ensure!(
             peer.public == signer && peer.syncthing_device.is_some(),
             "inspection identity not approved"
         );
-        let mut stored = self.shared.inventory.lock().unwrap();
+        ensure!(
+            peer.allowed.iter().any(|v| v == vault),
+            "vault not authorized"
+        );
+        let source = db
+            .attached
+            .iter()
+            .find(|v| v.folder_id == vault)
+            .context("authorized vault unavailable")?
+            .clone();
+        Ok((source, db.seed))
+    }
+    pub(super) fn inspect_request(
+        &self,
+        scope: Uuid,
+        signer: &[u8],
+        request: Request,
+    ) -> Result<Response> {
+        self.check()?;
+        let vault = match &request {
+            Request::Open { vault } => vault,
+            Request::Page { header, .. }
+            | Request::Content { header, .. }
+            | Request::Validate { header } => &header.binding.vault,
+        };
+        let (source, seed) = self.inspection_authority(scope, signer, vault)?;
+        let opening = matches!(&request, Request::Open { .. });
+        self.shared
+            .inventory
+            .lock()
+            .unwrap()
+            .admit(scope, opening.then_some(vault.as_str()))?;
+        let _permit = Permit {
+            shared: self.shared.clone(),
+            peer: scope,
+        };
+        #[cfg(test)]
+        {
+            let hook = self.shared.inspection_hook.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook(scope);
+            }
+        }
         if let Request::Open { vault } = request {
-            ensure!(peer.allowed.contains(&vault), "vault not authorized");
-            let source = db
-                .attached
-                .iter()
-                .find(|v| v.folder_id == vault)
-                .context("authorized vault unavailable")?
-                .clone();
             let fresh = inspect_existing(&self.configuration_paths()?, &source.path)?;
             ensure!(
                 existing::same_binding(&source, &fresh),
@@ -477,7 +640,7 @@ impl Controller {
                 "source is not the pinned managed runtime"
             );
             let root = Arc::new(tree::open_root(&source.path)?);
-            let owner = wire::fingerprint(&wire::public(&db.seed)?);
+            let owner = wire::fingerprint(&wire::public(&seed)?);
             let reader = wire::fingerprint(signer);
             let binding = self.inspection_binding(
                 scope,
@@ -489,39 +652,41 @@ impl Controller {
                 &root,
                 &source.daemon,
             )?;
-            let collected = local(binding, root)?;
+            let collected = local(binding, source.path.clone(), root)?;
             self.validate_local(&collected, &source.daemon, true)?;
-            let header = collected.header.clone();
-            *stored = Some(Stored {
+            let (fresh, _) = self.inspection_authority(scope, signer, &vault)?;
+            ensure!(
+                existing::same_binding(&fresh, &source),
+                "authorized replica changed"
+            );
+            let header = self.shared.inventory.lock().unwrap().insert(Stored {
                 local: collected,
                 source,
                 expires: Instant::now() + Duration::from_secs(LIFETIME_SECONDS),
             });
             return Ok(Response::Open { header });
         }
-        let current = stored
-            .as_ref()
-            .context("inventory expired or replaced; refresh")?;
         let header = match &request {
             Request::Page { header, .. }
             | Request::Content { header, .. }
             | Request::Validate { header } => header,
             Request::Open { .. } => unreachable!(),
         };
+        let current = {
+            let mut cache = self.shared.inventory.lock().unwrap();
+            cache.prune();
+            cache
+                .entries
+                .get(&(scope, header.binding.vault.clone(), header.revision.clone()))
+                .cloned()
+                .context("inventory expired or unavailable; refresh")?
+        };
         ensure!(
-            *header == current.local.header
-                && header.binding.pair == scope
-                && current.expires > Instant::now()
-                && peer.allowed.contains(&header.binding.vault),
+            *header == current.local.header && header.binding.pair == scope,
             "stale or unauthorized inventory"
         );
-        let fresh = db
-            .attached
-            .iter()
-            .find(|v| v.folder_id == header.binding.vault)
-            .context("vault authorization removed")?;
         ensure!(
-            existing::same_binding(fresh, &current.source),
+            existing::same_binding(&source, &current.source),
             "authorized replica changed"
         );
         // Chunks are immutable original bytes. Full byte revalidation brackets
@@ -566,9 +731,13 @@ impl Controller {
             Request::Validate { header } => Response::Valid { header },
             Request::Open { .. } => unreachable!(),
         };
-        // The returned bytes are the immutable inventory bytes; metadata before
-        // and after collection rejects changes rather than mixing generations.
-        self.validate_local(&current.local, &current.source.daemon, content)?;
+        // Only immutable cached data was sliced after the single validation.
+        // Recheck revocation under a short lock before releasing the response.
+        let (fresh, _) = self.inspection_authority(scope, signer, &current.source.folder_id)?;
+        ensure!(
+            existing::same_binding(&fresh, &current.source),
+            "authorized replica changed"
+        );
         ensure!(
             current.expires > Instant::now(),
             "inventory expired during collection"

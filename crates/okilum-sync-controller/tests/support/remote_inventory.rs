@@ -180,9 +180,44 @@ fn managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes()
         .second
         .preview_remote_vault(pair.peer, &id, &pair.target.vault)?;
     assert!(
-        pair.second.validate_remote_preview(&fresh).is_err(),
-        "replaced snapshot remained usable"
+        pair.second.validate_remote_preview(&fresh).is_ok(),
+        "unchanged second inspection invalidated first snapshot"
     );
+    for patch in [json!({"paused":true}), json!({"type":"receiveonly"})] {
+        pair.source.api.patch_folder(&id, &patch)?;
+        assert!(pair.second.validate_remote_preview(&fresh).is_err());
+        assert!(pair
+            .second
+            .preview_remote_vault(pair.peer, &id, &pair.target.vault)
+            .is_err());
+        pair.source
+            .api
+            .patch_folder(&id, &json!({"paused":false,"type":"sendreceive"}))?;
+    }
+    let prepared = pair
+        .target
+        .home
+        .parent()
+        .context("target preparation missing")?;
+    for here in [
+        pair._root.path().join("target-controller"),
+        prepared.to_owned(),
+        pair.target.home.clone(),
+        pair._root.path().to_owned(),
+    ] {
+        assert!(
+            pair.second
+                .preview_remote_vault(pair.peer, &id, &here)
+                .is_err(),
+            "accepted private-state overlap: {here:?}"
+        );
+    }
+    let empty = pair._root.path().join("empty-inspection");
+    fs::create_dir(&empty)?;
+    assert!(pair
+        .second
+        .preview_remote_vault(pair.peer, &id, &empty)
+        .is_err());
     std::os::unix::fs::symlink(pair._root.path(), pair.source.vault.join("escape"))?;
     assert!(pair
         .second

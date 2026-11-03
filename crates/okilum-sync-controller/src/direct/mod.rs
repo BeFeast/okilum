@@ -20,7 +20,7 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -157,7 +157,11 @@ struct Shared {
     transfer_lock: Mutex<()>,
     connection_watch: Mutex<addresses::ConnectionWatch>,
     #[cfg(target_os = "linux")]
-    inventory: Mutex<Option<inventory::Stored>>,
+    inventory: Mutex<inventory::Cache>,
+    #[cfg(target_os = "linux")]
+    inventory_key: [u8; 32],
+    #[cfg(all(test, target_os = "linux"))]
+    inspection_hook: Mutex<Option<Arc<dyn Fn(Uuid) + Send + Sync>>>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
     _lock: std::fs::File,
 }
@@ -282,7 +286,11 @@ impl Controller {
                 transfer_lock: Mutex::new(()),
                 connection_watch: Mutex::new(Default::default()),
                 #[cfg(target_os = "linux")]
-                inventory: Mutex::new(None),
+                inventory: Mutex::new(Default::default()),
+                #[cfg(target_os = "linux")]
+                inventory_key: wire::random()?,
+                #[cfg(all(test, target_os = "linux"))]
+                inspection_hook: Mutex::new(None),
                 _lock,
             }),
         })
@@ -428,6 +436,7 @@ impl Controller {
         let stopping = stop.clone();
         let socket = listener.try_clone()?;
         let weak = Arc::downgrade(&self.shared);
+        let connections = Arc::new(AtomicUsize::new(0));
         thread::Builder::new()
             .name("okilum-pairing".into())
             .spawn(move || {
@@ -438,14 +447,35 @@ impl Controller {
                     if shared.stopped.load(Ordering::Acquire) || !shared.access.allowed() {
                         break;
                     }
+                    #[cfg(target_os = "linux")]
+                    shared.inventory.lock().unwrap().prune();
                     drop(shared);
                     match listener.accept() {
                         Ok((mut stream, _)) => {
                             if let Some(shared) = weak.upgrade() {
-                                // One bounded connection at a time; no unbounded worker queue.
-                                if wire::limits(&stream).is_ok() {
-                                    let controller = Controller { shared };
-                                    let _ = controller.serve(&mut stream);
+                                // Bounded workers keep slow inspections/frame reads off the
+                                // accept loop. Inspection admission separately limits each peer.
+                                if wire::limits(&stream).is_ok()
+                                    && connections
+                                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                                            (n < 16).then_some(n + 1)
+                                        })
+                                        .is_ok()
+                                {
+                                    struct Connection(Arc<AtomicUsize>);
+                                    impl Drop for Connection {
+                                        fn drop(&mut self) {
+                                            self.0.fetch_sub(1, Ordering::AcqRel);
+                                        }
+                                    }
+                                    let connection = Connection(connections.clone());
+                                    let _ = thread::Builder::new()
+                                        .name("okilum-direct".into())
+                                        .spawn(move || {
+                                            let _connection = connection;
+                                            let controller = Controller { shared };
+                                            let _ = controller.serve(&mut stream);
+                                        });
                                 }
                             }
                         }
@@ -773,17 +803,24 @@ impl Controller {
             self.accept_transport(peer, transport)?;
             self.save(&db)?;
         }
-        let reply = self
-            .dispatch(&mut db, scope, message.operation, signer)
-            .unwrap_or_else(|_| Reply::Error {
-                message: "operation unavailable; check approved vault, replica and destination"
-                    .into(),
-            });
+        let seed = db.seed;
+        let result = match message.operation {
+            #[cfg(target_os = "linux")]
+            Operation::Inspect { request } => {
+                drop(db);
+                self.inspect_request(scope, &signer, request)
+                    .map(|response| Reply::Inspection { response })
+            }
+            operation => self.dispatch(&mut db, scope, operation, signer),
+        };
+        let reply = result.unwrap_or_else(|_| Reply::Error {
+            message: "operation unavailable; check approved vault is unpaused and promoted, replica and destination".into(),
+        });
         self.check()?;
         let response = wire::seal(
             scope,
             &credential,
-            &db.seed,
+            &seed,
             &Response {
                 nonce: message.nonce,
                 result: reply,
@@ -916,9 +953,7 @@ impl Controller {
                 }
             }
             #[cfg(target_os = "linux")]
-            Operation::Inspect { request } => Ok(Reply::Inspection {
-                response: self.inspect_request(db, scope, &signer, request)?,
-            }),
+            Operation::Inspect { .. } => anyhow::bail!("inspection requires lock-free dispatch"),
         }
     }
     fn save(&self, db: &Database) -> Result<()> {
