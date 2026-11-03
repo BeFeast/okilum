@@ -1116,6 +1116,21 @@ impl Render for Board {
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
         }
+        let forgejo_problem = source_problem("Forgejo", &self.snapshot.forgejo, 30, now());
+        let line = problem_line(forgejo_problem.into_iter().collect()).unwrap_or_default();
+        // Reserve the quiet source line across healthy/failed refreshes so card
+        // positions and scroll anchors do not move when connectivity changes.
+        root = root.child(
+            div()
+                .debug_selector(|| "board-live-status".into())
+                .h(px(16.))
+                .flex_none()
+                .min_w_0()
+                .truncate()
+                .text_size(px(12.))
+                .text_color(colors.text_muted)
+                .child(line),
+        );
         let mut counts = self.column_counts(binding);
         let ready = self.column_sources_ready(binding);
         self.columns.observe(counts, ready);
@@ -1336,20 +1351,7 @@ impl Render for Board {
                 .disabled(self.editor_loading)
                 .on_click(cx.listener(|this, _, window, cx| this.open_management(window, cx))),
         );
-        let forgejo_problem = source_problem("Forgejo", &self.snapshot.forgejo, 30, now());
-        let line = problem_line(forgejo_problem.into_iter().collect()).unwrap_or_default();
         root.child(columns.child(end.child(self.source_indicator(cx)).child(toggle)))
-            .child(
-                div()
-                    .debug_selector(|| "board-live-status".into())
-                    .h(px(16.))
-                    .flex_none()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(12.))
-                    .text_color(colors.text_muted)
-                    .child(line),
-            )
             .into_any_element()
     }
 }

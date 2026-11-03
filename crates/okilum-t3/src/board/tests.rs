@@ -353,7 +353,7 @@ fn attention_is_explicit_and_cannot_supply_an_unsafe_destination() {
 }
 
 #[test]
-fn presentation_edits_keep_the_same_issue_source_but_membership_changes_do_not() {
+fn annotation_edits_keep_live_membership_but_repository_changes_invalidate_it() {
     let original = Binding::parse(CONFIG).unwrap();
     let mut edited = original.clone();
     edited.issues[0].expected = "Updated human wording".into();
@@ -361,6 +361,13 @@ fn presentation_edits_keep_the_same_issue_source_but_membership_changes_do_not()
     edited.issues[0].stage = Some(HumanStage::Ready);
     assert!(original.same_issue_source(&edited));
     edited.issues[0].number = 99999;
+    assert!(original.same_issue_source(&edited));
+    edited.issues.clear();
+    assert!(
+        original.same_issue_source(&edited),
+        "removing annotations must not empty a live Board while offline"
+    );
+    edited.repository = "https://forgejo.example/other/project".into();
     assert!(!original.same_issue_source(&edited));
 }
 

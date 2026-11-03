@@ -34,6 +34,7 @@ struct Cached {
     etag: Option<reqwest::header::HeaderValue>,
     value: serde_json::Value,
     next: bool,
+    bytes: usize,
 }
 
 /// Keep one reader for the Board session, including hide/show cycles.
@@ -174,7 +175,15 @@ impl Reader {
             );
             let value: serde_json::Value = serde_json::from_slice(&bytes)?;
             // Bound retained pages even across repeated incomplete reads.
-            if self.cache.len() >= 256 && !self.cache.contains_key(path) {
+            let retained: usize = self
+                .cache
+                .iter()
+                .filter(|(key, _)| key.as_str() != path)
+                .map(|(_, entry)| entry.bytes)
+                .sum();
+            if retained + bytes.len() > 8 * 1024 * 1024
+                || (self.cache.len() >= 256 && !self.cache.contains_key(path))
+            {
                 self.cache.clear();
             }
             self.cache.insert(
@@ -183,6 +192,7 @@ impl Reader {
                     etag,
                     value: value.clone(),
                     next,
+                    bytes: bytes.len(),
                 },
             );
             (value, next)
@@ -388,9 +398,6 @@ pub fn checks(issue: &Issue) -> bool {
         .any(|p| p.merged_at.is_none() && p.checks != "success")
 }
 
-#[cfg(test)]
-mod tests;
-
 /// Missing annotation is explicit; a generated card never invents ownership or
 /// inherits one of several conflicting manual cards.
 pub fn mapping_problem(binding: &Binding, number: u64) -> Option<&'static str> {
@@ -412,3 +419,6 @@ pub fn mapping_problem(binding: &Binding, number: u64) -> Option<&'static str> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests;

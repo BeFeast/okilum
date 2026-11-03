@@ -399,14 +399,10 @@ impl Binding {
         }
         Ok(Some(binding))
     }
-    /// Presentation or attention edits retain issue snapshots and card selection.
+    /// Manual annotations do not determine live repository membership. Keep
+    /// the last good source through annotation edits, even while offline.
     pub fn same_issue_source(&self, other: &Self) -> bool {
         self.repository == other.repository
-            && self
-                .issues
-                .iter()
-                .map(|i| i.number)
-                .eq(other.issues.iter().map(|i| i.number))
     }
     pub fn issue_url(&self, number: u64) -> String {
         format!("{}/issues/{number}", self.repository.trim_end_matches('/'))

@@ -37,7 +37,7 @@ is no separate tracker token in the existing desktop Board; Manager OAuth belong
 to its T3 origin and is never forwarded to Forgejo. No host or token is inferred
 from the developer's environment. Reads reject redirects, share a 20-second
 deadline and cap responses at 2 MiB and each list at 1000 entries. A Board-owned
-ETag cache revalidates responses on subsequent reads and survives hide/show;
+ETag cache (at most 8 MiB of response payloads / 256 entries) revalidates responses on subsequent reads and survives hide/show;
 changing repository discards cached responses and server backoff. HTTP 429/503
 honours Retry-After (60 seconds when absent), retaining the last complete Board.
 Refresh is clamped to 15–30 seconds to avoid fast-poll configurations flooding the
@@ -197,7 +197,8 @@ the explicit destination. This action never sends a message or starts a workflow
 No issue status, label, agent activity or build report creates attention entries.
 The manager maintains this list; delivery does not prepopulate it with invented
 next actions. Presentation/list edits keep the existing issue snapshot and card
-selection. Repository or selected-issue identity changes still invalidate reads.
+selection. Only repository changes invalidate issue membership; changing manual annotations
+keeps the live snapshot through an outage.
 
 ## No header block, #1795 correction
 
