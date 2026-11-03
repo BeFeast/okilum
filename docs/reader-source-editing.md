@@ -10,6 +10,24 @@ encodings are refused, never decoded lossily. Native undo/redo and the existing
 exact clipboard adapter apply. Cmd+S/Ctrl+S saves; leaving the note, losing focus,
 closing the window and quitting also attempt a save.
 
+Incoming changes to an open note (#2486) are observed through a shallow parent
+watch independently of vault indexing, including Syncthing's rename over the
+original file. Clean Source and Live Preview buffers reload in place while
+retaining the source selection and scroll. A native reset is bound to the refreshed base, so repeated incoming changes
+do not turn a clean editor into an apparent unsaved edit. Dirty buffers retain their text and show
+a conflict notice; an already active Sync controller may add the uniquely
+identified remote computer name. Unavailable or ambiguous provenance remains
+unattributed rather than guessing a computer.
+
+Explicit Save during that conflict, or **Keep both versions**, creates a complete,
+create-only `*.sync-conflict-YYYYMMDD-HHMMSS-XXXXXXX.md` copy of the latest local
+buffer next to the note and names it in the notice. The incoming canonical file
+and previous conflict copies remain unchanged; the draft and conflict stay open
+for comparison or explicit resolution. Repeating Save for the same unchanged
+copy reuses it; later local edits produce a new copy. Autosave stops at the
+conflict and retains the recovery draft. This supplies the keep-both preservation
+boundary of #2044 without claiming its full conflict-resolution workflow.
+
 Within the same Reader window, choosing another supported Markdown note keeps the
 chosen Read, Source or Live Preview mode (#1723). An explicit return to Read keeps
 later notes in Read. File switching still completes the existing save/recovery

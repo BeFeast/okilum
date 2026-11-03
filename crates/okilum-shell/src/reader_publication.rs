@@ -71,9 +71,10 @@ impl Reader {
                 return;
             }
             self.refresh_source_in_background(window, cx);
-        } else if let Some(source) = source {
-            self.reconcile_document_source(Some(source.raw.clone()), window, cx);
         } else {
+            // An index batch may have captured bytes before the selected-file
+            // watcher refreshed this window. Read the current contained source
+            // rather than putting an older published snapshot back on screen.
             self.reconcile_published_document(window, cx);
         }
     }
