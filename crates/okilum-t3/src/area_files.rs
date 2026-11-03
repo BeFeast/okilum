@@ -181,7 +181,12 @@ impl Document {
     }
     /// Optimistic revision check and durable same-directory atomic replacement.
     pub fn replace(&self, updated: &str) -> Result<()> {
-        let _admission = okilum_write_authority::operation_for_path(&self.path)?;
+        let scope = self
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .context("Manifest has no Area")?;
+        let _admission = okilum_write_authority::operation(scope)?;
         if updated == self.source {
             return Ok(());
         }
