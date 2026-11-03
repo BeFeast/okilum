@@ -1,0 +1,84 @@
+# Board + Manager reference (#2464 / #2465)
+
+The opt-in `project-ui-harness` mode `performance` mounts the production Reader,
+Manager, composer and Board. Its synthetic data contains 200 completed runs,
+1,200 timeline items (Markdown, source-keyed tool-call groups and response folds),
+and 240 cards divided equally between Queue, In progress, Checks and Can try.
+It uses a fake Manager gateway and a Board-owned synthetic issue reader. No real
+threads, provider dispatches, credentials or installed application are involved.
+
+Use the prescribed `H=github scripts/agent/gh-check.sh` for ordinary acceptance.
+Build native artifacts only in an approved hardware build slot; never run Cargo
+on maestro except fmt. Prepare **and verify** the unchanged vendor patch stack.
+The native reference uses the shipped release optimization profile:
+
+```
+cargo build --locked --offline --release -p okilum-shell --bin okilum \
+  --features project-ui-harness
+```
+
+Run before and after on **one muninn or baldr**, under **one GUI lock for the whole
+session**, with isolated state/config/cache directories and a private headless
+sway/DBus session. Launch only the copied artifact, setting:
+
+```
+OKILUM_PROJECT_UI_FIXTURE=performance OKILUM_STATE_DIR=<isolated-state-directory>
+```
+
+The initial asynchronous note publication can show the note. Enter Board through
+the real `← Board` action and verify all four 60-card lanes alongside Manager
+before measuring. Use explicit `px` units for sway's floating resize command.
+The reference capture is 1196 × 772 client pixels (1200 × 800 decorated window),
+scale 1, Dark, Manager about 560 px wide. Retain the actual sway window geometry,
+profile widths and artifact/source SHA256s. Do not compare debug and release
+numbers, different hosts, or captures clipped by the output.
+
+The harness enables GPUI's **existing** profiler, with no gpui core patch.
+`PERF` lines contain UTC epoch end time, CPU `Window::draw` milliseconds and
+invalidation count. `PRESENT` records GPU/platform submission separately.
+`WORK` is a 250 ms diagnostic aggregate of Board renders, card builds and
+Manager row builds; it is not an exact per-frame gate. The Rust regression uses
+per-render card counts, including each follow-up measurement frame separately.
+
+Physical input and positive controls:
+
+- Scroll the Manager at 60 events/s in three 2-second bursts, two toward older
+  history and one back. A Wayland pixel stream must set `AxisSource::Finger`
+  before Axis/Frame; GPUI ignores raw Wheel Axis without discrete steps. The
+  reference sends ±18 pixel values, scaled to ±54 px by GPUI's Wayland adapter.
+  Retain before/after captures for **each** burst and reject an unchanged view.
+- Drag the real splitter through ±100 px in four alternating 2-second bursts,
+  120 motion events each. Read the durable Reader panel width on release;
+  each burst must change it by at least 80 px. Restore the initial width before
+  the following scenario. Retain before/after captures.
+- Click the first Board card 13 times, at least one second apart, with the
+  pointer settled before the first activation. Each before/after card crop must
+  change, proving an actual disclosure response. Record input send times and
+  first subsequent presentation. This measures send-to-submission latency,
+  including compositor/input queueing, not physical display scanout.
+- Open the actual model control, send native Escape and type a slow focus-proof
+  string. The popup must disappear, the composer must receive that text and the
+  selected Board card/model must remain unchanged. Never press Send.
+
+Store ranges as `<phase>-ranges.json`, an array of objects with `scenario`,
+`rep`, `start`, `end` (epoch seconds). Resize entries also have `width_before`
+and `width_after`. Store the app log as `<phase>.log`, and screenshots as
+`<phase>-<scenario>-<rep>-before.png` / `...-after.png`. With Python and Pillow:
+
+```
+python3 scripts/perf/manager-board/analyze.py QA_DIRECTORY before
+python3 scripts/perf/manager-board/analyze.py QA_DIRECTORY after --gate
+```
+
+Missing ranges, zero drawn frames, unmoved splitter, unchanged scroll captures,
+unchanged card crops or missing click presentation produce **no verdict**.
+Acceptance requires scroll and resize CPU draw p95 ≤ 8 ms; report the share of
+frames over 16.7 ms and click latency separately. Keep platform submission costs
+separate so a headless compositor's pacing cannot be mistaken for CPU layout.
+
+The ordinary Linux Rust suite includes the Reader-mounted reference regression,
+its real wheel/drag/card-tail controls and Reader Escape/focus assertions. It
+rejects Board card builds during Manager scrolling, >64 card builds in any
+splitter frame, >96 Manager row builds per settled scroll/resize step, and an
+unreachable last card. The standalone blocked-picker regression covers sending,
+offline, inactive and model-loading state without sends/model writes/draft loss.
