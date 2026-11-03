@@ -149,6 +149,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn issue1622_attachment_embeds_keep_ranges_paths_and_broken_identity() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("attachments")).unwrap();
+        for path in [
+            "root.png",
+            "attachments/photo.png",
+            "attachments/manual.pdf",
+            "bundle.zip",
+            "sample.unknown",
+        ] {
+            std::fs::write(root.join(path), "synthetic file").unwrap();
+        }
+        let vault = Vault::scan(&root).unwrap();
+        let source = "![[root.png]]\n\n![[attachments/photo.png]]\n\n![[attachments/manual.pdf]]\n\n![[bundle.zip]]\n\n![other](sample.unknown)\n\n![[missing.zip]]\n\n`![[ignored.zip]]`\n";
+        let refs = references(source, &vault, "note.md");
+        assert_eq!(refs.len(), 6);
+        for (reference, path) in refs.iter().zip([
+            "root.png",
+            "attachments/photo.png",
+            "attachments/manual.pdf",
+            "bundle.zip",
+            "sample.unknown",
+        ]) {
+            assert_eq!(
+                reference.url.as_deref(),
+                Some(url::Url::from_file_path(root.join(path)).unwrap().as_str())
+            );
+            assert!(source[reference.range.clone()].starts_with("!["));
+        }
+        assert!(refs[5].url.is_none());
+        let rendered =
+            crate::render::reader_document_from_source(&vault, "note.md", source).rendered;
+        for path in ["root.png", "attachments/manual.pdf", "bundle.zip"] {
+            assert!(
+                rendered.contains(url::Url::from_file_path(root.join(path)).unwrap().as_str()),
+                "{rendered}"
+            );
+        }
+        assert!(
+            rendered.contains(&crate::render::unavailable_file("missing.zip")),
+            "{rendered}"
+        );
+        assert!(!root.join("missing.zip").exists());
+    }
+
+    #[test]
     fn file_image_actions_reject_outside_paths_and_decoded_traversal() {
         let fixture = tempfile::tempdir().unwrap();
         let root = fixture.path().join("vault");
