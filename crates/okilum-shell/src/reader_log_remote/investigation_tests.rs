@@ -335,6 +335,9 @@ async fn remote_replacement_restarts_an_inflight_investigation_filter(cx: &mut T
             window,
             cx,
         );
+        // Navigation can retain an unchanged empty query. Explicitly start
+        // its local request-scope filter before delivering the worker result.
+        view.refilter(cx);
         assert!(
             view.filtering && view.filter_running.is_some(),
             "positive control: the parent-window filter is still in flight"
