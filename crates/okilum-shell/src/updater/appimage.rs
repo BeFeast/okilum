@@ -181,6 +181,22 @@ pub(super) fn confirm_startup() {
             env!("OKILUM_SOURCE_COMMIT"),
         ) {
             status::set(CheckStatus::Failed(format!("Update startup confirmation failed: {error}. Previous AppImage retained beside this file.")));
+            return;
+        }
+        // The managed install now holds this build: an older launcher copy
+        // must not replace it on the next ordinary launch (#2455).
+        if let (Some(home), Some(image), Ok(build)) = (
+            std::env::var_os("HOME"),
+            std::env::var_os("APPIMAGE"),
+            env!("OKILUM_BUILD_VERSION").parse::<u64>(),
+        ) {
+            if let Err(error) = okilum_appimage::installation::record_running(
+                std::path::Path::new(&home),
+                std::path::Path::new(&image),
+                build,
+            ) {
+                eprintln!("AppImage installation record: {error:#}");
+            }
         }
     });
 }

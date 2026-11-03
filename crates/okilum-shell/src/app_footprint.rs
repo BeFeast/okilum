@@ -55,7 +55,9 @@ pub(crate) fn enter_managed_appimage() {
         return;
     };
     let source = PathBuf::from(source);
-    let target = match okilum_appimage::installation::install(Path::new(&home), &source) {
+    // A non-numeric (development) build never replaces a known managed build.
+    let build = env!("OKILUM_BUILD_VERSION").parse().unwrap_or(0);
+    let target = match okilum_appimage::installation::install(Path::new(&home), &source, build) {
         Ok(target) => target,
         Err(error) => {
             eprintln!("AppImage installation: {error:#}");

@@ -27,6 +27,42 @@ fn regular(path: &Path) -> Result<fs::Metadata> {
 fn marker(image: &Path) -> PathBuf {
     image.with_file_name(".appimage-owner")
 }
+/// Build of the bytes at the managed path, recorded by the process that put
+/// them there or ran from there (#2455). Absent or unreadable means unknown.
+fn build_record(image: &Path) -> PathBuf {
+    image.with_file_name(".appimage-build")
+}
+fn recorded_build(image: &Path) -> Option<u64> {
+    regular(&build_record(image)).ok()?;
+    fs::read_to_string(build_record(image))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+fn write_build(image: &Path, build: u64) -> Result<()> {
+    let mut record = tempfile::NamedTempFile::new_in(image.parent().context("Missing parent")?)?;
+    record.write_all(build.to_string().as_bytes())?;
+    record.as_file().sync_all()?;
+    record.persist(build_record(image))?;
+    Ok(())
+}
+
+/// Record the build now running from `running` when it is our managed image
+/// (an applied update, or an ordinary managed launch). Anything else is ignored.
+pub fn record_running(home: &Path, running: &Path, build: u64) -> Result<()> {
+    let (image, _) = paths(home)?;
+    if running != image || image.symlink_metadata().is_err() {
+        return Ok(());
+    }
+    regular(&image)?;
+    owned(&image)?;
+    if recorded_build(&image) != Some(build) {
+        write_build(&image, build)?;
+    }
+    Ok(())
+}
+
 fn owned(image: &Path) -> Result<()> {
     regular(&marker(image))?;
     ensure!(
@@ -38,7 +74,10 @@ fn owned(image: &Path) -> Result<()> {
 
 /// Publish bytes before changing the launchers; keep arbitrary downloaded copies.
 /// Only the exact legacy ~/Applications/Okilum.AppImage is removed after success.
-pub fn install(home: &Path, source: &Path) -> Result<PathBuf> {
+/// `build` is the build of `source` (the running process). An external copy
+/// never replaces a managed install already at the same or a newer build: a
+/// launcher pinned to an old download must not undo self-updates (#2455).
+pub fn install(home: &Path, source: &Path, build: u64) -> Result<PathBuf> {
     ensure!(source.is_absolute(), "AppImage source must be absolute");
     let metadata = regular(source)?;
     ensure!(
@@ -78,7 +117,13 @@ pub fn install(home: &Path, source: &Path) -> Result<PathBuf> {
             owned(&image)?;
         }
     }
-    if source != image {
+    let current = if image.symlink_metadata().is_ok() {
+        recorded_build(&image)
+    } else {
+        None
+    };
+    let replace = source != image && current.is_none_or(|installed| build > installed);
+    if replace {
         let mut input = fs::File::open(source)?;
         let mut staged = tempfile::NamedTempFile::new_in(image.parent().unwrap())?;
         std::io::copy(&mut input, staged.as_file_mut())?;
@@ -102,6 +147,9 @@ pub fn install(home: &Path, source: &Path) -> Result<PathBuf> {
     owner.write_all(OWNER)?;
     owner.as_file().sync_all()?;
     owner.persist(marker(&image))?;
+    if replace || source == image {
+        write_build(&image, build)?;
+    }
     fs::File::open(image.parent().unwrap())?.sync_all()?;
     if command.symlink_metadata().is_err() {
         std::os::unix::fs::symlink(&image, &command)?;
@@ -136,6 +184,7 @@ pub fn remove(home: &Path) -> Result<()> {
         }
         fs::remove_file(&image)?;
         fs::remove_file(marker(&image))?;
+        let _ = fs::remove_file(build_record(&image));
         let _ = fs::remove_file(image.with_file_name(".install-lock"));
         let _ = fs::remove_dir(image.parent().context("Missing install directory")?);
     }
@@ -153,7 +202,7 @@ mod tests {
         fs::write(legacy.parent().unwrap().join("foreign"), "keep").unwrap();
         fs::write(&legacy, b"old").unwrap();
         fs::set_permissions(&legacy, fs::Permissions::from_mode(0o755)).unwrap();
-        let image = install(home.path(), &legacy).unwrap();
+        let image = install(home.path(), &legacy, 7464).unwrap();
         crate::desktop::install(home.path(), &image).unwrap();
         let (desktop, _) = crate::desktop::paths(home.path()).unwrap();
         let entry = fs::read_to_string(&desktop).unwrap();
@@ -165,7 +214,7 @@ mod tests {
         let update = home.path().join("new.AppImage");
         fs::write(&update, b"new").unwrap();
         fs::set_permissions(&update, fs::Permissions::from_mode(0o755)).unwrap();
-        install(home.path(), &update).unwrap();
+        install(home.path(), &update, 7538).unwrap();
         assert_eq!(fs::read(&image).unwrap(), b"new");
         assert_eq!(fs::read_link(paths(home.path()).unwrap().1).unwrap(), image);
         crate::desktop::remove(home.path()).unwrap();
@@ -188,7 +237,7 @@ mod tests {
         let candidate = home.path().join("candidate");
         fs::write(&candidate, b"candidate").unwrap();
         fs::set_permissions(&candidate, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(install(home.path(), &candidate).is_err());
+        assert!(install(home.path(), &candidate, 7538).is_err());
         assert!(remove(home.path()).is_err());
         assert_eq!(fs::read(&image).unwrap(), b"foreign");
         fs::remove_file(&image).unwrap();
@@ -197,7 +246,62 @@ mod tests {
         let source = home.path().join("download");
         fs::write(&source, b"app").unwrap();
         fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(install(home.path(), &source).is_err());
+        assert!(install(home.path(), &source, 7538).is_err());
         assert!(!image.exists());
+    }
+
+    fn executable(path: &Path, bytes: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn older_external_launcher_never_downgrades_a_self_updated_install() {
+        // #2455: the launcher runs ~/AppImages/okilum.appimage (7464); the
+        // managed copy self-updates to 7538; the next launch must keep 7538.
+        let home = tempfile::tempdir().unwrap();
+        let external = home.path().join("AppImages/okilum.appimage");
+        executable(&external, b"7464");
+        let image = install(home.path(), &external, 7464).unwrap();
+        assert_eq!(fs::read(&image).unwrap(), b"7464");
+        // Applied self-update replaces the managed bytes; the new process records itself.
+        executable(&image, b"7538");
+        record_running(home.path(), &image, 7538).unwrap();
+        assert_eq!(install(home.path(), &external, 7464).unwrap(), image);
+        assert_eq!(fs::read(&image).unwrap(), b"7538");
+        assert_eq!(recorded_build(&image), Some(7538));
+        // The same build from the launcher is not a reason to copy either.
+        executable(&external, b"7538");
+        install(home.path(), &external, 7538).unwrap();
+        assert_eq!(fs::read(&image).unwrap(), b"7538");
+        // A strictly newer manual download still replaces the install.
+        executable(&external, b"7539");
+        install(home.path(), &external, 7539).unwrap();
+        assert_eq!(fs::read(&image).unwrap(), b"7539");
+        assert_eq!(recorded_build(&image), Some(7539));
+        assert_eq!(fs::read(&external).unwrap(), b"7539"); // never written
+    }
+
+    #[test]
+    fn unknown_installed_build_keeps_the_previous_replacement_behaviour() {
+        let home = tempfile::tempdir().unwrap();
+        let external = home.path().join("AppImages/okilum.appimage");
+        executable(&external, b"old");
+        let image = install(home.path(), &external, 7464).unwrap();
+        fs::remove_file(build_record(&image)).unwrap(); // installed before #2455
+        executable(&external, b"new");
+        install(home.path(), &external, 7465).unwrap();
+        assert_eq!(fs::read(&image).unwrap(), b"new");
+    }
+
+    #[test]
+    fn running_record_ignores_foreign_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let external = home.path().join("AppImages/okilum.appimage");
+        executable(&external, b"x");
+        let image = install(home.path(), &external, 7464).unwrap();
+        record_running(home.path(), &external, 9999).unwrap();
+        assert_eq!(recorded_build(&image), Some(7464));
     }
 }
