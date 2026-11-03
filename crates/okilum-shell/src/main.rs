@@ -1845,7 +1845,7 @@ struct Reader {
     /// vault Arc or the current document changes.
     tree: reader_tree::Tree,
     tree_source: Option<Arc<Vault>>,
-    tree_rules_source: Option<Arc<Vault>>,
+    tree_rules_source: Option<(Arc<Vault>, u64)>,
     tree_rules_running: bool,
     tree_revealed: String,
     /// Settings «Show the open note in the file tree» (#1762), read from
