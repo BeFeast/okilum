@@ -114,11 +114,19 @@ class Admission(unittest.TestCase):
             self.statuses[SOURCE] = copy.deepcopy(original)
             self.statuses[SOURCE][0]['status'] = state
             self.assertFalse(self.select()[0])
-        for statuses in [[], original[:1], original * 2,
+        for statuses in [[], original[1:], original * 2,
                          [dict(context=c.replace('workflow_dispatch', 'pull_request'), status='success')
                           for c in hourly.REQUIRED]]:
             self.statuses[SOURCE] = statuses
             self.assertFalse(self.select()[0])
+        self.assertFalse(self.writes())
+
+    def test_red_or_missing_shell_full_never_holds_beta_once_check_is_green(self):
+        original = copy.deepcopy(self.statuses[SOURCE])
+        for statuses in [original[:1], [original[0], dict(original[1], status='failure')],
+                         [original[0], dict(original[1], status='pending')]]:
+            self.statuses[SOURCE] = copy.deepcopy(statuses)
+            self.assertEqual(self.select()[:2], (True, SOURCE))
         self.assertFalse(self.writes())
 
     def test_only_linux_tick_certifies_at_most_once_in_an_hour(self):
@@ -291,22 +299,24 @@ class StatusReporting(unittest.TestCase):
 
     def test_both_certification_results_are_explicitly_reported_on_the_requested_sha(self):
         for result in ['success', 'failure', 'skipped', 'cancelled']:
-            self.api.reset_mock()
-            env = dict(self.env, CERTIFICATION_SOURCE=SOURCE, JOB_RESULTS=json.dumps({
-                'check': {'result': 'success'}, 'shell-full': {'result': result}}))
-            hourly.report_certification(env)
-            calls = [c for c in self.api.call_args_list if c.args[0].startswith('/statuses/')]
-            self.assertEqual([call.args[:2] for call in calls], [('/statuses/' + SOURCE, 'POST')] * 2)
-            self.assertEqual([call.args[2]['context'] for call in calls], list(hourly.REQUIRED))
-            self.assertEqual([call.args[2]['state'] for call in calls],
-                             ['success', 'failure' if result == 'cancelled' else result])
-            self.assertEqual(calls[0].args[2]['target_url'],
-                             'https://git.oklabs.uk/BeFeast/okilum/actions/runs/123')
+            for job, context in zip(['check', 'shell-full'], hourly.REQUIRED):
+                self.api.reset_mock()
+                env = dict(self.env, CERTIFICATION_SOURCE=SOURCE,
+                           JOB_RESULTS=json.dumps({job: {'result': result}}))
+                hourly.report_certification(env)
+                calls = [c for c in self.api.call_args_list if c.args[0].startswith('/statuses/')]
+                self.assertEqual([call.args[:2] for call in calls], [('/statuses/' + SOURCE, 'POST')])
+                self.assertEqual([call.args[2]['context'] for call in calls], [context])
+                self.assertEqual([call.args[2]['state'] for call in calls],
+                                 ['failure' if result == 'cancelled' else result])
+                self.assertEqual(calls[0].args[2]['target_url'],
+                                 'https://git.oklabs.uk/BeFeast/okilum/actions/runs/123')
         # The dispatch snapshot may advance; results still belong to the pinned checkout.
         self.api.reset_mock()
         hourly.report_certification({**env, 'GITHUB_SHA': OLD})
         self.assertTrue(all(call.args[0] == '/statuses/' + SOURCE for call in self.api.call_args_list))
-        for broken in [dict(JOB_RESULTS='{}'), dict(CERTIFICATION_SOURCE='main')]:
+        both = json.dumps({j: {'result': 'success'} for j in ['check', 'shell-full']})
+        for broken in [dict(JOB_RESULTS='{}'), dict(JOB_RESULTS=both), dict(CERTIFICATION_SOURCE='main')]:
             self.api.reset_mock()
             with self.assertRaises(ValueError):
                 hourly.report_certification({**env, **broken})
@@ -334,15 +344,17 @@ class StatusReporting(unittest.TestCase):
 
     def test_green_certification_immediately_dispatches_all_platforms_even_after_main_moves(self):
         env = dict(self.env, GITHUB_SHA=OLD, CERTIFICATION_SOURCE=SOURCE,
-                   JOB_RESULTS=json.dumps({j: {'result': 'success'} for j in ['check', 'shell-full']}))
+                   JOB_RESULTS=json.dumps({'check': {'result': 'success'}}))
         hourly.report_certification(env)
         dispatches = [c.args for c in self.api.call_args_list if c.args[0].endswith('/dispatches')]
         self.assertEqual(dispatches, [('/actions/workflows/' + w + '/dispatches', 'POST',
             {'ref': 'main', 'inputs': {'hourly_source': SOURCE}}) for w in hourly.WORKFLOWS.values()])
-        self.api.reset_mock()
-        results = json.loads(env['JOB_RESULTS']); results['check']['result'] = 'failure'
-        hourly.report_certification(dict(env, JOB_RESULTS=json.dumps(results)))
-        self.assertFalse(any(c.args[0].endswith('/dispatches') for c in self.api.call_args_list))
+        # Red check, or any shell-full result, never dispatches release work.
+        for results in [{'check': {'result': 'failure'}}, {'shell-full': {'result': 'success'}},
+                        {'shell-full': {'result': 'failure'}}]:
+            self.api.reset_mock()
+            hourly.report_certification(dict(env, JOB_RESULTS=json.dumps(results)))
+            self.assertFalse(any(c.args[0].endswith('/dispatches') for c in self.api.call_args_list))
 
     def test_red_or_cancelled_shipping_job_cannot_be_reported_as_green(self):
         for state in ['failure', 'cancelled']:
@@ -455,11 +467,13 @@ class WorkflowContract(unittest.TestCase):
         self.assertLess(check.index(validation), next(i for i, s in enumerate(check)
                         if s.get('name') == 'Prepare local Linux toolchain'))
         self.assertIn("inputs.certification_source == ''", data['jobs']['sync-source-sharing']['if'])
-        report = data['jobs']['certification-status']
-        self.assertEqual(report['needs'], ['check', 'shell-full'])
-        self.assertEqual(report['if'], "always() && inputs.certification_source != ''")
-        self.assertEqual(report['steps'][-1]['run'], 'python3 scripts/releases/hourly_beta.py certification-status')
-        self.assertEqual(report['steps'][-1]['env']['JOB_RESULTS'], '${{ toJSON(needs) }}')
+        # Beta's gate reports right after check; shell-full reports on its own.
+        for name, needs in [('certification-status', ['check']), ('shell-full-status', ['shell-full'])]:
+            report = data['jobs'][name]
+            self.assertEqual(report['needs'], needs)
+            self.assertEqual(report['if'], "always() && inputs.certification_source != ''")
+            self.assertEqual(report['steps'][-1]['run'], 'python3 scripts/releases/hourly_beta.py certification-status')
+            self.assertEqual(report['steps'][-1]['env']['JOB_RESULTS'], '${{ toJSON(needs) }}')
 
     def test_stable_selector_shipping_contexts_remain_on_the_beta_source_commit(self):
         # Dispatch/schedule runs need explicit reporting on this Forgejo. Stale

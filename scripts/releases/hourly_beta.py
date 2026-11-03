@@ -15,6 +15,11 @@ REPOSITORY = 'BeFeast/okilum'
 WORKFLOWS = {'linux': 'linux-release.yml', 'macos': 'macos-release.yml',
              'windows': 'windows-diagnostic.yml'}
 REQUIRED = ('fast / check (workflow_dispatch)', 'fast / shell-full (workflow_dispatch)')
+# Beta gates on the shipping check only. shell-full is the full runtime suite:
+# it is still certified and reported on the same source, but it informs Stable
+# and never holds Beta (03.11 rule: CI never gates development).
+BETA_REQUIRED = REQUIRED[:1]
+CERTIFICATION_JOBS = dict(zip(('check', 'shell-full'), REQUIRED))
 SHIPPING_JOBS = {
     # Stable Linux uses AppImage; frozen/independent Arch cannot delay its gate.
     'linux': ('select', 'appimage-reuse', 'appimage-publication'),
@@ -64,7 +69,7 @@ def green(source):
     data = api('/commits/' + source + '/status?limit=100')
     if data['sha'] != source or data['total_count'] != len(data['statuses']):
         raise ValueError('Incomplete or mismatched main status inventory')
-    for context in REQUIRED:
+    for context in BETA_REQUIRED:
         matches = [s for s in data['statuses'] if s['context'] == context]
         if len(matches) != 1 or matches[0]['status'] != 'success':
             return False, f'Waiting for {context} success on main source {source}'
@@ -200,15 +205,16 @@ def report_statuses(source, contexts, env):
 def report_certification(env):
     source = env['CERTIFICATION_SOURCE']
     results = json.loads(env['JOB_RESULTS'])
-    if set(results) != {'check', 'shell-full'}:
+    # check reports as soon as it finishes; shell-full reports separately later.
+    if set(results) not in ({'check'}, {'shell-full'}):
         raise ValueError('Incomplete certification job results')
     if (env['GITHUB_REF'] != 'refs/heads/main'
             or env['GITHUB_EVENT_NAME'] != 'workflow_dispatch'):
         raise ValueError('Certification requires a trusted main dispatch')
     main_source(source)
-    report_statuses(source, [(context, results[job]['result'])
-        for context, job in zip(REQUIRED, ('check', 'shell-full'))], env)
-    if all(results[job]['result'] == 'success' for job in ('check', 'shell-full')):
+    report_statuses(source, [(CERTIFICATION_JOBS[job], result['result'])
+        for job, result in results.items()], env)
+    if results.get('check', {}).get('result') == 'success':
         # Publication is independently re-admitted against the current feed.
         # A failed dispatch is recovered by the next ordinary platform tick.
         for workflow in WORKFLOWS.values():
