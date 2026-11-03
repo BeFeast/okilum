@@ -856,15 +856,19 @@ impl Board {
                     .child(
                         // Natural block flow needs one width-constrained pass;
                         // flex intrinsic-height negotiation is redundant here.
-                        div().block().w_full().min_w_0().child(meta.mb_2()).child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .whitespace_normal()
-                                .text_size(px(14.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(scope.expected.clone()),
-                        ),
+                        div()
+                            .block()
+                            .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(
+                                meta.mb_2()
+                                    .font_weight(FontWeight::NORMAL)
+                                    .whitespace_nowrap(),
+                            )
+                            .child(scope.expected.clone()),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_local = None;
@@ -999,16 +1003,25 @@ impl Board {
         // A single explicit PR link is a link, not a fabricated CI/merge status.
         if let Some(pr) = scope.pull_requests.first() {
             let url = binding.pull_url(*pr);
+            let label: SharedString = format!("PR #{pr}").into();
             card = card.child(
-                h_flex().px_2().pb_2().child(
-                    Button::new(("board-pr-badge", number as usize))
-                        .ghost()
-                        .small()
-                        .min_w_0()
-                        .child(appearance::icon("git-pull-request", colors.accent))
-                        .label(format!("PR #{pr}"))
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                ),
+                controls::compact_action(("board-pr-badge", number as usize), window, cx)
+                    .debug_selector(move || format!("board-pr-badge-{number}"))
+                    .self_start()
+                    .ml_2()
+                    .mb_2()
+                    .min_w_0()
+                    .accessibility_label(label.clone())
+                    .child(appearance::icon("git-pull-request", colors.accent))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .line_height(gpui::relative(1.))
+                            .child(label),
+                    )
+                    .on_click(move |_, _, cx| cx.open_url(&url)),
             );
         }
         if let Some(problem) = self

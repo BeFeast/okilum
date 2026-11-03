@@ -105,6 +105,8 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "0.3.3" }
 signal-hook-registry = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Frame construction creates many short-lived layout and interaction nodes.
+mimalloc = "=0.1.52"
 okilum-appimage = { path = "../okilum-appimage" }
 okilum-sync-controller = { path = "../okilum-sync-controller" }
 wayland-client = "=0.31.15"

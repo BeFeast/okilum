@@ -48,3 +48,13 @@ pub(super) fn disclosure(
         });
     (button, focus)
 }
+
+/// Compact links retain the same Ghost colors/focus/keyboard contract without
+/// adding a second full-size flex container around an icon and a label.
+pub(super) fn compact_action(
+    id: impl Into<ElementId>,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_base::Button {
+    disclosure(id, window, cx).0.h_6().px_2().text_sm().gap_1()
+}

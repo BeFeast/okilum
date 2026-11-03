@@ -7,6 +7,11 @@
 //! decide the framework (self-driven scroll sweeps, height dumps, frame
 //! timing) is deliberately gone: it measured a decision that has been made.
 
+// Keep transient native frame allocations local to the rendering thread.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static NATIVE_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod about;
 mod app_footprint;
 #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
