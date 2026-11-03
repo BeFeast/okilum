@@ -1,8 +1,21 @@
 use super::*;
 use ::core::prelude::v1::test;
 
+fn fixture_document(count: usize) -> String {
+    serde_json::json!({
+        "version": 1,
+        "title": "Synthetic tasks",
+        "repository": "https://example.test/team/project",
+        "issues": (1..=count).map(|n| serde_json::json!({
+            "number": n,
+            "expected": format!("Synthetic task {n}: keep source identity and verify the next delivery"),
+            "executor": "Fixture",
+            "notes": ["note.md"]
+        })).collect::<Vec<_>>()
+    }).to_string()
+}
 fn fixture(count: usize) -> Binding {
-    Binding::parse(&serde_json::json!({"version":1,"title":"Synthetic tasks","repository":"https://example.test/team/project","issues":(1..=count).map(|n| serde_json::json!({"number":n,"expected":format!("Synthetic task {n}: keep source identity and verify the next delivery"),"executor":"Fixture","notes":["note.md"]})).collect::<Vec<_>>()} ).to_string()).unwrap()
+    Binding::parse(&fixture_document(count)).unwrap()
 }
 fn open<'a>(
     cx: &'a mut TestAppContext,
@@ -147,7 +160,7 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
     )
     .unwrap();
     std::fs::write(area.join("ops/project.toml"), "kind='code'\n").unwrap();
-    let binding = fixture(240);
+    std::fs::write(area.join("ops/board.yaml"), fixture_document(240)).unwrap();
     let project = okilum_t3::projects::Project::read(&area).unwrap();
     let mut reader = None;
     let (_, visual) = cx.add_window_view(|window, cx| {
@@ -172,10 +185,25 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
     visual.simulate_resize(size(px(1400.), px(900.)));
     visual.run_until_parked();
     reader.update_in(visual, |reader, window, cx| {
-        reader.project_navigation.active = Some(project.clone());
-        reader.ensure_project_board_using(area.clone(), |_| Ok(Vec::new()), window, cx);
+        reader.ensure_project_board_using(
+            area.clone(),
+            |binding| {
+                Ok(binding
+                    .issues
+                    .iter()
+                    .map(|scope| {
+                        serde_json::from_value(serde_json::json!({
+                            "number": scope.number, "title": scope.expected, "state": "open"
+                        }))
+                        .unwrap()
+                    })
+                    .collect())
+            },
+            window,
+            cx,
+        );
+        reader.enter_vault_project(project.clone(), window, cx);
         reader.project_navigation.boards[&area].update(cx, |board, cx| {
-            board.binding = Some(binding);
             board.list.preferences.collapsed[Column::Queue as usize] = false;
             cx.notify();
         });
