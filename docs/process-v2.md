@@ -7,7 +7,7 @@ describe CI and producer mechanics, not additional merge gates.
 
 ## Merge admission
 
-`fast / check (pull_request)` is the sole required main protection context.
+`fast / check (pull_request)` remains a required main protection context.
 It runs the exact PR head on baldr's dedicated `fast-linux` Forgejo host runner (capacity two):
 desktop/supervisor build, `cargo check --locked --workspace --tests` (compilation
 only), plus deterministic okilum-paste library unit tests. Test fixture/API drift
@@ -17,7 +17,8 @@ Linux `okilum-shell --bin okilum` suite with four test workers and a nonempty
 inventory control (#2415). It has its own twenty-minute budget and reuses the
 same locked persistent source/target pool after `check`. No test is removed or
 weakened. Main protection is changed only after this reporting context passes
-reliably twice on the fast runner; see [the evidence](fast-runner.md).
+reliably twice on the fast runner. PR #2434 and issue #2415 record the resulting
+required-status decision and measured margin; see [the rollout](fast-runner.md).
 The fifteen-minute job budget includes setup and build. The LAN compiler cache and
 Cargo downloads are reused; two separately locked persistent targets
 allow two simultaneous builds. Each job has three compiler workers (six total).
