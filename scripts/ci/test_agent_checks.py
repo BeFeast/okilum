@@ -151,6 +151,8 @@ class HelperFlowTests(unittest.TestCase):
             for name in ('linux-rust-tests.sh', 'test-nofile.sh'):
                 shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
             (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
+            (scripts / 'local-writer-admission.sh').write_text(
+                'echo local-writer-admission >> "$CALL_LOG"\n')
             fake = root / 'bin'
             fake.mkdir()
             cargo = fake / 'cargo'
@@ -176,6 +178,32 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertIn('sidecar::macos::preparation::', calls[-1])
                 counts.append(len(calls))
             self.assertEqual(counts[0], counts[1])
+
+
+    def test_local_writer_regression_groups_require_nonzero_passed_counts(self):
+        for passed, status in [('1', 0), ('0', 0), ('1', 7)]:
+            with self.subTest(passed=passed, status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                scripts = root / 'scripts/ci'
+                scripts.mkdir(parents=True)
+                for name in ('local-writer-admission.sh', 'test-nofile.sh'):
+                    shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
+                fake = root / 'bin'
+                fake.mkdir()
+                cargo = fake / 'cargo'
+                cargo.write_text('#!/usr/bin/env bash\n'
+                                 'echo "$*" >> "$CALL_LOG"\n'
+                                 'echo "test result: ok. $PASSED passed; 0 failed;"\n'
+                                 'exit "$STATUS"\n')
+                cargo.chmod(0o755)
+                calls = root / 'calls'
+                result = subprocess.run(['bash', str(scripts / 'local-writer-admission.sh')],
+                    cwd=root, env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
+                        'CALL_LOG': str(calls), 'PASSED': passed, 'STATUS': str(status)},
+                    capture_output=True, text=True, timeout=30)
+                success = passed == '1' and status == 0
+                self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                self.assertEqual(len(calls.read_text().splitlines()), 5 if success else 1)
 
 
 if __name__ == "__main__":
