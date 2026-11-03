@@ -274,6 +274,12 @@ fn read_with(
             .as_ref()
             .and_then(|user| user.id)
             .context("Fresh report has no filing identity")?;
+        ensure!(
+            comments
+                .iter()
+                .all(|comment| comment["user"]["id"].as_u64().is_some_and(|id| id > 0)),
+            "Report comment has no author identity"
+        );
         issue.report.filing_bot_only = comments
             .iter()
             .all(|comment| comment["user"]["id"].as_u64() == Some(filer));

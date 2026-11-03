@@ -22,6 +22,28 @@ impl Board {
                     self.projection_time(),
                 )
             });
+        if let Some(error) = &self.snapshot.forgejo.error {
+            let detail = format!(
+                "Forgejo: {} · last success {}",
+                status_detail(error),
+                self.snapshot
+                    .forgejo
+                    .last_success
+                    .map_or("never".into(), |at| format!(
+                        "{}s ago",
+                        now().saturating_sub(at)
+                    ))
+            );
+            self.waiting.problem = Some(
+                self.waiting
+                    .problem
+                    .take()
+                    .map_or_else(|| detail.clone(), |notes| format!("{notes} · {detail}")),
+            );
+        }
+        self.waiting_page = self
+            .waiting_page
+            .min(self.waiting.items.len().saturating_sub(1) / 4);
     }
     pub(super) fn render_waiting(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.waiting.visible() && self.waiting.problem.is_none() {
@@ -35,7 +57,9 @@ impl Board {
                     .debug_selector(|| "board-waiting-problem".into())
                     .text_size(px(12.))
                     .text_color(colors.text_muted)
-                    .child(format!("Project notes: {problem}")),
+                    .min_w_0()
+                    .truncate()
+                    .child(problem.clone()),
             );
         }
         if !self.waiting.visible() {
@@ -60,8 +84,9 @@ impl Board {
             .waiting
             .items
             .iter()
-            .take(if self.waiting_expanded { usize::MAX } else { 4 })
             .enumerate()
+            .skip(self.waiting_page * 4)
+            .take(4)
         {
             let color = match item.kind {
                 model::Kind::Decision => colors.warning,
@@ -141,18 +166,41 @@ impl Board {
         view = view.child(strip);
         if self.waiting.items.len() > 4 {
             view = view.child(
-                Button::new("waiting-more")
-                    .ghost()
-                    .small()
-                    .label(if self.waiting_expanded {
-                        "Свернуть".into()
-                    } else {
-                        format!("Ещё {}", self.waiting.items.len() - 4)
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.waiting_expanded = !this.waiting_expanded;
-                        cx.notify();
-                    })),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("waiting-previous")
+                            .ghost()
+                            .small()
+                            .label("Назад")
+                            .disabled(self.waiting_page == 0)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.waiting_page = this.waiting_page.saturating_sub(1);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(colors.text_muted)
+                            .child(format!(
+                                "{} / {}",
+                                self.waiting_page + 1,
+                                self.waiting.items.len().div_ceil(4)
+                            )),
+                    )
+                    .child(
+                        Button::new("waiting-next")
+                            .debug_selector(|| "board-waiting-next".into())
+                            .ghost()
+                            .small()
+                            .label("Дальше")
+                            .disabled((self.waiting_page + 1) * 4 >= self.waiting.items.len())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.waiting_page += 1;
+                                cx.notify();
+                            })),
+                    ),
             );
         }
         Some(view.into_any_element())

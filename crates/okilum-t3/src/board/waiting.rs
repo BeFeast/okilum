@@ -249,16 +249,22 @@ pub fn project(
         .extend(reports.into_iter().map(|issue| Item {
             kind: Kind::New,
             title: format!("#{} {}", issue.number, issue.title),
-            source: issue.report.user.as_ref().map_or_else(
-                || {
-                    if issue.has_label("from-tester") {
-                        "tester".into()
-                    } else {
-                        "Oleg".into()
-                    }
-                },
-                |user| user.login.clone(),
-            ),
+            source: {
+                let origin = if issue.has_label("from-tester") {
+                    "tester"
+                } else {
+                    "Oleg"
+                };
+                issue
+                    .report
+                    .user
+                    .as_ref()
+                    .filter(|user| !user.login.is_empty())
+                    .map_or_else(
+                        || origin.into(),
+                        |user| format!("{origin} · {}", user.login),
+                    )
+            },
             target: binding.issue_url(issue.number),
             video: None,
             at: issue.report.created_at.as_deref().and_then(timestamp),
