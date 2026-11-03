@@ -292,6 +292,7 @@ impl Board {
         if !items.is_empty() {
             view = view.child(
                 Button::new("context-details")
+                    .debug_selector(|| "board-context-details".into())
                     .ghost()
                     .small()
                     .label("Context details")
