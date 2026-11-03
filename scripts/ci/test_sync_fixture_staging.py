@@ -59,6 +59,7 @@ class FixtureStagingTests(unittest.TestCase):
 
     def test_publish_while_executing_and_reuse_verified_inode(self):
         binary = helper.stage(self.cache)
+        binary.chmod(0o755)  # Match the old writable cache for the ETXTBSY control.
         process = self.running(binary)
         # Positive control: opening the existing executable for writing fails.
         with self.assertRaises(OSError) as error:
