@@ -865,19 +865,49 @@ mod tests {
     fn concurrent_checkpoints_never_lose_the_persisted_generation() {
         use std::sync::{
             atomic::{AtomicBool, Ordering},
+            mpsc::sync_channel,
             Arc,
         };
         let temp = tempfile::tempdir().unwrap();
         let base = Arc::new(temp.path().join("cache"));
         publish_marker(&base, 0);
         hint(&base, "reader-delta.json", Some(0));
+        // An abandoned checkpoint supplies real garbage for the first run.
+        publish_marker(&base, 61);
+        let pin = GenerationPin::acquire(&base, &name(1)).unwrap();
+        publish_marker(&base, 1);
+        let (retiring, retirement_started) = sync_channel(0);
+        let (published, publication_finished) = sync_channel(0);
         let done = Arc::new(AtomicBool::new(false));
         let collector = {
             let (base, done) = (base.clone(), done.clone());
             std::thread::spawn(move || {
                 let (mut runs, mut retired) = (0, 0);
                 while !done.load(Ordering::Acquire) || runs < 3 {
-                    let report = collect_generations(&base).unwrap();
+                    let report = if runs == 0 {
+                        collect_generations_with(
+                            &base,
+                            &mut || {},
+                            &mut |from, to| {
+                                // The gate and pin snapshot are already held.
+                                // Publish and unpin checkpoint 1 before the
+                                // actual rename, not merely between GC calls.
+                                assert!(from.ends_with(format!("{}.repairs", name(61))));
+                                retiring.send(()).unwrap();
+                                publication_finished.recv().unwrap();
+                                fs::rename(from, to)
+                            },
+                            &mut |path| fs::remove_dir_all(path),
+                        )
+                        .unwrap()
+                    } else {
+                        collect_generations(&base).unwrap()
+                    };
+                    if runs == 0 {
+                        assert!(report.skipped.is_none());
+                        assert_eq!(report.retired, [name(61)]);
+                        assert!(families(&base).contains(&name(1)));
+                    }
                     assert!(report.cleanup_errors.is_empty());
                     retired += report.retired.len();
                     runs += 1;
@@ -893,8 +923,15 @@ mod tests {
                 retired
             })
         };
+        // Force one real retirement to overlap publication, even if every
+        // later unsynchronized collection is deferred by changing hints.
+        retirement_started.recv().unwrap();
+        hint(&base, "reader-delta.json", Some(1));
+        drop(pin);
+        published.send(()).unwrap();
+        // Keep exercising unconstrained publication races after the rendezvous.
         // The checkpoint writer is a separate pin holder, as another process is.
-        for n in 1..=60 {
+        for n in 2..=60 {
             let pin = GenerationPin::acquire(&base, &name(n)).unwrap();
             publish_marker(&base, n);
             hint(&base, "reader-delta.json", Some(n));
