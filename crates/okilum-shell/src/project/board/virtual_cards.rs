@@ -7,7 +7,7 @@ use gpui::{
     Style,
 };
 
-struct Height(Pixels);
+pub(super) struct Height(Pixels);
 enum Source {
     Issue(okilum_t3::board::Scope, Column, Arc<Binding>),
     Local(okilum_t3::board::local::Card),
