@@ -1491,7 +1491,7 @@ fn markdown_plugins_at(
                 _ => {
                     if let Some(reader) = &image_actions {
                         if let Some(element) =
-                            reader_image_actions::attachment(reader.clone(), &image.url, live, cx)
+                            reader_image_actions::attachment(reader.clone(), &image.url, cx)
                         {
                             column = column.child(element);
                             continue;
