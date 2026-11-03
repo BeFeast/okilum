@@ -96,9 +96,21 @@ impl HoverProvider for SourceHover {
                     ))
                 })
                 .await;
+            let source_range = result.as_ref().map(|(range, _)| {
+                source.position_to_offset(&range.start)..source.position_to_offset(&range.end)
+            });
             // A tooltip from an edited/replaced note cannot land on new text.
             let current = weak
                 .read_with(cx, |reader, cx| {
+                    if let Some(input) = reader.source_input() {
+                        let input = input.read(cx);
+                        diagnostics(format_args!(
+                            "source anchor={:?}",
+                            source_range
+                                .as_ref()
+                                .and_then(|range| input.range_to_bounds(range))
+                        ));
+                    }
                     reader.navigation.preparation_generation == generation
                         && reader.editing.as_ref().is_some_and(|editing| {
                             editing.input().read(cx).source_snapshot().text.rope() == &source
@@ -109,6 +121,23 @@ impl HoverProvider for SourceHover {
                 "source hover found={} current={current}",
                 result.is_some()
             ));
+            if std::env::var_os("OKILUM_EMBED_DIAGNOSTICS").is_some() {
+                let weak = weak.clone();
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(300))
+                        .await;
+                    let _ = weak.read_with(cx, |reader, cx| {
+                        diagnostics(format_args!(
+                            "source popup retained={}",
+                            reader
+                                .source_input()
+                                .is_some_and(|input| input.read(cx).hover_popover().is_some())
+                        ));
+                    });
+                })
+                .detach();
+            }
             Ok(result
                 .filter(|_| current)
                 .map(|(range, value)| lsp_types::Hover {
