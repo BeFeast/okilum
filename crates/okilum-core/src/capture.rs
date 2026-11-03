@@ -95,6 +95,8 @@ impl Capture {
     /// A completion receipt is authoritative even if the user later edits/deletes
     /// the note. An unfinished publication requires exact source reconciliation.
     pub fn publish(&self, root: &Path, drafts: &Path, records: &Path) -> Result<Receipt> {
+        self.checkpoint(root, records)?;
+        let _admission = okilum_write_authority::operation(root)?;
         self.validate()?;
         prepare_records(records)?;
         let record = Record {

@@ -78,6 +78,7 @@ pub(crate) fn resolve_explicit_path(
         .and_then(|name| name.to_str())
         .context("The document path is not valid UTF-8")?;
     let destination = parent.join(name);
+    let _admission = okilum_write_authority::operation(explicit_root.unwrap_or(&parent))?;
     let created = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)

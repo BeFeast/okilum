@@ -219,6 +219,7 @@ impl DiskStamp {
 pub struct DiskStamp(());
 
 pub struct FileEditor {
+    authority: okilum_write_authority::Authority,
     raw_transaction: Option<Arc<raw_transaction::ByteTransaction>>,
     directory: Directory,
     draft: Draft,
@@ -425,6 +426,7 @@ impl FileEditor {
         #[cfg(windows)]
         let (_, original) = directory.read(path.file_name().context("Missing source filename")?)?;
         let path = path.canonicalize()?;
+        let authority = okilum_write_authority::Authority::for_path(&path)?;
         #[cfg(unix)]
         let directory = Directory::open(path.parent().context("Missing source folder")?)?;
         fs::create_dir_all(state).context(RECOVERY_UNAVAILABLE)?;
@@ -481,6 +483,7 @@ impl FileEditor {
         };
         let on_disk = opened_stamp.filter(|_| holds_base);
         Ok(Self {
+            authority,
             directory,
             draft,
             on_disk,
@@ -783,6 +786,7 @@ impl FileEditor {
     /// the journal order; `save` still refuses to replace a changed file.
     pub fn save_copy(&self) -> Result<Self> {
         Ok(Self {
+            authority: self.authority.clone(),
             directory: self.directory.try_clone()?,
             draft: self.draft.clone(),
             on_disk: self.on_disk,
@@ -835,6 +839,8 @@ impl FileEditor {
         Ok(())
     }
     fn save_before_exchange(&mut self, before_exchange: impl FnOnce()) -> Result<Save> {
+        self.persist()?;
+        let _admission = self.authority.admit()?.enter()?;
         let writes = self.writes.clone();
         let mut order = writes
             .save
