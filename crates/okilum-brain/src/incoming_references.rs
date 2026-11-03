@@ -8,7 +8,7 @@ use base64::{
 use okilum_core::{
     document_links,
     source::SourceSnapshot,
-    vault::{visit_wikilinks, ResolutionRef},
+    vault::{visit_wikilinks, Resolution},
     Vault,
 };
 use serde::{Deserialize, Serialize};
@@ -271,10 +271,12 @@ impl Graph {
                     true
                 };
                 let keep_going = if wiki {
-                    match resolver.resolve_from_ref(&link, &source.path) {
-                        ResolutionRef::Resolved(path) => add(path, false),
-                        ResolutionRef::Ambiguous(paths) => paths.iter().all(|path| add(path, true)),
-                        ResolutionRef::Unresolved => true,
+                    match resolver.resolve_from(&link, &source.path) {
+                        Resolution::Resolved { path } => add(&path, false),
+                        Resolution::Ambiguous { candidates: paths } => {
+                            paths.iter().all(|path| add(path, true))
+                        }
+                        Resolution::Unresolved => true,
                     }
                 } else {
                     let resolved =
