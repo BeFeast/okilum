@@ -1634,6 +1634,10 @@ impl Reader {
             Ok(Save::Saved) => {
                 // The recovery copy of a large note is written off the UI thread too.
                 let write = editing.store.saved_snapshot_queued_at(text, stamp);
+                // This journal generation includes the confirmed base and the
+                // latest typing. An obsolete pre-save task cannot acknowledge it.
+                editing.recovery_epoch = editing.recovery_epoch.wrapping_add(1);
+                editing.protecting = true;
                 let epoch = editing.recovery_epoch;
                 cx.spawn(async move |this, cx| {
                     let result = cx
@@ -1641,17 +1645,18 @@ impl Reader {
                         .spawn(async move { write.persist() })
                         .await;
                     let _ = this.update(cx, |this, cx| {
+                        let Some(editing) = this.editing.as_mut().filter(|e| {
+                            e.input.entity_id() == input_id && e.recovery_epoch == epoch
+                        }) else {
+                            return;
+                        };
+                        editing.protecting = false;
+                        editing.input.update(cx, |_, cx| cx.notify());
                         if let Err(error) = result {
-                            if let Some(editing) = this.editing.as_mut().filter(|e| {
-                                e.input.entity_id() == input_id && e.recovery_epoch == epoch
-                            }) {
-                                editing.save_failed = true;
-                                eprintln!(
-                                    "Autosaved, but recovery acknowledgement failed: {error:#}"
-                                );
-                                this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
-                                cx.notify();
-                            }
+                            editing.save_failed = true;
+                            eprintln!("Autosaved, but recovery acknowledgement failed: {error:#}");
+                            this.link_notice = Some(DRAFT_WRITE_NOTICE.into());
+                            cx.notify();
                         }
                     });
                 })
@@ -5883,6 +5888,41 @@ mod autosave_tests {
             assert!(source.contains("https://example.com/new"));
             assert!(!source.contains("https://example.com/old"));
         });
+    }
+
+    #[gpui::test]
+    fn issue2404_save_acknowledgement_owns_protection_of_newer_typing(cx: &mut TestAppContext) {
+        let (f, visual) = open(cx, "base");
+        type_at_start(&f, visual, "a");
+        let saves = autosave_in_flight(&f, visual, "abase");
+        type_at_start(&f, visual, "b");
+        let path = f.reader.read_with(visual, |r, _| {
+            r.session_directory.as_ref().unwrap().join("editor-drafts")
+        });
+        let input_id = input(&f, visual).entity_id();
+        f.reader.update(visual, |r, cx| {
+            let before = r.editing.as_ref().unwrap().recovery_epoch;
+            r.autosaved(input_id, saves, "abase".into(), Ok(Save::Saved), None, cx);
+            let editing = r.editing.as_ref().unwrap();
+            assert!(editing.protecting);
+            assert!(
+                editing.recovery_epoch > before,
+                "the previous journal worker lost acknowledgement ownership"
+            );
+        });
+        visual.run_until_parked();
+        f.reader.read_with(visual, |r, _| {
+            assert!(!r.editing.as_ref().unwrap().protecting)
+        });
+        // Crash-style release without Save/close flush. The acknowledged draft
+        // must contain the typing made after the canonical save's snapshot.
+        f.reader.update(visual, |r, _| {
+            r.editing = None;
+        });
+        visual.run_until_parked();
+        let recovered = FileEditor::open(&f.file, &path).unwrap();
+        assert_eq!(recovered.text(), "babase");
+        assert_eq!(on_disk(&f), "abase");
     }
 
     /// A change made outside Okilum before the autosave is never overwritten:
