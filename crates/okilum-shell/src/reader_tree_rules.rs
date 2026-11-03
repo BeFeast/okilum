@@ -95,6 +95,7 @@ pub(crate) fn badge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[test]
     fn issue1587_discovery_classifies_only_small_provider_shims() {
