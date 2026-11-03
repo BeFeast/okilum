@@ -381,6 +381,14 @@ fn cache_is_peer_vault_revision_scoped_bounded_and_reaps_expired_bytes() -> Resu
 fn paused_receiving_and_missing_folder_state_are_explicit_refusals() -> Result<()> {
     use serde_json::json;
     inspectable(&json!({"paused":false,"type":"sendreceive"}))?;
+    for (folder, expected) in [
+        (json!({"paused":true,"type":"sendreceive"}), PAUSED),
+        (json!({"paused":false,"type":"receiveonly"}), NOT_PROMOTED),
+    ] {
+        let error = inspectable(&folder).unwrap_err();
+        assert_eq!(public_refusal(&error), Some(expected));
+    }
+    assert!(public_refusal(&anyhow::anyhow!("private path /home/private-user/vault")).is_none());
     for folder in [
         json!({"paused":true,"type":"sendreceive"}),
         json!({"paused":false,"type":"receiveonly"}),

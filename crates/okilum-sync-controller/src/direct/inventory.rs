@@ -17,6 +17,15 @@ const LIFETIME_SECONDS: u64 = 120;
 const MAX_SNAPSHOTS: usize = 4;
 const MAX_PEER_SNAPSHOTS: usize = 2;
 const MAX_ACTIVE: usize = 4;
+const PAUSED: &str = "paused vault cannot be inspected";
+const NOT_PROMOTED: &str = "inspection requires a promoted sendreceive vault";
+
+pub(super) fn public_refusal(error: &anyhow::Error) -> Option<&'static str> {
+    let message = error.to_string();
+    [PAUSED, NOT_PROMOTED]
+        .into_iter()
+        .find(|public| *public == message)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -202,14 +211,12 @@ fn disjoint(root: &Path, state: &Path) -> Result<()> {
     Ok(())
 }
 fn inspectable(folder: &serde_json::Value) -> Result<()> {
-    ensure!(
-        folder["paused"] == false,
-        "paused vault cannot be inspected"
-    );
-    ensure!(
-        folder["type"] == "sendreceive",
-        "inspection requires a promoted sendreceive vault"
-    );
+    let paused = folder["paused"]
+        .as_bool()
+        .context("vault pause state missing")?;
+    let mode = folder["type"].as_str().context("vault mode missing")?;
+    ensure!(!paused, PAUSED);
+    ensure!(mode == "sendreceive", NOT_PROMOTED);
     Ok(())
 }
 fn authorized_root(source: &ExistingVault) -> Result<Arc<File>> {
@@ -301,6 +308,7 @@ impl Controller {
             Operation::Inspect { request },
         )? {
             Reply::Inspection { response } => Ok(response),
+            Reply::Error { message } if message == PAUSED || message == NOT_PROMOTED => anyhow::bail!(message),
             _ => anyhow::bail!(
                 "inspection unavailable or stale; check authorization, unpaused promoted vault, runtime and inventory limits, then refresh"
             ),

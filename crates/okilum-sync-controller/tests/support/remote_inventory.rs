@@ -223,11 +223,27 @@ fn managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes()
     );
     for patch in [json!({"paused":true}), json!({"type":"receiveonly"})] {
         pair.source.api.patch_folder(&id, &patch)?;
-        assert!(pair.second.validate_remote_preview(&fresh).is_err());
-        assert!(pair
-            .second
-            .preview_remote_vault(pair.peer, &id, &pair.target.vault)
-            .is_err());
+        let expected = if patch["paused"] == true {
+            "paused vault cannot be inspected"
+        } else {
+            "inspection requires a promoted sendreceive vault"
+        };
+        assert_eq!(
+            pair.second
+                .validate_remote_preview(&fresh)
+                .err()
+                .context("paused/receiving validation succeeded")?
+                .to_string(),
+            expected
+        );
+        assert_eq!(
+            pair.second
+                .preview_remote_vault(pair.peer, &id, &pair.target.vault)
+                .err()
+                .context("paused/receiving opening succeeded")?
+                .to_string(),
+            expected
+        );
         pair.source
             .api
             .patch_folder(&id, &json!({"paused":false,"type":"sendreceive"}))?;

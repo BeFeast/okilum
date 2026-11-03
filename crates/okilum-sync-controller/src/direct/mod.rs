@@ -816,8 +816,18 @@ impl Controller {
             }
             operation => self.dispatch(&mut db, scope, operation, signer),
         };
-        let reply = result.unwrap_or_else(|_| Reply::Error {
-            message: "operation unavailable; check approved vault is unpaused and promoted, replica and destination".into(),
+        let reply = result.unwrap_or_else(|error| {
+            #[cfg(target_os = "linux")]
+            if let Some(message) = inventory::public_refusal(&error) {
+                return Reply::Error {
+                    message: message.into(),
+                };
+            }
+            let _ = error;
+            Reply::Error {
+                message: "operation unavailable; check approved vault, replica and destination"
+                    .into(),
+            }
         });
         self.check()?;
         let response = wire::seal(
