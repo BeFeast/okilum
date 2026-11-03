@@ -40,6 +40,8 @@ struct Prepared {
     roles: Vec<String>,
     source_problem: Option<String>,
     sources_ready: bool,
+    mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
+    invalid_annotations: std::collections::BTreeSet<u64>,
     issue_indices: std::collections::BTreeMap<u64, usize>,
 }
 pub(super) struct State {
@@ -135,6 +137,20 @@ impl Board {
             }
         }
         let binding = self.binding.as_ref().expect("configured Board");
+        let mut annotation_counts = std::collections::BTreeMap::<u64, usize>::new();
+        for scope in &binding.issues {
+            *annotation_counts.entry(scope.number).or_default() += 1;
+        }
+        let mut invalid_annotations = binding
+            .card_problems
+            .iter()
+            .filter_map(|p| p.number)
+            .collect::<std::collections::BTreeSet<_>>();
+        invalid_annotations.extend(
+            annotation_counts
+                .iter()
+                .filter_map(|(n, count)| (*count > 1).then_some(*n)),
+        );
         let binding = if self.snapshot.forgejo.last_success.is_some() {
             okilum_t3::board::live::project(
                 binding,
@@ -178,11 +194,26 @@ impl Board {
             .enumerate()
             .map(|(i, s)| (s.number, i))
             .collect();
+        let mappings = binding
+            .issues
+            .iter()
+            .map(|scope| {
+                (
+                    scope.number,
+                    okilum_t3::board::live::mapping_problem(
+                        self.binding.as_ref().unwrap(),
+                        scope.number,
+                    ),
+                )
+            })
+            .collect();
         let source_problem = self.problem(now());
         let sources_ready = self.column_sources_ready(&binding);
         let prepared = Arc::new(Prepared {
             source_problem,
             sources_ready,
+            mappings,
+            invalid_annotations,
             issue_indices,
             binding,
             rows,
@@ -368,7 +399,13 @@ impl Board {
                 .and_then(|number| prepared.issue_indices.get(&number))
                 .map(|i| &prepared.binding.issues[*i])
             {
-                Some(self.card(scope, self.delivery_column(scope), &prepared.binding, cx))
+                Some(self.card_with_mapping(
+                    scope,
+                    self.delivery_column(scope),
+                    &prepared.binding,
+                    prepared.mappings.get(&scope.number).copied().flatten(),
+                    cx,
+                ))
             } else {
                 self.local_cards
                     .value
@@ -479,9 +516,21 @@ impl Board {
                     }))
                     .into_any_element()
             }
-            Row::Issue(index) => {
-                self.issue_row(&prepared.binding.issues[index], &prepared.binding, cx)
-            }
+            Row::Issue(index) => self.issue_row(
+                &prepared.binding.issues[index],
+                &prepared.binding,
+                prepared
+                    .mappings
+                    .get(&prepared.binding.issues[index].number)
+                    .copied()
+                    .flatten()
+                    .filter(|_| {
+                        prepared
+                            .invalid_annotations
+                            .contains(&prepared.binding.issues[index].number)
+                    }),
+                cx,
+            ),
             Row::Local(index) => {
                 let card = &self.local_cards.value.cards[index];
                 let id = card.id.clone();
@@ -552,6 +601,7 @@ impl Board {
         &self,
         scope: &okilum_t3::board::Scope,
         binding: &Binding,
+        mapping: Option<&'static str>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = brand::palette(cx);
@@ -612,10 +662,7 @@ impl Board {
                 .map(|a| a.label())
                 .unwrap_or_else(|| self.delivery_column(scope).label().into())
         };
-        let mapping = self
-            .binding
-            .as_ref()
-            .and_then(|b| okilum_t3::board::live::mapping_problem(b, number));
+
         row = row.child(
             div()
                 .debug_selector(move || format!("board-state-{number}"))

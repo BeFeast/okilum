@@ -702,6 +702,20 @@ impl Board {
         binding: &Binding,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let mapping = self
+            .binding
+            .as_ref()
+            .and_then(|binding| okilum_t3::board::live::mapping_problem(binding, scope.number));
+        self.card_with_mapping(scope, column, binding, mapping, cx)
+    }
+    fn card_with_mapping(
+        &self,
+        scope: &okilum_t3::board::Scope,
+        column: Column,
+        binding: &Binding,
+        mapping: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = brand::palette(cx);
         let number = scope.number;
         let issue = self.snapshot.forgejo.value.get(&number);
@@ -925,11 +939,7 @@ impl Board {
                 ),
             );
         }
-        if let Some(problem) = self
-            .binding
-            .as_ref()
-            .and_then(|binding| okilum_t3::board::live::mapping_problem(binding, number))
-        {
+        if let Some(problem) = mapping {
             card = card.child(
                 div()
                     .debug_selector(move || format!("board-mapping-{number}"))
