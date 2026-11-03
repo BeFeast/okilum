@@ -106,7 +106,26 @@ impl FileEditor {
             raw_transaction: Some(transaction),
         };
         editor.persist()?;
-        let _admission = editor.authority.admit()?.enter()?;
+        let lease = match editor.authority.admit() {
+            Ok(lease) => lease,
+            Err(error) => {
+                use base64::{engine::general_purpose::STANDARD, Engine};
+                let record = state
+                    .join("deferred-byte-publications")
+                    .join(format!("{}.json", uuid::Uuid::new_v4()));
+                crate::source_state::persist(
+                    &record,
+                    &serde_json::to_vec(&serde_json::json!({
+                        "path": path, "reviewed_base64": STANDARD.encode(reviewed), "proposed_base64": STANDARD.encode(proposed)
+                    }))?,
+                )?;
+                return Err(error.context(format!(
+                    "Exact byte proposal retained at {}",
+                    record.display()
+                )));
+            }
+        };
+        let _admission = lease.enter()?;
         let result = editor.save_before_exchange(before_exchange);
         let retain_recovery = result.as_ref().err().is_some_and(|error| {
             error.is::<UnconfirmedSave>() || error.is::<PublishedSaveNeedsAttention>()

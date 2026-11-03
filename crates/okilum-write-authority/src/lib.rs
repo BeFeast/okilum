@@ -223,10 +223,23 @@ impl Authority {
         }
         // An old single-folder authority cannot silently become a different
         // vault authority. Surface this ambiguity instead of bypassing its hold.
+        let ancestor_identities = root.ancestors().map(identity).collect::<Result<Vec<_>>>()?;
         for entry in fs::read_dir(&account)? {
             let p = entry?.path();
             if p.extension().is_some_and(|e| e == "json") {
                 let b: Binding = read(&p)?;
+                // Canonical path aliases such as bind mounts can still name
+                // the same physical root. Never mint a second authority for it.
+                if ancestor_identities.contains(&b.root_identity) {
+                    let a = Self {
+                        account: account.clone(),
+                        binding_path: p,
+                        directory: account.join(key(&b.root)),
+                        binding: b,
+                    };
+                    a.validate()?;
+                    return Ok(a);
+                }
                 if b.root.starts_with(&root) && b.root != root && b.root.exists() {
                     bail!("An enclosed folder already has writer authority; reopen that folder or explicitly reconcile vault scopes");
                 }
