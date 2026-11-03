@@ -39,8 +39,13 @@ including two windows showing the same file in different modes. Older session
 records continue to restore as vault windows.
 
 The same Reader rendering, source editor, safe-save checks, and navigation history
-are used in both modes. The upgrade saves or refuses a dirty document through the
-existing source transition before starting vault preparation.
+are used in both modes. Both directions save or refuse a dirty document through the existing revision-checked
+source transition before starting preparation. A conflict keeps the editor and its
+latest buffer open. Deleted sources ask Save As / Don’t Save / Cancel before editor
+release; Don’t Save requires a durable recovery draft and a failed recovery write
+blocks the switch. Typed file previews retain their viewer entities, including
+viewport and filters. Session targets and modes are read together; explicit update
+restart targets remain independent of that ordinary saved session.
 
 Linux advertises `text/markdown` with `okilum %f`; macOS advertises both Markdown
 UTIs. Windows Velopack install/update registers a per-user Open With ProgID, and
