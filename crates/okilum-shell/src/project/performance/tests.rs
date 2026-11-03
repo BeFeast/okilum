@@ -144,6 +144,9 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     let renders = board.read_with(visual, |board, _| board.render_calls.get());
     project.update(visual, |project, cx| {
         // Native reply batches can publish only Feed without notifying Project.
+        project.chat.as_mut().unwrap().items.insert(1199, serde_json::from_value(json!({
+            "position":1199,"itemId":"item-199-5","runId":"run-199","type":"assistant_message","status":"completed","text":"Updated synthetic progress","updatedAt":"now"
+        })).unwrap());
         project.feed.update(cx, |feed, cx| feed.apply_native(Changes {
             rows: vec![Arc::new(TurnRow {
                 key: RowKey { thread: "mcp:fixture-manager".into(), item: "item-199-5".into() },

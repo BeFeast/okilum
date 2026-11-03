@@ -27,6 +27,10 @@ pub(crate) struct Board {
     _manager_observer: Option<Subscription>,
     #[cfg(target_os = "linux")]
     _manager_feed_observer: Option<Subscription>,
+    #[cfg(target_os = "linux")]
+    manager_publication: Option<(Option<ServerIdentity>, Option<String>, u64)>,
+    #[cfg(target_os = "linux")]
+    manager_display: live::ManagerDisplay,
     active: bool,
     ticker: Option<Task<()>>,
     focus: FocusHandle,
@@ -142,6 +146,10 @@ impl Board {
             _manager_observer: None,
             #[cfg(target_os = "linux")]
             _manager_feed_observer: None,
+            #[cfg(target_os = "linux")]
+            manager_publication: None,
+            #[cfg(target_os = "linux")]
+            manager_display: live::ManagerDisplay::default(),
             active: false,
             ticker: None,
             focus: cx.focus_handle(),
@@ -273,45 +281,44 @@ impl Board {
         self.snapshot.t3 = Source::default();
         self.delivery_loading = false;
         self.notes_loading = false;
-        // This sibling is now cached: retain the live progress/status updates
-        // that previously arrived incidentally through Reader redraws.
-        #[cfg(target_os = "linux")]
-        let publication = |manager: &ProjectView| {
-            (
-                manager.identity.clone(),
-                manager.chat.as_ref().map(|chat| chat.thread_id.clone()),
-            )
-        };
-        #[cfg(target_os = "linux")]
-        let mut last_publication = publication(manager.read(cx));
-        self._manager_observer = Some(cx.observe(&manager, move |_, manager, cx| {
+        self.manager = Some(manager.clone());
+        self._manager_observer = Some(cx.observe(&manager, |this, _, cx| {
             #[cfg(target_os = "linux")]
-            {
-                let next = publication(manager.read(cx));
-                if next == last_publication {
-                    return;
-                }
-                last_publication = next;
-            }
-            // Draft/cursor/composer notifications are not Board source changes.
-            // Identity and timeline publications still invalidate live cards.
+            this.sync_manager_display(cx);
+            #[cfg(not(target_os = "linux"))]
             cx.notify();
         }));
         #[cfg(target_os = "linux")]
         {
+            self.manager_publication = None;
             let feed = manager.read(cx).feed.clone();
-            let mut revision = feed.read(cx).typed_revision();
-            self._manager_feed_observer = Some(cx.observe(&feed, move |_, feed, cx| {
-                let next = feed.read(cx).typed_revision();
-                if next != revision {
-                    revision = next;
-                    cx.notify();
-                }
-            }));
+            self._manager_feed_observer =
+                Some(cx.observe(&feed, |this, _, cx| this.sync_manager_display(cx)));
+            self.sync_manager_display(cx);
         }
-        self.manager = Some(manager);
         if self.active {
             self.refresh(window, cx);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    fn sync_manager_display(&mut self, cx: &mut Context<Self>) {
+        let Some(manager) = &self.manager else {
+            return;
+        };
+        let manager = manager.read(cx);
+        let publication = (
+            manager.identity.clone(),
+            manager.chat.as_ref().map(|chat| chat.thread_id.clone()),
+            manager.feed.read(cx).typed_revision(),
+        );
+        if self.manager_publication.as_ref() == Some(&publication) {
+            return;
+        }
+        let display = live::ManagerDisplay::read(manager.identity.as_ref(), manager.chat.as_ref());
+        self.manager_publication = Some(publication);
+        if self.manager_display != display {
+            self.manager_display = display;
+            cx.notify();
         }
     }
     pub(crate) fn set_visible(
@@ -842,6 +849,15 @@ impl Board {
                     })),
             )
             .child(if let Some(agent) = &agent {
+                #[cfg(target_os = "linux")]
+                let (url, progress) = (
+                    self.manager_display
+                        .identity
+                        .as_ref()
+                        .map(|identity| identity.thread_url(&agent.thread.thread_id)),
+                    self.manager_display.progress(scope, agent.thread),
+                );
+                #[cfg(not(target_os = "linux"))]
                 let (url, progress) = self
                     .manager
                     .as_ref()
