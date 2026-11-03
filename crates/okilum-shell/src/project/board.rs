@@ -1012,7 +1012,6 @@ impl Board {
                     .mb_2()
                     .min_w_0()
                     .accessibility_label(label.clone())
-                    .child(appearance::icon("git-pull-request", colors.accent))
                     .child(
                         div()
                             .min_w_0()
@@ -1021,6 +1020,7 @@ impl Board {
                             .line_height(gpui::relative(1.))
                             .child(label),
                     )
+                    .child(appearance::icon("git-pull-request", colors.accent))
                     .on_click(move |_, _, cx| cx.open_url(&url)),
             );
         }
