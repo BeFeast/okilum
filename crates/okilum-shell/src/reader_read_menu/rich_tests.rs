@@ -120,6 +120,13 @@ impl Fixture<'_> {
         self.visual.run_until_parked();
     }
     fn select_all(&mut self) -> String {
+        // Keyboard and palette copy retain selection. Start each independent
+        // menu scenario on the background, which offers Select all.
+        self.reader.update(self.visual, |r, cx| {
+            r.content
+                .update(cx, |content, cx| content.clear_selection(cx));
+        });
+        self.visual.run_until_parked();
         let at = self.background();
         self.right_click(at);
         self.pick("read-menu-Select all");
