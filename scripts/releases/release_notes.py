@@ -11,6 +11,41 @@ HIDDEN = {'ci', 'test', 'chore', 'docs', 'refactor'}
 CONVENTIONAL = re.compile(r'^([a-z]+)(?:\([^)]*\))?!?:\s*(.*)$', re.I)
 SPARKLE = '{http://www.andymatuschak.org/xml-namespaces/sparkle}'
 OKILUM = '{https://git.oklabs.uk/BeFeast/okilum/update-metadata}'
+FORGEJO_START = '<!-- okilum-release-notes:start -->'
+FORGEJO_END = '<!-- okilum-release-notes:end -->'
+
+
+def forgejo_body(notes, existing):
+    """Render the canonical sidecar items, replacing only our managed notes block.
+
+    Publication's signing/channel footer stays verbatim. Stable can replace the
+    Beta range with its pinned Stable range, including on an interrupted retry.
+    """
+    groups = {'feature': [], 'fix': []}
+    for item in notes['items']:
+        kind = item['kind']
+        if kind in HIDDEN:
+            continue
+        if kind not in groups:
+            raise ValueError('Unknown release-note kind')
+        number = item['pr']
+        if type(number) is not int or number <= 0:
+            raise ValueError('Invalid release-note PR number')
+        # The app displays authored summaries as plain text. Keep Markdown from
+        # turning them into headings/HTML, and link issue references in that text.
+        text = re.sub(r'([\\`*_\[\]<>])', r'\\\1', ' '.join(item['text'].split()))
+        text = re.sub(r'(?<![\w/\\])#([1-9][0-9]*)\b',
+                      r'[#\1](https://git.oklabs.uk/BeFeast/okilum/issues/\1)', text)
+        groups[kind].append(f'- {text} ([#{number}](https://git.oklabs.uk/BeFeast/okilum/pulls/{number}))')
+    sections = [f'### {title}\n\n' + '\n'.join(groups[kind])
+                for kind, title in [('feature', 'New'), ('fix', 'Fixed')] if groups[kind]]
+    summary = '\n\n'.join(sections) if sections else 'без видимых изменений'
+    # Only bodies written by this renderer have a managed block. Legacy bodies
+    # consist solely of the technical footer and are retained in full.
+    if existing.startswith(FORGEJO_START + '\n') and FORGEJO_END in existing:
+        existing = existing.split(FORGEJO_END, 1)[1].removeprefix('\n\n')
+    block = f'{FORGEJO_START}\n{summary}\n{FORGEJO_END}'
+    return block + ('\n\n' + existing if existing else '')
 
 
 def key(source, platform, channel):
