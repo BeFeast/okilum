@@ -11,6 +11,7 @@ use std::{
 
 static ANNOUNCE: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
+static STARTUP_CONFIRMED: AtomicBool = AtomicBool::new(false);
 static CHANNEL: Mutex<Option<Channel>> = Mutex::new(None);
 static PENDING: Mutex<Option<okilum_appimage::Staged>> = Mutex::new(None);
 
@@ -76,16 +77,20 @@ pub(super) fn start() {
         return;
     }
     if packaged() && std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_none() {
-        check();
+        super::check();
     }
 }
-pub(super) fn check() {
+pub(super) fn check() -> bool {
     if !packaged()
+        // A focus event can arrive before the receipt writer. Do not recover
+        // an update that this process has not yet confirmed (#2387/#2455).
+        || (std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_some()
+            && !STARTUP_CONFIRMED.load(Ordering::SeqCst))
         || BUSY
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
     {
-        return;
+        return false;
     }
     status::set(CheckStatus::Checking);
     std::thread::spawn(|| {
@@ -130,6 +135,7 @@ pub(super) fn check() {
         }
         BUSY.store(false, Ordering::SeqCst);
     });
+    true
 }
 pub(super) fn restart(cx: &mut gpui::App) {
     if !crate::linux_sprint::allows_updates() {
@@ -198,6 +204,7 @@ pub(super) fn confirm_startup() {
                 eprintln!("AppImage installation record: {error:#}");
             }
         }
+        STARTUP_CONFIRMED.store(true, Ordering::SeqCst);
     });
 }
 

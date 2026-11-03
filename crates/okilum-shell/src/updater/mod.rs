@@ -9,6 +9,7 @@ pub(crate) mod linux_repo;
 mod macos;
 #[cfg(any(windows, test))]
 mod ready;
+mod scheduler;
 pub(crate) mod status;
 pub(crate) mod whats_new;
 #[cfg(windows)]
@@ -17,6 +18,12 @@ mod windows;
 mod windows_feed;
 
 use gpui::{App, MenuItem};
+use scheduler::{Schedule, Trigger};
+use std::{
+    hash::BuildHasher as _,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 #[cfg(target_os = "macos")]
 gpui::actions!(okilum, [AboutOkilum, CheckForUpdates, ToggleBetaBuilds]);
@@ -58,9 +65,107 @@ pub(crate) fn installed_package() -> Option<String> {
     None
 }
 
-/// How often a running Windows install checks its channel again.
-#[cfg(windows)]
-const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+fn recheck_interval() -> Duration {
+    // RandomState is independently seeded by the OS. No persisted identity or
+    // dependency is needed to spread automatic requests from different installs.
+    scheduler::interval(std::collections::hash_map::RandomState::new().hash_one(std::process::id()))
+}
+
+fn schedule() -> &'static Mutex<Schedule> {
+    static SCHEDULE: OnceLock<Mutex<Schedule>> = OnceLock::new();
+    SCHEDULE.get_or_init(|| Mutex::new(Schedule::new(now(), recheck_interval())))
+}
+
+fn now() -> Duration {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed()
+}
+
+fn run_check(trigger: Trigger) {
+    schedule().lock().unwrap().run(
+        now(),
+        trigger,
+        if matches!(trigger, Trigger::Manual) {
+            available()
+        } else {
+            automatic_checks_enabled()
+        },
+        recheck_interval(),
+        || start_check(trigger),
+    );
+}
+
+fn automatic_checks_enabled() -> bool {
+    #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+    if crate::appimage_acceptance::active() {
+        return false;
+    }
+    available()
+}
+
+fn start_check(trigger: Trigger) -> bool {
+    #[cfg(target_os = "linux")]
+    return if !matches!(trigger, Trigger::Manual) && appimage::ready() {
+        // The staged AppImage holds the installation lock until restart. Keep
+        // Ready intact rather than trying to stage the same archive again.
+        false
+    } else {
+        appimage::check()
+    };
+    #[cfg(not(target_os = "linux"))]
+    let _ = trigger;
+    #[cfg(target_os = "macos")]
+    return macos::check();
+    #[cfg(windows)]
+    return windows::check();
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    false
+}
+
+/// The native Sparkle scheduler shares the automatic throttle with focus,
+/// startup and explicit checks. Sparkle has already claimed its own session.
+#[cfg(target_os = "macos")]
+fn admit_sparkle_check(automatic: bool) -> bool {
+    schedule().lock().unwrap().run(
+        now(),
+        if automatic {
+            Trigger::Focus
+        } else {
+            Trigger::Manual
+        },
+        automatic_checks_enabled(),
+        recheck_interval(),
+        || true,
+    )
+}
+
+fn install_schedule(cx: &mut App) {
+    let _ = schedule();
+    observe_window_focus(cx, || run_check(Trigger::Focus));
+    cx.spawn(async move |cx| loop {
+        // Ticks only consult the policy; the network runs once per due interval.
+        cx.background_executor().timer(Duration::from_secs(1)).await;
+        run_check(Trigger::Interval);
+    })
+    .detach();
+}
+
+fn observe_window_focus(cx: &App, on_focus: impl Fn() + Clone + 'static) {
+    // Observe every GPUI root, including Settings/About and single-file windows.
+    // Switching between two Okilum windows uses the same application-wide gate.
+    cx.observe_new::<gpui_component::Root>(move |_, window, cx| {
+        if let Some(window) = window {
+            let on_focus = on_focus.clone();
+            cx.observe_window_activation(window, move |_, window, _| {
+                if window.is_window_active() {
+                    on_focus();
+                }
+            })
+            .detach();
+        }
+    })
+    .detach();
+}
 
 // Startup confirmation requires a constructed GUI window, not keyboard focus.
 // A restored/background Linux window (including Xvfb without a window manager)
@@ -75,6 +180,7 @@ fn with_startup_window(cx: &App, confirm: impl FnOnce()) {
 /// Start Sparkle before the menus are built, so they reflect its availability.
 pub(crate) fn install(_cx: &mut App) {
     crate::reader_settings::install(_cx);
+    install_schedule(_cx);
     #[cfg(target_os = "linux")]
     if appimage::packaged() {
         appimage::start();
@@ -99,12 +205,6 @@ pub(crate) fn install(_cx: &mut App) {
     #[cfg(windows)]
     {
         windows::start();
-        // An Okilum left open for days still learns of a new release (#683).
-        _cx.spawn(async move |cx| loop {
-            cx.background_executor().timer(RECHECK_EVERY).await;
-            windows::check(false);
-        })
-        .detach();
         _cx.spawn(async move |cx| {
             let mut previous = None;
             let mut checked = status::generation();
@@ -147,7 +247,7 @@ pub(crate) fn install(_cx: &mut App) {
         // Explicit update entry overrides the remembered Settings pane (#1496).
         _cx.on_action(|_: &CheckForUpdates, cx| {
             crate::reader_settings::show_updates(cx);
-            macos::check();
+            check();
         });
         _cx.on_action(|_: &ToggleBetaBuilds, cx| {
             set_beta(!macos::beta(), cx);
@@ -175,12 +275,7 @@ pub(crate) fn apply_pending_at_start() -> bool {
 }
 
 pub(crate) fn check() {
-    #[cfg(target_os = "linux")]
-    appimage::check();
-    #[cfg(target_os = "macos")]
-    macos::check();
-    #[cfg(windows)]
-    windows::check(true);
+    run_check(Trigger::Manual);
 }
 
 pub(crate) fn channel() -> &'static str {
@@ -247,7 +342,7 @@ pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
         let changed = macos::beta() != enabled;
         macos::set_beta(enabled);
         if changed {
-            macos::check();
+            check();
         }
         #[cfg(feature = "brain")]
         crate::brain::app_quit::set_menus(cx);
@@ -260,7 +355,7 @@ pub(crate) fn set_beta(enabled: bool, cx: &mut App) {
         let previous = windows::beta();
         windows::set_beta(enabled);
         if windows::beta() != previous {
-            windows::check(true);
+            check();
         }
         cx.refresh_windows();
     }
@@ -417,6 +512,71 @@ mod tests {
                 .size_full()
                 .children(Root::render_notification_layer(window, cx))
         }
+    }
+
+    #[gpui::test]
+    fn window_activation_reaches_the_shared_scheduler_without_polling(cx: &mut TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+        let elapsed = Rc::new(std::cell::Cell::new(Duration::ZERO));
+        let starts = Rc::new(std::cell::Cell::new(0));
+        let schedule = Rc::new(RefCell::new(Schedule::new(
+            Duration::ZERO,
+            scheduler::MAX_INTERVAL,
+        )));
+        // Startup has already checked. New roots and focus storms share that
+        // timestamp, independent of GPUI's test executor clock.
+        schedule.borrow_mut().run(
+            Duration::ZERO,
+            Trigger::Manual,
+            true,
+            scheduler::MAX_INTERVAL,
+            || true,
+        );
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            crate::test_init(cx);
+            observe_window_focus(cx, {
+                let elapsed = elapsed.clone();
+                let starts = starts.clone();
+                move || {
+                    schedule.borrow_mut().run(
+                        elapsed.get(),
+                        Trigger::Focus,
+                        true,
+                        scheduler::MAX_INTERVAL,
+                        || {
+                            starts.set(starts.get() + 1);
+                            true
+                        },
+                    );
+                }
+            });
+        });
+        let (_, mut first) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Empty);
+            Root::new(view, window, cx)
+        });
+        first.run_until_parked();
+        assert_eq!(starts.get(), 0);
+        elapsed.set(Duration::from_secs(5 * 60));
+        first.deactivate_window();
+        first.run_until_parked();
+        assert_eq!(starts.get(), 0, "deactivation must not request an update");
+        first.update(|window, _| window.activate_window());
+        first.run_until_parked();
+        assert_eq!(starts.get(), 1, "positive control: activation really fired");
+        let (_, mut second) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Empty);
+            Root::new(view, window, cx)
+        });
+        second.update(|window, _| window.activate_window());
+        second.run_until_parked();
+        assert_eq!(starts.get(), 1, "a second window shares the throttle");
+        elapsed.set(Duration::from_secs(10 * 60));
+        second.deactivate_window();
+        second.update(|window, _| window.activate_window());
+        second.run_until_parked();
+        assert_eq!(starts.get(), 2);
     }
 
     #[gpui::test]

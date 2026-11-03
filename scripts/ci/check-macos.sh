@@ -146,6 +146,8 @@ release_cache_stats
 
 # #1583: Settings progress/ready/restart controls and the shared update state machine.
 run_tests okilum-shell --bins updater::status::
+run_tests okilum-shell --bins updater::scheduler::
+run_tests okilum-shell --bins updater::tests::window_activation_reaches_the_shared_scheduler_without_polling --exact
 run_tests okilum-shell --bins updater::progress_ui_tests::
 
 # Real GPUI editor protection at the same final boundary used by both Quit and Restart.

@@ -9,7 +9,12 @@ About Install action starts downloading. Automatic downloads remain disabled
 so every prepared installation passes [signed freshness and the final Rust editor
 guard](macos-update-freshness.md). The application menu has
 **About Okilum**, **Check for Updates…** and **Receive Beta Builds**. Sparkle also
-checks every hour on its own.
+uses the public thirty-minute scheduled-check setting with two minutes of
+jitter. Stock Sparkle 2.10 clamps its timer to a minimum of one hour, so the
+shared scheduler also runs its silent metadata probe every 28–32 minutes.
+Window focus and application activation trigger discovery immediately, with a
+shared five-minute automatic-check throttle. These checks preserve the explicit
+Install action and never create Sparkle windows.
 
 ## How a build is released
 

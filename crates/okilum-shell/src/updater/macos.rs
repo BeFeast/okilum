@@ -6,6 +6,7 @@ use std::ffi::{c_char, c_int, CStr};
 extern "C" {
     fn okilum_updater_start();
     fn okilum_updater_set_report(report: extern "C" fn(c_int, *const c_char));
+    fn okilum_updater_set_automatic_admission(admit: extern "C" fn(bool) -> bool);
     fn okilum_updater_available() -> bool;
     fn okilum_updater_check() -> bool;
     fn okilum_updater_install();
@@ -25,6 +26,10 @@ extern "C" {
 
 /// Sparkle calls this on the main thread with a probe's outcome.
 extern "C" fn report(kind: c_int, text: *const c_char) {
+    if kind == 12 {
+        super::run_check(super::Trigger::Focus);
+        return;
+    }
     let text = if text.is_null() {
         String::new()
     } else {
@@ -54,19 +59,27 @@ extern "C" fn report(kind: c_int, text: *const c_char) {
     });
 }
 
+extern "C" fn admit_automatic(automatic: bool) -> bool {
+    super::admit_sparkle_check(automatic)
+}
+
 pub(super) fn start() {
     unsafe {
         okilum_updater_set_report(report);
+        okilum_updater_set_automatic_admission(admit_automatic);
         okilum_updater_start()
     }
 }
 pub(super) fn available() -> bool {
     unsafe { okilum_updater_available() }
 }
-pub(super) fn check() {
+pub(super) fn check() -> bool {
     // A repeated check must not replace download progress or a ready action.
     if unsafe { okilum_updater_check() } {
         status::set(CheckStatus::Checking);
+        true
+    } else {
+        false
     }
 }
 pub(super) fn install() {

@@ -231,7 +231,7 @@ fn settings() -> bool {
 
 pub(super) fn start() {
     if settings() {
-        check(false);
+        super::check();
     }
 }
 
@@ -269,13 +269,13 @@ pub(super) fn set_beta(value: bool) {
     }
 }
 
-pub(super) fn check(_manual: bool) {
+pub(super) fn check() -> bool {
     if !available() {
-        return;
+        return false;
     }
     use super::status::{self, CheckStatus};
     if BUSY.swap(true, Ordering::AcqRel) {
-        return;
+        return false;
     }
     status::set(CheckStatus::Checking);
     // HTTP and package IO never block the GPUI/UI thread or vault preparation.
@@ -302,6 +302,7 @@ pub(super) fn check(_manual: bool) {
         });
         BUSY.store(false, Ordering::Release);
     });
+    true
 }
 
 const UP_TO_DATE: &str = "You are up to date on the selected channel.";
