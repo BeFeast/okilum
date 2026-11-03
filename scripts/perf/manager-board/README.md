@@ -10,6 +10,9 @@ threads, provider dispatches, credentials or installed application are involved.
 Use the prescribed `H=github scripts/agent/gh-check.sh` for ordinary acceptance.
 Build native artifacts only in an approved hardware build slot; never run Cargo
 on maestro except fmt. Prepare **and verify** the unchanged vendor patch stack.
+The `manager-board-fixture` GitHub workflow also builds the exact committed
+release artifact with source/binary hashes (manual dispatch, or relevant
+`agent-checks/**` pushes). It builds an artifact, not an acceptance verdict.
 The native reference uses the shipped release optimization profile:
 
 ```
@@ -32,6 +35,11 @@ The reference capture is 1196 × 772 client pixels (1200 × 800 decorated window
 scale 1, Dark, Manager about 560 px wide. Retain the actual sway window geometry,
 profile widths and artifact/source SHA256s. Do not compare debug and release
 numbers, different hosts, or captures clipped by the output.
+Verify the rendering backend too: on muninn use a headless `gles2` compositor
+with `WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128`. Record positive i915 render-engine
+activity for the measured process and reject an accidental llvmpipe reference.
+If backend configuration changes, repeat **both** artifacts under that backend
+while retaining the GUI lock. Software-rendering diagnostics remain separate.
 
 The harness enables GPUI's **existing** profiler, with no gpui core patch.
 `PERF` lines contain UTC epoch end time, CPU `Window::draw` milliseconds and
