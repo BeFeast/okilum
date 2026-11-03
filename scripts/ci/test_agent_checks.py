@@ -203,7 +203,18 @@ class HelperFlowTests(unittest.TestCase):
                     capture_output=True, text=True, timeout=30)
                 success = passed == '1' and status == 0
                 self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
-                self.assertEqual(len(calls.read_text().splitlines()), 5 if success else 1)
+                expected = [
+                    'test --locked -p okilum-write-authority local_writer_admission -- --nocapture',
+                    'test --locked -p okilum-core --lib file_editor::local_writer_admission_tests -- --nocapture',
+                    'test --locked -p okilum-core --test local_writer_admission -- --nocapture',
+                    'test --locked -p okilum-shell --bin okilum local_writer_admission -- --nocapture',
+                    'test --locked -p okilum-t3 local_writer_admission -- --nocapture',
+                    'test --locked -p okilum-core --lib local_writer_review -- --nocapture',
+                    'test --locked -p okilum-shell --bin okilum local_writer_review -- --nocapture',
+                ]
+                self.assertEqual(calls.read_text().splitlines(), expected if success else expected[:1])
+                if passed == '0' and status == 0:
+                    self.assertIn('No non-zero passing test count', result.stderr)
 
 
 if __name__ == "__main__":
