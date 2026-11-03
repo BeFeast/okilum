@@ -18,6 +18,13 @@ fn retry_delay(failures: u32) -> std::time::Duration {
 /// itself may need a moment, so no error is shown until it has passed.
 const CONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
+const UNSUPPORTED_WEBKIT: &str = "This Mac’s embedded browser cannot run this version of T3. Open the Manager thread in the T3 desktop app or an up to date system browser.";
+
+struct ManagerLinks {
+    browser: url::Url,
+    desktop: String,
+}
+
 /// The one status line for the panel and Settings › T3, or `None` while
 /// there is nothing worth saying (connecting within the grace period).
 fn status_line(
@@ -59,6 +66,10 @@ pub(super) struct ManagerPanel {
     /// Start of the current grace period (panel creation or address change).
     started: std::time::Instant,
     generation: u64,
+    links: Option<ManagerLinks>,
+    unsupported_webkit: bool,
+    #[cfg(any(target_os = "macos", test))]
+    checking_webkit: bool,
     _activation: Option<Subscription>,
     #[cfg(target_os = "macos")]
     focus_routing: Option<crate::reader_manager_focus::FocusRouting>,
@@ -173,6 +184,10 @@ impl ManagerPanel {
             loading: false,
             started: std::time::Instant::now(),
             generation: 0,
+            links: None,
+            unsupported_webkit: false,
+            #[cfg(any(target_os = "macos", test))]
+            checking_webkit: false,
             _activation: Some(activation),
             #[cfg(target_os = "macos")]
             focus_routing: None,
@@ -263,6 +278,9 @@ impl ManagerPanel {
     /// One short status line (panel and Settings → T3) and the full error,
     /// shown only as a tooltip. No line and no error during the grace period.
     pub(super) fn connection_status(&self) -> (Option<String>, Option<String>) {
+        if self.unsupported_webkit {
+            return (Some("Embedded T3 is unavailable on this Mac".into()), None);
+        }
         let connected = self.connected();
         let line = status_line(
             connected,
@@ -295,6 +313,12 @@ impl ManagerPanel {
         self.failures = 0;
         self.error = None;
         self.retrying = false;
+        self.links = None;
+        self.unsupported_webkit = false;
+        #[cfg(any(target_os = "macos", test))]
+        {
+            self.checking_webkit = false;
+        }
         self.started = std::time::Instant::now();
         Self::refresh_after_grace(window, cx);
         self.origin
@@ -324,6 +348,41 @@ impl ManagerPanel {
         }
     }
 
+    /// A capability failure cannot heal through network retries. Keep details
+    /// in diagnostics and release the native child so it cannot cover the UI.
+    #[cfg(any(target_os = "macos", test))]
+    fn finish_webkit_check(
+        &mut self,
+        generation: u64,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if generation != self.generation || self.closed || !self.checking_webkit {
+            return false;
+        }
+        self.checking_webkit = false;
+        if let Err(detail) = result {
+            self.log_failure(
+                &format!("Embedded WebKit lacks T3 regex support: {detail}"),
+                cx,
+            );
+            self.unsupported_webkit = true;
+            self.loading = false;
+            self.retrying = false;
+            self.error = None;
+            self.focused = false;
+            #[cfg(target_os = "macos")]
+            {
+                self.focus_routing.take();
+                if let Some(view) = self.webview.take() {
+                    view.update(cx, |view, _| view.hide());
+                }
+            }
+        }
+        cx.notify();
+        true
+    }
+
     /// A failed attempt: keep one quiet line and try again with backoff.
     fn failed(&mut self, error: String, window: &mut Window, cx: &mut Context<Self>) {
         self.failures = self.failures.saturating_add(1);
@@ -350,7 +409,7 @@ impl ManagerPanel {
         if !reader_features::enabled(reader_features::Feature::Agents, cx) {
             return;
         }
-        if self.loading {
+        if self.loading || self.unsupported_webkit {
             return;
         }
         let Manager::Thread(thread) = self.project.manager.clone() else {
@@ -385,7 +444,10 @@ impl ManagerPanel {
                 .spawn(async move {
                     let identity = okilum_t3::projects::browser_identity(&env)?;
                     let url = okilum_t3::projects::manager_url(&env, &identity, &thread)?;
-                    Ok::<_, anyhow::Error>(url)
+                    Ok::<_, anyhow::Error>(ManagerLinks {
+                        browser: url,
+                        desktop: identity.thread_url(&thread),
+                    })
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -394,10 +456,11 @@ impl ManagerPanel {
                 }
                 this.loading = false;
                 match result {
-                    Ok(url) => {
+                    Ok(links) => {
                         #[cfg(target_os = "macos")]
-                        match Self::browser(&url, generation, window, cx) {
+                        match Self::browser(&links.browser, generation, window, cx) {
                             Ok((view, routing)) => {
+                                this.checking_webkit = true;
                                 this.focus_routing = Some(routing);
                                 this.webview = Some(view);
                                 this.error = None;
@@ -411,11 +474,12 @@ impl ManagerPanel {
                         }
                         #[cfg(not(target_os = "macos"))]
                         {
-                            let _ = (url, window);
+                            let _ = window;
                             this.error = None;
                             this.retrying = false;
                             this.failures = 0;
                         }
+                        this.links = Some(links);
                     }
                     Err(e) => this.failed(format!("T3 is unreachable: {e:#}"), window, cx),
                 }
@@ -449,6 +513,32 @@ impl ManagerPanel {
                     .update_in(cx, |this, window, cx| {
                         // An old browser's queued callbacks must not affect its successor.
                         if this.generation != generation {
+                            return;
+                        }
+                        if let Some(result) =
+                            crate::reader_manager_compatibility::report(&event, "about:blank")
+                        {
+                            let supported = result.is_ok();
+                            if this.finish_webkit_check(generation, result, cx) && supported {
+                                if let (Some(view), Some(links)) = (&this.webview, &this.links) {
+                                    if let Err(error) = view
+                                        .read(cx)
+                                        .handle()
+                                        .raw()
+                                        .load_url(links.browser.as_str())
+                                    {
+                                        this.focus_routing.take();
+                                        if let Some(view) = this.webview.take() {
+                                            view.update(cx, |view, _| view.hide());
+                                        }
+                                        this.failed(
+                                            format!("Manager navigation failed: {error:#}"),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                }
+                            }
                             return;
                         }
                         if event.starts_with("page-load:") {
@@ -511,7 +601,7 @@ impl ManagerPanel {
         let browser = wry::WebViewBuilder::new()
             .with_incognito(false)
             .with_data_store_identifier(store)
-            .with_url(url.as_str())
+            .with_html(crate::reader_manager_compatibility::PREFLIGHT)
             .with_focused(false)
             .with_initialization_script(
                 r#"
@@ -541,7 +631,10 @@ impl ManagerPanel {
             )
             .with_initialization_script(&crate::reader_manager_links::page_script(&url))
             .with_ipc_handler(move |request| {
-                if matches!(request.body().as_str(), "focus" | "blur" | "escape") {
+                if crate::reader_manager_compatibility::report(
+                    request.body(),
+                    &request.uri().to_string(),
+                ).is_some() || matches!(request.body().as_str(), "focus" | "blur" | "escape") {
                     let _ = send.try_send(request.body().clone());
                 } else if let Some(request) = crate::reader_manager_links::page_request(
                     request.body(),
@@ -568,7 +661,7 @@ impl ManagerPanel {
                 let _ = page_events.try_send(event.into());
             })
             .with_navigation_handler(|url| {
-                url::Url::parse(&url).is_ok_and(|url| {
+                url == "about:blank" || url::Url::parse(&url).is_ok_and(|url| {
                     url.username().is_empty()
                         && url.password().is_none()
                         && okilum_t3::Environment::new(
@@ -607,6 +700,33 @@ impl Render for ManagerPanel {
                 .gap_2()
                 .child("Manager не запущен")
                 .child(t3_settings_button())
+                .into_any_element();
+        }
+        if self.unsupported_webkit {
+            return v_flex()
+                .id("manager-unsupported-webkit")
+                .p_3()
+                .gap_2()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(UNSUPPORTED_WEBKIT)
+                .when_some(self.links.as_ref(), |panel, links| {
+                    let desktop = links.desktop.clone();
+                    let browser = links.browser.to_string();
+                    panel
+                        .child(
+                            Button::new("manager-fallback-desktop")
+                                .small()
+                                .label("Open in T3")
+                                .on_click(move |_, _, cx| cx.open_url(&desktop)),
+                        )
+                        .child(
+                            Button::new("manager-fallback-browser")
+                                .small()
+                                .label("Open in browser")
+                                .on_click(move |_, _, cx| cx.open_url(&browser)),
+                        )
+                })
                 .into_any_element();
         }
         // No Okilum header or project line above T3: T3's own thread header
@@ -743,6 +863,88 @@ mod status_tests {
     use super::*;
     use ::core::prelude::v1::test;
     use std::time::Duration;
+
+    #[gpui::test]
+    fn webkit_failure_preserves_thread_actions_without_retries_or_raw_ui_errors(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let temp = tempfile::tempdir().unwrap();
+        let project = Project {
+            folder: temp.path().into(),
+            name: "Compatibility fixture".into(),
+            kind: okilum_t3::projects::Kind::Knowledge,
+            environment: Some("local-alias".into()),
+            manager_project: None,
+            manager: Manager::Thread("mcp:manager".into()),
+            appearance: Default::default(),
+        };
+        let (root, visual) = cx.add_window_view(|window, cx| {
+            let panel = cx
+                .new(|cx| ManagerPanel::new(project, Some(temp.path().join("state")), window, cx));
+            Root::new(panel, window, cx)
+        });
+        visual.run_until_parked();
+        let panel = root.read_with(visual, |root, _| {
+            root.view().clone().downcast::<ManagerPanel>().unwrap()
+        });
+        panel.update_in(visual, |panel, window, cx| {
+            let environment =
+                okilum_t3::Environment::new("local-alias", "https://t3.example:8443").unwrap();
+            let identity = okilum_t3::ServerIdentity {
+                environment_id: "actual-server".into(),
+                label: "Fixture".into(),
+            };
+            panel.links = Some(ManagerLinks {
+                browser: okilum_t3::projects::manager_url(&environment, &identity, "mcp:manager")
+                    .unwrap(),
+                desktop: identity.thread_url("mcp:manager"),
+            });
+            panel.generation = 2;
+            panel.checking_webkit = true;
+            // The engine that passes the check remains eligible for the normal page.
+            assert!(panel.finish_webkit_check(2, Ok(()), cx));
+            assert!(!panel.unsupported_webkit);
+            assert!(!panel.finish_webkit_check(2, Err("duplicate report".into()), cx));
+            panel.checking_webkit = true;
+            assert!(!panel.finish_webkit_check(1, Err("old browser".into()), cx));
+            assert!(panel.checking_webkit);
+            panel.error = Some("previous network failure".into());
+            panel.retrying = true;
+            panel.loading = true;
+            panel.focused = true;
+            assert!(panel.finish_webkit_check(
+                2,
+                Err("SyntaxError: invalid group specifier name".into()),
+                cx
+            ));
+            assert!(panel.unsupported_webkit);
+            assert!(!panel.loading && !panel.retrying && !panel.focused);
+            assert!(panel.error.is_none());
+            assert_eq!(
+                panel.connection_status(),
+                (Some("Embedded T3 is unavailable on this Mac".into()), None)
+            );
+            let links = panel.links.as_ref().unwrap();
+            assert_eq!(links.desktop, "t3code://threads/actual-server/mcp:manager");
+            assert_eq!(
+                links.browser.as_str(),
+                "https://t3.example:8443/actual-server/mcp:manager"
+            );
+            panel.retry_now(window, cx);
+            panel.connect(window, cx);
+            assert_eq!(
+                panel.generation, 2,
+                "activation and retries must not reload an incompatible bundle"
+            );
+            panel.hide(cx);
+            panel.checking_webkit = true;
+            assert!(
+                !panel.finish_webkit_check(panel.generation, Ok(()), cx),
+                "a closed panel ignores callbacks"
+            );
+        });
+    }
 
     #[gpui::test]
     fn shared_connection_refreshes_only_panels_without_project_overrides(cx: &mut TestAppContext) {
