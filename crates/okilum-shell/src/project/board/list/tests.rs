@@ -282,6 +282,12 @@ fn list_2530_ci_live_age_and_executor_filter_use_existing_evidence(cx: &mut Test
             "missing {selector}"
         );
     }
+    let dot = visual.debug_bounds("board-agent-live-dot").unwrap();
+    let avatar = visual.debug_bounds("board-agent-link-1").unwrap();
+    assert!(
+        dot.left() >= avatar.left() && dot.right() <= avatar.right(),
+        "live dot must not be clipped by button padding"
+    );
     board.read_with(visual, |b, _| {
         assert_eq!(b.list.prepared.as_ref().unwrap().counts, [0, 1, 3, 0, 0]);
         let scope = &b.binding.as_ref().unwrap().issues[0];

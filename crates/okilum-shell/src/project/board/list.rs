@@ -687,8 +687,12 @@ impl Board {
                     .ghost()
                     .small()
                     .flex_none()
-                    .child(row_bits::ci_dot(checks, cx))
-                    .label(format!("PR {pr}"))
+                    .child(
+                        h_flex()
+                            .gap(px(5.))
+                            .child(row_bits::ci_dot(checks, cx))
+                            .child(format!("PR {pr}")),
+                    )
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         cx.open_url(&url);
@@ -717,6 +721,7 @@ impl Board {
                     .small()
                     .ghost()
                     .size(px(24.))
+                    .p_0()
                     .flex_none()
                     .disabled(url.is_none())
                     .tooltip(format!("{} · {}", scope.executor, agent.label()))
