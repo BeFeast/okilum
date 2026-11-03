@@ -88,7 +88,7 @@ pub(crate) fn text(status: &CheckStatus, now: SystemTime) -> Option<String> {
             let ago = now.duration_since(*at).unwrap_or_default();
             format!("Up to date · checked {}", elapsed(ago))
         }
-        CheckStatus::Available(version) => format!("Okilum {version} is available"),
+        CheckStatus::Available(version) => format!("Okilum {version} is available — download?"),
         CheckStatus::Downloading(Some(percent)) => format!("Downloading update · {percent}%"),
         CheckStatus::Downloading(None) => "Downloading update…".into(),
         CheckStatus::Preparing => "Preparing update…".into(),
@@ -177,7 +177,7 @@ mod tests {
             ),
             (
                 CheckStatus::Available("0.1.9999".into()),
-                "Okilum 0.1.9999 is available",
+                "Okilum 0.1.9999 is available — download?",
             ),
             (CheckStatus::Ready, "Update ready to install"),
             (

@@ -5,6 +5,11 @@ without applying a staged update or terminating that primary. A running primary
 updates only through the existing explicit restart transaction, including
 `protect_all_for_quit` and state persistence.
 
+Since #2467, Velopack auto-apply on ordinary startup is always disabled, even
+for a channel-verified pending package with no live primary. Downloading is not
+installation consent. Restart now still uses the guarded explicit SDK apply
+transaction. The instance reservation and its ownership transfer remain intact.
+
 Before Velopack startup, an ordinary launch reserves the same OS-owned instance
 lock used by Reader IPC. If another primary or startup owns it, automatic apply
 is disabled for this launch. An owner keeps its reservation across the SDK call

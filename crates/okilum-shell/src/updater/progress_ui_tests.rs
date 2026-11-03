@@ -47,6 +47,7 @@ fn settings_download_progress_becomes_an_adjacent_explicit_restart(cx: &mut Test
         CheckStatus::RestartRetry("Your latest edits could not be protected.".into()),
     ] {
         restarted.set(false);
+        let downloading = matches!(status, CheckStatus::Downloading(_));
         let actionable = matches!(status, CheckStatus::Ready | CheckStatus::RestartRetry(_));
         controls.update(visual, |controls, cx| {
             controls.status = status;
@@ -54,6 +55,11 @@ fn settings_download_progress_becomes_an_adjacent_explicit_restart(cx: &mut Test
         });
         visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            visual.debug_bounds("fixture-cancel-update").is_some(),
+            downloading,
+            "a running download exposes Cancel on every platform"
+        );
         let progress = visual
             .debug_bounds("fixture-update-progress")
             .expect("positive control: real progress indicator drawn");
@@ -168,4 +174,29 @@ fn long_update_error_wraps_within_settings_content(cx: &mut TestAppContext) {
         );
         assert!(text.bottom() <= content.bottom());
     }
+}
+
+#[gpui::test]
+fn available_version_offers_download_and_no_restart(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        crate::test_init(cx);
+    });
+    let restarted = Rc::new(Cell::new(false));
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let controls = cx.new(|_| UpdateControls {
+            status: CheckStatus::Available("0.1.9999".into()),
+            restarted: restarted.clone(),
+        });
+        Root::new(controls, window, cx)
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        visual.debug_bounds("fixture-install-update").is_some(),
+        "positive control: Download action drawn"
+    );
+    assert!(visual.debug_bounds("fixture-restart-update").is_none());
+    assert!(visual.debug_bounds("fixture-update-progress").is_none());
+    assert!(!restarted.get());
 }

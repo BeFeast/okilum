@@ -242,7 +242,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             'standard-main': 'EXPECTED observer-incomplete/defaults-missing: Foundation refuses the main bundle id as a suite; never reproduction or CF-readback substitution',
             'explicit-suite-background': 'Regression must install admitted version 4 after observed group0->6 on the unchanged signed feed',
         }
-        ordinary_scenarios = ('termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
+        ordinary_scenarios = ('mode-background', 'mode-ask', 'mode-off', 'termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'cancel-ready-immediate', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
                          'eligibility-phase-background', 'eligibility-phase-foreground',
                          'eligibility-skip-background', 'eligibility-skip-foreground',
                          'eligibility-major-background', 'eligibility-major-foreground',
@@ -299,7 +299,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                 'NSAppTransportSecurity': {'NSAllowsLocalNetworking': True},
                 'TSTerminationRetry': 'delay' if scenario == 'termination-delayed-retry' else 'refuse' if scenario.startswith('termination-') else '',
                 'TSRetryGuardRefuse': scenario == 'termination-retry-guard-refusal',
-                'TSCancel': scenario.removeprefix('cancel-') if scenario.startswith('cancel-') else '',
+                'TSCancel': 'ready' if scenario == 'cancel-ready-immediate' else scenario.removeprefix('cancel-') if scenario.startswith('cancel-') else '',
+                'TSImmediateQuit': scenario == 'cancel-ready-immediate',
                 'TSTrace': str(trace), 'TSReceipt': str(receipt),
                 'TSPendingFeed': str(case / 'pending.xml'), 'TSFeedPath': str(case / 'appcast.xml'),
                 'TSBeta': scenario != 'stable', 'TSRefuse': scenario in ('guard-refusal', 'quit-guard-refusal'),
@@ -337,6 +338,8 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     base_info['TSSkip'] = '4'
                 if 'major' in scenario:
                     base_info['TSSkipMajor'] = '2'
+            if scenario.startswith('mode-'):
+                base_info['TSMode'] = {'mode-background': 0, 'mode-ask': 1, 'mode-off': 2}[scenario]
             if scenario in ('restart-newest', 'quit-newest'):
                 base_info['TSRestartFeed'] = str(case / 'restart.xml')
             signatures = {}
@@ -428,6 +431,10 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         wait_for(lambda: receipt.exists() or 'report 2 ' in trace.read_text(), process, output,
                                  terminal_codes=(62,))
                         callbacks = trace.read_text()
+                        if scenario == 'mode-background':
+                            callbacks = trace.read_text()
+                            assert callbacks.index('mode ready awaiting explicit restart') < callbacks.index('mode explicit restart clicked')
+                            assert callbacks.index('mode explicit restart clicked') < callbacks.index('final editor guard boundary')
                         installed = plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion']
                         rotation_evidence = {
                             **parse_rotation_trace(callbacks), 'process_exit': process.poll(),
@@ -478,6 +485,25 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         assert 'About retry enabled after original delegate decision' in trace.read_text()
                         assert (case / 'protected-editor').read_text() == 'edited after verification'
                         print('PASS retry editor refusal preserves app and About action', flush=True)
+                        continue
+                    if scenario.startswith('quit-'):
+                        wait_for(lambda: process.poll() is not None, process, output)
+                        time.sleep(3)  # catch an accidentally retained install-on-quit
+                        assert process.returncode == 0, trace.read_text()
+                        assert not receipt.exists()
+                        assert plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion'] == '1'
+                        assert 'final editor guard boundary' not in trace.read_text(), trace.read_text()
+                        assert 'report 7 ' in trace.read_text(), trace.read_text()
+                        print(f'PASS ordinary Quit never installs: {scenario}', flush=True)
+                        continue
+                    if scenario in ('mode-ask', 'mode-off'):
+                        wait_for(lambda: process.poll() is not None, process, output)
+                        assert process.returncode == 0, trace.read_text()
+                        assert 'mode available without download' in trace.read_text()
+                        assert not any('.zip' in r for r in requests), requests
+                        assert not receipt.exists()
+                        assert plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion'] == '1'
+                        print(f'PASS mode without automatic download: {scenario}', flush=True)
                         continue
                     if scenario == 'discovery':
                         wait_for(lambda: process.poll() is not None, process, output)

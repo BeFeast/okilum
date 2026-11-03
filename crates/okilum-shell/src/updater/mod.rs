@@ -1,15 +1,15 @@
 #[cfg(target_os = "linux")]
 pub(crate) mod appimage;
-// macOS updates through stock Sparkle 2: its standard UI downloads, installs
-// and relaunches. A manual check only probes and reports inline (#995). The
-// app adds menu items and the beta channel preference.
+// Platform engines retain selection/validation; Okilum owns policy and UI.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) mod linux_repo;
 #[cfg(target_os = "macos")]
 mod macos;
+mod policy;
 #[cfg(any(windows, test))]
 mod ready;
 mod scheduler;
+pub(crate) use policy::{mode, Mode};
 pub(crate) mod status;
 pub(crate) mod whats_new;
 #[cfg(windows)]
@@ -85,7 +85,7 @@ fn run_check(trigger: Trigger) {
     schedule().lock().unwrap().run(
         now(),
         trigger,
-        if matches!(trigger, Trigger::Manual) {
+        if trigger.manual() {
             available()
         } else {
             automatic_checks_enabled()
@@ -100,24 +100,27 @@ fn automatic_checks_enabled() -> bool {
     if crate::appimage_acceptance::active() {
         return false;
     }
-    available()
+    available() && mode().automatic_checks()
 }
 
 fn start_check(trigger: Trigger) -> bool {
     #[cfg(target_os = "linux")]
-    return if !matches!(trigger, Trigger::Manual) && appimage::ready() {
+    return if appimage::ready() {
         // The staged AppImage holds the installation lock until restart. Keep
         // Ready intact rather than trying to stage the same archive again.
         false
     } else {
-        appimage::check()
+        appimage::check(mode().download(matches!(trigger, Trigger::Download)))
     };
     #[cfg(not(target_os = "linux"))]
     let _ = trigger;
     #[cfg(target_os = "macos")]
-    return macos::check();
+    return macos::check(
+        mode().download(matches!(trigger, Trigger::Download)),
+        trigger.manual(),
+    );
     #[cfg(windows)]
-    return windows::check();
+    return windows::check(mode().download(matches!(trigger, Trigger::Download)));
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     false
 }
@@ -133,7 +136,11 @@ fn admit_sparkle_check(automatic: bool) -> bool {
         } else {
             Trigger::Manual
         },
-        automatic_checks_enabled(),
+        if automatic {
+            automatic_checks_enabled()
+        } else {
+            available()
+        },
         recheck_interval(),
         || true,
     )
@@ -272,6 +279,21 @@ pub(crate) fn available() -> bool {
 #[cfg(windows)]
 pub(crate) fn apply_pending_at_start() -> bool {
     windows::apply_pending_at_start()
+}
+
+pub(super) fn startup_check() {
+    run_check(Trigger::Focus);
+}
+
+pub(crate) fn set_mode(value: Mode, cx: &mut App) {
+    if let Err(error) = policy::set_mode(value) {
+        status::set(status::CheckStatus::Failed(format!(
+            "Could not save update mode: {error}"
+        )));
+    }
+    #[cfg(target_os = "macos")]
+    macos::configure_mode();
+    cx.refresh_windows();
 }
 
 pub(crate) fn check() {
@@ -416,10 +438,9 @@ pub(crate) fn activate(cx: &mut App) {
     check();
 }
 
-/// Explicit download intent from About. Progress stays in the same status row.
+/// Explicit download intent from About/Settings. Installation is a separate click.
 pub(crate) fn install_update() {
-    #[cfg(target_os = "macos")]
-    macos::install();
+    run_check(Trigger::Download);
 }
 
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
@@ -659,10 +680,14 @@ pub(crate) fn can_cancel_update() -> bool {
     {
         return macos::can_cancel();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "linux", windows))]
+    return policy::DOWNLOAD.active();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     false
 }
 pub(crate) fn cancel_update() {
+    #[cfg(any(target_os = "linux", windows))]
+    policy::DOWNLOAD.cancel();
     #[cfg(target_os = "macos")]
     macos::cancel();
 }
