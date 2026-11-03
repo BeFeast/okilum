@@ -333,12 +333,19 @@ mod tests {
                 let editor = reader.read_with(visual, |r, _| input(r));
                 let caret = original.find("line 40").unwrap();
                 editor.update(visual, |i, cx| {
+                    i.enable_layout_diagnostics();
                     i.set_selected_range(caret + 4..caret, cx);
                     i.scroll_line_to_top(35, cx);
                 });
                 visual.run_until_parked();
                 visual.update(|window, cx| window.draw(cx).clear(cx));
-                let scroll = editor.read_with(visual, |i, _| i.scroll_offset());
+                let (scroll, top, caret_y) = editor.read_with(visual, |i, _| {
+                    (
+                        i.scroll_offset(),
+                        i.top_visible_line(),
+                        i.cursor_layout().unwrap().0.origin.y,
+                    )
+                });
                 assert!(
                     scroll.y < px(0.),
                     "positive control: editor viewport is scrolled"
@@ -348,13 +355,21 @@ mod tests {
                     input(r).read(cx).value().contains("remote line")
                 });
                 editor.read_with(visual, |i, _| {
+                    let frames = i.take_layout_frames();
+                    let painted = frames.last().expect("positive control: editor actually painted");
+                    assert_eq!(painted.generation, i.source_stamp().generation, "geometry belongs to the incoming revision");
                     assert_eq!(
                         i.cursor(),
                         caret,
                         "clean refresh retains the cursor and selection direction"
                     );
                     assert_eq!(i.selected_range(), caret..caret + 4);
-                    assert_eq!(i.scroll_offset(), scroll, "clean refresh retains scroll");
+                    // Live Preview can remeasure rows above the viewport. A
+                    // corrected pixel offset must still retain the same source
+                    // row and caret on screen, which is the visible scroll state.
+                    assert_eq!(i.top_visible_line(), top, "profile={profile} live={live}: source row stays visible; before={scroll:?} after={:?}", i.scroll_offset());
+                    let after_y = i.cursor_layout().unwrap().0.origin.y;
+                    assert!((after_y - caret_y).abs() <= px(1.), "profile={profile} live={live}: viewport anchor moved: before={caret_y:?} after={after_y:?}; scroll before={scroll:?} after={:?}", i.scroll_offset());
                 });
                 reader.read_with(visual, |r, _| {
                     assert!(!r.editing.as_ref().unwrap().conflict_detected)
