@@ -17,7 +17,7 @@ static void TSRegisterChannelDefault(void) {
 // kind: 0 up to date, 1 update available (text = version), 2 error (text = reason).
 typedef void (*TSReport)(int kind, const char *text);
 static TSReport TSReporter;
-typedef bool (*TSAutomaticAdmission)(void);
+typedef bool (*TSAutomaticAdmission)(bool automatic);
 static TSAutomaticAdmission TSAdmitAutomatic;
 static void TSSend(int kind, NSString *text) {
     if (TSReporter) TSReporter(kind, (text ?: @"").UTF8String);
@@ -250,11 +250,15 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     // A native scheduled check shares the focus/timer throttle; probing must
     // never race a retained installation or the isolated metadata updater.
     if (check == SPUUpdateCheckUpdatesInBackground && !TSInstallRequested && !TSReplacingUpdate()) {
-        if (TSProbe.completion || TSManualCheck || (TSAdmitAutomatic && !TSAdmitAutomatic())) {
+        if (TSProbe.completion || TSManualCheck || (TSAdmitAutomatic && !TSAdmitAutomatic(true))) {
             TSScheduledCheckSkipped = YES;
             return NO;
         }
         TSSend(9, nil);
+    } else if (TSAdmitAutomatic) {
+        // A user-initiated download also postpones automatic discovery, but is
+        // never throttled. This does not touch signed freshness probes.
+        TSAdmitAutomatic(false);
     }
     return YES;
 }

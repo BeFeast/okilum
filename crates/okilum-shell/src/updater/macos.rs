@@ -6,7 +6,7 @@ use std::ffi::{c_char, c_int, CStr};
 extern "C" {
     fn okilum_updater_start();
     fn okilum_updater_set_report(report: extern "C" fn(c_int, *const c_char));
-    fn okilum_updater_set_automatic_admission(admit: extern "C" fn() -> bool);
+    fn okilum_updater_set_automatic_admission(admit: extern "C" fn(bool) -> bool);
     fn okilum_updater_available() -> bool;
     fn okilum_updater_check() -> bool;
     fn okilum_updater_install();
@@ -59,8 +59,8 @@ extern "C" fn report(kind: c_int, text: *const c_char) {
     });
 }
 
-extern "C" fn admit_automatic() -> bool {
-    super::admit_sparkle_scheduled_check()
+extern "C" fn admit_automatic(automatic: bool) -> bool {
+    super::admit_sparkle_check(automatic)
 }
 
 pub(super) fn start() {

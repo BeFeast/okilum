@@ -82,12 +82,25 @@ fn now() -> Duration {
 }
 
 fn run_check(trigger: Trigger) {
-    schedule()
-        .lock()
-        .unwrap()
-        .run(now(), trigger, available(), recheck_interval(), || {
-            start_check(trigger)
-        });
+    schedule().lock().unwrap().run(
+        now(),
+        trigger,
+        if matches!(trigger, Trigger::Manual) {
+            available()
+        } else {
+            automatic_checks_enabled()
+        },
+        recheck_interval(),
+        || start_check(trigger),
+    );
+}
+
+fn automatic_checks_enabled() -> bool {
+    #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
+    if crate::appimage_acceptance::active() {
+        return false;
+    }
+    available()
 }
 
 fn start_check(trigger: Trigger) -> bool {
@@ -112,11 +125,15 @@ fn start_check(trigger: Trigger) -> bool {
 /// The native Sparkle scheduler shares the automatic throttle with focus,
 /// startup and explicit checks. Sparkle has already claimed its own session.
 #[cfg(target_os = "macos")]
-pub(super) fn admit_sparkle_scheduled_check() -> bool {
+fn admit_sparkle_check(automatic: bool) -> bool {
     schedule().lock().unwrap().run(
         now(),
-        Trigger::Focus,
-        available(),
+        if automatic {
+            Trigger::Focus
+        } else {
+            Trigger::Manual
+        },
+        automatic_checks_enabled(),
         recheck_interval(),
         || true,
     )
