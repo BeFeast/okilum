@@ -131,22 +131,33 @@ fn issue1588_line_click_and_inline_nested_expansion(cx: &mut TestAppContext) {
 #[gpui::test]
 fn issue1588_expanded_markdown_link_uses_imported_origin(cx: &mut TestAppContext) {
     let mut f = open(cx, "project/AGENTS.md");
-    f.click("agent-disclosure-imports/rules.md");
-    let body = f
-        .visual
-        .debug_bounds("agent-expanded-imports/rules.md")
-        .unwrap();
-    // The imported document starts with one Markdown link. Click its first
-    // line through TextView's real native link handler, not handle_link directly.
-    f.visual.simulate_click(
-        point(body.origin.x + px(60.), body.origin.y + px(10.)),
-        Modifiers::default(),
-    );
-    f.draw();
-    assert_eq!(
-        f.reader.read_with(f.visual, |r, _| r.current_rel.clone()),
-        "project/imports/target.md"
-    );
+    for live in [false, true] {
+        if live {
+            f.reader.update_in(f.visual, |r, window, cx| {
+                r.open_note_at("project/AGENTS.md", None, None, window, cx)
+            });
+            f.draw();
+            f.reader
+                .update_in(f.visual, |r, window, cx| r.open_live_preview(window, cx));
+            f.draw();
+        }
+        f.click("agent-disclosure-imports/rules.md");
+        let body = f
+            .visual
+            .debug_bounds("agent-expanded-imports/rules.md")
+            .unwrap();
+        // The imported document starts with one Markdown link. Click its first
+        // line through TextView's real native link handler, not handle_link directly.
+        f.visual.simulate_click(
+            point(body.origin.x + px(60.), body.origin.y + px(10.)),
+            Modifiers::default(),
+        );
+        f.draw();
+        assert_eq!(
+            f.reader.read_with(f.visual, |r, _| r.current_rel.clone()),
+            "project/imports/target.md"
+        );
+    }
 }
 #[gpui::test]
 fn issue1588_entered_project_note_and_contract_keep_document_features(cx: &mut TestAppContext) {
@@ -187,7 +198,7 @@ fn issue1588_source_command_click_and_live_preview_disclosure(cx: &mut TestAppCo
     f.draw();
     let input = f
         .reader
-        .read_with(f.visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        .read_with(f.visual, |r, _| r.source_input().unwrap());
     let at = input.read_with(f.visual, |input, _| {
         let offset = input.value().find("@imports").unwrap();
         input
