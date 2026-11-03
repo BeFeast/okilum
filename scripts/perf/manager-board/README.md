@@ -73,6 +73,11 @@ Physical input and positive controls:
   virtual keyboard/keymap needs to settle, otherwise the first key can be lost.
   Prove Escape delivery separately by opening Quick Open with Ctrl+K and closing
   it with the same delayed Escape. Typed letters alone do not prove Escape fired.
+- Cancel a held splitter drag by moving focus to another private workspace,
+  then return and move with the button still held. The width must stay fixed.
+  Keep a virtual keyboard connected for this entire control: a pointer-only sway
+  seat does not deliver the required keyboard activation boundary. Verify the
+  seat has keyboard capability before interpreting the focus-loss result.
 
 Store ranges as `<phase>-ranges.json`, an array of objects with `scenario`,
 `rep`, `start`, `end` (epoch seconds). Resize entries also have `width_before`
@@ -102,6 +107,12 @@ released on pointer-up, cancellation, panel closure and focus loss.
 Repaints transfer only an owned grab and cannot reacquire a released pointer.
 Measured lane extents invalidate a rendered geometry leaf, preserving the
 canonical projection cache while still updating the real scroll extent.
+Height/focus hints are window-local cells inside one retained lane map. They do
+not register an entity dependency for every offscreen card on each resize step.
+Linux uses bundled mimalloc for the short-lived layout and interaction nodes;
+its effect is checked in the actual release artifact on the same reference rig.
+The compact pull badge uses the same Base Ghost/focus/keyboard contract as card
+disclosures and retains its original source-bound URL and natural spacing.
 
 The ordinary Linux Rust suite includes the Reader-mounted reference regression,
 its real wheel/drag/card-tail controls and Reader Escape/focus assertions. It
