@@ -31,12 +31,12 @@ if [ "${RUNNER_OS:-}" = macOS ]; then
 fi
 if [ "${RUNNER_OS:-Linux}" = Linux ]; then
     # #2369: report the executed regressions even if a later desktop phase times out.
-    phase appimage-channel-tests 120 cargo test --locked -p okilum-appimage --lib channel -- --test-threads=1
+    phase appimage-channel-tests 300 cargo test --locked -p okilum-appimage --lib channel -- --test-threads=1
 fi
-phase build 360 "$@"
+phase build 540 "$@"
 # Compile every workspace test target; fixture/API drift must block merge even
 # when its suite runs only during full overnight acceptance. Do not execute it.
-phase workspace-test-check 360 cargo check --locked --workspace --tests
+phase workspace-test-check 540 cargo check --locked --workspace --tests
 # Pure HTML/Markdown parsing tests, no UI, process trees, network or timers.
 phase list-tests 120 cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/fast-tests.txt"

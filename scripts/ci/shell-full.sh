@@ -16,9 +16,30 @@ phase() {
 }
 scripts/vendor-setup.sh
 scripts/vendor-setup.sh --verify
-# Resolve locked test dependencies and compile even when this job gets a different
-# warm slot from check. The inventory is a positive control against an empty run.
-phase shell-binary-list 360 cargo test --locked -p okilum-shell --bin okilum -- --list | tee "${RUNNER_TEMP:?}/shell-tests.txt"
+# Compilation has a separate, generous budget: listing must never compile or
+# wait for Cargo's target lock. Run the exact artifact Cargo reports, rather than
+# invoking Cargo again under either execution deadline. See docs/fast-runner.md.
+artifacts=$(mktemp "${RUNNER_TEMP:?}/shell-artifacts-XXXXXX")
+trap 'rm -f "$artifacts"' EXIT
+phase shell-binary-compile 840 bash -c \
+    'exec cargo test --locked -p okilum-shell --bin okilum --no-run --message-format=json-render-diagnostics > "$1"' \
+    bash "$artifacts"
+executable=$(python3 - "$artifacts" <<'PY'
+import json, sys
+messages = [json.loads(line) for line in open(sys.argv[1])]
+matches = [v['executable'] for v in messages if v.get('reason') == 'compiler-artifact'
+           and v.get('executable') and v['target']['name'] == 'okilum'
+           and v.get('profile', {}).get('test')]
+assert len(matches) == 1, matches
+print(matches[0])
+PY
+)
+# The inventory is a positive control against an empty run.
+# Match cargo test's package working directory for both direct invocations.
+manifest_directory="$PWD/crates/okilum-shell"
+phase shell-binary-list 30 bash -c 'cd "$1" && shift && exec "$@"' \
+    bash "$manifest_directory" "$executable" --list | tee "$RUNNER_TEMP/shell-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/shell-tests.txt"
 # Match hosted validation, with no test-name filter or new ignored tests.
-phase shell-binary-tests 900 cargo test --offline --locked -p okilum-shell --bin okilum -- --test-threads=4
+phase shell-binary-tests 990 bash -c 'cd "$1" && shift && exec "$@"' \
+    bash "$manifest_directory" "$executable" --test-threads=4

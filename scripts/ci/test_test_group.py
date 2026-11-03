@@ -131,8 +131,8 @@ class TestGroup(unittest.TestCase):
     def test_workflow_bounds_setup_and_keeps_job_budgets(self):
         workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         for command in [
-            'fast-local-check 540 bash scripts/ci/fast-local.sh',
-            'fast-local-shell-full 1110 bash scripts/ci/fast-local.sh shell-full',
+            'fast-local-check 720 bash scripts/ci/fast-local.sh',
+            'fast-local-shell-full 1140 bash scripts/ci/fast-local.sh shell-full',
             'sync-local 840 bash scripts/ci/sync-source-sharing-fast.sh',
         ]:
             self.assertIn('bash scripts/ci/test-group.sh ' + command, workflow)

@@ -65,7 +65,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Run the full CI tooling Python suite
         timeout-minutes: 5
-        run: bash scripts/ci/test-group.sh ci-python 90 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+        run: bash scripts/ci/test-group.sh ci-python 180 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - name: Run the full releases Python suite
         timeout-minutes: 5
         run: bash scripts/ci/test-group.sh releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/test-group.sh fast-local-check 540 bash scripts/ci/fast-local.sh
+          bash scripts/ci/test-group.sh fast-local-check 720 bash scripts/ci/fast-local.sh
 
   shell-full:
     # Full runtime coverage never occupies a PR admission slot.
@@ -137,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/test-group.sh fast-local-shell-full 1110 bash scripts/ci/fast-local.sh shell-full
+          bash scripts/ci/test-group.sh fast-local-shell-full 1140 bash scripts/ci/fast-local.sh shell-full
 
   certification-status:
     # Beta gates on check alone: report and dispatch as soon as it finishes,

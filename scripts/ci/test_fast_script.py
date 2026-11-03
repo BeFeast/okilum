@@ -5,6 +5,7 @@ import re
 import shlex
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,9 +24,10 @@ class FastScript(unittest.TestCase):
                 self.assertIsNotNone(match, name)
                 step = match[1]
                 self.assertNotIn('if:', step)
+                limit = '180' if directory == 'ci' else '90'
                 self.assertIn('        timeout-minutes: 5\n', step)
                 command = shlex.split(step.split('        run: ', 1)[1].strip())
-                self.assertEqual(command, ['bash', 'scripts/ci/test-group.sh', f'{directory}-python', '90',
+                self.assertEqual(command, ['bash', 'scripts/ci/test-group.sh', f'{directory}-python', limit,
                                            'python3', '-I', '-m', 'unittest', 'discover',
                                            '-s', f'scripts/{directory}', '-p', 'test_*.py', '-v'])
                 self.assertLess(check.index(name),
@@ -47,7 +49,7 @@ class FastScript(unittest.TestCase):
                             result = subprocess.run(command, cwd=root, capture_output=True,
                                                     text=True, timeout=5)
                             self.assertEqual(result.returncode == 0, outcome == 'pass', result.stderr)
-                            self.assertIn(f'TEST_GROUP_START group={directory}-python limit=90s', result.stdout)
+                            self.assertIn(f'TEST_GROUP_START group={directory}-python limit={limit}s', result.stdout)
                             self.assertIn('Ran 1 test', result.stderr)
                             summary = ('OK' if outcome == 'pass' else 'FAILED (failures=1)'
                                        if outcome.startswith('self.fail') else 'FAILED (errors=1)')
@@ -79,8 +81,8 @@ class FastScript(unittest.TestCase):
                 result = subprocess.run(['bash', 'scripts/ci/fast.sh'], cwd=root, env=env, capture_output=True)
                 self.assertEqual(result.returncode, check_status, result.stderr)
                 if platform == 'Linux':
-                    self.assertIn(b'TEST_GROUP_START group=build limit=360s', result.stdout)
-                    self.assertIn(b'TEST_GROUP_START group=workspace-test-check limit=360s', result.stdout)
+                    self.assertIn(b'TEST_GROUP_START group=build limit=540s', result.stdout)
+                    self.assertIn(b'TEST_GROUP_START group=workspace-test-check limit=540s', result.stdout)
                     if not check_status:
                         self.assertIn(b'TEST_GROUP_START group=paste-tests limit=120s', result.stdout)
                 calls = commands.read_text().splitlines()
@@ -97,41 +99,104 @@ class FastScript(unittest.TestCase):
 
 
 class ShellFullScript(unittest.TestCase):
-    def test_unfiltered_suite_inventory_and_failures(self):
-        for list_status, test_status, empty in [(0, 0, False), (23, 0, False), (0, 41, False), (0, 0, True)]:
-            with self.subTest(list_status=list_status, test_status=test_status, empty=empty), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
-                (root / 'scripts/ci').mkdir(parents=True)
-                (root / 'bin').mkdir()
-                for name in ['shell-full.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py']:
-                    (root / 'scripts/ci' / name).write_text((ROOT / 'scripts/ci' / name).read_text())
-                vendor = root / 'scripts/vendor-setup.sh'
-                vendor.write_text('#!/bin/sh\nexit 0\n')
-                vendor.chmod(0o755)
-                cargo = root / 'bin/cargo'
-                cargo.write_text('''#!/bin/sh
-printf '%s\\n' "$*" >> "$COMMANDS"
-case "$*" in
-    *--list*)
-        if [ "$EMPTY" = 0 ]; then echo 'shell_positive: test'; fi
-        exit "$LIST_STATUS" ;;
-    *) exit "$TEST_STATUS" ;;
-esac
+    def fixture(self, root):
+        (root / 'scripts/ci').mkdir(parents=True)
+        (root / 'crates/okilum-shell').mkdir(parents=True)
+        (root / 'bin').mkdir()
+        for name in ['shell-full.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py']:
+            (root / 'scripts/ci' / name).write_text((ROOT / 'scripts/ci' / name).read_text())
+        vendor = root / 'scripts/vendor-setup.sh'
+        vendor.write_text('#!/bin/sh\nexit 0\n')
+        vendor.chmod(0o755)
+        cargo = root / 'bin/cargo'
+        cargo.write_text('''#!/usr/bin/env python3
+import json, os, sys, time
+from pathlib import Path
+with open(os.environ['COMMANDS'], 'a') as log:
+    print('cargo ' + ' '.join(sys.argv[1:]), file=log)
+Path(os.environ['RUNNER_TEMP'], 'compiler.pid').write_text(str(os.getpid()))
+for i in range(int(os.environ.get('COMPILE_TICKS', '0'))):
+    with open(os.environ['RUNNER_TEMP'] + '/compile-progress', 'a') as progress:
+        print(i, file=progress)
+    time.sleep(0.1)
+if int(os.environ['COMPILE_STATUS']):
+    sys.exit(int(os.environ['COMPILE_STATUS']))
+print(json.dumps({'reason': 'compiler-artifact', 'target': {'name': 'okilum'},
+                  'profile': {'test': False}, 'executable': '/not-the-test-artifact'}))
+print(json.dumps({'reason': 'compiler-artifact', 'target': {'name': 'okilum'},
+                  'profile': {'test': True}, 'executable': os.environ['TEST_BINARY']}))
 ''')
-                cargo.chmod(0o755)
-                commands = root / 'commands'
-                env = dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
-                           GITHUB_SHA='a' * 40, RUNNER_TEMP=str(root), COMMANDS=str(commands),
-                           LIST_STATUS=str(list_status), TEST_STATUS=str(test_status), EMPTY=str(int(empty)))
-                result = subprocess.run(['bash', 'scripts/ci/shell-full.sh'], cwd=root, env=env, capture_output=True)
-                self.assertEqual(result.returncode, list_status or test_status or int(empty), result.stderr)
-                self.assertIn(b'TEST_GROUP_START group=shell-binary-list limit=360s', result.stdout)
-                if not list_status and not empty:
-                    self.assertIn(b'TEST_GROUP_START group=shell-binary-tests limit=900s', result.stdout)
-                expected = ['test --locked -p okilum-shell --bin okilum -- --list']
-                if not list_status and not empty:
-                    expected.append('test --offline --locked -p okilum-shell --bin okilum -- --test-threads=4')
-                self.assertEqual(commands.read_text().splitlines(), expected)
+        cargo.chmod(0o755)
+        binary = root / 'bin/shell test binary'
+        binary.write_text('''#!/usr/bin/env python3
+import os, sys, time
+from pathlib import Path
+assert Path.cwd() == Path(os.environ['RUNNER_TEMP']) / 'crates/okilum-shell'
+with open(os.environ['COMMANDS'], 'a') as log:
+    print('binary ' + ' '.join(sys.argv[1:]), file=log)
+if '--list' in sys.argv:
+    if os.environ['EMPTY'] == '0': print('shell_positive: test')
+    sys.exit(int(os.environ['LIST_STATUS']))
+Path(os.environ['RUNNER_TEMP'], 'test.pid').write_text(str(os.getpid()))
+if os.environ.get('HANG') == '1':
+    while True: time.sleep(1)
+sys.exit(int(os.environ['TEST_STATUS']))
+''')
+        binary.chmod(0o755)
+        return dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
+                    GITHUB_SHA='a' * 40, RUNNER_TEMP=str(root), COMMANDS=str(root / 'commands'),
+                    TEST_BINARY=str(binary), COMPILE_STATUS='0', LIST_STATUS='0', TEST_STATUS='0', EMPTY='0')
+
+    def test_unfiltered_suite_inventory_and_failures(self):
+        for compile_status, list_status, test_status, empty in [
+                (0, 0, 0, False), (19, 0, 0, False), (0, 23, 0, False),
+                (0, 0, 41, False), (0, 0, 0, True)]:
+            with self.subTest(compile_status=compile_status, list_status=list_status,
+                              test_status=test_status, empty=empty), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                env = self.fixture(root)
+                env.update(COMPILE_STATUS=str(compile_status), LIST_STATUS=str(list_status),
+                           TEST_STATUS=str(test_status), EMPTY=str(int(empty)))
+                result = subprocess.run(['bash', 'scripts/ci/shell-full.sh'], cwd=root, env=env,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, compile_status or list_status or test_status or int(empty), result.stderr)
+                self.assertIn('TEST_GROUP_START group=shell-binary-compile limit=840s', result.stdout)
+                expected = ['cargo test --locked -p okilum-shell --bin okilum --no-run --message-format=json-render-diagnostics']
+                if not compile_status:
+                    self.assertIn('TEST_GROUP_START group=shell-binary-list limit=30s', result.stdout)
+                    expected.append('binary --list')
+                    if not list_status and not empty:
+                        self.assertIn('TEST_GROUP_START group=shell-binary-tests limit=990s', result.stdout)
+                        expected.append('binary --test-threads=4')
+                self.assertEqual((root / 'commands').read_text().splitlines(), expected)
+                self.assertEqual(list(root.glob('shell-artifacts-*')), [])
+
+    def test_progressing_compile_outlives_inventory_limit_and_tests_keep_their_own_deadline(self):
+        # Exercise the actual shell entrypoint and real supervisor with scaled
+        # budgets. Never compile Rust on maestro. The compiler writes progress
+        # throughout a 3 s build, three times the inventory deadline.
+        for hang in [False, True]:
+            with self.subTest(hang=hang), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                env = self.fixture(root)
+                env.update(COMPILE_TICKS='30', HANG=str(int(hang)))
+                script = root / 'scripts/ci/shell-full.sh'
+                script.write_text(script.read_text().replace('compile 840', 'compile 10')
+                                  .replace('list 30', 'list 1').replace('tests 990', 'tests 2'))
+                started = time.monotonic()
+                result = subprocess.run(['bash', str(script)], cwd=root, env=env,
+                                        capture_output=True, text=True, timeout=45)
+                self.assertEqual(result.returncode, 124 if hang else 0, result.stdout + result.stderr)
+                self.assertEqual((root / 'compile-progress').read_text().splitlines(), list(map(str, range(30))))
+                self.assertGreater(time.monotonic() - started, 3)
+                self.assertIn('TEST_GROUP_END group=shell-binary-compile', result.stdout)
+                self.assertNotIn('TEST_GROUP_TIMEOUT group=shell-binary-compile', result.stdout)
+                self.assertEqual(result.stdout.count('TEST_GROUP_TIMEOUT'), int(hang))
+                if hang:
+                    self.assertIn('TEST_GROUP_TIMEOUT group=shell-binary-tests limit=2s', result.stdout)
+                    self.assertLess(time.monotonic() - started, 10 + 2 + 30 + 1)
+                for name in ['compiler.pid', 'test.pid']:
+                    self.assertFalse(Path('/proc', (root / name).read_text()).exists(), name)
 
 
 if __name__ == '__main__':
