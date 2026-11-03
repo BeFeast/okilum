@@ -5729,7 +5729,10 @@ mod autosave_tests {
                 input.replace_text_in_range(Some(0..1), "x", window, cx);
             });
             let measured = work::take();
-            if measured.largest >= 16 * 1024 || measured.bytes >= 128 * 1024 || notified.get() != 0
+            if measured.largest >= 16 * 1024
+                || measured.bytes >= 128 * 1024
+                || measured.frees >= 512
+                || notified.get() != 0
             {
                 violations.push((bytes, measured, notified.get()));
             }
@@ -5739,7 +5742,7 @@ mod autosave_tests {
             let flat = input.read_with(visual, |i, _| i.value().to_string());
             let control = work::take();
             assert!(
-                control.largest >= bytes && control.bytes >= 2 * bytes,
+                control.largest >= bytes && control.bytes >= 2 * bytes && control.frees > 0,
                 "unfired positive control: {control:?}"
             );
             assert!(flat.starts_with('x'));

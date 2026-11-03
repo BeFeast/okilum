@@ -7,6 +7,7 @@ use std::cell::Cell;
 pub(super) struct Work {
     pub bytes: usize,
     pub largest: usize,
+    pub frees: usize,
 }
 thread_local! { static WORK: Cell<Option<Work>> = const { Cell::new(None) }; }
 struct Meter;
@@ -31,6 +32,12 @@ unsafe impl GlobalAlloc for Meter {
         unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let _ = WORK.try_with(|slot| {
+            if let Some(mut work) = slot.get() {
+                work.frees += 1;
+                slot.set(Some(work));
+            }
+        });
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {

@@ -35,7 +35,10 @@ notification to Reader. Outline workers share native snapshots and notify Reader
 only when displayed outline labels change. Direction exemptions, rendered-block
 reference definitions and footnote context are prepared after the recovery pause
 on a worker, accepted only for the same editor/generation. Pending block context is
-unresolved rather than borrowed from another revision. Context-menu source facts
+unresolved rather than borrowed from another revision. The initial context shares
+its base revision, and workers retain the last large footnote cache until its
+replacement so a key does not destroy note-wide data on the UI thread.
+Context-menu source facts
 are immutable Rope snapshots; full reference/code context is extracted on opening
 the menu, not on every editor notification.
 
@@ -44,7 +47,7 @@ a late pre-save journal writer, typing during publication, failed recovery/retry
 close/quit before debounce, crash-style reopen and exact BOM/CRLF bytes. The
 foreground allocator gate observes actual allocations, including the legacy
 String path, at 25 KB, 130 KB and 1 MiB. It requires a bounded largest allocation
-and total allocation count-bytes, plus a positive control that materializes the
+and total allocated bytes, bounds foreground deallocation calls, and requires a positive control that materializes the
 same native input. The same test is overlaid on the pinned origin/main source for
 a real negative-control run. Core revision counters independently establish no
 flattening/scanning while queuing/copying shared snapshots. These are deterministic
