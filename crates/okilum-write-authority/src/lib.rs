@@ -389,6 +389,7 @@ impl Authority {
         Ok(WriterLease(Arc::new(LeaseInner {
             authority: self.clone(),
             _writers: writers,
+            revision: s.revision,
         })))
     }
     /// Close admission durably BEFORE testing/draining existing writers. Caller
@@ -503,13 +504,20 @@ impl Hold {
 struct LeaseInner {
     authority: Authority,
     _writers: File,
+    revision: u64,
 }
 #[derive(Clone)]
 pub struct WriterLease(Arc<LeaseInner>);
 thread_local! { static ACTIVE: RefCell<Vec<WriterLease>> = const { RefCell::new(Vec::new()) }; }
 impl WriterLease {
     pub fn validate(&self) -> Result<()> {
-        self.0.authority.validate()
+        self.0.authority.validate()?;
+        let state = self.0.authority.state()?;
+        ensure!(
+            state.revision >= self.0.revision && state.phase != Phase::Held,
+            "Writer lease state replaced or rolled back; publication refused"
+        );
+        Ok(())
     }
     /// Explicit operation inheritance: nested synchronous writers borrow this
     /// admission, including rollback after drain closes. Delayed jobs retain a
