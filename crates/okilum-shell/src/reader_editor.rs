@@ -688,10 +688,9 @@ impl Reader {
         let reader_place = (!plain_file)
             .then(|| {
                 let top = self
-                    .content
-                    .read(cx)
-                    .list_state()
-                    .logical_scroll_top()
+                    .navigation
+                    .pending_landing
+                    .unwrap_or_else(|| self.content.read(cx).list_state().logical_scroll_top())
                     .item_ix;
                 Some((
                     top,
@@ -702,6 +701,7 @@ impl Reader {
             .flatten()
             .filter(|(top, _, _)| *top > 0);
         self.close_find(window, cx);
+        self.clear_landing_notice();
         // Cancel a pending navigation before exposing an editable snapshot.
         self.navigation.preparation_generation =
             self.navigation.preparation_generation.wrapping_add(1);
@@ -828,6 +828,10 @@ impl Reader {
             if editing.input.entity_id() != input.entity_id() {
                 return;
             }
+            this.clear_landing_notice();
+            let Some(editing) = &mut this.editing else {
+                return;
+            };
             let snapshot = input.read(cx).source_snapshot();
             let source_stamp = snapshot.stamp;
             let value = okilum_core::source_projection::revision::Text::from_identified_rope(

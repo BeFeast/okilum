@@ -1,0 +1,123 @@
+diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/state.rs
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -465,6 +465,8 @@
+     /// Advances every time search is explicitly invoked. See
+     /// [`InputBaseState::search_activation_revision`].
+     pub(super) search_activation_revision: u64,
++    /// Closed Find's exact revision/selection, until a projection is adopted.
++    pub(super) search_return: Option<(SourceStamp, Range<usize>)>,
+     pub(super) searchable: bool,
+     pub(super) replaceable: bool,
+     pub(super) soft_wrap: bool,
+@@ -916,6 +918,7 @@
+             display_map: DisplayMap::new(text_style.font(), window.rem_size(), None),
+             search_session: super::SearchSession::default(),
+             search_activation_revision: 0,
++            search_return: None,
+             searchable: false,
+             replaceable: true,
+             soft_wrap: true,
+@@ -9404,6 +9407,17 @@
+     ) {
+         let _trace = TraceSpan::new("provider_adoption", TraceIdentity::new(self.source_stamp(), self.presentation_epoch(), self.projection.current.is_some()));
+         if provider.is_some() {
++            if let Some((stamp, selection)) = self.search_return.take() {
++                if stamp == self.source_stamp() && selection == self.selected_range()
++                    && self.projection.current.is_none() && !self.search_session.open
++                {
++                    // Find leaves the editing caret alone. Return through the
++                    // actual matched source row, not the distant editing caret.
++                    self.preserve_search_match_anchor();
++                }
++            }
++        }
++        if provider.is_some() {
+             self.projection.enabled = true;
+             if let LayoutMode::CodeEditor { indent_guides, .. } = &mut self.mode {
+                 *indent_guides = false;
+diff --git a/crates/base/src/input/base/element.rs b/crates/base/src/input/base/element.rs
+--- a/crates/base/src/input/base/element.rs
++++ b/crates/base/src/input/base/element.rs
+@@ -486,6 +486,8 @@
+         &self,
+         layout: &LastLayout,
+         bounds: &Bounds<Pixels>,
++        anchor: Option<(usize, bool)>,
++        painted_scroll: Point<Pixels>,
+         window: &mut Window,
+         cx: &mut App,
+     ) -> BlockPrepaint {
+@@ -550,7 +552,28 @@
+             });
+             // `refresh` is a no-op while the window draws; without the next
+             // frame the rows kept the stale height until an unrelated repaint.
+-            window.on_next_frame(|window, _| window.refresh());
++            // Measuring a block within the viewport can move a match below
++            // it. Carry this frame's source anchor through that new row map,
++            // until the measured layout settles. User input supersedes it.
++            let state = self.state.clone();
++            let stamp = layout.source_stamp;
++            let selection = state.read(cx).selected_range;
++            let anchor = anchor.map(|(source, affinity)| {
++                let row = state.read(cx).display_map
++                    .offset_to_wrap_display_point_with_affinity(source, affinity).row;
++                (source, layout.rows.row_top(row), affinity)
++            });
++            window.on_next_frame(move |window, cx| {
++                state.update(cx, |state, _| {
++                    if anchor.is_some() && state.zoom_anchor.is_none() && state.source_stamp() == stamp && state.selected_range == selection
++                        && state.scroll_handle.offset() == painted_scroll
++                        && state.deferred_scroll_offset.is_none() && !state.selecting
++                    {
++                        state.zoom_anchor = anchor;
++                    }
++                });
++                window.refresh();
++            });
+         }
+         BlockPrepaint { lines, elements, hits }
+     }
+@@ -2674,7 +2697,9 @@
+             lines: block_lines,
+             elements: block_elements,
+             hits: block_hits,
+-        } = self.prepaint_blocks(&last_layout, &bounds, window, cx);
++        } = self.prepaint_blocks(&last_layout, &bounds,
++            source_anchor.map(|(source, _, affinity)| (source, affinity)),
++            cursor_scroll_offset, window, cx);
+         let state = self.state.read(cx);
+         let marker_source = super::marker_paint::source_for_markers(
+             last_layout.projection.as_ref(),
+diff --git a/crates/base/src/input/editor/search.rs b/crates/base/src/input/editor/search.rs
+--- a/crates/base/src/input/editor/search.rs
++++ b/crates/base/src/input/editor/search.rs
+@@ -133,7 +133,28 @@
+         cx.notify();
+     }
+ 
++    /// Pin the actual match through a presentation handoff. Uses the painted
++    /// source-to-display map; no source edit, caret move or Undo transaction.
++    pub(super) fn preserve_search_match_anchor(&mut self) {
++        let Some(last) = self.last_layout.as_ref()
++            .filter(|last| last.source_stamp == self.source_stamp()) else { return; };
++        let matcher = &self.search_session.matcher;
++        let Some(range) = matcher.matched_ranges().get(matcher.current_match_index()).cloned() else { return; };
++        let row = self.display_map.offset_to_wrap_display_point_with_affinity(range.start, false).row;
++        let y = last.rows.row_top(row);
++        let screen_y = y + self.scroll_handle.offset().y;
++        if screen_y >= gpui::px(0.) && screen_y + last.rows.row_height(row) <= self.input_bounds.size.height {
++            self.zoom_anchor = Some((range.start, y, false));
++            // Find owns this presentation handoff even if typewriter had been
++            // following the editing caret. An edit/caret move resumes it.
++            self.typewriter_paused = true;
++        }
++    }
++
+     pub fn close_search(&mut self, cx: &mut Context<Self>) {
++        if self.search_session.open {
++            self.search_return = Some((self.source_stamp(), self.selected_range()));
++        }
+         self.search_session.close();
+         cx.notify();
+     }

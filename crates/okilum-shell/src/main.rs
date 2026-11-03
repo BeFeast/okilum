@@ -2793,7 +2793,17 @@ impl Reader {
             cx,
         );
     }
+    fn clear_landing_notice(&mut self) {
+        if self.link_notice.as_deref().is_some_and(|notice| {
+            notice.starts_with("The document did not finish rendering at the requested position.")
+                || notice.starts_with("Could not render the requested position:")
+        }) {
+            self.link_notice = None;
+        }
+    }
+
     fn cancel_pending_landing(&mut self) {
+        self.clear_landing_notice();
         self.navigation.pending_landing = None;
         self.navigation.landing_generation = self.navigation.landing_generation.wrapping_add(1);
     }
@@ -2805,42 +2815,67 @@ impl Reader {
         let generation = self.navigation.generation;
         let content = self.content.entity_id();
         cx.spawn(async move |entity, cx| {
-            for attempt in 0..100 {
-                cx.background_executor().timer(Duration::from_millis(50)).await;
-                let done = entity.update(cx, |this, cx| {
-                    if landing != this.navigation.landing_generation { return true; }
-                    if generation == this.navigation.generation && content == this.content.entity_id()
-                        && this.typed_navigation.active.get() {
-                        this.navigation.pending_landing = None;
-                        if let Err(reason) = reader_typed_view::land(this, position.item_ix) {
-                            this.link_notice = Some(reason.into());
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let done = entity
+                    .update(cx, |this, cx| {
+                        if landing != this.navigation.landing_generation {
+                            return true;
                         }
-                        cx.notify();
-                        return true;
-                    }
-                    match reader_landing_state(generation == this.navigation.generation,
-                        content == this.content.entity_id(), this.content.read(cx).list_state().item_count(), position.item_ix, attempt)
-                    {
-                        ReaderLanding::Cancelled => { this.navigation.pending_landing = None; true },
-                        ReaderLanding::Waiting => { cx.notify(); false },
-                        ReaderLanding::Failed => {
+                        if generation != this.navigation.generation
+                            || content != this.content.entity_id()
+                        {
                             this.navigation.pending_landing = None;
-                            this.link_notice = Some("The document did not finish rendering at the requested position. Heading/Back landing failed; try again.".into());
-                            cx.notify(); true
-                        },
-                        ReaderLanding::Ready => {
+                            return true;
+                        }
+                        if this.typed_navigation.active.get() {
                             this.navigation.pending_landing = None;
-                            this.content.update(cx, |s, cx| { s.list_state().scroll_to(position); cx.notify(); });
-                            if this.navigation.flash_pending.take() == Some(position.item_ix) {
-                                this.flash_block(position.item_ix, cx);
+                            if let Err(reason) = reader_typed_view::land(this, position.item_ix) {
+                                this.link_notice = Some(reason.into());
                             }
-                            true
+                            cx.notify();
+                            return true;
                         }
-                    }
-                }).unwrap_or(true);
-                if done { break; }
+                        // Parsing owns readiness. A hidden Reader (Source/Live
+                        // session restoration) never renders its list, so waiting
+                        // for item_count to grow can never finish. Publish the
+                        // prepared list's position before its first layout instead.
+                        match this.content.read(cx).preparation_status() {
+                            None => false,
+                            Some(Err(reason)) => {
+                                this.navigation.pending_landing = None;
+                                if this.editing.is_none() {
+                                    this.link_notice = Some(
+                                        format!(
+                                            "Could not render the requested position: {reason}"
+                                        )
+                                        .into(),
+                                    );
+                                }
+                                cx.notify();
+                                true
+                            }
+                            Some(Ok(())) => {
+                                this.content.update(cx, |s, cx| {
+                                    s.scroll_to_prepared_position(position, cx);
+                                });
+                                this.navigation.pending_landing = None;
+                                if this.navigation.flash_pending.take() == Some(position.item_ix) {
+                                    this.flash_block(position.item_ix, cx);
+                                }
+                                true
+                            }
+                        }
+                    })
+                    .unwrap_or(true);
+                if done {
+                    break;
+                }
             }
-        }).detach();
+        })
+        .detach();
     }
 
     // --- keyboard actions (#48) ---

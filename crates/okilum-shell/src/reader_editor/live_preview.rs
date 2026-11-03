@@ -2970,6 +2970,7 @@ mod tests {
         reader.update_in(visual, |r, window, cx| r.toggle_live_preview(window, cx));
         visual.run_until_parked();
         let input = reader.read_with(visual, |r, _| r.editing.as_ref().unwrap().input.clone());
+        let untouched = input.read_with(visual, |i, _| (i.source_stamp(), i.selected_range()));
         let at = note.find(query).unwrap();
         reader.update_in(visual, |r, window, cx| r.open_find(window, cx));
         visual.run_until_parked();
@@ -3006,6 +3007,11 @@ mod tests {
             );
             let i = input.read(cx);
             assert_eq!(i.value().as_ref(), note);
+            assert_eq!(
+                (i.source_stamp(), i.selected_range()),
+                untouched,
+                "Find and projection do not edit or move the editing caret"
+            );
             let bounds = i
                 .range_to_bounds(&(at..at + query.len()))
                 .expect("#2484: match must remain laid out after Find closes");
@@ -3018,6 +3024,29 @@ mod tests {
                 (after - before).abs() < px(1.),
                 "#2484: matched row moved: {before:?} -> {after:?}"
             );
+        });
+        reader.update(visual, |r, _| {
+            r.link_notice = Some("The document did not finish rendering at the requested position. Heading/Back landing failed; try again.".into());
+        });
+        input.update_in(visual, |i, window, cx| {
+            i.set_selected_range(at..at, cx);
+            i.replace_text_in_range(None, "x", window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert!(
+                r.link_notice.is_none(),
+                "an obsolete landing error must not remain while editing"
+            )
+        });
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-z"
+        } else {
+            "ctrl-z"
+        });
+        visual.run_until_parked();
+        input.read_with(visual, |i, _| {
+            assert_eq!(i.value().as_ref(), note, "Undo after returning from Find")
         });
     }
 
@@ -3039,8 +3068,10 @@ mod tests {
                 .block
         });
         reader.update_in(visual, |r, _, cx| {
-            // Session restoration can request the Reader's place after opening
-            // the editor. The hidden TextView will never paint its block list.
+            // Session restoration can publish a prepared replacement while the
+            // editor is already visible. This new list has never been painted.
+            r.content = cx.new(|cx| TextViewState::markdown(&note, cx).scrollable(true));
+            assert_eq!(r.content.read(cx).list_state().item_count(), 0);
             r.scroll_to_block(block, cx);
         });
         for _ in 0..105 {
@@ -3060,6 +3091,68 @@ mod tests {
             assert_eq!(
                 r.content.read(cx).list_state().logical_scroll_top().item_ix,
                 block
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn issue2484_large_live_heading_and_back_land_on_visible_editor(cx: &mut TestAppContext) {
+        let note = format!(
+            "# Start\n\n{}## Landing\n\n{}",
+            "Public **documentation** paragraph.\n\n".repeat(3200),
+            "Following paragraph.\n\n".repeat(900)
+        );
+        assert!(note.len() >= 120 * 1024);
+        let line = note[..note.find("## Landing").unwrap()]
+            .bytes()
+            .filter(|b| *b == b'\n')
+            .count();
+        let (reader, visual, _directory) = fixture(cx, &note);
+        reader.update_in(visual, |r, window, cx| {
+            r.toggle_live_preview(window, cx);
+            r.open_note_at("note.md", None, Some("Landing"), window, cx);
+        });
+        for _ in 0..8 {
+            visual.run_until_parked();
+            visual.executor().advance_clock(Duration::from_millis(50));
+        }
+        reader.read_with(visual, |r, cx| {
+            assert!(r.live_preview_shown(), "heading keeps Live Preview");
+            let i = r.editing.as_ref().unwrap().input.read(cx);
+            assert_eq!(i.top_visible_line(), Some(line), "large heading is visible");
+            assert_eq!(i.cursor_position().line as usize, line);
+            assert!(r.link_notice.is_none(), "{:?}", r.link_notice);
+        });
+        reader.update_in(visual, |r, window, cx| {
+            r.open_note("target.md", None, window, cx)
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |r, _| {
+            assert_eq!(r.current_rel, "target.md", "navigation positive control")
+        });
+        reader.update_in(visual, |r, window, cx| r.history_move(-1, window, cx));
+        for _ in 0..110 {
+            visual.run_until_parked();
+            visual.executor().advance_clock(Duration::from_millis(50));
+        }
+        reader.read_with(visual, |r, cx| {
+            assert_eq!(r.current_rel, "note.md");
+            assert!(r.live_preview_shown(), "Back keeps Live Preview");
+            assert_eq!(
+                r.editing
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .top_visible_line(),
+                Some(line),
+                "Back restores the large-note heading"
+            );
+            assert!(r.navigation.pending_landing.is_none());
+            assert!(
+                r.link_notice.is_none(),
+                "Back must not time out: {:?}",
+                r.link_notice
             );
         });
     }
