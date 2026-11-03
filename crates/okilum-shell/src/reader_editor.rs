@@ -10,6 +10,7 @@ mod link_complete;
 mod lists;
 mod live_preview;
 mod math_preview;
+mod open_note_sync;
 mod paste_jobs;
 mod recovery;
 mod status;
@@ -85,6 +86,22 @@ const AUTOSAVE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
 /// notice with it and leaves any other notice alone (#1376).
 const CONFLICT_NOTICE: &str = "This file changed outside Okilum.";
 
+/// A disk reload keeps the native editor entity, focus, cursor and viewport.
+/// set_value deliberately clears undo: the old base must not be undoable over
+/// a newly arrived remote version without another revision-checked save.
+fn replace_clean_source(
+    input: &mut EditorState,
+    text: String,
+    window: &mut Window,
+    cx: &mut Context<EditorState>,
+) {
+    let selection = input.selected_range();
+    let scroll = input.scroll_offset();
+    input.set_value(text, window, cx);
+    input.set_selected_range_preserving_view(selection.clone(), selection.start, cx);
+    input.set_scroll_offset(scroll, cx);
+}
+
 /// Paint-only status. Destructive actions keep using source_is_dirty, which
 /// reads the current native buffer directly rather than trusting this cache.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -129,6 +146,7 @@ pub(super) struct Editing {
     input: Entity<EditorState>,
     conflict: Option<String>,
     conflict_detected: bool,
+    conflict_copy: Option<(SourceStamp, String)>,
     compare: bool,
     save_failed: bool,
     protecting: bool,
@@ -186,8 +204,7 @@ fn edit_error_text(error: &anyhow::Error) -> String {
 
 /// The editor's notice for a note that went away (the deleted-note notice of
 /// #1986 says more and replaces it).
-pub(super) const MOVED_OR_DELETED_NOTICE: &str =
-    "This file was moved or deleted. Your edits are still here. Copy them or close, keeping a draft.";
+pub(super) const MOVED_OR_DELETED_NOTICE: &str = "This file was moved or deleted. Your edits are still here. Copy them or close, keeping a draft.";
 
 const DRAFT_WRITE_NOTICE: &str =
     "The recovery copy couldn’t be saved. Keep this window open and retry Save or copy your draft.";
@@ -347,6 +364,27 @@ pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
 }
 
 impl Editing {
+    fn replace_clean_source(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Reader>,
+    ) {
+        self.input.update(cx, |input, cx| {
+            replace_clean_source(input, text, window, cx)
+        });
+        let snapshot = self.input.read(cx).source_snapshot();
+        self.draft_stamp = snapshot.stamp;
+        // The worker has already persisted this exact clean source. Bind the
+        // native reset to it now, so its new Rope identity is not queued later
+        // as unsaved typing. Genuine pending input keeps its recovery semantics.
+        self.store
+            .queue_reset_snapshot(DraftText::from_identified_rope(
+                snapshot.text.rope().clone(),
+                snapshot.text.id(),
+            ));
+    }
+
     pub(super) fn input(&self) -> &Entity<EditorState> {
         &self.input
     }
@@ -388,6 +426,7 @@ impl Editing {
             input,
             conflict,
             conflict_detected,
+            conflict_copy,
             compare,
             save_failed,
             protecting,
@@ -424,6 +463,7 @@ impl Editing {
             input,
             conflict,
             conflict_detected,
+            conflict_copy,
             compare,
             save_failed,
             protecting,
@@ -1124,6 +1164,7 @@ impl Reader {
             input: input.clone(),
             conflict: None,
             conflict_detected: false,
+            conflict_copy: None,
             compare: false,
             save_failed: false,
             protecting: false,
@@ -1341,6 +1382,7 @@ impl Reader {
                         editing.conflict_detected = result == Save::Conflict;
                         if result == Save::Conflict {
                             this.link_notice = Some(format!("{CONFLICT_NOTICE} Your edits are still here. Reload, keep your version, or compare before saving.").into());
+                            this.describe_source_conflict(cx);
                         } else {
                             editing.save_failed = false;
                             editing.compare = false;
@@ -1349,7 +1391,7 @@ impl Reader {
                             }
                             if this.link_notice.as_deref().is_some_and(|n| n.starts_with(CONFLICT_NOTICE)) { this.link_notice = None; }
                             if let Some(updated) = replacement {
-                                editing.input.update(cx, |input, cx| input.set_value(updated, window, cx));
+                                editing.replace_clean_source(updated, window, cx);
                                 editing.saved_at = None;
                             }
                         }
@@ -1456,9 +1498,7 @@ impl Reader {
                 } else if editing.store.text() != text {
                     outcome = "replaced";
                     let updated = editing.store.text().to_owned();
-                    editing
-                        .input
-                        .update(cx, |input, cx| input.set_value(updated, window, cx));
+                    editing.replace_clean_source(updated, window, cx);
                     editing.conflict = None;
                     editing.conflict_detected = false;
                     editing.save_failed = false;
@@ -1689,6 +1729,19 @@ impl Reader {
                 false
             }
         };
+        if !saved
+            && protected
+            && self.deleted_note.is_none()
+            && self
+                .editing
+                .as_ref()
+                .is_some_and(|e| e.conflict_detected && e.conflict.is_some())
+        {
+            self.keep_both_source(cx);
+        }
+        if !saved {
+            self.describe_source_conflict(cx);
+        }
         (saved, protected)
     }
     /// Autosave (#1353): one second after the last edit, save on a worker so
@@ -1906,6 +1959,7 @@ impl Reader {
                 self.link_notice = Some(file_access_notice(&error).into());
             }
         }
+        self.describe_source_conflict(cx);
         cx.notify();
     }
 
@@ -2106,6 +2160,148 @@ impl Reader {
         }
         cx.notify();
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn describe_source_conflict(&self, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_ref().filter(|e| e.conflict_detected) else {
+            return;
+        };
+        let Some(reviewed) = editing.conflict.clone() else {
+            return;
+        };
+        let Some(controller) = reader_settings_sync::active_controller(cx) else {
+            return;
+        };
+        let input = editing.input.entity_id();
+        let root = self.vault_root.clone();
+        let rel = self.current_rel.clone();
+        let target_root = root.clone();
+        let target_rel = rel.clone();
+        cx.spawn(async move |this, cx| {
+            let text = reviewed.clone();
+            let name = cx
+                .background_executor()
+                .spawn(async move {
+                    controller
+                        .file_change_origin(&target_root, &target_rel, &text)
+                        .ok()
+                        .flatten()
+                })
+                .await;
+            let Some(name) = name else {
+                return;
+            };
+            let _ = this.update(cx, |reader, cx| {
+                if reader.vault_root != root || reader.current_rel != rel {
+                    return;
+                }
+                if reader.editing.as_ref().is_some_and(|e| {
+                    e.input.entity_id() == input
+                        && e.conflict_detected
+                        && e.conflict.as_ref() == Some(&reviewed)
+                }) {
+                    if let Some(notice) = reader
+                        .link_notice
+                        .as_deref()
+                        .filter(|n| n.starts_with(CONFLICT_NOTICE))
+                    {
+                        reader.link_notice = Some(
+                            notice
+                                .replacen(
+                                    CONFLICT_NOTICE,
+                                    &format!(
+                                        "{CONFLICT_NOTICE} A newer version arrived from {name}."
+                                    ),
+                                    1,
+                                )
+                                .into(),
+                        );
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn describe_source_conflict(&self, _cx: &mut Context<Self>) {}
+
+    /// Explicit Save/Keep both publishes the latest local buffer as a new
+    /// conflict note. The incoming canonical note is never replaced. Keep the
+    /// conflict open until the person chooses which document to continue with.
+    fn keep_both_source(&mut self, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing.as_mut().filter(|e| e.conflict_detected) else {
+            return;
+        };
+        let stamp = editing.input.read(cx).source_stamp();
+        let text = editing.input.read(cx).value().to_string();
+        let previous = editing
+            .conflict_copy
+            .as_ref()
+            .filter(|(revision, rel)| {
+                *revision == stamp
+                    && std::fs::read_to_string(self.vault_root.join(rel))
+                        .ok()
+                        .as_deref()
+                        == Some(text.as_str())
+            })
+            .map(|(_, rel)| rel.clone());
+        let rel = previous.unwrap_or_else(|| {
+            let path = Path::new(&self.current_rel);
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let extension = path.extension().unwrap_or_default().to_string_lossy();
+            let id = uuid::Uuid::new_v4();
+            // Match the existing possible-conflict inventory's filename grammar.
+            // This random discriminator is not a claim about a device identity.
+            let suffix: String = id
+                .as_bytes()
+                .iter()
+                .take(7)
+                .map(|b| b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[(b & 31) as usize] as char)
+                .collect();
+            let name = format!(
+                "{stem}.sync-conflict-{}-{suffix}.{extension}",
+                chrono::Utc::now().format("%Y%m%d-%H%M%S")
+            );
+            okilum_core::vault::note_path(&path.with_file_name(name))
+        });
+        let saved = editing
+            .conflict_copy
+            .as_ref()
+            .is_some_and(|(revision, old)| *revision == stamp && *old == rel)
+            && std::fs::read_to_string(self.vault_root.join(&rel))
+                .ok()
+                .as_deref()
+                == Some(text.as_str());
+        let result = if saved {
+            Ok(())
+        } else {
+            okilum_core::note_files::create_attachment_with_source(
+                &self.vault_root,
+                Path::new(&rel),
+                text.as_bytes(),
+            )
+        };
+        match result {
+            Ok(()) => {
+                editing.conflict_copy = Some((stamp, rel.clone()));
+                self.link_notice = Some(format!("{CONFLICT_NOTICE} Both versions are kept. Your version was saved as {rel}. The incoming file is unchanged; compare or reload to continue.").into());
+                self.queue_vault_mutation(
+                    okilum_core::Changes {
+                        changed: [rel].into(),
+                        ..Default::default()
+                    },
+                    cx,
+                );
+            }
+            Err(error) => {
+                editing.save_failed = true;
+                self.link_notice = Some(format!("{CONFLICT_NOTICE} Could not save both versions: {error:#}. Your draft is still protected; the incoming file is unchanged.").into());
+            }
+        }
+        cx.notify();
+    }
+
     fn park_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editing) = &mut self.editing else {
             return;
@@ -2312,6 +2508,20 @@ impl Reader {
                                 )
                                 .on_click(cx.listener(
                                     |this, _, window, cx| this.resolve_source(false, window, cx),
+                                )),
+                            )
+                            .child(
+                                reader_icon_button(
+                                    "source-keep-both",
+                                    IconName::Copy,
+                                    "Keep both versions",
+                                    cx,
+                                )
+                                .debug_selector(|| "source-keep-both".into())
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.save_source(cx);
+                                    },
                                 )),
                             )
                             .child(
@@ -6065,7 +6275,9 @@ mod autosave_tests {
                     assert_eq!(frame.presentation_epoch, i.presentation_epoch());
                 });
                 let cache_kept = LIVE_PREPARES.with(|n| n.get()) == prepared;
-                println!("EDITOR_SAVE_WORK bytes={bytes} shared={shared} measured={measured:?} same_vault={same} cache_kept={cache_kept}");
+                println!(
+                    "EDITOR_SAVE_WORK bytes={bytes} shared={shared} measured={measured:?} same_vault={same} cache_kept={cache_kept}"
+                );
                 if !same
                     || !cache_kept
                     || measured.largest >= 16 * 1024

@@ -73,6 +73,7 @@ jobs:
         # #1248: the .stignore offer (CRLF files and paths are where Windows differs); list first.
         foreach ($filter in @(
           @('okilum-shell', '--bins', 'reader_deleted_note::tests::'),
+          @('okilum-shell', '--bins', 'reader_editor::open_note_sync::tests::'),
           @('okilum-shell', '--bins', 'reader_files::single_folder_watch::tests::'),
           @('okilum-shell', '--bins', 'reader_loading::quick_view_tests::quick_folder_'),
           @('okilum-core', '--lib', 'syncthing_ignore::'),

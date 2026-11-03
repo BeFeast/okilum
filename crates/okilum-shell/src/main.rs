@@ -2245,6 +2245,7 @@ impl Reader {
         })
         .detach();
         this.install_source_lifecycle(window, cx);
+        this.watch_open_note(cx);
         this.start_session_records(cx);
         #[cfg(any(unix, windows))]
         if let Some(state) = &this.session_directory {

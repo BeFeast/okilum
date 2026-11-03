@@ -1892,6 +1892,10 @@ impl Reader {
                     {
                         return Ok(None);
                     }
+                    if raw.is_none() {
+                        anyhow::ensure!(vault.root.canonicalize()? == vault.root, "The opened folder has been redirected");
+                        reader_files::checked_path(&vault.root, &target)?;
+                    }
                     let document: prepared_links::PreparedDocument = if html {
                         prepared_links::PreparedDocument::html(
                             &vault,
