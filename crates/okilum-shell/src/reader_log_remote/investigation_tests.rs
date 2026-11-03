@@ -15,12 +15,20 @@ fn wait_for(
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
         settle(visual);
-        if panel.read_with(visual, |panel, _| predicate(panel)) {
+        // HTTP completion publishes a window before its asynchronous table
+        // filter finishes. Assert labels/rows only after both phases settle.
+        if panel.read_with(visual, |panel, cx| {
+            predicate(panel)
+                && panel
+                    .view
+                    .as_ref()
+                    .is_none_or(|view| !view.read(cx).filtering)
+        }) {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "remote worker did not finish: {}",
+            "remote worker or table filter did not finish: {}",
             panel.read_with(visual, |panel, _| panel.message.clone())
         );
         std::thread::sleep(Duration::from_millis(5));
@@ -140,10 +148,11 @@ fn request_details_back_live_and_saved_view_use_fake_server_and_keep_investigati
         assert_eq!(applied.discover.sort[0].order, "asc");
         assert_eq!(panel.data.as_ref().unwrap().events.len(), 101);
         let view = view.read(cx);
-        assert!(view
-            .investigation_label()
-            .unwrap()
-            .starts_with("Kibana: 101 events for id request-0 in "));
+        let label = view.investigation_label().unwrap();
+        assert!(
+            label.starts_with("Kibana: 101 events for id request-0 in "),
+            "{label}"
+        );
         assert_eq!(view.columns(cx), ["flow"]);
     });
     click(visual, "log-request-back");
