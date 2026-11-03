@@ -175,18 +175,18 @@ mod tests {
             let result = Rc::new(std::cell::RefCell::new(None));
             let output = result.clone();
             visual.update(|window, cx| {
-                let state = input.read(cx);
-                let task = state
-                    .lsp()
-                    .hover_provider
-                    .as_ref()
-                    .expect("Source installs native hover")
-                    .hover(
-                        state.source_snapshot().text.rope(),
-                        source.find(path).unwrap(),
-                        window,
-                        cx,
-                    );
+                let (provider, text) = {
+                    let state = input.read(cx);
+                    (
+                        state
+                            .lsp()
+                            .hover_provider
+                            .clone()
+                            .expect("Source installs native hover"),
+                        state.source_snapshot().text.rope().clone(),
+                    )
+                };
+                let task = provider.hover(&text, source.find(path).unwrap(), window, cx);
                 cx.spawn(async move |_| {
                     *output.borrow_mut() = Some(task.await.unwrap());
                 })
