@@ -350,9 +350,7 @@ pub(crate) fn save_all_for_quit(cx: &mut App) -> bool {
     let editors = cx.default_global::<Editors>().0.clone();
     editors.into_iter().fold(true, |allowed, (editor, _)| {
         let result = editor
-            .update(cx, |reader, cx| {
-                reader.save_source_for_close(cx)
-            })
+            .update(cx, |reader, cx| reader.save_source_for_close(cx))
             .unwrap_or(true);
         allowed && result
     })
@@ -4136,7 +4134,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn local_writer_review_clean_navigation_and_protected_close_during_hold(cx: &mut TestAppContext) {
+    fn local_writer_review_clean_navigation_and_protected_close_during_hold(
+        cx: &mut TestAppContext,
+    ) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
         let state = temp.path().join("state");
@@ -4149,11 +4149,19 @@ mod tests {
         });
         let mut reader = None;
         let (_, visual) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| Reader::new(Opts {
-                vault: Some(root.clone()), note: Some("note.md".into()),
-                index_dir: Some(temp.path().join("index")), session_directory: Some(state.clone()),
-                ..Default::default()
-            }, window, cx));
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
             reader = Some(view.clone());
             Root::new(view, window, cx)
         });
@@ -4172,17 +4180,30 @@ mod tests {
             assert!(reader.editing.is_none());
             reader.toggle_source(window, cx);
             assert!(reader.editing.is_some());
-            reader.editing.as_ref().unwrap().set_value("held draft", window, cx);
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .set_value("held draft", window, cx);
             assert!(!reader.save_source(cx));
             assert!(reader.save_source_for_close(cx));
         });
         cx.update(|cx| assert!(save_all_for_quit(cx)));
-        assert_eq!(std::fs::read_to_string(root.join("note.md")).unwrap(), "original");
-        assert!(FileEditor::has_unsaved_draft(&root.join("note.md"), &state.join("editor-drafts")).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "original"
+        );
+        assert!(
+            FileEditor::has_unsaved_draft(&root.join("note.md"), &state.join("editor-drafts"))
+                .unwrap()
+        );
         let token = hold.token().clone();
         hold.release(&token).unwrap();
         reader.update_in(visual, |reader, _, cx| assert!(reader.save_source(cx)));
-        assert_eq!(std::fs::read_to_string(root.join("note.md")).unwrap(), "held draft");
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "held draft"
+        );
         cx.update(|cx| cx.shutdown());
     }
 

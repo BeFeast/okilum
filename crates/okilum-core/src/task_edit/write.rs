@@ -170,7 +170,9 @@ mod tests {
         assert!(!FileEditor::has_unsaved_draft(&root.join("a.md"), &drafts).unwrap());
         let token = hold.token().clone();
         hold.release(&token).unwrap();
-        let receipt = apply_indexed(&root, &drafts, &index, &task, Change::Checked(true)).unwrap().unwrap();
+        let receipt = apply_indexed(&root, &drafts, &index, &task, Change::Checked(true))
+            .unwrap()
+            .unwrap();
         let hold = a.begin_drain("undo-refusal").unwrap();
         assert!(receipt.undo(&root, &drafts).is_err());
         assert!(!FileEditor::has_unsaved_draft(&root.join("a.md"), &drafts).unwrap());

@@ -304,8 +304,10 @@ impl Authority {
         private_dir(&directory)?;
         let state_path = directory.join("state.json");
         if state_path.try_exists()? {
-            ensure!(read::<Snapshot>(&state_path)?.phase == Phase::Open,
-                "Unbound authority has an unfinished hold; recovery required");
+            ensure!(
+                read::<Snapshot>(&state_path)?.phase == Phase::Open,
+                "Unbound authority has an unfinished hold; recovery required"
+            );
         }
         for name in ["admission.lock", "writers.lock", "owner.lock"] {
             file(&directory.join(name), true)?.sync_all()?;
@@ -395,7 +397,14 @@ impl Authority {
     // Read the outermost published scope without validating each candidate.
     // The selected scope is validated exactly once, under its admission lock.
     fn enclosing(&self) -> Result<Option<Self>> {
-        for ancestor in self.root().ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
+        for ancestor in self
+            .root()
+            .ancestors()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             let binding_path = self.account.join(format!("{}.json", key(ancestor)));
             if binding_path.try_exists()? {
                 let binding: Binding = read(&binding_path)?;
@@ -416,7 +425,8 @@ impl Authority {
             let f = file(&authority.directory.join("admission.lock"), false)?;
             // This protects only bounded metadata work, never a writer's whole
             // lifetime. Contention is normal and must not become a failed save.
-            f.lock().context("Cannot serialize local writer admission")?;
+            f.lock()
+                .context("Cannot serialize local writer admission")?;
             if let Some(parent) = authority.enclosing()? {
                 drop(f);
                 authority = parent;
@@ -456,9 +466,11 @@ impl Authority {
         if let Some(lease) = ACTIVE.with(|a| {
             a.borrow()
                 .iter()
-                .find(|l| l.0.authority.binding == self.binding
-                    || (l.0.authority.account == self.account
-                        && self.root().starts_with(l.0.authority.root())))
+                .find(|l| {
+                    l.0.authority.binding == self.binding
+                        || (l.0.authority.account == self.account
+                            && self.root().starts_with(l.0.authority.root()))
+                })
                 .cloned()
         }) {
             lease.validate()?;
@@ -705,11 +717,14 @@ mod tests {
                     barrier.wait();
                     for iteration in 0..16 {
                         let _operation = a.operation().unwrap();
-                        fs::write(a.root().join(format!("{index}-{iteration}.md")), b"saved").unwrap();
+                        fs::write(a.root().join(format!("{index}-{iteration}.md")), b"saved")
+                            .unwrap();
                     }
                 }));
             }
-            for job in jobs { job.join().unwrap(); }
+            for job in jobs {
+                job.join().unwrap();
+            }
         });
         assert_eq!(fs::read_dir(a.root()).unwrap().count(), 256);
         let hold = a.begin_drain("positive-hold-control").unwrap();
@@ -743,19 +758,33 @@ mod tests {
         let first = Authority::open_in(&account, &sub).unwrap();
         let other = Authority::open_in(&account, &sibling).unwrap();
         let lease = first.admit().unwrap();
-        assert!(Authority::open_in(&account, &root).is_err(), "live lease fences promotion");
+        assert!(
+            Authority::open_in(&account, &root).is_err(),
+            "live lease fences promotion"
+        );
         drop(lease);
         let hold = other.begin_drain("subfolder-hold").unwrap();
-        assert!(Authority::open_in(&account, &root).is_err(), "hold cannot be bypassed by promotion");
+        assert!(
+            Authority::open_in(&account, &root).is_err(),
+            "hold cannot be bypassed by promotion"
+        );
         let token = hold.token().clone();
         hold.release(&token).unwrap();
         let vault = Authority::open_in(&account, &root).unwrap();
-        assert_eq!(Authority::open_in(&account, &sub).unwrap().root(), vault.root());
-        assert_eq!(Authority::open_in(&account, &sibling).unwrap().root(), vault.root());
+        assert_eq!(
+            Authority::open_in(&account, &sub).unwrap().root(),
+            vault.root()
+        );
+        assert_eq!(
+            Authority::open_in(&account, &sibling).unwrap().root(),
+            vault.root()
+        );
         first.operation().unwrap();
         other.operation().unwrap();
         let hold = vault.begin_drain("whole-vault").unwrap();
-        for authority in [&first, &other, &vault] { assert!(authority.admit().is_err()); }
+        for authority in [&first, &other, &vault] {
+            assert!(authority.admit().is_err());
+        }
         let token = hold.token().clone();
         hold.release(&token).unwrap();
         let _operation = vault.operation().unwrap();

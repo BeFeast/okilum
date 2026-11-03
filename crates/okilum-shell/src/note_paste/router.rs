@@ -857,7 +857,7 @@ fn rich_text_with(
                     rich.account(saved, &asset.alt)
                 } else {
                     rich.deferred += 1;
-                    retained_local_image(&path, &asset.alt, &asset.placeholder)
+                    retained_local_image(&path, &asset.alt)
                 };
                 markdown = markdown.replacen(&asset.placeholder, &text, 1);
             }
@@ -867,7 +867,7 @@ fn rich_text_with(
     Some(rich)
 }
 
-pub const DEFERRED_IMAGES_TEXT: &str = "Vault writes are paused. Pasted images were kept in the draft; attachment import is deferred.";
+pub const DEFERRED_IMAGES_TEXT: &str = "Vault writes are paused. Pasted image data and references were kept in the draft. Save after writes resume.";
 
 fn inline_image(mime: &str, bytes: &[u8], alt: &str) -> String {
     use base64::Engine as _;
@@ -876,16 +876,20 @@ fn inline_image(mime: &str, bytes: &[u8], alt: &str) -> String {
     format!("![{alt}](data:{mime};base64,{payload})")
 }
 
-fn retained_local_image(path: &Path, alt: &str, placeholder: &str) -> String {
+fn retained_local_image(path: &Path, alt: &str) -> String {
     use std::io::Read;
     // Copy bounded local payloads into the durable text draft. Clipboard cache
     // files may disappear before the hold releases. If unreadable/oversized,
     // preserve the original image reference instead of reducing it to alt text.
     let bytes = (|| {
         let file = std::fs::File::open(path).ok()?;
-        if !file.metadata().ok()?.is_file() { return None; }
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
         let mut bytes = Vec::new();
-        file.take(MAX_LOCAL_IMAGE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+        file.take(MAX_LOCAL_IMAGE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
         (bytes.len() as u64 <= MAX_LOCAL_IMAGE_BYTES).then_some(bytes)
     })();
     match bytes {
@@ -895,7 +899,13 @@ fn retained_local_image(path: &Path, alt: &str, placeholder: &str) -> String {
                 .unwrap_or_else(|| "application/octet-stream".into());
             inline_image(&mime, &bytes, alt)
         }
-        None => placeholder.to_owned(),
+        None => {
+            let alt = alt.replace(['[', ']', '\n'], " ");
+            let url = url::Url::from_file_path(path)
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| format!("file://{}", path.to_string_lossy()));
+            format!("![{alt}](<{url}>)")
+        }
     }
 }
 
@@ -1180,8 +1190,12 @@ mod tests {
         let html = format!("<p>Keep <img alt=\"data\" src=\"data:image/png;base64,{payload}\"> and <img alt=\"local\" src=\"{}\"></p>", url::Url::from_file_path(&local).unwrap());
         let job = || RichJob {
             image_options: super::super::image_import::Options::disabled(),
-            html: html.clone(), base_url: None, plain: None,
-            vault_root: note.vault.path().to_owned(), note_rel: "note.md".into(), stamp: "20261103".into(),
+            html: html.clone(),
+            base_url: None,
+            plain: None,
+            vault_root: note.vault.path().to_owned(),
+            note_rel: "note.md".into(),
+            stamp: "20261103".into(),
         };
         let authority = okilum_write_authority::Authority::for_root(note.vault.path()).unwrap();
         let hold = authority.begin_drain("rich-paste").unwrap();
@@ -1196,9 +1210,16 @@ mod tests {
         hold.release(&token).unwrap();
         let saved = run_rich_job(job());
         assert_eq!((saved.saved, saved.failed, saved.deferred), (2, 0, 0));
-        assert!(!saved.files.is_empty(), "post-release import is the positive control");
+        assert!(
+            !saved.files.is_empty(),
+            "post-release import is the positive control"
+        );
         std::fs::remove_file(&local).unwrap();
-        assert_eq!(done.text.matches(&payload).count(), 2, "cache-file removal cannot erase the retained payload");
+        assert_eq!(
+            done.text.matches(&payload).count(),
+            2,
+            "cache-file removal cannot erase the retained payload"
+        );
     }
 
     #[test]

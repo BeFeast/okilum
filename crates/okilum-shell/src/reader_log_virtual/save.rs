@@ -50,7 +50,9 @@ impl Session {
         // A hold refusal is certain non-publication. Leave the criteria in the
         // UI and allow retry, without manufacturing a blocking recovery draft.
         let _admission = if !unchanged {
-            Some(okilum_write_authority::operation_for_path(self.editor.path())?)
+            Some(okilum_write_authority::operation_for_path(
+                self.editor.path(),
+            )?)
         } else {
             None
         };
