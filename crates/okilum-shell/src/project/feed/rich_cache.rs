@@ -13,6 +13,7 @@ struct Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[gpui::test]
     fn adjacent_markdown_reuses_state_updates_source_and_has_a_bounded_lifetime(
