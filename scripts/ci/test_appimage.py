@@ -87,7 +87,7 @@ class AppImageTests(unittest.TestCase):
 
     def test_required_workflow_retains_artifact_before_testing_and_aggregates_both_gates(self):
         workflow = (ROOT / '.github/workflows/forgejo-linux.yml').read_text()
-        self.assertIn('needs: [linux-checks, appimage]', workflow)
+        self.assertIn('needs: [select, linux-checks, appimage]', workflow)
         # The actual aggregate command and fail-closed evidence are exercised
         # across main/branch and manual/automatic runs in test_gate_log_evidence.
         self.assertIn('CHECKS: ${{ needs.linux-checks.result }}', workflow)

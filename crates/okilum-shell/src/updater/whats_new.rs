@@ -178,8 +178,17 @@ impl Render for NotesView {
                         "Some release notes for earlier builds haven't been published yet."
                     }
                     (model::Unavailable::FetchFailed, false) => "Release notes couldn't be loaded.",
+                    // After the automatic retry a mid-chain failure shows the
+                    // builds that did load with a quiet note, not the error (#2451).
                     (model::Unavailable::FetchFailed, true) => {
-                        "Some release notes couldn't be loaded."
+                        "Older release notes couldn't be loaded."
+                    }
+                    // Deterministic problems: say what is wrong, offer no retry (#2451).
+                    (model::Unavailable::UnknownChannel, _) => {
+                        "Release notes aren't available on this build's channel."
+                    }
+                    (model::Unavailable::NoClient, _) => {
+                        "A secure HTTP client couldn't be created."
                     }
                 };
                 body = body.child(
@@ -187,6 +196,8 @@ impl Render for NotesView {
                         .debug_selector(move || match reason {
                             model::Unavailable::NotPublished => "whats-new-unpublished".into(),
                             model::Unavailable::FetchFailed => "whats-new-offline".into(),
+                            model::Unavailable::UnknownChannel => "whats-new-channel".into(),
+                            model::Unavailable::NoClient => "whats-new-no-client".into(),
                         })
                         .text_sm()
                         .text_color(palette.text_muted)
@@ -218,16 +229,23 @@ impl Render for NotesView {
                                     .child("Changes merged in this build ↗")
                                     .on_click(move |_, _, cx| cx.open_url(&url)),
                             )
-                            .when(reason == model::Unavailable::FetchFailed, |row| {
-                                row.child(
-                                    Button::new("whats-new-retry")
-                                        .debug_selector(|| "whats-new-retry".into())
-                                        .small()
-                                        .ghost()
-                                        .label("Retry")
-                                        .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
-                                )
-                            }),
+                            // Retry only the total failure: a partial chain
+                            // already survived the automatic retry (#2451).
+                            .when(
+                                reason == model::Unavailable::FetchFailed && !partial,
+                                |row| {
+                                    row.child(
+                                        Button::new("whats-new-retry")
+                                            .debug_selector(|| "whats-new-retry".into())
+                                            .small()
+                                            .ghost()
+                                            .label("Retry")
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| this.reload(cx)),
+                                            ),
+                                    )
+                                },
+                            ),
                     );
             }
         } else {

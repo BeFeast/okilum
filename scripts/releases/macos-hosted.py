@@ -26,7 +26,7 @@ def route(env):
     source = source_identity(env.get('PRODUCT_SOURCE'), env.get('GITHUB_SHA'))
     if source != env['GITHUB_SHA'] and (lane != 'hosted' or env.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'):
         raise ValueError('Explicit older source requires manual hosted artifact route')
-    if lane == 'hosted' and env.get('GITHUB_EVENT_NAME') not in ('workflow_dispatch', 'push'):
+    if lane == 'hosted' and env.get('GITHUB_EVENT_NAME') not in ('workflow_dispatch', 'push', 'schedule'):
         raise ValueError('Hosted shipping requires a trusted main push or explicit dispatch; no local fallback')
     with open(env['GITHUB_OUTPUT'], 'a') as output:
         output.write(f'lane={lane}\nsource={source}\n')

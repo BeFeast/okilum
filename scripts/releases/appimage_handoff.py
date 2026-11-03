@@ -55,7 +55,7 @@ def accepted(run, jobs, source):
     if (not re.fullmatch('[0-9a-f]{40}', source)
             or run.get('repository', {}).get('full_name') != artifact.REPOSITORY
             or run.get('path') != artifact.WORKFLOW or run.get('head_sha') != source
-            or run.get('head_branch') != 'main' or run.get('event') != 'push'
+            or run.get('head_branch') != 'main' or run.get('event') not in ('push', 'schedule', 'workflow_dispatch')
             or type(run.get('run_attempt')) is not int or run['run_attempt'] != 1
             or type(run.get('run_number')) is not int or run['run_number'] <= 0):
         raise ValueError('Expected original main AppImage producer')
@@ -93,6 +93,10 @@ def accepted(run, jobs, source):
     if (job.get('status') != 'completed' or job.get('conclusion') != 'success'
             or not smoke or smoke[0].get('conclusion') != 'success'):
         raise ReuseUnavailable('appimage-smoke-not-accepted')
+    if run['event'] != 'push' and not any(
+            step.get('name') == 'Build exact-source AppImage once'
+            and step.get('conclusion') == 'success' for step in steps):
+        raise ReuseUnavailable('not-an-original-hourly-producer')
 
 
 def unpack(directory, destination):
@@ -112,19 +116,48 @@ def unpack(directory, destination):
     return source, receipt
 
 
-def stage(api, source, directory, fetch):
-    if not re.fullmatch('[0-9a-f]{40}', source):
-        raise ValueError('Expected full source SHA')
-    runs = api.request(f'actions/workflows/forgejo-linux.yml/runs?head_sha={source}&event=push&per_page=100')
+def original_main_producer(api, source, runs):
+    """Ignore idle ticks/nightly copies without weakening real-producer ambiguity."""
     if runs.get('total_count', len(runs['workflow_runs'])) != len(runs['workflow_runs']):
         raise ValueError('Incomplete producer listing')
     matches = [run for run in runs['workflow_runs'] if run.get('head_sha') == source
                and run.get('path') == artifact.WORKFLOW and run.get('head_branch') == 'main']
     if not matches:
         raise ReuseUnavailable('no-exact-main-producer')
-    if len(matches) != 1:
-        raise ValueError('Ambiguous original main producer')
-    run = api.request(f"actions/runs/{matches[0]['id']}")
+    if len({run['id'] for run in matches}) != len(matches):
+        raise ValueError('Ambiguous original main producer inventory')
+    # Hourly selectors also leave runs on an unchanged SHA. Only an actual
+    # artifact producer belongs to the immutable receipt inventory. Keep the
+    # ambiguity guard for two real producers; never pick arbitrary bytes.
+    if len(matches) > 1:
+        producers = []
+        for candidate in matches:
+            items = api.request(f"actions/runs/{candidate['id']}/artifacts?per_page=100")
+            if items.get('total_count', len(items['artifacts'])) != len(items['artifacts']):
+                raise ValueError('Incomplete GitHub artifact inventory')
+            if any(item.get('name') == f'linux-appimage-{source}' for item in items['artifacts']):
+                if candidate.get('event') != 'push':
+                    jobs = api.request(f"actions/runs/{candidate['id']}/attempts/1/jobs?per_page=100")
+                    if jobs.get('total_count', len(jobs['jobs'])) != len(jobs['jobs']):
+                        raise ValueError('Incomplete GitHub job inventory')
+                    try:
+                        accepted(api.request(f"actions/runs/{candidate['id']}"), jobs['jobs'], source)
+                    except ReuseUnavailable:
+                        continue
+                producers.append(candidate)
+        if not producers:
+            raise ReuseUnavailable('no-exact-main-producer')
+        if len(producers) != 1:
+            raise ValueError('Ambiguous original main producer')
+        matches = producers
+    return api.request(f"actions/runs/{matches[0]['id']}")
+
+
+def stage(api, source, directory, fetch):
+    if not re.fullmatch('[0-9a-f]{40}', source):
+        raise ValueError('Expected full source SHA')
+    runs = api.request(f'actions/workflows/forgejo-linux.yml/runs?head_sha={source}&per_page=100')
+    run = original_main_producer(api, source, runs)
     jobs = api.request(f"actions/runs/{run['id']}/attempts/1/jobs?per_page=100")
     items = api.request(f"actions/runs/{run['id']}/artifacts?per_page=100")
     for response, key in [(jobs, 'jobs'), (items, 'artifacts')]:

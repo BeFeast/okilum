@@ -12,6 +12,18 @@ spec.loader.exec_module(m)
 
 
 class HostedProducer(unittest.TestCase):
+    def test_hourly_and_urgent_main_stage_beta_but_archive_and_verify_stay_artifacts_only(self):
+        source = 'a' * 40
+        env = {'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': source}
+        for event in ['schedule', 'workflow_dispatch', 'push']:
+            selected = env | {'GITHUB_EVENT_NAME': event}
+            self.assertTrue(m.beta_publication(selected, source))
+            self.assertFalse(m.beta_publication(selected, 'b' * 40))
+            self.assertFalse(m.beta_publication(selected | {'VERIFY_ONLY': 'true'}, source))
+            self.assertFalse(m.beta_publication(selected | {'GITHUB_REF': 'refs/heads/branch'}, source))
+        for event in ['pull_request', 'pull_request_target', 'repository_dispatch']:
+            self.assertFalse(m.beta_publication(env | {'GITHUB_EVENT_NAME': event}, source))
+
     def test_verify_mirror_is_bare_exact_and_attested_only_after_live_recheck(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'releases'))
         import macos_verify_authorization as authorization

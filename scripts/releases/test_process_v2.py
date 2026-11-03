@@ -45,32 +45,16 @@ class ProcessV2(unittest.TestCase):
         self.assertNotIn('cargo test --workspace', script)
         self.assertNotIn('check-linux.sh', script)
 
-    def test_all_platform_beta_builds_start_on_main_push_without_cancelling_signing(self):
+    def test_all_platform_beta_builds_are_hourly_and_manual_signing_is_isolated(self):
         for file in ['linux-release', 'windows-diagnostic', 'macos-release']:
             data = workflow(f'.forgejo/workflows/{file}.yml')
-            self.assertEqual(data['on']['push']['branches'], ['main'])
-            self.assertNotIn('pull_request', data['on'])
-            self.assertEqual(data['concurrency']['cancel-in-progress'], 'false')
+            self.assertEqual(set(data['on']), {'schedule', 'workflow_dispatch'})
+            self.assertEqual(data['on']['schedule'], [{'cron': '17 * * * *'}])
+            self.assertEqual(data['concurrency']['cancel-in-progress'], 'true')
+            self.assertIn('github.run_id', data['concurrency']['group'])
         windows = (ROOT / '.forgejo/workflows/windows-diagnostic.yml').read_text()
-        self.assertIn("github.event_name != 'push' && vars.OKILUM_WINDOWS_SIGN_BACKEND", windows)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.hourly_source == '' && vars.OKILUM_WINDOWS_SIGN_BACKEND", windows)
         self.assertIn('resign_build:', windows)
-
-    @patch.object(coalesce, 'main_tip', return_value='a' * 40)
-    @patch.object(coalesce, 'descriptor')
-    def test_newest_source_only_reuses_existing_payload_and_rejects_bad_identity(self, descriptor, tip):
-        for platform in ['linux', 'windows', 'macos']:
-            descriptor.return_value = None
-            self.assertTrue(coalesce.push_ready('a' * 40, platform, 'refs/heads/main'))
-            descriptor.return_value = {'source': 'a' * 40, 'platform': platform}
-            self.assertFalse(coalesce.push_ready('a' * 40, platform, 'refs/heads/main'))
-            descriptor.reset_mock()
-            self.assertFalse(coalesce.push_ready('b' * 40, platform, 'refs/heads/main'))
-            descriptor.assert_not_called()
-        with self.assertRaises(ValueError):
-            coalesce.push_ready('a' * 40, 'windows', 'refs/heads/untrusted')
-        descriptor.return_value = {'source': 'b' * 40, 'platform': 'macos'}
-        with self.assertRaises(ValueError):
-            coalesce.push_ready('a' * 40, 'macos', 'refs/heads/main')
 
 
 if __name__ == '__main__':

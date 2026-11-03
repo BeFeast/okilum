@@ -24,11 +24,12 @@ SMOKE = 'Verify AppImage package'
 def accepted(run, jobs, source):
     if (run.get('repository', {}).get('full_name') != REPOSITORY
             or run.get('head_sha') != source or run.get('path') != WORKFLOW
-            or run.get('event') != 'push' or run.get('status') != 'completed'
+            or run.get('event') not in ('push', 'schedule', 'workflow_dispatch') or run.get('status') != 'completed'
             or run.get('conclusion') != 'success' or run.get('run_attempt') != 1
             or not isinstance(run.get('run_number'), int) or run['run_number'] <= 0
             or not (run.get('head_branch') == 'main'
-                    or run.get('head_branch', '').startswith('forgejo-linux-pr/'))):
+                    or (run.get('event') == 'push'
+                        and run.get('head_branch', '').startswith('forgejo-linux-pr/')))):
         raise ValueError('Not an accepted exact-source hosted Linux run')
     for name, step in [('appimage', SMOKE), ('linux', 'Run full Linux gate')]:
         matches = [j for j in jobs if j.get('name') == name]
@@ -39,6 +40,12 @@ def accepted(run, jobs, source):
                 or len([s for s in matches[0].get('steps', [])
                         if s.get('name') == step and s.get('conclusion') == 'success']) != 1):
             raise ValueError('Hosted smoke or Linux aggregate did not execute successfully')
+    if run['event'] != 'push' and not any(
+            job.get('name') == 'appimage' and any(
+                step.get('name') == 'Build exact-source AppImage once'
+                and step.get('conclusion') == 'success' for step in job.get('steps', []))
+            for job in jobs):
+        raise ValueError('Expected original hourly AppImage compilation')
 
 
 def artifact_identity(artifact, run, source):
@@ -90,11 +97,17 @@ def stage(api, source, directory, fetch):
     if not re.fullmatch('[0-9a-f]{40}', source):
         raise ValueError('Expected full main source SHA')
     # No dispatch/retry/rebuild here. Missing, failed, expired or ambiguous evidence stops publication.
-    runs = api.request(f'actions/workflows/forgejo-linux.yml/runs?head_sha={source}&event=push&per_page=100')
-    matches = [r for r in runs['workflow_runs'] if r.get('head_sha') == source and r.get('path') == WORKFLOW]
-    if len(matches) != 1:
-        raise ValueError('Missing or ambiguous exact-source hosted producer; nothing published')
-    run = api.request(f"actions/runs/{matches[0]['id']}")
+    runs = api.request(f'actions/workflows/forgejo-linux.yml/runs?head_sha={source}&per_page=100')
+    if any(run.get('head_branch') == 'main' for run in runs['workflow_runs']):
+        # Shared original-producer selection excludes idle hourly runs and
+        # nightly copies. This path still requires the full Linux aggregate below.
+        from appimage_handoff import original_main_producer
+        run = original_main_producer(api, source, runs)
+    else:
+        matches = [r for r in runs['workflow_runs'] if r.get('head_sha') == source and r.get('path') == WORKFLOW]
+        if len(matches) != 1:
+            raise ValueError('Missing or ambiguous exact-source hosted producer; nothing published')
+        run = api.request(f"actions/runs/{matches[0]['id']}")
     jobs = api.request(f"actions/runs/{run['id']}/attempts/1/jobs?per_page=100")
     if jobs.get('total_count', len(jobs['jobs'])) != len(jobs['jobs']):
         raise ValueError('Incomplete hosted job evidence')
