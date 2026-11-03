@@ -257,14 +257,14 @@ fn direct_metadata_parent_is_private_without_creating_managed_sync_state() -> an
 #[test]
 fn preparing_receive_continues_refresh_after_pairing_finishes() {
     let mut value = snapshot(None);
-    assert!(!sync_refresh_needed(&value));
+    assert!(!sync_refresh_interval(&value).is_some());
     value.preparing = true;
-    assert!(sync_refresh_needed(&value));
+    assert!(sync_refresh_interval(&value).is_some());
     value.preparing = false;
     value.offer_url = Some("fixture-only invitation".into());
-    assert!(sync_refresh_needed(&value));
+    assert!(sync_refresh_interval(&value).is_some());
     value.offer_url = None;
-    assert!(!sync_refresh_needed(&value));
+    assert!(!sync_refresh_interval(&value).is_some());
 }
 
 #[test]
@@ -430,6 +430,7 @@ fn guided_worker(
                 states.front().unwrap().clone()
             };
             Ok(Output {
+                connection_error: None,
                 controller: controller.clone(),
                 snapshot,
                 inspected: None,
@@ -617,7 +618,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
         view.scroll.set_offset(point(px(0.), px(-1000.)));
         cx.notify();
     });
-    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.executor().advance_clock(Duration::from_secs(1));
     visual.run_until_parked();
     assert_visible(&mut visual, "sync-approve-computer");
     assert!(
@@ -687,8 +688,11 @@ fn guided_first_run_waiting_then_catalog_arrives_from_timer(cx: &mut TestAppCont
         assert_eq!(view.read(cx).selected_peer, Some(id));
     });
     assert_eq!(*calls.lock().unwrap(), vec!["read", "read"]);
-    // Polling survives completed confirmation; later changes need no Refresh.
+    // Completed pairing returns to the normal interval.
     visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    visual.executor().advance_clock(Duration::from_secs(28));
     visual.run_until_parked();
     assert_eq!(calls.lock().unwrap().len(), 3);
 }
@@ -847,7 +851,7 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
         visual.did_prompt_for_new_path(),
         "positive control: real folder dialog opened"
     );
-    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.executor().advance_clock(Duration::from_secs(30));
     visual.run_until_parked();
     visual.simulate_new_path_selection(|_| Some(directory.path().join("Work notes")));
     visual.run_until_parked();
@@ -916,6 +920,7 @@ fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
             let local =
                 policy == okilum_sync_controller::network_policy::Policy::LocalNetworkAndVpn;
             Ok(Output {
+                connection_error: None,
                 controller: controller.clone(),
                 snapshot: snapshot(None),
                 inspected: None,
@@ -1069,6 +1074,7 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
             }
             calls.lock().unwrap().push("read");
             Ok(Output {
+                connection_error: None,
                 controller: controller.clone(),
                 snapshot: ready.clone(),
                 inspected: None,
@@ -1111,4 +1117,259 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
         "refresh preserves actionable failure"
     );
     assert!(!directory.path().join("absent").exists());
+}
+
+#[gpui::test]
+fn sync_2419_sidebar_is_visible_while_off_and_first_click_enables_only_sync(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_features::install(directory.path(), cx);
+    });
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    cx.update(|cx| reader_settings::show(None, cx));
+    cx.run_until_parked();
+    let settings = cx.update(|cx| cx.windows()[0]);
+    let mut visual = VisualTestContext::from_window(settings, cx);
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert!(!reader_features::enabled(
+            reader_features::Feature::Sync,
+            cx
+        ))
+    });
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "visibility alone grants no network access"
+    );
+    let entry = visual
+        .debug_bounds("settings-section-Sync")
+        .expect("Sync discoverable with module off");
+    visual.simulate_click(entry.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_visible(&mut visual, "sync-add-computer");
+    visual.update(|_, cx| {
+        assert!(reader_features::enabled(reader_features::Feature::Sync, cx));
+        assert!(!reader_features::enabled(
+            reader_features::Feature::Agents,
+            cx
+        ));
+        assert!(!reader_features::enabled(
+            reader_features::Feature::SecondBrain,
+            cx
+        ));
+        reader_features::install(directory.path(), cx);
+        assert!(
+            reader_features::enabled(reader_features::Feature::Sync, cx),
+            "choice persisted"
+        );
+    });
+    assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
+}
+
+#[gpui::test]
+fn sync_2419_preparing_shows_setup_and_existing_incompatible_connection_shows_error(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::test_init);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.busy = true;
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sync-pending").is_some());
+    assert!(visual.debug_bounds("sync-setup").is_some());
+    assert!(visual.debug_bounds("sync-error").is_none());
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual.update(|_, cx| {
+        cx.set_global(TestWorker(std::sync::Arc::new(|_| {
+            anyhow::bail!("unsupported Syncthing version")
+        })))
+    });
+    view.update(visual, |view, cx| {
+        view.busy = false;
+        view.run(Operation::EnterPairing, cx);
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("sync-error").is_some(),
+        "positive control: incompatible existing Syncthing reports a real error"
+    );
+    view.read_with(visual, |view, _| {
+        assert!(view
+            .error
+            .as_ref()
+            .unwrap()
+            .starts_with("No compatible Syncthing"))
+    });
+}
+
+#[test]
+fn sync_2419_pairing_cadence_is_fast_and_idle_returns_to_normal() {
+    let mut value = snapshot(None);
+    assert_eq!(sync_refresh_interval(&value), None);
+    value.offer_url = Some("fixture".into());
+    assert_eq!(sync_refresh_interval(&value), Some(Duration::from_secs(1)));
+    value.offer_url = None;
+    value.pending = Some(direct::Pending {
+        request_id: uuid::Uuid::new_v4(),
+        incoming: false,
+        name: "Laptop".into(),
+        device_id: "device".into(),
+        fingerprint: "key".into(),
+    });
+    assert_eq!(sync_refresh_interval(&value), Some(Duration::from_secs(1)));
+    value.pending = None;
+    value.peers.push(direct::Peer {
+        id: uuid::Uuid::new_v4(),
+        name: "Laptop".into(),
+        device_id: "device".into(),
+    });
+    assert_eq!(sync_refresh_interval(&value), Some(Duration::from_secs(30)));
+    value.preparing = true;
+    assert_eq!(sync_refresh_interval(&value), Some(Duration::from_secs(2)));
+}
+
+#[gpui::test]
+fn sync_2419_share_menu_opens_sync_with_module_off(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_features::install(directory.path(), cx);
+    });
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let reader = cx.new(|cx| Reader::new(Opts::default(), window, cx));
+        Root::new(reader, window, cx)
+    });
+    let reader = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<Reader>().unwrap()
+    });
+    visual.update(|window, cx| {
+        assert!(!reader_features::enabled(
+            reader_features::Feature::Sync,
+            cx
+        ));
+        let gpui_component::menu::PopupMenuItem::Item {
+            label,
+            handler: Some(handler),
+            disabled,
+            ..
+        } = reader_settings::share_sync_menu_item(reader.downgrade())
+        else {
+            panic!("ordinary actionable menu entry required")
+        };
+        assert_eq!(label.as_ref(), "Share with another computer…");
+        assert!(!disabled);
+        handler(&ClickEvent::default(), window, cx);
+    });
+    visual.run_until_parked();
+    let settings = visual.update(|window, cx| {
+        assert!(reader_features::enabled(reader_features::Feature::Sync, cx));
+        cx.windows()
+            .into_iter()
+            .find(|w| *w != window.window_handle())
+            .unwrap()
+    });
+    let mut settings = VisualTestContext::from_window(settings, &*visual);
+    settings.run_until_parked();
+    assert_visible(&mut settings, "sync-add-computer");
+    assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
+}
+
+#[gpui::test]
+fn sync_2419_first_use_keeps_sync_off_when_preferences_cannot_be_saved(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_features::install(directory.path(), cx);
+    });
+    std::fs::create_dir(directory.path().join("features.json")).unwrap();
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    cx.update(|cx| reader_settings::show(None, cx));
+    cx.run_until_parked();
+    let settings = cx.update(|cx| cx.windows()[0]);
+    let mut visual = VisualTestContext::from_window(settings, cx);
+    visual.run_until_parked();
+    let entry = visual.debug_bounds("settings-section-Sync").unwrap();
+    visual.simulate_click(entry.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert!(!reader_features::enabled(
+            reader_features::Feature::Sync,
+            cx
+        ));
+        assert!(reader_features::error(cx).is_some());
+    });
+    assert!(
+        visual.debug_bounds("settings-feature-sync").is_some(),
+        "failed enable opens Features with the save error"
+    );
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "failed consent must not reach the controller"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn sync_2419_real_pairing_timer_skips_full_runtime_inspection(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    let prepared = directory.path().join("prepared");
+    std::fs::create_dir(&prepared).unwrap();
+    std::fs::write(prepared.join("prepared.json"), b"invalid runtime receipt").unwrap();
+    let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
+    let offer = controller
+        .begin_pairing_at(
+            "Desktop",
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1".parse().unwrap(),
+        )
+        .unwrap();
+    controller
+        .set_configurations(vec![prepared.join("syncthing/config.xml")])
+        .unwrap();
+    assert!(
+        controller.refresh().is_err(),
+        "positive control: full runtime inspection detects the invalid receipt"
+    );
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.controller = Some(controller.clone());
+            view.snapshot = Some(offer);
+            view.schedule_refresh(cx);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual.executor().advance_clock(Duration::from_millis(999));
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| assert_eq!(view.epoch.current(), 0));
+    visual.executor().advance_clock(Duration::from_millis(1));
+    visual.run_until_parked();
+    view.read_with(visual, |view, _| {
+        assert_eq!(view.epoch.current(), 1, "timer really dispatched a worker");
+        assert!(!view.busy, "real worker completed");
+        assert!(
+            view.error.is_none(),
+            "pairing must not wait for unrelated runtime inspection"
+        );
+        assert!(view.snapshot.as_ref().unwrap().offer_url.is_some());
+    });
+    assert_visible(visual, "sync-copy-url");
+    controller.shutdown();
 }

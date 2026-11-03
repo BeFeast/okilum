@@ -441,7 +441,7 @@ impl Controller {
                 // A timeout may follow remote receipt. Retry the durable identity,
                 // including its approved Syncthing binding, rather than replacing it.
                 drop(db);
-                return self.refresh();
+                return self.refresh_pairing();
             }
         }
         let configs = self.configuration_paths()?;
@@ -470,7 +470,7 @@ impl Controller {
         db.outbound = Some((offer, request));
         self.save(&db)?;
         drop(db);
-        self.refresh()
+        self.refresh_pairing()
     }
     pub fn refresh(&self) -> Result<Snapshot> {
         self.check()?;
@@ -487,6 +487,17 @@ impl Controller {
             // address is an error, never permission to invalidate peer pins.
             self.listen(endpoint, endpoint.ip())?;
         }
+        self.refresh_pairing()?;
+        self.reconcile_peer_addresses()?;
+        self.reconcile_transfers()?;
+        self.refresh_connection_status()?;
+        self.refresh_attached()?;
+        self.snapshot()
+    }
+    /// Refresh the pairing journal/channel without daemon inventory, binary
+    /// verification or transfer reconciliation. Used while a pairing step is open.
+    pub fn refresh_pairing(&self) -> Result<Snapshot> {
+        self.check()?;
         let outbound = self.shared.db.lock().unwrap().outbound.clone();
         if let Some((offer, request)) = outbound {
             if offer.expires <= now()? {
@@ -538,10 +549,6 @@ impl Controller {
                 _ => anyhow::bail!("unexpected pairing response"),
             }
         }
-        self.reconcile_peer_addresses()?;
-        self.reconcile_transfers()?;
-        self.refresh_connection_status()?;
-        self.refresh_attached()?;
         self.snapshot()
     }
     pub fn approve(&self, request_id: Uuid) -> Result<Snapshot> {
@@ -1046,6 +1053,32 @@ mod tests {
     use super::*;
     fn controller(root: &Path, name: &str) -> Result<Controller> {
         Controller::open(root.join(name), vec![])
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sync_2419_pairing_poll_does_not_wait_for_managed_runtime_inspection() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let prepared = directory.path().join("prepared");
+        std::fs::create_dir(&prepared)?;
+        std::fs::write(prepared.join("prepared.json"), b"invalid runtime receipt")?;
+        let controller = Controller::open(directory.path().join("direct"), vec![])?;
+        controller.begin_pairing_at("Desktop", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?;
+        controller.set_configurations(vec![prepared.join("syncthing/config.xml")])?;
+        let polled = controller.refresh_pairing()?;
+        assert!(
+            polled.offer_url.is_some(),
+            "invitation observation uses the live journal"
+        );
+        assert!(
+            controller.refresh().is_err(),
+            "positive control: full refresh still checks the runtime"
+        );
+        controller.shutdown();
+        assert!(
+            controller.refresh_pairing().is_err(),
+            "fast polling honors revocation"
+        );
+        Ok(())
     }
     #[test]
     fn direct_request_identity_and_unknown_operations_fail_before_claim() -> Result<()> {

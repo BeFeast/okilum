@@ -71,6 +71,7 @@ struct TestWorker(std::sync::Arc<dyn Fn(Operation) -> anyhow::Result<Output> + S
 impl Global for TestWorker {}
 
 struct Output {
+    connection_error: Option<String>,
     controller: Controller,
     snapshot: Snapshot,
     inspected: Option<ExistingVault>,
@@ -154,6 +155,34 @@ impl SyncSettings {
             self.inspected = None;
         }
         let controller = self.controller.clone();
+        // Pairing observes the authenticated channel/journal, not a repeated
+        // system inventory or executable hash. Vault operations retain full checks.
+        let pairing_action = match &operation {
+            Operation::Read | Operation::Approve(_) | Operation::Reject(_) | Operation::Cancel => {
+                self.snapshot.as_ref().is_some_and(sync_pairing_in_progress)
+            }
+            Operation::Catalog(_) => true,
+            _ => false,
+        };
+        let pairing_poll = if pairing_action {
+            self.controller
+                .as_ref()
+                .zip(self.snapshot.as_ref())
+                .map(|(controller, snapshot)| Output {
+                    connection_error: None,
+                    controller: controller.clone(),
+                    snapshot: snapshot.clone(),
+                    inspected: None,
+                    selected_destination: None,
+                    #[cfg(target_os = "linux")]
+                    runtimes: self.runtimes.clone(),
+                    #[cfg(target_os = "linux")]
+                    vaults: self.vaults.clone(),
+                })
+        } else {
+            None
+        };
+
         #[cfg(test)]
         let worker = cx.try_global::<TestWorker>().cloned();
         let access = reader_features::access(reader_features::Feature::Sync, cx);
@@ -167,6 +196,30 @@ impl SyncSettings {
                         #[cfg(test)]
                         if let Some(worker) = worker {
                             return worker_epoch.run(|| (worker.0)(operation))?;
+                        }
+                        if let Some(mut output) = pairing_poll {
+                            let guard = ControllerGuard {
+                                ticket: worker_epoch,
+                                controller: output.controller.clone(),
+                            };
+                            guard.check()?;
+                            output.snapshot = match operation {
+                                Operation::Approve(id) => output.controller.approve(id)?,
+                                Operation::Reject(id) => output.controller.reject(id)?,
+                                Operation::Cancel => output.controller.cancel()?,
+                                Operation::Read => output.controller.refresh_pairing()?,
+                                Operation::Catalog(peer) => {
+                                    let catalog = output.controller.catalog(peer)?;
+                                    let mut snapshot = output.controller.snapshot()?;
+                                    snapshot.catalog = catalog;
+                                    snapshot
+                                }
+                                _ => unreachable!(
+                                    "only pairing journal actions use cached runtime metadata"
+                                ),
+                            };
+                            guard.check()?;
+                            return Ok(output);
                         }
                         perform_scoped(controller, operation, &worker_epoch)
                     }))
@@ -221,6 +274,7 @@ impl SyncSettings {
         .detach();
     }
     fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
+        self.error = output.connection_error;
         // Refreshes must not pull someone away while they read an unchanged step.
         let changed = self.snapshot.as_ref().is_none_or(|old| {
             old.status != output.snapshot.status
@@ -281,12 +335,12 @@ impl SyncSettings {
         }
     }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
-        if !self.snapshot.as_ref().is_some_and(sync_refresh_needed) {
+        let Some(interval) = self.snapshot.as_ref().and_then(sync_refresh_interval) else {
             return;
-        }
+        };
         let epoch = self.epoch.ticket();
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(2)).await;
+            cx.background_executor().timer(interval).await;
             let _ = this.update(cx, |this, cx| {
                 if epoch.is_current() && !this.busy {
                     this.run(Operation::Read, cx);
@@ -418,11 +472,19 @@ fn destination_name(label: &str) -> String {
         name.into()
     }
 }
-fn sync_refresh_needed(snapshot: &Snapshot) -> bool {
-    snapshot.offer_url.is_some()
-        || snapshot.pending.is_some()
-        || snapshot.preparing
-        || !snapshot.peers.is_empty()
+fn sync_pairing_in_progress(snapshot: &Snapshot) -> bool {
+    snapshot.offer_url.is_some() || snapshot.pending.is_some()
+}
+fn sync_refresh_interval(snapshot: &Snapshot) -> Option<Duration> {
+    if sync_pairing_in_progress(snapshot) {
+        Some(Duration::from_secs(1))
+    } else if snapshot.preparing {
+        Some(Duration::from_secs(2))
+    } else if !snapshot.peers.is_empty() {
+        Some(Duration::from_secs(30))
+    } else {
+        None
+    }
 }
 fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
     let configs = direct::configuration_paths()?;
@@ -633,6 +695,17 @@ fn perform_with_locations(
             }
             _ => None,
         };
+        #[cfg(target_os = "linux")]
+        let refresh_inventory_after_action = !matches!(
+            &operation,
+            Operation::EnterPairing
+                | Operation::Begin(_)
+                | Operation::Redeem(_, _)
+                | Operation::Approve(_)
+                | Operation::Reject(_)
+                | Operation::Cancel
+                | Operation::Catalog(_)
+        );
         let mut inspected = None;
         let snapshot = match operation {
             Operation::Read | Operation::EnterPairing => controller.refresh()?,
@@ -675,8 +748,16 @@ fn perform_with_locations(
         guard.check()?;
         // Publish folder counts from the same completed action as the snapshot.
         #[cfg(target_os = "linux")]
-        let runtime = linux_runtime::inspect(&state, &complete_configs)?;
+        let runtime = if refresh_inventory_after_action {
+            linux_runtime::inspect(&state, &complete_configs)?
+        } else {
+            runtime
+        };
         Ok(Output {
+            #[cfg(target_os = "linux")]
+            connection_error: linux_runtime::connection_error(&runtime),
+            #[cfg(target_os = "macos")]
+            connection_error: None,
             controller,
             snapshot,
             inspected,
@@ -728,6 +809,8 @@ fn user_error(error: &anyhow::Error) -> String {
         "The local folder could not be created or checked. Choose a location you can write to with an existing parent folder, or use an existing empty folder.".into()
     } else if text.contains("network policy") {
         "The network setting could not be verified. Refresh and try again. Custom connection addresses may need review in Syncthing.".into()
+    } else if text.contains("sync setup could not verify") {
+        "Sync setup could not verify the bundled connection. Refresh to retry.".into()
     } else if text.starts_with("not connected to ") {
         error.to_string()
     } else if cfg!(target_os = "linux") && text.contains("ignore policy") {

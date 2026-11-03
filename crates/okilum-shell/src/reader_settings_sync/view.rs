@@ -34,7 +34,24 @@ impl Render for SyncSettings {
                     .debug_selector(|| "sync-pending".into())
                     .text_sm()
                     .text_color(p.text_muted)
-                    .child("Connecting…"),
+                    .child(
+                        div()
+                            .debug_selector({
+                                let setting_up = self.snapshot.is_none();
+                                move || {
+                                    if setting_up {
+                                        "sync-setup".into()
+                                    } else {
+                                        "sync-connecting".into()
+                                    }
+                                }
+                            })
+                            .child(if self.snapshot.is_none() {
+                                "Setting up Sync on this computer…"
+                            } else {
+                                "Connecting…"
+                            }),
+                    ),
             );
         }
         if let Some(snapshot) = &self.snapshot {

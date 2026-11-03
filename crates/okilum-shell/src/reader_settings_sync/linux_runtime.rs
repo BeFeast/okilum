@@ -102,6 +102,17 @@ pub(super) fn inspect(state: &Path, configs: &[PathBuf]) -> anyhow::Result<Runti
         choices,
     })
 }
+pub(super) fn connection_error(runtime: &Runtime) -> Option<String> {
+    if runtime.choices.iter().any(|choice| choice.selected)
+        || runtime.inventory.candidates.is_empty() && runtime.inventory.unavailable.is_empty()
+    {
+        None
+    } else {
+        Some(user_error(&anyhow::anyhow!(
+            "Syncthing connection requires explicit selection"
+        )))
+    }
+}
 pub(super) fn select(
     state: &Path,
     runtime: &mut Runtime,
@@ -274,6 +285,10 @@ mod guided_tests {
                 candidates,
             },
         };
+        assert!(
+            connection_error(&runtime(vec![], vec![])).is_none(),
+            "fresh preparation is not an existing-instance error"
+        );
         let called = std::cell::Cell::new(false);
         prepare_for_pairing(runtime(vec![], vec![]), || {
             called.set(true);
@@ -291,13 +306,19 @@ mod guided_tests {
                 certificate_hash: "external".into(),
             },
             folders: vec![],
-            version: "v2.1.7".into(),
+            version: "v1.29.5".into(),
         };
         let existing = prepare_for_pairing(runtime(vec![], vec![external]), || {
             called.set(true);
             anyhow::bail!("must not prepare")
         })?;
         assert!(!called.get());
+        assert!(
+            connection_error(&existing)
+                .unwrap()
+                .starts_with("No compatible Syncthing"),
+            "positive control: an unselected existing instance keeps the actionable error"
+        );
         assert!(
             existing.choices.is_empty(),
             "external inventory never grants implicit selection"
