@@ -40,7 +40,7 @@ mod models;
 #[cfg(target_os = "linux")]
 mod native;
 #[cfg(all(target_os = "linux", any(test, feature = "project-ui-harness")))]
-mod performance;
+pub(crate) mod performance;
 #[cfg(target_os = "linux")]
 mod rotation;
 mod rules_reread;

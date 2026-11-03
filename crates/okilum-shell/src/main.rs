@@ -8259,6 +8259,11 @@ impl Render for Reader {
                     .map(|(menu, position)| anchored().position(*position).child(menu.clone())),
             )
             .children(self.render_title_nav_overlay(cx))
+            .map(|view| {
+                #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+                let view = project::performance::Trace::new(view.into_any_element(), 2);
+                view
+            })
     }
 }
 
