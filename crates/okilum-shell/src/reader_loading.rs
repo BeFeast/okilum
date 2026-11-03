@@ -267,7 +267,7 @@ fn prepare_first_existing_document(
         .find(|root| canonical_path.starts_with(root));
     // Direct file delivery uses quick mode. An explicit vault-mode switch
     // prepares the vault and mounts the same typed preview after publication.
-    let quick_file = opts.single_file || (root.is_none() && reusable.is_none());
+    let quick_file = opts.single_file || root.is_none();
     if quick_file && canonical_path.is_file() && okilum_core::log::is_log_path(&canonical_path) {
         return prepare_log(&canonical_path, root, cancel);
     }
