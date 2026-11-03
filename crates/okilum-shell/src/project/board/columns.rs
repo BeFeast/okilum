@@ -49,7 +49,10 @@ impl Board {
         !self.binding_loading
             && !self.local_loading
             && !self.snapshot.busy()
-            && !self.delivery_loading
+            // Delivery follows Forgejo and can overlap the next poll. Its
+            // retained completed snapshot still determines the visible columns;
+            // requiring an idle delivery reader can starve the first collapse.
+            // The config success/error gate below still rejects initial unknowns.
             && self.local_cards.last_success.is_some()
             && self.local_cards.error.is_none()
             && self.local_cards.value.problems.is_empty()

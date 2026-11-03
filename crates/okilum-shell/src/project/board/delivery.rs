@@ -105,28 +105,27 @@ impl Board {
         let mut view = v_flex()
             .id(namespace)
             .debug_selector(move || namespace.into())
-            .w_full()
+            .items_start()
             .min_w_0()
             .gap_1()
             .text_size(px(12.));
         let line_id = format!("{namespace}-line");
-        let mut line = v_flex()
+        // Intrinsic column widths keep dates beside builds at every viewport
+        // width. Equal-height cells preserve platform/channel alignment.
+        let mut line = h_flex()
             .id(SharedString::from(line_id.clone()))
             .debug_selector(move || line_id.clone())
-            .w_full()
-            .min_w_0()
-            .gap_1();
-        let mut header = h_flex().w_full().gap_2().child(div().w(px(96.)));
-        for channel in [facts::Channel::Stable, facts::Channel::Beta] {
-            header = header.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
+            .items_start()
+            .gap_2();
+        let mut names = v_flex().flex_none().gap_1().child(div().h(px(24.)));
+        let mut channels = [facts::Channel::Stable, facts::Channel::Beta].map(|channel| {
+            v_flex().flex_none().items_start().gap_1().child(
+                h_flex()
+                    .h(px(24.))
                     .text_color(colors.text_muted)
                     .child(channel.label()),
-            );
-        }
-        line = line.child(header);
+            )
+        });
         for platform in facts::Platform::ALL {
             let mut problems = Vec::new();
             let mut cells = Vec::new();
@@ -184,7 +183,7 @@ impl Board {
                 });
                 let id = format!("{namespace}-{}-{}", platform.label(), channel.label());
                 cells.push(
-                    div().flex_1().min_w_0().child(
+                    div().h(px(24.)).child(
                         Button::new(SharedString::from(id.clone()))
                             .ghost()
                             .small()
@@ -202,7 +201,7 @@ impl Board {
                 );
             }
             let mut name = h_flex()
-                .w(px(96.))
+                .h(px(24.))
                 .flex_shrink_0()
                 .gap_1()
                 .child(platform.label());
@@ -225,15 +224,12 @@ impl Board {
                         .on_click(move |_, _, cx| cx.open_url(&url)),
                 );
             }
-            line = line.child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_2()
-                    .child(name)
-                    .children(cells),
-            );
+            names = names.child(name);
+            for (column, cell) in channels.iter_mut().zip(cells) {
+                *column = std::mem::replace(column, v_flex()).child(cell);
+            }
         }
+        line = line.child(names).children(channels);
         view = view.child(line);
         view.into_any_element()
     }

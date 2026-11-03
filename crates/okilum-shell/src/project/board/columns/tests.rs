@@ -247,3 +247,115 @@ fn annotation_free_repository_failure_is_unknown_until_live_discovery_succeeds(
     );
     assert!(visual.debug_bounds("board-expand-empty-Queue").is_some());
 }
+
+#[gpui::test]
+fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_cards(
+    cx: &mut TestAppContext,
+) {
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path());
+    // Reproduce the serialized live Forgejo -> delivery path: the first paint
+    // of a complete last-good projection can occur with the next delivery read
+    // already in flight. No earlier render established an emptiness decision.
+    board.update(visual, |board, cx| {
+        board.binding.as_mut().unwrap().repository = "https://forgejo.example/team/project".into();
+        board.snapshot.forgejo.accept(
+            Ok([(
+                42,
+                serde_json::from_value(serde_json::json!({
+                    "number": 42, "title": "Live repository card", "state": "open"
+                }))
+                .unwrap(),
+            )]
+            .into()),
+            now(),
+        );
+        board.local_loading = false;
+        board.local_cards.last_success = Some(now());
+        board.delivery_loading = true;
+        board.columns.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-lane-Ready").is_some(),
+        "initial unknown delivery is not proof of emptiness"
+    );
+    board.update(visual, |board, cx| {
+        board.delivery.config.accept(Ok(None), now());
+        cx.notify();
+    });
+    for mode in [
+        gpui_component::ThemeMode::Light,
+        gpui_component::ThemeMode::Dark,
+    ] {
+        visual.update(|_, cx| {
+            Theme::change(mode, None, cx);
+            brand::apply_theme(cx);
+        });
+        for width in [800., 1600.] {
+            board.update(visual, |board, cx| {
+                board.columns.invalidate();
+                cx.notify();
+            });
+            visual.simulate_resize(size(px(width), px(900.)));
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds("board-expand-42").is_some(),
+                "positive control: live projection actually rendered"
+            );
+            for (lane, control) in [
+                ("board-lane-Working", "board-expand-empty-Working"),
+                ("board-lane-Checks", "board-expand-empty-Checks"),
+                ("board-lane-Ready", "board-expand-empty-Ready"),
+            ] {
+                assert!(
+                    visual.debug_bounds(lane).is_none(),
+                    "empty {lane} collapses during live delivery refresh"
+                );
+                assert!(visual.debug_bounds(control).is_some());
+            }
+            let columns = visual.debug_bounds("board-columns").unwrap();
+            let queue = visual.debug_bounds("board-lane-Queue").unwrap();
+            assert!(
+                queue.size.width > columns.size.width * 0.8,
+                "useful lane receives released width"
+            );
+        }
+    }
+    board.update(visual, |board, cx| {
+        let issue = board.snapshot.forgejo.value.get_mut(&42).unwrap();
+        issue.open_pull_requests.push(7);
+        issue.live_pulls.push(okilum_t3::board::live::Pull {
+            number: 7,
+            merged_at: None,
+            checks: "pending".into(),
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-lane-Checks").is_some(),
+        "incoming live card reopens the lane immediately"
+    );
+    assert!(visual.debug_bounds("board-expand-42").is_some());
+    board.update(visual, |board, cx| {
+        board.snapshot.forgejo.accept(Err("HTTP 503".into()), now());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-lane-Checks").is_some(),
+        "failure retains last-good live cards"
+    );
+    assert!(
+        visual.debug_bounds("board-lane-Ready").is_none(),
+        "failure retains completed collapse"
+    );
+    let center = visual.debug_bounds("project-board").unwrap();
+    let status = visual.debug_bounds("board-live-status").unwrap();
+    assert!(
+        status.top() > center.top() + center.size.height / 2.,
+        "live status stays at the lower edge"
+    );
+}

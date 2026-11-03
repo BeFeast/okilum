@@ -1165,7 +1165,7 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
 }
 
 #[gpui::test]
-fn delivery_publications_align_by_platform_at_board_width(cx: &mut TestAppContext) {
+fn release_table_stays_compact_at_normal_and_wide_widths_in_both_themes(cx: &mut TestAppContext) {
     use okilum_t3::board::delivery as d;
     cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
@@ -1227,42 +1227,80 @@ fn delivery_publications_align_by_platform_at_board_width(cx: &mut TestAppContex
         });
         Root::new(board, window, cx)
     });
-    visual.simulate_resize(size(px(800.), px(600.)));
-    visual.run_until_parked();
-    let line = visual
-        .debug_bounds("board-delivery-line")
-        .expect("delivery line");
-    let mut platform_rows = std::collections::HashMap::new();
-    for id in [
-        "board-delivery-Mac-Stable",
-        "board-delivery-Windows-Stable",
-        "board-delivery-Linux-Stable",
-        "board-delivery-Mac-Beta",
-        "board-delivery-Windows-Beta",
-        "board-delivery-Linux-Beta",
+    for mode in [
+        gpui_component::ThemeMode::Light,
+        gpui_component::ThemeMode::Dark,
     ] {
-        let button = visual.debug_bounds(id).expect("publication control");
-        assert_eq!(
-            *platform_rows
-                .entry(id.split('-').nth(2).unwrap())
-                .or_insert(button.origin.y),
-            button.origin.y,
-            "channels share their platform row: {id}"
-        );
-        assert!(
-            button.right() <= line.right(),
-            "visible without horizontal scrolling at normal Board width: {id}"
-        );
-    }
-    assert_eq!(platform_rows.len(), 3, "all platform rows are present");
-    assert!(platform_rows["Mac"] < platform_rows["Windows"]);
-    assert!(platform_rows["Windows"] < platform_rows["Linux"]);
-    for id in [
-        "board-delivery-Mac-Sprint",
-        "board-delivery-Windows-Sprint",
-        "board-delivery-Linux-Sprint",
-    ] {
-        assert!(visual.debug_bounds(id).is_none(), "Sprint remains absent");
+        visual.update(|_, cx| {
+            Theme::change(mode, None, cx);
+            brand::apply_theme(cx);
+        });
+        let mut normal_width = None;
+        for width in [800., 1600.] {
+            visual.simulate_resize(size(px(width), px(800.)));
+            visual.run_until_parked();
+            let line = visual
+                .debug_bounds("board-delivery-line")
+                .expect("delivery line");
+            let mut platform_rows = std::collections::HashMap::new();
+            for id in [
+                "board-delivery-Mac-Stable",
+                "board-delivery-Windows-Stable",
+                "board-delivery-Linux-Stable",
+                "board-delivery-Mac-Beta",
+                "board-delivery-Windows-Beta",
+                "board-delivery-Linux-Beta",
+            ] {
+                let button = visual.debug_bounds(id).expect("publication control");
+                assert_eq!(
+                    *platform_rows
+                        .entry(id.split('-').nth(2).unwrap())
+                        .or_insert(button.origin.y),
+                    button.origin.y,
+                    "channels share their platform row: {id}"
+                );
+                assert!(
+                    button.right() <= line.right(),
+                    "visible without horizontal scrolling at normal Board width: {id}"
+                );
+            }
+            assert_eq!(platform_rows.len(), 3, "all platform rows are present");
+            assert!(platform_rows["Mac"] < platform_rows["Windows"]);
+            assert!(platform_rows["Windows"] < platform_rows["Linux"]);
+            for id in [
+                "board-delivery-Mac-Sprint",
+                "board-delivery-Windows-Sprint",
+                "board-delivery-Linux-Sprint",
+            ] {
+                assert!(visual.debug_bounds(id).is_none(), "Sprint remains absent");
+            }
+            let stable = visual.debug_bounds("board-delivery-Mac-Stable").unwrap();
+            let beta = visual.debug_bounds("board-delivery-Mac-Beta").unwrap();
+            assert!(
+                beta.left() - stable.right() <= px(24.),
+                "channel cells stay adjacent at {width}px in {mode:?}"
+            );
+            assert!(
+                line.size.width <= px(640.),
+                "delivery uses its content width at {width}px in {mode:?}: {line:?}"
+            );
+            let content_right = visual
+                .debug_bounds("board-delivery-Linux-Beta")
+                .unwrap()
+                .right();
+            assert!(
+                line.right() - content_right <= px(8.),
+                "no full-window trailing space"
+            );
+            if let Some(normal) = normal_width {
+                assert!(
+                    (line.size.width - normal).abs() <= px(1.),
+                    "widening the window must not stretch the table"
+                );
+            } else {
+                normal_width = Some(line.size.width);
+            }
+        }
     }
 }
 
