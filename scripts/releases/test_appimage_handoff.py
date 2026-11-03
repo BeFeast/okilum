@@ -12,6 +12,22 @@ from test_appimage_publication import evidence, SOURCE
 
 
 class IndependentAcceptance(unittest.TestCase):
+    def test_hourly_and_manual_originals_are_accepted_but_nightly_copies_are_not(self):
+        receipt, _, _, _ = evidence()
+        for event in ['schedule', 'workflow_dispatch']:
+            receipt['run']['event'] = event
+            with self.assertRaises(handoff.ReuseUnavailable):
+                handoff.accepted(receipt['run'], receipt['jobs'], SOURCE)
+            build = {'name': 'Build exact-source AppImage once', 'status': 'completed',
+                     'conclusion': 'success'}
+            receipt['jobs'][0]['steps'].append(build)
+            handoff.accepted(receipt['run'], receipt['jobs'], SOURCE)
+            receipt['jobs'][0]['steps'].pop()
+        for event in ['pull_request', 'pull_request_target', 'repository_dispatch']:
+            receipt['run']['event'] = event
+            with self.assertRaises(ValueError):
+                handoff.accepted(receipt['run'], receipt['jobs'], SOURCE)
+
     def test_appimage_smoke_survives_failed_linux_aggregate(self):
         receipt, _, _, _ = evidence()
         receipt['run']['conclusion'] = 'failure'
@@ -63,6 +79,26 @@ class IndependentAcceptance(unittest.TestCase):
 
 
 class ReuseOutcomes(unittest.TestCase):
+    def test_hourly_idle_runs_do_not_make_the_original_producer_ambiguous(self):
+        receipt, data, _, _ = evidence()
+        original = receipt['run']
+        idle = {**original, 'id': 99, 'event': 'schedule'}
+        api = Mock()
+        def request(path):
+            if '/runs?' in path:
+                return {'workflow_runs': [idle, original], 'total_count': 2}
+            if '/runs/99/artifacts?' in path:
+                return {'artifacts': [], 'total_count': 0}
+            if '/artifacts?' in path:
+                return {'artifacts': [receipt['artifact']]}
+            if '/jobs?' in path:
+                return {'jobs': receipt['jobs']}
+            return original
+        api.request.side_effect = request
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertTrue(handoff.stage_result(api, SOURCE, Path(directory) / 'handoff', lambda _: data))
+        # Existing real-producer ambiguity test below remains the negative control.
+
     def stage(self, change=None, error=None):
         receipt, data, _, _ = evidence()
         responses = {'runs': {'workflow_runs': [receipt['run']]},
@@ -197,5 +233,5 @@ class WorkflowIndependence(unittest.TestCase):
         self.assertIn('needs: [select, appimage-reuse]', appimage)
         self.assertIn("needs.appimage-reuse.outputs.accepted == 'true'", appimage)
         reuse = job('appimage-reuse')
-        self.assertNotIn('outputs.build', reuse)
+        self.assertIn("needs.select.outputs.build == 'true'", reuse)
         self.assertIn("if: steps.reuse.outputs.accepted == 'true'", reuse)

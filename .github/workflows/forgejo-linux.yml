@@ -2,16 +2,41 @@
 name: forgejo-linux
 on:
   push:
-    branches: [main, 'forgejo-linux-pr/**']
+    branches: ['forgejo-linux-pr/**']
   schedule:
+    - cron: '17 * * * *'
     - cron: '5 22 * * 2,6'
   workflow_dispatch:
+    inputs:
+      source:
+        description: 'Optional exact green main requested by the Forgejo hourly/manual producer'
+        default: ''
 permissions:
   contents: read
 concurrency:
   group: forgejo-linux-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
+  select:
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.select.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOURLY_SOURCE: ${{ inputs.source }}
+          NIGHTLY: ${{ github.event.schedule == '5 22 * * 2,6' }}
+        run: |
+          if [ "$NIGHTLY" = true ]; then echo 'build=true' >> "$GITHUB_OUTPUT";
+          else python3 scripts/releases/hourly_beta.py linux; fi
+
   linux-checks:
     if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -59,6 +84,8 @@ jobs:
 
   # One source-pinned product build; both distributions consume its exact bytes.
   appimage:
+    needs: select
+    if: needs.select.outputs.build == 'true'
     permissions:
       contents: read
       actions: read
@@ -82,7 +109,7 @@ jobs:
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev libvulkan1
       - uses: actions/cache@v4
-        if: github.ref == 'refs/heads/main' && github.event_name != 'schedule'
+        if: github.ref == 'refs/heads/main' && github.event.schedule != '5 22 * * 2,6'
         with:
           path: |
             ~/.cargo/registry/
@@ -90,10 +117,10 @@ jobs:
             target/
           key: beta-appimage-v2-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'scripts/patches/*.diff') }}
       - name: Build exact-source AppImage once
-        if: github.event_name != 'schedule'
+        if: github.event.schedule != '5 22 * * 2,6'
         run: bash scripts/appimage/build.sh
       - name: Reuse original main AppImage for nightly acceptance
-        if: github.event_name == 'schedule'
+        if: github.event.schedule == '5 22 * * 2,6'
         env:
           MIRROR_TOKEN: ${{ github.token }}
         run: |
@@ -130,7 +157,7 @@ jobs:
           chmod +x Okilum-x86_64.AppImage
           APPIMAGE_EXTRACT_AND_RUN=1 ./Okilum-x86_64.AppImage --help
       - name: Verify unchanged AppImage on clean Ubuntu and Fedora
-        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
+        if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6'
         run: |
           set -euo pipefail
           mkdir -p dist/appimage/evidence
@@ -142,11 +169,11 @@ jobs:
               2>&1 | tee "dist/appimage/evidence/${image//:/-}.log"
           done
       - name: Verify signed AppImage installation with disposable CI key
-        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
+        if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event.schedule == '5 22 * * 2,6'
         env:
           GH_TOKEN: ${{ github.token }}
           APPIMAGE_ARTIFACT_ID: ${{ steps.producer.outputs.artifact-id }}
-          APPIMAGE_RETAINED_RECEIPT: ${{ github.event_name == 'schedule' && 'dist/retained/acceptance.json' || '' }}
+          APPIMAGE_RETAINED_RECEIPT: ${{ github.event.schedule == '5 22 * * 2,6' && 'dist/retained/acceptance.json' || '' }}
         run: |
           set -euo pipefail
           python3 scripts/releases/appimage_ci.py dist/appimage \
@@ -160,8 +187,8 @@ jobs:
           if-no-files-found: warn
 
   linux:
-    needs: [linux-checks, appimage]
-    if: always()
+    needs: [select, linux-checks, appimage]
+    if: always() && needs.select.outputs.build == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

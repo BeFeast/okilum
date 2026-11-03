@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 import subprocess
 import urllib.request
+
+import hourly_beta
 from urllib.parse import quote
 
 
@@ -29,51 +31,8 @@ def needed(event, published, source, platform):
     return False
 
 
-def main_tip():
-    result = subprocess.run(['git', 'ls-remote', '--exit-code', 'origin',
-                             'refs/heads/main'], check=True, capture_output=True,
-                            text=True, timeout=15)
-    fields = result.stdout.split()
-    if (len(fields) != 2 or fields[1] != 'refs/heads/main'
-            or len(fields[0]) != 40
-            or any(c not in '0123456789abcdef' for c in fields[0])):
-        raise ValueError('Cannot identify current main for scheduled build')
-    return fields[0]
-
-
-def push_ready(source, platform, ref):
-    """Only the newest queued main snapshot may start a new platform build."""
-    if ref != 'refs/heads/main' or not re.fullmatch('[0-9a-f]{40}', source):
-        raise ValueError('Automatic beta requires exact main source')
-    if source != main_tip():
-        return False
-    return needed('push', descriptor(source, platform), source, platform)
-
-
-def scheduled_source(event, source, platform):
-    """The commit an automatic Windows/Linux tick builds: main as it is now.
-
-    A tick carries the main snapshot from when it fired. Merges land faster than the
-    tick reaches its runner, so skipping an outdated snapshot starved beta for hours;
-    the tick builds the current main tip instead (unless that is already published).
-    """
-    if event != 'schedule' or platform not in ('windows', 'linux', 'macos'):
-        return source
-    return main_tip()
-
-
 # Temporary owner-approved M4 beta window (#1476); no operational revert needed.
 MACOS_BETA_UNTIL = datetime(2026, 10, 26, 3, tzinfo=timezone.utc)
-
-
-def macos_slot(now, cron=''):
-    if now < MACOS_BETA_UNTIL:
-        return 'frequent'
-    # Forgejo versions without event.schedule expose only the tick time. Accept
-    # the original daily slot, including the overlapping ten-minute tick.
-    if cron == '30 10 * * *' or (not cron and now.hour == 10 and 30 <= now.minute < 40):
-        return 'daily'
-    return None
 
 
 def macos_api(method, path, body=None):
@@ -181,30 +140,12 @@ def select_macos_preview(event, source, env, now):
 def select_macos(event, source, env, now):
     if env.get('MACOS_PREVIEW_PR'):
         return select_macos_preview(event, source, env, now)
-    if event == 'push':
-        return push_ready(source, 'macos', env.get('GITHUB_REF')), source, False, 'Coalesced main beta push'
-    tick = env.get('MACOS_BETA_TICK', '')
-    if event != 'schedule' and not tick:
-        return needed(event, None, source, 'macos'), source, False, 'Manual Mac selection'
-    if env.get('GITHUB_REF') != 'refs/heads/main':
-        raise ValueError('Automatic Mac beta requires main')
-    if tick and (event != 'workflow_dispatch' or tick not in ('frequent', 'daily')):
-        raise ValueError('Invalid automatic Mac tick')
-    slot = macos_slot(now, env.get('RELEASE_SCHEDULE', '')) if event == 'schedule' else tick
-    if slot is None or (slot == 'frequent' and now >= MACOS_BETA_UNTIL):
-        return False, source, False, 'Mac beta window expired; waiting for daily 10:30 UTC slot'
-    source = scheduled_source(event, source, 'macos')
-    if not needed('schedule', descriptor(source, 'macos'), source, 'macos'):
-        return False, source, False, 'Mac main tip already published'
-    if macos_attempted(source, env['GITHUB_RUN_ID'], before_current=event == 'workflow_dispatch'):
-        return False, source, False, 'Mac beta backoff: prior attempt for this SHA; waiting for new main'
-    if event == 'schedule':
-        macos_api('POST', '/actions/workflows/macos-release.yml/dispatches',
-                  {'ref': 'main', 'inputs': {'beta_tick': slot}})
-        return False, source, False, 'Dispatched unpublished Mac main tip; tick does not use macos runner'
-    # Dispatch captures main in run.commit_sha; do NOT check out a newer SHA.
-    # Publication keeps its strict artifact SOURCE_SHA == run.commit_sha check.
-    return True, source, now < MACOS_BETA_UNTIL, 'Build source-pinned automatic Mac beta'
+    if event == 'schedule' or (event == 'workflow_dispatch'
+            and env.get('GITHUB_REF') == 'refs/heads/main'
+            and not env.get('OKILUM_SOURCE')):
+        build, source, reason = hourly_beta.select(event, source, 'macos', env, hourly_beta.published_beta)
+        return build, source, False, reason
+    return needed(event, None, source, 'macos'), source, False, 'Manual Mac selection'
 
 
 def descriptor(source, platform):
@@ -285,17 +226,13 @@ if __name__ == '__main__':
         build = descriptor(requested, args.platform) is None
         source = requested
         print(f'Explicit source {requested}: ' + ('build' if build else 'already published'))
+    elif event == 'schedule' or (event == 'workflow_dispatch'
+            and os.environ.get('GITHUB_REF') == 'refs/heads/main'):
+        build, source, reason = hourly_beta.select(event, source, args.platform,
+                                                   os.environ, hourly_beta.published_beta)
+        print(reason)
     else:
-        tip = scheduled_source(event, source, args.platform)
-        if tip != source:
-            print(f'Scheduled snapshot {source[:8]} is behind main; building main tip {tip[:8]}')
-            source = tip
-        if event == 'push':
-            build = push_ready(source, args.platform, os.environ.get('GITHUB_REF'))
-        else:
-            published = descriptor(source, args.platform) if event == 'schedule' else None
-            build = needed(event, published, source, args.platform)
-        print('Build newest commit' if build else 'No build: coalescing or already published')
+        build = needed(event, None, source, args.platform)
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
         output.write(f'build={str(build).lower()}\n')
         output.write(f'source={source}\n')

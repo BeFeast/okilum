@@ -18,9 +18,15 @@ WORKFLOW = '.github/workflows/forgejo-macos-shipping.yml'
 STEP = 'Build, sign and notarize exact product source'
 
 
+def beta_publication(env, source):
+    return (env.get('VERIFY_ONLY') != 'true' and env.get('GITHUB_REF') == 'refs/heads/main'
+            and source == env.get('GITHUB_SHA')
+            and env.get('GITHUB_EVENT_NAME') in ('push', 'schedule', 'workflow_dispatch'))
+
+
 def identity(env):
     if (env.get('GITHUB_REF') != 'refs/heads/main'
-            or env.get('GITHUB_EVENT_NAME') not in ('workflow_dispatch', 'push')):
+            or env.get('GITHUB_EVENT_NAME') not in ('workflow_dispatch', 'push', 'schedule')):
         raise ValueError('Hosted shipping artifacts require a trusted main push or manual run')
     if env.get('GITHUB_RUN_ATTEMPT') != '1':
         raise ValueError('Shipping producer reruns are forbidden')
@@ -148,7 +154,7 @@ def main():
                 print(json.dumps({'event': 'signed_artifact_available', 'source': source,
                                   'workflow_sha': tooling, 'build': build, 'run': run['html_url'],
                                   'artifact': matches[0], 'publication': 'NONE; QA download only'}))
-                if not verify_only and os.environ.get('GITHUB_EVENT_NAME') == 'push':
+                if beta_publication(os.environ, source):
                     import sys
                     sys.path.insert(0, str(Path(__file__).parents[1] / 'releases'))
                     import appimage_artifact

@@ -159,7 +159,8 @@ class PreviewTests(unittest.TestCase):
         self.assertIn('ref: main', block)
         self.assertIn('actions: write', block)
         workflow = (ROOT / '.forgejo/workflows/macos-release.yml').read_text()
-        self.assertIn('cancel-in-progress: false', workflow)
+        self.assertIn('cancel-in-progress: true', workflow)
+        self.assertIn("|| github.run_id }}", workflow)  # manual/preview cannot cancel signing
         self.assertIn('MACOS_PR_PREVIEWS_ENABLED: ${{ vars.OKILUM_MACOS_PR_PREVIEWS }}', workflow)
         self.assertIn('MACOS_PREVIEW_HEAD: ${{ inputs.preview_head }}', workflow)
         self.assertIn("needs.select.outputs.preview == 'true'", workflow)

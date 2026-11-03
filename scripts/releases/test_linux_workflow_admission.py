@@ -11,10 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 class LinuxAdmission(unittest.TestCase):
     def test_arch_cannot_block_next_main_appimage_path(self):
         workflow = yaml.safe_load((ROOT / '.forgejo/workflows/linux-release.yml').read_text())
-        # A workflow group gates select before any jobs/if conditions can run.
-        # Explicit false also prevents a later push canceling accepted artifacts.
-        self.assertNotIn('group', workflow['concurrency'])
-        self.assertIs(workflow['concurrency']['cancel-in-progress'], False)
+        # Hourly coordinators cancel superseded ticks. Explicit archive/reuse
+        # runs have independent groups, so Arch cannot occupy their admission.
+        self.assertIn('github.run_id', workflow['concurrency']['group'])
+        self.assertIn("inputs.hourly_source", workflow['concurrency']['group'])
+        self.assertIs(workflow['concurrency']['cancel-in-progress'], True)
         jobs = workflow['jobs']
         self.assertNotIn('needs', jobs['select'])
         self.assertEqual(jobs['appimage-reuse']['needs'], 'select')

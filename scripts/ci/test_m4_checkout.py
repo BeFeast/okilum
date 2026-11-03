@@ -181,7 +181,7 @@ class M4Checkout(unittest.TestCase):
                                  [local] if job in ['macos-local', 'release', 'build'] else [])
                 if hosted:
                     self.assertIn('    runs-on: bridge\n', block)
-                    self.assertIn("if: github.event_name == 'push'", block)
+                    self.assertIn("if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'", block)
                     self.assertIn('name: macos-publication', block)
                 if local in uses:
                     self.assertIn('ACTION_SERVER_URL: ${{ github.server_url }}', block)

@@ -1,10 +1,14 @@
 name: windows-release
 
 on:
-  push:
-    branches: [main]
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
+      hourly_source:
+        description: 'Internal source-pinned hourly retry; revalidated against green main'
+        required: false
+        default: ''
       cache-benchmark:
         description: 'Measure cold/warm SDK setup on this runner before building'
         type: boolean
@@ -19,8 +23,8 @@ on:
         default: ''
 
 concurrency:
-  group: windows-build-${{ github.ref }}
-  cancel-in-progress: false
+  group: windows-beta-${{ (github.event_name == 'schedule' || inputs.hourly_source != '') && 'hourly' || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   select:
@@ -38,6 +42,9 @@ jobs:
       - name: Select hourly or manual build
         id: select
         env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          HOURLY_SOURCE: ${{ inputs.hourly_source }}
           OKILUM_SOURCE: ${{ inputs.source }}
           OKILUM_RESIGN_BUILD: ${{ inputs.resign_build }}
         run: python3 scripts/releases/coalesce.py windows
@@ -133,7 +140,7 @@ jobs:
       - name: Decide signing
         id: signing
         env:
-          BACKEND: ${{ github.event_name != 'push' && vars.OKILUM_WINDOWS_SIGN_BACKEND || '' }}
+          BACKEND: ${{ github.event_name == 'workflow_dispatch' && inputs.hourly_source == '' && vars.OKILUM_WINDOWS_SIGN_BACKEND || '' }}
           READY: ${{ vars.OKILUM_WINDOWS_SIGNER_READY }}
         run: |
           on=false
@@ -326,3 +333,21 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           CI_LANE: windows-release
         run: python3 scripts/ci/github-pr.py
+
+  shipping-status:
+    needs: [select, release, resign, package, windows-release-github]
+    if: always() && needs.select.outputs.build == 'true' && needs.select.outputs.source == github.sha && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: bridge
+    timeout-minutes: 2
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Keep Stable selector contexts on the beta source commit
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_URL: ${{ github.server_url }}
+          SOURCE: ${{ needs.select.outputs.source }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python3 scripts/releases/hourly_beta.py shipping-status windows
