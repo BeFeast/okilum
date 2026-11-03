@@ -3,7 +3,7 @@
 use super::*;
 use gpui_component::input::{HoverProvider, Rope, RopeExt};
 
-pub(super) fn provider(reader: WeakEntity<Reader>) -> Rc<dyn HoverProvider> {
+pub(crate) fn provider(reader: WeakEntity<Reader>) -> Rc<dyn HoverProvider> {
     Rc::new(SourceHover(reader))
 }
 struct SourceHover(WeakEntity<Reader>);
@@ -16,7 +16,7 @@ impl HoverProvider for SourceHover {
         _: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<Option<lsp_types::Hover>>> {
-        if text.len_bytes() > okilum_core::source_classifier::MAX_BYTES {
+        if text.len() > okilum_core::source_classifier::MAX_BYTES {
             return Task::ready(Ok(None));
         }
         let Some(reader) = self.0.upgrade() else {
@@ -97,7 +97,7 @@ impl HoverProvider for SourceHover {
                 .read_with(cx, |reader, cx| {
                     reader.navigation.preparation_generation == generation
                         && reader.editing.as_ref().is_some_and(|editing| {
-                            editing.input.read(cx).source_snapshot().text.rope() == &source
+                            editing.input().read(cx).source_snapshot().text.rope() == &source
                         })
                 })
                 .unwrap_or(false);
