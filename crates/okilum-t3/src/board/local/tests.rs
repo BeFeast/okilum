@@ -182,3 +182,22 @@ fn sidecar_reads_are_read_only_and_format_replacement_or_project_change_refuses_
         .contains("project changed"));
     assert_eq!(std::fs::read(area.path()).unwrap(), before);
 }
+
+#[test]
+fn local_writer_admission_local_board_and_manifest_replacement_are_fenced() {
+    let a = Area::new();
+    let authority = okilum_write_authority::Authority::for_root(&a.0).unwrap();
+    let session = Session::load(&a.0).unwrap();
+    let change = Change::Add(uuid::Uuid::new_v4().to_string(), draft("Retained title"));
+    let doc = crate::area_files::read(&a.0, "project").unwrap().unwrap();
+    let h = authority.begin_drain("local-board").unwrap();
+    assert!(session.save(&change).is_err());
+    assert!(doc.replace("name='changed'\nkind='code'\n").is_err());
+    assert!(!a.path().exists());
+    assert!(doc.source.contains("Local"));
+    let token = h.token().clone();
+    h.release(&token).unwrap();
+    let saved = session.save(&change).unwrap();
+    assert_eq!(saved.projection.cards[0].title, "Retained title");
+    doc.replace("name='changed'\nkind='code'\n").unwrap();
+}

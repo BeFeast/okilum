@@ -598,8 +598,12 @@ fn convert_in_background(
             );
             let Some(region) = region else {
                 // Not inserted: its saved images would be linked from nowhere.
-                for file in &done.files {
-                    let _ = std::fs::remove_file(file);
+                if let Some(lease) = &done.admission {
+                    if let Ok(_admission) = lease.enter() {
+                        for file in &done.files {
+                            let _ = std::fs::remove_file(file);
+                        }
+                    }
                 }
                 note_closed("", window, cx);
                 return;
@@ -761,8 +765,10 @@ fn download_images(
                 .unwrap_or(0);
             if hits == 0 {
                 // The remote image was edited away: no file without a link.
-                for path in name.paths {
-                    let _ = std::fs::remove_file(path);
+                if let Ok(_admission) = name.admission.enter() {
+                    for path in name.paths {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
             }
             replaced += hits;
