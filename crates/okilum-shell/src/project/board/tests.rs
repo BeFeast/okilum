@@ -232,6 +232,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
                     state: "closed".into(),
                     body: String::new(),
                     labels: Vec::new(),
+                    updated_at: String::new(),
                     open_pull_requests: Vec::new(),
                     live_pulls: Vec::new(),
                 }),
@@ -353,6 +354,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                         state: "open".into(),
                         body: String::new(),
                         labels: Vec::new(),
+                        updated_at: String::new(),
                         open_pull_requests: Vec::new(),
                         live_pulls: Vec::new(),
                     })

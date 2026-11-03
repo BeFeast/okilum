@@ -148,6 +148,16 @@ There is no new source poll, execution inference, delivery claim or status mappi
 The human-attention lane, item/stage colours and richer live-agent presentation
 remain separate product work; this slice adds none of them.
 
+Within each stage group or column (`okilum_t3::board::order` and `Board::stage_scopes`, #2535),
+issues are sorted deterministically by:
+1. Priority band: label `from-oleg` first, then `from-tester`, then `bug`, then the rest;
+2. Inside each band: issues with an open PR first, then most recently updated (`updated_at`) first;
+3. Stable tie-break by issue number descending.
+
+The Queue header displays the muted hint `«от Олега сначала»`. Because the sort
+key depends only on each issue's own metadata, refreshes with unchanged inputs
+preserve the exact order and an issue never jumps when only an unrelated issue changes.
+
 ## Accepted look, push 1
 
 The native layout follows the accepted 27 October Board v2 mockup. Type and

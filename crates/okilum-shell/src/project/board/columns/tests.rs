@@ -359,3 +359,156 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
         "live status stays at the lower edge"
     );
 }
+
+#[gpui::test]
+fn stage_cards_order_by_band_open_pr_recency_and_number_with_queue_hint(cx: &mut TestAppContext) {
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path());
+    let make_issue = |number: u64, labels: &[&str], updated_at: &str, open_pr: Option<u64>| {
+        let mut issue: okilum_t3::board::Issue = serde_json::from_value(serde_json::json!({
+            "number": number,
+            "title": format!("Issue {number}"),
+            "state": "open",
+            "updated_at": updated_at,
+            "labels": labels.iter().map(|name| serde_json::json!({"name": name})).collect::<Vec<_>>(),
+        }))
+        .unwrap();
+        if let Some(pr) = open_pr {
+            issue.open_pull_requests.push(pr);
+            issue.live_pulls.push(okilum_t3::board::live::Pull {
+                number: pr,
+                merged_at: None,
+                checks: "success".into(),
+            });
+        }
+        (number, issue)
+    };
+    board.update(visual, |board, cx| {
+        let mut binding = Binding::parse(
+            "version: 1\ntitle: Order fixture\nrepository: https://forgejo.example/team/project\nissues:\n  - {number: 101, expected: Rest older low, executor: UI}\n  - {number: 105, expected: Rest older high, executor: UI}\n  - {number: 201, expected: Bug older, executor: UI}\n  - {number: 202, expected: Bug newer, executor: UI}\n  - {number: 301, expected: Tester item, executor: UI}\n  - {number: 401, expected: Oleg item, executor: UI}\n  - {number: 501, expected: Oleg active run without PR, executor: UI, agent_thread_id: thread-501}\n  - {number: 502, expected: Oleg with open PR, executor: UI}\n  - {number: 503, expected: Tester with open PR, executor: UI}\n",
+        )
+        .unwrap();
+        if let Some(scope) = binding.issues.iter_mut().find(|s| s.number == 501) {
+            scope.current_task = true;
+        }
+        board.binding = Some(binding);
+        board.snapshot.t3.accept(
+            Ok(vec![serde_json::from_value(serde_json::json!({
+                "threadId": "thread-501",
+                "title": "Working agent",
+                "status": "running",
+                "activeRunId": "run-501",
+                "latestRunId": "run-501",
+                "providerInstanceId": "codex",
+                "model": "gpt-6.1-sol",
+                "runtimeMode": "full-access",
+                "updatedAt": "2026-11-03T20:00:00Z"
+            }))
+            .unwrap()]),
+            now(),
+        );
+        board.snapshot.forgejo.accept(
+            Ok([
+                make_issue(101, &["task"], "2026-11-03T10:00:00Z", None),
+                make_issue(105, &["task"], "2026-11-03T10:00:00Z", None),
+                make_issue(201, &["bug"], "2026-11-03T09:00:00Z", None),
+                make_issue(202, &["bug"], "2026-11-03T11:00:00Z", None),
+                make_issue(301, &["from-tester"], "2026-11-03T08:00:00Z", None),
+                make_issue(401, &["from-oleg"], "2026-11-03T07:00:00Z", None),
+                make_issue(501, &["from-oleg"], "2026-11-03T20:00:00Z", None),
+                make_issue(502, &["from-oleg"], "2026-11-03T12:00:00Z", Some(700)),
+                make_issue(503, &["from-tester"], "2026-11-03T21:00:00Z", Some(701)),
+            ]
+            .into()),
+            now(),
+        );
+        board.delivery.config.accept(Ok(None), now());
+        cx.notify();
+    });
+    loaded(&board, visual);
+
+    for mode in [
+        gpui_component::ThemeMode::Light,
+        gpui_component::ThemeMode::Dark,
+    ] {
+        visual.update(|_, cx| {
+            Theme::change(mode, None, cx);
+            brand::apply_theme(cx);
+        });
+        visual.simulate_resize(size(px(1400.), px(1000.)));
+        visual.run_until_parked();
+
+        let queue_lane = visual.debug_bounds("board-lane-Queue").unwrap();
+        let hint = visual
+            .debug_bounds("board-queue-order-hint")
+            .expect("Queue header shows 'от Олега сначала' hint");
+        assert!(
+            hint.left() >= queue_lane.left() && hint.right() <= queue_lane.right(),
+            "Queue order hint stays inside the Queue lane header"
+        );
+
+        let queue_order = [401_u64, 301, 202, 201, 105, 101];
+        for pair in queue_order.windows(2) {
+            let first = visual
+                .debug_bounds(&format!("board-expand-{}", pair[0]))
+                .unwrap();
+            let second = visual
+                .debug_bounds(&format!("board-expand-{}", pair[1]))
+                .unwrap();
+            assert!(
+                first.top() < second.top(),
+                "expected Queue issue #{} above #{} (got {:?} vs {:?})",
+                pair[0],
+                pair[1],
+                first.top(),
+                second.top()
+            );
+        }
+
+        let working_order = [502_u64, 501, 503];
+        for pair in working_order.windows(2) {
+            let first = visual
+                .debug_bounds(&format!("board-expand-{}", pair[0]))
+                .unwrap();
+            let second = visual
+                .debug_bounds(&format!("board-expand-{}", pair[1]))
+                .unwrap();
+            assert!(
+                first.top() < second.top(),
+                "expected Working issue #{} above #{} (got {:?} vs {:?})",
+                pair[0],
+                pair[1],
+                first.top(),
+                second.top()
+            );
+        }
+    }
+
+    // Refreshing with an updated timestamp on #101 moves only #101 above #105;
+    // all higher-priority cards keep their relative order.
+    board.update(visual, |board, cx| {
+        board
+            .snapshot
+            .forgejo
+            .value
+            .get_mut(&101)
+            .unwrap()
+            .updated_at = "2026-11-03T15:00:00Z".into();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for pair in [401_u64, 301, 202, 201, 101, 105].windows(2) {
+        let first = visual
+            .debug_bounds(&format!("board-expand-{}", pair[0]))
+            .unwrap();
+        let second = visual
+            .debug_bounds(&format!("board-expand-{}", pair[1]))
+            .unwrap();
+        assert!(
+            first.top() < second.top(),
+            "expected Queue issue #{} above #{} after refresh",
+            pair[0],
+            pair[1]
+        );
+    }
+}

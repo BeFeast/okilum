@@ -404,10 +404,30 @@ pub(super) fn open(cx: &mut App) -> bool {
         mode.as_str(),
         "mounted-header-light" | "mounted-header-dark"
     );
-    if picker_reference || mounted_header {
+    let board_order = matches!(mode.as_str(), "board-order-light" | "board-order-dark");
+    if picker_reference || mounted_header || board_order {
         reader_features::set_enabled(reader_features::Feature::Agents, true, cx);
     }
     let state = reader_history::state_directory().expect("isolated fixture state");
+    if board_order {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1400.), px(860.)),
+                    cx,
+                ))),
+                ..Default::default()
+            },
+            move |window, cx| {
+                window.set_window_title("Okilum — Board order fixture");
+                let board = cx.new(|cx| board::Board::order_fixture(state, window, cx));
+                cx.new(|cx| Root::new(board, window, cx))
+            },
+        )
+        .expect("Board order fixture window");
+        return true;
+    }
     if picker_reference {
         picker_reference_preferences(&state);
     }

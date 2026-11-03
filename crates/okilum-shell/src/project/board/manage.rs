@@ -716,6 +716,7 @@ mod tests {
                                 state: "open".into(),
                                 body: String::new(),
                                 labels: Vec::new(),
+                                updated_at: String::new(),
                                 open_pull_requests: Vec::new(),
                                 live_pulls: Vec::new(),
                             })

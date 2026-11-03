@@ -12,6 +12,11 @@ pub mod delivery;
 pub mod live;
 pub mod local;
 pub mod manage;
+pub mod order;
+pub use order::{
+    has_open_pr, issue_sort_key, priority_band, sort_scope_refs, sort_scopes, sorted_scope_refs,
+    updated_at_timestamp, IssueSortKey, PriorityBand, QUEUE_ORDER_HINT,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -446,7 +451,7 @@ fn validate_scope(scope: &Scope) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct Issue {
     pub number: u64,
     pub title: String,
@@ -455,13 +460,15 @@ pub struct Issue {
     pub body: String,
     #[serde(default)]
     pub labels: Vec<IssueLabel>,
+    #[serde(default)]
+    pub updated_at: String,
     /// Verified open references from this refresh, never inferred from a URL badge.
     #[serde(skip)]
     pub open_pull_requests: Vec<u64>,
     #[serde(skip)]
     pub live_pulls: Vec<live::Pull>,
 }
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct IssueLabel {
     pub name: String,
 }

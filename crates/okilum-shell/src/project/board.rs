@@ -1142,14 +1142,7 @@ impl Render for Board {
             stages.push(Column::Verified);
         }
         for column in stages {
-            let scopes: Vec<_> = binding
-                .issues
-                .iter()
-                .filter(|scope| {
-                    self.filter.as_ref().is_none_or(|f| f == &scope.executor)
-                        && self.delivery_column(scope) == column
-                })
-                .collect();
+            let scopes = self.stage_scopes(binding, column);
             let local_cards: Vec<_> = self
                 .local_cards
                 .value
@@ -1185,6 +1178,7 @@ impl Render for Board {
                 .pt_3()
                 .child(
                     h_flex()
+                        .w_full()
                         .min_w_0()
                         .gap_2()
                         .flex_wrap()
@@ -1201,6 +1195,9 @@ impl Render for Board {
                                 .text_color(colors.text_muted)
                                 .child(count.to_string()),
                         )
+                        .when(column == Column::Queue, |header| {
+                            header.child(self.queue_order_hint(cx))
+                        })
                         .when(count == 0 && self.columns.known_empty(column), |header| {
                             header.child(self.collapse_empty_column(column, cx))
                         }),

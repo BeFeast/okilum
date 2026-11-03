@@ -388,6 +388,7 @@ pub fn project(binding: &Binding, issues: &BTreeMap<u64, Issue>, at: u64) -> Bin
             scope
         })
         .collect();
+    super::order::sort_scopes(&mut projected.issues, issues);
     projected
 }
 

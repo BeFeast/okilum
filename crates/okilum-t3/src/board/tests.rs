@@ -132,6 +132,7 @@ fn issue(number: u64, state: &str) -> Issue {
         state: state.into(),
         body: "Actual issue body".into(),
         labels: Vec::new(),
+        updated_at: String::new(),
         open_pull_requests: Vec::new(),
         live_pulls: Vec::new(),
     }
