@@ -232,10 +232,6 @@ pub(super) fn render_line(
     let toggle_selector = format!("agent-disclosure-{}", link.import.target);
     let mut column = v_flex()
         .id(SharedString::from(format!("import-inline-{id}")))
-        // Keep the read-only import's controls/selection out of the host
-        // editor's reveal-on-press path. Moving the caret into the directive
-        // by keyboard still exposes its canonical source as usual.
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .w_full()
         .child(
             h_flex()
@@ -380,7 +376,37 @@ pub(super) fn render_line(
                 .child(body),
         );
     }
-    column.into_any_element()
+    if this.live_preview_shown() {
+        // Register before painting the document, so its native link press
+        // handlers run first. Stop the host editor only after child controls
+        // recorded their press; an ancestor Div handler runs too early for
+        // TextView's inline link tracking.
+        div()
+            .relative()
+            .w_full()
+            .child(
+                canvas(
+                    |bounds, window, _| bounds.intersect(&window.content_mask().bounds),
+                    |_, visible, window, _| {
+                        window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
+                            if phase.bubble()
+                                && event.button == MouseButton::Left
+                                && visible.contains(&event.position)
+                            {
+                                cx.stop_propagation();
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0()
+                .size_full(),
+            )
+            .child(column)
+            .into_any_element()
+    } else {
+        column.into_any_element()
+    }
 }
 
 impl Reader {
