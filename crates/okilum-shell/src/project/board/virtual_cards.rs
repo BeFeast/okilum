@@ -7,7 +7,10 @@ use gpui::{
     Style,
 };
 
-pub(super) struct Height(Pixels);
+pub(super) struct Height {
+    value: Pixels,
+    focused: Option<FocusHandle>,
+}
 enum Source {
     Issue(okilum_t3::board::Scope, Column, Arc<Binding>),
     Local(okilum_t3::board::local::Card),
@@ -71,11 +74,13 @@ impl Element for Card {
     ) -> (LayoutId, Self::RequestLayoutState) {
         // Estimates are layout hints, never a cap on authored text. A visible
         // card always measures its complete, existing production renderer.
-        let state =
-            window.use_keyed_state((self.id.clone(), "height"), cx, |_, _| Height(px(192.)));
+        let state = window.use_keyed_state((self.id.clone(), "height"), cx, |_, _| Height {
+            value: px(192.),
+            focused: None,
+        });
         let mut style = Style::default();
         style.size.width = gpui::relative(1.).into();
-        style.size.height = state.read(cx).0.into();
+        style.size.height = state.read(cx).value.into();
         style.min_size.width = px(0.).into();
         style.flex_shrink = 0.;
         (window.request_layout(style, None, cx), state)
@@ -90,7 +95,12 @@ impl Element for Card {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let viewport = window.content_mask().bounds;
-        if !self.selected && !bounds.intersects(&viewport.dilate(px(400.))) {
+        let focused = state
+            .read(cx)
+            .focused
+            .as_ref()
+            .is_some_and(|focus| focus.contains_focused(window, cx));
+        if !self.selected && !focused && !bounds.intersects(&viewport.dilate(px(400.))) {
             return None;
         }
         let mut element = self
@@ -108,8 +118,8 @@ impl Element for Card {
             window,
             cx,
         );
-        if (measured.height - state.read(cx).0).abs() > px(0.5) {
-            state.update(cx, |height, _| height.0 = measured.height);
+        if (measured.height - state.read(cx).value).abs() > px(0.5) {
+            state.update(cx, |height, _| height.value = measured.height);
             let board = self.board.clone();
             window.defer(cx, move |_, cx| {
                 let _ = board.update(cx, |_, cx| cx.notify());
@@ -117,9 +127,10 @@ impl Element for Card {
         }
         // Refinement can change a lane's total height on the next frame.
         // Contain this frame until the shared outer scroll surface relays it.
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            element.prepaint_at(bounds.origin, window, cx);
+        let focused = window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            element.prepaint_at(bounds.origin, window, cx)
         });
+        state.update(cx, |height, _| height.focused = focused);
         Some(element)
     }
     fn paint(
