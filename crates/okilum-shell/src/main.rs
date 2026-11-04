@@ -8434,7 +8434,6 @@ impl Render for Reader {
                 }
             }))
             .children(self.render_hover_preview(window, cx))
-            .children(reader_image_actions::source_hover_overlay(self, cx))
             .map(|view| {
                 #[cfg(any(unix, windows))]
                 let view = view.children(self.render_move_picker());
