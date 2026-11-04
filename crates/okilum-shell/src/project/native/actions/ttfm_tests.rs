@@ -34,6 +34,15 @@ fn draw(visual: &mut VisualTestContext) {
 async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
     cx: &mut TestAppContext,
 ) {
+    scenario(cx, true).await;
+}
+
+#[gpui::test]
+async fn manager_ttfm_missing_snapshot_never_logs_a_success(cx: &mut TestAppContext) {
+    scenario(cx, false).await;
+}
+
+async fn scenario(cx: &mut TestAppContext, deliver_snapshot: bool) {
     let diagnostics = tempfile::tempdir().unwrap();
     let trace = reader_diagnostics::Trace::new(Some(diagnostics.path().to_owned()), None);
     cx.update(|cx| cx.set_global(reader_diagnostics::LaunchTrace(trace.clone())));
@@ -59,6 +68,9 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
         let mut manager = socket(&sockets, None);
         subscribed.send(()).unwrap();
         released.recv_timeout(Duration::from_secs(10)).unwrap();
+        if !deliver_snapshot {
+            return;
+        }
         let item = json!({"id":"ttfm-message","threadId":THREAD,"ordinal":1,
             "type":"assistant_message","text":"TTFM fixture message","status":"completed"});
         let mut value = snapshot();
@@ -104,6 +116,18 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
     assert!(events(diagnostics.path(), "manager_ttfm").is_empty());
     assert!(view.read_with(visual, |view, _| view.ttfm.needs_paint()));
 
+    if !deliver_snapshot {
+        // Finish an entire open without ever sending a Manager snapshot.
+        view.update_in(visual, |view, window, cx| {
+            view.set_active(false, window, cx)
+        });
+        release.send(()).unwrap();
+        server.join().unwrap();
+        trace.event("ttfm_control", json!({"closed_without_snapshot":true}));
+        wait_events(diagnostics.path(), "ttfm_control", 2);
+        assert!(events(diagnostics.path(), "manager_ttfm").is_empty());
+        return;
+    }
     release.send(()).unwrap();
     visual
         .condition(&view, |view, _| view.native.title() == "TTFM fixture")
