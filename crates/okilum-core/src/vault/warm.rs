@@ -2566,6 +2566,67 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn cold_read_crossing_native_ctime_window_keeps_stamp_and_relaunch_reuses_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("source.md");
+        std::fs::write(&path, "# Unchanged").unwrap();
+        let metadata = SourceRevision::metadata(&path).unwrap();
+        let changed = UNIX_EPOCH + std::time::Duration::from_nanos(metadata.changed as u64);
+        let young = changed + std::time::Duration::from_millis(1999);
+        let aged = changed + std::time::Duration::from_secs(2);
+        let now = std::rc::Rc::new(std::cell::Cell::new(young));
+        let clock = now.clone();
+        crate::change_detection::with_native_ctime_clock(
+            move || clock.get(),
+            || {
+                assert!(SourceRevision::read(&path).unwrap().content_hash.is_some());
+                let (vault, cold, stats) =
+                    reconcile_with_reader(&root, None, false, &mut |_, _| Ok(()), &mut |path| {
+                        let bytes = std::fs::read(path)?;
+                        now.set(aged);
+                        Ok(bytes)
+                    })
+                    .unwrap();
+                assert_eq!(stats.read, 1, "cold source read positive control");
+                assert_eq!(stats.reuse.fingerprinted, 1, "before was inside the window");
+                assert!(
+                    SourceRevision::read(&path).unwrap().content_hash.is_none(),
+                    "after crossed the window without any file edit"
+                );
+                assert_eq!(SourceRevision::metadata(&path).unwrap(), metadata);
+                assert!(
+                    cold.source_revision("source.md").is_some(),
+                    "elapsed time must not invalidate a verified cold read"
+                );
+                assert!(
+                    cold.source_revision("source.md")
+                        .unwrap()
+                        .content_hash
+                        .is_some(),
+                    "retain the fingerprint tied to the source bytes"
+                );
+                save_complete(&cold, &vault, &cache).unwrap();
+                let saved = Snapshot::load_checked(&cache, &root).unwrap();
+                let (_, _, stats) = reconcile_with_reader(
+                    &root,
+                    Some(&saved),
+                    false,
+                    &mut |_, _| Ok(()),
+                    &mut |_| panic!("unchanged persisted source must not be re-read"),
+                )
+                .unwrap();
+                assert_eq!((stats.read, stats.reused), (0, 1));
+                assert_eq!(stats.reuse.invalidated_revision, 0);
+                assert!(stats.graph_reused);
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn content_fallback_detects_identical_stat_edits_and_reuses_unchanged_sources() {
         crate::change_detection::with_content_checks(|| {
             let temp = tempfile::tempdir().unwrap();
