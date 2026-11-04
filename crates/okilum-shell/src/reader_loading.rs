@@ -2719,6 +2719,8 @@ impl Reader {
                                 this.stage_first_document(
                                     intent, vault, document, searcher, published, log, window, cx,
                                 );
+                                #[cfg(target_os = "linux")]
+                                reader_sync_conflicts::show_startup_notice(window, cx);
                                 if let Some(notice) = recovery_notice {
                                     reader_toast::error(notice, window, cx);
                                 }
@@ -5996,6 +5998,54 @@ mod tests {
         // Best effort: background indexing may still be writing here (main run 6557 failed
         // only in this cleanup, with every assertion above passing).
         let _ = std::fs::remove_dir_all(temp);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn issue2044_startup_repairs_before_primary_path_and_cached_inventory() {
+        use okilum_sync_controller::conflicts::{self, ApplyOutcome, Choice};
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("vault");
+        let state = fixture.path().join("state");
+        let recovery = state.join("sync-conflicts");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        conflicts::prepare_recovery(&recovery).unwrap();
+        let copy = Path::new("note.sync-conflict-20261104-123456-ABC2345.md");
+        std::fs::write(root.join("note.md"), b"this").unwrap();
+        std::fs::write(root.join(copy), b"that").unwrap();
+        let preview = conflicts::preview(&root, copy).unwrap();
+        let ApplyOutcome::Applied(receipt) =
+            conflicts::apply(&preview, Choice::KeepBoth, &recovery).unwrap()
+        else {
+            panic!("fixture must apply")
+        };
+        // Model the durable capture gap. Actual process termination at both
+        // captures is independently exercised by the controller subprocess test.
+        std::fs::remove_file(receipt.recovery_record.with_extension("complete")).unwrap();
+        std::fs::remove_file(root.join("note.md")).unwrap();
+        let opts = Opts {
+            vault: Some(root.clone()),
+            note: Some("note.md".into()),
+            session_directory: Some(state),
+            index_dir: Some(fixture.path().join("index")),
+            ..Default::default()
+        };
+        assert!(!root.join("note.md").exists(), "gap control");
+        assert_eq!(
+            crate::reader_sync_conflicts::recover_before_open(&opts).len(),
+            1
+        );
+        let Event::First {
+            document, vault, ..
+        } = prepare_first(&opts, &Cancellation::default()).unwrap()
+        else {
+            panic!("first document expected")
+        };
+        assert_eq!(document.unwrap().0, "note.md");
+        assert!(vault.notes.iter().any(|note| note.path == "note.md"));
+        assert_eq!(std::fs::read(root.join("note.md")).unwrap(), b"this");
+        assert_eq!(std::fs::read(root.join(copy)).unwrap(), b"that");
     }
 
     #[test]

@@ -293,6 +293,14 @@ impl Reader {
             .px_2()
             .gap_1()
             .child(title)
+            .when_some(self.tree.rules_of(self.tree.scope()), |row, path| {
+                row.child(reader_tree_rules::badge(
+                    path,
+                    reader.clone(),
+                    self.vault_root.clone(),
+                    generation,
+                ))
+            })
             .child(actions)
             .into_any_element()
     }
@@ -498,6 +506,8 @@ mod tests {
                     archived: false,
                     hidden: false,
                     index: false,
+                    agent_rules: None,
+                    agent_shim: false,
                 })
             })
             .collect();
@@ -614,6 +624,155 @@ mod tests {
         });
         visual.run_until_parked();
         (reader, visual, temp)
+    }
+
+    #[gpui::test]
+    fn issue1587_folder_rules_badge_opens_hidden_rules_without_toggling_folder(
+        cx: &mut TestAppContext,
+    ) {
+        let (reader, visual, temp) = fixture_with_branch(cx, "Project", &["Other"]);
+        let vault = temp.path().join("vault");
+        for (path, source) in [
+            ("AGENTS.md", "# Root agent rules\n"),
+            ("Project/AGENTS.md", "# Project agent rules\n"),
+            ("Project/CLAUDE.md", "\u{feff} @./AGENTS.md\r\n"),
+            ("Project/GEMINI.md", "# Real provider rules\n"),
+        ] {
+            std::fs::write(vault.join(path), source).unwrap();
+        }
+        for folder in [".claude", ".agents", ".codex"] {
+            std::fs::create_dir(vault.join(format!("Project/{folder}"))).unwrap();
+            std::fs::write(
+                vault.join(format!("Project/{folder}/config.md")),
+                "# Config\n",
+            )
+            .unwrap();
+        }
+        reader.update(visual, |view, cx| {
+            view.vault = Arc::new(Vault::scan(&vault).unwrap());
+            view.sync_tree();
+            view.tree.set_expanded("Project", false);
+            view.tree.cursor = Some("Other".into());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("tree-agent-rules-AGENTS.md").is_some(),
+            "root rules are accessible from the header"
+        );
+        assert!(visual
+            .debug_bounds("tree-agent-rules-Other/AGENTS.md")
+            .is_none());
+        reader.read_with(visual, |view, _| {
+            assert!(!view
+                .tree
+                .rows
+                .iter()
+                .any(|r| r.path.ends_with("/AGENTS.md")));
+            assert_eq!(
+                view.tree.rules_of("Project").as_deref(),
+                Some("Project/AGENTS.md")
+            );
+        });
+        let badge = visual
+            .debug_bounds("tree-agent-rules-Project/AGENTS.md")
+            .expect("collapsed folder has its badge");
+        let row = visual.debug_bounds("tree-row-Project").unwrap();
+        assert!(badge.left() >= row.left() && badge.right() <= row.right());
+        visual.simulate_click(badge.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert_eq!(
+                view.current_rel, "Project/AGENTS.md",
+                "real click opens the hidden file"
+            );
+            assert!(
+                !view.tree.expanded_paths().contains("Project"),
+                "badge click must not expand the folder"
+            );
+            assert_ne!(
+                view.tree.cursor.as_deref(),
+                Some("Project"),
+                "folder selection must not receive the click"
+            );
+        });
+        let root = visual.debug_bounds("tree-agent-rules-AGENTS.md").unwrap();
+        visual.simulate_click(root.center(), Modifiers::default());
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| assert_eq!(view.current_rel, "AGENTS.md"));
+        reader.update(visual, |view, cx| {
+            view.tree.set_subtree("Project", true);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        reader.update(visual, |view, cx| {
+            view.tree.set_show_hidden(true);
+            view.sidebar.show_hidden = true;
+            view.refresh_tree_rules(cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert!(
+                view.tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == "Project/CLAUDE.md")
+                    .unwrap()
+                    .agent_shim
+            )
+        });
+        std::fs::write(vault.join("Project/CLAUDE.md"), "# Own rules\n").unwrap();
+        reader.update(visual, |view, cx| {
+            // Source-only changes can reuse the same inventory Arc.
+            view.source_publication_epoch += 1;
+            view.refresh_tree_rules(cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |view, _| {
+            assert!(
+                !view
+                    .tree
+                    .rows
+                    .iter()
+                    .find(|r| r.path == "Project/CLAUDE.md")
+                    .unwrap()
+                    .agent_shim
+            )
+        });
+        reader.update(visual, |view, cx| {
+            view.tree.set_show_hidden(false);
+            view.sidebar.show_hidden = false;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        for enabled in [true, false] {
+            let toggle = visual.debug_bounds("sidebar-show-hidden").unwrap();
+            visual.simulate_click(toggle.center(), Modifiers::default());
+            visual.run_until_parked();
+            reader.read_with(visual, |view, _| {
+                assert_eq!(view.tree.show_hidden(), enabled);
+                for path in [
+                    "Project/AGENTS.md",
+                    "Project/CLAUDE.md",
+                    "Project/GEMINI.md",
+                    "Project/.claude",
+                    "Project/.agents",
+                    "Project/.codex",
+                ] {
+                    assert_eq!(
+                        view.tree.rows.iter().any(|r| r.path == path),
+                        enabled,
+                        "{path}"
+                    );
+                }
+            });
+            assert!(
+                visual
+                    .debug_bounds("tree-agent-rules-Project/AGENTS.md")
+                    .is_some(),
+                "badge survives either visibility state"
+            );
+        }
     }
 
     #[gpui::test]
