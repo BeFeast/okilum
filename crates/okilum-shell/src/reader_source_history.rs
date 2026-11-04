@@ -27,7 +27,17 @@ impl Reader {
             let drafts = state.join("editor-drafts");
             let mut listing = if drafts_only {
                 let mut listing = source_history::drafts(&drafts, &root)?;
-                let history = source_history::list(&drafts, &root)?;
+                let mut history = source_history::list(&drafts, &root)?;
+                #[cfg(unix)]
+                match source_history::sync::list(&root, None) {
+                    Ok(sync) => {
+                        history.versions.extend(sync.versions);
+                        history.warnings.extend(sync.warnings);
+                    }
+                    Err(error) => history
+                        .warnings
+                        .push(format!("Cannot read Sync history: {error:#}")),
+                }
                 listing
                     .versions
                     .extend(history.versions.into_iter().filter(|v| !v.note.exists()));
@@ -102,13 +112,17 @@ impl Reader {
         });
     }
 
-    fn preview_source_version(
+    pub(super) fn preview_source_version(
         &mut self,
         version: Version,
         root: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let can_restore = version.note.strip_prefix(&root).is_ok()
+            && std::fs::symlink_metadata(&version.note)
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            && !version.link_move;
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .language("markdown")
@@ -135,7 +149,32 @@ impl Reader {
                         .h(px(320.)),
                 )
                 .footer(
-                    h_flex().gap_2().child(
+                    h_flex().gap_2().when(can_restore, |buttons| {
+                        let reader = reader.clone(); let version = version.clone(); let root = root.clone();
+                        buttons.child(Button::new("recover-source-original").debug_selector(|| "recover-source-original".into()).primary().label("Restore to original path")
+                            .on_click(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let _ = reader.update(cx, |r, cx| {
+                                    let result = (|| -> anyhow::Result<()> {
+                                        anyhow::ensure!(r.vault_root == root, "The open folder changed; open history again");
+                                        let relative = version.note.strip_prefix(&root)?;
+                                        let rel = relative.to_str().ok_or_else(|| anyhow::anyhow!("Unsupported note path"))?.to_string();
+                                        anyhow::ensure!(!r.source_is_dirty(cx), "Save or discard unsaved edits before restoring");
+                                        r.check_move_editors(std::slice::from_ref(&rel), cx)?;
+                                        let state = r.session_directory.as_ref().ok_or_else(|| anyhow::anyhow!("No recovery storage"))?;
+                                        source_history::save_copy_bytes(&root, relative, &state.join("editor-drafts"), version.bytes())?;
+                                        r.timeline = None;
+                                        r.prepare_document(&rel, None, None, window, cx);
+                                        Ok(())
+                                    })();
+                                    match result {
+                                        Ok(()) => reader_toast::transient("Note restored. The history version is retained.", window, cx),
+                                        Err(error) => r.link_notice = Some(format!("Cannot restore: {error:#}").into()),
+                                    }
+                                    cx.notify();
+                                });
+                            }))
+                    }).child(
                         Button::new("recover-source-copy")
                             .primary()
                             .label("Save as recovered note…")

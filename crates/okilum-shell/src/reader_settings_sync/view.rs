@@ -262,6 +262,19 @@ impl Render for SyncSettings {
                 content = content.child(div().text_sm().text_color(p.text_muted)
                     .child("An empty folder starts syncing automatically. A folder with existing files requires a lossless merge preview before Sync can start."));
             }
+            for (index, setting) in snapshot.history_retention.iter().enumerate() {
+                content = content.child(v_flex().gap_1()
+                    .child(format!("Previous Sync versions · {}", setting.path.display()))
+                    .child(format!("Keep for {} days on this computer. Restore from Note history or Recover notes. Sync is not a backup of every local edit.", setting.days.days()))
+                    .child(h_flex().gap_2().children([7u16, 30, 90, 365].into_iter().map(|days| {
+                        let path = setting.path.clone();
+                        Button::new(("sync-history-days", index * 4 + [7,30,90,365].iter().position(|d| *d == days).unwrap()))
+                            .label(format!("{days} days"))
+                            .selected(setting.days.days() == days)
+                            .disabled(self.busy)
+                            .on_click(cx.listener(move |this, _, _, cx| this.run(Operation::Retention(path.clone(), direct::RetentionDays::try_from(days).expect("valid retention preset")), cx)))
+                    }))));
+            }
             if !snapshot.attached.is_empty() {
                 content = content.child(div().text_base().child("Connected vaults"));
                 for vault in &snapshot.attached {

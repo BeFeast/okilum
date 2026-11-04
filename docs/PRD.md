@@ -56,10 +56,11 @@ unmerged PRs #2511/#2513 do not enable it. Incoming changes update open reading
 and clean editing views. With unsaved edits, a notice preserves local text;
 explicit Save or **Keep both versions** saves a separate
 `.okilum-conflict-<time>-<random>` copy without replacing the incoming file
-(#2486). The full Sync conflict journey (#2044), shared ignore policy (#2046),
-and 30-day history on every device with Note history restore (#2045) remain
-follow-ups. New managed folders already use Syncthing staggered 30-day versioning;
-that is not a backup of every local edit. macOS is **coming** in
+(#2486). The full Sync conflict journey (#2044) and shared ignore policy (#2046)
+remain follow-ups. [Previous Sync versions](source-history.md#previous-versions-from-sync-2045)
+use staggered 30-day history on both managed sides, reconcile existing owned
+folders, offer per-computer retention settings and guarded Restore in Note history
+and Recover notes (#2045). This is not a backup of every local edit. macOS is **coming** in
 [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is **coming** in
 [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
 

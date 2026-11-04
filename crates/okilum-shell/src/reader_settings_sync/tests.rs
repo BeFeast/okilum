@@ -254,6 +254,7 @@ fn reader_settings_sync_nonempty_and_expired_errors_have_actionable_recovery() {
 
 fn snapshot(pending: Option<direct::Pending>) -> Snapshot {
     Snapshot {
+        history_retention: vec![],
         offer_url: None,
         preparing: false,
         pending,

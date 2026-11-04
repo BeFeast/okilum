@@ -117,14 +117,16 @@ behavior. Okilum copies deliberately avoid Syncthing's `.sync-conflict-` naming
 pattern so Syncthing does not prune them as transport conflicts. Syncthing can
 also create its own conflict copies. Neither kind means the conflict was resolved.
 
-New managed source and receiving folders use Syncthing staggered versioning with
-a 30-day maximum age and retain transport conflict copies. This is transport
-history, not a guarantee of a snapshot of every local edit. Existing external
+Managed source and receiving folders use Syncthing staggered versioning with
+30-day retention by default, including idempotent reconciliation of existing
+owned folders. Settings → Sync changes retention on this computer. Overwritten
+notes appear in **Note history**; deleted notes appear in **Recover notes…** with
+an exclusive Restore action. A newer local edit blocks replacement; successful
+replacement retains its preimage in application history. See
+[previous Sync versions](source-history.md#previous-versions-from-sync-2045).
+This is transport history, not a snapshot of every local edit. Existing external
 folder/version settings are preserved. The full Sync conflict-resolution journey
-in [#2044](https://git.oklabs.uk/BeFeast/okilum/issues/2044) and 30-day history on
-every device with restore from **Note history** in
-[#2045](https://git.oklabs.uk/BeFeast/okilum/issues/2045) remain follow-ups; existing
-editor compare/recovery controls do not complete those promises.
+in [#2044](https://git.oklabs.uk/BeFeast/okilum/issues/2044) remains a follow-up.
 
 ## Existing Syncthing
 
@@ -183,10 +185,9 @@ set the direction. These parts remain unfinished:
   does not enable this flow. Unmerged PRs
   [#2511](https://git.oklabs.uk/BeFeast/okilum/pulls/2511) and
   [#2513](https://git.oklabs.uk/BeFeast/okilum/pulls/2513) are not shipped support.
-- [#2044](https://git.oklabs.uk/BeFeast/okilum/issues/2044),
-  [#2045](https://git.oklabs.uk/BeFeast/okilum/issues/2045) and
-  [#2048](https://git.oklabs.uk/BeFeast/okilum/issues/2048): the complete conflict,
-  history and headless/plain-peer journeys described above.
+- [#2044](https://git.oklabs.uk/BeFeast/okilum/issues/2044) and
+  [#2048](https://git.oklabs.uk/BeFeast/okilum/issues/2048): the complete conflict
+  and headless/plain-peer journeys described above.
 - [#2046](https://git.oklabs.uk/BeFeast/okilum/issues/2046): one shared ignore
   policy for the whole vault. Today source enrollment seeds/verifies local
   `.stignore` rules and first receive applies approved ignores; Syncthing does

@@ -1,5 +1,7 @@
 //! Durable source preimages, distinct from the rebuildable index.
 mod raw;
+#[cfg(unix)]
+pub mod sync;
 use anyhow::{ensure, Context, Result};
 pub(crate) use raw::RawRecord;
 use serde::{Deserialize, Serialize};
