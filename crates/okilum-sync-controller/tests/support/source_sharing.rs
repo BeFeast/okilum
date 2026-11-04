@@ -598,6 +598,9 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
     Ok(())
 }
 
+#[path = "remote_inventory.rs"]
+mod remote_inventory;
+
 /// Driven in separate processes by CI: observe two live daemons before release,
 /// then exercise success, assertion unwinding, and SIGKILL without Drop.
 #[test]
@@ -972,5 +975,143 @@ fn managed_history_2045_broken_folder_warns_while_other_vault_receives() -> Resu
         .history_warnings
         .iter()
         .any(|w| w.path == pair.target.vault));
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_real_conflicts_resolve_each_choice_with_hashes() -> Result<()> {
+    use okilum_sync_controller::conflicts::{self, ApplyOutcome, Choice};
+    use std::time::{Duration, SystemTime};
+    let mut pair = Pair::loopback()?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("conflict receiver promotion", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing)
+    })?;
+    for vault in [&pair.source.vault, &pair.target.vault] {
+        let policy = fs::read_to_string(vault.join(".stignore"))?;
+        assert!(
+            policy.lines().any(|line| line == ".okilum-save-*"),
+            "managed enrollment must seed local retention policy on both computers"
+        );
+    }
+    for (index, choice) in [Choice::KeepThis, Choice::KeepThat, Choice::KeepBoth]
+        .into_iter()
+        .enumerate()
+    {
+        let name = format!("decision-{index}.md");
+        fs::write(pair.source.vault.join(&name), b"shared base\r\n")?;
+        wait("shared conflict base hash", || {
+            pair.tick(&id)?;
+            Ok(same_hash(&pair.target.vault, &name, b"shared base\r\n"))
+        })?;
+        pair.source.pause_remote(&pair.target.id, true)?;
+        pair.target.pause_remote(&pair.source.id, true)?;
+        let versions = [
+            b"\xef\xbb\xbfsource offline\r\n".as_slice(),
+            b"target offline\n".as_slice(),
+        ];
+        for (peer, bytes, offset) in [
+            (&pair.source, versions[0], 2),
+            (&pair.target, versions[1], 4),
+        ] {
+            fs::write(peer.vault.join(&name), bytes)?;
+            fs::File::options()
+                .write(true)
+                .open(peer.vault.join(&name))?
+                .set_times(
+                    fs::FileTimes::new()
+                        .set_modified(SystemTime::now() + Duration::from_secs(offset)),
+                )?;
+            peer.api.scan(&id)?;
+        }
+        pair.source.pause_remote(&pair.target.id, false)?;
+        pair.target.pause_remote(&pair.source.id, false)?;
+        let mut actual = None;
+        wait(
+            "real Syncthing creates conflict copy with both original hashes",
+            || {
+                pair.tick(&id)?;
+                for copy in conflicts::inspect(&pair.target.vault)?.copies {
+                    if conflicts::canonical_path(&copy).as_deref() != Some(Path::new(&name)) {
+                        continue;
+                    }
+                    let p = conflicts::preview(&pair.target.vault, &copy)?;
+                    let hashes = [
+                        Sha256::digest(p.this().bytes()),
+                        Sha256::digest(p.that().bytes()),
+                    ];
+                    if versions
+                        .iter()
+                        .all(|bytes| hashes.contains(&Sha256::digest(bytes)))
+                    {
+                        actual = Some(copy);
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            },
+        )?;
+        // The decision acts on actual synced inputs; no hand-made conflict copy.
+        let p = conflicts::preview(&pair.target.vault, actual.as_ref().unwrap())?;
+        let before = [p.this().bytes().to_vec(), p.that().bytes().to_vec()];
+        let state = pair._root.path().join(format!("resolution-{index}"));
+        fs::create_dir(&state)?;
+        let ApplyOutcome::Applied(receipt) = conflicts::apply(&p, choice, &state)? else {
+            anyhow::bail!("real conflict decision was not completed");
+        };
+        for original in &receipt.originals {
+            assert!(pair.target.vault.join(original).is_file());
+            assert!(!pair.source.vault.join(original).exists());
+        }
+        let expected = &before[usize::from(choice == Choice::KeepThat)];
+        assert!(same_hash(&pair.target.vault, &name, expected));
+        assert!(!pair.target.vault.join(actual.as_ref().unwrap()).exists());
+        for (version, expected) in conflicts::retained_versions(&receipt.recovery_record)?
+            .iter()
+            .zip(&before)
+        {
+            assert_eq!(Sha256::digest(&version.bytes), Sha256::digest(expected));
+        }
+        if let Some(path) = receipt.kept_both.as_ref() {
+            assert!(same_hash(
+                &pair.target.vault,
+                &path.to_string_lossy(),
+                &before[1]
+            ));
+        }
+        wait(
+            "resolved hashes and conflict removal reach other runtime",
+            || {
+                pair.tick(&id)?;
+                Ok(same_hash(&pair.source.vault, &name, expected)
+                    && !pair.source.vault.join(actual.as_ref().unwrap()).exists()
+                    && receipt.kept_both.as_ref().is_none_or(|path| {
+                        same_hash(&pair.source.vault, &path.to_string_lossy(), &before[1])
+                    }))
+            },
+        )?;
+        for (original, bytes) in receipt.originals.iter().zip(&before) {
+            assert!(same_hash(
+                &pair.target.vault,
+                &original.to_string_lossy(),
+                bytes
+            ));
+            assert!(
+                !pair.source.vault.join(original).exists(),
+                "retained original must stay on the resolving computer after both scans"
+            );
+            for api in [&pair.source.api, &pair.target.api] {
+                assert!(api.ignores(&id)?["ignore"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|line| line == ".okilum-save-*"));
+            }
+        }
+    }
     Ok(())
 }

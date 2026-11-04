@@ -19,6 +19,8 @@ suite cargo test -p okilum-appimage --all-features --no-fail-fast -- --test-thre
 suite cargo test --locked -p okilum-http --features updates --no-fail-fast
 # #2572: retain a separate non-empty verdict for unified Vaults and log sources.
 suite cargo test --locked -p okilum-shell --bin okilum issue2572_ -- --nocapture
+# #1587: preserve explicit non-empty classifier/tree/badge click evidence.
+suite cargo test --locked -p okilum-shell --bin okilum issue1587_ -- --nocapture
 # Keep an explicit non-empty Settings dismissal verdict ahead of the full shell.
 # Keep Board filter interaction and model verdicts explicit and non-empty.
 suite cargo test --locked -p okilum-shell --bin okilum issue2532_ -- --nocapture
@@ -44,6 +46,9 @@ suite cargo test --locked -p okilum-shell --bin okilum input_anchor_tests:: -- -
 suite cargo test --locked -p okilum-shell --bin okilum reader_editor::tables::grid:: -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum reader_editor::lists::key_tests:: -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum reader_outline::tests::draft_1320_ -- --nocapture
+# #2044: explicit conflict controller and mounted shell acceptance.
+suite cargo test --locked -p okilum-sync-controller --lib conflicts:: -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum issue2044_ -- --nocapture --test-threads=1
 # Preserve assertion diagnostics even if a later native task aborts the process.
 suite cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 --no-fail-fast -- --nocapture
 # #1915: explicit filters make unsupported-flag coverage inspectable in CI.

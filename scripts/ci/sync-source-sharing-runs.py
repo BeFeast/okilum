@@ -17,11 +17,13 @@ check = lifecycle["check"]
 TESTS = {
     "managed_history_2045_broken_folder_warns_while_other_vault_receives",
     "managed_history_2045_restore_retention_and_migration",
+    "managed_real_conflicts_resolve_each_choice_with_hashes",
     "managed_source_share_empty_receive_and_bidirectional_hashes",
     "managed_source_skipped_share_negative_control",
     "managed_source_nonempty_destination_refused_without_writes",
     "managed_peer_addresses_without_discovery_negative_then_hashes_and_restart",
     "managed_receiver_catalog_name_and_7504_label_reconcile",
+    "remote_inventory::managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes",
 }
 
 

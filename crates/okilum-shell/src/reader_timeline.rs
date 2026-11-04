@@ -142,6 +142,8 @@ impl Reader {
                         Ok(sync) => { listing.versions.extend(sync.versions); listing.warnings.extend(sync.warnings); }
                         Err(error) => listing.warnings.push(format!("Cannot read Sync history: {error:#}")),
                     }
+                    #[cfg(target_os = "linux")]
+                    crate::reader_sync_conflicts::append_history(&state, &root, &mut listing)?;
                     let moves = source_history::move_versions(&state, &root)?;
                     listing.versions.extend(moves.versions);
                     listing.warnings.extend(moves.warnings);

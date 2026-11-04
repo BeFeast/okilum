@@ -114,6 +114,9 @@ pub(super) struct SyncSettings {
     destination_error: Option<(String, String)>,
     receiving: bool,
     scroll: ScrollHandle,
+    #[cfg(target_os = "linux")]
+    conflicts:
+        std::collections::BTreeMap<PathBuf, Entity<crate::reader_sync_conflicts::InventoryView>>,
 }
 impl SyncSettings {
     fn choose_retention(
@@ -196,6 +199,8 @@ impl SyncSettings {
             destination_error: None,
             receiving: false,
             scroll: ScrollHandle::new(),
+            #[cfg(target_os = "linux")]
+            conflicts: Default::default(),
         };
         this.run(Operation::EnterPairing, cx);
         this

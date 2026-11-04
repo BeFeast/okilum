@@ -176,6 +176,16 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Dismissal is local UI state. A send, lost connection or unavailable
+        // catalog must never trap an already-open popup or dispatch a request.
+        if self.model_open
+            && event.keystroke.key == "escape"
+            && event.keystroke.modifiers == gpui::Modifiers::default()
+        {
+            self.close_models(window, cx);
+            cx.stop_propagation();
+            return true;
+        }
         if !self.active || self.busy || !self.can_read_models() {
             return false;
         }
@@ -746,6 +756,28 @@ impl ProjectView {
                 .occlude()
                 .on_prepaint(gpui_base::GlobalState::record_native_overlay)
                 .tab_group()
+                .key_context("ManagerModels")
+                .on_action(
+                    cx.listener(|this, _: &crate::DismissManagerModel, window, cx| {
+                        if this.model_open {
+                            this.close_models(window, cx);
+                            cx.stop_propagation();
+                        } else {
+                            cx.propagate();
+                        }
+                    }),
+                )
+                // Reader's Escape binding dispatches Dismiss before low-level
+                // key listeners. Own it inside this deferred popup so it cannot
+                // dismiss background Reader UI or trap focus in model search.
+                .on_action(cx.listener(|this, _: &crate::Dismiss, window, cx| {
+                    if this.model_open {
+                        this.close_models(window, cx);
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }))
                 .popover_style(cx)
                 .rounded(px(crate::project::design::RADIUS))
                 .border_1()

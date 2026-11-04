@@ -4,6 +4,8 @@ mod addresses;
 mod existing;
 mod history;
 pub use history::{HistoryWarning, RetentionDays, RetentionSetting};
+#[cfg(target_os = "linux")]
+pub mod inventory;
 mod origin;
 #[cfg(target_os = "linux")]
 mod source;
@@ -21,7 +23,7 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, UdpSocket},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -149,6 +151,9 @@ struct Database {
     #[serde(default)]
     sources: Vec<source::Source>,
 }
+#[cfg(all(test, target_os = "linux"))]
+type InspectionHook = Arc<dyn Fn(Uuid) + Send + Sync>;
+
 struct Shared {
     history_warnings: Mutex<Vec<history::HistoryWarning>>,
     state: PathBuf,
@@ -160,6 +165,12 @@ struct Shared {
     observation_generation: Uuid,
     transfer_lock: Mutex<()>,
     connection_watch: Mutex<addresses::ConnectionWatch>,
+    #[cfg(target_os = "linux")]
+    inventory: Mutex<inventory::Cache>,
+    #[cfg(target_os = "linux")]
+    inventory_key: [u8; 32],
+    #[cfg(all(test, target_os = "linux"))]
+    inspection_hook: Mutex<Option<InspectionHook>>,
     // Lifetime-wide exclusive ownership, including multiple application windows.
     _lock: std::fs::File,
 }
@@ -185,10 +196,22 @@ pub struct Controller {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
-    Redeem { request: Request },
+    Redeem {
+        request: Request,
+    },
     Catalog {},
-    Share { vault: String, device: String },
-    Observe { vault: String, device: String },
+    Share {
+        vault: String,
+        device: String,
+    },
+    Observe {
+        vault: String,
+        device: String,
+    },
+    #[cfg(target_os = "linux")]
+    Inspect {
+        request: inventory::Request,
+    },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -212,12 +235,27 @@ struct Response {
 enum Reply {
     Pending,
     Rejected,
-    Approved { paired: Paired, catalog: Vec<Vault> },
-    Catalog { catalog: Vec<Vault> },
-    Shared { connection: transfer::Connection },
-    Observed { observation: transfer::Observation },
+    Approved {
+        paired: Paired,
+        catalog: Vec<Vault>,
+    },
+    Catalog {
+        catalog: Vec<Vault>,
+    },
+    Shared {
+        connection: transfer::Connection,
+    },
+    Observed {
+        observation: transfer::Observation,
+    },
+    #[cfg(target_os = "linux")]
+    Inspection {
+        response: inventory::Response,
+    },
     NotReady,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 impl Controller {
@@ -257,6 +295,12 @@ impl Controller {
                 transfer_lock: Mutex::new(()),
                 history_warnings: Mutex::new(Vec::new()),
                 connection_watch: Mutex::new(Default::default()),
+                #[cfg(target_os = "linux")]
+                inventory: Mutex::new(Default::default()),
+                #[cfg(target_os = "linux")]
+                inventory_key: wire::random()?,
+                #[cfg(all(test, target_os = "linux"))]
+                inspection_hook: Mutex::new(None),
                 _lock,
             }),
         })
@@ -403,6 +447,7 @@ impl Controller {
         let stopping = stop.clone();
         let socket = listener.try_clone()?;
         let weak = Arc::downgrade(&self.shared);
+        let connections = Arc::new(AtomicUsize::new(0));
         thread::Builder::new()
             .name("okilum-pairing".into())
             .spawn(move || {
@@ -413,14 +458,35 @@ impl Controller {
                     if shared.stopped.load(Ordering::Acquire) || !shared.access.allowed() {
                         break;
                     }
+                    #[cfg(target_os = "linux")]
+                    shared.inventory.lock().unwrap().prune();
                     drop(shared);
                     match listener.accept() {
                         Ok((mut stream, _)) => {
                             if let Some(shared) = weak.upgrade() {
-                                // One bounded connection at a time; no unbounded worker queue.
-                                if wire::limits(&stream).is_ok() {
-                                    let controller = Controller { shared };
-                                    let _ = controller.serve(&mut stream);
+                                // Bounded workers keep slow inspections/frame reads off the
+                                // accept loop. Inspection admission separately limits each peer.
+                                if wire::limits(&stream).is_ok()
+                                    && connections
+                                        .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                                            (n < 16).then_some(n + 1)
+                                        })
+                                        .is_ok()
+                                {
+                                    struct Connection(Arc<AtomicUsize>);
+                                    impl Drop for Connection {
+                                        fn drop(&mut self) {
+                                            self.0.fetch_sub(1, Ordering::AcqRel);
+                                        }
+                                    }
+                                    let connection = Connection(connections.clone());
+                                    let _ = thread::Builder::new()
+                                        .name("okilum-direct".into())
+                                        .spawn(move || {
+                                            let _connection = connection;
+                                            let controller = Controller { shared };
+                                            let _ = controller.serve(&mut stream);
+                                        });
                                 }
                             }
                         }
@@ -663,12 +729,17 @@ impl Controller {
         operation: Operation,
     ) -> Result<Reply> {
         self.check()?;
+        let read_only = operation.read_only();
         let seed = self.shared.db.lock().unwrap().seed;
         let message = Message {
             nonce: Uuid::new_v4(),
             target: public.to_vec(),
             operation,
-            transport: self.local_transport()?,
+            transport: if read_only {
+                None
+            } else {
+                self.local_transport()?
+            },
         };
         let frame = wire::seal(scope, credential, &seed, &message)?;
         let mut stream = wire::connect(endpoint).with_context(|| format!(
@@ -682,6 +753,10 @@ impl Controller {
         self.check()?;
         let mut reply = response.result;
         if let Some(transport) = response.transport {
+            ensure!(
+                !read_only,
+                "inspection cannot exchange transport configuration"
+            );
             match &mut reply {
                 Reply::Approved { paired, .. } => addresses::remember(paired, &transport)?,
                 Reply::Error { .. } | Reply::Pending | Reply::Rejected => {}
@@ -714,6 +789,10 @@ impl Controller {
         let (message, signer): (Message, _) =
             wire::open(envelope, &credential, expected.as_deref())?;
         ensure!(
+            !message.operation.read_only() || message.transport.is_none(),
+            "inspection cannot exchange transport configuration"
+        );
+        ensure!(
             message.target == wire::public(&db.seed)?,
             "wrong intended computer"
         );
@@ -736,17 +815,34 @@ impl Controller {
             self.accept_transport(peer, transport)?;
             self.save(&db)?;
         }
-        let reply = self
-            .dispatch(&mut db, scope, message.operation, signer)
-            .unwrap_or_else(|_| Reply::Error {
+        let seed = db.seed;
+        let result = match message.operation {
+            #[cfg(target_os = "linux")]
+            Operation::Inspect { request } => {
+                drop(db);
+                self.inspect_request(scope, &signer, request)
+                    .map(|response| Reply::Inspection { response })
+            }
+            operation => self.dispatch(&mut db, scope, operation, signer),
+        };
+        let reply = result.unwrap_or_else(|error| {
+            #[cfg(target_os = "linux")]
+            if let Some(message) = inventory::public_refusal(&error) {
+                return Reply::Error {
+                    message: message.into(),
+                };
+            }
+            let _ = error;
+            Reply::Error {
                 message: "operation unavailable; check approved vault, replica and destination"
                     .into(),
-            });
+            }
+        });
         self.check()?;
         let response = wire::seal(
             scope,
             &credential,
-            &db.seed,
+            &seed,
             &Response {
                 nonce: message.nonce,
                 result: reply,
@@ -878,6 +974,8 @@ impl Controller {
                     Err(error) => Err(error),
                 }
             }
+            #[cfg(target_os = "linux")]
+            Operation::Inspect { .. } => anyhow::bail!("inspection requires lock-free dispatch"),
         }
     }
     fn save(&self, db: &Database) -> Result<()> {
@@ -900,6 +998,15 @@ impl Controller {
             }
         }
         Ok(())
+    }
+}
+impl Operation {
+    fn read_only(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if matches!(self, Self::Inspect { .. }) {
+            return true;
+        }
+        false
     }
 }
 fn snapshot(db: &Database) -> Result<Snapshot> {

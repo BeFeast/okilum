@@ -1,6 +1,7 @@
 //! Test-only foreground allocation accounting. This observes the old String
 //! path too, rather than trusting annotations on the replacement path.
-use std::alloc::{GlobalAlloc, Layout, System};
+use crate::NATIVE_ALLOCATION;
+use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -68,11 +69,11 @@ fn charge(bytes: usize) {
 unsafe impl GlobalAlloc for Meter {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         charge(layout.size());
-        unsafe { System.alloc(layout) }
+        unsafe { NATIVE_ALLOCATION.alloc(layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         charge(layout.size());
-        unsafe { System.alloc_zeroed(layout) }
+        unsafe { NATIVE_ALLOCATION.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if DEPTH.try_with(|d| d.get() > 0).unwrap_or(false) {
@@ -83,11 +84,11 @@ unsafe impl GlobalAlloc for Meter {
                 }
             });
         }
-        unsafe { System.dealloc(ptr, layout) }
+        unsafe { NATIVE_ALLOCATION.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         charge(size);
-        unsafe { System.realloc(ptr, layout, size) }
+        unsafe { NATIVE_ALLOCATION.realloc(ptr, layout, size) }
     }
 }
 pub(crate) fn reset() {

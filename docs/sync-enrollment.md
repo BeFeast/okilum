@@ -125,8 +125,11 @@ an exclusive Restore action. A newer local edit blocks replacement; successful
 replacement retains its preimage in application history. See
 [previous Sync versions](source-history.md#previous-versions-from-sync-2045).
 This is transport history, not a snapshot of every local edit. Existing external
-folder/version settings are preserved. The full Sync conflict-resolution journey
-in [#2044](https://git.oklabs.uk/BeFeast/okilum/issues/2044) remains a follow-up.
+folder/version settings are preserved. Linux [in-note conflict review](sync-conflicts.md)
+handles both copy kinds with side-by-side differences and Keep this / Keep that /
+Keep both (#2044). The Settings → Sync inventory also offers explicit recovery of
+interrupted decisions. Both originals are retained outside the index and appear
+in Note history / Recover notes.
 
 ## Existing Syncthing
 
@@ -185,9 +188,8 @@ set the direction. These parts remain unfinished:
   does not enable this flow. Unmerged PRs
   [#2511](https://git.oklabs.uk/BeFeast/okilum/pulls/2511) and
   [#2513](https://git.oklabs.uk/BeFeast/okilum/pulls/2513) are not shipped support.
-- [#2044](https://git.oklabs.uk/BeFeast/okilum/issues/2044) and
-  [#2048](https://git.oklabs.uk/BeFeast/okilum/issues/2048): the complete conflict
-  and headless/plain-peer journeys described above.
+- [#2048](https://git.oklabs.uk/BeFeast/okilum/issues/2048): the complete
+  headless/plain-peer journey described above.
 - [#2046](https://git.oklabs.uk/BeFeast/okilum/issues/2046): one shared ignore
   policy for the whole vault. Today source enrollment seeds/verifies local
   `.stignore` rules and first receive applies approved ignores; Syncthing does
