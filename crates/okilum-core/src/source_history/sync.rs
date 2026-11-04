@@ -122,10 +122,10 @@ fn visit(
             let mut data = Vec::new();
             file.take((MAX_BYTES - *bytes + 1) as u64)
                 .read_to_end(&mut data)?;
-            ensure!(
-                data.len() <= MAX_BYTES - *bytes,
-                "Sync version exceeds preview limit"
-            );
+            if data.len() > MAX_BYTES - *bytes {
+                *bytes = MAX_BYTES;
+                anyhow::bail!("Sync version exceeds preview limit");
+            }
             Ok(data)
         })();
         match read {
@@ -165,7 +165,10 @@ fn original_name(name: &str) -> Option<(String, u64)> {
         .assume_utc();
     let micros = u64::try_from(date.unix_timestamp_nanos() / 1000).ok()?;
     let original = format!("{stem}{extension}");
-    if !original.ends_with(".md") {
+    if original
+        .rsplit_once('.')
+        .is_none_or(|(_, extension)| !extension.eq_ignore_ascii_case("md"))
+    {
         return None;
     }
     Some((original, micros))
@@ -205,6 +208,15 @@ mod tests {
         assert_eq!(fs::read(&v.note)?, b"new local edit");
         assert!(list(&root, Some(Path::new("../escape.md"))).is_err());
         assert_eq!(list(&root, None)?.versions.len(), 1);
+        let mut editor = crate::file_editor::FileEditor::open(&v.note, state.path())?;
+        editor.set_text("unsaved local draft".into())?;
+        drop(editor);
+        fs::remove_file(&v.note)?;
+        assert!(restore_deleted(&root, Path::new("nested/note.md"), state.path(), raw).is_err());
+        assert!(
+            !v.note.exists(),
+            "a dirty recovery journal must block Restore"
+        );
         Ok(())
     }
     #[test]
@@ -236,6 +248,29 @@ mod tests {
         let l = list(&root, None)?;
         assert_eq!(l.versions.len(), 100);
         assert!(!l.warnings.is_empty());
+        Ok(())
+    }
+    #[test]
+    fn issue2045_oversized_archive_exhausts_the_read_budget_once() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let root = root.path().canonicalize()?;
+        fs::create_dir(root.join(".stversions"))?;
+        for name in ["first", "second"] {
+            fs::File::create(root.join(format!(".stversions/{name}~20261102-120000.md")))?
+                .set_len((MAX_BYTES + 1) as u64)?;
+        }
+        let listing = list(&root, None)?;
+        assert!(listing.versions.is_empty());
+        assert_eq!(
+            listing
+                .warnings
+                .iter()
+                .filter(|w| w.contains("exceeds preview limit"))
+                .count(),
+            1,
+            "the first oversized read must stop further reads"
+        );
+        assert!(listing.warnings.iter().any(|w| w.contains("limit reached")));
         Ok(())
     }
 }

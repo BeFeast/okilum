@@ -1092,10 +1092,20 @@ mod tests {
         reader.update_in(visual, |r, w, cx| r.restore_timeline(w, cx));
         assert_eq!(std::fs::read(root.join("note.md")).unwrap(), old);
         std::fs::remove_file(root.join("note.md")).unwrap();
+        reader.update_in(visual, |r, w, cx| r.source_history(false, w, cx));
+        visual.run_until_parked();
         reader.update_in(visual, |r, w, cx| {
-            let listing = source_history::sync::list(&root, None).unwrap();
-            r.preview_source_version(listing.versions[0].clone(), root.clone(), w, cx);
+            let index = r
+                .active_timeline()
+                .unwrap()
+                .versions
+                .iter()
+                .position(|v| v.bytes() == old)
+                .unwrap();
+            r.select_timeline_version(index, w, cx);
         });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, w, cx| r.restore_timeline(w, cx));
         visual.run_until_parked();
         visual.update(|w, cx| w.draw(cx).clear(cx));
         let button = visual
