@@ -926,3 +926,32 @@ fn prompt_history_uses_native_chronology_and_row_keys_across_id_retirement(
         "retired ID resolves through newest identical prompt"
     );
 }
+
+#[gpui::test]
+fn issue2521_edit_menu_copy_uses_focused_feed_selection(cx: &mut TestAppContext) {
+    let (view, visual, _temp) = fixture(cx, 0);
+    let mut item = message(1);
+    item.text = Some("Selected feed text 🧠".into());
+    view.update(visual, |view, cx| {
+        view.feed
+            .update(cx, |feed, cx| feed.apply(std::iter::once(&item), None, cx));
+    });
+    visual.run_until_parked();
+    let surface = visual.debug_bounds("project-message-surface-1").unwrap();
+    let header = visual.debug_bounds("project-message-header-1").unwrap();
+    visual.simulate_click(
+        point(surface.left() + px(30.), header.bottom() + px(12.)),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    super::super::composer::input_tests::menu(visual, "Select All");
+    visual
+        .update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("sentinel".into())));
+    super::super::composer::input_tests::menu(visual, "Copy");
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("Selected feed text 🧠")
+        )
+    });
+}

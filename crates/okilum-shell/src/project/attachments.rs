@@ -372,7 +372,7 @@ impl ProjectView {
             }
             Some(Ok(PasteOffer::Text(text))) => {
                 self.compose
-                    .update(cx, |input, cx| input.insert(text, window, cx));
+                    .update(cx, |input, cx| input.replace(text, window, cx));
                 return;
             }
             Some(Err(crate::note_paste::offer::OfferError::TooLarge)) => {
@@ -410,7 +410,7 @@ impl ProjectView {
             }
             if let Some(text) = item.text() {
                 self.compose
-                    .update(cx, |input, cx| input.insert(text, window, cx));
+                    .update(cx, |input, cx| input.replace(text, window, cx));
             }
         }
     }
