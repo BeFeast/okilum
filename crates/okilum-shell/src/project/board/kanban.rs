@@ -140,20 +140,22 @@ impl Board {
                             .line_height(px(16.))
                             .label(format!("＋ ещё {} · открыть списком", count - QUEUE_LIMIT))
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.list.preferences.mode = list::Mode::List;
-                                this.list.preferences.collapsed[Column::Queue as usize] = false;
-                                let prepared = this.prepare_list();
-                                let index = prepared
-                                    .rows
-                                    .iter()
-                                    .position(|row| matches!(row, Row::Group(Column::Queue)))
-                                    .unwrap_or(0);
-                                this.list
-                                    .scroll
-                                    .scroll_to_item_strict(index, gpui::ScrollStrategy::Top);
-                                this.save_presentation();
-                                this.focus.focus(window, cx);
-                                cx.notify();
+                                this.open_queue_list(false, window, cx)
+                            })),
+                    );
+                }
+                if let Some(problem) = binding.card_problems.first() {
+                    lane = lane.child(
+                        Button::new("board-queue-problems")
+                            .debug_selector(|| "board-card-problem-0".into())
+                            .ghost()
+                            .small()
+                            .w_full()
+                            .text_color(p.warning)
+                            .label(format!("Needs attention · {}", binding.card_problems.len()))
+                            .tooltip(format!("{}: {}", problem.field, problem.detail))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_queue_list(true, window, cx)
                             })),
                     );
                 }
@@ -200,9 +202,11 @@ impl Board {
             .debug_selector(|| "board-verified-toggle".into())
             .ghost()
             .w(px(34.))
-            .h_full()
+            .flex_1()
+            .min_h_0()
+            .items_start()
             .p_0()
-            .flex_none()
+            .pt(px(6.))
             .accessibility_label(if self.verified_open {
                 "Collapse verified results"
             } else {
@@ -224,13 +228,7 @@ impl Board {
                             "chevron-right"
                         },
                         p.text_muted,
-                    ))
-                    // Native vertical rail; full wording also remains in its accessible label/tooltip.
-                    .children(
-                        "Проверено"
-                            .chars()
-                            .map(|c| div().h(px(16.)).child(c.to_string())),
-                    ),
+                    )),
             )
             .on_click(cx.listener(|this, _, _, cx| {
                 this.verified_open = !this.verified_open;
@@ -316,6 +314,28 @@ impl Board {
                 ),
         )
         .into_any_element()
+    }
+    fn open_queue_list(&mut self, problem: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.list.preferences.mode = list::Mode::List;
+        self.list.preferences.collapsed[Column::Queue as usize] = false;
+        let prepared = self.prepare_list();
+        let index = prepared
+            .rows
+            .iter()
+            .position(|row| {
+                if problem {
+                    matches!(row, Row::Problem(_))
+                } else {
+                    matches!(row, Row::Group(Column::Queue))
+                }
+            })
+            .unwrap_or(0);
+        self.list
+            .scroll
+            .scroll_to_item_strict(index, gpui::ScrollStrategy::Top);
+        self.save_presentation();
+        self.focus.focus(window, cx);
+        cx.notify();
     }
     fn kanban_row(
         &self,
