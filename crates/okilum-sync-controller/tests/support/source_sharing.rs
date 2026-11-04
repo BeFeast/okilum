@@ -854,6 +854,19 @@ fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
     let external = pair.source.home.join("external-vault");
     fs::create_dir(&external)?;
     pair.source.api.add_paused_folder(&json!({"id":"external-history","path":external,"type":"sendreceive","paused":true,"devices":[{"deviceID":pair.source.id}],"versioning":{"type":"simple","params":{"keep":"7"}}}))?;
+    pair.first.attach_existing(
+        &inspect_existing(&[pair.source.home.join("config.xml")], &external)?,
+        true,
+    )?;
+    assert!(
+        !pair
+            .first
+            .snapshot()?
+            .history_retention
+            .iter()
+            .any(|s| s.path == external),
+        "existing-vault Sync consent must not grant versioning authority"
+    );
     let before = pair.source.api.folder("external-history")?;
     assert!(pair
         .first
