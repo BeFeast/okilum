@@ -465,11 +465,12 @@ class WorkflowContract(unittest.TestCase):
 
     def test_main_retains_full_certification_without_pr_triggers(self):
         data = self.load('.forgejo/workflows/fast.yml')
-        self.assertEqual(set(data['on']), {'push', 'schedule', 'workflow_dispatch'})
-        self.assertEqual(data['on']['push']['branches'], ['main'])
+        self.assertEqual(set(data['on']), {'schedule', 'workflow_dispatch'})
         self.assertIn('certification_source', data['on']['workflow_dispatch']['inputs'])
-        self.assertEqual(data['concurrency']['group'], 'fast-${{ github.ref }}')
-        self.assertEqual(data['concurrency']['cancel-in-progress'], 'false')
+        self.assertEqual(data['concurrency']['group'],
+                         "fast-${{ github.event_name }}-${{ github.ref }}-${{ inputs.certification_source != '' && github.run_id || 'ordinary' }}")
+        self.assertEqual(data['concurrency']['cancel-in-progress'],
+                         "${{ github.event_name == 'workflow_dispatch' && inputs.certification_source == '' }}")
         for name in ['check', 'shell-full']:
             job = data['jobs'][name]
             self.assertEqual(job['runs-on'], 'fast-linux')
