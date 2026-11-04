@@ -12,6 +12,15 @@ fn run(command: &mut Command) {
 
 /// Compiles the Sparkle bridge and links the vendored stock Sparkle.framework.
 fn main() {
+    // Compile the portable native Manager on both platforms. Runtime panel
+    // selection stays separate: macOS still mounts WKWebView until #2522.
+    println!("cargo:rustc-check-cfg=cfg(native_manager)");
+    if matches!(
+        env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("linux" | "macos")
+    ) {
+        println!("cargo:rustc-cfg=native_manager");
+    }
     println!("cargo:rerun-if-env-changed=OKILUM_SPRINT_BUILD");
     if env::var_os("CARGO_FEATURE_LINUX_SPRINT").is_some() {
         assert!(

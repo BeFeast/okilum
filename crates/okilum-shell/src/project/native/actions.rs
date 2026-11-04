@@ -1454,8 +1454,7 @@ impl ProjectView {
     }
 
     pub(in crate::project) fn native_actions_pinned(&self) -> bool {
-        cfg!(target_os = "linux")
-            && self.local_setup.is_none()
+        self.local_setup.is_none()
             && self.binding.is_some()
             && self.native.active()
             && !self.executors_open
@@ -1835,6 +1834,8 @@ mod tests {
                 let started = std::time::Instant::now();
                 loop {
                     if let Ok((s, _)) = listener.accept() {
+                        // BSD/macOS inherits the listener's nonblocking mode.
+                        s.set_nonblocking(false).unwrap();
                         s.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
                         return s;
                     }
