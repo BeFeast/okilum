@@ -15,6 +15,7 @@ lifecycle = runpy.run_path(str(Path(__file__).with_name("sync-fixture-lifecycle.
 check = lifecycle["check"]
 
 TESTS = {
+    "managed_history_2045_restore_retention_and_migration",
     "managed_source_share_empty_receive_and_bidirectional_hashes",
     "managed_source_skipped_share_negative_control",
     "managed_source_nonempty_destination_refused_without_writes",
@@ -80,10 +81,13 @@ def run_trials(args, evidence, processes):
             output = Path(trial["log"]).read_text()
             passed = {name for name in TESTS if f"test source_sharing::{name} ... ok" in output.splitlines()}
             trial["passed"] = len(passed)
-            trial["ok"] = trial["exit"] == 0 and passed == TESTS and "test result: ok. 5 passed;" in output
+            trial["ok"] = trial["exit"] == 0 and passed == TESTS and f"test result: ok. {len(TESTS)} passed;" in output
             failed |= not trial["ok"]
             trials.append(trial)
-            print(f"Run {trial['run']}: exit={trial['exit']} passed={len(passed)}/5", flush=True)
+            print(f"Run {trial['run']}: exit={trial['exit']} passed={len(passed)}/{len(TESTS)}", flush=True)
+            for line in output.splitlines():
+                if line.startswith("#2045:"):
+                    print(line, flush=True)
             if not trial["ok"]:
                 print(output, flush=True)
     (evidence / "results.json").write_text(json.dumps(trials, indent=2) + "\n")

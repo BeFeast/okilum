@@ -2,6 +2,8 @@
 //! lifecycle. Opening this controller does not listen or start a daemon.
 mod addresses;
 mod existing;
+mod history;
+pub use history::{RetentionDays, RetentionSetting};
 mod origin;
 #[cfg(target_os = "linux")]
 mod source;
@@ -51,6 +53,7 @@ pub struct Vault {
 }
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    pub history_retention: Vec<RetentionSetting>,
     pub offer_url: Option<String>,
     pub pending: Option<Pending>,
     pub peers: Vec<Peer>,
@@ -490,6 +493,7 @@ impl Controller {
         }
         self.refresh_pairing()?;
         self.reconcile_peer_addresses()?;
+        self.reconcile_history()?;
         self.reconcile_transfers()?;
         self.refresh_connection_status()?;
         self.refresh_attached()?;
@@ -909,6 +913,7 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
             .map(|(_, r)| pending(r, false))
     };
     Ok(Snapshot {
+        history_retention: history_settings(db),
         offer_url: offer.map(|i| encode_url(&i.offer)).transpose()?,
         pending,
         peers: db.peers.values().map(|p| p.peer.clone()).collect(),
@@ -1589,4 +1594,11 @@ mod tests {
         assert!(wire::open::<Message>(frame, &credential, Some(&[1; 32])).is_err());
         Ok(())
     }
+}
+
+fn history_settings(db: &Database) -> Vec<RetentionSetting> {
+    let mut settings = transfer::history_settings(db);
+    #[cfg(target_os = "linux")]
+    settings.extend(source::history_settings(db));
+    settings
 }

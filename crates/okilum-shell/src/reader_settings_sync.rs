@@ -54,6 +54,7 @@ pub(super) fn suspend(cx: &mut App) {
 }
 
 enum Operation {
+    Retention(PathBuf, direct::RetentionDays),
     Read,
     EnterPairing,
     #[cfg(target_os = "linux")]
@@ -720,6 +721,7 @@ fn perform_with_locations(
         );
         let mut inspected = None;
         let snapshot = match operation {
+            Operation::Retention(path, days) => controller.set_history_retention(&path, days)?,
             Operation::Read | Operation::EnterPairing => controller.refresh()?,
             #[cfg(target_os = "linux")]
             Operation::SelectConnection(_) | Operation::Network(..) => controller.refresh()?,

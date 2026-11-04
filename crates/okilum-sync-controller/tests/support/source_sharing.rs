@@ -624,3 +624,254 @@ fn fixture_lifecycle_control() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
+    use okilum_core::{
+        file_editor::{FileEditor, Save},
+        source_history,
+    };
+    use okilum_sync_controller::direct::RetentionDays;
+    let mut pair = Pair::loopback()?;
+    let old = b"\xef\xbb\xbf# Previous source\r\nExact bytes\r\n";
+    fs::write(pair.source.vault.join("history.md"), old)?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("history initial hash and promotion", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing && same_hash(&pair.target.vault, "history.md", old))
+    })?;
+    for peer in [&pair.source, &pair.target] {
+        assert_eq!(peer.api.folder(&id)?["versioning"]["type"], "staggered");
+        assert_eq!(
+            peer.api.folder(&id)?["versioning"]["params"]["maxAge"],
+            "2592000"
+        );
+    }
+    // Exercise real migration of both existing ownership records, including a
+    // receiver witness. No unrelated fields may change, and the second refresh
+    // must produce exactly the same daemon configuration.
+    pair.first.shutdown();
+    drop(pair.first);
+    pair.second.shutdown();
+    drop(pair.second);
+    let target_state = pair._root.path().join("target-controller");
+    for (peer, state, records) in [
+        (&pair.source, &pair.source_state, "sources"),
+        (&pair.target, &target_state, "transfers"),
+    ] {
+        let mut folder = peer.api.folder(&id)?;
+        folder["versioning"]["type"] = json!("");
+        folder["versioning"]["params"] = json!({});
+        peer.api
+            .patch_folder(&id, &json!({"versioning":folder["versioning"]}))?;
+        let observed = peer.api.folder(&id)?;
+        let file = state.join("direct.json");
+        let mut journal: Value = serde_json::from_slice(&fs::read(&file)?)?;
+        journal[records][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("history");
+        journal[records][0]["witness"] = observed;
+        fs::write(&file, serde_json::to_vec(&journal)?)?;
+    }
+    pair.first = Controller::open(
+        pair.source_state.clone(),
+        vec![pair.source.home.join("config.xml")],
+    )?;
+    pair.second = Controller::open(
+        target_state.clone(),
+        vec![pair.target.home.join("config.xml")],
+    )?;
+    let source_before = pair.source.api.folder(&id)?;
+    let target_before = pair.target.api.folder(&id)?;
+    pair.first.refresh()?;
+    pair.second.refresh()?;
+    for (peer, mut before) in [(&pair.source, source_before), (&pair.target, target_before)] {
+        before["versioning"]["type"] = json!("staggered");
+        before["versioning"]["params"] = json!({"maxAge":"2592000"});
+        assert_eq!(
+            peer.api.folder(&id)?,
+            before,
+            "migration changed unrelated fields"
+        );
+    }
+    let source_config = pair.source.api.config()?;
+    let target_config = pair.target.api.config()?;
+    pair.first.refresh()?;
+    pair.second.refresh()?;
+    assert_eq!(pair.source.api.config()?, source_config);
+    assert_eq!(pair.target.api.config()?, target_config);
+
+    // Delete on A -> discover from B's Note history store -> exact-byte Restore
+    // -> both canonical hashes. The archive is not consumed by restoration.
+    fs::remove_file(pair.source.vault.join("history.md"))?;
+    wait("remote deletion and actual archive", || {
+        pair.tick(&id)?;
+        Ok(!pair.target.vault.join("history.md").exists()
+            && source_history::sync::list(&pair.target.vault, Some(Path::new("history.md")))?
+                .versions
+                .iter()
+                .any(|v| v.bytes() == old))
+    })?;
+    let listing = source_history::sync::list(&pair.target.vault, None)?;
+    let version = listing
+        .versions
+        .iter()
+        .find(|v| v.bytes() == old)
+        .context("deleted note absent from recovery history")?;
+    let drafts = pair._root.path().join("editor-drafts");
+    source_history::sync::restore_deleted(
+        &pair.target.vault,
+        Path::new("history.md"),
+        &drafts,
+        version.bytes(),
+    )?;
+    assert!(source_history::sync::restore_deleted(
+        &pair.target.vault,
+        Path::new("history.md"),
+        &drafts,
+        b"must not replace"
+    )
+    .is_err());
+    wait("restored hashes on both devices", || {
+        pair.tick(&id)?;
+        Ok(same_hash(&pair.source.vault, "history.md", old)
+            && same_hash(&pair.target.vault, "history.md", old))
+    })?;
+    assert!(
+        source_history::sync::list(&pair.target.vault, Some(Path::new("history.md")))?
+            .versions
+            .iter()
+            .any(|v| v.bytes() == old)
+    );
+
+    // Remote overwrite on the sharing side also has history. A stale reviewed
+    // preimage refuses a newer local edit; successful restore backs it up.
+    fs::write(pair.target.vault.join("history.md"), b"remote replacement")?;
+    wait("overwrite history on sharing computer", || {
+        pair.tick(&id)?;
+        Ok(same_hash(
+            &pair.source.vault,
+            "history.md",
+            b"remote replacement",
+        ))
+    })?;
+    let versions = source_history::sync::list(&pair.source.vault, Some(Path::new("history.md")))?;
+    assert!(versions.versions.iter().any(|v| v.bytes() == old));
+    fs::write(pair.source.vault.join("history.md"), b"newer local edit")?;
+    assert_eq!(
+        FileEditor::replace_bytes(
+            &pair.source.vault.join("history.md"),
+            &drafts,
+            b"remote replacement",
+            old
+        )?,
+        Save::Conflict
+    );
+    assert!(same_hash(
+        &pair.source.vault,
+        "history.md",
+        b"newer local edit"
+    ));
+    assert_eq!(
+        FileEditor::replace_bytes(
+            &pair.source.vault.join("history.md"),
+            &drafts,
+            b"newer local edit",
+            old
+        )?,
+        Save::Saved
+    );
+    assert!(source_history::list(&drafts, &pair.source.vault)?
+        .versions
+        .iter()
+        .any(|v| v.bytes() == b"newer local edit"));
+
+    // Time-shifted control: the same real versioner preserves a 31-day archive
+    // with 90-day retention, then trims it at 30 days while retaining a 29-day
+    // sibling. Triggering an actual remote overwrite invokes staggered Clean.
+    pair.second
+        .set_history_retention(&pair.target.vault, RetentionDays::try_from(90)?)?;
+    let archive = pair.target.vault.join(".stversions");
+    fs::create_dir_all(&archive)?;
+    let stamp = |days: u64| -> Result<String> {
+        let output = std::process::Command::new("date")
+            .env("TZ", "UTC")
+            .args(["-u", "-d", &format!("{days} days ago"), "+%Y%m%d-%H%M%S"])
+            .output()?;
+        ensure!(output.status.success(), "fixture date failed");
+        Ok(String::from_utf8(output.stdout)?.trim().into())
+    };
+    let expired = archive.join(format!("trim~{}.md", stamp(31)?));
+    let retained = archive.join(format!("trim~{}.md", stamp(29)?));
+    fs::write(&expired, b"31-day version")?;
+    fs::write(&retained, b"29-day version")?;
+    fs::write(pair.source.vault.join("trim.md"), b"initial trim source")?;
+    wait("trim positive initial hash", || {
+        pair.tick(&id)?;
+        Ok(same_hash(
+            &pair.target.vault,
+            "trim.md",
+            b"initial trim source",
+        ))
+    })?;
+    fs::write(
+        pair.source.vault.join("trim.md"),
+        b"90-day control overwrite",
+    )?;
+    wait("90-day versioner fired", || {
+        pair.tick(&id)?;
+        Ok(same_hash(
+            &pair.target.vault,
+            "trim.md",
+            b"90-day control overwrite",
+        ))
+    })?;
+    assert_eq!(
+        fs::read(&expired)?,
+        b"31-day version",
+        "control did not preserve the older version"
+    );
+    assert_eq!(fs::read(&retained)?, b"29-day version");
+    pair.second
+        .set_history_retention(&pair.target.vault, RetentionDays::default())?;
+    fs::write(
+        pair.source.vault.join("trim.md"),
+        b"30-day trimming overwrite",
+    )?;
+    wait("30-day trim fired with hash control", || {
+        pair.tick(&id)?;
+        Ok(!expired.exists()
+            && same_hash(&pair.target.vault, "trim.md", b"30-day trimming overwrite"))
+    })?;
+    assert_eq!(fs::read(&retained)?, b"29-day version");
+
+    // Existing external folder, even in the same managed daemon, is never
+    // adopted for retention. Its original policy remains byte-for-byte intact.
+    let external = pair.source.home.join("external-vault");
+    fs::create_dir(&external)?;
+    pair.source.api.add_paused_folder(&json!({"id":"external-history","path":external,"type":"sendreceive","paused":true,"devices":[{"deviceID":pair.source.id}],"versioning":{"type":"simple","params":{"keep":"7"}}}))?;
+    let before = pair.source.api.folder("external-history")?;
+    assert!(pair
+        .first
+        .set_history_retention(&external, RetentionDays::default())
+        .is_err());
+    pair.first.refresh()?;
+    assert_eq!(pair.source.api.folder("external-history")?, before);
+    // A configurable retention value survives controller restart.
+    pair.second
+        .set_history_retention(&pair.target.vault, RetentionDays::try_from(90)?)?;
+    pair.second.shutdown();
+    drop(pair.second);
+    pair.second = Controller::open(target_state, vec![pair.target.home.join("config.xml")])?;
+    assert_eq!(pair.second.refresh()?.history_retention[0].days.days(), 90);
+    assert_eq!(
+        pair.target.api.folder(&id)?["versioning"]["params"]["maxAge"],
+        "7776000"
+    );
+    println!("#2045: two pinned 2.1.6 runtimes; delete/restore/overwrite hashes, stale edit refusal, both migrations, idempotence, 90d control retains 31d, 30d trims 31d and keeps 29d, external unchanged");
+    Ok(())
+}

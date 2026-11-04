@@ -16,6 +16,8 @@ pub(super) struct Connection {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Transfer {
+    #[serde(default)]
+    history: history::Policy,
     peer: Uuid,
     vault: String,
     path: PathBuf,
@@ -196,6 +198,7 @@ impl Controller {
                     "use attach-existing for an existing replica"
                 );
                 let t = Transfer {
+                    history: history::Policy::default(),
                     peer: peer_id,
                     vault: vault_id.into(),
                     path: path.clone(),
@@ -432,11 +435,6 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
         actual_peers == expected_peers,
         "owned replica membership changed"
     );
-    ensure!(
-        folder["versioning"]["type"] == "staggered"
-            && folder["versioning"]["params"]["maxAge"] == "2592000",
-        "owned version history policy changed"
-    );
     let allowed_mode = match transfer.phase {
         Phase::Promoting => folder["type"] == "receiveonly" || folder["type"] == "sendreceive",
         Phase::Bidirectional => folder["type"] == "sendreceive",
@@ -448,7 +446,7 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     );
     if let Some(expected) = &transfer.witness {
         let mut expected = expected.clone();
-        let mut actual = folder.clone();
+        let mut actual = transfer.history.witness_folder(folder)?;
         // Label changes require a durable authorized intent above; all other
         // fields still match the full preparation/promotion witness.
         expected["label"] = actual["label"].clone();
@@ -953,6 +951,7 @@ mod tests {
     fn fixture() -> Result<(tempfile::TempDir, Transfer, Value, Observation, Value)> {
         let root = tempfile::tempdir()?;
         let transfer = Transfer {
+            history: history::Policy::default(),
             peer: Uuid::new_v4(),
             vault: "fixture".into(),
             path: root.path().to_owned(),
@@ -1122,4 +1121,63 @@ mod tests {
         assert_ne!(identity, DirectoryIdentity::read(&destination)?);
         Ok(())
     }
+}
+
+impl Controller {
+    fn apply_transfer_history(&self, transfer: &mut Transfer) -> Result<()> {
+        let api = self.history_daemon(&transfer.daemon)?;
+        let folder = api.folder(&transfer.vault)?;
+        validate_owned(transfer, &folder)?;
+        if transfer.history.prepare(&folder)? {
+            self.save_transfer(transfer)?;
+            self.check()?;
+            let after = transfer.history.apply(&api, &transfer.vault)?;
+            transfer.witness = Some(after);
+            transfer.history.finish();
+            self.save_transfer(transfer)?;
+        }
+        Ok(())
+    }
+    pub(super) fn set_transfer_retention(&self, path: &Path, days: RetentionDays) -> Result<bool> {
+        let transfer = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .transfers
+            .iter()
+            .find(|t| t.active && !t.legacy_hold() && t.path == path)
+            .cloned();
+        let Some(mut transfer) = transfer else {
+            return Ok(false);
+        };
+        self.apply_transfer_history(&mut transfer)?;
+        transfer.history.days = days;
+        self.save_transfer(&transfer)?;
+        self.apply_transfer_history(&mut transfer)?;
+        Ok(true)
+    }
+    pub(super) fn reconcile_transfer_history(&self) -> Result<()> {
+        let transfers = self.shared.db.lock().unwrap().transfers.clone();
+        for mut transfer in transfers
+            .into_iter()
+            .filter(|t| t.active && !t.legacy_hold() && t.phase != Phase::Preparing)
+        {
+            match self.apply_transfer_history(&mut transfer) {
+                Err(error) if offline(&error) => {}
+                result => result?,
+            }
+        }
+        Ok(())
+    }
+}
+pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {
+    db.transfers
+        .iter()
+        .filter(|t| t.active && !t.legacy_hold())
+        .map(|t| RetentionSetting {
+            path: t.path.clone(),
+            days: t.history.days,
+        })
+        .collect()
 }
