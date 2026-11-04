@@ -45,8 +45,7 @@ API while meeting the one-minute closure target on a healthy source. A failed/in
 the last complete snapshot and reports its source error in one quiet line with
 the last-success time; full details remain in the existing source disclosure.
 Merge expiry also freezes at that last-success time during failure, so an offline
-Board cannot silently empty itself. Generated cards explicitly identify missing
-manual annotations. Invalid or duplicate annotations stay visible and never supply
+Board cannot silently empty itself. Generated cards identify missing manual annotations in their card disclosure. Invalid or duplicate annotations stay visible and never supply
 an arbitrary owner. Delivery refresh follows
 the issue read so newly discovered PRs reach the existing delivery verifier in the
 same refresh cycle. The earlier selected-scope descriptions below document the

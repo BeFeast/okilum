@@ -471,8 +471,14 @@ impl Board {
             )
             .child(div().flex_none().text_color(p.text_muted).child(id))
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.selected = number;
-                this.selected_local = local.clone();
+                if let Some(number) = number {
+                    this.selected = (this.selected != Some(number)).then_some(number);
+                    this.selected_local = None;
+                } else if let Some(id) = &local {
+                    this.selected = None;
+                    this.selected_local =
+                        (this.selected_local.as_ref() != Some(id)).then(|| id.clone());
+                }
                 this.focus.focus(window, cx);
                 cx.notify();
             }))

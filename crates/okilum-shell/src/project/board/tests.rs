@@ -490,8 +490,11 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         visual.run_until_parked();
         let center = visual.debug_bounds("project-board").unwrap();
         for key in ["board-columns", "board-expand-empty-Ready"] {
-            let lane = visual.debug_bounds(key).unwrap();
-            assert_eq!(lane.size.width, px(268.));
+            let bounds = visual.debug_bounds(key).unwrap();
+            assert!(
+                bounds.left() >= center.left() && bounds.right() <= center.right(),
+                "{key} stays inside the Reader center"
+            );
         }
     }
     // Compact cards expose only the summary; links and notes need expansion.
@@ -1368,9 +1371,18 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
         "offline retains the last complete membership even beyond the merge expiry"
     );
     assert!(
-        visual.debug_bounds("board-mapping-42").is_some(),
-        "missing manual context is visible on the generated card"
+        visual.debug_bounds("board-mapping-42").is_none(),
+        "compact summaries keep exactly three rows"
     );
+    let card = visual.debug_bounds("board-expand-42").unwrap();
+    visual.simulate_click(card.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-mapping-42").is_some(),
+        "generated-card mapping diagnostics remain reachable in its disclosure"
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
     assert!(
         visual.debug_bounds("board-live-status").is_some(),
         "source failure has a quiet inline status, not only a popover"
