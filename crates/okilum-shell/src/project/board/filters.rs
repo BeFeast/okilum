@@ -149,7 +149,7 @@ fn active(scope: &Scope, threads: &[okilum_t3::ThreadSummary]) -> bool {
 
 pub(super) struct Projection {
     /// The same narrowed binding feeds either presentation, including group counts.
-    pub binding: Binding,
+    pub binding: Arc<Binding>,
     pub chip_counts: [usize; 5],
     pub counts: [usize; 5],
     pub scopes: [Vec<usize>; 5],
@@ -198,20 +198,22 @@ impl Cache {
 }
 impl Board {
     pub(super) fn filtered_projection(&mut self) -> Arc<Projection> {
+        self.filtered_projection_at(now())
+    }
+    fn filtered_projection_at(&mut self, at: u64) -> Arc<Projection> {
         let binding = self.binding.as_ref().expect("configured Board");
-        let at = now();
         if !self.filter_cache.matches(&self.filter, at) {
             let mut projected = if self.snapshot.forgejo.last_success.is_some() {
                 okilum_t3::board::live::project(
                     binding,
                     &self.snapshot.forgejo.value,
-                    self.projection_time(),
+                    self.projection_time_at(at),
                 )
             } else {
                 binding.clone()
             };
             let mut result = Projection {
-                binding: projected.clone(),
+                binding: Arc::new(projected.clone()),
                 chip_counts: [0; 5],
                 counts: [0; 5],
                 scopes: Default::default(),
@@ -240,7 +242,7 @@ impl Board {
                 }
                 extras && self.filter.chip.matches(issue, active)
             });
-            result.binding = projected;
+            result.binding = Arc::new(projected);
             for (index, scope) in result.binding.issues.iter().enumerate() {
                 let column = self.delivery_column(scope) as usize;
                 result.scopes[column].push(index);

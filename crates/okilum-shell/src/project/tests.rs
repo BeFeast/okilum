@@ -1662,6 +1662,9 @@ fn mounted_manager_has_one_compact_header_with_status_menu_and_open(cx: &mut Tes
             cx.notify();
         });
         visual.run_until_parked();
+        // A same-width parent notification can reuse the cached Manager scene.
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
         let panel = visual
             .debug_bounds("reader-backlinks-panel")
             .expect("mounted Manager panel");

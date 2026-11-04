@@ -32,7 +32,7 @@ enum Row {
     Problem(usize),
 }
 struct Prepared {
-    binding: Binding,
+    binding: Arc<Binding>,
     rows: Vec<Row>,
     counts: [usize; 5],
     projection: Arc<filters::Projection>,
@@ -97,7 +97,7 @@ impl Board {
             self.notice = Some(format!("Could not save Board presentation: {error:#}"));
         }
     }
-    pub(super) fn view_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn view_toggle(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
         let mut control = h_flex()
             .gap(px(2.))
@@ -109,11 +109,9 @@ impl Board {
             (Mode::Board, "Доска", "board-view-board"),
         ] {
             control = control.child(
-                Button::new(selector)
+                controls::compact_option(selector, self.list.preferences.mode == mode, window, cx)
                     .debug_selector(move || selector.into())
-                    .small()
-                    .ghost()
-                    .label(caption)
+                    .child(caption)
                     .accessibility_label(format!("{caption} view"))
                     .when(self.list.preferences.mode == mode, |button| {
                         button.bg(p.surface).text_color(p.text)
@@ -161,6 +159,7 @@ impl Board {
                 .chain(projection.locals[column].iter().copied().map(Row::Local))
                 .collect()
         });
+
         for i in 0..binding.card_problems.len() {
             groups[Column::Queue as usize].push(Row::Problem(i));
         }
@@ -285,7 +284,7 @@ impl Board {
     }
     pub(super) fn render_list(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = brand::palette(cx);
@@ -320,12 +319,11 @@ impl Board {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Задачи"),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.filter_bar(&prepared.projection, cx)),
-                    )
+                    .child(div().flex_1().min_w_0().child(self.filter_bar(
+                        &prepared.projection,
+                        window,
+                        cx,
+                    )))
                     .child(self.add_card_button(cx))
                     .child(
                         Button::new("board-manage")
@@ -430,13 +428,14 @@ impl Board {
                     self.delivery_column(scope),
                     &prepared.binding,
                     prepared.mappings.get(&scope.number).copied().flatten(),
+                    window,
                     cx,
                 ))
             } else {
                 self.selected_local
                     .as_ref()
                     .and_then(|id| prepared.local_indices.get(id))
-                    .map(|index| self.local_card(&self.local_cards.value.cards[*index], cx))
+                    .map(|index| self.local_card(&self.local_cards.value.cards[*index], window, cx))
             };
             if let Some(details) = details {
                 root = root.child(
@@ -665,6 +664,11 @@ impl Board {
                 cx,
             ));
         }
+        #[cfg(target_os = "linux")]
+        let progress = agent
+            .as_ref()
+            .and_then(|a| self.manager_display.progress(scope, a.thread));
+        #[cfg(not(target_os = "linux"))]
         let progress = agent.as_ref().and_then(|a| {
             self.manager
                 .as_ref()
@@ -730,6 +734,13 @@ impl Board {
                 .as_ref()
                 .is_some_and(|id| !id.is_empty())
                 && !agent.thread.settled;
+            #[cfg(target_os = "linux")]
+            let url = self
+                .manager_display
+                .identity
+                .as_ref()
+                .map(|identity| identity.thread_url(&agent.thread.thread_id));
+            #[cfg(not(target_os = "linux"))]
             let url = self.manager.as_ref().and_then(|m| {
                 m.read(cx)
                     .identity
