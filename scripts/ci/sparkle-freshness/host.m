@@ -101,6 +101,7 @@ extern bool fixture_about_retry_enabled(void);
 static BOOL TSFirstTerminationResolved;
 static BOOL TSRetryClicked;
 static BOOL TSModeOfferSeen;
+static BOOL TSEarlyRestartClicked;
 static void Report(int kind, const char *text) {
     fixture_record_report(kind);
     NSNumber *mode = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSMode"];
@@ -356,6 +357,14 @@ static void FinishComparison(void) {
         if (![data writeToFile:[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSFeedPath"] atomically:YES]) exit(65);
     }
     [super showReadyToInstallAndRelaunch:reply];
+    if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRestartCase"] isEqualToString:@"verifying"] && !TSEarlyRestartClicked) {
+        TSEarlyRestartClicked = YES;
+        Trace(@"restart clicked during real Ready verification");
+        if (!self.verifying || TSGuardRequested) exit(74);
+        okilum_updater_restart();
+        okilum_updater_restart();
+        if (TSGuardRequested) exit(75); // no install before signed freshness
+    }
     if ([[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSCancel"] isEqualToString:@"verifying"])
         okilum_updater_cancel();
 }
@@ -371,6 +380,22 @@ static void FinishComparison(void) {
         Trace(@"published while ready");
     }
     if (TSCompare) return;
+    NSString *restartCase = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRestartCase"];
+    if (restartCase.length) {
+        if ([restartCase isEqualToString:@"verifying"]) return; // only the earlier click may authorize it
+        Trace(@"ready rechecks from focus and interval");
+        // Both triggers enter this same production check gate. Exercise it
+        // before/after activation, and with manual discovery as a control.
+        [NSNotificationCenter.defaultCenter postNotificationName:NSApplicationDidResignActiveNotification object:NSApp];
+        if (okilum_updater_check(true, false)) exit(76);
+        [NSNotificationCenter.defaultCenter postNotificationName:NSApplicationDidBecomeActiveNotification object:NSApp];
+        if (okilum_updater_check(true, false) || okilum_updater_check(true, true)) exit(77);
+        Trace(@"restart clicked after focus and interval rechecks");
+        if (!okilum_updater_restart()) exit(78);
+        if (okilum_updater_check(true, false)) exit(79);
+        okilum_updater_restart(); // repeated click must report why it is waiting
+        return;
+    }
     if ([NSBundle.mainBundle objectForInfoDictionaryKey:@"TSMode"]) {
         Trace(@"mode ready awaiting explicit restart");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
