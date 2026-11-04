@@ -12,6 +12,18 @@ impl std::fmt::Display for PreviousConnection {
 }
 impl std::error::Error for PreviousConnection {}
 
+// Match the canonical old record without exposing any enrollment actions.
+// A lone `retired` flag in a damaged record cannot authorize a new daemon.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedSetup {
+    #[serde(rename = "setup")]
+    _setup: okilum_sync_controller::desktop::Setup,
+    #[serde(rename = "generation")]
+    _generation: uuid::Uuid,
+    retired: bool,
+}
+
 pub(super) fn check(direct_state: &Path) -> anyhow::Result<()> {
     let Some(parent) = direct_state.parent() else {
         anyhow::bail!("Sync state parent unavailable");
@@ -28,8 +40,8 @@ pub(super) fn check(direct_state: &Path) -> anyhow::Result<()> {
                     .take(65537)
                     .read_to_end(&mut bytes)?;
                 anyhow::ensure!(bytes.len() <= 65536, "oversized setup");
-                let record: serde_json::Value = serde_json::from_slice(&bytes)?;
-                Ok(record.get("retired").and_then(|v| v.as_bool()) == Some(true))
+                let record: SavedSetup = serde_json::from_slice(&bytes)?;
+                Ok(record.retired)
             })();
             if matches!(retired, Ok(true)) {
                 return Ok(());
@@ -80,6 +92,21 @@ mod tests {
                 certificate_hash: "fixture".into(),
             }),
         };
+        let runtime = state.join(generation.to_string()).join("runtime");
+        fs::DirBuilder::new().mode(0o700).create(&runtime)?;
+        let Selection::Reuse(identity) = &setup.selection else {
+            unreachable!()
+        };
+        let runtime_file = runtime.join("runtime.json");
+        fs::write(
+            &runtime_file,
+            serde_json::to_vec(&okilum_sync_controller::runtime::Snapshot {
+                selection: setup.selection.clone(),
+                desired_enabled: true,
+                removed: false,
+                identity: Some(identity.clone()),
+            })?,
+        )?;
         fs::write(
             state.join("setup.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -98,7 +125,11 @@ mod tests {
                     "state": "hub_ready", "last_error": null}
             }))?,
         )?;
-        for path in [state.join("setup.json"), journal.join("pairing.json")] {
+        for path in [
+            state.join("setup.json"),
+            journal.join("pairing.json"),
+            runtime_file.clone(),
+        ] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         }
         // Positive control: this is a readable production enrollment, not an
@@ -113,9 +144,11 @@ mod tests {
             desktop.read()?.pairing.unwrap().registration.unwrap().state,
             State::HubReady
         );
+        assert!(desktop.read()?.runtime.unwrap().desired_enabled);
         let files = [
             state.join("setup.json"),
             journal.join("pairing.json"),
+            runtime_file,
             config.clone(),
             note,
         ];
@@ -166,9 +199,25 @@ mod tests {
         check(&direct)?;
         assert_eq!(fs::read_dir(root.path())?.count(), 0, "absence stays inert");
         let setup = root.path().join("setup.json");
-        fs::write(&setup, br#"{"retired":true}"#)?;
+        let retired = serde_json::json!({
+            "setup": Setup {
+                origin: "https://not-contacted.invalid".into(),
+                name: "Old computer".into(), destination: root.path().to_owned(),
+                selection: Selection::Reuse(DaemonIdentity {
+                    config_file: root.path().join("config.xml"),
+                    device_id: ["AAAAAAA"; 8].join("-"), certificate_hash: "fixture".into(),
+                }),
+            },
+            "generation": uuid::Uuid::new_v4(), "retired": true
+        });
+        fs::write(&setup, serde_json::to_vec(&retired)?)?;
         check(&direct)?;
-        for bytes in [br#"{"retired":false}"#.as_slice(), b"{broken", b"{}"] {
+        for bytes in [
+            br#"{"retired":false}"#.as_slice(),
+            br#"{"retired":true}"#,
+            b"{broken",
+            b"{}",
+        ] {
             fs::write(&setup, bytes)?;
             assert_eq!(user_error(&check(&direct).unwrap_err()), MESSAGE);
             assert_eq!(fs::read(&setup)?, bytes);
