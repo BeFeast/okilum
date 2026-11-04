@@ -1634,6 +1634,7 @@ impl Settings {
                         .child(div().text_sm().text_color(p.text_muted)
                             .child("Stored with this vault. Switch vault to edit another vault's sources."))
                         .when(root.is_none(), |block| block.child("Open a vault to edit its log sources."))
+                    .child(h_flex().flex_wrap().gap_2()
                     .child(Button::new("settings-https-log-sources").debug_selector(|| "settings-https-log-sources".into()).label("HTTPS log files…").disabled(self.vault(cx).is_none()).on_click(cx.listener(|this, _, _, cx| {
                         if let Some(reader) = this.vault(cx) {
                             let root = reader.read(cx).vault_root.clone();
@@ -1645,7 +1646,7 @@ impl Settings {
                             let root=reader.read(cx).vault_root.clone();
                             reader_log::remote::show(root,cx);
                         }
-                    })))
+                    }))))
                     .child(div().text_sm().child("Import Discover URLs for the current vault. API keys stay in OS credential storage; loaded events stay in memory."))
                     .children(root.map(|root| self.source_map_controls(&root, cx))))
                     .into_any_element()
@@ -2990,6 +2991,7 @@ mod tests {
             settings = Some(view.clone());
             Root::new(view, window, cx)
         });
+        visual.simulate_resize(size(px(1200.), px(1500.)));
         let settings = settings.unwrap();
         let shown = |visual: &mut gpui::VisualTestContext, label: &str| {
             visual.run_until_parked();
