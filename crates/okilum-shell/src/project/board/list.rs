@@ -319,7 +319,12 @@ impl Board {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Задачи"),
                     )
-                    .child(self.filter_bar(&prepared.projection, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.filter_bar(&prepared.projection, cx)),
+                    )
                     .child(self.add_card_button(cx))
                     .child(
                         Button::new("board-manage")
