@@ -14,8 +14,10 @@ Path(sys.argv[1]).write_text(s.split('# Kernel lifecycle failures')[0])
 PY
 source "$setup"
 rm "$setup"
-run_tests okilum-shell --bins issue2521_ 2>&1 | tee "$controls/positive.log"
-run_tests okilum-shell --bins project::composer::tests::send_mode_disclosure_stays_with_send_and_enter_retains_each_explicit_mode --exact 2>&1 | tee "$controls/ime-positive.log"
+run_tests okilum-shell --bins issue2521_ > "$controls/positive.log" 2>&1
+cat "$controls/positive.log"
+run_tests okilum-shell --bins project::composer::tests::send_mode_disclosure_stays_with_send_and_enter_retains_each_explicit_mode --exact > "$controls/ime-positive.log" 2>&1
+cat "$controls/ime-positive.log"
 [[ "$macos_rust_failed" = 0 ]]
 python3 - <<'PY'
 from pathlib import Path
