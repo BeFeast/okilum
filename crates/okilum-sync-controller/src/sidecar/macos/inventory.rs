@@ -109,12 +109,9 @@ fn processes(deadline: Instant) -> Result<()> {
             )
         };
         if read != size {
-            // A disappearing process is harmless; an unreadable live process is uncertainty.
-            let alive = unsafe { libc::kill(pid, 0) };
-            ensure!(
-                alive == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
-                "live process inventory unreadable"
-            );
+            // Managed Macs hide some processes, including ones of this account (#2589).
+            // An unreadable process is skipped: a running Syncthing is still detected
+            // by its configuration files and launchd definitions below.
             continue;
         }
         let name: Vec<u8> = info
@@ -129,7 +126,15 @@ fn processes(deadline: Instant) -> Result<()> {
         }
         let mut bytes = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
         let n = unsafe { libc::proc_pidpath(pid, bytes.as_mut_ptr().cast(), bytes.len() as u32) };
-        ensure!(n > 0, "account process image inventory unreadable");
+        if n <= 0 {
+            // Managed Macs hide the image path of some account processes (#2589). Their
+            // name already passed reject_sync; only the positive control needs a path.
+            ensure!(
+                pid != std::process::id() as i32,
+                "account process image inventory unreadable"
+            );
+            continue;
+        }
         let path = &bytes[..n as usize];
         reject_sync(path)?;
         if pid == std::process::id() as i32 {
@@ -177,11 +182,13 @@ pub fn require_fresh(deadline: Instant) -> Result<()> {
         .nth(4)
         .context("account home unavailable")?
         .to_path_buf();
+    let account_agents = home.join("Library/LaunchAgents");
     for directory in [
-        home.join("Library/LaunchAgents"),
+        account_agents.clone(),
         "/Library/LaunchAgents".into(),
         "/Library/LaunchDaemons".into(),
     ] {
+        let system = directory != account_agents;
         match std::fs::read_dir(directory) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e.into()),
@@ -191,13 +198,20 @@ pub fn require_fresh(deadline: Instant) -> Result<()> {
                     if path.extension().is_none_or(|x| x != "plist") {
                         continue;
                     }
-                    let xml = output(
+                    let xml = match output(
                         Command::new("/usr/bin/plutil")
                             .args(["-convert", "xml1", "-o", "-"])
                             .arg(&path),
                         deadline,
                         1024 * 1024,
-                    )?;
+                    ) {
+                        Ok(xml) => xml,
+                        // A managed Mac keeps some system definitions unreadable to the
+                        // account (#2589). This account cannot have installed them, so
+                        // they cannot be its Sync service; account agents stay strict.
+                        Err(_) if system && std::fs::File::open(&path).is_err() => continue,
+                        Err(e) => return Err(e),
+                    };
                     ensure!(
                         xml.starts_with(b"<?xml") && xml.windows(6).any(|x| x == b"<plist"),
                         "service definition inventory incomplete"

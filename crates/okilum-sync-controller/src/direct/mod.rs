@@ -30,7 +30,8 @@ use std::{
 };
 use uuid::Uuid;
 
-const LIFETIME: u64 = 600;
+const LIFETIME: u64 = 3600;
+const PAIRING_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PEERS: usize = 64;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -744,6 +745,7 @@ impl Controller {
     ) -> Result<Reply> {
         self.check()?;
         let read_only = operation.read_only();
+        let redeem = matches!(operation, Operation::Redeem { .. });
         let seed = self.shared.db.lock().unwrap().seed;
         let message = Message {
             nonce: Uuid::new_v4(),
@@ -760,6 +762,11 @@ impl Controller {
             "Not connected to the other computer at {endpoint}. Its firewall may block incoming connections. Open TCP port {} on that computer, or keep both computers on the same network.", endpoint.port()
         ))?;
         self.check()?;
+        if redeem {
+            // The other computer may be busy (daemon inventory, disk). A pairing
+            // request waits longer than the 3 s frame bound before giving up (#2589).
+            stream.set_read_timeout(Some(PAIRING_REPLY_TIMEOUT))?;
+        }
         wire::write(&mut stream, &frame)?;
         let response = wire::read(&mut stream)?;
         let (response, _): (Response, _) = wire::open(response, credential, Some(public))?;
@@ -837,7 +844,14 @@ impl Controller {
                 self.inspect_request(scope, &signer, *request)
                     .map(|response| Reply::Inspection { response })
             }
-            operation => self.dispatch(&mut db, scope, operation, signer),
+            operation => {
+                let reply = self.dispatch(&mut db, scope, operation, signer);
+                // The reply's transport query contacts the local Syncthing daemon.
+                // Never hold the pairing database across it (#2589): the UI and other
+                // requests must not wait for a slow daemon.
+                drop(db);
+                reply
+            }
         };
         let reply = result.unwrap_or_else(|error| {
             #[cfg(target_os = "linux")]
@@ -861,7 +875,13 @@ impl Controller {
                 nonce: message.nonce,
                 result: reply,
                 transport: if message.transport.is_some() {
-                    self.local_transport()?
+                    // Address exchange is optional and repeats on every refresh. An
+                    // unreachable daemon must not turn a pending pairing into a
+                    // silent socket timeout on the other computer (#2589).
+                    self.local_transport().unwrap_or_else(|error| {
+                        eprintln!("okilum-sync: pairing reply without transport: {error:#}");
+                        None
+                    })
                 } else {
                     None
                 },
