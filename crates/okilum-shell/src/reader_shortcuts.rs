@@ -159,6 +159,7 @@ fn catalog() -> Vec<Entry> {
         entry::<reader_open::NewWindow>("New window", View),
         entry::<reader_settings::OpenSettings>("Settings", View),
         entry::<Dismiss>("Close or clear", View),
+        entry::<DismissManagerModel>("Close model picker", View),
     ]
 }
 

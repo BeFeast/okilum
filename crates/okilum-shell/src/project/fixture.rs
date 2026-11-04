@@ -331,6 +331,8 @@ fn open_mounted_header(state: PathBuf, gateway: Arc<Fake>, cx: &mut App) {
         "# Project notes\n\nThe Manager stays beside your notes.\n",
     )
     .expect("fixture note");
+    let performance =
+        std::env::var("OKILUM_PROJECT_UI_FIXTURE").is_ok_and(|mode| mode == "performance");
     let width = match std::env::var("OKILUM_HEADER_QA_WIDTH").as_deref() {
         Ok("320") => 320.,
         _ => 560.,
@@ -368,6 +370,17 @@ fn open_mounted_header(state: PathBuf, gateway: Arc<Fake>, cx: &mut App) {
                 });
                 reader.project_navigation.active =
                     Some(okilum_t3::projects::Project::read(&vault).expect("fixture project"));
+                if performance {
+                    super::performance::populate(&project, cx);
+                    let board = cx.new(|cx| {
+                        super::board::Board::performance_fixture(vault.clone(), window, cx)
+                    });
+                    reader
+                        .project_navigation
+                        .boards
+                        .insert(vault.clone(), board);
+                    reader.project_navigation.board_visible = true;
+                }
                 reader.project = Some(project);
                 reader.project_open = true;
                 reader.panels.close(reader_layout::Panel::Notes);
@@ -404,7 +417,7 @@ pub(super) fn open(cx: &mut App) -> bool {
         mode.as_str(),
         "mounted-header-light" | "mounted-header-dark"
     );
-    if picker_reference || mounted_header {
+    if picker_reference || mounted_header || mode == "performance" {
         reader_features::set_enabled(reader_features::Feature::Agents, true, cx);
     }
     let state = reader_history::state_directory().expect("isolated fixture state");
@@ -426,7 +439,8 @@ pub(super) fn open(cx: &mut App) -> bool {
         grown: Mutex::new(true),
         ..Default::default()
     });
-    if mounted_header {
+    if mounted_header || mode == "performance" {
+        super::performance::collect(cx);
         open_mounted_header(state, gateway, cx);
         return true;
     }

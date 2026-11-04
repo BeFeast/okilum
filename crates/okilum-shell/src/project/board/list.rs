@@ -296,7 +296,7 @@ impl Board {
     }
     pub(super) fn render_list(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = brand::palette(cx);
@@ -414,13 +414,14 @@ impl Board {
                     self.delivery_column(scope),
                     &prepared.binding,
                     prepared.mappings.get(&scope.number).copied().flatten(),
+                    window,
                     cx,
                 ))
             } else {
                 self.selected_local
                     .as_ref()
                     .and_then(|id| prepared.local_indices.get(id))
-                    .map(|index| self.local_card(&self.local_cards.value.cards[*index], cx))
+                    .map(|index| self.local_card(&self.local_cards.value.cards[*index], window, cx))
             };
             if let Some(details) = details {
                 root = root.child(
