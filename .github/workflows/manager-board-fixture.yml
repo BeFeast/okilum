@@ -44,25 +44,54 @@ jobs:
             manager-board-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
             agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
             manager-board-native-v1-${{ runner.os }}-
-      - name: Verify source and build the release fixture
+      - name: Source-pinned diagnostic regressions (not acceptance)
         run: |
           test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
           bash scripts/vendor-setup.sh
           bash scripts/vendor-setup.sh --verify
           cargo fetch --locked
-          cargo build --offline --locked --release -p okilum-shell --bin okilum --features project-ui-harness
-          artifact_dir=$(mktemp -d)
-          cp target/release/okilum "$artifact_dir/okilum"
-          printf '%s\n' "$OKILUM_SOURCE_COMMIT" > "$artifact_dir/SOURCE"
-          (cd "$artifact_dir" && sha256sum okilum > SHA256SUMS)
-          tar -C "$artifact_dir" -czf "$RUNNER_TEMP/manager-board-fixture.tar.gz" okilum SOURCE SHA256SUMS
-      - uses: actions/upload-artifact@v4
-        with:
-          name: manager-board-fixture-${{ github.sha }}
-          path: ${{ runner.temp }}/manager-board-fixture.tar.gz
-          retention-days: 14
+          set -o pipefail
+          {
+            printf 'SOURCE_PROBE %s\n' "$OKILUM_SOURCE_COMMIT"
+            failed=0
+            for filter in project::performance::tests::reference_scroll_and_splitter_have_bounded_board_and_timeline_work cached_live_; do
+              cargo test --offline --locked --release -p okilum-shell --bin okilum --features project-ui-harness "$filter" -- --list > "$RUNNER_TEMP/probe-list.txt" || failed=1
+              if ! grep ': test$' "$RUNNER_TEMP/probe-list.txt"; then
+                echo "No verdict: empty regression filter $filter"
+                failed=1
+                continue
+              fi
+              cargo test --offline --locked --release -p okilum-shell --bin okilum --features project-ui-harness "$filter" -- --nocapture || failed=1
+            done
+            exit "$failed"
+          } 2>&1 | tee "$RUNNER_TEMP/2497-regression.log"
+      - name: Compiled negative control without axis guards
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          source_file=crates/okilum-shell/src/project/board/kanban.rs
+          cp "$source_file" "$RUNNER_TEMP/positive-kanban.rs"
+          trap 'cp "$RUNNER_TEMP/positive-kanban.rs" "$source_file"' EXIT
+          python3 - <<'CONTROL'
+          from pathlib import Path
+          p=Path('crates/okilum-shell/src/project/board/kanban.rs')
+          s=p.read_text()
+          assert s.count('.restrict_scroll_to_axis()') == 2
+          assert s.count('list.style().restrict_scroll_to_axis = Some(true);') == 1
+          p.write_text(s.replace('.restrict_scroll_to_axis()', '').replace('list.style().restrict_scroll_to_axis = Some(true);', 'list.style().restrict_scroll_to_axis = Some(false);'))
+          CONTROL
+          filter=project::performance::tests::reference_scroll_and_splitter_have_bounded_board_and_timeline_work
+          cargo test --offline --locked --release -p okilum-shell --bin okilum --features project-ui-harness "$filter" --no-run
+          set +e
+          cargo test --offline --locked --release -p okilum-shell --bin okilum --features project-ui-harness "$filter" -- --nocapture > "$RUNNER_TEMP/axis-negative.log" 2>&1
+          control_status=$?
+          set -e
+          cat "$RUNNER_TEMP/axis-negative.log"
+          test "$control_status" = 101
+          grep -F 'vertical wheel must not pan sibling lanes out of the viewport' "$RUNNER_TEMP/axis-negative.log"
+          echo 'Compiled negative control failed at the independent-axis assertion as required'
       - uses: actions/cache/save@v4
-        if: steps.native-cache.outputs.cache-hit != 'true'
+        if: ${{ always() && !cancelled() && steps.native-cache.outputs.cache-hit != 'true' }}
         with:
           path: |
             ~/.cargo/registry/
