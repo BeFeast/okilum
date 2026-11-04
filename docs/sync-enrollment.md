@@ -1,255 +1,227 @@
-# Explicit Sync enrollment
+# Sync between your computers
 
-Approved extension for #574; slice 1 is #585. This contract does not enable Sync
-in the application. Reader and single-file mode remain local-only until the user
-chooses **Enable Sync** in Settings → Sync. Syncthing transports canonical files;
-indexes remain disposable, identity/grants/operation journals do not.
+Sync copies a vault's notes and attachments between approved computers using
+Syncthing. On Linux, Okilum can set this up from a fresh installation with its
+bundled runtime. You do not need an Okilum account, a service, or a server.
+After the first transfer, saved changes and deletions sync automatically in both
+directions. Keep a separate backup: Sync can copy an accidental deletion too.
 
-## Approved behavior
+This describes the Linux flow on `origin/main`, checked at
+`547a8c4c96be464a4d66921447c6c93e5ad90162` (2026-11-04). The
+[Linux outcome](https://git.oklabs.uk/BeFeast/okilum/issues/2039#issuecomment-46260)
+records the fresh two-computer run on beta 7538. macOS is **coming** in
+[#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is **coming** in
+[#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490). Platform code and bundled
+binaries alone do not establish that the same setup works there today.
 
-- After Enable Sync, a managed user background service continues after closing the
-  window and starts at login. Logout/sleep/offline is not loss of the local vault.
-  Linux packages offer Syncthing as an optional dependency; installation never starts it or registers
-  any service/autostart. Registration starts only on Enable Sync; Disable/Remove
-  unregister Okilum-owned services, preserving externally owned services. macOS and
-  Windows bundle an unchanged sidecar with matching MPL notices/source access.
-- Offer reuse of an existing daemon after confirming identity, path, and user
-  consent. Never take over its lifecycle or replace its complete configuration.
-  Multiple candidates, inaccessible configuration, or path ambiguity require an
-  explicit choice. The selected endpoint's device ID must match durable state.
-- A new client trusts the hub as introducer; the hub does not trust the client as
-  introducer. Skip Introduction Removals is on; Auto Accept Folders is off.
-  Existing fleet settings stay unchanged. These flags are not a fleet revoke.
-- One-click enrollment accepts only an empty directory or an authenticated known
-  replica with the same folder ID and canonical path. Unknown nonempty import is
-  separate. Reject overlap with any daemon's existing folder, including symlink
-  aliases. A folder ID alone is not proof of ownership or replica identity.
-- Create a new folder paused, seed approved canonical ignore bytes and validate
-  include dependencies, then receive initially as `receiveonly`. `.stignore` is
-  local policy, not transported by Syncthing. Different existing policy stays
-  stopped for review; never overwrite it automatically. `.claude/skills` is
-  permitted; worktrees and `.okilum-index` are excluded. The small policy in the
-  fixture demonstrates those shapes and is **not** the live canonical policy.
-- Promote to `sendreceive` only after verified complete receipt and no local
-  changes under serialized controller ownership. No automatic Revert/Override.
-  Missing folder markers remain errors; never recreate a marker to hide a missing
-  mount. The compatibility crate deliberately does not implement promotion.
-- Pause is per folder, including all peers. Remove is cooperative local stop plus
-  service/hub revocation, retaining local files. Reuse removes only recorded
-  Okilum additions; previously configured sync may continue. Hub offline means
-  removal pending. Durable deny/reconciliation prevents re-introduction at the
-  hub, with an eventual-enforcement window, not guaranteed fleet isolation.
-  Lost-device fleet revoke is separate; already copied data cannot be revoked.
+## Connect two Linux computers
 
-## Authority and subsequent slices
+1. **On the computer that already has your notes**, open the vault and choose
+   **Share with another computer…** from the app menu. In Settings → Sync, find
+   the vault under **Vaults on this computer** and select **Share with my
+   computers**. It becomes **Shared with approved computers**. An ordinary local
+   vault can be the source; it need not already be configured in Syncthing.
+2. Give **This computer** a recognizable name. Select **Add computer**, then
+   **Copy pairing URL**, and send the URL privately to the new computer. Keep
+   the first computer's Okilum open. The URL pairs one computer, expires after
+   **10 minutes**, and is not a folder path. Both computers must be on the
+   **same LAN for this first pairing**. There is no lifetime setting to adjust.
+3. **On the new computer**, choose **Get notes from another computer** on the
+   welcome screen. This opens Sync and enables the optional Sync feature.
+   Enter its name under **This computer**, paste the URL into **Paste pairing
+   URL**, and select **Connect**. You can also reach this step in Settings → Sync.
+4. **Back on the first computer**, check the requesting computer's name and
+   displayed identities. Select **Confirm computer** only for the computer you
+   intended to connect; reject an unexpected request. Only then can the new
+   computer see the vaults authorized for it.
+5. **On the new computer**, select the vault under **Available vaults** and
+   select **Choose local folder**. Okilum suggests a new folder based on the
+   vault name. Alternatively, **Use existing folder** lets you choose an empty
+   folder. Confirm the local destination. **A non-empty destination is refused**:
+   merging two existing copies with a lossless preview is still
+   [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043). Do not delete a
+   working copy to make setup proceed.
+6. Wait for **Bidirectional Sync active**. The first transfer starts automatically
+   and the received vault opens when it is ready. There is no extra Enable,
+   daemon setup, or promotion step. Save a small edit with **Ctrl+S**, check it
+   on the other computer, then save a change there to check the return direction.
 
-Local managed cert/key, REST key, selected device identity, ownership records,
-operation IDs and revocation tombstones live in private OS application state,
-outside vault/index. REST keys never go in URLs, argv, diagnostics or service
-responses. REST uses authenticated literal loopback with redirects and proxies
-disabled. Sync transport policy is separately explicit; a loopback REST address
-alone does not restrict listeners, discovery, relay or NAT traffic.
+Opening Sync prepares the bundled Linux Syncthing only after checking that no
+existing or unavailable runtime needs attention. If a connection is already
+present, explicitly select **Use connection**; Okilum does not silently take it
+over or start a second daemon. See [existing Syncthing](#existing-syncthing).
 
-Browser passkey approval at the existing HTTPS origin produces a short-lived,
-nonce/verifier-bound scoped device grant. Service chooses owner/vault/folder;
-clients never supply a server path or arbitrary REST target. A host hub adapter is
-the sole reader of the hub REST key. It offers scoped add/remove/status, not a
-REST proxy. Operations persist requested → approved → hub_added → local_prepared
-→ syncing → active with read-back and idempotent retry; removal has a durable
-pending state. Service pairing and the isolated adapter are defined in [slice 2](sync-pairing.md);
-  native local preparation and service lifecycle remain subsequent slices.
+Computers pair once. Further authorized vault selections between that pair do
+not need a new URL. Sharing another ordinary vault makes it available to already
+approved computers too. Keep the source Okilum open while the other computer is
+choosing a vault; bootstrap/catalog serving is separate from file transport.
+The managed Linux background service can continue transferring files after the
+window closes. Offline or sleeping peers catch up when connected again; a paired
+entry or local idle state alone does not prove the other computer is caught up.
 
-Settings must distinguish preparing/syncing/idle/paused/offline/error, report
-conflict files and folder errors, and show device/path and managed/reused mode.
-Idle is local state, not proof that all peers are connected or caught up. Event
-cursor loss triggers fresh status/connection/error snapshots. Preserve both
-conflict versions. Sync is not backup: sendreceive deletions propagate; hub
-versioning does not protect local hub edits. No iCloud migration is authorized.
+The in-app **Help: connect a computer** opens the bundled
+[written guide](help/sync/setup.md). [Pairing details](sync-pairing.md) explain
+what the URL and confirmation authorize.
 
-Live hub installation/socket mounts need a concrete backup/rollback plan and
-authority for that infrastructure change; the development manager is not an
-approval gate. Native GUI checks must exercise the actual platform; no desktop
-behavior is inferred from a Linux container test.
+## Computer network settings (#2047)
 
-## Slice 1 compatibility boundary
+The managed Linux connection uses **public Syncthing discovery, encrypted relays
+and NAT traversal by default**. They help approved computers find and reach each
+other when direct connections are blocked. File contents are encrypted between
+the Syncthing devices. Discovery services can see device IDs and advertised
+addresses; relays see encrypted traffic and connection metadata. These services
+do not authorize computers or publish a vault catalog. First pairing still
+requires the same LAN.
 
-`okilum-sync` is a small independent crate consumed by the opt-in host adapter. It
-uses scoped REST endpoints, authenticated identity/version inspection, explicit
-paused folder creation, scoped folder patch/read-back, ignore read-back, scan and
-status/error inspection. It never PUTs the whole configuration. The controller
-must serialize enrollment, recheck paths immediately before writes, validate
-identity before every resumed operation, and retain a journal of additions.
-Generic JSON here mirrors the versioned upstream API; it is not a remotely
-exposed authority boundary. Scope/ownership and service grants remain slice 2.
+Okilum also exchanges **explicit Syncthing peer addresses** over the authenticated
+pairing/catalog channel, bound to the approved device identity. It saves usable
+literal TCP/QUIC LAN addresses and applies them alongside Syncthing's `dynamic`
+address to managed peers. A stable listen port survives restart, and refresh
+updates address hints. Public discovery is not the only way a managed pair can
+find each other. External runtimes keep their existing address behavior.
 
-The real fixture runs unchanged **Syncthing 1.29.5 (hub)** against **2.1.6
-(client)**. Client 2.1.6 is an explicit compatibility candidate, not a promise
-that arbitrary future Linux package versions pass. Later controllers must
-version-check and reject unsupported behavior; this does not upgrade the hub.
-No source changes or system installation of Syncthing are involved.
+In Settings → Sync, **Only local network and VPN** applies to every vault using
+the selected managed connection **on this computer**. It is not a vault-wide or
+fleet-wide switch. Turning it on disables global discovery, relays, NAT traversal
+and STUN, removes the dynamic relay listener, and keeps local discovery and the
+stable direct listener. Turning it off restores the public defaults. The saved
+choice survives restart; older managed Linux installations migrate to the default
+once, rather than having the default reapplied on every refresh.
 
-Reproduce on an isolated Linux amd64 development machine with Rust, Python 3,
-curl, tar and sha256sum (Okilum executors must use the authorized remote build
-host and wrap the complete command in its build lock):
+The switch keeps explicit peer addresses. It does not change OS routing or
+firewall rules: for a private connection those addresses must be reachable over
+your LAN or VPN. Custom relay routes require review before local-only mode can
+be reported. If a peer stays disconnected, check the named computer, its network
+and the firewall/TCP-port guidance in Settings. Local idle is not proof of a
+working peer connection.
 
-```sh
-cargo test -p okilum-sync
-bash scripts/sync-compatibility.sh
-cargo fmt --all --check
-cargo clippy --tests -p okilum-sync -- -D warnings
-```
+With external Syncthing, Settings shows the current network options and directs
+you to change them in Syncthing. Okilum does not apply its managed defaults or
+provide a mutating network switch for that connection.
 
-The script downloads the two pinned Linux amd64 archives, verifies their committed
-SHA-256 sums and invokes an ignored integration test. The
-test uses separate temporary homes/configs/identities/keys/vaults, loopback-only
-REST and TCP listeners, no discovery/relay/NAT/upgrade, and reaps only children it
-started. It never reads a user daemon/config or contacts the live hub. Port
-allocation has the normal release/bind race; startup failure fails the run.
+## Conflicts and previous versions
 
-Evidence and limitations are in [the compatibility result](sync-compatibility.md).
+A note open for reading or clean editing updates when a changed file arrives,
+including Syncthing's replace-by-rename writes. If you have unsaved edits, Okilum
+keeps your text and shows a conflict notice instead of overwriting it. It names
+the sending computer only when it can verify that origin.
 
-The first Linux controller component is documented in [Linux lifecycle ownership](sync-linux-controller.md). It is not yet connected to Reader or Settings.
+For this editor conflict, deliberate **Save** or **Keep both versions** saves your
+local text beside the incoming file as
+`<name>.okilum-conflict-<time>-<random>.<extension>`. The time is local; the random
+part is not a computer ID. For example, a Markdown note keeps its `.md` extension.
+The incoming file stays unchanged. After a copy has been saved, Reload preserves
+later local edits in another copy before loading the incoming file; a failed
+preservation leaves your edits open. This is the shipped [#2486](https://git.oklabs.uk/BeFeast/okilum/issues/2486)
+behavior. Okilum copies deliberately avoid Syncthing's `.sync-conflict-` naming
+pattern so Syncthing does not prune them as transport conflicts. Syncthing can
+also create its own conflict copies. Neither kind means the conflict was resolved.
 
+New managed source and receiving folders use Syncthing staggered versioning with
+a 30-day maximum age and retain transport conflict copies. This is transport
+history, not a guarantee of a snapshot of every local edit. Existing external
+folder/version settings are preserved. The full Sync conflict-resolution journey
+in [#2044](https://git.oklabs.uk/BeFeast/okilum/issues/2044) and 30-day history on
+every device with restore from **Note history** in
+[#2045](https://git.oklabs.uk/BeFeast/okilum/issues/2045) remain follow-ups; existing
+editor compare/recovery controls do not complete those promises.
 
-### Linux package boundary (#587)
+## Existing Syncthing
 
-The Arch package declares `syncthing: sync between devices` in `optdepends`, not
-`depends`. Reader installation and use do not require Syncthing. Okilum installs
-no service unit or package install hook; discovering the package does not run it.
-Only explicit Enable Sync may prepare Okilum's private instance and register
-its user service. Disable/Remove unregister that owned service. External reused
-instances keep their lifecycle.
+If you already sync a vault with Syncthing, select its runtime with **Use
+connection**, then **Choose existing synced vault**. Okilum inspects the vault's
+canonical folder, folder ID, device identity and accessible runtime. Check the
+details and explicitly select **Use this connection**. This associates the
+existing replica; it does not recreate the folder or change its current shares.
+Later authorized vault connections make only the scoped additions they need.
 
-The controller currently accepts the tested client version 2.1.6 and reports an
-unsupported package version before preparation if Arch ships a different one.
-The dependency does not pin or downgrade the user's Syncthing package; support
-for another version requires updating the isolated compatibility evidence first.
-Arch package installation/lifecycle QA remains a native Linux check, separate
-from the controller's CT141 systemd and fixture tests.
+Okilum preserves the external daemon's lifecycle, existing peer roles, folder
+settings and network options. It never replaces its complete configuration.
+Multiple candidates, inaccessible configuration, overlapping folders or changed
+identities must be resolved explicitly. The bundled runtime is pinned to
+Syncthing **2.1.6**; verified external reuse accepts **2.1.6 or 2.1.7**, not an
+arbitrary installed version. Reuse consent is not consent to change network policy.
 
-### Desktop Remove coordination
+## An optional always-on computer and plain Syncthing peers
 
-Remove first records terminal intent in the runtime, pairing, and folder journals.
-It attempts local folder cleanup, stops/unregisters only the owned runtime, then
-reconciles service revocation. An unavailable service cannot keep the owned daemon
-running. Retry after restart revokes using saved credentials without starting the
-service again. A reused daemon keeps running; its folder cleanup must complete
-before claiming removal, and the UI must say external sync can continue.
+Two computers need no server. An always-on Linux computer running Okilum can
+receive an empty local copy through the same steps and keep Syncthing running to
+hold that copy while another peer is off. It is another trusted peer, not a
+required hub or an Okilum service. It can exchange changes with its connected
+peers while the other computer is unavailable.
 
-If an owned daemon was already offline, private dormant configuration may remain;
-local files remain in all cases. The removed runtime identity cannot be enabled
-again through its old journal. Disable remains reversible and preserves identity;
-a new connection after Remove requires a fresh explicit enrollment. The real
-CT141 user-systemd fixture verifies stop-before-revoke during a simulated service
-outage, later revocation, and no restart or certificate replacement on retry.
+For three or more computers, do not assume receiving a vault also makes that
+computer a catalog source, or that pairing with one computer automatically
+connects every other computer. Symmetric catalog serving and a synchronized
+all-device list are not delivered. Add the intended peer connections explicitly
+through supported setup or existing Syncthing configuration.
 
-### Settings integration boundary
+A plain Syncthing server without Okilum is configured in Syncthing, with the
+intended device IDs and folder shares on each side. Existing configurations can
+be reused as above. Headless Okilum and an introducer-based plain-peer workflow
+remain [#2048](https://git.oklabs.uk/BeFeast/okilum/issues/2048); current direct
+pairing creates peers with `introducer: false` and `autoAcceptFolders: false`.
+A server holding an ordinary synced vault can read it. Encryption for servers
+the owner does not trust remains open; transport encryption does not solve that.
 
-The Linux Sync section is a separate GPUI component, created only when the user
-opens that section. Discovery and every blocking controller operation run on the
-background executor. Its initial read cannot prepare/register/start Syncthing.
-Explicit Enable persists the chosen HTTPS service, computer name, folder and
-managed/reused runtime before effects. Browser approval shows a grouped matching
-code. A bounded refresh continues pairing and scoped first receipt; local idle
-never substitutes for the readiness predicate. Status distinguishes Preparing,
-paused, hub offline, local errors and caught up with the hub; the last observed
-hub connection remains available offline. It does not claim all computers are
-online or that conflict copies have been resolved.
+## Removal, ignores, and remaining work
 
-Disable keeps identity for re-enable. Remove attempts local stop independently of
-remote availability and displays pending until required reconciliation completes.
-Once removal completes, a private generation record retires that connection;
-explicit new setup allocates new journals. Retired authority is never silently
-reused and canonical files are never deleted. Unknown nonempty folders still
-require a separately approved adoption flow. Per-generation records stay outside
-the vault/index; no marker is added to the vault.
+The direct Settings flow does not yet offer fleet-wide device removal or
+propagated revocation. To disconnect a plain/external Syncthing peer, remove its
+folder shares and device connections in Syncthing on the relevant computers.
+Stopping a local app or disabling its optional Sync UI is not remote revocation.
+Already copied files remain on a disconnected or lost computer; they cannot be
+recalled. A new invitation does not revoke an earlier pairing.
 
-Native Linux light/dark before/after evidence and browser-to-daemon end-to-end QA
-are required before publishing the Settings UI. Development still uses only the
-CT141 sandbox. The optional QA trust certificate is compiled only into the
-non-publishing settings harness; shipping builds use system certificate trust.
+The [30 October decisions and 1 November clarification](https://git.oklabs.uk/BeFeast/okilum/issues/2039)
+set the direction. These parts remain unfinished:
 
-Folder attention messages distinguish unavailable locations or markers, permissions,
-full disks, and preserved receive-only local edits. They use the existing authenticated
-status/error snapshot and perform no additional file scan. Raw daemon paths and error
-text stay out of the Settings layout. Local edits during first receive report Needs
-attention rather than silently remaining Preparing. These messages never recreate a
-marker, revert local edits, or resolve conflict copies automatically.
+- [#2042](https://git.oklabs.uk/BeFeast/okilum/issues/2042): a device list inside
+  the vault, all-to-all connections and propagated additions/removals.
+- [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043): preview and lossless
+  first merge when the destination already has files. Local preview groundwork
+  does not enable this flow. Unmerged PRs
+  [#2511](https://git.oklabs.uk/BeFeast/okilum/pulls/2511) and
+  [#2513](https://git.oklabs.uk/BeFeast/okilum/pulls/2513) are not shipped support.
+- [#2044](https://git.oklabs.uk/BeFeast/okilum/issues/2044),
+  [#2045](https://git.oklabs.uk/BeFeast/okilum/issues/2045) and
+  [#2048](https://git.oklabs.uk/BeFeast/okilum/issues/2048): the complete conflict,
+  history and headless/plain-peer journeys described above.
+- [#2046](https://git.oklabs.uk/BeFeast/okilum/issues/2046): one shared ignore
+  policy for the whole vault. Today source enrollment seeds/verifies local
+  `.stignore` rules and first receive applies approved ignores; Syncthing does
+  not transport `.stignore`. Indexes, save temporaries and worktrees are excluded;
+  `.claude/skills` can sync. Incompatible existing policy requires review.
+- Untrusted-server encryption and the limits of removal for already copied data.
 
-Conflict-copy inspection is an explicit Settings action, not a periodic vault scan.
-It checks local filenames using Syncthing's timestamp/device suffix convention,
-without reading contents or writing either version. Results are possible copies
-from that check, not proof of unresolved conflicts. File Manager reveal is explicit;
-there is no automatic resolve/delete. The walker does not follow directory symlinks,
-and omits Syncthing history/marker and Okilum index directories. Enumeration uses
-open directory descriptors and is limited to 100,000 entries, 50 results, 64 nested
-directories and a cooperative two-second budget. Unreadable entries or exhausted
-limits produce an incomplete result, never a false all-clear. Kernel filesystem
-calls may still block on an unavailable mount; the UI thread remains independent.
+The old service/hub/passkey enrollment is gone from the desktop user flow
+([#2049](https://git.oklabs.uk/BeFeast/okilum/issues/2049)). Its implementation
+remains in the repository for independent consumers; it is not a setup requirement.
 
-### Direct managed peer addresses (#2397)
+## Code references
 
-The authenticated pairing/catalog/attach channel carries the selected Linux
-managed runtime's current literal TCP/QUIC LAN listen addresses. Loopback,
-link-local, unspecified, multicast and hostname targets are excluded, including
-IPv4-mapped IPv6 equivalents. Hints are bound to the approved Syncthing device
-identity and persisted outside the vault/index. Existing paired device records
-receive a scoped address-only update plus `dynamic`; folder membership and trust
-roles do not change. External reused daemons retain their existing behavior.
-Refresh exchanges current hints and reconciles saved addresses after restart.
-Managed preparation already saves a concrete nonzero listen port in its durable
-request/configuration; restarting retains that port. A disconnected managed peer
-shows its name and firewall/TCP-port guidance after 30 seconds of observation,
-without treating a local idle folder as proof of connectivity.
+All references below were checked in the `origin/main` revision named above.
+Credentials, paired identities, address hints and operation journals stay in
+private application state outside the vault and disposable index.
 
-### Computer network settings (#2047)
+- [Linux Settings actions and runtime selection](../crates/okilum-shell/src/reader_settings_sync.rs),
+  [visible labels and catalog](../crates/okilum-shell/src/reader_settings_sync/view.rs),
+  [welcome entry](../crates/okilum-shell/src/reader_startup.rs), and
+  [implicit bootstrap policy](../crates/okilum-sync-controller/src/linux_bootstrap.rs).
+- [Invitation lifetime, approval and durable pairing](../crates/okilum-sync-controller/src/direct/mod.rs)
+  and [authenticated wire protocol](../crates/okilum-sync-controller/src/direct/wire.rs).
+- [Ordinary source sharing and ignores](../crates/okilum-sync-controller/src/direct/source.rs),
+  [empty first receive, versioning and promotion](../crates/okilum-sync-controller/src/direct/transfer.rs),
+  [existing-replica inspection](../crates/okilum-sync-controller/src/direct/existing.rs), and
+  [supported versions](../crates/okilum-sync-controller/src/daemon.rs).
+- [Explicit peer addresses](../crates/okilum-sync-controller/src/direct/addresses.rs),
+  [network policy and migration](../crates/okilum-sync-controller/src/network_policy.rs), and
+  [managed Linux service](../crates/okilum-sync-controller/src/lifecycle.rs).
+- [Open-note updates](../crates/okilum-shell/src/reader_editor/open_note_sync.rs),
+  [editor preservation and conflict-copy naming](../crates/okilum-shell/src/reader_editor.rs), and
+  [in-app Help entry](../crates/okilum-shell/src/reader_sync_help.rs).
 
-The managed Linux connection uses public Syncthing discovery, relays and NAT
-traversal by default. The stable TCP listen port and authenticated explicit peer
-addresses stay intact; the dynamic relay listener lets two computers connect when
-both firewalls block incoming connections. Public discovery receives device IDs
-and advertised addresses; the relay directory sees relay lookup traffic, relays
-see encrypted connection traffic and network metadata, and router traversal may
-request a port mapping. File contents travel end-to-end encrypted between the
-approved Syncthing devices. This does not publish vaults or grant device trust.
-The Okilum pairing handshake still requires the same LAN;
-this issue does not move the handshake or vault catalog onto relays.
-
-Settings → Sync offers **Only local network and VPN** for the selected managed
-connection. It affects every vault using that runtime on this computer, not one
-vault or every computer. Turning it on disables global discovery, relays, NAT
-traversal and STUN (`stunKeepaliveStartS = 0` and `stunKeepaliveMinS = 0`), removes the dynamic relay listener,
-and keeps local discovery and the stable direct listener. Turning it off restores
-the public defaults. The UI publishes the authenticated REST read-back, not an
-optimistic preference; a failed operation stays an error until refreshed/retried.
-Custom relay routes/listeners require review rather than a false local-only claim.
-Explicit TCP/QUIC peer addresses from the authenticated paired channel are kept;
-this setting controls discovery/traversal services, not the OS routing table or
-firewall. A configured direct address must be reachable over the LAN or VPN for a
-private connection.
-
-For an external Syncthing connection, Settings displays its current network
-options and directs the user to Syncthing to change them. It offers no mutating
-switch and never applies the managed default to that runtime. Existing reuse
-consent is not consent to change its network options. macOS/Windows transport
-bootstrap remains outside this Linux delivery.
-
-Existing managed Linux installations, including 7504/7510, migrate on their next
-selected-runtime reconciliation after Sync is enabled. Authority comes from the
-private, checksum-pinned preparation receipt and exact selected device identity.
-`sync/managed/prepared/network-policy-v1.json` records the one-time migration and
-subsequent explicit choices outside the vault and disposable index. A pending
-intent is flushed before scoped options PATCH, completed only after read-back,
-and retried after interruption. An applied receipt is never treated as permission
-to reset the options on every refresh. A saved local-only choice survives restart
-and future reconciliation. No other daemon or user service is changed.
-
-The real-runtime acceptance script is `scripts/ci/sync-network-policy.sh`: five
-named tests run against unmodified checksum-pinned Syncthing 2.1.6 with loopback as
-the only interface in a disposable network namespace. It checks default options,
-local/public round trips, daemon restart, one-time legacy migration, interrupted
-intent, external negative control and explicit-route handling. It requires Linux
-`sudo -n unshare --net`, `ip` and `runuser`; it changes no host interface or firewall.
-No test depends on public discovery or a public relay being available. Dependency
-archive acquisition occurs before network isolation. A public relay round trip
-is not an acceptance claim of this options/read-back test.
+The [direct-pairing engineering notes](sync-direct-pairing.md) cover the protocol,
+readiness checks and remaining lifecycle limits. The older
+[compatibility evidence](sync-compatibility.md) describes isolated hub/client
+fixtures, not today's user setup.

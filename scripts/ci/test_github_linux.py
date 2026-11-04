@@ -294,3 +294,23 @@ class CanaryRoutingTests(unittest.TestCase):
         ]:
             self.assertEqual(evaluate('linux-github', event, value, number, fork), hosted)
             self.assertEqual(evaluate('linux-local', event, value, number, fork), not hosted)
+
+
+class HourlyAppImageProductionBuild(unittest.TestCase):
+    def test_hourly_producer_ref_builds_production_not_acceptance_harness(self):
+        # The beta publisher rejects acceptance-harness provenance; the write-once
+        # forgejo-linux-pr/hourly-<sha> ref must build and describe production bytes.
+        cases = {'forgejo-linux-pr/1': True, 'forgejo-linux-pr/issue-2100-xdg': True,
+                 'forgejo-linux-pr/hourly-' + SHA: False, 'main': False, '': False}
+        script = (ROOT / 'scripts/appimage/build.sh').read_text()
+        condition = next(line for line in script.splitlines() if 'build_features=(--features' in line
+                         or line.startswith('if [[ "${GITHUB_REF_NAME'))
+        provenance = (ROOT / 'scripts/appimage/provenance.py').read_text()
+        expression = provenance.split("'acceptance_harness': ", 1)[1].split('),\n', 1)[0] + ')'
+        for ref, harness in cases.items():
+            shell = subprocess.run(['bash', '-c', condition + ' echo yes; else echo no; fi'],
+                                   env={'GITHUB_REF_NAME': ref, 'PATH': os.environ['PATH']},
+                                   capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(shell == 'yes', harness, ref)
+            with patch.dict(os.environ, {'GITHUB_REF_NAME': ref}):
+                self.assertEqual(eval(expression, {'os': os}), harness, ref)
