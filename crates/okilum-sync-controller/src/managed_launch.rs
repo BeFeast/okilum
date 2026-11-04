@@ -374,6 +374,8 @@ pub struct Generation {
     pub id: Uuid,
     pub pid: u32,
     pub start_time: String,
+    pub owner_pid: u32,
+    pub owner_start_time: String,
     pub binding: Uuid,
     pub executable_hash: String,
     pub rest_address: SocketAddr,
@@ -436,6 +438,17 @@ fn process_start(pid: u32) -> Result<String> {
         .nth(19)
         .context("process start time missing")?
         .into())
+}
+fn process_parent(pid: u32) -> Result<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    Ok(stat
+        .rsplit_once(')')
+        .context("invalid process identity")?
+        .1
+        .split_whitespace()
+        .nth(1)
+        .context("process parent missing")?
+        .parse()?)
 }
 /// Invoked only by the dedicated autonomous command after lifecycle verification.
 /// Returns the child's exit status; the service manager owns retry policy.
@@ -540,6 +553,8 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
             id: Uuid::new_v4(),
             pid: child.id(),
             start_time: process_start(child.id())?,
+            owner_pid: std::process::id(),
+            owner_start_time: process_start(std::process::id())?,
             binding: b.id,
             executable_hash: b.executable_hash.clone(),
             rest_address,
@@ -630,7 +645,9 @@ pub fn live_generation(home: &Path) -> Result<Generation> {
     ensure!(
         generation.binding == b.id
             && generation.executable_hash == b.executable_hash
-            && process_start(generation.pid)? == generation.start_time,
+            && process_start(generation.pid)? == generation.start_time
+            && process_start(generation.owner_pid)? == generation.owner_start_time
+            && process_parent(generation.pid)? == generation.owner_pid,
         "stale managed process generation"
     );
     let running = fs::metadata(format!("/proc/{}/exe", generation.pid))?;
