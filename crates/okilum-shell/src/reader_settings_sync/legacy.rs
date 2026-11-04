@@ -50,7 +50,10 @@ mod tests {
         pairing::{Session, State},
         runtime::Selection,
     };
-    use std::{fs, os::unix::fs::DirBuilderExt};
+    use std::{
+        fs,
+        os::unix::fs::{DirBuilderExt, PermissionsExt},
+    };
 
     #[test]
     fn issue2049_enrolled_install_is_explained_before_any_direct_operation() -> anyhow::Result<()> {
@@ -95,6 +98,9 @@ mod tests {
                     "state": "hub_ready", "last_error": null}
             }))?,
         )?;
+        for path in [state.join("setup.json"), journal.join("pairing.json")] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
         // Positive control: this is a readable production enrollment, not an
         // arbitrary marker that could hide an unfired compatibility test.
         let desktop = Desktop {
