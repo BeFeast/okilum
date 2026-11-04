@@ -70,6 +70,7 @@ extern "C" fn focus_changed(context: *mut c_void, kind: i32) {
     let event = match kind {
         1 => "native-focus",
         2 => "escape",
+        3 => "open-terminal",
         _ => "blur",
     };
     let _ = events.try_send(event.into());
@@ -229,5 +230,46 @@ mod tests {
             .status()
             .expect("cannot start native GUI fixture");
         assert!(status.success(), "native GUI fixture failed");
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    extern "C" {
+        fn okilum_manager_terminal_key(
+            code: u16,
+            command: bool,
+            shift: bool,
+            control: bool,
+            option: bool,
+            non_editable: bool,
+        ) -> bool;
+    }
+    #[test]
+    fn terminal_shortcuts_preserve_composer_and_other_modifiers() {
+        // SAFETY: this predicate has no GUI or side effects.
+        unsafe {
+            assert!(okilum_manager_terminal_key(
+                38, true, false, false, false, true
+            ));
+            assert!(okilum_manager_terminal_key(
+                50, false, false, true, false, true
+            ));
+            assert!(!okilum_manager_terminal_key(
+                38, true, false, false, false, false
+            ));
+            assert!(!okilum_manager_terminal_key(
+                50, false, false, true, false, false
+            ));
+            assert!(!okilum_manager_terminal_key(
+                38, false, false, true, false, true
+            ));
+            assert!(!okilum_manager_terminal_key(
+                38, true, true, false, false, true
+            ));
+            assert!(!okilum_manager_terminal_key(
+                50, true, false, true, false, true
+            ));
+        }
     }
 }

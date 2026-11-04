@@ -29,6 +29,7 @@
     const context = () => ({
         doc: state.doc, origin: state.origin, target: id(active()),
         focus: state.focus, edit: state.edit, selection: selectionStamp(),
+        editable: !!active()?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"]'),
         activity: state.activity, seq: state.seq,
     });
     const sameDocumentTarget = c => state.live && c && c.doc === state.doc
