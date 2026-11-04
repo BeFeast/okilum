@@ -26,9 +26,14 @@ def main():
     timings = []
     for index in range(args.runs):
         started = time.monotonic()
-        subprocess.run([sys.executable, str(ROOT / 'scripts/ci/test-group.py'),
-                        f'reveal-{index + 1}', '20', binaries[0], TEST, '--exact', '--nocapture'],
-                       check=True)
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/ci/test-group.py'),
+                                 f'reveal-{index + 1}', '20', binaries[0], TEST, '--exact', '--nocapture'],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        print(result.stdout, end='', flush=True)
+        result.check_returncode()
+        assert '1 passed; 0 failed' in result.stdout, 'reveal test did not execute'
+        assert 'reveal: receiving positive control' in result.stdout, 'fake manager did not answer'
+        assert 'reveal: private dbus-daemon reaped' in result.stdout, 'bus cleanup did not execute'
         timings.append(time.monotonic() - started)
     print(f'REVEAL_STRESS runs={len(timings)} hangs=0 max={max(timings):.3f}s', flush=True)
 

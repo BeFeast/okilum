@@ -4,9 +4,12 @@ import importlib.util
 import contextlib
 import io
 import os
+import re
 from pathlib import Path
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -24,7 +27,8 @@ def receipt():
         {"name": "linux", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
                 "Prepare and verify pinned vendor and comrak", "Lint every workspace target offline", "Build Linux desktop offline",
-                "Run complete okilum-core suite offline", "Run Linux Rust suites offline")]}]}
+                "Run complete okilum-core suite offline", "Run Linux Rust suites offline",
+                "Verify agent helper controls", "Stress private reveal bus (20 runs)")]}]}
 
 
 class VerdictTests(unittest.TestCase):
@@ -45,7 +49,7 @@ class VerdictTests(unittest.TestCase):
 
     def test_other_head_or_missing_tests_cannot_pass(self):
         self.assertEqual(helper.verdict(receipt(), "b" * 40), 75)
-        for index in range(5):
+        for index in range(7):
             data = receipt()
             data["jobs"][0]["steps"].pop(index)
             self.assertEqual(helper.verdict(data, SHA), 75)
@@ -149,7 +153,7 @@ class HelperFlowTests(unittest.TestCase):
             root = Path(directory)
             scripts = root / 'scripts/ci'
             scripts.mkdir(parents=True)
-            for name in ('linux-rust-tests.sh', 'test-nofile.sh'):
+            for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py'):
                 shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
             (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
             (scripts / 'local-writer-admission.sh').write_text(
@@ -183,6 +187,58 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertIn('sidecar::macos::preparation::', calls[-1])
                 counts.append(len(calls))
             self.assertEqual(counts[0], counts[1])
+
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux process supervision')
+    def test_linux_suite_hang_fails_named_group_and_keeps_later_suites(self):
+        # Run the real shared entrypoint; only its fixture deadline and runners
+        # change. A missing wrapper must leave this control hanging/failing.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / 'scripts/ci'
+            scripts.mkdir(parents=True)
+            for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py'):
+                shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
+            entrypoint = scripts / 'linux-rust-tests.sh'
+            entrypoint.write_text(entrypoint.read_text().replace('suite issue2049 120 ',
+                                                                'suite issue2049 2 '))
+            for name in ('vendor-tests.sh', 'local-writer-admission.sh'):
+                (scripts / name).write_text('exit 0\n')
+            fixture = ROOT / 'scripts/ci/fixtures/hung-test-group.py'
+            fake = root / 'bin'
+            fake.mkdir()
+            runner = fake / 'cargo'
+            runner.write_text('#!/usr/bin/env bash\n'
+                              'if [[ " $* " == *" issue2049_ "* ]]; then\n'
+                              '  exec python3 "$HANG_FIXTURE" "$HANG_WORK" test\n'
+                              'fi\n'
+                              'echo "$*" >> "$CALL_LOG"\n')
+            runner.chmod(0o755)
+            shutil.copy2(runner, fake / 'node')
+            try:
+                result = subprocess.run(['bash', str(entrypoint)], cwd=root,
+                    env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
+                         'HANG_FIXTURE': str(fixture), 'HANG_WORK': str(root),
+                         'CALL_LOG': str(root / 'calls')}, capture_output=True, text=True, timeout=90)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn('TEST_GROUP_TIMEOUT group=issue2049 limit=2s', result.stdout)
+                elapsed = float(re.search(r'TEST_GROUP_END group=issue2049 elapsed=([0-9.]+)s status=124', result.stdout)[1])
+                self.assertLessEqual(elapsed, 32)
+                self.assertTrue((root / 'ready').exists(), 'hanging tree did not start')
+                for pid in root.glob('*.pid'):
+                    self.assertFalse(Path('/proc', pid.read_text()).exists(), pid.name)
+                self.assertIn('sidecar::macos::preparation::', (root / 'calls').read_text())
+            finally:
+                # A removed watchdog must fail the control without leaking its
+                # TERM-resistant synthetic descendants on the worker host.
+                for path in root.glob('*.pid'):
+                    try:
+                        pid = int(path.read_text())
+                        command = Path('/proc', str(pid), 'cmdline').read_bytes()
+                        if str(root).encode() in command:
+                            os.kill(pid, signal.SIGKILL)
+                    except (FileNotFoundError, ProcessLookupError):
+                        pass
 
 
     def test_local_writer_regression_groups_require_nonzero_passed_counts(self):

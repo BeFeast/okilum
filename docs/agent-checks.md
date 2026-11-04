@@ -88,3 +88,31 @@ H=github scripts/agent/gh-check.sh --dispatch --publication-baseline <full-main-
 This also runs the normal complete checks. The helper requires the comparison
 step to succeed; missing/skipped comparison work is not a passing verdict.
 The baseline compile must pass before its failing regression counts as evidence.
+
+Each Linux Rust group now runs through the same `test-group.py` subreaper as
+nightly/manual fast checks (#2510, #2592). A deadline prints
+`TEST_GROUP_TIMEOUT group=<name> limit=<seconds>s`, fails the group, and terminates,
+kills and reaps its descendants (including private D-Bus daemons) within another
+30 s. Independent groups still run after a failure. The hosted Linux step has a
+3000 s outer deadline as well; it cannot spend the entire 100-minute job on one
+unresponsive test tree. Benchmark passes use the identical wrappers.
+
+Initial sizing uses the timestamps from hosted run `41825902192` (4 vCPU), with
+compilation included: core 206 s -> 480 s; local-writer 347 s -> 900 s;
+AppImage 26 s -> 120 s; HTTP 32 s -> 180 s; web 3 s -> 60 s;
+filtered groups up to 35 s -> 120 s. The full workspace group did **not** finish
+in that run, so its last output is not a passing runtime sample. Its 1320 s
+policy also reserves compilation/core overhead around the separate shell
+execution policy from #2510 (990 s, including margin above its measured baldr
+805 s execution). These are conservative deadline policies, not fleet percentiles
+or cross-host speed comparisons. Sprint/no-default/portable/vendor groups retain
+600/600/300/900 s budgets for their separate compilation/configuration paths.
+New runtime evidence must justify adjusting a limit; a hung test does not.
+
+The hosted controls include the real shared Linux entrypoint with a deliberately
+hung, detached, TERM-resistant fixture. It must fail its named 2 s group, reap
+every descendant within 32 s, and continue to the final independent suite.
+`test_test_group.py` also exercises the unchanged #2510 supervisor directly.
+`reveal-stress.py` runs the exact compiled shell test at least 20 times, requires
+both its missing-manager assertion and fake-manager receipt, and checks that the
+private daemon's cleanup ran. Each repetition has its own 20 s process deadline.
