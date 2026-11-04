@@ -408,7 +408,9 @@ impl Board {
             }
             Row::Group(_) => unreachable!(),
         };
-        div()
+        let local_title = local.clone();
+        let local_root = local.clone();
+        let mini = div()
             .id(("board-queue-row", index))
             .debug_selector(move || format!("board-queue-row-{index}"))
             .h(px(30.))
@@ -431,6 +433,11 @@ impl Board {
                     .debug_selector(move || {
                         number
                             .map(|n| format!("board-expand-{n}"))
+                            .or_else(|| {
+                                local_title
+                                    .as_ref()
+                                    .map(|id| format!("board-local-expand-{id}"))
+                            })
                             .unwrap_or_else(|| "board-queue-local-title".into())
                     })
                     .child(title),
@@ -442,6 +449,18 @@ impl Board {
                 this.focus.focus(window, cx);
                 cx.notify();
             }))
-            .into_any_element()
+            .into_any_element();
+        if let Some(id) = local_root {
+            div()
+                .debug_selector(move || format!("board-local-card-{id}"))
+                .w_full()
+                .min_w_0()
+                .h(px(30.))
+                .flex_none()
+                .child(mini)
+                .into_any_element()
+        } else {
+            mini
+        }
     }
 }
