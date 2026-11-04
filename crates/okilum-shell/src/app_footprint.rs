@@ -429,14 +429,14 @@ fn blocked(state: Option<&Path>, units: Option<&Path>) -> Option<String> {
                 return Some("Quit Okilum first, then run this again.".into());
             }
         }
-        // Sync must be removed through the controller so the hub forgets this
-        // computer and the user service is stopped, never by deleting files.
+        // Preserve the old connection authority and running daemon. The retired
+        // Settings controls cannot safely remove them; never imply they can.
         let sync = state.join("sync/setup.json");
         let active = read_json(&sync).is_some_and(|record| record["retired"] != true);
         if active {
             return Some(
-                "Sync is still set up on this computer. Open Okilum → Settings → Sync → \
-                 Remove this computer first, then run this again."
+                "Sync is still set up on this computer. Automatic cleanup is unavailable \
+                 for this older connection. Your files and saved connection have been kept."
                     .into(),
             );
         }
@@ -449,8 +449,8 @@ fn blocked(state: Option<&Path>, units: Option<&Path>) -> Option<String> {
     });
     unit.map(|unit| {
         format!(
-            "The sync service {} is still installed. Open Okilum → Settings → Sync → \
-             Remove this computer first, then run this again.",
+            "An existing file sync process ({}) is still installed. Automatic cleanup is \
+             unavailable while it is present. Your files and connection settings have been kept.",
             unit.file_name().to_string_lossy()
         )
     })
@@ -899,6 +899,8 @@ mod tests {
             reason.as_deref().unwrap().contains("Sync is still set up"),
             "{reason:?}"
         );
+        assert!(!reason.as_deref().unwrap().contains("Settings"));
+        assert!(reason.as_deref().unwrap().contains("have been kept"));
         write(&state.join("sync/setup.json"), r#"{"retired":true}"#);
         assert_eq!(
             blocked(Some(&state), Some(&units)),
@@ -925,6 +927,8 @@ mod tests {
                 .contains("okilum-syncthing-abc.service"),
             "{reason:?}"
         );
+        assert!(!reason.as_deref().unwrap().contains("Settings"));
+        assert!(reason.as_deref().unwrap().contains("have been kept"));
     }
 
     #[cfg(unix)]
