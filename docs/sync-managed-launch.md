@@ -65,7 +65,10 @@ verifies the loaded fragment and absence of drop-ins. After verified stop, it
 removes only that definition, binds current folders, then durably publishes the
 helper journal/unit. UUID, certificate and home remain unchanged. Interrupted
 migration retries under the lifecycle lock. Existing helper bindings never fall
-back to migration when state disappears. The autonomous command also checks the
+back to migration when state disappears. A missing preparation receipt after
+launch registration refuses regeneration before config effects, including
+bootstrap/Runtime retries. Partial registration requires explicit recovery; it
+is never reset from an empty registry. The autonomous command also checks the
 exact unit and loaded definition.
 
 Migration is an explicit process-wide upgrade, not a selected-folder barrier.

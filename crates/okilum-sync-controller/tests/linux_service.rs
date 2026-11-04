@@ -46,7 +46,17 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
         .write_all(b"changed-package")?;
     assert!(prepare(&prepared_state, &preparation).is_err());
     fs::copy(&binary, &package)?;
-    fs::remove_file(prepared_state.join("prepared.json"))?;
+    let receipt = prepared_state.join("prepared.json");
+    let saved_receipt = fs::read(&receipt)?;
+    let saved_config = fs::read(&identity.config_file)?;
+    fs::remove_file(&receipt)?;
+    assert!(
+        prepare(&prepared_state, &preparation).is_err(),
+        "missing launch-era receipt cannot authorize configuration regeneration"
+    );
+    assert_eq!(fs::read(&identity.config_file)?, saved_config);
+    fs::write(&receipt, saved_receipt)?;
+    fs::set_permissions(&receipt, fs::Permissions::from_mode(0o600))?;
     let (_, resumed) = prepare(&prepared_state, &preparation)?;
     assert_eq!(resumed.device_id, id);
     let mut changed = preparation.clone();
