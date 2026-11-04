@@ -138,12 +138,14 @@ check=75s. The suite then ran for more than 394s with all reported tests passing
 before the fifteen-minute `check` deadline killed it. The hosted 258.19s runtime
 is from different hardware and cannot size this runner's budget.
 
-`check` retains every pre-#2434 command and its fifteen-minute timeout. The new
-`shell-full` job queues after `check`, owns a separate twenty-minute execution
+`check` retains every pre-#2434 command. The initial fifteen-minute check
+and twenty-minute shell budgets described here are superseded by the additive
+watchdog budgets below. `shell-full` queues after `check`, owns a separate execution
 budget, and uses the existing fast runner, slot locks, stable sources, compiler
-flags and three compiler workers. Its locked inventory command resolves test
-dependencies even if it gets a different slot; the unfiltered offline test run
-uses four test workers and rejects an empty inventory. Failures propagate to its
+flags and three compiler workers. Its locked `cargo test --no-run` command resolves
+test dependencies even if it gets a different slot. Inventory and the unfiltered
+test run execute that exact reported artifact directly, with four test workers
+and Cargo's package working directory, and reject an empty inventory. Failures propagate to its
 own status. No host setting or nightly/native suite changes.
 
 The initial budget uses the existing twenty-minute runner ceiling, leaving
@@ -152,3 +154,183 @@ provisional until two complete normal-load measurements establish the runtime
 and margin. Keep the new status non-required until those successful PR runs;
 record the final measurements and branch-protection decision in PR #2434 and
 issue #2415 before re-enabling auto-merge.
+
+
+## Test-group hard deadlines (#2503)
+
+The Linux fast workflow uses `scripts/ci/test-group.sh GROUP SECONDS COMMAND...`.
+The Python supervisor starts a private session and becomes a Linux child
+subreaper. It sends TERM to the entire descendant tree at the wall-clock limit,
+then KILL and reaps adopted children within a further 30 seconds before returning
+124 (reserving up to 0.5 s of that budget for reaping and returning).
+This includes double-forked daemons that created another session; a plain
+`timeout ... setsid ...` does not cover those. Exact privileged descendants from
+`sync-network-policy.sh` are signalled through the runner's existing noninteractive
+sudo, without changing its services, watchdog, capacity or labels. Cancellation
+also cleans descendants and returns a failure. Normal command status is preserved;
+a successful command cannot leave background children running. Logs contain one
+`TEST_GROUP_TIMEOUT group=... limit=...s kill_after=30s` line per expired group,
+plus start/end lines with actual elapsed seconds. Cleanup that needs KILL after a
+parent has already exited emits `TEST_GROUP_KILL` with the group and limit.
+
+Compilation and execution have separate shell budgets. Every enclosing deadline
+covers the sum of its children plus 60 s setup/cleanup overhead; job ceilings
+cover all bounded steps plus 90 s checkout/toolchain/final-cleanup margin.
+Job ceilings are now check 55 min, shell-full 37 min, sync-source-sharing 30 min.
+These are ceilings for slow progressing work; a hung phase is still killed by
+its own original deadline plus at most 30 s cleanup:
+
+| Scope | Limit | Basis / margin |
+| --- | ---: | --- |
+| CI tooling Python discovery | 180 s | Recent green baldr runs: 45.595–81.114 s; current main run 21861 was still progressing when its old 120 s step expired. All three Python step ceilings are 5 min (#2536), including the 30 s cleanup grace. |
+| Releases / updater Python discovery | 90 s each | Recent green runs: at most 4.802 / 0.107 s; #2536's 5 min step ceilings retained. |
+| Entire fast-local check / locked fast.sh | 2100 / 2040 s | 300 + 540 + 540 + 120 + 120 + optional 360 = 1980 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. Optional Live Preview is included conservatively. |
+| Check build / workspace test compilation | 540 s each | Loaded build 300 s in 20289; workspace check 324.35 s in the main probe above. Margins 240 / 215 s. Both phases may consume their full limits. |
+| Channel tests (including compilation) | 300 s | Cold appimage dependency variant took 126.62 s in the main probe; recent warm phases 0–4 s. |
+| Paste inventory / paste tests | 120 s each | Recent green Cargo compilation/listing at most 1.11 s; parsing execution at most 0.07 s. These small commands retain their existing caps. |
+| Entire fast-local shell / locked shell-full.sh | 1980 / 1920 s | 840 + 30 + 990 = 1860 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. The 37 min job retains the original 35 min envelope and adds 2 min for certification. |
+| Shell compilation only | 840 s | Historical 335 s compile (20932), recent successful compile/list 180–307 s, and normal compilation censored at 360 s by the broken watchdog (21840). Run 21877 completed compilation in 503.870 s, leaving 336 s headroom; no execution timer runs during compilation. |
+| Shell inventory only / unfiltered execution | 30 / 990 s | Inventory after Cargo's finished marker: 0.119–0.368 s; successful execution phases 445–805 s. Runtime margin is 185 s above the loaded maximum. Neither command invokes Cargo. |
+| Entire sync-local entrypoint | 1500 s | 600 s lock + 120 s setup + 60 s verification + 480 s sharing + 180 s policy = 1440 s, plus 60 s overhead. The 30 min job reserves 300 s beyond the group; 1500 + 30 + 90 = 1620 <= 1800 s. |
+| Sync target lock / vendor setup / verification | 600 / 120 / 60 s | Preserve the existing lock wait for concurrent jobs; the outer scope bounds the combined wait/setup/tests. |
+| Sync source sharing (two concurrent trials) | 480 s | See same-runner measurements below; nearly 2x the longest complete observed sync step. |
+| Sync network policy | 180 s | #2578: 20 full groups + 20 isolated pending-choice runs passed on baldr; loaded full-group empirical p95/max 113.561 s. ceil((113.561 + 60) / 30) * 30 = 180 s. |
+
+Run [21877](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21877/jobs/1/attempt/1)
+exposed the old non-additive design: compilation completed in 503.870 s, listing
+in 0.246 s, and unfiltered tests were still progressing after ~596 s when the
+1110 s aggregate watchdog expired. Their own 990 s deadline had not fired.
+That aggregate cap is removed by resizing, rather than tightening any phase.
+The slowest measured green test execution remains 805 s (run 21766), so 990 s
+retains 185 s (23%) headroom. Compilation retains 336 s above the loaded 504 s
+measurement. These observations do not establish a fleet p95.
+
+`test_fast_budgets.py` parses the actual workflow and scripts, follows both
+fast-local modes and the sync wrapper, includes the sync lock wait and optional
+Live Preview, and enforces each aggregate >= sum(children) + 60 s. Step ceilings
+include the supervisor's 30 s cleanup; job ceilings include all bounded steps
+and another 90 s for setup/final cleanup. Mutation controls reject the old
+aggregate limits, growth of every child phase/lock, and insufficient step/job
+ceilings. The invariant test fails against the pre-fix limits.
+
+The check job retains #2536's three 5 min Python step ceilings and adds a
+2 min certification step: 900 + 120 + 2100 + 30 + 90 = 3240 s <= 3300 s.
+Shell retains its original 35 min envelope and adds the same 2 min step:
+120 + 1980 + 30 + 90 = 2220 s = 37 min. The invariant conservatively includes certification even on ordinary main/nightly
+runs, where that step is skipped.
+
+Both exact-product validation steps use the same process-tree supervisor with a
+90 s limit and a 2 min step ceiling including cleanup. Baldr certification
+[22157/check](https://git.oklabs.uk/BeFeast/okilum/actions/runs/22157/jobs/0/attempt/1)
+completed that step in 3 s on 4 November 2026, leaving 87 s headroom. This single
+measurement is not a tail-latency estimate. Before changing HEAD, the step copies
+only the two supervisor files into a job-owned `mktemp` directory under
+`RUNNER_TEMP`; subsequent workflow entrypoints use that copy. A requested older
+product may predate these files. Its tracked tree stays exact, while its Python
+and compiler entrypoints still receive an outer hard deadline. A real Git/HTTP
+control certifies such an older tree, checks the unchanged main ref and clean
+checkout, then exercises successful, failing and hung discovery through the
+staged supervisor. Phase supervision inside the product scripts applies when
+those scripts contain it.
+
+The owner reports baldr now allows a 60 min runner ceiling. All three job
+ceilings (55/37/30 min) fit it; this change does not modify any host settings.
+
+The newer owner-authorized #2581 supersedes #2580's fifteen-minute PR gate:
+Forgejo fast.yml has no PR trigger and main has no required status checks.
+Workers validate the exact committed HEAD with
+`H=github scripts/agent/gh-check.sh`, wait for green, then squash-merge through
+Forgejo. The larger additive envelopes here apply to nightly runs, manual dispatches
+and source-pinned certification. Newer #2583 also removes heavy main push runs,
+gives certification dispatches unique concurrency groups so they always report,
+and lets ordinary manual retries supersede only other ordinary manual runs on
+the same ref. Its feedback-ci and worker-owned GitHub gate are retained. No PR
+or push workloads are restored. The Sync owner closed #2576 as superseded by
+#2581 without merging its proposed move off fast-linux; no hosted routing from
+that branch is imported here. A future move must carry these wrappers to the
+actual execution and recheck additive hosted/bridge budgets. #2578 is resolved
+by measured policy/aggregate limits of 180/1500 s. The Sync owner's
+[measurement series](https://git.oklabs.uk/BeFeast/okilum/pulls/2510#issuecomment-49613)
+passed 20 full groups and 20 isolated pending-choice runs on baldr, including
+15 loaded pairs and an eight-worker CPU-load window. Loaded full-group empirical
+p95/max was 113.561 s (all-group p95 111.341 s); isolated loaded p95/max was
+35.502 s. Reconciliation itself took 94/127 ms baseline/loaded; no product stall
+was reproduced. The small sample is not a fleet p95. The 180 s group provides
+66.439 s headroom above the loaded observed maximum; its additive parent is
+600 + 120 + 60 + 480 + 180 + 60 = 1500 s. Raising the policy cap without its
+parent is correctly rejected by the invariant.
+
+### Resizing evidence, PR #2510
+
+Raw logs/API snapshots are retained at
+`~/work/qa-evidence/issue-2510-limits/` on maestro. All current timing samples
+below come from baldr's `fast-linux` runner on 3 November 2026. Compile/list is
+the old combined phase; runtime includes the old second Cargo invocation.
+
+| Green web run (PR) | Compile/list | Execution | Slot admission to tests complete |
+| --- | ---: | ---: | ---: |
+| [21604 attempt 2](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21604/jobs/1/attempt/2) (#2499) | 275 s | 566 s | 847.17 s |
+| [21635](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21635/jobs/1/attempt/1) (#2488) | 185 s | 698 s | 887.62 s |
+| [21638](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21638/jobs/1/attempt/1) (#2485) | 302 s | 565 s | 876.60 s |
+| [21641](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21641/jobs/1/attempt/1) (#2491) | 228 s | 585 s | 819.22 s |
+| [21647](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21647/jobs/1/attempt/1) (#2495) | 295 s | 481 s | 786.08 s |
+| [21670](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21670/jobs/1/attempt/1) (#2501) | 202 s | 611 s | 819.98 s |
+| [21686](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21686/jobs/1/attempt/1) (#2510) | 256 s | 599 s | 861.57 s |
+| [21692](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21692/jobs/1/attempt/1) (#2509) | 180 s | 445 s | 632.55 s |
+| [21766](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21766/jobs/1/attempt/1) (#2501) | 236 s | 805 s | 1044.19 s |
+| [21802](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21802/jobs/1/attempt/1) (#2514) | 294 s | 642 s | 945.58 s |
+| [21809](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21809/jobs/1/attempt/1) (#2511) | 307 s | 647 s | 961.44 s |
+| [21829](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21829/jobs/1/attempt/1) (#2515) | 213 s | 508 s | 725.62 s |
+
+These include loaded runs: 21802 check admission reported CPU pressure
+`some avg10=19.79 avg60=13.84 avg300=10.83`. The failing 21840 shell compilation
+reported `29.86 / 30.11 / 25.39` and was still compiling at the 360 s cutoff;
+that is a lower bound, not a complete compile measurement.
+
+Main was checked explicitly: its newest certification
+[21861](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21861/jobs/0/attempt/1)
+hit the existing 2 min Python step ceiling while making progress, before Rust.
+The latest successful main fast run in the retrieved inventory was
+[17317](https://git.oklabs.uk/BeFeast/okilum/actions/runs/17317/jobs/0/attempt/1)
+(31 October), before the current workspace/full-shell gate; its 85 s build is
+not used to size today's gate. There is no recent successful main full-shell
+sample in that inventory. The same-host main core-rebuild probe documented
+above supplies the additional main compilation evidence; failed/incomplete main
+runs are not presented as green measurements.
+
+Read-only measurements on **baldr fast-linux**, 2026-11-03, from successful
+Forgejo job details/logs (all before this change, no cross-machine comparison):
+
+- [run 21635, sync job](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21635/jobs/2/attempt/1):
+  complete step 244 s; source compilation 41.89 + 9.80 s, two concurrent five-test
+  trials ~100.2 s, network-policy compilation 1.45 s and execution 50.80 s.
+- [run 21578, sync job](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21578/jobs/2/attempt/1):
+  complete step 120 s.
+- [run 21482, sync job](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21482/jobs/2/attempt/1):
+  complete step 100 s.
+
+`test_test_group.py` is part of required CI discovery. Its real hanging fixture
+starts a test, a double-forked detached daemon and another helper, with descendants
+ignoring TERM. With a 2 s limit and a 0.3 s test grace it must return 124 around 2.3 s, identify the group
+and limit, and leave none of the recorded PIDs in `/proc` (including zombies).
+The production grace defaults to 30 s; `--kill-after` accepts only (0, 30] s.
+Independent subprocess deadlines and fixture cleanup turn a broken watchdog into
+a failing test. Passing, failing, signal cancellation and successful-parent orphan
+controls exercise the same production entrypoint. Existing inventory checks and
+full shell/source-sharing/network-policy selections are unchanged.
+
+The shell orchestration control substitutes a progressing compiler that writes
+30 progress records over 3 s. With scaled compilation/list/runtime caps of
+10 / 1 / 2 s, compilation must complete past the listing deadline and only one
+Cargo invocation is allowed. Direct inventory and ordinary execution succeed;
+a hanging binary then returns 124 under its own execution deadline, with both
+compiler and test PIDs absent. The existing detached, TERM-resistant tree control
+still checks KILL/reaping; a separate production-grace run returned 124 in
+31.844 s at limit=2 s with every recorded PID absent.
+
+After merge, use `scripts/ci/fast-runtime-report.py PR_NUMBER` to inspect the next
+24 h of `fast.yml`. It prints the longest started-to-stopped runtime and the run
+URL against the incident's 2700 s (45 min). Creation-to-stop is printed separately
+because queue delay is not execution time. Running workflows are lower bounds;
+include failed/cancelled runs and do not claim a full-day observation early.
+Record the result in #2503 with the observation window and raw JSON evidence.

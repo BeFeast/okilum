@@ -9,6 +9,17 @@ one, then choose a vault and an empty local folder on the new one. First receive
 and bidirectional Sync start automatically.
 
 The pairing URL is private, usable for one computer and expires after ten minutes.
+On macOS, opening Sync settings and creating this URL use only Okilum's local
+pairing identity and listener. They do not start Syncthing or wait for Login Items
+approval. Runtime preparation remains required when connecting to receive notes.
+Repeated **Add computer** reuses an active invitation, preserving a pending
+confirmation; expired, cancelled or unbound invitations are replaced. The LAN
+address comes from active interfaces, with default routing used only as a hint,
+so a VPN or missing Internet route cannot select a tunnel instead of Ethernet/Wi-Fi.
+Action failures record the redacted complete cause chain as `sync_action_failed`
+in the app diagnostic log. Unclassified failures show their short underlying
+cause in Settings. Explicitly disabled Sync remains disabled.
+
 Keep both computers on the same LAN for first pairing and keep the old computer's
 Okilum open during confirmation and vault selection. The URL is not a filesystem
 path. If it expires, create a new one on the old computer. A paired computer can
