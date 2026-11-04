@@ -33,7 +33,7 @@ impl ProjectView {
             .items_center()
             .gap_1()
             .child(self.connection_line(status, cx));
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if !self.native.active() {
             actions = actions.child(
                 Button::new("project-pair")
@@ -46,7 +46,7 @@ impl ProjectView {
             );
         }
         let can_open = open.is_some();
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let can_open = can_open || (self.native.active() && self.chat.is_some());
         if can_open {
             actions = actions.child(
@@ -107,7 +107,7 @@ impl ProjectView {
                         })),
                 ),
             );
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if !self.native.title().is_empty() {
             panel = panel.child(format!("Title: {}", self.native.title()));
         }

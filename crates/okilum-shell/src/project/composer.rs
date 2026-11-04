@@ -1,4 +1,4 @@
-//! Linux composer invalidates its own controls, never the history entity.
+//! Native composer invalidates its own controls, never the history entity.
 use super::*;
 use crate::project::design;
 use gpui_component::{button::ButtonCustomVariant, ThemeStyled as _};
@@ -1627,7 +1627,11 @@ mod tests {
                 "file:///typed-file.txt".into(),
             ))
         });
-        visual.simulate_keystrokes("ctrl-v");
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-v"
+        } else {
+            "ctrl-v"
+        });
         visual.run_until_parked();
         assert_eq!(received.get(), 1);
         composer.read_with(visual, |composer, cx| {
@@ -1642,7 +1646,11 @@ mod tests {
                 "First line\nSecond line".into(),
             ))
         });
-        visual.simulate_keystrokes("ctrl-v");
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-v"
+        } else {
+            "ctrl-v"
+        });
         visual.run_until_parked();
         assert_eq!(received.get(), 2);
         composer.update_in(visual, |composer, window, cx| {
@@ -1656,7 +1664,11 @@ mod tests {
             composer.set_native(false, false, cx);
         });
         visual.run_until_parked();
-        visual.simulate_keystrokes("ctrl-v");
+        visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-v"
+        } else {
+            "ctrl-v"
+        });
         visual.run_until_parked();
         assert_eq!(
             received.get(),

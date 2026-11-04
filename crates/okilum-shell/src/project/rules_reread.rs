@@ -137,7 +137,7 @@ impl ProjectView {
             );
             Ok(())
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if self.native.active() {
             let intent = Intent::message(text.clone(), DispatchMode::QueueAfterActive);
             if self.native.deleted()
@@ -219,7 +219,7 @@ impl ProjectView {
                 delivery
             }));
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if self.threads.enabled {
             return Err("Pair the Manager connection before sending");
         }

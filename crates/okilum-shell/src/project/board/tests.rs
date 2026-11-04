@@ -268,7 +268,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         crate::test_init(cx);
         bind_keys(cx);
     });
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::project::fixture::canonical_tempdir();
     let vault = temp.path().join("vault");
     let folder = vault.join("project");
     std::fs::create_dir_all(folder.join("ops")).unwrap();
@@ -455,7 +455,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     });
     reader.update_in(visual, |reader, window, cx| {
         assert!(reader.project_navigation.board_visible);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             let manager = cx.new(|cx| {
                 let mut view = super::super::discuss_handoff::native_tests::view_with_draft(

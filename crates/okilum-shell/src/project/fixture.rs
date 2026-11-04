@@ -7,6 +7,33 @@ use okilum_t3::{
 };
 use std::sync::Mutex;
 
+/// Reader normalizes its vault root. Build all fixture paths in that same form,
+/// including on macOS where the temporary directory is reached through /var.
+#[cfg(test)]
+pub(super) fn canonical_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+}
+
+/// Join every owned worker before reporting its first panic. Cleanup must keep
+/// the original test failure when it runs during unwinding, rather than aborting
+/// the binary with a second panic from Drop.
+#[cfg(test)]
+pub(super) fn join_workers(workers: impl IntoIterator<Item = std::thread::JoinHandle<()>>) {
+    let mut failure = None;
+    for worker in workers {
+        if let Err(error) = worker.join() {
+            if failure.is_none() {
+                failure = Some(error);
+            }
+        }
+    }
+    if !std::thread::panicking() {
+        if let Some(error) = failure {
+            std::panic::resume_unwind(error);
+        }
+    }
+}
+
 type Result<T> = std::result::Result<T, GatewayError>;
 #[derive(Default)]
 pub(super) struct Fake {
@@ -386,7 +413,7 @@ pub(super) fn open(cx: &mut App) -> bool {
     if board::fixture::open(cx) {
         return true;
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     if threads::native_fixture::open(cx) {
         return true;
     }

@@ -139,9 +139,7 @@ impl RecoverySockets {
                     }
                 }));
             }
-            for worker in workers {
-                worker.join().unwrap();
-            }
+            crate::project::fixture::join_workers(workers);
         });
         Self {
             threads: accepted,
@@ -156,7 +154,7 @@ impl Drop for RecoverySockets {
         self.stopped.store(true, Ordering::SeqCst);
         // Wake the blocking accept, then join every owned connection worker.
         let _ = TcpStream::connect(self.address);
-        self.worker.take().unwrap().join().unwrap();
+        crate::project::fixture::join_workers(self.worker.take());
     }
 }
 fn socket(server: &RecoverySockets, after: Option<u64>) -> WebSocket<TcpStream> {
