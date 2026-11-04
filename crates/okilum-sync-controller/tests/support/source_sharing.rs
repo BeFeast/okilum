@@ -9,6 +9,7 @@ struct Pair {
     source: Peer,
     target: Peer,
     prepared: PathBuf,
+    target_prepared: PathBuf,
     source_state: PathBuf,
     first: Controller,
     second: Controller,
@@ -34,7 +35,7 @@ impl Pair {
             Peer::managed
         };
         let (source, prepared) = prepare(root.path(), "managed-source", binary.clone())?;
-        let (target, _) = prepare(root.path(), "managed-target", binary)?;
+        let (target, target_prepared) = prepare(root.path(), "managed-target", binary)?;
         assert_eq!(source.api.version()?["version"], "v2.1.6");
         assert_eq!(target.api.version()?["version"], "v2.1.6");
         let source_state = root.path().join("source-controller");
@@ -71,6 +72,7 @@ impl Pair {
             source,
             target,
             prepared,
+            target_prepared,
             source_state,
             first,
             second,
@@ -885,5 +887,90 @@ fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
         pair.target.api.folder(&id)?["versioning"]["params"]["maxAge"],
         "7776000"
     );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_history_2045_broken_folder_warns_while_other_vault_receives() -> Result<()> {
+    let pair = Pair::loopback()?;
+    fs::write(pair.source.vault.join("healthy.md"), b"initial")?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("healthy initial receive and promotion", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing
+            && same_hash(&pair.target.vault, "healthy.md", b"initial"))
+    })?;
+    let broken = pair.target.home.join("broken-vault");
+    fs::create_dir(&broken)?;
+    pair.second.share_vault(&pair.target_prepared, &broken)?;
+    let folder = pair.target.api.config()?["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"].as_str().is_some_and(|p| Path::new(p) == broken))
+        .context("broken source was not actually enrolled")?
+        .clone();
+    let broken_id = folder["id"].as_str().unwrap();
+    let moved = pair.target.home.join("moved-vault");
+    fs::rename(&broken, &moved)?;
+    let snapshot = pair.second.refresh()?;
+    assert!(snapshot.history_warnings.iter().any(|w| w.path == broken));
+    fs::write(pair.source.vault.join("healthy.md"), b"after moved source")?;
+    wait("healthy vault receives despite moved source", || {
+        pair.tick(&id)?;
+        Ok(same_hash(
+            &pair.target.vault,
+            "healthy.md",
+            b"after moved source",
+        ))
+    })?;
+    fs::rename(&moved, &broken)?;
+    assert!(
+        pair.second.refresh()?.history_warnings.is_empty(),
+        "a repaired binding must clear its warning"
+    );
+    pair.target.api.remove_folder(broken_id)?;
+    let snapshot = pair.second.refresh()?;
+    assert!(snapshot.history_warnings.iter().any(|w| w.path == broken));
+    assert!(
+        pair.target.api.folder(broken_id).is_err(),
+        "refresh must not recreate a removed folder"
+    );
+    fs::write(
+        pair.source.vault.join("healthy.md"),
+        b"after removed source",
+    )?;
+    wait("healthy vault receives despite removed source", || {
+        pair.tick(&id)?;
+        Ok(same_hash(
+            &pair.target.vault,
+            "healthy.md",
+            b"after removed source",
+        ))
+    })?;
+    // Deselecting a runtime is also a per-folder history failure, never an
+    // authorization to reconnect to it or fail the entire settings refresh.
+    pair.second.set_configurations(vec![])?;
+    let snapshot = pair.second.refresh()?;
+    assert!(snapshot.history_warnings.iter().any(|w| w.path == broken));
+    assert!(snapshot
+        .history_warnings
+        .iter()
+        .any(|w| w.path == pair.target.vault));
+    pair.second
+        .set_configurations(vec![pair.target.home.join("config.xml")])?;
+    pair.second.refresh()?;
+    // A removed receiver must likewise stay isolated, without a second error
+    // from transfer reconciliation re-attempting the failed history binding.
+    pair.target.api.remove_folder(&id)?;
+    assert!(pair
+        .second
+        .refresh()?
+        .history_warnings
+        .iter()
+        .any(|w| w.path == pair.target.vault));
     Ok(())
 }

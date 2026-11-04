@@ -3,7 +3,7 @@
 mod addresses;
 mod existing;
 mod history;
-pub use history::{RetentionDays, RetentionSetting};
+pub use history::{HistoryWarning, RetentionDays, RetentionSetting};
 mod origin;
 #[cfg(target_os = "linux")]
 mod source;
@@ -53,6 +53,7 @@ pub struct Vault {
 }
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    pub history_warnings: Vec<history::HistoryWarning>,
     pub history_retention: Vec<RetentionSetting>,
     pub offer_url: Option<String>,
     pub pending: Option<Pending>,
@@ -149,6 +150,7 @@ struct Database {
     sources: Vec<source::Source>,
 }
 struct Shared {
+    history_warnings: Mutex<Vec<history::HistoryWarning>>,
     state: PathBuf,
     configs: Mutex<Vec<PathBuf>>,
     db: Mutex<Database>,
@@ -253,6 +255,7 @@ impl Controller {
                 access: okilum_sync::NetworkAccess::current(),
                 observation_generation: Uuid::new_v4(),
                 transfer_lock: Mutex::new(()),
+                history_warnings: Mutex::new(Vec::new()),
                 connection_watch: Mutex::new(Default::default()),
                 _lock,
             }),
@@ -292,6 +295,7 @@ impl Controller {
         self.check()?;
         let db = self.shared.db.lock().unwrap();
         let mut snapshot = snapshot(&db)?;
+        snapshot.history_warnings = self.shared.history_warnings.lock().unwrap().clone();
         let held = db.transfers.iter().any(transfer::Transfer::legacy_hold);
         drop(db);
         if !held && snapshot.pending.is_none() && snapshot.offer_url.is_none() {
@@ -913,6 +917,7 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
             .map(|(_, r)| pending(r, false))
     };
     Ok(Snapshot {
+        history_warnings: Vec::new(),
         history_retention: history_settings(db),
         offer_url: offer.map(|i| encode_url(&i.offer)).transpose()?,
         pending,

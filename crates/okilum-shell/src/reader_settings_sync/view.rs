@@ -27,6 +27,16 @@ impl Render for SyncSettings {
                     .child(error.clone()),
             );
         }
+        if let Some(snapshot) = &self.snapshot {
+            for (index, warning) in snapshot.history_warnings.iter().enumerate() {
+                result = result.child(
+                    div()
+                        .id(("sync-history-warning", index))
+                        .text_sm()
+                        .child(format!("{}: {}", warning.path.display(), warning.message)),
+                );
+            }
+        }
         if self.busy {
             result = result.child(
                 div()
@@ -269,10 +279,11 @@ impl Render for SyncSettings {
                     .child(h_flex().gap_2().children([7u16, 30, 90, 365].into_iter().map(|days| {
                         let path = setting.path.clone();
                         Button::new(("sync-history-days", index * 4 + [7,30,90,365].iter().position(|d| *d == days).unwrap()))
+                            .debug_selector(move || format!("sync-history-days-{index}-{days}").into())
                             .label(format!("{days} days"))
                             .selected(setting.days.days() == days)
                             .disabled(self.busy)
-                            .on_click(cx.listener(move |this, _, _, cx| this.run(Operation::Retention(path.clone(), direct::RetentionDays::try_from(days).expect("valid retention preset")), cx)))
+                            .on_click(cx.listener(move |this, _, window, cx| this.choose_retention(path.clone(), direct::RetentionDays::try_from(days).expect("valid retention preset"), window, cx)))
                     }))));
             }
             if !snapshot.attached.is_empty() {

@@ -65,6 +65,9 @@ request to 10,000 entries, 100 versions and 16 MiB. Limits and unreadable entrie
 produce visible incomplete-result warnings. Unsupported/custom Syncthing version
 stores are not imported or moved. This is a local safety net for remote deletions
 and overwrites, not an archive of every local edit or a vault backup.
+Recover notes excludes originals that still exist before charging its version
+and byte budgets, so an active note's many archives cannot hide deleted notes.
+The entry traversal limit still applies and is reported when reached.
 
 Folders created by Okilum use staggered versioning with a default maximum age of
 30 days on both the sharing and receiving computer. Existing owned folders
@@ -72,6 +75,10 @@ reconcile this default on Sync refresh. Settings → Sync offers 7, 30, 90 and 3
 days per folder on this computer; the choice persists outside the index and does
 not change another computer's choice. Staggering keeps fewer older revisions
 within that age window; it does not promise every revision for 30 days.
+Reducing retention requires an explicit confirmation showing the old and new
+windows and how many days are removed. Syncthing can permanently delete versions
+older than the new window on cleanup; increasing it later cannot recover them.
+Cancel, Escape, closing the dialog and Enter do not authorize the reduction.
 
 Only durable source/receiver ownership records authorize policy changes. External
 folders (including folders in the same managed daemon) and legacy receivers with
@@ -81,6 +88,10 @@ an exact before/after intent, PATCH only the folder's versioning fields, and rea
 back the result. A lost acknowledgement accepts only those exact snapshots;
 unrelated changes stop reconciliation. Custom version store locations require
 explicit review and are never silently reset.
+An unavailable or changed folder records a warning beside its path in Settings
+instead of stopping refresh for every vault. Healthy folders continue receiving
+and reconciling. Failed bindings retain their ownership checks and pending
+intents; refresh does not recreate removed folders or adopt another runtime.
 
 Acceptance runs in `scripts/ci/sync-source-sharing.sh` through the reaped fixture
 path, with checksum-pinned Syncthing 2.1.6 on both sides. The #2045 scenario covers
