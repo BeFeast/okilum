@@ -111,7 +111,7 @@ fn issue2521_edit_menu_and_command_shortcuts_follow_composer_focus(cx: &mut Test
                 "ctrl-x",
                 "ctrl-v",
                 "ctrl-z",
-                "ctrl-shift-z",
+                "ctrl-y",
             ]
         };
         for (index, label) in ["Select All", "Copy", "Cut", "Paste", "Undo", "Redo"]
