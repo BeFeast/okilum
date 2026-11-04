@@ -19,8 +19,9 @@ legacy Finder filename lists become attachments in clipboard order, without
 checking the filesystem on the UI thread. The attachment worker handles missing
 or unreadable files visibly. Ordinary text stays text, including paths into a
 clipboard manager's cache. Note-editor smart paste keeps its existing policy.
-PNG and TIFF from AppKit retain their bytes before the attachment pipeline
-validates and prepares them. Finder drops and the multi-file picker use the
+PNG from AppKit retains its original bytes. TIFF (Preview / screenshot) is
+converted losslessly to PNG on the bounded preparation worker because T3 does
+not accept TIFF; output size budgets, previews and PNG filename/MIME stay in sync. Finder drops and the multi-file picker use the
 same revision/scoped attachment pipeline as Linux.
 
 ## Hosted and live checks

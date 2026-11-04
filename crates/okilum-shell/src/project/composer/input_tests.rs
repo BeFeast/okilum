@@ -19,7 +19,8 @@ pub(in crate::project) fn menu(visual: &mut VisualTestContext, label: &str) {
 fn issue2521_native_text_paste_replaces_selection_and_undo_restores_it(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     let temp = super::super::fixture::canonical_tempdir();
-    let (root, visual) = cx.add_window_view(|window, cx| {
+    let mut project = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = super::super::fixture::view(
                 temp.path().to_owned(),
@@ -28,8 +29,10 @@ fn issue2521_native_text_paste_replaces_selection_and_undo_restores_it(cx: &mut 
                 cx,
             );
             view.active = false;
-            view.composer
-                .update(cx, |composer, cx| composer.set_native(true, false, cx));
+            view.composer.update(cx, |composer, cx| {
+                composer.set_native(true, false, cx);
+                composer.set_controls(true, false, cx);
+            });
             view.compose.update(cx, |input, cx| {
                 input.set_value("before old after", window, cx);
                 input.set_selected_range(7..10, cx);
@@ -37,11 +40,11 @@ fn issue2521_native_text_paste_replaces_selection_and_undo_restores_it(cx: &mut 
             });
             view
         });
-        Root::new(view, window, cx)
+        let composer = view.read(cx).composer.clone();
+        project = Some(view);
+        Root::new(composer, window, cx)
     });
-    let view = root.read_with(visual, |root, _| {
-        root.view().clone().downcast::<ProjectView>().unwrap()
-    });
+    let view = project.unwrap();
     visual.run_until_parked();
     visual
         .update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("new\ntext".into())));
@@ -69,7 +72,8 @@ fn issue2521_edit_menu_and_command_shortcuts_follow_composer_focus(cx: &mut Test
     cx.update(crate::test_init);
     cx.update(crate::note_paste::install_menu);
     let temp = super::super::fixture::canonical_tempdir();
-    let (root, visual) = cx.add_window_view(|window, cx| {
+    let mut project = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = super::super::fixture::view(
                 temp.path().to_owned(),
@@ -78,19 +82,21 @@ fn issue2521_edit_menu_and_command_shortcuts_follow_composer_focus(cx: &mut Test
                 cx,
             );
             view.active = false;
-            view.composer
-                .update(cx, |composer, cx| composer.set_native(true, false, cx));
+            view.composer.update(cx, |composer, cx| {
+                composer.set_native(true, false, cx);
+                composer.set_controls(true, false, cx);
+            });
             view.compose.update(cx, |input, cx| {
                 input.set_value("draft 🧠", window, cx);
                 input.focus(window, cx);
             });
             view
         });
-        Root::new(view, window, cx)
+        let composer = view.read(cx).composer.clone();
+        project = Some(view);
+        Root::new(composer, window, cx)
     });
-    let view = root.read_with(visual, |root, _| {
-        root.view().clone().downcast::<ProjectView>().unwrap()
-    });
+    let view = project.unwrap();
     let value = |visual: &VisualTestContext| {
         view.read_with(visual, |view, cx| view.compose.read(cx).value().to_string())
     };
