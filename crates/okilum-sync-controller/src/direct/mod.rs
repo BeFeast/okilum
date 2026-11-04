@@ -162,6 +162,9 @@ struct Shared {
     observation_generation: Uuid,
     transfer_lock: Mutex<()>,
     connection_watch: Mutex<addresses::ConnectionWatch>,
+    /// Invitation whose approval reply this process has written to the joiner.
+    /// In memory only; a headless inviter waits on it before exiting.
+    delivered_approval: Mutex<Option<Uuid>>,
     #[cfg(target_os = "linux")]
     inventory: Mutex<inventory::Cache>,
     #[cfg(target_os = "linux")]
@@ -291,6 +294,7 @@ impl Controller {
                 observation_generation: Uuid::new_v4(),
                 transfer_lock: Mutex::new(()),
                 connection_watch: Mutex::new(Default::default()),
+                delivered_approval: Mutex::new(None),
                 #[cfg(target_os = "linux")]
                 inventory: Mutex::new(Default::default()),
                 #[cfg(target_os = "linux")]
@@ -330,6 +334,27 @@ impl Controller {
         if let Ok(mut listener) = self.shared.listener.try_lock() {
             listener.take();
         }
+    }
+    /// The name this computer last offered or requested pairing under.
+    pub fn computer_name(&self) -> Result<String> {
+        self.check()?;
+        Ok(self.shared.db.lock().unwrap().name.clone())
+    }
+    /// Whether the joiner has been sent this invitation's approval. `approve`
+    /// only records the peer; the joiner learns it on its next poll, so the
+    /// inviting process must keep listening until this is true.
+    pub fn approval_delivered(&self) -> Result<bool> {
+        self.check()?;
+        let approved = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .invitation
+            .as_ref()
+            .filter(|i| i.approved.is_some())
+            .map(|i| i.offer.id);
+        Ok(approved.is_some() && *self.shared.delivered_approval.lock().unwrap() == approved)
     }
     pub fn snapshot(&self) -> Result<Snapshot> {
         self.check()?;
@@ -867,6 +892,7 @@ impl Controller {
             }
         });
         self.check()?;
+        let approval = matches!(reply, Reply::Approved { .. });
         let response = wire::seal(
             scope,
             &credential,
@@ -887,7 +913,11 @@ impl Controller {
                 },
             },
         )?;
-        wire::write(stream, &response)
+        wire::write(stream, &response)?;
+        if approval {
+            *self.shared.delivered_approval.lock().unwrap() = Some(scope);
+        }
+        Ok(())
     }
     fn dispatch(
         &self,

@@ -927,6 +927,8 @@ use failure::{failure_details, short_cause};
 
 #[path = "reader_settings_sync/epoch.rs"]
 mod epoch;
+#[path = "reader_settings_sync/cli.rs"]
+pub(crate) mod cli;
 #[cfg(test)]
 #[path = "reader_settings_sync/tests.rs"]
 mod tests;
