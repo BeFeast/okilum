@@ -340,7 +340,15 @@ fn list_2530_ci_live_age_and_executor_filter_use_existing_evidence(cx: &mut Test
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-list-row-2").is_some());
     assert!(visual.debug_bounds("board-list-row-1").is_none());
-    board.read_with(visual, |b, _| assert_eq!(b.snapshot.forgejo.value.len(), 4));
+    board.read_with(visual, |b, _| {
+        assert_eq!(b.snapshot.forgejo.value.len(), 4);
+        assert_eq!(b.list.prepared.as_ref().unwrap().counts, [0, 1, 0, 0, 0]);
+    });
+    click(visual, "board-remove-executor");
+    assert!(visual.debug_bounds("board-list-row-1").is_some());
+    board.read_with(visual, |b, _| {
+        assert_eq!(b.list.prepared.as_ref().unwrap().counts, [0, 1, 3, 0, 0])
+    });
 }
 
 #[gpui::test]
@@ -354,8 +362,13 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
             (2, "Tester report", vec!["from-tester", "bug"]),
             (3, "Other task", vec!["task"])]
             .into_iter().map(|(number, title, labels)| {
-                let issue = serde_json::from_value(serde_json::json!({"number":number,"title":title,"state":"open",
+                let mut issue: okilum_t3::board::Issue = serde_json::from_value(serde_json::json!({"number":number,"title":title,"state":"open",
                     "labels": labels.into_iter().map(|name| serde_json::json!({"name":name})).collect::<Vec<_>>() })).unwrap();
+                if number == 2 {
+                    issue.live_pulls.push(okilum_t3::board::live::Pull {
+                        number: 102, merged_at: None, checks: "failure".into(),
+                    });
+                }
                 (number, issue)
             }).collect();
         board.filter_cache.invalidate();
@@ -370,7 +383,8 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
             "positive control: all source rows rendered"
         );
     }
-    assert!(visual.debug_bounds("board-list-count-Queue-3").is_some());
+    assert!(visual.debug_bounds("board-list-count-Queue-2").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
     let toggle = visual.debug_bounds("board-view-board").unwrap();
     let chip = visual.debug_bounds("board-chip-all").unwrap();
     assert!(
@@ -385,7 +399,8 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
     assert!(visual.debug_bounds("board-list-row-1").is_some());
     assert!(visual.debug_bounds("board-list-row-2").is_some());
     assert!(visual.debug_bounds("board-list-row-3").is_none());
-    assert!(visual.debug_bounds("board-list-count-Queue-2").is_some());
+    assert!(visual.debug_bounds("board-list-count-Queue-1").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
     let prepared = board.read_with(visual, |b, _| b.list.prepared.clone().unwrap());
     board.update(visual, |_, cx| cx.notify());
     visual.run_until_parked();
@@ -401,6 +416,7 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
     assert!(visual.debug_bounds("board-list-row-1").is_some());
     assert!(visual.debug_bounds("board-list-row-2").is_none());
     assert!(visual.debug_bounds("board-list-count-Queue-1").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-0").is_some());
     board.read_with(visual, |b, _| {
         assert!(
             !Arc::ptr_eq(&prepared, b.list.prepared.as_ref().unwrap()),
@@ -415,18 +431,21 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     board.update_in(visual, |b, window, _| assert!(b.focus.is_focused(window)));
-    assert!(visual.debug_bounds("board-list-count-Queue-2").is_some());
+    assert!(visual.debug_bounds("board-list-count-Queue-1").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
     visual.simulate_keystrokes("/");
     visual.simulate_input("#2");
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-list-row-2").is_some());
     assert!(visual.debug_bounds("board-list-row-1").is_none());
-    assert!(visual.debug_bounds("board-list-count-Queue-1").is_some());
+    assert!(visual.debug_bounds("board-list-count-Queue-0").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
     visual.simulate_keystrokes("escape /");
     // Set a query through the actual input after clearing the numeric search.
     visual.simulate_input("#999");
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-filter-empty").is_some());
     click(visual, "board-reset-filters");
-    assert!(visual.debug_bounds("board-list-count-Queue-3").is_some());
+    assert!(visual.debug_bounds("board-list-count-Queue-2").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
 }
