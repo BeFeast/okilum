@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import importlib.util
 import io
+import multiprocessing
 import os
 from pathlib import Path
 import subprocess
@@ -13,6 +14,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from unittest.mock import patch
 import zlib
@@ -125,16 +127,44 @@ class FixtureStagingTests(unittest.TestCase):
 
     def test_concurrent_cold_staging_and_exec(self):
         publish = helper.publish
-        barrier = threading.Barrier(8, timeout=10)
+        # Real jobs stage in separate processes. Forking exec from a staging
+        # thread can inherit another thread's private writer until exec closes
+        # it, creating ETXTBSY even after the publisher closed its own descriptor.
+        context = multiprocessing.get_context('fork')
+        barrier = context.Barrier(8, timeout=10)
+        results = context.Queue()
         def synchronized(destination, data, mode):
             if destination.name == 'syncthing':
                 barrier.wait()  # Every caller must take the publication path.
             publish(destination, data, mode)
             if destination.name == 'syncthing':
                 subprocess.run([str(destination), '-c', 'pass'], check=True)
-        with patch.object(helper, 'publish', side_effect=synchronized):
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                binaries = list(pool.map(lambda _: helper.stage(self.cache), range(8)))
+        def stage_and_exec():
+            try:
+                with patch.object(helper, 'publish', side_effect=synchronized):
+                    binary = helper.stage(self.cache)
+                results.put((True, str(binary)))
+            except BaseException:
+                results.put((False, traceback.format_exc()))
+                raise
+        workers = [context.Process(target=stage_and_exec) for _ in range(8)]
+        try:
+            for worker in workers:
+                worker.start()
+            received = [results.get(timeout=30) for _ in workers]
+            self.assertTrue(all(ok for ok, _ in received), received)
+            for worker in workers:
+                worker.join(timeout=10)
+                self.assertEqual(worker.exitcode, 0)
+            binaries = [Path(binary) for _, binary in received]
+        finally:
+            for worker in workers:
+                if worker.pid is not None:
+                    if worker.is_alive():
+                        worker.kill()
+                    worker.join()
+            results.close()
+            results.join_thread()
         self.assertEqual(len(set(binaries)), 1)
         self.assertEqual(binaries[0].read_bytes(), self.executable)
         self.assertEqual(binaries[0].stat().st_mode & 0o777, 0o555)
