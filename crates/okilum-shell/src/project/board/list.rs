@@ -173,6 +173,14 @@ impl Board {
                 groups[self.delivery_column(scope) as usize].push(Row::Issue(i));
             }
         }
+        for group in &mut groups {
+            group.sort_by(|a, b| match (a, b) {
+                (Row::Issue(a), Row::Issue(b)) => {
+                    self.compare_scopes(&binding.issues[*a], &binding.issues[*b])
+                }
+                _ => std::cmp::Ordering::Equal,
+            });
+        }
         if self.filter.is_none() {
             for (i, card) in self.local_cards.value.cards.iter().enumerate() {
                 groups[card.state.column() as usize].push(Row::Local(i));

@@ -4,6 +4,11 @@ The opt-in `project-ui-harness` mode `performance` mounts the production Reader,
 Manager, composer and Board. Its synthetic data contains 200 completed runs,
 1,200 timeline items (Markdown, source-keyed tool-call groups and response folds),
 and 240 cards divided equally between Queue, In progress, Checks and Can try.
+Production defaults to the Board v2 List view. This reference explicitly selects
+Kanban so the original 240-card scroll/resize workload remains comparable. Both
+views retain main's origin/PR/recency ordering; sorting runs when their source
+presentation is rebuilt and is reused during viewport work. Synthetic source
+update timestamps keep the fixture's original ascending card order.
 It uses a fake Manager gateway and a Board-owned synthetic issue reader. No real
 threads, provider dispatches, credentials or installed application are involved.
 

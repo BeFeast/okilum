@@ -327,3 +327,79 @@ fn list_2530_ci_live_age_and_executor_filter_use_existing_evidence(cx: &mut Test
     assert!(visual.debug_bounds("board-list-row-1").is_none());
     board.read_with(visual, |b, _| assert_eq!(b.snapshot.forgejo.value.len(), 4));
 }
+
+#[gpui::test]
+fn list_and_cached_kanban_retain_main_ordering_after_source_publication(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        entity = Some(cx.new(|cx| {
+            let mut board = Board::with_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
+            board.binding = Some(fixture(5));
+            board.list.preferences.collapsed[Column::Queue as usize] = false;
+            for (number, origin, time) in [
+                (1, "task", 500),
+                (2, "bug", 400),
+                (3, "from-tester", 300),
+                (4, "from-oleg", 100),
+                (5, "from-oleg", 200),
+            ] {
+                board.snapshot.forgejo.value.insert(number, serde_json::from_value(serde_json::json!({
+                    "number": number, "title": "Synthetic issue", "state": "open",
+                    "labels": [{"name": origin}],
+                    "updated_at": chrono::DateTime::from_timestamp(time, 0).unwrap().to_rfc3339(),
+                })).unwrap());
+            }
+            board.snapshot.forgejo.last_success = Some(now());
+            board
+        }));
+        Root::new(cx.new(|_| gpui::EmptyView), window, cx)
+    });
+    visual.run_until_parked();
+    let board = entity.unwrap();
+    let order = |board: &mut Board| {
+        let kanban = board.presentation();
+        let kanban_order = kanban.columns[Column::Queue as usize]
+            .iter()
+            .map(|i| kanban.binding.issues[*i].number)
+            .collect::<Vec<_>>();
+        let list = board.prepare_list();
+        let list_order = list
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Issue(i) => Some(list.binding.issues[*i].number),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            list_order, kanban_order,
+            "both views retain the same main comparator"
+        );
+        list_order
+    };
+    assert_eq!(
+        board.update(visual, |board, _| order(board)),
+        vec![5, 4, 3, 2, 1]
+    );
+    let prepared = board.update(visual, |board, _| board.prepare_list());
+    let reused = board.update(visual, |board, _| board.prepare_list());
+    assert!(
+        Arc::ptr_eq(&prepared, &reused),
+        "viewport work reuses ordered rows"
+    );
+    board.update(visual, |board, cx| {
+        board.snapshot.forgejo.value.get_mut(&4).unwrap().updated_at =
+            chrono::DateTime::from_timestamp(600, 0)
+                .unwrap()
+                .to_rfc3339();
+        board.list.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        board.update(visual, |board, _| order(board)),
+        vec![4, 5, 3, 2, 1]
+    );
+}

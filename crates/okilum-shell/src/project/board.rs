@@ -1161,9 +1161,15 @@ impl Board {
     fn context(&self, scope: &okilum_t3::board::Scope) -> String {
         let binding = self.binding.as_ref().expect("rendered configured card");
         let issue = self.snapshot.forgejo.value.get(&scope.number);
-        format!("Board: {}\nIssue: {}\nExpected result: {}\nExecutor: {}\nLast issue state: {}\nStage note: {}\n\nQuestion for Manager: ",
-            binding.title, binding.issue_url(scope.number), scope.expected, scope.executor,
-            issue.map(|i| i.state.as_str()).unwrap_or("not read"), self.area.join(&binding.stage_note).display())
+        format!(
+            "Board: {}\nIssue: {}\nExpected result: {}\nExecutor: {}\nLast issue state: {}\nStage note: {}\n\nQuestion for Manager: ",
+            binding.title,
+            binding.issue_url(scope.number),
+            scope.expected,
+            scope.executor,
+            issue.map(|i| i.state.as_str()).unwrap_or("not read"),
+            self.area.join(&binding.stage_note).display()
+        )
     }
 }
 impl Render for Board {
@@ -1786,7 +1792,9 @@ impl Board {
                 okilum_t3::board::Issue {
                     number,
                     title: format!("Synthetic task {number}"),
-                    updated_at: String::new(),
+                    updated_at: chrono::DateTime::from_timestamp(1_700_000_000 - number as i64, 0)
+                        .unwrap()
+                        .to_rfc3339(),
                     state: "open".into(),
                     body: String::new(),
                     labels: vec![],
