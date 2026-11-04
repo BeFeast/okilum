@@ -99,7 +99,21 @@ impl Watch {
 }
 fn affects_file(event: &notify::Event, path: &Path) -> bool {
     !matches!(event.kind, notify::EventKind::Access(_))
-        && (event.need_rescan() || event.paths.iter().any(|p| p == path))
+        && (event.need_rescan()
+            || event.paths.iter().any(|p| {
+                p == path || {
+                    #[cfg(target_os = "linux")]
+                    {
+                        p.parent() == path.parent()
+                            && okilum_sync_controller::conflicts::canonical_path(p).as_deref()
+                                == Some(path)
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        false
+                    }
+                }
+            }))
 }
 
 impl Reader {
@@ -136,7 +150,11 @@ impl Reader {
                     continue;
                 };
                 let target = selection.clone();
-                let (next, changed, error) = cx
+                #[cfg(target_os = "linux")]
+                let selection_root = selection.root.clone();
+                #[cfg(target_os = "linux")]
+                let selection_rel = selection.rel.clone();
+                let (next, changed, error, conflicts) = cx
                     .background_executor()
                     .spawn(async move {
                         let mut error = None;
@@ -152,7 +170,18 @@ impl Reader {
                             };
                         }
                         let changed = watch.as_mut().is_some_and(|w| w.changed());
-                        (watch, changed, error)
+                        #[cfg(target_os = "linux")]
+                        let conflicts = if changed {
+                            Some(okilum_sync_controller::conflicts::inspect_note(
+                                &selection_root,
+                                Path::new(&selection_rel),
+                            ))
+                        } else {
+                            None
+                        };
+                        #[cfg(not(target_os = "linux"))]
+                        let conflicts: Option<()> = None;
+                        (watch, changed, error, conflicts)
                     })
                     .await;
                 watch = next;
@@ -161,6 +190,22 @@ impl Reader {
                     let _ = handle.update(cx, |_, window, cx| {
                         let _ = this.update(cx, |reader, cx| {
                             if Selection::current(reader).as_ref() == Some(&selection) {
+                                #[cfg(target_os = "linux")]
+                                if let Some(conflicts) = conflicts {
+                                    let (copies, complete) = match conflicts {
+                                        Ok(inventory) => (inventory.copies, inventory.complete),
+                                        Err(_) => (vec![], false),
+                                    };
+                                    reader.sync_note_conflicts = Some((
+                                        selection.root.clone(),
+                                        selection.rel.clone(),
+                                        copies,
+                                        complete,
+                                    ));
+                                    cx.notify();
+                                }
+                                #[cfg(not(target_os = "linux"))]
+                                let _ = conflicts;
                                 if active && !reader.has_open_note_watch() {
                                     reader.open_note_watch =
                                         Some((selection.root.clone(), selection.rel.clone()));
@@ -980,5 +1025,40 @@ mod tests {
                 visual.run_until_parked();
             }
         }
+    }
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn issue2044_sibling_conflict_copies_mount_and_remove_the_note_banner(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("vault");
+        let (reader, visual) = open(cx, directory.path(), 0);
+        settle(visual, &reader, "initial conflict inventory", |r, _| {
+            r.sync_note_conflicts.is_some()
+        });
+        assert!(
+            visual.debug_bounds("sync-conflict-banner").is_none(),
+            "clean-note negative control"
+        );
+        for marker in ["sync", "okilum"] {
+            let copy = root.join(format!("note.{marker}-conflict-20261104-123456-ABC2345.md"));
+            std::fs::write(&copy, "other version").unwrap();
+            settle(visual, &reader, "sibling conflict banner", |r, _| {
+                r.sync_note_conflicts
+                    .as_ref()
+                    .is_some_and(|(_, _, copies, _)| copies.len() == 1)
+            });
+            assert!(visual.debug_bounds("sync-conflict-banner").is_some());
+            std::fs::remove_file(&copy).unwrap();
+            settle(visual, &reader, "removed conflict banner", |r, _| {
+                r.sync_note_conflicts
+                    .as_ref()
+                    .is_some_and(|(_, _, copies, _)| copies.is_empty())
+            });
+            assert!(visual.debug_bounds("sync-conflict-banner").is_none());
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "# Note\n\nbase line\n"
+        );
     }
 }

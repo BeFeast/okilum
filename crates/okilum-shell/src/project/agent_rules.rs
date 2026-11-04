@@ -63,6 +63,7 @@ impl RulesView {
     }
 
     /// Compatibility hook for an owner-provided snapshot; supersedes worker reads.
+    #[allow(dead_code, reason = "owner snapshot hook, not wired yet")]
     pub(crate) fn replace(&mut self, stack: RuleStack, cx: &mut Context<Self>) {
         self.refresh.supersede();
         self.install(stack);

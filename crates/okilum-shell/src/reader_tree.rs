@@ -22,6 +22,9 @@ pub struct Row {
     /// folder, muted, with its own icon, and shown without Show hidden
     /// files. Otherwise an ordinary note row.
     pub index: bool,
+    /// Exact direct-child rules identity, independent of row visibility.
+    pub agent_rules: Option<String>,
+    pub agent_shim: bool,
 }
 
 /// Ancestors already scrolled out above the first visible row. Paths retain
@@ -55,6 +58,7 @@ pub struct Tree {
     pub cursor: Option<String>,
     /// Show `_`/`.` items (per-vault preference, #395).
     show_hidden: bool,
+    agent_shims: BTreeSet<String>,
     /// A hidden path revealed for navigation; its branch is shown until the
     /// reveal moves elsewhere.
     revealed_hidden: Option<String>,
@@ -303,9 +307,14 @@ impl Tree {
                 if !(index && self.scope.is_empty() && !path.contains('/')) {
                     rows.push(Row {
                         hidden: (self.agent_file(&path)
+                            || self.agent_folder(&path)
                             || hidden(&path) && !self.template_branch(&path))
                             && !self.shown_index(&path),
                         index,
+                        agent_rules: (kind == EntryKind::Directory)
+                            .then(|| self.rules_of(&path))
+                            .flatten(),
+                        agent_shim: self.agent_shims.contains(&path),
                         label: tree_label(&path, kind, self.note_titles, &self.titles),
                         expanded: self.expanded.contains(&path),
                         kind,
@@ -347,6 +356,36 @@ impl Tree {
                 .revealed_hidden
                 .as_deref()
                 .is_some_and(|target| target == path || target.starts_with(&format!("{path}/")))
+    }
+
+    /// Only an exact Markdown direct child supplies a folder badge. No I/O.
+    pub(crate) fn rules_of(&self, folder: &str) -> Option<String> {
+        let path = if folder.is_empty() {
+            "AGENTS.md".to_owned()
+        } else {
+            format!("{folder}/AGENTS.md")
+        };
+        (self.kinds.get(&path) == Some(&EntryKind::Markdown)).then_some(path)
+    }
+
+    pub(crate) fn set_agent_shims(&mut self, shims: BTreeSet<String>) {
+        if self.agent_shims != shims {
+            self.agent_shims = shims;
+            self.flatten();
+        }
+    }
+
+    /// Agent configuration directories stay hidden even inside the configured
+    /// templates branch, whose ordinary dot/underscore notes remain visible.
+    fn agent_folder(&self, path: &str) -> bool {
+        std::iter::once(path)
+            .chain(path.rmatch_indices('/').map(|(at, _)| &path[..at]))
+            .any(|ancestor| {
+                matches!(
+                    ancestor.rsplit('/').next(),
+                    Some(".claude" | ".agents" | ".codex")
+                ) && self.kinds.get(ancestor) == Some(&EntryKind::Directory)
+            })
     }
 
     fn agent_file(&self, path: &str) -> bool {
@@ -399,7 +438,10 @@ impl Tree {
     /// Inbox use this so they list what the tree lists (#635); a navigation
     /// reveal and a folder's index row (#1512) apply to the tree only.
     pub fn hidden_by_preference(&self, path: &str) -> bool {
-        !self.show_hidden && (self.agent_file(path) || hidden(path) && !self.template_branch(path))
+        !self.show_hidden
+            && (self.agent_file(path)
+                || self.agent_folder(path)
+                || hidden(path) && !self.template_branch(path))
     }
 
     pub fn set_show_hidden(&mut self, show: bool) {
@@ -713,6 +755,80 @@ fn parent(path: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue1587_agent_folders_and_files_follow_the_existing_toggle() {
+        use EntryKind::*;
+        let mut entries = vec![
+            entry("Project", Directory),
+            entry("Project/AGENTS.md", Markdown),
+            entry("Project/CLAUDE.md", Markdown),
+            entry("Project/GEMINI.md", Markdown),
+            entry("Other", Directory),
+            entry("Other/AGENTS.md", Directory),
+            entry("Other/sub", Directory),
+            entry("Other/sub/AGENTS.md", Markdown),
+        ];
+        for folder in [".claude", ".agents", ".codex"] {
+            entries.push(entry(&format!("Project/{folder}"), Directory));
+            entries.push(entry(&format!("Project/{folder}/rules.md"), Markdown));
+        }
+        let mut tree = Tree::default();
+        tree.refresh(Path::new("/vault"), &entries);
+        tree.set_templates_folder("Project".into());
+        tree.set_subtree("Project", true);
+        tree.set_agent_shims(BTreeSet::from(["Project/CLAUDE.md".into()]));
+        assert_eq!(tree.rules_of("Project"), Some("Project/AGENTS.md".into()));
+        assert_eq!(
+            tree.rules_of("Other"),
+            None,
+            "a namesake directory is not rules"
+        );
+        assert_eq!(tree.rules_of(""), None);
+        assert_eq!(
+            tree.rows
+                .iter()
+                .find(|r| r.path == "Project")
+                .unwrap()
+                .agent_rules
+                .as_deref(),
+            Some("Project/AGENTS.md")
+        );
+        assert!(!tree.rows.iter().any(|r| r.path.starts_with("Project/")));
+        tree.set_show_hidden(true);
+        tree.set_subtree("Project", true);
+        for entry in entries.iter().filter(|e| e.path.starts_with("Project/")) {
+            assert!(
+                tree.rows.iter().any(|r| r.path == entry.path),
+                "{}",
+                entry.path
+            );
+        }
+        assert!(
+            tree.rows
+                .iter()
+                .find(|r| r.path == "Project/CLAUDE.md")
+                .unwrap()
+                .agent_shim
+        );
+        assert!(
+            !tree
+                .rows
+                .iter()
+                .find(|r| r.path == "Project/GEMINI.md")
+                .unwrap()
+                .agent_shim,
+            "real rules are hidden by the existing broad rule, never classified as shims"
+        );
+        tree.set_show_hidden(false);
+        assert!(!tree.rows.iter().any(|r| r.path.starts_with("Project/")));
+        tree.refresh(Path::new("/vault"), &[entry("Project", Directory)]);
+        assert_eq!(
+            tree.rules_of("Project"),
+            None,
+            "deleted rules remove the badge"
+        );
+    }
 
     #[test]
     fn default_tree_labels_and_sort_use_file_names() {

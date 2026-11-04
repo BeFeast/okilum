@@ -1,5 +1,4 @@
 // Included in the existing offline window fixtures: no new Reader test hooks.
-use gpui::ElementInputHandler;
 use okilum_core::remote_markdown::save::{Attempt, Outcome, Revision, Snapshot};
 fn save_click(visual: &mut VisualTestContext, selector: &'static str) {
     let bounds = visual

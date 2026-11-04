@@ -40,6 +40,8 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
         destination_error: None,
         receiving: false,
         scroll: ScrollHandle::new(),
+        #[cfg(target_os = "linux")]
+        conflicts: Default::default(),
     }
 }
 
@@ -147,7 +149,7 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
     assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
     let view = visual.update(|_, cx| cx.global::<BackgroundSync>().0.clone());
 
-    let field = view.read_with(&mut visual, |view, _| {
+    let field = view.read_with(&visual, |view, _| {
         if invitation {
             view.invitation.clone()
         } else {

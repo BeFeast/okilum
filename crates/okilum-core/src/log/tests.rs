@@ -212,7 +212,7 @@ fn throughput_100mb_with_known_counts() {
     let (mut written, mut errors, mut frames) = (0u64, 0u64, 0u64);
     while data.len() < TARGET {
         let r = next();
-        if r % 997 == 0 {
+        if r.is_multiple_of(997) {
             data.extend_from_slice(b"    at okilum::reader::open (reader.rs:42)\n");
             frames += 1;
         } else {

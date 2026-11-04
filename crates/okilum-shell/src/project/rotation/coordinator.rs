@@ -17,6 +17,7 @@ use std::sync::{
 /// The configured policy surface supplies its canonical rotation owner (including policy/lifecycle
 /// revision). None revokes access. This callback is always read on the UI thread.
 pub(in crate::project) type OwnerResolver = fn(&ProjectView, &App) -> Option<Owner>;
+#[allow(dead_code, reason = "event payload; no subscriber reads it yet")]
 #[derive(Clone)]
 pub(in crate::project) struct Resolved {
     pub action: Action,

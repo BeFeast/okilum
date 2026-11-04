@@ -18,6 +18,48 @@ impl Render for SyncSettings {
             .gap_4()
             .overflow_y_scroll()
             .track_scroll(&self.scroll);
+        #[cfg(target_os = "linux")]
+        {
+            let mut roots: Vec<_> = self
+                .snapshot
+                .as_ref()
+                .map(|s| s.attached.iter().map(|v| v.path.clone()).collect())
+                .unwrap_or_default();
+            let readers = reader_open::readers(cx);
+            roots.extend(
+                readers
+                    .iter()
+                    .map(|r| r.read(cx).vault_root.clone())
+                    .filter(|r| !r.as_os_str().is_empty()),
+            );
+            roots.sort();
+            roots.dedup();
+            content = content.child(div().text_base().child("Conflicts"));
+            for root in roots {
+                if !self.conflicts.contains_key(&root) {
+                    let owner = readers.iter().find(|r| r.read(cx).vault_root == root);
+                    let state = owner
+                        .and_then(|r| r.read(cx).session_directory.clone())
+                        .map(Ok)
+                        .unwrap_or_else(|| reader_ui_state::state_directory(cx));
+                    if let Ok(state) = state {
+                        let owner = owner.map(Entity::downgrade);
+                        let view = cx.new(|cx| {
+                            crate::reader_sync_conflicts::InventoryView::new(
+                                root.clone(),
+                                state,
+                                owner,
+                                cx,
+                            )
+                        });
+                        self.conflicts.insert(root.clone(), view);
+                    }
+                }
+                if let Some(view) = self.conflicts.get(&root) {
+                    content = content.child(view.clone());
+                }
+            }
+        }
         if let Some(error) = &self.error {
             result = result.child(
                 div()
@@ -174,7 +216,7 @@ impl Render for SyncSettings {
                             .child(peer.name.clone())
                             .child(
                                 Button::new(("sync-catalog", index))
-                                    .debug_selector(move || format!("sync-catalog-{index}").into())
+                                    .debug_selector(move || format!("sync-catalog-{index}"))
                                     .label("Choose vaults")
                                     .ghost()
                                     .selected(self.selected_peer == Some(id))
@@ -220,7 +262,7 @@ impl Render for SyncSettings {
                                     .child(
                                         Button::new(("sync-new-vault-folder", index))
                                             .debug_selector(move || {
-                                                format!("sync-new-vault-folder-{index}").into()
+                                                format!("sync-new-vault-folder-{index}")
                                             })
                                             .label("Choose local folder")
                                             .disabled(self.busy)
@@ -251,9 +293,7 @@ impl Render for SyncSettings {
                         content = content.child(
                             div()
                                 .id(("sync-destination-error", index))
-                                .debug_selector(move || {
-                                    format!("sync-destination-error-{index}").into()
-                                })
+                                .debug_selector(move || format!("sync-destination-error-{index}"))
                                 .text_sm()
                                 .child(message.clone()),
                         );
@@ -328,26 +368,23 @@ impl Render for SyncSettings {
                     h_flex()
                         .gap_2()
                         .child(div().text_sm().child(format!(
-                            "{} · {} vaults",
-                            format!(
-                                    "{}…{}",
-                                    runtime
-                                        .identity
-                                        .device_id
-                                        .chars()
-                                        .take(7)
-                                        .collect::<String>(),
-                                    runtime
-                                        .identity
-                                        .device_id
-                                        .chars()
-                                        .rev()
-                                        .take(7)
-                                        .collect::<String>()
-                                        .chars()
-                                        .rev()
-                                        .collect::<String>()
-                                ),
+                            "{}…{} · {} vaults",
+                            runtime
+                                .identity
+                                .device_id
+                                .chars()
+                                .take(7)
+                                .collect::<String>(),
+                            runtime
+                                .identity
+                                .device_id
+                                .chars()
+                                .rev()
+                                .take(7)
+                                .collect::<String>()
+                                .chars()
+                                .rev()
+                                .collect::<String>(),
                             runtime.folders
                         )))
                         .child(
@@ -444,7 +481,7 @@ impl Render for SyncSettings {
                         .child(div().text_sm().child(path.display().to_string()))
                         .child(
                             Button::new(("sync-share-vault", index))
-                                .debug_selector(move || format!("sync-share-vault-{index}").into())
+                                .debug_selector(move || format!("sync-share-vault-{index}"))
                                 .label(label)
                                 .disabled(
                                     self.busy

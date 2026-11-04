@@ -2,6 +2,7 @@
 //! Parent integration supplies existing rendered surfaces and FileEditor handles.
 //! The ownership model owns no watcher, cache, sidebar or persisted layout.
 //! The concrete source adapter delegates IO to the existing FileEditor.
+#![cfg_attr(not(test), allow(dead_code, reason = "#773, not wired yet"))]
 use super::reader_document::{Document, Identity};
 use std::sync::atomic::{AtomicU64, Ordering};
 

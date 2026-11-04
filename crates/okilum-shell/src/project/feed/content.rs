@@ -39,6 +39,7 @@ pub(crate) type LinkHandler = Arc<dyn Fn(LinkTarget, &mut Window, &mut App) + Se
 
 /// The caller supplies a stable element ID for each message/activity body and
 /// the current confirmed root. No Feed state or Reader-note context is needed.
+#[allow(dead_code, reason = "Feed renders through its cached view")]
 pub(super) fn markdown(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,

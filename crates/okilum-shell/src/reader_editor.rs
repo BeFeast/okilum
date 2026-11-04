@@ -89,7 +89,10 @@ const CONFLICT_NOTICE: &str = "This file changed outside Okilum.";
 fn conflict_copy_rel(current_rel: &str) -> String {
     let path = Path::new(current_rel);
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let extension = path.extension().unwrap_or_default().to_string_lossy();
+    let extension = path
+        .extension()
+        .map(|value| format!(".{}", value.to_string_lossy()))
+        .unwrap_or_default();
     let id = uuid::Uuid::new_v4();
     // This random discriminator is not a claim about a device identity.
     let suffix: String = id
@@ -99,7 +102,7 @@ fn conflict_copy_rel(current_rel: &str) -> String {
         .map(|b| b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[(b & 31) as usize] as char)
         .collect();
     let name = format!(
-        "{stem}.okilum-conflict-{}-{suffix}.{extension}",
+        "{stem}.okilum-conflict-{}-{suffix}{extension}",
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     );
     // Syncthing prunes *.sync-conflict-*. Even an original named by Syncthing
@@ -339,7 +342,7 @@ mod saved_agents_revision_tests {
 struct Editors(Vec<(WeakEntity<Reader>, AnyWindowHandle)>);
 impl Global for Editors {}
 
-#[cfg(any(test, feature = "brain"))]
+#[cfg(test)]
 pub(crate) fn save_all(cx: &mut App) -> bool {
     save_all_outcomes(cx).0
 }
@@ -1463,6 +1466,7 @@ impl Reader {
         }).detach();
     }
 
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub(super) fn refresh_source_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(test)]
         let _work = work::scope();
@@ -1612,7 +1616,7 @@ impl Reader {
     /// The editor's buffer was just written back at the note's own place
     /// (#1986): that file is its base now. False when the editor can no
     /// longer reach the file (its folder was recreated) and must reopen it.
-    pub(super) fn source_restored(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn source_restored(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(editing) = &mut self.editing else {
             return true;
         };
@@ -1939,6 +1943,7 @@ impl Reader {
         self.autosaved_observed(input_id, saves, text, result, stamp, None, cx);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn autosaved_observed(
         &mut self,
         input_id: EntityId,
@@ -3544,6 +3549,30 @@ fn location_notice(_: &anyhow::Error) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn issue2044_editor_copy_names_round_trip_extensionless_and_hidden_notes() {
+        for note in [
+            "TODO",
+            ".hidden",
+            "nested/TODO",
+            "nested/.hidden",
+            "nested/note.md",
+        ] {
+            let copy = super::conflict_copy_rel(note);
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                okilum_sync_controller::conflicts::canonical_path(std::path::Path::new(&copy)),
+                Some(std::path::PathBuf::from(note))
+            );
+            if !note.ends_with(".md") {
+                assert!(
+                    !copy.ends_with('.'),
+                    "extensionless copies cannot gain a trailing dot"
+                );
+            }
+        }
+    }
+
     #[test]
     fn code_blocks_and_tables_keep_one_alignment() {
         let source = "שלום\n```\n# הערה\n```\n| שם | Name |\n|---|---|\nטקסט\n~~~~\nopen";

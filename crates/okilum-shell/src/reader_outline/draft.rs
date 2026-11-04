@@ -12,6 +12,7 @@ pub(super) struct DraftCache {
 struct ContainerReferences {
     source: String,
     sections: Vec<ReferenceSection>,
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     environment: String,
     dependencies: CanonicalDependencies,
 }

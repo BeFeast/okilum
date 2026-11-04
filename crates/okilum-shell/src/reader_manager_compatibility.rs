@@ -1,5 +1,7 @@
 //! Check the actual embedded engine before importing any T3 modules (#2381).
 
+// Only the native macOS panel loads the preflight page.
+#[cfg_attr(any(not(target_os = "macos"), test), allow(dead_code))]
 pub(crate) const PREFLIGHT: &str = include_str!("reader_manager_compatibility.html");
 
 /// Only the local preflight document can report capabilities. Once consumed,

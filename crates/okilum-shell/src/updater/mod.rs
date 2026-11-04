@@ -573,7 +573,7 @@ mod tests {
                 }
             });
         });
-        let (_, mut first) = cx.add_window_view(|window, cx| {
+        let (_, first) = cx.add_window_view(|window, cx| {
             let view = cx.new(|_| Empty);
             Root::new(view, window, cx)
         });
@@ -586,7 +586,7 @@ mod tests {
         first.update(|window, _| window.activate_window());
         first.run_until_parked();
         assert_eq!(starts.get(), 1, "positive control: activation really fired");
-        let (_, mut second) = cx.add_window_view(|window, cx| {
+        let (_, second) = cx.add_window_view(|window, cx| {
             let view = cx.new(|_| Empty);
             Root::new(view, window, cx)
         });

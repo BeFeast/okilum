@@ -9,13 +9,18 @@ pub(super) use draft::DraftOutline;
 
 const STALE_HEADING: &str = "The outline is updating. Click the heading again when it refreshes.";
 
+/// Held outline publication: source text plus its release and resume signals.
+#[cfg(test)]
+type OutlinePublicationHold = (
+    String,
+    futures::channel::oneshot::Sender<()>,
+    futures::channel::oneshot::Receiver<()>,
+);
+
 #[cfg(test)]
 thread_local! {
-    static OUTLINE_PUBLICATION_HOLD: std::cell::RefCell<Option<(
-        String,
-        futures::channel::oneshot::Sender<()>,
-        futures::channel::oneshot::Receiver<()>,
-    )>> = const { std::cell::RefCell::new(None) };
+    static OUTLINE_PUBLICATION_HOLD: std::cell::RefCell<Option<OutlinePublicationHold>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]

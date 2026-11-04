@@ -182,9 +182,8 @@ impl Store {
             plan,
         };
         std::fs::create_dir_all(&store.directory)?;
-        match store.read()? {
-            None => store.publish(0, State::Prepared)?,
-            Some(_) => {}
+        if store.read()?.is_none() {
+            store.publish(0, State::Prepared)?;
         }
         Ok(store)
     }
