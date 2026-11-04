@@ -48,7 +48,7 @@ impl Board {
             .min(self.waiting.items.len().saturating_sub(1) / 4);
     }
     pub(super) fn render_waiting(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.waiting.visible() && self.waiting.problem.is_none() {
+        if !self.waiting.visible() {
             return None;
         }
         let colors = brand::palette(cx);
@@ -57,20 +57,6 @@ impl Board {
             .min_w_0()
             .gap_2()
             .line_height(relative(1.5));
-        if let Some(problem) = &self.waiting.problem {
-            view = view.child(
-                div()
-                    .debug_selector(|| "board-waiting-problem".into())
-                    .text_size(px(12.))
-                    .text_color(colors.text_muted)
-                    .min_w_0()
-                    .truncate()
-                    .child(problem.clone()),
-            );
-        }
-        if !self.waiting.visible() {
-            return Some(view.into_any_element());
-        }
         let mut strip = h_flex()
             .debug_selector(|| "board-waiting".into())
             .w_full()
