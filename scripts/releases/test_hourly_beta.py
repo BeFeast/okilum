@@ -463,12 +463,13 @@ class WorkflowContract(unittest.TestCase):
     def load(self, path):
         return yaml.load((ROOT / path).read_text(), Loader=yaml.BaseLoader)
 
-    def test_hourly_certification_runs_the_same_fast_jobs_without_a_merge_trigger(self):
+    def test_pr_admission_is_light_and_main_retains_full_certification(self):
         data = self.load('.forgejo/workflows/fast.yml')
-        self.assertEqual(set(data['on']), {'pull_request', 'workflow_dispatch'})
+        self.assertEqual(set(data['on']), {'pull_request', 'push', 'schedule', 'workflow_dispatch'})
+        self.assertEqual(data['on']['push']['branches'], ['main'])
         self.assertIn('certification_source', data['on']['workflow_dispatch']['inputs'])
-        self.assertIn("inputs.certification_source != '' && inputs.certification_source", data['concurrency']['group'])
-        self.assertEqual(data['concurrency']['cancel-in-progress'], 'true')
+        self.assertEqual(data['concurrency']['group'], 'fast-${{ github.event.pull_request.number || github.ref }}')
+        self.assertEqual(data['concurrency']['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}")
         for name in ['check', 'shell-full']:
             job = data['jobs'][name]
             self.assertEqual(job['runs-on'], 'fast-linux')
@@ -484,9 +485,25 @@ class WorkflowContract(unittest.TestCase):
         for name, needs in [('certification-status', ['check']), ('shell-full-status', ['shell-full'])]:
             report = data['jobs'][name]
             self.assertEqual(report['needs'], needs)
-            self.assertEqual(report['if'], "always() && inputs.certification_source != ''")
+            self.assertEqual(report['if'], "always() && github.event_name != 'pull_request' && inputs.certification_source != ''")
             self.assertEqual(report['steps'][-1]['run'], 'python3 scripts/releases/hourly_beta.py certification-status')
             self.assertEqual(report['steps'][-1]['env']['JOB_RESULTS'], '${{ toJSON(needs) }}')
+
+    def test_full_suites_cannot_enter_pr_admission(self):
+        jobs = self.load('.forgejo/workflows/fast.yml')['jobs']
+        for event in ['pull_request', 'push', 'schedule', 'workflow_dispatch']:
+            for source in ['', SOURCE]:
+                for name in ['shell-full', 'sync-source-sharing', 'shell-full-status']:
+                    expression = (jobs[name]['if'].replace('always()', 'True')
+                                  .replace('github.event_name', repr(event))
+                                  .replace('inputs.certification_source', repr(source))
+                                  .replace('&&', ' and ').replace('||', ' or '))
+                    enabled = eval(expression, {'__builtins__': {}})
+                    expected = event != 'pull_request' and (
+                        name == 'shell-full' or
+                        (bool(source) if name == 'shell-full-status' else not source))
+                    self.assertEqual(enabled, expected, (event, source, name))
+        self.assertNotIn('pull_request', self.load('.forgejo/workflows/feedback-ci.yml')['on'])
 
     def test_stable_selector_shipping_contexts_remain_on_the_beta_source_commit(self):
         # Dispatch/schedule runs need explicit reporting on this Forgejo. Stale
