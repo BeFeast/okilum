@@ -198,6 +198,8 @@ the quiet status line without an empty group.
 The delivery summary in either view and expanded cards omits tracks without a
 build, hides platforms/channels with no data, and disappears if no build exists.
 Last-known builds and their source diagnostics remain visible on refresh failure.
+If a failed delivery source has no last-known build, its diagnostic remains on
+the same quiet status line even though the table and empty waiting group are hidden.
 Item/stage colours and richer live-agent
 presentation retain their existing independent sources.
 

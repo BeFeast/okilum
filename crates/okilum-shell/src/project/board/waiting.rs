@@ -24,6 +24,7 @@ impl Board {
                     self.projection_time(),
                 )
             });
+        let mut problems = self.waiting.problem.take().into_iter().collect::<Vec<_>>();
         if let Some(error) = &self.snapshot.forgejo.error {
             let detail = format!(
                 "Forgejo: {} · last success {}",
@@ -36,13 +37,21 @@ impl Board {
                         now().saturating_sub(at)
                     ))
             );
-            self.waiting.problem = Some(
-                self.waiting
-                    .problem
-                    .take()
-                    .map_or_else(|| detail.clone(), |notes| format!("{notes} · {detail}")),
+            problems.push(detail);
+        }
+        // Missing builds hide the table, but must not hide a failed source.
+        // Cache its diagnostics on the same publication as the waiting rows.
+        if self.delivery.enabled() {
+            problems.extend(
+                self.delivery.problems(
+                    now(),
+                    self.binding
+                        .as_ref()
+                        .map_or(30, |binding| binding.refresh_seconds),
+                ),
             );
         }
+        self.waiting.problem = (!problems.is_empty()).then(|| problems.join(" · "));
         self.waiting_page = self
             .waiting_page
             .min(self.waiting.items.len().saturating_sub(1) / 4);

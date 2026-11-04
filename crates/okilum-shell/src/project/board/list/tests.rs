@@ -619,11 +619,17 @@ fn issue2533_delivery_omits_empty_platforms_channels_cells_and_table(cx: &mut Te
         for source in board.delivery.feeds.values_mut() {
             source.value = None;
         }
-        board.list.invalidate();
+        board.project_notes = Default::default();
+        board.snapshot.forgejo.value.clear();
+        board.refresh_waiting();
         cx.notify();
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-delivery").is_none());
+    assert!(visual.debug_bounds("board-list-waiting-group").is_none());
+    assert!(visual.debug_bounds("board-waiting-problem").is_some());
     click(visual, "board-view-board");
     assert!(visual.debug_bounds("board-delivery").is_none());
+    assert!(visual.debug_bounds("board-waiting").is_none());
+    assert!(visual.debug_bounds("board-waiting-problem").is_some());
 }
