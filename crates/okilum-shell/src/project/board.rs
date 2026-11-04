@@ -1406,7 +1406,12 @@ impl Render for Board {
                 .on_click(cx.listener(|this, _, window, cx| this.open_management(window, cx))),
         );
         let forgejo_problem = source_problem("Forgejo", &self.snapshot.forgejo, 30, now());
-        let line = problem_line(forgejo_problem.into_iter().collect()).unwrap_or_default();
+        let line = self
+            .waiting
+            .problem
+            .clone()
+            .or_else(|| problem_line(forgejo_problem.into_iter().collect()))
+            .unwrap_or_default();
         // Keep the quiet source line at the viewport's lower edge. Its reserved
         // bottom padding preserves card geometry without restoring a header.
         root.pb_8()
@@ -1418,12 +1423,19 @@ impl Render for Board {
                     .bottom_2()
                     .left_4()
                     .right_4()
-                    .h(px(16.))
+                    .h(px(20.))
                     .min_w_0()
                     .truncate()
                     .text_size(px(12.))
+                    .line_height(px(18.))
                     .text_color(colors.text_muted)
-                    .child(line),
+                    .child(
+                        div()
+                            .when(self.waiting.problem.is_some(), |line| {
+                                line.debug_selector(|| "board-waiting-problem".into())
+                            })
+                            .child(line),
+                    ),
             )
             .into_any_element()
     }
