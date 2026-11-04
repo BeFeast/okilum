@@ -31,18 +31,16 @@ enum Row {
     Local(usize),
     Problem(usize),
 }
-pub(super) struct Prepared {
-    pub(super) binding: Binding,
+struct Prepared {
+    binding: Binding,
     rows: Vec<Row>,
     counts: [usize; 5],
     projection: Arc<filters::Projection>,
     collapsed: [bool; 5],
-    local_indices: std::collections::BTreeMap<String, usize>,
     source_problem: Option<String>,
     sources_ready: bool,
-    pub(super) mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
+    mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
     invalid_annotations: std::collections::BTreeSet<u64>,
-    pub(super) issue_indices: std::collections::BTreeMap<u64, usize>,
 }
 pub(super) struct State {
     pub preferences: Preferences,
@@ -126,7 +124,7 @@ impl Board {
         }
         control.into_any_element()
     }
-    pub(super) fn prepare_list(&mut self) -> Arc<Prepared> {
+    fn prepare_list(&mut self) -> Arc<Prepared> {
         let projection = self.filtered_projection();
         if let Some(prepared) = &self.list.prepared {
             if Arc::ptr_eq(&prepared.projection, &projection)
@@ -170,12 +168,6 @@ impl Board {
                 rows.append(&mut groups[stage as usize]);
             }
         }
-        let issue_indices = binding
-            .issues
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.number, i))
-            .collect();
         let mappings = binding
             .issues
             .iter()
@@ -196,18 +188,11 @@ impl Board {
             sources_ready,
             mappings,
             invalid_annotations,
-            issue_indices,
             binding,
             rows,
             counts,
             projection: projection.clone(),
             collapsed: self.list.preferences.collapsed,
-            local_indices: projection
-                .locals
-                .iter()
-                .flatten()
-                .map(|i| (self.local_cards.value.cards[*i].id.clone(), *i))
-                .collect(),
         });
         self.list.prepared = Some(prepared.clone());
         #[cfg(test)]

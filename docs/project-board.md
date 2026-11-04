@@ -182,7 +182,8 @@ The sibling attention/compact-card/ordering issues remain independent.
 
 Clicking a List row or kanban card, or Space/Enter on the selection, opens the
 right dock and selects **Задача**, beside **Manager**, using gpui-kit tabs.
-Switching tabs retains the selected issue and the existing Manager entity,
+Filtering rows retains the selected issue panel, using the cached complete
+membership projection. Switching tabs retains the issue and the existing Manager entity,
 composer draft and Undo state. Escape or **Esc закрыть** removes the issue tab
 and returns to Manager without changing its draft. Project/source changes close
 the panel and invalidate outstanding comment results. Local task details and

@@ -251,17 +251,16 @@ impl Board {
                     .into_any_element();
             }
         }
-        let prepared = self.prepare_list();
+        let projection = self.filtered_projection();
+        let binding = &projection.unfiltered;
         let Some(scope) = self
             .selected
-            .and_then(|n| prepared.issue_indices.get(&n))
-            .map(|i| &prepared.binding.issues[*i])
+            .and_then(|n| binding.issues.iter().find(|scope| scope.number == n))
         else {
             return body
                 .child("Задача больше не входит в Board. Закройте панель или выберите другую.")
                 .into_any_element();
         };
-        let binding = &prepared.binding;
         let number = scope.number;
         let issue = self.snapshot.forgejo.value.get(&number);
         let mut meta = h_flex()
@@ -434,7 +433,11 @@ impl Board {
             .child(property("Связано", related, cx))
             .child(div().text_color(p.text_muted).child("Ожидаемый результат"))
             .child(div().child(scope.expected.clone()));
-        if let Some(problem) = prepared.mappings.get(&number).copied().flatten() {
+        if let Some(problem) = self
+            .binding
+            .as_ref()
+            .and_then(|binding| okilum_t3::board::live::mapping_problem(binding, number))
+        {
             body = body.child(div().text_color(p.warning).child(problem));
         }
         let mut timeline = Vec::<(String, String)>::new();

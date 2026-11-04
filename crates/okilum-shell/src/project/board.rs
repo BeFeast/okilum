@@ -979,7 +979,6 @@ impl Render for Board {
                 {
                     this.open_peek(window, cx);
                     cx.stop_propagation();
-
                 }
             }));
         let Some(_) = self.binding.as_ref() else {

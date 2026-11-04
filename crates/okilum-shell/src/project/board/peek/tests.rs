@@ -64,6 +64,29 @@ fn peek_2531_click_space_escape_arrows_and_tabs_preserve_board_geometry(cx: &mut
         visual.debug_bounds("board-list-row-1").unwrap().size.height,
         height
     );
+    board.update(visual, |b, cx| {
+        b.filter.chip = filters::Chip::Oleg;
+        b.filter_changed(cx);
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-list-row-1").is_none(),
+        "positive control: the filter hides the row"
+    );
+    assert!(
+        visual.debug_bounds("board-peek-pr-title-101").is_some(),
+        "filtering rows retains the same issue details"
+    );
+    assert_eq!(
+        reads.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "rendering after a filter change never reads comments"
+    );
+    board.update(visual, |b, cx| {
+        b.filter.chip = filters::Chip::All;
+        b.filter_changed(cx);
+    });
+    visual.run_until_parked();
     click(visual, "board-peek-manager-tab");
     assert!(visual.debug_bounds("fixture-manager").is_some());
     click(visual, "board-peek-tab");
