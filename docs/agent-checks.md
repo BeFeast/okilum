@@ -135,3 +135,8 @@ supervisor returns 124; with it, both return in five seconds. The isolated origi
 modules passed 50 hosted repetitions (`41844867137`), so lack of an installed
 manager alone does not identify the historical full-suite stall. Keep that
 historical trigger distinct from the controlled, reproduced indefinite waits.
+
+Hosted run `41845308559` exhausted the stock image's disk during shell-test
+compilation, before any stress verdict (helper 75). The lane now records free
+space and removes only the image's unused Android/.NET/CodeQL SDKs before cache
+restoration. Rust, system libraries, fixtures and test inventories are retained.

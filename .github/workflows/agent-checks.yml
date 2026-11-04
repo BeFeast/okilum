@@ -40,6 +40,13 @@ jobs:
           printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           lscpu
           free -h
+          df -h /
+      - name: Reclaim unused hosted SDKs for Rust artifacts
+        run: |
+          # The Rust lint/build/test profiles exceeded the stock image's free
+          # disk before a verdict (#2592). These SDKs are unused by this lane.
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Install system libraries
         timeout-minutes: 10
         run: |
