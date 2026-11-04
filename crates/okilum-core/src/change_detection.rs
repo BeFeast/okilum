@@ -58,6 +58,13 @@ pub(crate) fn needs_content_check(path: &Path, changed: SystemTime) -> bool {
     if FORCE_CONTENT.with(|value| value.get()) {
         return true;
     }
+    #[cfg(test)]
+    if let Some(now) = NATIVE_CTIME_CLOCK.with(|clock| clock.borrow_mut().as_mut().map(|now| now()))
+    {
+        return now
+            .duration_since(changed)
+            .map_or(true, |age| age.as_secs() < 2);
+    }
     // Even a local filesystem may round ctime to a scheduler tick. No write
     // observed in the current (conservatively two-second) tick is stat-only.
     if changed.elapsed().map_or(true, |age| age.as_secs() < 2) {
@@ -88,6 +95,26 @@ fn known_local_filesystem(path: &Path) -> bool {
 #[cfg(test)]
 thread_local! {
     static FORCE_CONTENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static NATIVE_CTIME_CLOCK: std::cell::RefCell<Option<Box<dyn FnMut() -> SystemTime>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Emulate the known-local filesystem policy with an injectable clock. This
+/// thread-scoped hook exercises real metadata and fingerprints without sleeps
+/// or dependence on the test host's filesystem. Coarse-content checks win.
+#[cfg(test)]
+pub(crate) fn with_native_ctime_clock<T>(
+    now: impl FnMut() -> SystemTime + 'static,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<Box<dyn FnMut() -> SystemTime>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            NATIVE_CTIME_CLOCK.with(|clock| *clock.borrow_mut() = self.0.take());
+        }
+    }
+    let _reset = Reset(NATIVE_CTIME_CLOCK.with(|clock| clock.replace(Some(Box::new(now)))));
+    run()
 }
 
 /// Test-only emulation of a filesystem which returns one ctime tick for all
