@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class FastScript(unittest.TestCase):
     def test_required_check_runs_full_isolated_python_discovery_and_fails_on_errors(self):
         workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
-        self.assertIn('on:\n  pull_request:\n', workflow)
+        self.assertNotIn('  pull_request:', workflow)
         check = workflow.split('  check:\n', 1)[1].split('\n  shell-full:', 1)[0]
         self.assertNotIn('continue-on-error:', check)
         for directory, label in [('ci', 'CI tooling'), ('releases', 'releases'), ('updater', 'updater')]:

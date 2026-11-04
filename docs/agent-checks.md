@@ -21,7 +21,10 @@ must contain only public code and synthetic fixtures, never private/corporate da
 Only `agent-checks.yml` listens to this namespace. It creates no GitHub PR, tags,
 release, signing or publication work. Forgejo remains primary; its existing main
 and release-tag mirror is unchanged. Push the implementation branch to Forgejo
-and open its PR there as usual. Agent checks supplement existing merge admission.
+and open its PR there as usual. Before merge, require gh-check green on this
+exact HEAD, then merge the PR yourself. Any later commit needs a new check.
+Forgejo CI does not run on PRs; main has no required status checks. Forgejo
+continues main, nightly and Stable certification independently.
 
 The standard public `ubuntu-24.04` runner has 4 vCPUs. The job records its CPU,
 memory and exact source SHA, verifies the pinned Rust toolchain and the complete

@@ -1,6 +1,5 @@
 name: fast
 on:
-  pull_request:
   push:
     branches: [main]
   schedule:
@@ -12,13 +11,12 @@ on:
         required: false
         default: ''
 concurrency:
-  group: fast-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: fast-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   check:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Dedicated warm runner; keep PR admission within fifteen minutes.
-    # Full suites only run on main, nightly and explicit dispatches.
+    # Dedicated warm runner for main certification only.
+    # Workers validate their own exact HEAD through GitHub agent checks.
     runs-on: fast-linux
     # Core changes rebuild the desktop AND workspace test targets (#2378).
     timeout-minutes: 15
@@ -37,7 +35,7 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Validate hourly certification source before compiling
@@ -76,7 +74,7 @@ jobs:
         run: python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
       - name: Build Linux desktop and run fast unit tests
         env:
-          GITHUB_SHA: ${{ inputs.certification_source || github.event.pull_request.head.sha || github.sha }}
+          GITHUB_SHA: ${{ inputs.certification_source || github.sha }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -85,7 +83,6 @@ jobs:
   shell-full:
     # Full runtime coverage never occupies a PR admission slot.
     needs: [check]
-    if: github.event_name != 'pull_request'
     runs-on: fast-linux
     # Run 20932: test compilation 335s + >394s execution before check timed out.
     # Give this job the runner's full 20m ceiling; record two loaded runs before
@@ -106,7 +103,7 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Validate hourly certification source before compiling
@@ -136,7 +133,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Run the complete Linux shell binary suite
         env:
-          GITHUB_SHA: ${{ inputs.certification_source || github.event.pull_request.head.sha || github.sha }}
+          GITHUB_SHA: ${{ inputs.certification_source || github.sha }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -146,7 +143,7 @@ jobs:
     # Beta gates on check alone: report and dispatch as soon as it finishes,
     # never behind shell-full's queue slot and 20-minute runner ceiling.
     needs: [check]
-    if: always() && github.event_name != 'pull_request' && inputs.certification_source != ''
+    if: always() && inputs.certification_source != ''
     runs-on: bridge
     timeout-minutes: 2
     steps:
@@ -165,7 +162,7 @@ jobs:
   shell-full-status:
     # Stable information only; a red or timed-out shell-full never holds Beta.
     needs: [shell-full]
-    if: always() && github.event_name != 'pull_request' && inputs.certification_source != ''
+    if: always() && inputs.certification_source != ''
     runs-on: bridge
     timeout-minutes: 2
     steps:
@@ -184,7 +181,7 @@ jobs:
   sync-source-sharing:
     # Keep this additional compiler/daemon load outside the bounded desktop gate.
     needs: [check]
-    if: github.event_name != 'pull_request' && inputs.certification_source == ''
+    if: inputs.certification_source == ''
     runs-on: fast-linux
     timeout-minutes: 15
     env:
@@ -194,7 +191,7 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Allocate job-owned fixture directory
