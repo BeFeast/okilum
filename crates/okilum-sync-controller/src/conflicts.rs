@@ -122,12 +122,11 @@ fn conflict_marker(name: &[u8]) -> Option<(usize, usize)> {
 pub fn canonical_path(copy: &Path) -> Option<PathBuf> {
     let name = copy.file_name()?.as_bytes();
     let (index, length) = conflict_marker(name)?;
-    if conflict_marker(&name[index + length..]).is_some() {
+    let original = [&name[..index], &name[index + length..]].concat();
+    if conflict_marker(&original).is_some() {
         return None;
     }
-    Some(copy.with_file_name(OsStr::from_bytes(
-        &[&name[..index], &name[index + length..]].concat(),
-    )))
+    Some(copy.with_file_name(OsStr::from_bytes(&original)))
 }
 
 /// Shallow selected-note inventory: sibling changes must update the banner even

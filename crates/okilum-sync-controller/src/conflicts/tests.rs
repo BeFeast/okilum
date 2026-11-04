@@ -356,3 +356,26 @@ fn issue2044_non_utf8_paths_refuse_before_journal_serialization() {
     );
     assert_eq!(std::fs::read(vault.path().join(copy)).unwrap(), b"that");
 }
+
+#[test]
+fn issue2044_multiple_valid_markers_cannot_silently_choose_a_source() {
+    for markers in [
+        ["sync", "sync"],
+        ["sync", "okilum"],
+        ["okilum", "sync"],
+        ["okilum", "okilum"],
+    ] {
+        let copy = format!(
+            "note.{}-conflict-20261104-123456-ABC2345.{}-conflict-20261104-123457-DEF2345.md",
+            markers[0], markers[1]
+        );
+        assert!(
+            possible_copy(copy.as_bytes()),
+            "inventory must expose ambiguous candidates"
+        );
+        assert!(
+            canonical_path(Path::new(&copy)).is_none(),
+            "multiple valid markers need explicit inspection"
+        );
+    }
+}
