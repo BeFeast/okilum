@@ -473,3 +473,59 @@ fn missing_or_duplicate_annotations_are_visible_and_never_pick_an_owner() {
         "positive control: one annotation keeps the explicit owner"
     );
 }
+
+#[test]
+fn waiting_reports_read_all_comments_in_existing_refresh_and_fail_incomplete_sources() {
+    let binding = binding();
+    let repo = repository_url(&binding.repository).unwrap();
+    let mut report = issue(42, "open");
+    report["created_at"] = json!("1970-01-02T00:00:00Z");
+    report["labels"] = json!([{"name":"from-tester"}]);
+    report["comments"] = json!(1);
+    report["user"] = json!({"id":4,"login":"filing-bot"});
+    for commenter in [4, 5] {
+        let mut reads = 0;
+        let issues = read_with(&binding, &repo, 86500, &mut |path| {
+            Ok(match path {
+                "issues?state=open&type=issues&limit=50&page=1" => json!([report.clone()]),
+                "issues/42/comments?&limit=50&page=1" => {
+                    reads += 1;
+                    json!([{"user":{"id":commenter}}])
+                }
+                "pulls?state=open&limit=50&page=1"
+                | "pulls?state=closed&sort=recentupdate&limit=50&page=1" => json!([]),
+                unexpected => panic!("unexpected source {unexpected}"),
+            })
+        })
+        .unwrap();
+        assert_eq!(reads, 1, "positive control: comment reader actually ran");
+        assert_eq!(waiting::new_report(&issues[0], 86500), commenter == 4);
+    }
+    let failure = read_with(&binding, &repo, 86500, &mut |path| {
+        if path.starts_with("issues?state=open") {
+            return Ok(json!([report.clone()]));
+        }
+        anyhow::bail!("comments unavailable")
+    })
+    .unwrap_err();
+    assert!(failure.to_string().contains("comments unavailable"));
+    let incomplete = read_with(&binding, &repo, 86500, &mut |path| {
+        if path.starts_with("issues?state=open") {
+            return Ok(json!([report.clone()]));
+        }
+        Ok(json!([]))
+    })
+    .unwrap_err();
+    assert!(incomplete.to_string().contains("comments changed"));
+}
+
+#[test]
+fn waiting_report_comment_missing_identity_is_not_a_successful_answer() {
+    let binding = binding();
+    let repo = repository_url(&binding.repository).unwrap();
+    let error=read_with(&binding,&repo,86500,&mut |path| {
+        if path.starts_with("issues?state=open") { return Ok(json!([{"number":42,"title":"Report","state":"open","labels":[{"name":"from-oleg"}],"created_at":"1970-01-02T00:00:00Z","comments":1,"user":{"id":4}}])); }
+        Ok(json!([{"user":null}]))
+    }).unwrap_err();
+    assert!(error.to_string().contains("no author identity"));
+}
