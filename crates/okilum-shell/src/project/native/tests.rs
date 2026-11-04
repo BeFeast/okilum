@@ -496,7 +496,7 @@ fn native_pairing_immediately_replaces_the_boards_unpaired_gateway_2520(cx: &mut
     cx.update(crate::test_init);
     cx.update(reader_features::enable_test_modules);
     let temp = super::super::fixture::canonical_tempdir();
-    let env = Environment::new("fixture", "https://pairing.example.test").unwrap();
+    let env = Environment::new("fixture", "https://t3.example.test").unwrap();
     let token = NativeToken::from_secret(&env, &serde_json::to_vec(&json!({
         "origin":env.origin(), "access_token":"synthetic-newly-paired-token", "expires_at":u64::MAX,
         "scope":"orchestration:read"

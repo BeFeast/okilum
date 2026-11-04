@@ -178,6 +178,11 @@ pub(crate) struct ProjectView {
 pub(super) struct ManagerStarted;
 impl EventEmitter<ManagerStarted> for ProjectView {}
 
+#[cfg(native_manager)]
+pub(super) struct NativeConnected;
+#[cfg(native_manager)]
+impl EventEmitter<NativeConnected> for ProjectView {}
+
 impl ProjectView {
     pub(crate) fn new(
         binding: Option<AreaBinding>,
@@ -2254,6 +2259,20 @@ impl Reader {
                             });
                             #[cfg(native_manager)]
                             this.connect_manager_links(&project, window, cx);
+                            #[cfg(native_manager)]
+                            cx.subscribe_in(
+                                &project,
+                                window,
+                                |this, _, _: &NativeConnected, window, cx| {
+                                    // Discard pre-pairing snapshots before refreshing
+                                    // project status and icon gateways with the saved bearer.
+                                    this.project_navigation.generation =
+                                        this.project_navigation.generation.wrapping_add(1);
+                                    this.project_navigation.t3_gateways.clear();
+                                    this.refresh_project_statuses(window, cx);
+                                },
+                            )
+                            .detach();
                             cx.subscribe_in(
                                 &project,
                                 window,
