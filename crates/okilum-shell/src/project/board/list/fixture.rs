@@ -25,6 +25,9 @@ impl Board {
                 board.snapshot.t3.value = vec![serde_json::from_value(serde_json::json!({"threadId":"fixture-agent","projectId":"fixture-project","title":"Synthetic agent","status":"running","providerInstanceId":"codex","model":"synthetic","runtimeMode":"full-access","activeRunId":"fixture-run","updatedAt":chrono::DateTime::from_timestamp((at-180) as i64,0).unwrap().to_rfc3339()})).unwrap()];
                 board.local_cards.last_success = Some(at);
                 board.list.preferences.mode = if kanban { Mode::Board } else { Mode::List };
+                if std::env::var("OKILUM_PROJECT_UI_FIXTURE").is_ok_and(|mode| mode.contains("filtered")) {
+                    board.filter.chip = filters::Chip::Oleg;
+                }
                 board.selected = None;
                 board
             });
