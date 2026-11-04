@@ -108,9 +108,10 @@ impl ConflictPanel {
     }
 
     /// Read durable exact preimages for the host's existing History surface.
+    #[cfg(test)]
     pub fn previous_versions(&self) -> anyhow::Result<Vec<conflicts::RetainedVersion>> {
         match &self.recovery {
-            Some(receipt) => Ok(conflicts::retained_versions(&receipt.recovery_record)?.into()),
+            Some(receipt) => conflicts::retained_versions(&receipt.recovery_record),
             None => Ok(Vec::new()),
         }
     }
@@ -350,8 +351,7 @@ impl crate::Reader {
         &self,
         cx: &mut gpui::Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        use gpui::{prelude::*, *};
-        use gpui_base::ElementExt as _;
+        use gpui::prelude::*;
         use gpui_component::{button::Button, h_flex, Sizable};
         let (root, rel, copies, complete) = self.sync_note_conflicts.as_ref()?;
         if *root != self.vault_root || *rel != self.current_rel || (copies.is_empty() && *complete)
