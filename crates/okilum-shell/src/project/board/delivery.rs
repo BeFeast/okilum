@@ -51,6 +51,7 @@ impl Board {
                         let old = this.delivery.problems(now(), binding_refresh(this));
                         this.list.invalidate();
                         this.delivery.accept(update, now());
+                        this.filter_cache.invalidate();
                         this.delivery_loading = false;
                         let current = this.delivery.problems(now(), binding_refresh(this));
                         if current != old {
