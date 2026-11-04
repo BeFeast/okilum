@@ -40,6 +40,8 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
         destination_error: None,
         receiving: false,
         scroll: ScrollHandle::new(),
+        #[cfg(target_os = "linux")]
+        conflicts: Default::default(),
     }
 }
 

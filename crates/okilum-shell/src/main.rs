@@ -130,6 +130,8 @@ mod reader_side_panel;
 mod reader_sidebar;
 mod reader_split;
 mod reader_stignore;
+#[cfg(target_os = "linux")]
+mod reader_sync_conflicts;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod reader_sync_merge;
 mod reader_t3_settings;
@@ -1646,6 +1648,8 @@ struct Reader {
     project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
     editing: Option<reader_editor::Editing>,
+    #[cfg(target_os = "linux")]
+    sync_note_conflicts: Option<(PathBuf, String, Vec<PathBuf>, bool)>,
     /// Undo history and selection of the editor last left for the Reader, by
     /// file: Edit resumes it when the file's text is unchanged (#1095).
     retained_edit: Option<(String, gpui_component::input::EditHistory)>,
@@ -2055,6 +2059,8 @@ impl Reader {
             zoom_hud: Default::default(),
             content,
             editing: None,
+            #[cfg(target_os = "linux")]
+            sync_note_conflicts: None,
             retained_edit: None,
             #[cfg(any(unix, windows))]
             creation: None,

@@ -47,6 +47,16 @@ impl Reader {
                     .h(px(48.))
                     .child(self.render_document_header(window, cx)),
             )
+            .children({
+                #[cfg(target_os = "linux")]
+                {
+                    self.render_sync_conflict_banner(cx)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    None::<AnyElement>
+                }
+            })
             .when(self.note_encoding_damaged, |view| {
                 view.child(
                     h_flex()
