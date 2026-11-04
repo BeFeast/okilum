@@ -14,7 +14,7 @@ fi
 tar -xzf "$cache/$archive" -C "$cache"
 export OKILUM_SYNC_DIRECT_CLIENT="$cache/syncthing-linux-amd64-v2.1.6/syncthing"
 # Compile once; concurrent trials execute independent fixture processes rather
-# than serializing on Cargo's target lock. Every trial checks all five test names.
+# than serializing on Cargo's target lock. Every trial checks every expected name.
 cargo test --locked -p okilum-sync-controller --lib direct:: -- --nocapture
 artifacts=$(mktemp)
 trap 'rm -f "$artifacts"' EXIT
