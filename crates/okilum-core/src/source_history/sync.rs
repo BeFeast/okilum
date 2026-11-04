@@ -81,7 +81,32 @@ fn visit(
             continue;
         }
         let rel = relative.join(name);
-        if entry.file_type() == FileType::Directory {
+        let kind = if entry.file_type() == FileType::Unknown {
+            match rustix::fs::statat(
+                directory,
+                entry.file_name(),
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            ) {
+                Ok(stat) => FileType::from_raw_mode(stat.st_mode),
+                Err(error) => {
+                    listing.warnings.push(format!(
+                        "Cannot inspect Sync archive {}: {error}",
+                        rel.display()
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            entry.file_type()
+        };
+        if kind == FileType::Symlink {
+            listing.warnings.push(format!(
+                "Sync archive {} is a symbolic link; it was not followed",
+                rel.display()
+            ));
+            continue;
+        }
+        if kind == FileType::Directory {
             if note.is_some_and(|n| !n.starts_with(&rel)) {
                 continue;
             }
@@ -107,6 +132,9 @@ fn visit(
             continue;
         };
         let original = relative.join(original);
+        if crate::vault::service_path(&original) {
+            continue;
+        }
         if note.is_some_and(|n| n != original) {
             continue;
         }

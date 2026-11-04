@@ -1040,6 +1040,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("notes");
         std::fs::create_dir_all(root.join(".stversions")).unwrap();
+        let root = root.canonicalize().unwrap();
         let old = b"\xef\xbb\xbf# Sync preimage\r\n";
         std::fs::write(root.join("note.md"), b"# Current").unwrap();
         std::fs::write(root.join(".stversions/note~20261102-120000.md"), old).unwrap();
@@ -1091,6 +1092,7 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |r, w, cx| r.restore_timeline(w, cx));
         assert_eq!(std::fs::read(root.join("note.md")).unwrap(), old);
+        visual.run_until_parked();
         std::fs::remove_file(root.join("note.md")).unwrap();
         reader.update_in(visual, |r, w, cx| r.source_history(false, w, cx));
         visual.run_until_parked();

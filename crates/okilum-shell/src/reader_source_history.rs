@@ -161,6 +161,9 @@ impl Reader {
                                         let rel = relative.to_str().ok_or_else(|| anyhow::anyhow!("Unsupported note path"))?.to_string();
                                         anyhow::ensure!(!r.source_is_dirty(cx), "Save or discard unsaved edits before restoring");
                                         r.check_move_editors(std::slice::from_ref(&rel), cx)?;
+                                        if r.editing.is_some() {
+                                            anyhow::ensure!(r.leave_source(cx), "The editor is still saving; open history again");
+                                        }
                                         let state = r.session_directory.as_ref().ok_or_else(|| anyhow::anyhow!("No recovery storage"))?;
                                         source_history::save_copy_bytes(&root, relative, &state.join("editor-drafts"), version.bytes())?;
                                         r.timeline = None;
