@@ -948,7 +948,7 @@ impl Board {
                 } else {
                     colors.text_muted
                 })
-                .managed_tooltip(|window, cx| {
+                .tooltip(|window, cx| {
                     gpui_component::tooltip::Tooltip::new("Open the explicitly bound agent thread")
                         .build(window, cx)
                 })
