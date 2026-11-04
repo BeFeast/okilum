@@ -102,7 +102,6 @@ fn board_projects_and_icon_gateway_use_native_token_without_cookies_2520() {
     let mcp = Arc::new(okilum_t3::McpGateway::new(env.clone(), None).unwrap());
     let gateway =
         manager_gateway(env, mcp, Some(token), okilum_t3::NetworkAccess::default()).unwrap();
-    assert!(matches!(gateway.status(), GatewayStatus::Connected { .. }));
     assert_eq!(gateway.list_projects().unwrap()[0].id, "p");
     assert_eq!(gateway.read_project("p").unwrap().id, "p");
     let icon = ProjectIcon::Lucide {
@@ -121,6 +120,7 @@ fn board_projects_and_icon_gateway_use_native_token_without_cookies_2520() {
         None
     );
     assert!(gateway.list_threads("p").unwrap().is_empty());
+    assert!(matches!(gateway.status(), GatewayStatus::Connected { .. }));
     let requests = server.requests.lock().unwrap();
     assert_eq!(
         requests.len(),

@@ -186,8 +186,11 @@ pub(super) async fn t3_gateways(
             }
             #[cfg(test)]
             let mcp = probe.as_ref().and_then(|p| p.token.clone()).map(|token| {
-                Arc::new(okilum_t3::McpGateway::new(env.clone(), Some(token)).unwrap())
-                    as Arc<dyn okilum_t3::ManagerGateway>
+                Arc::new(
+                    okilum_t3::McpGateway::new(env.clone(), Some(token))
+                        .unwrap()
+                        .with_access(access.clone()),
+                ) as Arc<dyn okilum_t3::ManagerGateway>
             });
             #[cfg(not(test))]
             let mcp = None;

@@ -517,9 +517,9 @@ impl ManagerGateway for SessionGateway {
 }
 
 /// The gateway the Projects page and the icon dialog use for one saved T3
-/// connection: projects and icons over the paired web session (the Manager
-/// panel's), including read-only thread summaries. Without a paired session an MCP token, if
-/// the user connected one, still serves the icons.
+/// connection: project/icon operations and read-only summaries over the paired
+/// native bearer. The legacy session adapter remains available to library callers.
+/// MCP serves these operations only when the paired credential is absent.
 pub struct PairedGateway {
     session: SessionGateway,
     mcp: Arc<dyn ManagerGateway>,
