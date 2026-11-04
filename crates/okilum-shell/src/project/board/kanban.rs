@@ -252,7 +252,7 @@ impl Board {
                     .disabled(self.editor_loading)
                     .on_click(cx.listener(|this, _, window, cx| this.open_management(window, cx))),
             )
-            .child(self.source_indicator(cx))
+            .child(self.source_indicator_for(prepared.source_problem.clone(), cx))
             .child(toggle);
         root = root.child(
             h_flex()

@@ -36,7 +36,7 @@ pub(super) enum Row {
 struct SourceState {
     loading: [bool; 3],
     success: [Option<u64>; 4],
-    errors: [bool; 4],
+    errors: [Option<String>; 5],
     lengths: [usize; 4],
 }
 impl Board {
@@ -54,10 +54,11 @@ impl Board {
                 self.delivery.config.last_success,
             ],
             errors: [
-                self.snapshot.forgejo.error.is_some(),
-                self.snapshot.t3.error.is_some(),
-                self.local_cards.error.is_some(),
-                self.delivery.config.error.is_some(),
+                self.snapshot.forgejo.error.clone(),
+                self.snapshot.t3.error.clone(),
+                self.local_cards.error.clone(),
+                self.delivery.config.error.clone(),
+                self.binding_error.clone(),
             ],
             lengths: [
                 self.snapshot.forgejo.value.len(),
@@ -79,7 +80,7 @@ pub(super) struct Prepared {
     collapsed: [bool; 5],
     roles: Arc<[String]>,
     pub local_indices: std::collections::BTreeMap<String, usize>,
-    source_problem: Option<String>,
+    pub source_problem: Option<String>,
     pub sources_ready: bool,
     pub mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
     invalid_annotations: std::collections::BTreeSet<u64>,
@@ -125,6 +126,11 @@ impl State {
     #[cfg(test)]
     pub(super) fn publication_count(&self) -> usize {
         self.publications
+    }
+    pub(super) fn contains_issue(&self, number: u64) -> bool {
+        self.prepared
+            .as_ref()
+            .is_some_and(|p| p.issue_indices.contains_key(&number))
     }
     pub(super) fn roles(&self) -> Arc<[String]> {
         self.prepared
