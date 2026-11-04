@@ -15,7 +15,6 @@ suite cargo test --locked -p okilum-http --features updates --no-fail-fast
 # Keep Board filter interaction and model verdicts explicit and non-empty.
 suite cargo test --locked -p okilum-shell --bin okilum issue2532_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum list_2530_ -- --nocapture
-suite cargo test --locked -p okilum-shell --bin okilum issue2045_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum settings_2487_ -- --nocapture
 # Run the source/input acceptance groups independently, so an unrelated native
 # task abort cannot hide their verdict behind an unfinished full shell binary.
@@ -23,6 +22,8 @@ suite cargo test --locked -p okilum-shell --bin okilum settings_2487_ -- --nocap
 # distinguish Local from Utc without mutating global environment in Rust tests.
 suite env TZ=Pacific/Auckland cargo test --locked -p okilum-shell --bin okilum issue2486_ -- --nocapture --test-threads=1
 suite cargo test --locked -p okilum-sync-controller --lib direct::origin::tests:: -- --nocapture
+# #2045: retain a non-empty native history/restore verdict ahead of the full shell.
+suite cargo test --locked -p okilum-shell --bin okilum issue2045_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum source_presentation:: -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum reader_editor::live_preview:: -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum input_anchor_tests:: -- --nocapture
