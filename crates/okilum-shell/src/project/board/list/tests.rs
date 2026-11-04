@@ -479,7 +479,9 @@ fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
         board.snapshot.forgejo.value.insert(1, issue);
         board.snapshot.forgejo.last_success = Some(now());
         board.snapshot.t3.value = vec![serde_json::from_value(serde_json::json!({
-            "threadId": "glyph-agent", "status": "running", "activeRunId": "glyph-run",
+            "threadId": "glyph-agent", "title": "Synthetic glyph agent",
+            "updatedAt": chrono::DateTime::from_timestamp(now() as i64, 0).unwrap().to_rfc3339(),
+            "status": "running", "activeRunId": "glyph-run",
             "providerInstanceId": "codex", "model": "synthetic", "runtimeMode": "full-access"
         }))
         .unwrap()];
