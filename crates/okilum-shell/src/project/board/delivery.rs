@@ -221,6 +221,7 @@ impl Board {
                             .small()
                             .debug_selector(move || id.clone())
                             .text_size(px(12.))
+                            .accessibility_label(label.clone())
                             .child(div().line_height(px(18.)).child(label))
                             .tooltip(tooltip)
                             .disabled(url.is_none())

@@ -369,7 +369,10 @@ impl Board {
         if let Some(notice) = &self.notice {
             root = root.child(div().px_4().text_size(px(12.)).child(notice.clone()));
         }
-        if prepared.counts.iter().all(|count| *count == 0) && prepared.sources_ready {
+        if prepared.counts.iter().all(|count| *count == 0)
+            && prepared.sources_ready
+            && !self.waiting.visible()
+        {
             root = root.child(
                 div()
                     .debug_selector(|| "board-empty-state".into())

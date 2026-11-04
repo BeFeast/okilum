@@ -142,7 +142,13 @@ impl Board {
                 Button::new(("waiting-open", index))
                     .ghost()
                     .small()
-                    .label(item.kind.action())
+                    .accessibility_label(item.kind.action())
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(18.))
+                            .child(item.kind.action()),
+                    )
                     .debug_selector(move || format!("board-waiting-open-{index}"))
                     .tooltip(item.target.clone())
                     .on_click(cx.listener(move |this, _, _, cx| this.note(&target, cx))),
@@ -153,7 +159,8 @@ impl Board {
                     Button::new(("waiting-video", index))
                         .ghost()
                         .small()
-                        .label("Видео")
+                        .accessibility_label("Видео")
+                        .child(div().text_size(px(12.)).line_height(px(18.)).child("Видео"))
                         .on_click(move |_, _, cx| cx.open_url(&video)),
                 );
             }
@@ -178,7 +185,8 @@ impl Board {
                         Button::new("waiting-previous")
                             .ghost()
                             .small()
-                            .label("Назад")
+                            .accessibility_label("Назад")
+                            .child(div().text_size(px(12.)).line_height(px(18.)).child("Назад"))
                             .disabled(self.waiting_page == 0)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.waiting_page = this.waiting_page.saturating_sub(1);
@@ -200,7 +208,13 @@ impl Board {
                             .debug_selector(|| "board-waiting-next".into())
                             .ghost()
                             .small()
-                            .label("Дальше")
+                            .accessibility_label("Дальше")
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(18.))
+                                    .child("Дальше"),
+                            )
                             .disabled((self.waiting_page + 1) * 4 >= self.waiting.items.len())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.waiting_page += 1;
