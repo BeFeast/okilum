@@ -13,7 +13,7 @@ use gpui::{
     point, px, size, AppContext, ClickEvent, Context, Focusable, Modifiers, ScrollHandle,
     TestAppContext, VisualTestContext, Window,
 };
-use gpui_component::{input::InputState, Root};
+use gpui_component::{input::InputState, Root, WindowExt};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
