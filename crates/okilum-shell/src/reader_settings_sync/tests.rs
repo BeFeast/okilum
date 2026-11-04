@@ -528,9 +528,10 @@ fn direct_metadata_parent_is_private_without_creating_managed_sync_state() -> an
     assert!(!direct.exists());
     let parent = managed.parent().unwrap();
     assert_eq!(std::fs::metadata(parent)?.mode() & 0o777, 0o700);
+    // #2589: the platform-created 0755 app folder is tightened, not rejected.
     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755))?;
-    assert!(mac_direct_state(&managed).is_err());
-    assert_eq!(std::fs::metadata(parent)?.mode() & 0o777, 0o755);
+    assert_eq!(mac_direct_state(&managed)?, root.path().join("Okilum/SyncDirect"));
+    assert_eq!(std::fs::metadata(parent)?.mode() & 0o777, 0o700);
     let alias = root.path().join("linked");
     symlink(parent, &alias)?;
     assert!(mac_direct_state(&alias.join("Sync")).is_err());
