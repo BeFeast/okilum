@@ -21,6 +21,7 @@ TESTS = {
     "managed_source_nonempty_destination_refused_without_writes",
     "managed_peer_addresses_without_discovery_negative_then_hashes_and_restart",
     "managed_receiver_catalog_name_and_7504_label_reconcile",
+    "remote_inventory::managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes",
 }
 
 

@@ -178,7 +178,8 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
         bind_keys(cx);
         cx.set_reduce_motion(true);
     });
-    let temp = tempfile::tempdir().unwrap();
+    // Reader and project keys must share macOS's canonical /private/var root.
+    let temp = crate::project::fixture::canonical_tempdir();
     let vault = temp.path().join("vault");
     let area = vault.join("project");
     std::fs::create_dir_all(area.join("ops")).unwrap();
@@ -501,6 +502,7 @@ fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
         // explicitly so this typography fixture exercises the real source rules.
         board.list.preferences.collapsed[Column::Queue as usize] = false;
         board.list.invalidate();
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -579,4 +581,144 @@ fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
             "positive control: the long title overflows its constrained ellipsis box"
         );
     }
+}
+
+#[gpui::test]
+fn list_and_cached_kanban_retain_main_ordering_after_source_publication(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let mut entity = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        entity = Some(cx.new(|cx| {
+            let mut board = Board::with_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
+            board.binding = Some(fixture(5));
+            board.list.preferences.collapsed[Column::Queue as usize] = false;
+            for (number, origin, time) in [
+                (1, "task", 500),
+                (2, "bug", 400),
+                (3, "from-tester", 300),
+                (4, "from-oleg", 100),
+                (5, "from-oleg", 200),
+            ] {
+                board.snapshot.forgejo.value.insert(number, serde_json::from_value(serde_json::json!({
+                    "number": number, "title": "Synthetic issue", "state": "open",
+                    "labels": [{"name": origin}],
+                    "updated_at": chrono::DateTime::from_timestamp(time, 0).unwrap().to_rfc3339(),
+                })).unwrap());
+            }
+            board.snapshot.forgejo.last_success = Some(now());
+            board
+        }));
+        Root::new(cx.new(|_| gpui::EmptyView), window, cx)
+    });
+    visual.run_until_parked();
+    let board = entity.unwrap();
+    let order = |board: &mut Board| {
+        let kanban = board.filtered_projection();
+        let kanban_order = kanban.scopes[Column::Queue as usize]
+            .iter()
+            .map(|i| kanban.binding.issues[*i].number)
+            .collect::<Vec<_>>();
+        let list = board.prepare_list();
+        let list_order = list
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Issue(i) => Some(list.binding.issues[*i].number),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            list_order, kanban_order,
+            "both views retain the same main comparator"
+        );
+        list_order
+    };
+    assert_eq!(
+        board.update(visual, |board, _| order(board)),
+        vec![5, 4, 3, 2, 1]
+    );
+    let prepared = board.update(visual, |board, _| board.prepare_list());
+    let reused = board.update(visual, |board, _| board.prepare_list());
+    assert!(
+        Arc::ptr_eq(&prepared, &reused),
+        "viewport work reuses ordered rows"
+    );
+    board.update(visual, |board, cx| {
+        board.snapshot.forgejo.value.get_mut(&4).unwrap().updated_at =
+            chrono::DateTime::from_timestamp(600, 0)
+                .unwrap()
+                .to_rfc3339();
+        board.list.invalidate();
+        board.filter_cache.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        board.update(visual, |board, _| order(board)),
+        vec![4, 5, 3, 2, 1]
+    );
+}
+
+#[gpui::test]
+fn filtered_list_reuses_projection_and_bounds_rows_through_resize(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(240));
+    click(visual, "board-list-group-Queue");
+    visual.simulate_keystrokes("/");
+    visual.simulate_input("Synthetic task");
+    visual.run_until_parked();
+    let (projection, publications) = board.update(visual, |board, _| {
+        assert_eq!(board.filter.search, "Synthetic task");
+        let projection = board.filtered_projection();
+        assert_eq!(projection.counts.iter().sum::<usize>(), 240);
+        (projection, board.list.publications)
+    });
+    for width in [1300., 1100., 1250., 1400.] {
+        board.update(visual, |board, _| board.list.rendered_rows = 0);
+        visual.simulate_resize(size(px(width), px(900.)));
+        visual.run_until_parked();
+        board.update(visual, |board, _| {
+            assert!(Arc::ptr_eq(&projection, &board.filtered_projection()));
+            assert_eq!(board.list.publications, publications);
+            assert!(
+                board.list.rendered_rows > 0 && board.list.rendered_rows <= 64,
+                "resize must build visible rows, not all 240: {}",
+                board.list.rendered_rows
+            );
+        });
+    }
+    visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    });
+    board.read_with(visual, |board, cx| {
+        assert_eq!(
+            board.filter_ui.search.read(cx).selected_range(),
+            0.."Synthetic task".len(),
+            "positive control: the platform shortcut selected the entire query"
+        );
+    });
+    visual.simulate_input("#240");
+    visual.run_until_parked();
+    let (filtered, filtered_publications) = board.update(visual, |board, _| {
+        let filtered = board.filtered_projection();
+        assert!(!Arc::ptr_eq(&projection, &filtered));
+        assert_eq!(filtered.counts.iter().sum::<usize>(), 1);
+        // simulate_input delivers one genuine change for each typed character.
+        assert_eq!(
+            board.list.publications,
+            publications + "#240".chars().count()
+        );
+        (filtered, board.list.publications)
+    });
+    assert!(visual.debug_bounds("board-list-row-240").is_some());
+    visual.simulate_resize(size(px(1200.), px(900.)));
+    visual.run_until_parked();
+    board.update(visual, |board, _| {
+        assert!(Arc::ptr_eq(&filtered, &board.filtered_projection()));
+        assert_eq!(board.list.publications, filtered_publications);
+    });
 }
