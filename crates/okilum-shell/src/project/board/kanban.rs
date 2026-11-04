@@ -192,11 +192,13 @@ impl Board {
             root = root.child(empty);
         }
         if prepared.sources_ready && prepared.counts.iter().all(|n| *n == 0) {
-            root = root.child(
-                div()
-                    .debug_selector(|| "board-empty-state".into())
-                    .child("No cards yet. Add a card to get started, or expand a column."),
-            );
+            root = root.child(div().debug_selector(|| "board-empty-state".into()).child(
+                if self.filter.is_some() {
+                    "No cards for this executor. Expand a column to view it."
+                } else {
+                    "No cards yet. Add a card to get started, or expand a column."
+                },
+            ));
             root = root.child(self.add_card_button(cx));
         }
         let verified = prepared.counts[Column::Verified as usize];
