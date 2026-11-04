@@ -1,7 +1,6 @@
 use super::*;
 use crate::{brand, reader_open, reader_settings_sync, Reader};
 use gpui::{prelude::*, *};
-use gpui_base::ElementExt as _;
 use gpui_component::{button::Button, h_flex, v_flex, Disableable, Sizable, WindowExt};
 
 pub(crate) fn open(
@@ -393,7 +392,7 @@ impl Render for InventoryView {
                     |(index, (choice, label))| {
                         let choice = *choice;
                         Button::new(("sync-conflict-choice", index))
-                            .debug_selector(move || format!("sync-conflict-choice-{index}").into())
+                            .debug_selector(move || format!("sync-conflict-choice-{index}"))
                             .label(*label)
                             .disabled(self.busy || !matches!(panel.state, State::Ready))
                             .on_click(cx.listener(move |this, _, _, cx| this.apply(choice, cx)))
@@ -501,7 +500,7 @@ mod tests {
                 });
                 view.read_with(visual, |v, _| {
                     assert!(v.complete);
-                    assert_eq!(v.copies, [copy.clone()]);
+                    assert_eq!(v.copies, std::slice::from_ref(&copy));
                 });
                 view.update(visual, |v, cx| v.preview(copy.clone(), cx));
                 visual.run_until_parked();
@@ -608,7 +607,7 @@ mod tests {
         visual.run_until_parked();
         inventory.read_with(visual, |view, _| {
             assert_eq!(view.root, root.canonicalize().unwrap());
-            assert_eq!(view.copies, [copy.clone()]);
+            assert_eq!(view.copies, std::slice::from_ref(&copy));
         });
         inventory.update(visual, |view, cx| view.preview(copy.clone(), cx));
         visual.run_until_parked();
@@ -670,7 +669,7 @@ mod tests {
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
             assert_eq!(v.pending, 0);
-            assert_eq!(v.copies, [copy.clone()]);
+            assert_eq!(v.copies, std::slice::from_ref(&copy));
             assert!(v.complete);
         });
         assert_eq!(
