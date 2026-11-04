@@ -13,6 +13,10 @@ suite cargo test -p okilum-appimage --all-features --no-fail-fast
 suite cargo test --locked -p okilum-http --features updates --no-fail-fast
 # Keep an explicit non-empty Settings dismissal verdict ahead of the full shell.
 suite cargo test --locked -p okilum-shell --bin okilum settings_2487_ -- --nocapture
+# #2533: retain explicit, non-empty Board verdicts before shared package tests.
+suite cargo test --locked -p okilum-shell --bin okilum issue2533_ -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum waiting_2533_ -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum list_2530_ -- --nocapture
 # Run the source/input acceptance groups independently, so an unrelated native
 # task abort cannot hide their verdict behind an unfinished full shell binary.
 # A non-UTC process timezone makes the conflict-copy local timestamp check
