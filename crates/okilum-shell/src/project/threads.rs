@@ -122,10 +122,10 @@ impl ProjectView {
                 }
                 if socket.is_none() {
                     let connection = client.clone();
-                    match cx
-                        .background_executor()
-                        .spawn(async move { connection.subscribe_shell() })
-                        .await
+                    match super::native::recovery::stream_io(cx.background_executor(), move || {
+                        connection.subscribe_shell()
+                    })
+                    .await
                     {
                         Ok(stream) => {
                             let cancel = stream.cancellation().ok();
@@ -186,9 +186,8 @@ impl ProjectView {
                 }
                 let mut stream = socket.take().unwrap();
                 let directory = model.clone();
-                let (stream, result, changed, snapshot_at) = cx
-                    .background_executor()
-                    .spawn(async move {
+                let (stream, result, changed, snapshot_at) =
+                    super::native::recovery::stream_io(cx.background_executor(), move || {
                         let mut changed = false;
                         let mut snapshot_at = None;
                         let result = stream.receive(|updates| {
