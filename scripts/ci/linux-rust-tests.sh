@@ -9,7 +9,9 @@ suite() {
     printf '\nLinux suite: %s\n' "$*"
     "$@" || failed=1
 }
-suite cargo test -p okilum-appimage --all-features --no-fail-fast
+# Process fixtures fork with live descriptors. Isolate their lock lifecycle:
+# a sibling test's child can retain another fixture's flock until exec.
+suite cargo test -p okilum-appimage --all-features --no-fail-fast -- --test-threads=1
 suite cargo test --locked -p okilum-http --features updates --no-fail-fast
 # Keep an explicit non-empty Settings dismissal verdict ahead of the full shell.
 suite cargo test --locked -p okilum-shell --bin okilum settings_2487_ -- --nocapture
