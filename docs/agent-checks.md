@@ -37,10 +37,38 @@ then runs the scheduled shared gate's exact lint command,
 Linux desktop/sync supervisor and runs the full `okilum-core`
 suite and `scripts/ci/linux-rust-tests.sh` with Cargo offline. These are the same
 Rust suites called by full Linux acceptance (`scripts/ci/check-linux.sh`); the
-nightly acceptance Python/packaging checks retain their existing scope. AppImage process fixtures run serially so a
+nightly acceptance packaging checks retain their existing scope. The agent job
+also runs complete discovery of `scripts/ci`, `scripts/releases` and
+`scripts/updater`, and the helper requires that step to pass. AppImage process fixtures run serially so a
 concurrent fork cannot temporarily retain another fixture's installation lock
 before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
+
+Every job that discovers these Python suites, including local/hosted full gates
+and the fast and Sync fixture lanes, runs `scripts/ci/setup-python-tests.sh`
+first. It creates a fresh venv, installs `scripts/ci/requirements.txt` and adds
+its executables to the Actions `GITHUB_PATH`. `PyYAML==6.0.3` is explicit;
+host site-packages and pip configuration are excluded. Keeping the full YAML
+parser preserves workflow expressions, flow collections, block scalars and
+the existing BaseLoader/safe_load semantics without maintaining a partial
+parser in our tests. A guard rejects missing or mismatched dependencies with
+the installation command. Setup failure stops the job before discovery.
+
+For local Python-only checks, start with a fresh venv (no host PyYAML), install
+the same requirements and run all three suites:
+
+```bash
+test_env=$(mktemp -d)
+python3 -m venv "$test_env"
+"$test_env/bin/python3" -I -m pip --isolated install -r scripts/ci/requirements.txt
+"$test_env/bin/python3" -I scripts/ci/python_dependencies.py
+for suite in ci releases updater; do
+  "$test_env/bin/python3" -I -m unittest discover -s "scripts/$suite" -p 'test_*.py'
+done
+```
+
+Debian/Ubuntu jobs install `python3-venv` explicitly. Job-created environments
+are temporary; Actions owns their lifetime.
 
 Rust downloads, verified generated vendor trees and `target/` are cached with the toolchain, dependency/manifests,
 vendor patches and workflow configuration in the key. Each source SHA can save a
@@ -148,3 +176,20 @@ intentionally to collect its trace. The historical trigger was not reproduced;
 only the indefinite authentication/reply waits were reproduced by controlled
 stalls. This distinction is retained in the evidence rather than attributing the
 old failure to a file manager that was absent from the isolated bus.
+
+Main's #2595 isolated Python setup and complete CI/releases/updater discoveries
+remain required. Their groups reuse the same supervisor at 300/90/90 s; the
+observed local complete CI discovery was 136 s, and the releases/updater samples
+were about 3 s/0.04 s. These limits retain setup/scheduling margin rather than
+asserting a cross-host percentile. Main's #2589 first-computer and direct-LAN
+commands are retained as separately supervised 180/120 s groups, including
+compilation headroom. Final hosted group receipts provide their runner timings.
+
+Integrated gate validation also keeps the #2595 dependency guard aware of the
+#2510 Sync wrapper. Sync staging's concurrent exec probes use independent
+publisher processes, matching the production CLI path: a ThreadPool fork can
+inherit a sibling's temporary writable FD until exec and cause ETXTBSY after the
+parent has closed and renamed it. A dedicated positive control demonstrates that
+kernel behavior. Eight cold publishers and four live-daemon publishers still
+must all publish/exec successfully; checksum, inode, cleanup and old-tar negative
+controls remain. Twenty repeated eight-process cold controls passed locally.

@@ -12,6 +12,9 @@ suite() {
     bash scripts/ci/test-group.sh "$group" "$limit" "$@" || failed=1
 }
 suite local-writer 900 bash scripts/ci/local-writer-admission.sh
+# #2589: a real app pairing listener, fresh identity and repeated Add computer.
+suite first-computer 180 cargo test --locked -p okilum-sync-controller --test first_computer -- --nocapture
+suite direct-lan 120 cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
 suite web-sync 60 node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
 suite issue2049 120 cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture

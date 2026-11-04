@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import importlib.util
 import io
+import multiprocessing
 import os
 from pathlib import Path
 import subprocess
@@ -125,20 +126,79 @@ class FixtureStagingTests(unittest.TestCase):
 
     def test_concurrent_cold_staging_and_exec(self):
         publish = helper.publish
-        barrier = threading.Barrier(8, timeout=10)
+        context = multiprocessing.get_context('fork')
+        barrier = context.Barrier(8, timeout=10)
         def synchronized(destination, data, mode):
             if destination.name == 'syncthing':
                 barrier.wait()  # Every caller must take the publication path.
             publish(destination, data, mode)
             if destination.name == 'syncthing':
                 subprocess.run([str(destination), '-c', 'pass'], check=True)
+        # Production staging runs in independent CLI processes. Threads that
+        # fork while a sibling has a temp writer open can inherit that writer
+        # until exec, creating an unrelated ETXTBSY even after parent close.
+        def worker(index):
+            binary = helper.stage(self.cache)
+            (self.cache / f'result-{index}').write_text(str(binary))
         with patch.object(helper, 'publish', side_effect=synchronized):
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                binaries = list(pool.map(lambda _: helper.stage(self.cache), range(8)))
+            workers = [context.Process(target=worker, args=(index,)) for index in range(8)]
+            try:
+                for process in workers:
+                    process.start()
+                for process in workers:
+                    process.join(timeout=30)
+                    self.assertEqual(process.exitcode, 0)
+            finally:
+                for process in workers:
+                    if process.is_alive():
+                        process.kill()
+                    if process.pid is not None:
+                        process.join()
+        binaries = [Path((self.cache / f'result-{index}').read_text()) for index in range(8)]
         self.assertEqual(len(set(binaries)), 1)
         self.assertEqual(binaries[0].read_bytes(), self.executable)
         self.assertEqual(binaries[0].stat().st_mode & 0o777, 0o555)
         self.assertEqual(list(self.cache.rglob('.stage-*')), [])
+
+    def test_inherited_writer_positive_control_survives_parent_close(self):
+        # Prove why a thread/fork harness is not the CLI publication path: an
+        # inherited writer remains live after its parent closes and renames it.
+        source = self.cache / 'inherited-writer'
+        destination = self.cache / 'inherited-executable'
+        descriptor = os.open(source, os.O_WRONLY | os.O_CREAT, 0o755)
+        with os.fdopen(descriptor, 'wb', closefd=False) as output:
+            output.write(self.executable)
+        ready_read, ready_write = os.pipe()
+        release_read, release_write = os.pipe()
+        child = os.fork()
+        if child == 0:
+            os.close(ready_read)
+            os.close(release_write)
+            os.write(ready_write, b'ready')
+            os.read(release_read, 1)
+            os._exit(0)
+        try:
+            os.close(ready_write)
+            os.close(release_read)
+            self.assertEqual(os.read(ready_read, 5), b'ready')
+            os.close(descriptor)
+            descriptor = None
+            os.replace(source, destination)
+            with self.assertRaises(OSError) as error:
+                subprocess.run([str(destination), '-c', 'pass'], check=True)
+            self.assertEqual(error.exception.errno, errno.ETXTBSY)
+            os.write(release_write, b'x')
+            os.waitpid(child, 0)
+            child = None
+            subprocess.run([str(destination), '-c', 'pass'], check=True)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if child is not None:
+                os.kill(child, 9)
+                os.waitpid(child, 0)
+            os.close(ready_read)
+            os.close(release_write)
 
     def test_spawn_during_publication_has_no_writable_descriptor(self):
         binary = helper.stage(self.cache)

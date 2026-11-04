@@ -16,6 +16,7 @@ INFRA_STEPS = {
     "Install system libraries",
     "Verify pinned Rust toolchain", "Restore Rust downloads and target cache",
     "Fetch locked public dependencies", "Save Rust downloads and target cache",
+    "Prepare isolated Python test dependencies",
 }
 
 
@@ -42,7 +43,8 @@ def verdict(info, sha, benchmark=False, publication_controls=False):
     steps = jobs[0].get("steps", [])
     required = {"Prepare and verify pinned vendor and comrak", "Lint every workspace target offline",
                 "Build Linux desktop offline", "Run complete okilum-core suite offline", "Run Linux Rust suites offline",
-                "Verify agent helper controls", "Stress private reveal bus (20 runs)"}
+                "Verify agent helper controls", "Stress private reveal bus (20 runs)",
+                "Run CI, releases and updater Python suites"}
     if publication_controls:
         required.add("Compare editor publication with pinned main on this host")
     if benchmark:

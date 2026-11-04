@@ -54,7 +54,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo bash scripts/ci/hosted-ubuntu-apt.sh \
-            build-essential cmake pkg-config curl git mold zstd gnupg gpgv \
+            build-essential cmake pkg-config curl git mold zstd python3-venv gnupg gpgv \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
       - name: Verify pinned toolchain
@@ -79,6 +79,8 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
       - name: Verify acceptance instrument failure controls
         run: python3 scripts/appimage/test_update_acceptance.py
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Run full Linux gate
         run: bash scripts/ci/check-linux.sh
 

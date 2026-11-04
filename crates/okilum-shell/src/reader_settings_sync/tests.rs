@@ -254,6 +254,100 @@ fn reader_settings_sync_nonempty_and_expired_errors_have_actionable_recovery() {
     assert!(!user_error(&anyhow::anyhow!(secret)).contains(secret));
 }
 
+#[test]
+fn issue2589_mac_first_add_mints_url_without_runtime_or_approval() -> anyhow::Result<()> {
+    use std::cell::Cell;
+    let directory = tempfile::tempdir()?;
+    let controller = Controller::open(directory.path().join("direct"), vec![])?;
+    let called = Cell::new(false);
+    for operation in [
+        Operation::EnterPairing,
+        Operation::Begin("First Mac".into()),
+    ] {
+        super::prepare_mac_runtime(&controller, &operation, |_| {
+            called.set(true);
+            anyhow::bail!("macOS Sync approval required")
+        })?;
+    }
+    assert!(
+        !called.get(),
+        "Settings and Add computer cannot start a login item"
+    );
+    let invitation =
+        controller.begin_pairing_at("First Mac", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?;
+    assert!(invitation.offer_url.is_some());
+    let error = super::prepare_mac_runtime(
+        &controller,
+        &Operation::Redeem("private-url".into(), "Mac".into()),
+        |_| {
+            called.set(true);
+            anyhow::bail!("macOS Sync approval required")
+        },
+    )
+    .unwrap_err();
+    assert!(
+        called.get(),
+        "receiving still requires authenticated runtime preparation"
+    );
+    assert!(user_error(&error).contains("Login Items"));
+    assert!(user_error(&anyhow::anyhow!("Sync is disabled")).contains("Features"));
+    Ok(())
+}
+
+#[gpui::test]
+fn issue2589_action_failure_is_logged_with_chain_and_visible_cause(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    let trace = crate::reader_diagnostics::Trace::new(Some(directory.path().to_owned()), None);
+    cx.update(|cx| {
+        reader_features::install(directory.path(), cx);
+        reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+        cx.set_global(crate::reader_diagnostics::LaunchTrace(trace));
+        cx.set_global(TestWorker(std::sync::Arc::new(|_| {
+            Err(anyhow::Error::new(std::io::Error::from_raw_os_error(13))
+                .context("cannot start LAN pairing listener"))
+        })));
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| fixture(window, cx));
+        view.update(cx, |view, cx| {
+            view.run(Operation::Begin("First Mac".into()), cx)
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    view.read_with(visual, |view, _| {
+        assert!(view.error.as_deref().unwrap().contains("Permission denied"))
+    });
+    assert_visible(visual, "sync-error");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let log = std::fs::read_to_string(directory.path().join("reader-diagnostic.log"))
+            .unwrap_or_default();
+        if let Some(event) = log
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|event| event["phase"] == "sync_action_failed")
+        {
+            assert_eq!(event["details"]["action"], "add_computer");
+            assert_eq!(event["details"]["causes"].as_array().unwrap().len(), 2);
+            assert!(event["details"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("os error 13"));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "sync_action_failed must reach the app log"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn snapshot(pending: Option<direct::Pending>) -> Snapshot {
     Snapshot {
         offer_url: None,
