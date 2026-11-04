@@ -26,6 +26,53 @@ mod catalog;
 
 const RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Unit-test clock: advancing time notifies active HTTP deadlines without sleeps.
+#[cfg(test)]
+pub(super) struct TestClock {
+    now: Mutex<std::time::Instant>,
+    waiters: Mutex<Vec<async_channel::Sender<()>>>,
+    expired: std::sync::atomic::AtomicUsize,
+}
+#[cfg(test)]
+impl TestClock {
+    pub(super) fn new() -> Self {
+        Self {
+            now: Mutex::new(std::time::Instant::now()),
+            waiters: Default::default(),
+            expired: Default::default(),
+        }
+    }
+    pub(super) fn now(&self) -> std::time::Instant {
+        *self.now.lock().unwrap()
+    }
+    pub(super) fn advance(&self, duration: Duration) {
+        *self.now.lock().unwrap() += duration;
+        self.waiters
+            .lock()
+            .unwrap()
+            .retain(|waiter| waiter.force_send(()).is_ok());
+    }
+    pub(super) fn expirations(&self) -> usize {
+        self.expired.load(Ordering::Acquire)
+    }
+    async fn deadline(&self, began: std::time::Instant, budget: Duration) {
+        let (sender, receiver) = async_channel::bounded(1);
+        {
+            let mut waiters = self.waiters.lock().unwrap();
+            waiters.retain(|waiter| !waiter.is_closed());
+            waiters.push(sender);
+        }
+        loop {
+            if self.now().duration_since(began) >= budget {
+                self.expired.fetch_add(1, Ordering::AcqRel);
+                return;
+            }
+            // Register before checking time; a concurrent advance is buffered.
+            receiver.recv().await.unwrap();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ApiKey(zeroize::Zeroizing<Vec<u8>>);
 impl ApiKey {
@@ -75,6 +122,8 @@ pub struct Kibana {
     runtime: Arc<tokio::runtime::Runtime>,
     cancelled: Arc<AtomicBool>,
     diagnostics: Arc<Mutex<super::result::ConnectionDetails>>,
+    #[cfg(test)]
+    test_clock: Option<Arc<TestClock>>,
 }
 impl Kibana {
     pub fn new(source: &Source, key: ApiKey, cancelled: Arc<AtomicBool>) -> Result<Self> {
@@ -114,7 +163,36 @@ impl Kibana {
             runtime,
             cancelled,
             diagnostics: Default::default(),
+            #[cfg(test)]
+            test_clock: None,
         })
+    }
+    #[cfg(test)]
+    pub(super) fn with_test_clock(mut self, clock: Arc<TestClock>) -> Result<Self> {
+        let loopback = match self.endpoint.host() {
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            _ => false,
+        };
+        ensure!(
+            self.endpoint.scheme() == "http" && loopback,
+            "A test clock requires a synthetic HTTP loopback endpoint"
+        );
+        // Replace reqwest's real-time timers with the same budgets on our clock.
+        // This client cannot address a real source or forward credentials away.
+        self.client = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        self.test_clock = Some(clock);
+        Ok(self)
+    }
+    fn now(&self) -> std::time::Instant {
+        #[cfg(test)]
+        if let Some(clock) = &self.test_clock {
+            return clock.now();
+        }
+        std::time::Instant::now()
     }
     pub fn with_diagnostics(
         mut self,
@@ -179,7 +257,13 @@ impl Kibana {
         if let Some(body) = body {
             request = request.json(body);
         }
-        request = request.timeout(budget);
+        #[cfg(test)]
+        let virtual_time = self.test_clock.is_some();
+        #[cfg(not(test))]
+        let virtual_time = false;
+        if !virtual_time {
+            request = request.timeout(budget);
+        }
         let diagnostic_route = if body.is_some_and(|b| b["id"].is_string()) {
             "async poll"
         } else if route == "/internal/search/es"
@@ -233,6 +317,17 @@ impl Kibana {
                 bytes.extend_from_slice(&chunk);
             }
             Ok::<_, anyhow::Error>(bytes)
+        };
+        #[cfg(test)]
+        let execute = async {
+            if let Some(clock) = &self.test_clock {
+                let began = clock.now();
+                return tokio::select! {
+                    result = execute => result,
+                    _ = clock.deadline(began, budget) => Err(anyhow::anyhow!(SearchTimeout)),
+                };
+            }
+            execute.await
         };
         let result = self.runtime.block_on(async {
             if cleanup {
@@ -345,7 +440,7 @@ impl Kibana {
         Ok(resolved)
     }
     fn search(&self, params: &Value, deadline: Duration) -> Result<(Value, bool)> {
-        let clock = std::time::Instant::now();
+        let clock = self.now();
         let payload = json!({"params":params,"legacyHitsTotal":false});
         let mut response = self.request_budget(
             Method::POST,
@@ -375,7 +470,7 @@ impl Kibana {
             let current = id
                 .as_deref()
                 .context("Malformed async search: missing id")?;
-            if clock.elapsed() >= deadline {
+            if self.now().duration_since(clock) >= deadline {
                 self.record_search_status(&response, params, true);
                 return Ok((timeout_response(response), true));
             }
@@ -383,7 +478,7 @@ impl Kibana {
             // and unchanged flat params. Closing only cancels local polling.
             let poll_payload = json!({"id":current,"params":params,"legacyHitsTotal":false});
             for _ in 0..5 {
-                if clock.elapsed() >= deadline {
+                if self.now().duration_since(clock) >= deadline {
                     break;
                 }
                 if self.cancelled.load(Ordering::Acquire) {
@@ -391,7 +486,7 @@ impl Kibana {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            if clock.elapsed() >= deadline {
+            if self.now().duration_since(clock) >= deadline {
                 continue;
             }
             match self.request_budget(
@@ -400,7 +495,7 @@ impl Kibana {
                 &[],
                 Some(&poll_payload),
                 false,
-                deadline.saturating_sub(clock.elapsed()),
+                deadline.saturating_sub(self.now().duration_since(clock)),
             ) {
                 Ok(value) => response = value,
                 Err(error) if error.is::<SearchTimeout>() => {

@@ -3,6 +3,7 @@ use crate::remote_log::{
     discover::TimeRange,
     fake::{record, FakeKibana, Scenario},
     result::AuthError,
+    transport::TestClock,
     MAX_ROWS,
 };
 use serde_json::json;
@@ -26,14 +27,13 @@ fn key() -> ApiKey {
 }
 fn timing() -> Timing {
     // Ordinary fixtures test completed work, not how quickly the host schedules it.
-    let now = Instant::now();
     Timing {
         poll: Duration::from_millis(40),
         retry: Duration::from_millis(20),
         cycle: Duration::from_secs(20),
         idle: Duration::from_secs(60),
         after_page: None,
-        cycle_clock: Some(Arc::new(move || now)),
+        cycle_clock: Some(Arc::new(TestClock::new())),
     }
 }
 fn receive(
@@ -272,7 +272,10 @@ fn reconnect_after_observed_outage_reconciles_the_whole_window() {
 fn row_cap_and_cycle_deadline_are_explicit_and_leave_visible_bounded_rows() {
     let server = FakeKibana::start("127.0.0.1:0", MAX_ROWS + 1, Scenario::default()).unwrap();
     let source = make_source(&server);
-    let client = Kibana::new(&source, key(), Arc::new(AtomicBool::new(false))).unwrap();
+    let client = Kibana::new(&source, key(), Arc::new(AtomicBool::new(false)))
+        .unwrap()
+        .with_test_clock(Arc::new(TestClock::new()))
+        .unwrap();
     let mut history = History::for_source(client, &source).unwrap();
     let mut count = 0;
     while history.can_page() {
@@ -290,14 +293,12 @@ fn row_cap_and_cycle_deadline_are_explicit_and_leave_visible_bounded_rows() {
     let source = make_source(&server);
     let mut short = timing();
     short.cycle = Duration::from_millis(1);
-    let clock = Arc::new(Mutex::new(Instant::now()));
-    let read = clock.clone();
+    let clock = short.cycle_clock.as_ref().unwrap().clone();
     let expire = Arc::new(AtomicBool::new(false));
     let advance = expire.clone();
-    short.cycle_clock = Some(Arc::new(move || *read.lock().unwrap()));
     short.after_page = Some(Arc::new(move |_| {
         if advance.load(Ordering::Acquire) {
-            *clock.lock().unwrap() += Duration::from_millis(1);
+            clock.advance(Duration::from_millis(1));
         }
     }));
     let (worker, rx) = Worker::spawn(short, None);

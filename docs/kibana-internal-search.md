@@ -147,16 +147,15 @@ proving Stop/Drop abort in-flight HTTP and preventing another poll from racing
 with the observer. Server shutdown joins outstanding handlers before the final
 poll-count assertion. These signals cover actual work and stale-generation rejection.
 
-The private cycle clock is injectable in test builds. Ordinary fixtures freeze
-it so host scheduling cannot accidentally turn a successful cycle into a timeout.
+The private cycle and transport clocks are injectable in test builds. Ordinary
+live fixtures freeze them so host scheduling cannot turn valid synthetic work
+into a timeout. The loopback-only test client replaces reqwest's real-time timers
+with the same HTTP budgets driven by clock-advance notifications. Production
+retains its network policy, connect timeout and HTTP/search/cycle deadlines.
 The deadline fixture first completes below budget, then advances to the exact
 deadline after a page and checks that timed-out rows stay visible and following
-stops. Production uses the same monotonic `Instant` clock and existing budgets.
+stops. A separate transport regression holds an actual async-poll response,
+advances a one-millisecond budget explicitly and awaits timeout completion with
+the received rows retained. Its expiration counter verifies the virtual HTTP
+timer fired; a real-time timeout fallback cannot pass the control.
 No row-loss or stalled-cycle product race was established by this repair.
-
-The synthetic server borrows matching records until serializing the final page,
-and memoizes timestamp parsing in a bounded response-thread cache. Boundary replay
-otherwise clones the whole matching window and parses the same timestamp/bounds
-thousands of times per request; loaded debug fixtures can exhaust the real HTTP
-budget before reaching their worker-completion checks. These changes preserve
-query, ordering, totals and response data while keeping HTTP deadlines intact.

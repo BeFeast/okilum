@@ -152,7 +152,7 @@ struct Timing {
     #[cfg(test)]
     after_page: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     #[cfg(test)]
-    cycle_clock: Option<Arc<dyn Fn() -> Instant + Send + Sync>>,
+    cycle_clock: Option<Arc<super::transport::TestClock>>,
 }
 impl Default for Timing {
     fn default() -> Self {
@@ -172,7 +172,7 @@ impl Timing {
     fn cycle_now(&self) -> Instant {
         #[cfg(test)]
         if let Some(clock) = &self.cycle_clock {
-            return clock();
+            return clock.now();
         }
         Instant::now()
     }
@@ -427,6 +427,11 @@ impl Engine {
         let client = match &self.endpoint {
             Some(endpoint) => Kibana::with_endpoint(endpoint.clone(), key, cancel)?,
             None => Kibana::new(&source, key, cancel)?,
+        };
+        #[cfg(test)]
+        let client = match &self.timing.cycle_clock {
+            Some(clock) => client.with_test_clock(clock.clone())?,
+            None => client,
         };
         let client = client.with_diagnostics(self.diagnostics.lock().unwrap().clone());
         let source = client.resolve_source(&source)?;

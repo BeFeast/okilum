@@ -31,6 +31,49 @@ pub(super) fn client(server: &FakeKibana) -> Kibana {
     .unwrap()
 }
 #[test]
+fn injected_http_deadline_cancels_a_held_poll_and_keeps_received_rows() {
+    let server = server(
+        9,
+        Scenario {
+            never_complete: true,
+            ..Default::default()
+        },
+    );
+    let (arrived, polls) = std::sync::mpsc::channel();
+    let (release, permit) = std::sync::mpsc::channel();
+    let permit = Mutex::new(permit);
+    server.state.lock().unwrap().after_poll = Some(Arc::new(move |count| {
+        arrived.send(count).unwrap();
+        permit.lock().unwrap().recv().unwrap();
+    }));
+    let clock = Arc::new(TestClock::new());
+    let mut history = History::for_source(
+        client(&server).with_test_clock(clock.clone()).unwrap(),
+        &source(&server),
+    )
+    .unwrap();
+    history.search_timeout = Duration::from_millis(1);
+    let query = std::thread::spawn(move || history.page().unwrap());
+    // A real async poll reached the server despite a frozen one-millisecond
+    // budget. Its response stays held until AFTER virtual deadline completion.
+    assert_eq!(polls.recv().unwrap(), 1);
+    assert_eq!(clock.expirations(), 0);
+    clock.advance(Duration::from_millis(1));
+    let page = query.join().unwrap();
+    assert!(page.status.timed_out);
+    assert!(page.status.partial);
+    assert_eq!(page.events.len(), 9);
+    assert_eq!(
+        clock.expirations(),
+        1,
+        "the injected HTTP timer actually fired"
+    );
+    let state = server.state.clone();
+    release.send(()).unwrap();
+    drop(server);
+    assert_eq!(state.lock().unwrap().polls, 1);
+}
+#[test]
 fn history_flat_envelope_boundary_replay_exact_nanos_and_identity_no_gaps_both_directions() {
     for order in ["asc", "desc"] {
         let server = server(603, Scenario::default());
