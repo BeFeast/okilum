@@ -64,7 +64,7 @@ jobs:
       - name: Compile Reader and run quick native regressions
         id: native
         shell: bash
-        run: python3 scripts/ci/gate-step.py --name 'Compile Reader and run quick native regressions' -- bash scripts/ci/check-macos.sh
+        run: bash scripts/ci/manager-input-controls.sh
       - name: Save shared native Cargo cache
         if: github.ref == 'refs/heads/main' && steps.native-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -87,3 +87,11 @@ jobs:
           name: native-sparkle-freshness-evidence
           path: ${{ runner.temp }}/sparkle-freshness-evidence/
           if-no-files-found: warn
+
+      - name: Save input regression controls
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manager-input-controls
+          path: ${{ runner.temp }}/manager-input-controls/
+          if-no-files-found: error
