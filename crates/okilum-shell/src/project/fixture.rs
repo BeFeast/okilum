@@ -440,7 +440,12 @@ pub(super) fn open(cx: &mut App) -> bool {
     let state = reader_history::state_directory().expect("isolated fixture state");
     if matches!(
         mode.as_str(),
-        "board-list-dark" | "board-list-light" | "board-kanban-dark" | "board-kanban-light"
+        "board-list-dark"
+            | "board-list-light"
+            | "board-kanban-dark"
+            | "board-kanban-light"
+            | "board-kanban-filtered-dark"
+            | "board-kanban-filtered-light"
     ) {
         board::Board::open_list_fixture(state, mode.starts_with("board-kanban"), cx);
         return true;
