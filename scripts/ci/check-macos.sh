@@ -74,6 +74,9 @@ cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 # Compile every workspace test target, including test-only cfg branches and integration tests.
 cargo "${cargo_args[@]}" --workspace --no-run
 
+# #2519: native pairing must advertise the actual build target.
+run_tests okilum-t3 --lib stream::tests::pairing_reports_build_target_os --exact
+
 # #2517: compile and execute every native Manager module, including GPUI tests.
 # Each filter has its own positive control and libtest passed/failed counts.
 manager_skip=()

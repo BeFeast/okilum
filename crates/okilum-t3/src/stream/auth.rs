@@ -75,7 +75,7 @@ impl NativeToken {
                 ("scope", "orchestration:read orchestration:operate"),
                 ("client_label", "Okilum native Manager"),
                 ("client_device_type", "desktop"),
-                ("client_os", "linux"),
+                ("client_os", std::env::consts::OS),
             ])
             .send()
             .map_err(|_| StreamError::Unreachable)?;

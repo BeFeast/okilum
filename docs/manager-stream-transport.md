@@ -1,9 +1,9 @@
-# Linux Manager stream transport (#1787, slice 2)
+# Native Manager stream transport (#1787, #2519)
 
-The native Linux client uses T3's orchestration protocol v2. This slice adds
-the transport boundary in `okilum-t3::stream`; the following projection slice
-will connect it to the virtualized feed. The current UI still uses MCP. The
-macOS embedded web UI keeps its existing session and connection behavior.
+The native Manager uses T3's orchestration protocol v2. Linux mounts it today;
+macOS compiles and tests the same implementation under `cfg(native_manager)`.
+The Mac runtime still mounts WKWebView until #2522. Its existing session and
+Board/Projects cookie transport remain unchanged (#2520 owns that migration).
 
 ## Authentication
 
@@ -29,6 +29,61 @@ the origin and expiry. Pairing secrets and socket tickets are transient.
 Expiry or a 401 produces an explicit error without opening a browser, retrying
 authorization, or silently falling back to another credential. HTTP redirects
 are refused and transport errors omit peer bodies and credential-bearing URLs.
+
+## macOS pairing and Keychain (#2519)
+
+`client_os` in the native pairing exchange comes from the Rust **build target**
+(`linux`, `macos`, or `windows`), including cross-compiled builds. It does not
+inspect the build host or report Linux for a Mac client.
+
+The selected native Manager uses the Linux pairing lifecycle on macOS:
+restore an existing native token, or display the pairing prompt; paste the
+one-time T3 native pairing token and choose **Pair**. T3 exchanges it for a
+separate read/operate client. Okilum saves the returned bearer before installing
+the native connection. A failed Keychain write leaves the client disconnected
+with an explicit save error; it does not fall back to a session-only bearer.
+Reconnect reads that saved token. Expired/wrong-origin native tokens remain
+visible errors requiring explicit pairing.
+
+Both credential types use GPUI's platform credential API: `StoredToken` uses
+`Environment::credential_url()` (`/mcp`), and `NativeToken` uses the same
+origin's `/ws`. GPUI maps this API to macOS Security.framework Keychain items.
+The existing MCP authorization writer remains shared with Linux; native pairing
+writes only `/ws` and removes only its consumed `/ws/pairing` enrollment.
+Sign out removes MCP and native bearer items on both native platforms. Pairing
+does not read, convert, clear or revoke the WKWebView cookie session. A Mac with
+only an old web session therefore needs explicit native pairing; that web
+session continues to work independently. Tokens never enter project files,
+preferences, the rebuildable index, diagnostic output or a socket URL.
+
+`ProjectView::threads.enabled` is the native Manager selection. Retained Mac
+views leave it false while WKWebView is mounted: they skip MCP Keychain reads
+and do not automatically restore native credentials. When #2522 selects the
+native panel, it must enable that same selection at construction; connection
+completion and activation then restore the native token, and a missing token
+opens the existing native pairing controls. No hidden native sign-in is started
+behind the current Mac panel. Hosted tests explicitly select this future native
+path; this issue does not switch the shipping panel.
+
+The signed shipping bundle is `com.befeast.okilum` (Sprint has its separate
+bundle identity). New items written by that app normally need no access prompt.
+If macOS asks to access an existing item, the user sees **Okilum** requesting
+Keychain access: choose **Always Allow** to remember trust for the installed
+signed app, rather than **Allow** for just one access. With that remembered
+trust and an unlocked login Keychain, subsequent restores need no further
+access prompts (at most one initial trust prompt per installation). A locked
+Keychain, a denied request, or a changed signing identity is an OS recovery
+condition; Okilum does not bypass it or repeatedly authorize in the background.
+The prompt's app identity comes from the signed bundle, not a token label.
+
+Hosted GPUI unit tests use an injected in-memory credential-store double;
+GPUI's stock test platform discards writes and always returns no credential.
+They do **not** certify the runner's login Keychain or interactive access-dialog
+behavior. They execute the production pairing/restore lifecycle, including
+write failure, save-before-connect, independent MCP/native keys, one-time
+credential cleanup, native restore selection and the missing-token prompt.
+Stable signed-bundle Keychain ACL/dialog acceptance remains native tester
+verification; no real user credential is used by CI.
 
 ## Subscription and projection ownership
 
