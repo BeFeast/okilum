@@ -31,8 +31,8 @@ enum Row {
     Local(usize),
     Problem(usize),
 }
-struct Prepared {
-    binding: Binding,
+pub(super) struct Prepared {
+    pub(super) binding: Binding,
     rows: Vec<Row>,
     counts: [usize; 5],
     projection: Arc<filters::Projection>,
@@ -40,9 +40,9 @@ struct Prepared {
     local_indices: std::collections::BTreeMap<String, usize>,
     source_problem: Option<String>,
     sources_ready: bool,
-    mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
+    pub(super) mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
     invalid_annotations: std::collections::BTreeSet<u64>,
-    issue_indices: std::collections::BTreeMap<u64, usize>,
+    pub(super) issue_indices: std::collections::BTreeMap<u64, usize>,
 }
 pub(super) struct State {
     pub preferences: Preferences,
@@ -126,7 +126,7 @@ impl Board {
         }
         control.into_any_element()
     }
-    fn prepare_list(&mut self) -> Arc<Prepared> {
+    pub(super) fn prepare_list(&mut self) -> Arc<Prepared> {
         let projection = self.filtered_projection();
         if let Some(prepared) = &self.list.prepared {
             if Arc::ptr_eq(&prepared.projection, &projection)

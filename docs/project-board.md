@@ -172,7 +172,7 @@ click open the issue panel described below. With the panel open, Up/Down updates
 its issue. Board → related note → Board retains selection, shared filters and
 list scroll. Existing local cards,
 invalid annotations, attention, delivery and project-note context remain reachable.
-No new read, dispatch, membership, stage rule or delivery claim is introduced.
+List rows introduce no new read, dispatch, membership, stage rule or delivery claim.
 Native tests cover defaults, independent persisted project choices, collapse,
 240-row viewport work, keyboard reachability and actual Reader note round trips.
 The sibling attention/compact-card/ordering issues remain independent.

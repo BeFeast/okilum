@@ -94,6 +94,8 @@ fn peek_2531_generation_owner_repository_and_issue_reject_late_results(cx: &mut 
         b.set_visible(false,window,cx);
         assert!(!b.peek.open);
         assert!(!b.peek_matches(&ticket),"project switch invalidates outstanding read");
+        b.complete_peek_comments(&ticket, Ok(vec![comment]), window, cx);
+        assert!(b.peek.comments.is_empty(), "late completion from old project stays dropped");
         b.peek.open = true;
         let ticket = Ticket { generation:b.peek.generation,..ticket };
         b.area = area.path().join("other");
