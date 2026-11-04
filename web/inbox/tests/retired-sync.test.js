@@ -26,4 +26,6 @@ test('production Inbox has no menu, dialog or deep-link mount for folder pairing
   const sw = readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
   assert.doesNotMatch(sw, /\/sync-pairing.js/);
   assert.match(sw, /\/sync-links.js/);
+  const routes = readFileSync(new URL('../../../inbox/crates/okilum-inboxd/src/web.rs', import.meta.url), 'utf8');
+  assert.match(routes, /"\/sync-links.js"/);
 });
