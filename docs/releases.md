@@ -6,11 +6,15 @@ No build/signing credentials are needed on GitHub.
 
 ## Build cadence and manual builds
 
-PR admission requires only `fast / check (pull_request)` (15-minute ceiling).
-Full shell and source-sharing suites run on main pushes, nightly schedules and
-manual dispatches. PR concurrency cancels superseded runs. Main runs share one
-ref group: the running certification completes, and only the newest pending run
-is kept. Release/publication concurrency is unchanged.
+Forgejo workflows do not run on pull requests, and main has no required status
+checks. Before merge, each worker runs `H=github scripts/agent/gh-check.sh` on
+its committed exact HEAD, waits for green, then merges the PR themselves.
+A later commit requires a fresh check. See `docs/agent-checks.md`.
+
+Forgejo check, full shell and source-sharing suites run on main pushes, nightly
+schedules and manual dispatches. Main runs share one ref group: an active run
+completes, and only the newest pending run is kept. Release/publication
+concurrency is unchanged. Legacy native-check ref cleanup is manual maintenance.
 
 Before Stable promotion, require a successful `fast / shell-full` on the exact
 source being promoted, including its `(workflow_dispatch)` certification status.
