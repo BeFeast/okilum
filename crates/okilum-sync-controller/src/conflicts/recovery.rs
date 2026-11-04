@@ -18,15 +18,8 @@ pub struct History {
     pub warnings: Vec<String>,
 }
 pub(super) fn complete(record: &Path) -> Result<()> {
-    #[cfg(test)]
-    if FAIL_COMPLETE.with(|fail| fail.get()) {
-        anyhow::bail!("injected completion marker failure");
-    }
     marker(record, "complete", b"complete\n")
 }
-#[cfg(test)]
-thread_local! { pub(super) static FAIL_COMPLETE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-
 pub(super) fn refused(record: &mut PathBuf) -> Result<()> {
     if marker(record, "refused", b"refused\n").is_ok() {
         return Ok(());
@@ -74,6 +67,17 @@ fn has_marker(record: &Path, extension: &str, contents: &[u8]) -> Result<bool> {
     Ok(true)
 }
 
+fn is_pending(record: &Path) -> Result<bool> {
+    Ok(!record
+        .file_name()
+        .context("Missing record name")?
+        .as_bytes()
+        .ends_with(b".refused.json")
+        && !has_marker(record, "refused", b"refused\n")?
+        && !has_marker(record, "complete", b"complete\n")?
+        && !has_marker(record, "recovered", b"recovered\n")?)
+}
+
 /// All records remain adoptable by previous-version retention (#2045). An
 /// incomplete record must never be expired; this API does no cleanup.
 pub fn history(directory: &Path, root: &Path) -> Result<History> {
@@ -105,10 +109,7 @@ pub fn history(directory: &Path, root: &Path) -> Result<History> {
             }
             let canonical = versions[0].path.clone();
             let created = value["created"].as_u64().unwrap_or(0);
-            let pending = !name.ends_with(".refused.json")
-                && !has_marker(&record, "refused", b"refused\n")?
-                && !has_marker(&record, "complete", b"complete\n")?
-                && !has_marker(&record, "recovered", b"recovered\n")?;
+            let pending = is_pending(&record)?;
             Ok(Some(HistoryEntry {
                 canonical,
                 created,
@@ -211,6 +212,20 @@ pub fn recover_startup(directory: &Path) -> Result<Vec<String>> {
             continue;
         }
         let record = directory.join(OsStr::from_bytes(entry.file_name().to_bytes()));
+        // Completed/refused/repaired records carry no path-recreation authority.
+        // Do not decode their potentially large byte arrays or touch their vaults
+        // (which can have been intentionally deleted or disconnected since).
+        match is_pending(&record) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(error) => {
+                messages.push(format!(
+                    "Cannot check {}: {error}; use Recover notes.",
+                    record.display()
+                ));
+                continue;
+            }
+        }
         match retained_versions(&record) {
             Ok(versions) => {
                 roots.insert(versions[0].root.clone());

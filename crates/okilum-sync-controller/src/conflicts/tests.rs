@@ -410,24 +410,25 @@ fn issue2044_failed_complete_marker_is_terminal_and_preserves_history() {
     for block_refusal_marker in [false, true] {
         let (vault, state) = fixture();
         let p = preview(vault.path(), Path::new(COPY)).unwrap();
-        recovery::FAIL_COMPLETE.with(|fail| fail.set(true));
         let outcome = apply_with_hooks(
             &p,
             Choice::KeepThat,
             state.path(),
             || {},
             || {
-                if block_refusal_marker {
-                    for entry in std::fs::read_dir(state.path()).unwrap() {
-                        let record = entry.unwrap().path();
-                        if record.extension() == Some(OsStr::new("json")) {
+                for entry in std::fs::read_dir(state.path()).unwrap() {
+                    let record = entry.unwrap().path();
+                    if record.extension() == Some(OsStr::new("json")) {
+                        // Exercise actual filesystem errors at marker creation;
+                        // mode-bit failures do not work on privileged runners.
+                        std::fs::create_dir(record.with_extension("complete")).unwrap();
+                        if block_refusal_marker {
                             std::fs::create_dir(record.with_extension("refused")).unwrap();
                         }
                     }
                 }
             },
         );
-        recovery::FAIL_COMPLETE.with(|fail| fail.set(false));
         let ApplyOutcome::NeedsAttention {
             recovery: receipt,
             reason,
@@ -626,4 +627,25 @@ fn issue2044_crash_gap_restarts_before_indexing() {
             b"this before crash"
         );
     }
+}
+
+#[test]
+fn issue2044_startup_skips_terminal_records_even_after_vault_deletion() {
+    let (vault, state) = fixture();
+    let p = preview(vault.path(), Path::new(COPY)).unwrap();
+    let ApplyOutcome::Applied(receipt) = apply(&p, Choice::KeepThis, state.path()).unwrap() else {
+        panic!("not applied");
+    };
+    std::fs::remove_dir_all(vault.path()).unwrap();
+    assert!(
+        recover_startup(state.path()).unwrap().is_empty(),
+        "completed records cannot warn about intentionally deleted vaults"
+    );
+    std::fs::remove_file(receipt.recovery_record.with_extension("complete")).unwrap();
+    let mut record = receipt.recovery_record.clone();
+    recovery::refused(&mut record).unwrap();
+    assert!(recover_startup(state.path()).unwrap().is_empty());
+    // Terminal journals remain History evidence; no startup JSON read is needed.
+    std::fs::write(&record, b"unreadable old terminal payload").unwrap();
+    assert!(recover_startup(state.path()).unwrap().is_empty());
 }
