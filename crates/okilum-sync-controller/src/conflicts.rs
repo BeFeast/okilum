@@ -363,6 +363,10 @@ pub fn preview(root: &Path, copy: &Path) -> Result<Preview> {
     let this_path = canonical_path(copy)
         .context("Ambiguous conflict filename; inspect the candidate sources explicitly")?;
     let root = root.canonicalize()?;
+    ensure!(
+        root.to_str().is_some() && this_path.to_str().is_some() && copy.to_str().is_some(),
+        "Conflict recovery requires UTF-8 source paths; files have not been changed"
+    );
     let directory = parent(&root, copy)?;
     let this = read_version(&directory, &this_path)?;
     let that = read_version(&directory, copy)?;
