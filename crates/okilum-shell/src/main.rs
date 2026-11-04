@@ -7645,7 +7645,8 @@ impl Render for Reader {
             let visible = self.project_navigation.active.is_some()
                 && self
                     .panels
-                    .visible(reader_layout::Panel::Backlinks, available);
+                    .visible(reader_layout::Panel::Backlinks, available)
+                && !self.project_issue_peek_visible(cx);
             panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
         }
         #[cfg(target_os = "linux")]

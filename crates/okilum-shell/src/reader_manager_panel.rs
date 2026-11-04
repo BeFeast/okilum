@@ -821,6 +821,9 @@ impl Render for ManagerPanel {
 
 impl Reader {
     pub(super) fn manager_browser_focused(&self, cx: &App) -> bool {
+        if self.project_issue_peek_visible(cx) {
+            return false;
+        }
         self.project_navigation
             .manager_panel
             .as_ref()

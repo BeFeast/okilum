@@ -116,6 +116,37 @@ fn peek_2531_real_reader_opens_collapsed_dock_and_preserves_manager_draft_withou
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-peek-content").is_some());
     assert!(visual.debug_bounds("board-peek-tab").is_some());
+    // Model a focused native browser surface. The Reader must hide/revoke its
+    // routing while Task is selected, without replacing the Manager entity.
+    let browser_panel = reader.update_in(visual, |reader, window, cx| {
+        let project = reader.project_navigation.active.clone().unwrap();
+        let panel = cx.new(|cx| {
+            let mut panel = crate::reader_manager_panel::ManagerPanel::new(
+                project,
+                Some(temp.path().join("browser-state")),
+                window,
+                cx,
+            );
+            panel.hide(cx); // No connection attempts in this synthetic fixture.
+            panel.focused = true;
+            panel
+        });
+        reader.project_navigation.manager_panel = Some(panel.clone());
+        assert!(
+            !reader.manager_browser_focused(cx),
+            "hidden browser cannot own Task keyboard routing"
+        );
+        cx.notify();
+        panel
+    });
+    visual.run_until_parked();
+    browser_panel.read_with(visual, |panel, _| {
+        assert!(
+            !panel.focused,
+            "actual Reader render hides the browser surface for the Task tab"
+        )
+    });
+
     manager.update(visual, |view, cx| {
         assert_eq!(
             view.composer.read(cx).typed_source_text(cx),
@@ -125,6 +156,17 @@ fn peek_2531_real_reader_opens_collapsed_dock_and_preserves_manager_draft_withou
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-peek-dock").is_none());
+    reader.update(visual, |reader, cx| {
+        browser_panel.update(cx, |panel, _| panel.focused = true);
+        assert!(
+            reader.manager_browser_focused(cx),
+            "positive control: Manager browser routing is available after close"
+        );
+        browser_panel.update(cx, |panel, _| panel.focused = false);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
     manager.update(visual, |view, cx| {
         assert_eq!(
             view.composer.read(cx).typed_source_text(cx),
