@@ -60,7 +60,6 @@ mod tests {
 
     fn issue(number: u64, labels: &[&str], open_pr: bool, updated: Option<u64>) -> Issue {
         Issue {
-            created_at: String::new(),
             number,
             title: String::new(),
             state: "open".into(),

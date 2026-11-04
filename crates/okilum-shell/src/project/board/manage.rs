@@ -711,7 +711,6 @@ mod tests {
                             .issues
                             .iter()
                             .map(|scope| okilum_t3::board::Issue {
-                                created_at: String::new(),
                                 number: scope.number,
                                 title: format!("Fixture issue {}", scope.number),
                                 updated_at: String::new(),

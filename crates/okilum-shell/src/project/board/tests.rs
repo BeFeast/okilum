@@ -244,7 +244,6 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
             vec![(
                 1767,
                 Ok(okilum_t3::board::Issue {
-                    created_at: String::new(),
                     number: 1767,
                     title: "late".into(),
                     updated_at: String::new(),
@@ -368,7 +367,6 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                     .issues
                     .iter()
                     .map(|s| okilum_t3::board::Issue {
-                        created_at: String::new(),
                         number: s.number,
                         title: format!("Fixture issue {}", s.number),
                         updated_at: String::new(),

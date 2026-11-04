@@ -94,3 +94,7 @@ through indices built with the shared projection, including when row filters hid
 the selection. Opening, resizing and repainting the dock do not scan every issue
 or subscribe its parent to the Manager composer. The mounted reference keeps its
 wheel/splitter bounds and checks keyboard opening/Escape against the issue tab.
+
+Issue creation time remains in the flattened waiting Report source metadata
+introduced by #2533. The issue history reads that same timestamp; a second
+serde field would consume it before the waiting projection could see it.

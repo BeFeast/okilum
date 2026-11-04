@@ -465,7 +465,10 @@ impl Board {
         }
         let mut timeline = Vec::<(String, String)>::new();
         if let Some(issue) = issue {
-            timeline.push((issue.created_at.clone(), "Задача создана".into()));
+            timeline.push((
+                issue.report.created_at.clone().unwrap_or_default(),
+                "Задача создана".into(),
+            ));
             for pull in &issue.live_pulls {
                 timeline.push((
                     pull.created_at.clone(),

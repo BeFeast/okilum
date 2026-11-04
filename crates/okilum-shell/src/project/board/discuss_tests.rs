@@ -82,7 +82,6 @@ fn peek_2531_real_reader_opens_collapsed_dock_and_preserves_manager_draft_withou
                     .issues
                     .iter()
                     .map(|scope| okilum_t3::board::Issue {
-                        created_at: String::new(),
                         number: scope.number,
                         title: "Exact Board context".into(),
                         updated_at: String::new(),

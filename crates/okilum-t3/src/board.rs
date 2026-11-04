@@ -451,8 +451,6 @@ fn validate_scope(scope: &Scope) -> Result<()> {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Issue {
-    #[serde(default)]
-    pub created_at: String,
     pub number: u64,
     pub title: String,
     /// Source timestamp, retained for presentation; never used to infer a stage.

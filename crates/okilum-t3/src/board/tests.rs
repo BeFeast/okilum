@@ -127,7 +127,6 @@ fn one_related_note_escape_is_a_card_problem_not_a_board_failure() {
 }
 fn issue(number: u64, state: &str) -> Issue {
     Issue {
-        created_at: String::new(),
         number,
         title: format!("Issue {number}"),
         updated_at: String::new(),
