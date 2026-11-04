@@ -111,7 +111,7 @@ impl ConflictPanel {
     #[cfg(test)]
     pub fn previous_versions(&self) -> anyhow::Result<Vec<conflicts::RetainedVersion>> {
         match &self.recovery {
-            Some(receipt) => conflicts::retained_versions(&receipt.recovery_record),
+            Some(receipt) => Ok(conflicts::retained_versions(&receipt.recovery_record)?.into()),
             None => Ok(Vec::new()),
         }
     }
