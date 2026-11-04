@@ -1,0 +1,53 @@
+name: reveal-diagnostic
+on:
+  push:
+    branches: ['agent-reveal-diagnostic/**']
+permissions:
+  contents: read
+jobs:
+  reveal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and trace unchanged reveal modules without desktop build
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, tempfile
+          root = pathlib.Path.cwd()
+          work = pathlib.Path(tempfile.mkdtemp(prefix='reveal-diagnostic-'))
+          source = (root / 'crates/okilum-shell/src/platform/reveal.rs').read_text()
+          source = source[source.index('#[cfg(target_os = "linux")]\nmod linux'):]
+          (work / 'lib.rs').write_text('mod platform { mod reveal {\n' + source + '\n}}')
+          (work / 'Cargo.toml').write_text('''[package]
+          name = "reveal-diagnostic"
+          version = "0.0.0"
+          edition = "2021"
+          [workspace]
+          [lib]
+          path = "lib.rs"
+          [dependencies]
+          anyhow = "=1.0.104"
+          zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
+          async-channel = "=2.5.0"
+          tempfile = "=3.27.0"
+          url = "=2.5.8"
+          uuid = { version = "=1.26.0", features = ["v4"] }
+          ''')
+          (work / 'Cargo.lock').write_bytes((root / 'Cargo.lock').read_bytes())
+          built = subprocess.run(['cargo', 'test', '--manifest-path', str(work / 'Cargo.toml'),
+                                  '--no-run', '--message-format=json'], check=True, text=True,
+                                 stdout=subprocess.PIPE)
+          binaries = [m['executable'] for line in built.stdout.splitlines()
+                      if (m := json.loads(line)).get('executable')]
+          assert len(binaries) == 1, binaries
+          for i in range(50):
+              subprocess.run(['python3', 'scripts/ci/test-group.py', '--kill-after', '1',
+                              f'unchanged-reveal-{i+1}', '10', binaries[0],
+                              'show_items_selects_the_item_and_fails_without_a_file_manager',
+                              '--nocapture'], check=True)
+          print('UNCHANGED_REVEAL runs=50 hangs=0')
+          PY
