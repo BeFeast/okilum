@@ -126,6 +126,7 @@ impl Board {
                 .ghost()
                 .small()
                 .flex_none()
+                .accessibility_label(item.kind.action())
                 .child(
                     div()
                         .debug_selector(move || format!("board-list-waiting-action-{index}"))

@@ -576,6 +576,17 @@ fn issue2533_delivery_omits_empty_platforms_channels_cells_and_table(cx: &mut Te
     }
     board.update(visual, |board, cx| {
         // Missing cells in an otherwise populated row/column stay absent too.
+        let mut feed = board.delivery.config.value.as_ref().unwrap().feeds[0].clone();
+        feed.platform = d::Platform::Macos;
+        feed.channel = d::Channel::Stable;
+        board
+            .delivery
+            .config
+            .value
+            .as_mut()
+            .unwrap()
+            .feeds
+            .push(feed);
         let mut source = board.delivery.feeds[&(d::Platform::Linux, d::Channel::Beta)].clone();
         source.value.as_mut().unwrap().platform = d::Platform::Macos;
         source.value.as_mut().unwrap().channel = d::Channel::Stable;

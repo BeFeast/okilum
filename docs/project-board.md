@@ -147,7 +147,7 @@ control retains the existing kanban as an explicit choice. View and group
 collapse preferences are saved per canonical project path in app-owned state,
 outside the vault and the disposable index.
 
-The list groups the unchanged Snapshot in this order: В работе, Проверки,
+After the optional Ждёт тебя group, the list groups the unchanged Snapshot in this order: В работе, Проверки,
 Можно попробовать, Очередь, Проверено. Queue and Verified start collapsed.
 All rows are 38 px high and use GPUI `uniform_list`; a cached projection and
 row index rebuild only on source publications, executor-filter or collapse
@@ -162,15 +162,15 @@ CI state stays grey. A live dot requires an active run. Active/waiting agents
 with no update for four hours show amber «⚠ долго», with the existing tooltip
 identifying the age as time since thread update, not measured run duration.
 
-Up/Down selects visible issues and skips group headings. Enter and row click
+Up/Down selects visible issues and skips group headings and waiting rows. Enter and row click
 open the existing card actions in a bounded disclosure below the list; Escape
 closes it while retaining selection. Board → related note → Board retains the
 selection, executor filter, disclosure and list scroll. Existing local cards,
 invalid annotations, attention, delivery and project-note context remain reachable.
-No new read, dispatch, membership, stage rule or delivery claim is introduced.
+Switching presentation introduces no new read, dispatch, membership, stage rule or delivery claim.
 Native tests cover defaults, independent persisted project choices, collapse,
 240-row viewport work, keyboard reachability and actual Reader note round trips.
-The sibling peek/filter/attention/compact-card/ordering issues remain independent.
+The sibling peek/filter/compact-card/ordering issues remain independent.
 
 
 The compact card contains its issue title/number, a small agent tag and one
