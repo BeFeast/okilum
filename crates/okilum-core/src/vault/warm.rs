@@ -74,12 +74,16 @@ impl SourceRevision {
     /// fingerprint agrees with its bytes. Crossing the native ctime window may
     /// remove a fingerprint; retain that verified evidence for later reuse.
     fn verified_after_read(mut self, before: &Self, bytes: &[u8]) -> Option<Self> {
-        if !self.same_metadata(before) || !before.matches_bytes(bytes) || !self.matches_bytes(bytes)
-        {
+        if !self.same_metadata(before) {
             return None;
         }
+        if let (Some(old), Some(new)) = (before.content_hash, self.content_hash) {
+            if old != new {
+                return None;
+            }
+        }
         self.content_hash = self.content_hash.or(before.content_hash);
-        Some(self)
+        self.matches_bytes(bytes).then_some(self)
     }
 
     /// Compare a current observation with a saved revision. Once native ctime
