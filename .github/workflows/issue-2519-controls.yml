@@ -1,0 +1,64 @@
+name: issue-2519-controls
+on:
+  push:
+    branches: ['qa/2519-pairing-controls']
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: ${{ vars.OKILUM_GITHUB_MACOS_RUNNER || 'macos-15' }}
+    timeout-minutes: 75
+    env:
+      PAIRING_SOURCE_SHA: d625a800ecb157c54c77826ae623c9f22fdfeddb
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: d625a800ecb157c54c77826ae623c9f22fdfeddb
+      - name: Load diagnostic driver from workflow ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api repos/BeFeast/okilum/contents/scripts/ci/issue-2519-controls.py?ref=${{ github.sha }} --jq .content | base64 --decode > "$RUNNER_TEMP/issue-2519-controls.py"
+      - name: Verify native runner
+        run: test "$(uname -m)" = arm64
+      # Caches from unique sibling forgejo-pr refs are invisible to each other.
+      # Only main writes the shared baseline; PRs consume it without duplicating GBs.
+      - name: Restore native Cargo cache
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ~/.cache/okilum-macos/reader-arm64/
+          key: forgejo-native-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'scripts/ci/check-macos.sh', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff') }}
+          # An older main cache still holds most compiled dependencies; cargo rebuilds
+          # only what changed. Without it nearly every PR built from scratch (#1074).
+          restore-keys: |
+            forgejo-native-v1-${{ runner.os }}-${{ runner.arch }}-
+      - name: Run exact-source positive and negative pairing controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
+          export CC=/usr/bin/clang CXX=/usr/bin/clang++
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export CARGO_TARGET_DIR="$HOME/.cache/okilum-macos/reader-arm64"
+          export CARGO_INCREMENTAL=0
+          export TMPDIR="$RUNNER_TEMP"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          python3 scripts/updater/sparkle.py fetch "$archive"
+          python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+          export DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"
+          python3 "$RUNNER_TEMP/issue-2519-controls.py"
+      - name: Preserve all control logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-2519-control-logs
+          path: |
+            ${{ runner.temp }}/head-*.log
+            ${{ runner.temp }}/without-fix-*.log
+            ${{ runner.temp }}/restored-head-*.log
