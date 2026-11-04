@@ -201,8 +201,18 @@ impl Board {
             sources_ready,
             mappings,
             invalid_annotations,
-            issue_indices: binding.issues.iter().enumerate().map(|(i,s)| (s.number,i)).collect(),
-            local_indices: projection.locals.iter().flatten().map(|i| (self.local_cards.value.cards[*i].id.clone(),*i)).collect(),
+            issue_indices: binding
+                .issues
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.number, i))
+                .collect(),
+            local_indices: projection
+                .locals
+                .iter()
+                .flatten()
+                .map(|i| (self.local_cards.value.cards[*i].id.clone(), *i))
+                .collect(),
             binding,
             rows,
             counts,
@@ -217,7 +227,12 @@ impl Board {
         }
         prepared
     }
-    fn list_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn list_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self
             .filter_ui
             .search

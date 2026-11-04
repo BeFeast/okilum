@@ -512,10 +512,24 @@ impl Board {
                 .to_string();
             body = body.child(div().child(format!("• {date} · {text}")));
         }
-        if let Some(message) = self.peek.error.clone().or_else(|| (!self.peek.loaded).then(|| "Комментарии загружаются…".into())) {
-            body = body.child(div().text_size(px(12.)).text_color(p.text_muted).child(message));
+        if let Some(message) = self
+            .peek
+            .error
+            .clone()
+            .or_else(|| (!self.peek.loaded).then(|| "Комментарии загружаются…".into()))
+        {
+            body = body.child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(p.text_muted)
+                    .child(message),
+            );
         }
-        body = body.child(link_button("peek-full-history".into(), "Полная история — в Issue ↗".into(), binding.issue_url(number)));
+        body = body.child(link_button(
+            "peek-full-history".into(),
+            "Полная история — в Issue ↗".into(),
+            binding.issue_url(number),
+        ));
         if let Some(issue) = issue.filter(|i| !i.body.is_empty()) {
             body = body
                 .child(div().text_color(p.text_muted).child("Описание"))

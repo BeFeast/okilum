@@ -44,6 +44,25 @@ fn peek_2531_click_space_escape_arrows_and_tabs_preserve_board_geometry(cx: &mut
     click(visual, "board-list-row-1");
     assert!(visual.debug_bounds("board-peek-content").is_some());
     assert!(visual.debug_bounds("board-list-details").is_none());
+    assert!(
+        visual.debug_bounds("board-peek-property-Связано").is_none(),
+        "empty related property has no placeholder"
+    );
+    let stage = visual.debug_bounds("board-peek-property-Стадия").unwrap();
+    assert!(
+        stage.size.height >= px(20.),
+        "property labels reserve a full line box"
+    );
+    board.update(visual, |b, cx| {
+        b.binding.as_mut().unwrap().stage_note = "notes/context.md".into();
+        b.filter_cache.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-peek-property-Связано").is_some(),
+        "positive control: a real related note renders the row"
+    );
     let pr_title = visual.debug_bounds("board-peek-pr-title-101").unwrap();
     let panel = visual.debug_bounds("board-peek-content").unwrap();
     assert!(
