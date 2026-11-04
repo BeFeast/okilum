@@ -438,6 +438,10 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             "background reconciliation does not report a navigation failure"
         );
     });
+    // Cached Board paint is retained when only the background note changes.
+    // Debug selectors are collected on fresh paint, unlike the native scene.
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
     assert!(visual.debug_bounds("project-board").is_some());
     reader.read_with(visual, |reader, _| {
         assert_eq!(
@@ -695,6 +699,9 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             draft_before
         );
     });
+    // Composer Undo retains the cached Board scene; collect fresh selectors.
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
     let note = visual.debug_bounds("board-note-open-0").unwrap();
     visual.simulate_click(note.center(), Modifiers::default());
     visual.run_until_parked();
@@ -1431,4 +1438,181 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
         visual.debug_bounds("board-expand-42").is_none(),
         "positive control: a healthy read permits the expired merge to leave"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn cached_live_agent_cards_ignore_composer_notifications_and_keep_source_publications(
+    cx: &mut TestAppContext,
+) {
+    cached_live_agent_publications(cx, list::Mode::Board);
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn cached_live_list_rows_ignore_composer_notifications_and_keep_source_publications(
+    cx: &mut TestAppContext,
+) {
+    cached_live_agent_publications(cx, list::Mode::List);
+}
+
+#[cfg(target_os = "linux")]
+fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    struct Host {
+        board: Entity<Board>,
+        manager: Entity<ProjectView>,
+    }
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.board
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+        }
+    }
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let manager = cx.new(|cx| {
+            crate::project::fixture::view(
+                temp.path().join("manager"),
+                Arc::new(crate::project::fixture::Fake::default()),
+                window,
+                cx,
+            )
+        });
+        manager.update(cx, |manager, _| {
+            manager.generation += 1;
+            manager.polling = true;
+        });
+        let board = cx.new(|cx| Board::performance_fixture(temp.path().join("board"), window, cx));
+        Root::new(cx.new(|_| Host { board, manager }), window, cx)
+    });
+    visual.run_until_parked();
+    let (board, manager) = root.read_with(visual, |root, cx| {
+        let host = root.view().clone().downcast::<Host>().unwrap();
+        (host.read(cx).board.clone(), host.read(cx).manager.clone())
+    });
+    let thread_id = manager.update(visual, |manager, _| {
+        manager.identity = Some(ServerIdentity { environment_id:"fixture".into(), label:"Fixture".into() });
+        let chat = manager.chat.as_mut().unwrap();
+        chat.items.insert(1, serde_json::from_value(serde_json::json!({
+            "position":1,"itemId":"progress","runId":"run-live","type":"assistant_message","status":"completed","text":"First live progress\nDetails","updatedAt":"now"
+        })).unwrap());
+        chat.thread_id.clone()
+    });
+    board.update_in(visual, |board, window, cx| {
+        board.active = false;
+        board.list.preferences.mode = mode;
+        board.list.preferences.collapsed = [false; 5];
+        if mode == list::Mode::List {
+            // List groups Working before Queue; narrow the real filter so the
+            // bound Queue agent is visible and the dependency control fires.
+            board.filter.search = "#1".into();
+        }
+        board.set_manager(manager.clone(), window, cx);
+        let scope = &mut board.binding.as_mut().unwrap().issues[0];
+        scope.current_task = true;
+        scope.agent_thread_id = Some(thread_id.clone());
+        scope.execution = Some(okilum_t3::board::Execution { thread_id:thread_id.clone(), run_id:"run-live".into() });
+        board.snapshot.t3.value = vec![serde_json::from_value(serde_json::json!({
+            "threadId":thread_id,"title":"Fixture","status":"running","activeRunId":"run-live","latestRunId":"run-live","providerInstanceId":"codex","model":"model","runtimeMode":"full-access","updatedAt":chrono::Utc::now().to_rfc3339()
+        })).unwrap()];
+        board.snapshot.t3.last_success = Some(now());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-agent-link-1").is_some(),
+        "positive control: real agent renderer reads progress"
+    );
+    let agent = visual.debug_bounds("board-agent-link-1").unwrap();
+    visual.simulate_click(agent.center(), Modifiers::default());
+    assert_eq!(
+        visual.opened_url(),
+        Some(
+            ServerIdentity {
+                environment_id: "fixture".into(),
+                label: "Fixture".into()
+            }
+            .thread_url(&thread_id)
+        ),
+        "rich agent controls retain their explicit source URL"
+    );
+    assert_eq!(board.read_with(visual, |board, _| board.selected), None);
+    board.read_with(visual, |board, _| {
+        board.render_calls.set(0);
+        board.card_calls.set(0);
+    });
+    manager.update_in(visual, |manager, window, cx| {
+        manager.compose.update(cx, |input, cx| {
+            input.set_value("Keep the draft", window, cx)
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        board.read_with(visual, |board, _| board.render_calls.get()),
+        0,
+        "agent cards must not depend on the whole Manager entity"
+    );
+    manager.update(visual, |manager, cx| {
+        manager
+            .chat
+            .as_mut()
+            .unwrap()
+            .items
+            .get_mut(&1)
+            .unwrap()
+            .text = Some("Updated live progress\nDetails".into());
+        manager.feed.update(cx, |feed, cx| feed.reset(cx));
+        // Deliberately no parent notify: a reply may publish only Feed.
+    });
+    visual.run_until_parked();
+    board.read_with(visual, |board, _| {
+        assert!(board.render_calls.get() > 0);
+        assert_eq!(
+            board
+                .manager_display
+                .progress(
+                    &board.binding.as_ref().unwrap().issues[0],
+                    &board.snapshot.t3.value[0]
+                )
+                .as_deref(),
+            Some("Updated live progress")
+        );
+    });
+    assert_eq!(
+        manager
+            .read_with(visual, |manager, cx| manager.compose.read(cx).value())
+            .as_str(),
+        "Keep the draft"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn compact_pull_badge_opens_its_bound_pull_without_selecting_the_card(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let temp = tempfile::tempdir().unwrap();
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let board = cx.new(|cx| Board::performance_fixture(temp.path().join("board"), window, cx));
+        Root::new(board, window, cx)
+    });
+    visual.simulate_resize(size(px(1200.), px(800.)));
+    visual.run_until_parked();
+    let board = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<Board>().unwrap()
+    });
+    let expected = board.update(visual, |board, _| {
+        board.filtered_projection().binding.pull_url(1002)
+    });
+    let badge = visual
+        .debug_bounds("board-pr-badge-2")
+        .expect("real live PR badge");
+    assert!(badge.intersects(&visual.debug_bounds("project-board").unwrap()));
+    assert_ne!(visual.opened_url().as_deref(), Some(expected.as_str()));
+    visual.simulate_click(badge.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.opened_url().as_deref(), Some(expected.as_str()));
+    board.read_with(visual, |board, _| assert_eq!(board.selected, None));
 }

@@ -2,6 +2,39 @@
 use super::*;
 
 impl ProjectView {
+    pub(super) fn render_chrome(&self, cx: &mut Context<Self>) -> AnyElement {
+        let status = self
+            .gateway
+            .as_ref()
+            .map(|gateway| gateway.status())
+            .unwrap_or(GatewayStatus::NotConnected);
+        let open = self
+            .identity
+            .as_ref()
+            .zip(self.chat.as_ref())
+            .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
+        let mut tabs = h_flex().id("project-sections").gap_2().p_2();
+        for (id, label, section) in [
+            ("project-section-manager", "Chat", ProjectSection::Manager),
+            ("project-section-rules", "Rules", ProjectSection::Rules),
+            ("project-section-skills", "Skills", ProjectSection::Skills),
+        ] {
+            tabs = tabs.child(
+                Button::new(id)
+                    .debug_selector(move || format!("project-section-label-{label}"))
+                    .ghost()
+                    .label(label)
+                    .selected(self.section == section)
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_section(section, cx))),
+            );
+        }
+        v_flex()
+            .w_full()
+            .child(self.render_chat_header(&status, open, cx))
+            .child(tabs)
+            .into_any_element()
+    }
+
     pub(super) fn render_chat_header(
         &self,
         status: &GatewayStatus,
