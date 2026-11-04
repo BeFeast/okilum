@@ -437,7 +437,10 @@ fn show_entry(roots: Vec<PathBuf>, state: EntryState, cx: &mut App) {
         root
     }) {
         Ok(window) => {
-            cx.global_mut::<Startup>().entry = Some(window.into());
+            // Updating a typed WindowHandle<Root> also borrows Root. Notifications
+            // update Root themselves, so use the window-only handle here.
+            let window = AnyWindowHandle::from(window);
+            cx.global_mut::<Startup>().entry = Some(window);
             #[cfg(target_os = "linux")]
             let _ = window.update(cx, |_, window, cx| {
                 super::reader_sync_conflicts::show_startup_notice(window, cx);
