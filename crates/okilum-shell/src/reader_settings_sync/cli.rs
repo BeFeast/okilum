@@ -127,6 +127,10 @@ fn run(arguments: &[String]) -> i32 {
     })();
     result.unwrap_or_else(|error| {
         eprintln!("okilum sync: {error:#}");
+        if format!("{error:#}").contains("would block") {
+            // Controller::open found the profile's Sync lock taken.
+            eprintln!("okilum sync: another `okilum sync` command is using this Sync state");
+        }
         1
     })
 }
@@ -550,7 +554,8 @@ fn connect(
     let name = name.unwrap_or_else(default_computer_name);
     direct::validate_pairing_input(&url, &name)?;
     // Settings enters pairing before Connect; that also tells which computers
-    // were already paired. A stale earlier request must not block Connect.
+    // were already paired. Its failure (an unreachable earlier request, say)
+    // is reported but does not stop Connect; `okilum sync cancel` clears it.
     let before: Option<HashSet<_>> = match session.perform(Operation::EnterPairing) {
         Ok(output) => Some(output.snapshot.peers.iter().map(|p| p.id).collect()),
         Err(error) => {
