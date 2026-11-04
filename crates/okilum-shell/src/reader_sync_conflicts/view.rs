@@ -269,19 +269,24 @@ impl InventoryView {
                         .iter()
                         .filter(|entry| entry.pending)
                         .count();
-                    Ok::<_, anyhow::Error>((messages, remaining))
+                    let inventory = conflicts::inspect(&root)?;
+                    Ok::<_, anyhow::Error>((messages, remaining, inventory))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.message = match result {
-                    Ok((messages, remaining)) if messages.is_empty() => {
+                    Ok((messages, remaining, inventory)) => {
                         this.pending = remaining;
-                        "No interrupted resolutions.".into()
-                    }
-                    Ok((messages, remaining)) => {
-                        this.pending = remaining;
-                        messages.join("\n")
+                        this.copies = inventory.copies;
+                        this.complete = inventory.complete;
+                        this.panel = None;
+                        this.page = 0;
+                        if messages.is_empty() {
+                            "No interrupted resolutions.".into()
+                        } else {
+                            messages.join("\n")
+                        }
                     }
                     Err(error) => format!("Cannot recover: {error}"),
                 };
@@ -347,7 +352,7 @@ impl Render for InventoryView {
             )
             .child(self.message.clone());
         if self.pending > 0 {
-            view = view.child(format!("{} interrupted conflict decision(s) need recovery. Both originals are retained in Note history and Recover notes.", self.pending));
+            view = view.child(div().id("sync-conflict-pending").debug_selector(|| "sync-conflict-pending".into()).child(format!("{} interrupted conflict decision(s) need recovery. Both originals are retained in Note history and Recover notes.", self.pending)));
         }
         if self.busy {
             view = view.child("Loading…");
@@ -451,6 +456,7 @@ mod tests {
     use super::*;
     use ::core::prelude::v1::test;
     use gpui_component::Root;
+    use okilum_sync_controller::conflicts::ApplyOutcome;
 
     #[gpui::test]
     fn issue2044_mounted_inventory_comparison_and_buttons_resolve_both_kinds(
@@ -540,5 +546,55 @@ mod tests {
                 visual.update(|window, _| window.remove_window());
             }
         }
+    }
+    #[gpui::test]
+    fn issue2044_interrupted_inventory_recovery_reveals_recreated_copy(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("vault");
+        let state = directory.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&state).unwrap();
+        let copy = PathBuf::from("note.okilum-conflict-20261104-123456-ABC2345.md");
+        std::fs::write(root.join("note.md"), b"this").unwrap();
+        std::fs::write(root.join(&copy), b"that").unwrap();
+        let recovery = state.join("sync-conflicts");
+        conflicts::prepare_recovery(&recovery).unwrap();
+        let preview = conflicts::preview(&root, &copy).unwrap();
+        let ApplyOutcome::Applied(receipt) =
+            conflicts::apply(&preview, Choice::KeepBoth, &recovery).unwrap()
+        else {
+            panic!("fixture must apply");
+        };
+        std::fs::remove_file(receipt.recovery_record.with_extension("complete")).unwrap();
+        std::fs::write(root.join("note.md"), b"later writer").unwrap();
+        let (root_view, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| InventoryView::new(root.clone(), state.clone(), None, cx));
+            Root::new(view, window, cx)
+        });
+        visual.run_until_parked();
+        let view = root_view.read_with(visual, |root, _| {
+            root.view().clone().downcast::<InventoryView>().unwrap()
+        });
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.pending, 1);
+            assert!(v.copies.is_empty());
+        });
+        view.update(visual, |v, cx| v.recover(cx));
+        visual.run_until_parked();
+        view.read_with(visual, |v, _| {
+            assert_eq!(v.pending, 0);
+            assert_eq!(v.copies, [copy.clone()]);
+            assert!(v.complete);
+        });
+        assert_eq!(
+            std::fs::read(root.join("note.md")).unwrap(),
+            b"later writer"
+        );
+        assert_eq!(std::fs::read(root.join(copy)).unwrap(), b"that");
+        assert!(receipt
+            .recovery_record
+            .with_extension("recovered")
+            .is_file());
     }
 }
