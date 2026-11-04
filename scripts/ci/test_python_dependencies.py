@@ -65,6 +65,10 @@ class PythonDependencies(unittest.TestCase):
                         for i, run in enumerate(runs):
                             if runs_discovery(run):
                                 self.assertLess(setup, i)
+                            if run == 'python3 scripts/releases/hourly_beta.py certify-source':
+                                # This switches to an older exact product tree;
+                                # dependency tooling must come from the workflow.
+                                self.assertLess(setup, i)
                         jobs_checked.append((directory, path.name, name))
         self.assertIn(('.forgejo/workflows', 'fast.yml', 'check'), jobs_checked)
         self.assertIn(('.forgejo/workflows', 'ci.yml', 'linux-local'), jobs_checked)
