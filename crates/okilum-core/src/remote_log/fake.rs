@@ -51,6 +51,8 @@ pub struct State {
     pub polls: usize,
     pub searches: usize,
     pub rejected_headers: usize,
+    #[cfg(test)]
+    pub after_poll: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     next_id: usize,
     pending: BTreeMap<String, (Value, usize, Value)>,
 }
@@ -339,6 +341,17 @@ fn respond(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<(
         };
         (status, response, s.scenario.delay)
     };
+    #[cfg(test)]
+    if body["id"].is_string() {
+        // Cancellation fixtures can hold the HTTP response without holding state.
+        let (hook, polls) = {
+            let state = state.lock().unwrap();
+            (state.after_poll.clone(), state.polls)
+        };
+        if let Some(hook) = hook {
+            hook(polls);
+        }
+    }
     thread::sleep(delay);
     let bytes = serde_json::to_vec(&response).unwrap();
     write!(stream, "HTTP/1.1 {status} Response\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", bytes.len())?;
