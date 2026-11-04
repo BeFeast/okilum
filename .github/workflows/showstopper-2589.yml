@@ -1,0 +1,85 @@
+name: showstopper-compile-2589
+on:
+  push:
+    branches: ['showstopper-compile/2589-share']
+permissions:
+  contents: read
+jobs:
+  linux:
+    # Public repositories receive the standard 4-vCPU hosted Linux runner.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+      OKILUM_SOURCE_COMMIT: 57036e7e0c692dac387279778f1f1e762efdf85b
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 57036e7e0c692dac387279778f1f1e762efdf85b
+          persist-credentials: false
+      - name: Record exact source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          printf 'source=%s\ncpus=%s\n' "$OKILUM_SOURCE_COMMIT" "$(nproc)"
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          lscpu
+          free -h
+      - name: Install system libraries
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd python3-venv gnupg gpgv tini ffmpeg \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+      - name: Verify pinned Rust toolchain
+        run: |
+          rustc -Vv
+          cargo clippy --version
+          cargo fmt --version
+      # Separate namespace: worker archives cannot be restored by release lanes.
+      # Cache generated vendor source too: fresh path-dependency mtimes otherwise
+      # invalidate compiled artifacts. Always verify restored trees before use.
+      # Include source SHA to refresh immutable caches after each worker change.
+      - name: Restore Rust downloads and target cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-${{ github.sha }}
+          restore-keys: |
+            agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
+      - name: Prepare and verify pinned vendor and comrak
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          python3 scripts/ci/check-vendor-generation.py
+      - name: Fetch locked public dependencies
+        run: |
+          cargo fetch --locked
+          # vendor-tests.sh can test its independent workspace on patch changes.
+          # Resolve patched dependencies without changing the verified generated
+          # tree. The independent test invocation may resolve this lock offline.
+          vendor_lock=$(mktemp)
+          cp vendor/gpui-component/Cargo.lock "$vendor_lock"
+          trap 'cp "$vendor_lock" vendor/gpui-component/Cargo.lock; unlink "$vendor_lock"' EXIT
+          cargo fetch --manifest-path vendor/gpui-component/Cargo.toml
+      - name: Lint every workspace target offline
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build Linux desktop offline
+        id: build
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: |
+          cargo fmt --check
+          cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
