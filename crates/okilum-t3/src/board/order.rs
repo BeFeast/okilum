@@ -73,6 +73,7 @@ mod tests {
             open_pull_requests: if open_pr { vec![1] } else { vec![] },
             live_pulls: vec![],
             updated_at: updated.map(rfc3339).unwrap_or_default(),
+            report: Default::default(),
         }
     }
 

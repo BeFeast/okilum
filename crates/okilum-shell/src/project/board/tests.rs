@@ -252,6 +252,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
                     labels: Vec::new(),
                     open_pull_requests: Vec::new(),
                     live_pulls: Vec::new(),
+                    report: Default::default(),
                 }),
             )],
             1,
@@ -376,6 +377,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                         }],
                         open_pull_requests: Vec::new(),
                         live_pulls: Vec::new(),
+                        report: Default::default(),
                     })
                     .collect())
             },
@@ -645,6 +647,13 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     visual.simulate_click(back.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-attention-0").is_some());
+    assert!(visual.debug_bounds("board-waiting-open-0").is_some());
+    assert!(visual.debug_bounds("board-note-open-0").is_none());
+    // The waiting summary is immediate; detailed context and Discuss expand
+    // explicitly, preserving the real Reader/Manager/Undo acceptance below.
+    let details = visual.debug_bounds("board-context-details").unwrap();
+    visual.simulate_click(details.center(), Modifiers::default());
+    visual.run_until_parked();
     assert!(visual.debug_bounds("board-note-open-0").is_some());
     assert!(visual.debug_bounds("board-next-stage").is_some());
     assert!(visual.debug_bounds("board-note-card-next").is_none());
@@ -702,7 +711,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     // Composer Undo retains the cached Board scene; collect fresh selectors.
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();
-    let note = visual.debug_bounds("board-note-open-0").unwrap();
+    let note = visual.debug_bounds("board-waiting-open-0").unwrap();
     visual.simulate_click(note.center(), Modifiers::default());
     visual.run_until_parked();
     reader.read_with(visual, |reader, _| {
@@ -1062,10 +1071,10 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     assert!(visual.debug_bounds("board-delivery-details").is_some());
     assert!(visual.debug_bounds("board-delivery-line").is_some());
     assert!(visual.debug_bounds("board-delivery-details-line").is_some());
-    assert!(visual.debug_bounds("delivery-problem-Mac").is_some());
+    assert!(visual.debug_bounds("delivery-problem-Mac").is_none());
     assert!(visual
         .debug_bounds("board-delivery-details-problem-Mac")
-        .is_some());
+        .is_none());
     for id in ["delivery-problem-Mac-Stable", "delivery-problem-Mac-Beta"] {
         assert!(
             visual.debug_bounds(id).is_none(),
@@ -1080,9 +1089,11 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
         "board-delivery-details-Linux-Stable",
         "board-delivery-details-Linux-Beta",
     ] {
-        assert!(
+        let expected = id == format!("board-delivery-details-{}-Beta", platform.label());
+        assert_eq!(
             visual.debug_bounds(id).is_some(),
-            "expanded card control: {id}"
+            expected,
+            "expanded card: {id}"
         );
     }
     for id in [
@@ -1093,7 +1104,8 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
         "board-delivery-Linux-Stable",
         "board-delivery-Linux-Beta",
     ] {
-        assert!(visual.debug_bounds(id).is_some(), "visible {id}");
+        let expected = id == format!("board-delivery-{}-Beta", platform.label());
+        assert_eq!(visual.debug_bounds(id).is_some(), expected, "visible {id}");
     }
     for id in [
         "board-delivery-Mac-Sprint",
@@ -1180,6 +1192,8 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
                 .project_notes
                 .accept(okilum_t3::board::context::refresh(area.path()), now());
             board.binding = Some(binding);
+            board.notes_expanded = true;
+            board.refresh_waiting();
             board
         });
         Root::new(board, window, cx)

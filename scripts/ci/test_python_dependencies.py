@@ -1,8 +1,10 @@
 """Python suites require an explicit, pinned environment on every runner."""
 import importlib.util
 from pathlib import Path
+import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -14,7 +16,36 @@ dependencies = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dependencies)
 
 
+def runs_discovery(run, root=ROOT, seen=None):
+    """Follow shell wrappers so supervision cannot hide a discovery job."""
+    if any('unittest discover -s scripts/' + suite in run
+           for suite in ['ci', 'releases', 'updater']):
+        return True
+    seen = set() if seen is None else seen
+    for entrypoint in re.findall(r'\bscripts/ci/[\w.-]+\.sh\b', run):
+        if entrypoint in seen:
+            continue
+        seen.add(entrypoint)
+        script = root / entrypoint
+        if script.is_file() and runs_discovery(script.read_text(), root, seen):
+            return True
+    return False
+
+
 class PythonDependencies(unittest.TestCase):
+    def test_discovery_follows_nested_wrappers_and_stops_at_cycles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / 'scripts/ci'
+            scripts.mkdir(parents=True)
+            (scripts / 'suite.sh').write_text(
+                "python3 -I -m unittest discover -s scripts/ci -p 'test_*.py'\n")
+            (scripts / 'wrapped.sh').write_text(
+                'bash scripts/ci/wrapped.sh\nbash scripts/ci/suite.sh\n')
+            (scripts / 'unrelated.sh').write_text('bash scripts/ci/unrelated.sh\n')
+            self.assertTrue(runs_discovery('bash scripts/ci/wrapped.sh', root))
+            self.assertFalse(runs_discovery('bash scripts/ci/unrelated.sh', root))
+
     def test_required_dependencies_are_available_at_the_pinned_versions(self):
         result = subprocess.run([sys.executable, '-I', str(GUARD)],
                                 capture_output=True, text=True, timeout=10)
@@ -40,14 +71,6 @@ class PythonDependencies(unittest.TestCase):
         # Follow both direct discovery and the shell entrypoints used by local
         # and hosted full gates. Do not let a new runner inherit host PyYAML.
         import yaml
-        def runs_discovery(run):
-            return any('unittest discover -s scripts/' + suite in run
-                       for suite in ['ci', 'releases', 'updater']) or any(
-                           entrypoint in run for entrypoint in [
-                               'scripts/ci/check-linux.sh', 'scripts/ci/check-shared.sh',
-                               'scripts/ci/sync-source-sharing.sh',
-                               'scripts/ci/sync-source-sharing-fast.sh'])
-
         jobs_checked = []
         for directory in ['.forgejo/workflows', '.github/workflows']:
             for path in sorted((ROOT / directory).glob('*.yml')):
@@ -66,7 +89,7 @@ class PythonDependencies(unittest.TestCase):
                         for i, run in enumerate(runs):
                             if runs_discovery(run):
                                 self.assertLess(setup, i)
-                            if run == 'python3 scripts/releases/hourly_beta.py certify-source':
+                            if 'scripts/releases/hourly_beta.py certify-source' in run:
                                 # This switches to an older exact product tree;
                                 # dependency tooling must come from the workflow.
                                 self.assertLess(setup, i)

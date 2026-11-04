@@ -17,6 +17,8 @@ pub(crate) struct Preferences {
     project: PathBuf,
     pub mode: Mode,
     pub collapsed: [bool; 5],
+    #[serde(default)]
+    pub waiting_collapsed: bool,
 }
 impl Preferences {
     pub fn new(project: PathBuf) -> Self {
@@ -25,6 +27,7 @@ impl Preferences {
             project,
             mode: Mode::List,
             collapsed: [true, false, false, false, true],
+            waiting_collapsed: false,
         }
     }
     pub fn load(path: &Path, project: PathBuf) -> anyhow::Result<Self> {

@@ -343,7 +343,7 @@ impl Render for InventoryView {
             .id("sync-conflict-inventory")
             .debug_selector(|| "sync-conflict-inventory".into())
             .w_full()
-            .min_h_0()
+            .flex_shrink_0()
             .gap_2()
             .child(self.root.display().to_string())
             .child(
