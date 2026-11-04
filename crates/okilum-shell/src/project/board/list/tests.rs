@@ -774,6 +774,21 @@ fn issue2533_waiting_survives_zero_match_chips_and_search(cx: &mut TestAppContex
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-list-row-43").is_some());
+    visual.simulate_keystrokes("/");
+    visual.simulate_input("#999999");
+    visual.run_until_parked();
+    board.update(visual, |board, cx| {
+        board.project_notes = Default::default();
+        board.snapshot.forgejo.value.clear();
+        board.snapshot.forgejo.error = Some("Synthetic first read unavailable".into());
+        board.filter_cache.invalidate();
+        board.refresh_waiting();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-waiting-group").is_none());
+    assert!(visual.debug_bounds("board-filter-empty").is_some());
+    assert!(visual.debug_bounds("board-waiting-problem").is_some());
 }
 
 #[gpui::test]
