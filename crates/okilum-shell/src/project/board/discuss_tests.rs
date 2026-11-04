@@ -4,7 +4,7 @@ use ::core::prelude::v1::test;
 use std::{cell::RefCell, rc::Rc};
 
 #[gpui::test]
-fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_close_revokes(
+fn peek_2531_real_reader_opens_collapsed_dock_and_preserves_manager_draft_without_send(
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
@@ -82,6 +82,7 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
                     .issues
                     .iter()
                     .map(|scope| okilum_t3::board::Issue {
+                        created_at: String::new(),
                         number: scope.number,
                         title: "Exact Board context".into(),
                         updated_at: String::new(),
@@ -114,6 +115,68 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
         .expect("positive control: real Board card mounted");
     visual.simulate_click(expand.center(), Modifiers::default());
     visual.run_until_parked();
+    assert!(visual.debug_bounds("board-peek-content").is_some());
+    assert!(visual.debug_bounds("board-peek-tab").is_some());
+    // Model a focused native browser surface. The Reader must hide/revoke its
+    // routing while Task is selected, without replacing the Manager entity.
+    let browser_panel = reader.update_in(visual, |reader, window, cx| {
+        let project = reader.project_navigation.active.clone().unwrap();
+        let panel = cx.new(|cx| {
+            let mut panel = crate::reader_manager_panel::ManagerPanel::new(
+                project,
+                Some(temp.path().join("browser-state")),
+                window,
+                cx,
+            );
+            panel.hide(cx); // No connection attempts in this synthetic fixture.
+            panel.focused = true;
+            panel
+        });
+        reader.project_navigation.manager_panel = Some(panel.clone());
+        assert!(
+            !reader.manager_browser_focused(cx),
+            "hidden browser cannot own Task keyboard routing"
+        );
+        cx.notify();
+        panel
+    });
+    visual.run_until_parked();
+    browser_panel.read_with(visual, |panel, _| {
+        assert!(
+            !panel.focused,
+            "actual Reader render hides the browser surface for the Task tab"
+        )
+    });
+
+    manager.update(visual, |view, cx| {
+        assert_eq!(
+            view.composer.read(cx).typed_source_text(cx),
+            "Keep my draft\n"
+        )
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-peek-dock").is_none());
+    reader.update(visual, |reader, cx| {
+        browser_panel.update(cx, |panel, _| panel.focused = true);
+        assert!(
+            reader.manager_browser_focused(cx),
+            "positive control: Manager browser routing is available after close"
+        );
+        browser_panel.update(cx, |panel, _| panel.focused = false);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    manager.update(visual, |view, cx| {
+        assert_eq!(
+            view.composer.read(cx).typed_source_text(cx),
+            "Keep my draft\n"
+        )
+    });
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-peek-content").is_some());
     let contexts = Rc::new(RefCell::new(Vec::new()));
     let observed = contexts.clone();
     let board = reader.read_with(visual, |reader, _| {
@@ -127,18 +190,27 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
         })
         .detach();
     });
+    manager.update(visual, |view, cx| {
+        view.select_section(ProjectSection::Rules, cx)
+    });
     let discuss = visual
         .debug_bounds("board-discuss-1767")
         .expect("actual user action is visible");
     visual.simulate_click(discuss.center(), Modifiers::default());
     visual.run_until_parked();
     assert_eq!(contexts.borrow().len(), 1);
+    assert!(visual.debug_bounds("board-peek-content").is_none());
+    board.read_with(visual, |b, _| assert!(b.peek.manager_tab));
     let expected = format!("Keep my draft\n\n\n---\n{}", contexts.borrow()[0]);
     let target = manager.update(visual, |view, cx| {
         assert_eq!(
             view.composer.read(cx).typed_source_text(cx),
             expected,
             "one exact context append, not both caller and coordinator"
+        );
+        assert!(
+            view.section == ProjectSection::Manager,
+            "Discuss selects Chat before the draft handoff"
         );
         view.draft_handoff_target(cx).unwrap()
     });

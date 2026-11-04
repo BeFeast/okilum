@@ -60,16 +60,8 @@ impl Board {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.filter_key(event, window, cx);
             }))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    let issue = this.selected.take().is_some();
-                    let local = this.selected_local.take().is_some();
-                    if issue || local {
-                        cx.stop_propagation();
-                        cx.notify();
-                    }
-                }
-            }))
+            .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_peek(window, cx)))
+            .on_key_down(cx.listener(|this, event, window, cx| this.list_key(event, window, cx)))
             .child(self.filter_bar(&prepared.projection, window, cx));
         if binding.repository.is_empty() {
             root = root.child(div().debug_selector(|| "board-local".into()).text_size(px(12.))
@@ -342,38 +334,6 @@ impl Board {
                 .child(lanes)
                 .child(end),
         );
-        // Variable-height actions do not change virtualised card geometry.
-        let details = self
-            .selected
-            .and_then(|n| prepared.issue_indices.get(&n))
-            .map(|i| {
-                let scope = &binding.issues[*i];
-                self.card_with_mapping(
-                    scope,
-                    self.delivery_column(scope),
-                    binding,
-                    prepared.mappings.get(&scope.number).copied().flatten(),
-                    window,
-                    cx,
-                )
-            })
-            .or_else(|| {
-                self.selected_local
-                    .as_ref()
-                    .and_then(|id| prepared.local_indices.get(id))
-                    .map(|i| self.local_card(&self.local_cards.value.cards[*i], window, cx))
-            });
-        if let Some(details) = details {
-            root = root.child(
-                div()
-                    .id("board-kanban-details")
-                    .debug_selector(|| "board-kanban-details".into())
-                    .h(px(260.))
-                    .flex_none()
-                    .overflow_y_scroll()
-                    .child(details),
-            );
-        }
         root.child(
             div()
                 .debug_selector(|| "board-live-status".into())
@@ -557,17 +517,14 @@ impl Board {
             .child(div().flex_none().text_color(p.text_muted).child(id))
             .on_click(cx.listener(move |this, event, window, cx| {
                 if let Some(number) = number {
-                    this.selected = (this.selected != Some(number)).then_some(number);
+                    this.selected = Some(number);
                     this.selected_local = None;
                 } else if let Some(id) = &local {
                     this.selected = None;
-                    this.selected_local =
-                        (this.selected_local.as_ref() != Some(id)).then(|| id.clone());
+                    this.selected_local = Some(id.clone());
                 }
-                if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
-                    this.focus.focus(window, cx);
-                }
-                cx.notify();
+                this.focus.focus(window, cx);
+                this.open_peek(window, cx);
             }))
             .into_any_element();
         let row = if let Some(id) = local_root {

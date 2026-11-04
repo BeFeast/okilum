@@ -251,13 +251,7 @@ impl Board {
     ) -> AnyElement {
         let colors = brand::palette(cx);
         let id = card.id.clone();
-        let (disclosure, _) = super::controls::disclosure(
-            SharedString::from(format!("local-expand-{id}")),
-            window,
-            cx,
-        );
-        let expanded = self.selected_local.as_ref() == Some(&id);
-        let mut view = v_flex()
+        let view = v_flex()
             .min_w_0()
             .min_h_0()
             .flex_shrink_0()
@@ -292,73 +286,81 @@ impl Board {
                     )
                     .on_click(cx.listener({
                         let id = id.clone();
-                        move |this, _, _, cx| {
+                        move |this, _, window, cx| {
                             this.selected = None;
-                            this.selected_local = if this.selected_local.as_ref() == Some(&id) {
-                                None
-                            } else {
-                                Some(id.clone())
-                            };
+                            this.selected_local = Some(id.clone());
+                            this.open_peek(window, cx);
                             cx.notify();
                         }
                     })),
             );
-        if expanded {
-            let draft=format!("Project: {}\nLocal card: {}\nTitle: {}\nDetails: {}\nManual task state: {}\nSource: {}\n\nQuestion for Manager: ", self.area.display(),id,card.title,card.details,card.state.label(),self.area.join("ops/board-local.toml").display());
-            view = view
-                .child(
-                    div()
-                        .whitespace_normal()
-                        .text_size(px(12.))
-                        .child(card.details.clone()),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(colors.text_muted)
-                        .child(
-                            "Local task state; no executor, PR/CI or build acceptance is inferred.",
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .child(
-                            Button::new(SharedString::from(format!("local-edit-{id}")))
-                                .ghost()
-                                .small()
-                                .label("Edit")
-                                .debug_selector({
-                                    let id = id.clone();
-                                    move || format!("board-local-edit-{id}")
-                                })
-                                .on_click(cx.listener({
-                                    let id = id.clone();
-                                    move |this, _, window, cx| {
-                                        this.open_local_management(
-                                            Mode::Edit(id.clone()),
-                                            window,
-                                            cx,
-                                        )
-                                    }
-                                })),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("local-discuss-{id}")))
-                                .ghost()
-                                .small()
-                                .label("Discuss")
-                                .debug_selector({
-                                    let id = id.clone();
-                                    move || format!("board-local-discuss-{id}")
-                                })
-                                .tooltip("Prepare a Manager draft; does not send")
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.emit(Action::Discuss(draft.clone()))
-                                })),
-                        ),
-                );
-        }
+        view.into_any_element()
+    }
+    pub(super) fn local_details(&self, card: &model::Card, cx: &mut Context<Self>) -> AnyElement {
+        let colors = brand::palette(cx);
+        let id = card.id.clone();
+        let mut view = v_flex()
+            .gap_3()
+            .min_w_0()
+            .line_height(px(20.))
+            .child(
+                div()
+                    .text_size(px(17.))
+                    .line_height(px(23.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(card.title.clone()),
+            )
+            .child(format!("Local · {}", card.state.label()));
+        let draft=format!("Project: {}\nLocal card: {}\nTitle: {}\nDetails: {}\nManual task state: {}\nSource: {}\n\nQuestion for Manager: ", self.area.display(),id,card.title,card.details,card.state.label(),self.area.join("ops/board-local.toml").display());
+        view = view
+            .child(
+                div()
+                    .whitespace_normal()
+                    .text_size(px(12.))
+                    .child(card.details.clone()),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(colors.text_muted)
+                    .child("Local task state; no executor, PR/CI or build acceptance is inferred."),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new(SharedString::from(format!("local-edit-{id}")))
+                            .ghost()
+                            .small()
+                            .label("Edit")
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("board-local-edit-{id}")
+                            })
+                            .on_click(cx.listener({
+                                let id = id.clone();
+                                move |this, _, window, cx| {
+                                    this.open_local_management(Mode::Edit(id.clone()), window, cx)
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("local-discuss-{id}")))
+                            .ghost()
+                            .small()
+                            .label("Discuss")
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("board-local-discuss-{id}")
+                            })
+                            .tooltip("Prepare a Manager draft; does not send")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.peek.manager_tab = true;
+                                cx.notify();
+                                cx.emit(Action::Discuss(draft.clone()))
+                            })),
+                    ),
+            );
         view.into_any_element()
     }
     pub(super) fn render_local_management(

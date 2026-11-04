@@ -1,120 +1,7 @@
-//! Compact kanban summaries and the existing explicit card disclosure.
+//! Compact kanban summaries; details open in the issue dock.
 use super::*;
 
 impl Board {
-    pub(super) fn card_with_mapping(
-        &self,
-        scope: &okilum_t3::board::Scope,
-        column: Column,
-        binding: &Binding,
-        mapping: Option<&'static str>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = brand::palette(cx);
-        let number = scope.number;
-        let issue = self.snapshot.forgejo.value.get(&number);
-        let mut card = v_flex()
-            .w_full()
-            .min_w_0()
-            .gap_2()
-            .child(self.compact_card_control(scope, column, binding, false, window, cx));
-        if let Some(problem) = mapping {
-            card = card.child(
-                div()
-                    .debug_selector(move || format!("board-mapping-{number}"))
-                    .text_size(px(12.))
-                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
-                    .text_color(colors.warning)
-                    .child(problem),
-            );
-        }
-        if self.selected == Some(number) {
-            card = card.child(
-                div()
-                    .text_size(px(13.))
-                    .line_height(px(18.))
-                    .child(scope.expected.clone()),
-            );
-            if let Some(delivery) = self.delivery_details(scope, binding, cx) {
-                card = card.child(delivery);
-            }
-            let url = binding.issue_url(number);
-            let context = self.context(scope);
-            let mut actions = h_flex()
-                .px_2()
-                .pb_2()
-                .gap_1()
-                .flex_wrap()
-                .child(
-                    Button::new(("board-open-issue", number as usize))
-                        .ghost()
-                        .small()
-                        .label("Issue")
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                )
-                .child(
-                    Button::new(("board-discuss", number as usize))
-                        .debug_selector(move || format!("board-discuss-{number}"))
-                        .ghost()
-                        .small()
-                        .label("Discuss")
-                        .tooltip("Discuss with Manager · draft")
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(Action::Discuss(context.clone()))
-                        })),
-                );
-            for pr in &scope.pull_requests {
-                let url = binding.pull_url(*pr);
-                actions = actions.child(
-                    Button::new(("board-pr", *pr as usize))
-                        .ghost()
-                        .small()
-                        .label(format!("PR #{pr}"))
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                );
-            }
-            for (index, build) in scope.builds.iter().enumerate() {
-                let url = build.url.clone();
-                actions = actions.child(
-                    Button::new((SharedString::from(format!("board-build-{number}")), index))
-                        .ghost()
-                        .small()
-                        .label("Build")
-                        .tooltip(build.label.clone())
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                );
-            }
-            for (index, note) in scope.notes.iter().enumerate() {
-                if note == &binding.stage_note {
-                    continue;
-                }
-                let note = note.clone();
-                actions = actions.child(
-                    Button::new((SharedString::from(format!("board-note-{number}")), index))
-                        .ghost()
-                        .small()
-                        .debug_selector(move || format!("board-note-{number}-{index}"))
-                        .label(if okilum_t3::board::https_link(&note) {
-                            "Link"
-                        } else {
-                            "Note"
-                        })
-                        .tooltip(note.clone())
-                        .on_click(cx.listener(move |this, _, _, cx| this.note(&note, cx))),
-                );
-            }
-            card = card.child(actions);
-            if let Some(issue) = issue {
-                card = card.child(
-                    div()
-                        .text_size(px(12.))
-                        .child(issue.body.chars().take(1800).collect::<String>()),
-                );
-            }
-        }
-        card.into_any_element()
-    }
     pub(super) fn compact_local_card(
         &self,
         card: &okilum_t3::board::local::Card,
@@ -185,14 +72,14 @@ impl Board {
             )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.selected = None;
-                this.selected_local = (!selected).then(|| id.clone());
+                this.selected_local = Some(id.clone());
                 this.focus.focus(window, cx);
-                cx.notify();
+                this.open_peek(window, cx);
             }))
             .into_any_element();
         self.track_card_layout(card, cx)
     }
-    /// Exactly three rows; selection opens actions outside the virtualised lane.
+    /// Exactly three rows; selection opens the issue dock.
     pub(super) fn compact_card(
         &self,
         scope: &okilum_t3::board::Scope,
@@ -399,18 +286,16 @@ impl Board {
         let card = button
             .h_auto()
             .p_0()
-            .accessibility_label(format!("Expand issue {number}"))
+            .accessibility_label(format!("Open issue {number}"))
             .debug_selector(move || format!("board-expand-{number}"))
             .w_full()
             .min_w_0()
             .cursor_pointer()
             .on_click(cx.listener(move |this, event, window, cx| {
                 this.selected_local = None;
-                this.selected = (this.selected != Some(number)).then_some(number);
-                if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
-                    this.focus.focus(window, cx);
-                }
-                cx.notify();
+                this.selected = Some(number);
+                this.focus.focus(window, cx);
+                this.open_peek(window, cx);
             }))
             .child(
                 v_flex()

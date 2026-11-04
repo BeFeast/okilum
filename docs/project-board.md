@@ -45,7 +45,7 @@ API while meeting the one-minute closure target on a healthy source. A failed/in
 the last complete snapshot and reports its source error in one quiet line with
 the last-success time; full details remain in the existing source disclosure.
 Merge expiry also freezes at that last-success time during failure, so an offline
-Board cannot silently empty itself. Generated cards identify missing manual annotations in their card disclosure. Invalid or duplicate annotations stay visible and never supply
+Board cannot silently empty itself. Generated cards identify missing manual annotations in the issue panel. Invalid or duplicate annotations stay visible and never supply
 an arbitrary owner. Delivery refresh follows
 the issue read so newly discovered PRs reach the existing delivery verifier in the
 same refresh cycle. The earlier selected-scope descriptions below document the
@@ -58,9 +58,9 @@ place. Note opens still use the Reader's ordinary revision/save/refusal path;
 only a successfully accepted Markdown document hides the Board.
 
 The stage is an explicit selection, independent of whether issues are open or
-closed. An issue card shows its expected result and executor, expands in place,
-and opens explicit issue/PR/build links or related area notes. Escape closes its
-details. The horizontal lane scroll is local to the center.
+closed. An issue card shows its expected result and executor. Its right-hand issue
+panel opens explicit issue/PR/build links or related area notes. Escape closes
+the issue panel. The horizontal lane scroll is local to the center.
 
 **Discuss with Manager · draft** appends a separate block to the existing native
 Manager composer. It preserves existing text and uses an atomic input insertion,
@@ -167,16 +167,55 @@ CI state stays grey. A live dot requires an active run. Active/waiting agents
 with no update for four hours show amber «⚠ долго», with the existing tooltip
 identifying the age as time since thread update, not measured run duration.
 
-Up/Down selects visible issues and skips group headings and waiting rows. Enter
-and row click open the existing card actions in a bounded disclosure below the list; Escape
-closes it while retaining selection. Board → related note → Board retains the
-selection, shared filters, disclosure and list scroll. Existing local cards,
+Up/Down selects visible issues and skips group headings and waiting rows. Space, Enter and row
+click open the issue panel described below. With the panel open, Up/Down updates
+its issue. Board → related note → Board retains selection, shared filters and
+list scroll. Existing local cards,
 invalid annotations, attention, delivery and project-note context remain reachable.
-Switching presentation introduces no new read, dispatch, membership, stage rule
-or delivery claim.
+List rows introduce no new read, dispatch, membership, stage rule or delivery claim.
 Native tests cover defaults, independent persisted project choices, collapse,
 240-row viewport work, keyboard reachability and actual Reader note round trips.
-The sibling peek and attention issues remain independent.
+The sibling attention and ordering issues remain independent.
+
+
+### Issue panel (#2531)
+
+Clicking a List row or kanban card, or Space/Enter on the selection, opens the
+right dock and selects **Задача**, beside **Manager**, using gpui-kit tabs.
+Filtering rows retains the selected issue panel, using the cached complete
+membership projection. Switching tabs retains the issue and the existing Manager entity,
+composer draft and Undo state. Escape or **Esc закрыть** removes the issue tab
+and returns to Manager without changing its draft. The macOS native WebView is
+hidden while the issue tab is selected, including its keyboard routing; its
+entity and browser draft are retained. Project/source changes close
+the panel and invalidate outstanding comment results. Local task details and
+Edit/Discuss are available in the same dock, without inventing execution facts.
+
+The panel uses theme tokens, a 17 px semibold title with a 23 px line box, source
+labels, the bound live agent/avatar and exactly matched cached current step.
+The source-age label identifies time since update; amber after four hours is
+not a measured run duration. Stage, all linked PRs with their actual state/title
+and CI indicator, related/stage notes, expected result, description, build links
+and existing delivery details remain reachable. Literal same-repository issue
+mentions from the bounded description preview appear as labelled links, without
+inferring dependencies. **В beta** lists exact builds
+only from ready Beta rows in the existing delivery projection; otherwise it
+says **ещё нет**. Merge alone never claims delivery.
+
+**Что было** combines source creation/PR timestamps, verified Beta publication
+and a bounded comments excerpt. Opening an issue makes at most one extra public
+Forgejo request (first 12 comments, 256 KiB, 10 seconds, no redirects or tokens).
+It runs off the UI thread, with at most one request in flight; rapid selection
+changes coalesce to the latest issue. Project, repository, issue and generation
+must all match before publication. No per-frame request or all-issue detail read
+is added. Missing history and comment errors remain visible; full history opens
+through **Issue ↗**. The timeline shows at most 16 source events and a plain **Полная история — в Issue ↗** link. Empty **Связано** properties are omitted; property labels reserve a full 20 px line box.
+
+**Обсудить с Manager** switches to Manager → Chat and uses the existing protected
+append-to-draft path, with Undo. It never sends or creates a thread. Issue, PR,
+agent, note and build actions keep their existing destinations. Native GPUI
+regressions exercise click/Space, tabs, arrows, Escape/draft retention, stale
+owner/generation rejection, and real Reader Discuss without a send.
 
 ### Shared filter bar (#2532)
 
@@ -237,8 +276,10 @@ switches to List, expands Queue, scrolls to its heading and saves that view choi
 Local cards and annotation problems participate in the same count and remain
 reachable. Both views apply the shared #2535 priority order at publication time;
 Queue retains the «от Олега сначала» hint. The source timestamp stays lossless for
-List age labels while ordering compares its parsed time. Clicking a card opens the existing bounded disclosure below the lanes,
-with outcome, links, notes and draft-only Discuss; Escape closes it. Native GPUI
+List age labels while ordering compares its parsed time. Clicking a compact card or Queue mini row opens **Задача** beside **Manager**,
+with outcome, links, notes and draft-only Discuss. Space/Enter opens the selection;
+Up/Down updates the dock and Escape returns to Manager with its draft intact.
+There is no in-place disclosure in either view. Native GPUI
 regressions cover card geometry, two-line clamping, bounded Queue work and view
 handoff, actual CI/live/stale evidence, virtualised lanes and Verified expansion.
 
@@ -286,8 +327,8 @@ missing type metadata stays a neutral issue, not an invented bug/task. The theme
 danger, important, muted, information, warning and success roles supply the pink,
 violet, slate and stage colours in both appearance modes. Native Lucide icons and
 a steady indicator replace browser effects. Cards show the source title, agent and state, with the explicit expected
-outcome inside the disclosure, and at most one PR link badge; a PR link never claims
-that its CI passed or it merged. The expanded card retains notes and draft actions.
+outcome inside the issue panel, and at most one PR link badge; a PR link never claims
+that its CI passed or it merged. The issue panel retains notes and draft actions.
 
 Once card sources have completed a successful read, empty columns
 collapse into compact name/count controls above the lanes (#2219), leaving room for useful content. Each control expands its empty lane with the keyboard

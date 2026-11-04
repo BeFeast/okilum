@@ -92,7 +92,7 @@ fn list_2530_default_and_groups_persist_per_project(cx: &mut TestAppContext) {
     });
     visual.simulate_event(gpui::KeyUpEvent { keystroke });
     visual.run_until_parked();
-    board.read_with(visual, |board, _| assert!(!board.list.details_open));
+    board.read_with(visual, |board, _| assert!(!board.peek.open));
     assert!(visual.debug_bounds("board-columns").is_some());
     board.read_with(visual, |_board, cx| {
         let restored = State::load(area.path(), cx);
@@ -148,8 +148,8 @@ fn list_2530_virtualises_240_rows_and_keyboard_reaches_tail_without_reprojection
     });
     visual.simulate_keystrokes("up enter");
     visual.run_until_parked();
-    assert!(visual.debug_bounds("board-list-details").is_some());
-    assert!(visual.debug_bounds("board-note-239-0").is_some());
+    board.read_with(visual, |board, _| assert!(board.peek.open));
+    assert!(visual.debug_bounds("board-list-details").is_none());
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-list-details").is_none());
@@ -302,7 +302,7 @@ fn list_2530_ci_live_age_and_executor_filter_use_existing_evidence(cx: &mut Test
         board.snapshot.forgejo.value = (1..=4).map(|number| {
             let mut issue: okilum_t3::board::Issue = serde_json::from_value(serde_json::json!({"number":number,"state":"open","title":format!("Source title {number}"),"labels":[{"name":"bug"},{"name":"from-oleg"},{"name":"epic: Board"}],"updated_at":"1970-01-01T00:00:00Z"})).unwrap();
             issue.open_pull_requests = vec![100 + number];
-            issue.live_pulls = vec![okilum_t3::board::live::Pull { number: 100 + number, merged_at: None, checks: ["success", "pending", "failure", "unknown"][(number-1) as usize].into() }];
+            issue.live_pulls = vec![okilum_t3::board::live::Pull { title: String::new(), state: String::new(), created_at: String::new(), updated_at: String::new(), number: 100 + number, merged_at: None, checks: ["success", "pending", "failure", "unknown"][(number-1) as usize].into() }];
             (number, issue)
         }).collect();
         board.snapshot.forgejo.last_success = Some(at);
@@ -376,6 +376,7 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
                     "labels": labels.into_iter().map(|name| serde_json::json!({"name":name})).collect::<Vec<_>>() })).unwrap();
                 if number == 2 {
                     issue.live_pulls.push(okilum_t3::board::live::Pull {
+                        title: String::new(), state: String::new(), created_at: String::new(), updated_at: String::new(),
                         number: 102, merged_at: None, checks: "failure".into(),
                     });
                 }

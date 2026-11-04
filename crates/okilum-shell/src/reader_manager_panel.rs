@@ -825,6 +825,9 @@ impl Render for ManagerPanel {
 
 impl Reader {
     pub(super) fn manager_browser_focused(&self, cx: &App) -> bool {
+        if self.project_issue_peek_visible(cx) {
+            return false;
+        }
         self.project_navigation
             .manager_panel
             .as_ref()
@@ -846,19 +849,27 @@ impl Reader {
             .is_some_and(|p| p.manager == Manager::NotStarted)
         {
             if let Some(project) = &self.project {
-                return div().size_full().child(project.clone()).into_any_element();
+                return self.wrap_project_peek(
+                    div().size_full().child(project.clone()).into_any_element(),
+                    cx,
+                );
             }
         }
         #[cfg(target_os = "macos")]
         if let Some(panel) = &self.project_navigation.manager_panel {
-            return div().size_full().child(panel.clone()).into_any_element();
+            return self.wrap_project_peek(
+                div().size_full().child(panel.clone()).into_any_element(),
+                cx,
+            );
         }
         #[cfg(not(target_os = "macos"))]
         if let Some(project) = &self.project {
-            return div().size_full().child(project.clone()).into_any_element();
+            return self.wrap_project_peek(
+                div().size_full().child(project.clone()).into_any_element(),
+                cx,
+            );
         }
-        let _ = cx;
-        div().p_4().child("Loading manager…").into_any_element()
+        self.wrap_project_peek(div().p_4().child("Loading manager…").into_any_element(), cx)
     }
 }
 

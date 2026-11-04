@@ -148,6 +148,8 @@ fn active(scope: &Scope, threads: &[okilum_t3::ThreadSummary]) -> bool {
 }
 
 pub(super) struct Projection {
+    /// Complete membership for the selected issue, independent of row filters.
+    pub unfiltered: Binding,
     /// The same narrowed binding feeds either presentation, including group counts.
     pub binding: Arc<Binding>,
     pub chip_counts: [usize; 5],
@@ -213,6 +215,7 @@ impl Board {
                 binding.clone()
             };
             let mut result = Projection {
+                unfiltered: projected.clone(),
                 binding: Arc::new(projected.clone()),
                 chip_counts: [0; 5],
                 counts: [0; 5],
