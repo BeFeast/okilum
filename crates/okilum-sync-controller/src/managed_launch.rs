@@ -297,6 +297,11 @@ pub(crate) fn configuration(
     }
     let r = existing(home)?;
     let gate = r.gate()?;
+    ensure!(
+        crate::daemon::managed_transport_identity(home.parent().context("preparation missing")?)?
+            == *daemon,
+        "managed preparation binding changed"
+    );
     let mut b = r.load()?;
     ensure!(
         b.home == home && b.certificate_hash == daemon.certificate_hash,
@@ -346,6 +351,11 @@ pub(crate) fn runtime_configuration(daemon: &DaemonIdentity) -> Result<RuntimeCo
     let home = daemon.config_file.parent().context("daemon home missing")?;
     let reference = existing(home).context("external runtime has no managed hold ownership")?;
     let gate = reference.gate()?;
+    ensure!(
+        crate::daemon::managed_transport_identity(home.parent().context("preparation missing")?)?
+            == *daemon,
+        "managed preparation binding changed"
+    );
     let b = reference.load()?;
     ensure!(
         b.home == home && b.certificate_hash == daemon.certificate_hash,
