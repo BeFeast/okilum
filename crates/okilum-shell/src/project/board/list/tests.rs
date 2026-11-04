@@ -459,3 +459,115 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
     assert!(visual.debug_bounds("board-list-count-Queue-2").is_some());
     assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
 }
+
+/// #2548: exercise the production row and pill builders, including their actual
+/// truncation bounds, rather than a label styled only for the test.
+#[gpui::test]
+fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        crate::test_init(cx);
+        brand::apply_theme(cx);
+    });
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(1));
+    let glyphs = "Jumpy query: g j p q y · у р д щ";
+    let title = glyphs.repeat(12);
+    board.update(visual, |board, cx| {
+        board.binding.as_mut().unwrap().issues[0].agent_thread_id = Some("glyph-agent".into());
+        let issue = serde_json::from_value(serde_json::json!({
+            "number": 1, "state": "open", "title": title,
+            "labels": [{"name": "bug"}, {"name": "epic: g j p q y у р д щ"}]
+        }))
+        .unwrap();
+        board.snapshot.forgejo.value.insert(1, issue);
+        board.snapshot.forgejo.last_success = Some(now());
+        board.snapshot.t3.value = vec![serde_json::from_value(serde_json::json!({
+            "threadId": "glyph-agent", "title": "Synthetic glyph agent",
+            "updatedAt": chrono::DateTime::from_timestamp(now() as i64, 0).unwrap().to_rfc3339(),
+            "status": "running", "activeRunId": "glyph-run",
+            "providerInstanceId": "codex", "model": "synthetic", "runtimeMode": "full-access"
+        }))
+        .unwrap()];
+        // Agent activity alone does not promote a backlog issue. Open Queue
+        // explicitly so this typography fixture exercises the real source rules.
+        board.list.preferences.collapsed[Column::Queue as usize] = false;
+        board.list.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for width in [1200., 900.] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        let row = visual
+            .debug_bounds("board-list-row-1")
+            .expect("positive control: issue rendered");
+        assert_eq!(row.size.height, px(HEIGHT));
+        let mut measured = 0;
+        for (selector, font_size, weight) in [
+            ("board-list-title-1", 13., FontWeight::NORMAL),
+            ("board-state-1", 12., FontWeight::NORMAL),
+            (
+                "board-pill-label-epic: g j p q y у р д щ",
+                12.,
+                FontWeight::NORMAL,
+            ),
+            ("board-list-group-label-Working", 13., FontWeight::SEMIBOLD),
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            let required = visual.update(|_, cx| {
+                let mut descriptor = gpui::font(brand::SANS_FONT);
+                descriptor.weight = weight;
+                let font = cx.text_system().resolve_font(&descriptor);
+                // Descent is signed in GPUI's test text system. Compare the
+                // full extents so this check cannot accept a one-em clip box.
+                cx.text_system().ascent(font, px(font_size)).abs()
+                    + cx.text_system().descent(font, px(font_size)).abs()
+            });
+            assert!(
+                required > px(font_size),
+                "positive control: font metrics exceed one em"
+            );
+            assert!(
+                bounds.size.height >= required,
+                "{selector}: {:?} line box must fit ascent + descent {required:?}",
+                bounds.size.height
+            );
+            if selector != "board-list-group-label-Working" {
+                assert!(
+                    bounds.top() >= row.top() && bounds.bottom() <= row.bottom(),
+                    "{selector} must fit inside the 38 px row"
+                );
+            }
+            measured += 1;
+        }
+        assert_eq!(
+            measured, 4,
+            "positive control: title, state, pill and group all measured"
+        );
+        let title_bounds = visual.debug_bounds("board-list-title-1").unwrap();
+        let intrinsic_width = visual.update(|window, _| {
+            window
+                .text_system()
+                .shape_line(
+                    title.clone().into(),
+                    px(13.),
+                    &[gpui::TextRun {
+                        len: title.len(),
+                        font: gpui::font(brand::SANS_FONT),
+                        color: gpui::black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width()
+        });
+        assert!(
+            title_bounds.size.width > px(0.) && title_bounds.size.width < intrinsic_width,
+            "positive control: the long title overflows its constrained ellipsis box"
+        );
+    }
+}
