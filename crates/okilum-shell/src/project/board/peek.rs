@@ -255,7 +255,8 @@ impl Board {
         let binding = &projection.unfiltered;
         let Some(scope) = self
             .selected
-            .and_then(|n| binding.issues.iter().find(|scope| scope.number == n))
+            .and_then(|n| projection.unfiltered_indices.get(&n))
+            .map(|index| &binding.issues[*index])
         else {
             return body
                 .child("Задача больше не входит в Board. Закройте панель или выберите другую.")
@@ -288,6 +289,14 @@ impl Board {
                 ),
         );
         let agent = live::agent(scope, &self.snapshot.t3.value, now(), 4 * 3600);
+        #[cfg(target_os = "linux")]
+        let agent_url = agent.as_ref().and_then(|a| {
+            self.manager_display
+                .identity
+                .as_ref()
+                .map(|identity| identity.thread_url(&a.thread.thread_id))
+        });
+        #[cfg(not(target_os = "linux"))]
         let agent_url = agent.as_ref().and_then(|a| {
             self.manager.as_ref().and_then(|m| {
                 m.read(cx)
@@ -298,6 +307,9 @@ impl Board {
         });
         if let Some(agent) = &agent {
             let tone = if agent.stuck { p.warning } else { p.info };
+            #[cfg(target_os = "linux")]
+            let progress = self.manager_display.progress(scope, agent.thread);
+            #[cfg(not(target_os = "linux"))]
             let progress = self
                 .manager
                 .as_ref()
@@ -438,11 +450,7 @@ impl Board {
         body = body
             .child(div().text_color(p.text_muted).child("Ожидаемый результат"))
             .child(div().child(scope.expected.clone()));
-        if let Some(problem) = self
-            .binding
-            .as_ref()
-            .and_then(|binding| okilum_t3::board::live::mapping_problem(binding, number))
-        {
+        if let Some(problem) = projection.mapping_problems.get(&number).copied().flatten() {
             body = body.child(
                 div()
                     .debug_selector(move || format!("board-mapping-{number}"))

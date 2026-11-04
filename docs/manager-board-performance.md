@@ -87,3 +87,10 @@ surfaces retain their 720px maximum and leading alignment. Header controls,
 Markdown selection, code actions, attachment transfers and scroller ownership
 are unchanged. This removes nested flex intrinsic-size negotiation for the
 rich rows actually exercised during native splitter measurement.
+
+The #2531 issue dock uses the same retained Linux ManagerDisplay for exact-run
+progress and thread links. It resolves the selected issue and mapping diagnostic
+through indices built with the shared projection, including when row filters hide
+the selection. Opening, resizing and repainting the dock do not scan every issue
+or subscribe its parent to the Manager composer. The mounted reference keeps its
+wheel/splitter bounds and checks keyboard opening/Escape against the issue tab.

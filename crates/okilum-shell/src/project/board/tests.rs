@@ -1479,7 +1479,7 @@ fn peek_2531_live_board_retains_expiring_merge_and_visible_diagnostic_until_succ
 fn cached_live_agent_cards_ignore_composer_notifications_and_keep_source_publications(
     cx: &mut TestAppContext,
 ) {
-    cached_live_agent_publications(cx, list::Mode::Board);
+    cached_live_agent_publications(cx, list::Mode::Board, false);
 }
 
 #[cfg(target_os = "linux")]
@@ -1487,22 +1487,42 @@ fn cached_live_agent_cards_ignore_composer_notifications_and_keep_source_publica
 fn cached_live_list_rows_ignore_composer_notifications_and_keep_source_publications(
     cx: &mut TestAppContext,
 ) {
-    cached_live_agent_publications(cx, list::Mode::List);
+    cached_live_agent_publications(cx, list::Mode::List, false);
 }
 
 #[cfg(target_os = "linux")]
-fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
+#[gpui::test]
+fn peek_2531_cached_live_panel_ignores_composer_and_keeps_progress(cx: &mut TestAppContext) {
+    cached_live_agent_publications(cx, list::Mode::Board, true);
+}
+
+#[cfg(target_os = "linux")]
+fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode, peek: bool) {
     cx.update(crate::test_init);
     let temp = tempfile::tempdir().unwrap();
     struct Host {
         board: Entity<Board>,
         manager: Entity<ProjectView>,
+        peek: bool,
+        renders: usize,
     }
     impl Render for Host {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            self.board
-                .clone()
-                .cached(StyleRefinement::default().size_full())
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.renders += 1;
+            let mut view = h_flex().size_full().child(
+                div().flex_1().min_w_0().h_full().child(
+                    self.board
+                        .clone()
+                        .cached(StyleRefinement::default().size_full()),
+                ),
+            );
+            if self.peek {
+                let dock = self.board.update(cx, |board, cx| {
+                    board.render_peek_dock(div().into_any_element(), cx)
+                });
+                view = view.child(div().w(px(420.)).h_full().flex_none().child(dock));
+            }
+            view
         }
     }
     let (root, visual) = cx.add_window_view(|window, cx| {
@@ -1519,7 +1539,21 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
             manager.polling = true;
         });
         let board = cx.new(|cx| Board::performance_fixture(temp.path().join("board"), window, cx));
-        Root::new(cx.new(|_| Host { board, manager }), window, cx)
+        Root::new(
+            cx.new(|cx| {
+                if peek {
+                    cx.observe(&board, |_, _, cx| cx.notify()).detach();
+                }
+                Host {
+                    board,
+                    manager,
+                    peek,
+                    renders: 0,
+                }
+            }),
+            window,
+            cx,
+        )
     });
     visual.run_until_parked();
     let (board, manager) = root.read_with(visual, |root, cx| {
@@ -1587,6 +1621,25 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
         "rich agent controls retain their explicit source URL"
     );
     assert_eq!(board.read_with(visual, |board, _| board.selected), None);
+    if peek {
+        board.update_in(visual, |board, window, cx| {
+            board.selected = Some(2);
+            board.open_peek(window, cx);
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("board-peek-agent").is_some(),
+            "positive control: cached progress is rendered in the issue dock"
+        );
+    }
+    let dock_renders = root.read_with(visual, |root, cx| {
+        root.view()
+            .clone()
+            .downcast::<Host>()
+            .unwrap()
+            .read(cx)
+            .renders
+    });
     board.read_with(visual, |board, _| {
         board.render_calls.set(0);
         board.card_calls.set(0);
@@ -1602,6 +1655,17 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
         board.read_with(visual, |board, _| board.render_calls.get()),
         0,
         "agent cards must not depend on the whole Manager entity"
+    );
+    assert_eq!(
+        root.read_with(visual, |root, cx| root
+            .view()
+            .clone()
+            .downcast::<Host>()
+            .unwrap()
+            .read(cx)
+            .renders),
+        dock_renders,
+        "issue dock must not subscribe to composer notifications through the Manager entity"
     );
     manager.update(visual, |manager, cx| {
         manager
@@ -1629,6 +1693,19 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
             Some("Updated live progress")
         );
     });
+    if peek {
+        assert!(
+            root.read_with(visual, |root, cx| root
+                .view()
+                .clone()
+                .downcast::<Host>()
+                .unwrap()
+                .read(cx)
+                .renders)
+                > dock_renders,
+            "positive control: real Feed progress publication also refreshes the issue dock"
+        );
+    }
     assert_eq!(
         manager
             .read_with(visual, |manager, cx| manager.compose.read(cx).value())

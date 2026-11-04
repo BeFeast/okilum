@@ -149,7 +149,9 @@ fn active(scope: &Scope, threads: &[okilum_t3::ThreadSummary]) -> bool {
 
 pub(super) struct Projection {
     /// Complete membership for the selected issue, independent of row filters.
-    pub unfiltered: Binding,
+    pub unfiltered: Arc<Binding>,
+    pub unfiltered_indices: std::collections::BTreeMap<u64, usize>,
+    pub mapping_problems: std::collections::BTreeMap<u64, Option<&'static str>>,
     /// The same narrowed binding feeds either presentation, including group counts.
     pub binding: Arc<Binding>,
     pub chip_counts: [usize; 5],
@@ -214,9 +216,26 @@ impl Board {
             } else {
                 binding.clone()
             };
+            let unfiltered = Arc::new(projected.clone());
             let mut result = Projection {
-                unfiltered: projected.clone(),
-                binding: Arc::new(projected.clone()),
+                unfiltered_indices: unfiltered
+                    .issues
+                    .iter()
+                    .enumerate()
+                    .map(|(i, scope)| (scope.number, i))
+                    .collect(),
+                mapping_problems: unfiltered
+                    .issues
+                    .iter()
+                    .map(|scope| {
+                        (
+                            scope.number,
+                            okilum_t3::board::live::mapping_problem(binding, scope.number),
+                        )
+                    })
+                    .collect(),
+                binding: unfiltered.clone(),
+                unfiltered,
                 chip_counts: [0; 5],
                 counts: [0; 5],
                 scopes: Default::default(),

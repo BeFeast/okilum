@@ -291,7 +291,7 @@ impl Board {
             .w_full()
             .min_w_0()
             .cursor_pointer()
-            .on_click(cx.listener(move |this, event, window, cx| {
+            .on_click(cx.listener(move |this, _event, window, cx| {
                 this.selected_local = None;
                 this.selected = Some(number);
                 this.focus.focus(window, cx);

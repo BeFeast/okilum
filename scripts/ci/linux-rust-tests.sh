@@ -35,6 +35,11 @@ suite cargo test --locked -p okilum-shell --bin okilum issue1588_ -- --nocapture
 # #2533: explicit non-empty waiting verdicts before shared package tests.
 suite cargo test --locked -p okilum-shell --bin okilum issue2533_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum waiting_2533_ -- --nocapture
+# #2497: explicit non-empty performance/cache and picker verdicts.
+suite cargo test --locked -p okilum-shell --bin okilum project::performance::tests:: -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum cached_live_ -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum filtered_list_reuses_projection_ -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum project::models::interaction_tests:: -- --nocapture
 # Keep issue-peek interactions visible even if a later full-shell test aborts.
 suite cargo test --locked -p okilum-shell --bin okilum peek_2531_ -- --nocapture
 suite cargo test --locked -p okilum-t3 peek_2531_ -- --nocapture

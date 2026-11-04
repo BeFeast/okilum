@@ -515,7 +515,7 @@ impl Board {
                     .child(title),
             )
             .child(div().flex_none().text_color(p.text_muted).child(id))
-            .on_click(cx.listener(move |this, event, window, cx| {
+            .on_click(cx.listener(move |this, _event, window, cx| {
                 if let Some(number) = number {
                     this.selected = Some(number);
                     this.selected_local = None;
