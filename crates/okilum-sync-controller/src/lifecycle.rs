@@ -224,6 +224,14 @@ impl<S: UserServices> Lifecycle<S> {
             );
             return Ok(());
         }
+        let source = match &self.launcher {
+            Some(path) => path.clone(),
+            None => std::env::current_exe()?
+                .parent()
+                .context("package directory missing")?
+                .join("okilum-sync-launch"),
+        };
+        let hash = crate::managed_launch::digest(&source)?;
         // An old journal recognizes ONLY its exact previously generated unit.
         // Stop it before offline config/registry migration. Never stop arbitrary
         // definitions, and never use this process-wide upgrade as a folder proof.
@@ -241,14 +249,7 @@ impl<S: UserServices> Lifecycle<S> {
             File::open(&self.units)?.sync_all()?;
         }
         let reference = crate::managed_launch::initialize(&journal.instance)?;
-        let source = match &self.launcher {
-            Some(path) => path.clone(),
-            None => std::env::current_exe()?
-                .parent()
-                .context("package directory missing")?
-                .join("okilum-sync-launch"),
-        };
-        let hash = crate::managed_launch::digest(&source)?;
+
         let helper = self.state.join("okilum-sync-launch");
         if helper.try_exists()? {
             ensure!(
@@ -260,13 +261,17 @@ impl<S: UserServices> Lifecycle<S> {
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(&source)?;
+            let temporary = self.state.join(format!("lifecycle-{}.tmp", Uuid::new_v4()));
             let mut output = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o500)
-                .open(&helper)?;
+                .open(&temporary)?;
             std::io::copy(&mut input, &mut output)?;
             output.sync_all()?;
+            let publish = fs::hard_link(&temporary, &helper);
+            let _ = fs::remove_file(&temporary);
+            publish?;
             File::open(&self.state)?.sync_all()?;
         }
         ensure!(

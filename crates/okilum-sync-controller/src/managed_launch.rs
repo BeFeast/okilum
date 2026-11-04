@@ -27,14 +27,21 @@ use xmltree::{Element, XMLNode};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Identity(u64, u64);
+pub(crate) struct Identity(u64, u64, Option<u64>);
 pub(crate) fn identity(path: &Path) -> Result<Identity> {
     let m = fs::symlink_metadata(path)?;
     ensure!(
         !m.file_type().is_symlink(),
         "managed path replaced by symlink"
     );
-    Ok(Identity(m.dev(), m.ino()))
+    Ok(Identity(
+        m.dev(),
+        m.ino(),
+        m.created()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|t| u64::try_from(t.as_nanos()).ok()),
+    ))
 }
 pub(crate) fn digest(path: &Path) -> Result<String> {
     let mut f = OpenOptions::new()
@@ -443,7 +450,6 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
         .env_clear()
         .env("HOME", &b.home)
         .env("STMONITORED", "1")
-        .env("GOMAXPROCS", "2")
         .args([
             "serve",
             "--no-browser",

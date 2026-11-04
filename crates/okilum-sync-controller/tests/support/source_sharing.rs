@@ -132,6 +132,18 @@ fn managed_source_share_empty_receive_and_bidirectional_hashes() -> Result<()> {
         .unwrap()
         .is_empty());
     assert!(!pair.source.vault.join(".stfolder").exists());
+    // #2582: initial source publication must enter admission before seeding
+    // ignores/markers or creating a resumable folder configuration.
+    let source_authority = okilum_write_authority::Authority::for_root(&pair.source.vault)?;
+    let hold = source_authority.begin_drain("source-enrollment-refusal")?;
+    let token = hold.token().clone();
+    assert!(pair
+        .first
+        .share_vault(&pair.prepared, &pair.source.vault)
+        .is_err());
+    assert!(!pair.source.vault.join(".stignore").exists());
+    assert!(!pair.source.vault.join(".stfolder").exists());
+    hold.release(&token)?;
     let shared = pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
     assert_eq!(shared.shared, vec![pair.source.vault.clone()]);
     let id = pair.shared_catalog()?;
@@ -166,6 +178,29 @@ fn managed_source_share_empty_receive_and_bidirectional_hashes() -> Result<()> {
         id,
         "source share or authorization was not durable"
     );
+    // A receive hold refuses before either local configuration or remote Share;
+    // a source hold independently refuses the remote membership publisher.
+    let receiver_authority = okilum_write_authority::Authority::for_root(&pair.target.vault)?;
+    let hold = receiver_authority.begin_drain("receive-enrollment-refusal")?;
+    let token = hold.token().clone();
+    assert!(pair
+        .second
+        .attach(pair.peer, &id, &pair.target.vault)
+        .is_err());
+    assert!(pair.target.api.config()?["folders"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    hold.release(&token)?;
+    let hold = source_authority.begin_drain("remote-share-refusal")?;
+    let token = hold.token().clone();
+    let before_share = pair.source.api.folder(&id)?;
+    assert!(pair
+        .second
+        .attach(pair.peer, &id, &pair.target.vault)
+        .is_err());
+    assert_eq!(pair.source.api.folder(&id)?, before_share);
+    hold.release(&token)?;
     pair.second.attach(pair.peer, &id, &pair.target.vault)?;
     wait(
         "ordinary source initial receive and automatic promotion",
@@ -175,6 +210,14 @@ fn managed_source_share_empty_receive_and_bidirectional_hashes() -> Result<()> {
         },
     )?;
     assert_eq!(pair.target.api.folder(&id)?["type"], "sendreceive");
+    let hold = receiver_authority.begin_drain("promotion-reconcile-refusal")?;
+    let token = hold.token().clone();
+    let before_reconcile = pair.target.api.folder(&id)?;
+    assert!(pair.second.reconcile_transfers().is_err());
+    assert_eq!(pair.target.api.folder(&id)?, before_reconcile);
+    hold.release(&token)?;
+    pair.second.reconcile_transfers()?;
+
     assert_eq!(
         hashes(&pair.source.vault, &initial)?,
         before,

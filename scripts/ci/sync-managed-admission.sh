@@ -21,7 +21,16 @@ archive=syncthing-linux-amd64-v2.1.6.tar.gz
 export OKILUM_SYNC_DIRECT_CLIENT="$cache/syncthing-linux-amd64-v2.1.6/syncthing"
 artifacts=$(mktemp)
 trap 'unlink "$artifacts"' EXIT
-cargo test --locked -p okilum-sync-controller --test managed_launch --no-run --message-format=json > "$artifacts"
+if ! cargo test --locked -p okilum-sync-controller --test managed_launch --no-run --message-format=json > "$artifacts"; then
+    python3 - "$artifacts" <<'DIAGNOSTICS'
+import json,sys
+for line in open(sys.argv[1]):
+    value=json.loads(line)
+    if value.get("reason")=="compiler-message":
+        print(value["message"].get("rendered",value["message"]["message"]))
+DIAGNOSTICS
+    exit 1
+fi
 executable=$(python3 - "$artifacts" <<'PYTHON'
 import json,sys
 matches=[v['executable'] for line in open(sys.argv[1]) if (v:=json.loads(line)).get('reason')=='compiler-artifact' and v.get('executable') and v['target']['name']=='managed_launch']

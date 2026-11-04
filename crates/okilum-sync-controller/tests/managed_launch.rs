@@ -154,7 +154,7 @@ impl DelayedRest {
                 }
                 let folder = json!({"id":"fixture","path":root.join("selected"),"paused":paused,"type":"sendreceive"});
                 let value = if path.starts_with("/rest/system/status") {
-                    json!({"myID":["AAAAAAA";8].join("-")})
+                    json!({"myID":(["AAAAAAA";8].join("-"))})
                 } else if path.starts_with("/rest/system/version") {
                     json!({"version":"v2.1.6"})
                 } else if path.starts_with("/rest/config/folders/") {
@@ -217,11 +217,16 @@ fn issue2582_configuration_process_drains_and_later_real_effects_are_refused() -
         &path.join("folder-state/folder.json"),
         &json!({
             "daemon":daemon,"owner":Uuid::new_v4(),"registration":Uuid::new_v4(),"vault":Uuid::new_v4(),
-            "descriptor":{"folder_id":"fixture","hub_device_id":["BBBBBBB";8].join("-"),"hub_address":"tcp://127.0.0.1:22000","ignores":[]},
+            "descriptor":{"folder_id":"fixture","hub_device_id":(["BBBBBBB";8].join("-")),"hub_address":"tcp://127.0.0.1:22000","ignores":[]},
             "path":path.join("selected"),"owns_folder":false,"owns_hub":false,"original_paused":true,
             "changed_pause":false,"desired_paused":true,"remove_requested":false,"phase":"Reused"
         }),
     )?;
+    assert!(
+        live_generation(&path.join("external")).is_err(),
+        "external runtime cannot acquire managed hold ownership"
+    );
+    assert!(!path.join("managed-launch").exists());
     let authority = Authority::for_root(&path.join("selected"))?;
     let mut child = worker("resume", path)?;
     wait("actual configuration PATCH", || {
