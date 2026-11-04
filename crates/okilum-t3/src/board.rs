@@ -12,6 +12,7 @@ pub mod delivery;
 pub mod live;
 pub mod local;
 pub mod manage;
+pub mod order;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]

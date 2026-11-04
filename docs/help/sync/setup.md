@@ -2,42 +2,56 @@
 
 ## Before you begin
 
-This guide covers the Linux preview with an existing, configured Syncthing runtime on both computers. The first computer's source vault must already be registered in that runtime. Keep both computers on the same LAN and prepare an empty destination folder on the second computer.
+This guide covers Linux, including two fresh installations. Install Okilum on both computers, open the vault containing your notes on the first, and keep both computers on the same LAN for first pairing. Okilum sets up its bundled Syncthing automatically when no existing connection needs attention. No account or server is required. Keep a separate backup: Sync can propagate edits and deletions.
 
-Fresh-host bootstrap is not ready. This guide does not install or start a runtime. If no supported connection is available, stop here; Help cannot prepare one. The demonstrated flow used synthetic test data. Keep a separate backup: Sync can propagate edits and deletions.
+macOS is coming in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is coming in [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
 
-## 1. First computer: choose the source
+## 1. First computer: share your vault
 
-Enable Sync in Settings → Features if needed, then open Settings → Sync. If more than one connection appears under Sync connection, select the intended existing runtime. Enter a recognizable name under This computer.
+Open the app menu → Share with another computer…. In Settings → Sync, find your vault under Vaults on this computer and select Share with my computers. It becomes Shared with approved computers. Enter a recognizable name under This computer.
 
-Select Choose existing synced vault and choose the source vault already configured in that runtime. Check the displayed folder, device and Syncthing connection. Select Use this connection only for the intended vault.
+If Sync finds an existing Syncthing, explicitly select Use connection. For a vault already synced by that runtime, select Choose existing synced vault, check the inspected folder and device, then select Use this connection. Okilum reuses that connection without starting a second daemon or taking over its lifecycle or network options.
 
 ## 2. First computer: invite the second
 
-Select Add computer, then Copy pairing URL. Transfer the invitation privately to the second computer. Keep this Settings window open. The invitation expires after 10 minutes; do not post the complete pairing URL publicly.
+Select Add computer, then Copy pairing URL. Transfer the invitation privately to the second computer. Keep this Settings window open. The invitation pairs one computer and expires after 10 minutes; do not post the complete pairing URL publicly. If it expires, create a new one.
 
 ## 3. Second computer: request the connection
 
-Open Settings → Sync. Choose the intended existing runtime if prompted. Enter this computer's own recognizable name under This computer, paste the invitation into Paste pairing URL, then select Connect.
+On the welcome screen, select Get notes from another computer. This opens Settings → Sync and enables the Sync feature. Enter this computer's own recognizable name under This computer, paste the invitation into Paste pairing URL, then select Connect. If you already have a vault open, you can also use Settings → Sync. Choose Use connection if prompted about an existing runtime.
 
 ## 4. First computer: confirm the identity
 
-Compare the displayed name and computer identity with the second computer. Select Confirm computer only for the expected request; decline unexpected requests. The authorized vault catalog then appears on the second computer.
+Compare the displayed name and computer identities with the second computer. Select Confirm computer only for the expected request; decline unexpected requests. The authorized vault catalog then appears on the second computer. Further authorized vault selections between this pair need no new invitation.
 
-## 5. Second computer: choose an empty destination
+## 5. Second computer: choose the vault and local folder
 
-Under Available vaults, find the intended vault and select Choose local folder. In the folder picker, choose an empty local folder and confirm. Unknown nonempty folders require a separate lossless import flow; do not delete existing files to force this step.
+Under Available vaults, find the intended vault and select Choose local folder. Okilum suggests a new folder based on the vault name; confirm its location. Use existing folder also lets you choose an empty local folder. A non-empty folder is refused until the lossless preview and merge in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043); do not delete existing files to force this step.
 
 ## 6. Wait for the first transfer
 
-Wait for Bidirectional Sync active. Open the received vault and check a note and an attachment. Do not treat a paired-computer entry alone as proof that the first transfer finished. If the runtime or other computer is offline, restore that same connection and refresh; do not create a second daemon or replace its identity.
+The vault begins receiving automatically. Wait for Bidirectional Sync active; the received vault opens when it is ready. There is no extra Enable or daemon setup step. Do not treat a paired-computer entry alone as proof that the first transfer finished. If the runtime or other computer is offline, restore that same connection; do not create a second daemon or replace its identity.
 
 ## Check both directions
 
-Open a note, enter the editor, add a recognizable line and save with Ctrl+S. Open the same note on the other computer and confirm the line appears. Edit and save there to check the return direction. Switching Source and Live Preview is not a Save-button click.
+Open a note, enter the editor, add a recognizable line and save with Ctrl+S. Open the same note on the other computer and confirm the line appears. Edit and save there to check the return direction. Switching Source and Live Preview is not a Save-button click. Later saved edits and deletions sync automatically in both directions.
+
+## Network and conflicts
+
+Managed Linux Sync keeps explicit Syncthing peer addresses and uses public discovery and encrypted relays by default. Settings → Sync → Only local network and VPN turns off public discovery, relays and router traversal for every vault on the selected managed connection on this computer. Direct addresses must still be reachable over your LAN or VPN; first pairing always needs the same LAN. Change an external Syncthing's network options in Syncthing itself.
+
+If an incoming change reaches a note with unsaved edits, Okilum keeps your text and shows a notice. Explicit Save or Keep both versions preserves your local text in a separate `.okilum-conflict-<time>-<random>` file, keeping the note extension and leaving the incoming file unchanged. Reading and clean editing views update when a changed file arrives. Full Sync conflict/history workflows are still being developed (#2044/#2045).
+
+## Common questions
+
+**Do I need an always-on server?** No. An always-on Linux computer running Okilum can receive a copy using these steps and act as another trusted peer. A plain Syncthing server needs manual device/folder configuration. Headless Okilum and introducer guidance remain #2048; automatic all-device sharing/removal remains #2042.
+
+**Does disconnecting erase the other computer's copy?** No. Fleet-wide removal is not available in this flow. Removing shares/connections in Syncthing does not recall files already copied. Closing Okilum or disabling its optional Sync UI is not remote revocation.
+
+**Do I sign in with a passkey?** No. The former service/hub/passkey desktop enrollment is gone (#2049). Pair directly with the URL and confirmation above.
 
 ## About the local video
 
-The optional bundled video shows an already-connected pair. It does not record first-time pairing, folder selection or initial transfer. It is a silent 18.4-second v6 edit with English descriptions and a full transcript. A labelled cut removes 6.3 seconds of waiting; this is not real-time latency evidence or Oleg acceptance.
+The optional bundled video shows an already-connected pair. It does not record first-time pairing, folder selection or initial transfer. It is a silent 18.4-second v6 edit with English descriptions and a full transcript. A labelled cut removes 6.3 seconds of waiting; this is not real-time latency evidence or Oleg acceptance. The written steps above cover the later Linux setup flow.
 
 Opening Help does not connect computers or change Sync settings. Opening the local video guide writes only bundled Help files into Okilum's application state and opens their local page in your default browser. It needs no hosted page or media URL.
