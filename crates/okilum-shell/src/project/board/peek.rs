@@ -341,32 +341,40 @@ impl Board {
                 .child(list::label(column)),
             cx,
         ));
-        let mut prs = v_flex().gap_2().min_w_0();
-        for number in &scope.pull_requests {
-            let pull = issue.and_then(|i| i.live_pulls.iter().find(|p| p.number == *number));
-            let url = binding.pull_url(*number);
-            let text = pull
-                .map(|p| {
-                    format!(
-                        "#{number} · {} · {} · {}",
-                        p.state,
-                        row_bits::ci_label(Some(&p.checks)),
-                        p.title
-                    )
-                })
-                .unwrap_or_else(|| format!("#{number} · состояние не прочитано"));
+        let mut prs = v_flex().gap_2().w_full().min_w_0();
+        for pr_number in &scope.pull_requests {
+            let pr_number = *pr_number;
+            let pull = issue.and_then(|i| i.live_pulls.iter().find(|p| p.number == pr_number));
+            let status = pull
+                .map(|p| format!("{} · {}", p.state, row_bits::ci_label(Some(&p.checks))))
+                .unwrap_or_else(|| "состояние не прочитано".into());
+            let title = pull.map(|p| p.title.clone()).unwrap_or_default();
             prs = prs.child(
-                h_flex()
-                    .items_start()
-                    .gap_2()
+                v_flex()
+                    .w_full()
                     .min_w_0()
-                    .child(row_bits::ci_dot(pull.map(|p| p.checks.as_str()), cx))
+                    .gap_1()
                     .child(
-                        div().flex_1().min_w_0().child(
-                            link_button(format!("peek-pr-{number}"), text, url)
-                                .w_full()
-                                .justify_start(),
-                        ),
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .min_w_0()
+                            .child(row_bits::ci_dot(pull.map(|p| p.checks.as_str()), cx))
+                            .child(link_button(
+                                format!("peek-pr-{pr_number}"),
+                                format!("#{pr_number} ↗"),
+                                binding.pull_url(pr_number),
+                            ))
+                            .child(div().min_w_0().whitespace_normal().child(status)),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(move || format!("board-peek-pr-title-{pr_number}"))
+                            .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .line_height(px(20.))
+                            .child(title),
                     ),
             );
         }

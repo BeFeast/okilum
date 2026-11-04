@@ -17,6 +17,10 @@ fn peek_2531_click_space_escape_arrows_and_tabs_preserve_board_geometry(cx: &mut
         let board = cx.new(|cx| {
             let mut b = Board::with_reader(area.path().into(), |_| Ok(vec![]), window, cx);
             b.binding = Some(Binding::parse(&serde_json::json!({"version":1,"title":"Fixture","repository":"https://example.test/team/repo","issues":[{"number":1,"expected":"Typography gypд","executor":"Fixture"},{"number":2,"expected":"Preserve identity","executor":"Fixture"}]}).to_string()).unwrap());
+            b.binding.as_mut().unwrap().issues[0].pull_requests = vec![101];
+            let mut issue: okilum_t3::board::Issue = serde_json::from_value(serde_json::json!({"number":1,"title":"Typography gypд","state":"open"})).unwrap();
+            issue.live_pulls = vec![okilum_t3::board::live::Pull { number:101,title:"Preserve the complete readable pull request title while switching between the issue details and the existing Manager conversation, including descenders gypд".into(),state:"open".into(),checks:"pending".into(),..Default::default() }];
+            b.snapshot.forgejo.value.insert(1,issue);
             let reads = reads.clone();
             b.peek.reader = Some(Arc::new(move |_,_| { reads.fetch_add(1,std::sync::atomic::Ordering::SeqCst); Ok(vec![]) }));
             b.list.preferences.collapsed[Column::Queue as usize] = false;
@@ -40,6 +44,16 @@ fn peek_2531_click_space_escape_arrows_and_tabs_preserve_board_geometry(cx: &mut
     click(visual, "board-list-row-1");
     assert!(visual.debug_bounds("board-peek-content").is_some());
     assert!(visual.debug_bounds("board-list-details").is_none());
+    let pr_title = visual.debug_bounds("board-peek-pr-title-101").unwrap();
+    let panel = visual.debug_bounds("board-peek-content").unwrap();
+    assert!(
+        pr_title.size.height >= px(40.),
+        "long PR title has full wrapped line boxes"
+    );
+    assert!(
+        pr_title.left() >= panel.left() && pr_title.right() <= panel.right(),
+        "PR text stays inside its pane"
+    );
     click(visual, "board-list-row-1");
     assert_eq!(
         reads.load(std::sync::atomic::Ordering::SeqCst),
