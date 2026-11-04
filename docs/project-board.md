@@ -178,15 +178,27 @@ existing stage-state line. The expected result and issue/PR/build/note/Discuss
 actions are inside the expanded card. Related-note navigation retains the same one-action return to Board. Escape
 still collapses the card. Refresh is automatic and silent.
 There is no new source poll, execution inference, delivery claim or status mapping.
-The **Ждёт тебя** strip (#2533) precedes the columns and contains Решить (explicit
+The **Ждёт тебя** group (#2533) is the first group in the default List view;
+in Board view it is a strip above the columns. It contains Решить (explicit
 `questions_note` Open bullets and existing unresolved context decisions), Попробуй
 (existing exact-build scenario notes, build label and optional video), and Новое
 (unanswered from-tester/from-oleg reports younger than 24 hours). The optional
 `questions_note` belongs in `ops/board-context.toml`; see [the binding and rules](board-context.md#waiting-for-you-2533).
-The strip initially renders up to four compact cards, with explicit paging.
+List uses distinct fixed-height waiting rows: kind, text, source/owner, one action
+button, relative time when known, and an optional scenario video link. The group
+collapses independently of stages; its state is saved per project in app state,
+with older presentation preferences defaulting to expanded. Waiting rows share
+the virtualised stream with stages and keep full text line boxes for descenders.
+The Board strip renders up to four compact cards, with explicit paging.
 Empty means no group; source failure retains the last snapshot and shows one quiet
 line. Projection work runs on snapshot changes and reuses the existing refresh,
-not a new per-frame scan or poller. Item/stage colours and richer live-agent
+not a new per-frame scan or poller. Every waiting publication invalidates the
+cached List row index; repaint and scrolling reuse it. A failed first source shows
+the quiet status line without an empty group.
+The delivery summary in either view and expanded cards omits tracks without a
+build, hides platforms/channels with no data, and disappears if no build exists.
+Last-known builds and their source diagnostics remain visible on refresh failure.
+Item/stage colours and richer live-agent
 presentation retain their existing independent sources.
 
 ## Accepted look, push 1

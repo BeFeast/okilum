@@ -2,7 +2,7 @@
 use super::*;
 use okilum_t3::board::{context, delivery as d};
 
-pub(super) fn populate(board: &mut Board) {
+pub(in crate::project::board) fn populate(board: &mut Board) {
     let at = now();
     std::fs::create_dir_all(board.area.join("ops")).unwrap();
     std::fs::write(
@@ -98,7 +98,10 @@ pub(in crate::project) fn open(cx: &mut App) -> bool {
     let Ok(mode) = std::env::var("OKILUM_PROJECT_UI_FIXTURE") else {
         return false;
     };
-    if !matches!(mode.as_str(), "board-waiting-dark" | "board-waiting-light") {
+    if !matches!(
+        mode.as_str(),
+        "board-waiting-dark" | "board-waiting-light" | "list-waiting-dark" | "list-waiting-light"
+    ) {
         return false;
     }
     gpui_component::Theme::change(
@@ -128,6 +131,11 @@ pub(in crate::project) fn open(cx: &mut App) -> bool {
             let board = cx.new(|cx| {
                 let mut board = Board::with_reader(area, |_| panic!("offline fixture"), window, cx);
                 populate(&mut board);
+                board.list.preferences.mode = if mode.starts_with("list-") {
+                    list::Mode::List
+                } else {
+                    list::Mode::Board
+                };
                 board
             });
             cx.new(|cx| Root::new(board, window, cx))

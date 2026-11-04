@@ -4,6 +4,8 @@ use okilum_t3::board::waiting as model;
 
 impl Board {
     pub(super) fn refresh_waiting(&mut self) {
+        // Waiting rows share the cached virtual List index with stage rows.
+        self.list.invalidate();
         self.waiting = self
             .binding
             .as_ref()
@@ -50,7 +52,11 @@ impl Board {
             return None;
         }
         let colors = brand::palette(cx);
-        let mut view = v_flex().w_full().min_w_0().gap_2();
+        let mut view = v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .line_height(relative(1.5));
         if let Some(problem) = &self.waiting.problem {
             view = view.child(
                 div()
@@ -206,7 +212,7 @@ impl Board {
         Some(view.into_any_element())
     }
 }
-fn relative_age(age: u64) -> String {
+pub(super) fn relative_age(age: u64) -> String {
     if age < 60 {
         "только что".into()
     } else if age < 3600 {
