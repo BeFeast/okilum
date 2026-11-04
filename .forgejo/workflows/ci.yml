@@ -199,6 +199,8 @@ jobs:
             ~/.cargo/git/
           key: okilum-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
 
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Check every shared suite and summarize failures
         run: |
           set -euo pipefail
@@ -321,7 +323,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            build-essential cmake pkg-config curl git mold zstd \
+            build-essential cmake pkg-config curl git mold zstd python3-venv \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
 
@@ -377,6 +379,8 @@ jobs:
             ~/.cargo/git/
           key: okilum-cargo-v2-${{ runner.os }}-${{ steps.cargo-cache-key.outputs.compatibility }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.cargo/**', '.forgejo/workflows/ci.yml') }}
 
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Run full Linux gate
         run: |
           set -euo pipefail
