@@ -463,8 +463,12 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
             transfer.phase == Phase::Preparing
                 && folder["paused"] == true
                 && folder["versioning"]["type"] == "staggered"
-                && folder["versioning"]["params"]["maxAge"]
-                    == (u64::from(transfer.history.days.days()) * 86400).to_string(),
+                && folder["versioning"]["params"]["maxAge"].as_str()
+                    == Some(
+                        (u64::from(transfer.history.days.days()) * 86400)
+                            .to_string()
+                            .as_str()
+                    ),
             "missing first-receive configuration witness or history policy"
         );
     }
