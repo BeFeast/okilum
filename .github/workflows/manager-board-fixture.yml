@@ -1,0 +1,73 @@
+# Builds a portable measurement artifact; acceptance still runs in agent-checks
+# and on the one locked reference machine. Public synthetic fixture only.
+name: manager-board-fixture
+on:
+  push:
+    branches: ['perf-fixture/**']
+    paths:
+      - '.github/workflows/manager-board-fixture.yml'
+      - 'scripts/perf/manager-board/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release-fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+      OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install build libraries
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd gnupg gpgv tini \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@v4
+        id: native-cache
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: manager-board-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-${{ github.sha }}
+          restore-keys: |
+            manager-board-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
+            agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
+            manager-board-native-v1-${{ runner.os }}-
+      - name: Verify source and build the release fixture
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          cargo fetch --locked
+          cargo build --offline --locked --release -p okilum-shell --bin okilum --features project-ui-harness
+          artifact_dir=$(mktemp -d)
+          cp target/release/okilum "$artifact_dir/okilum"
+          printf '%s\n' "$OKILUM_SOURCE_COMMIT" > "$artifact_dir/SOURCE"
+          (cd "$artifact_dir" && sha256sum okilum > SHA256SUMS)
+          tar -C "$artifact_dir" -czf "$RUNNER_TEMP/manager-board-fixture.tar.gz" okilum SOURCE SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manager-board-fixture-${{ github.sha }}
+          path: ${{ runner.temp }}/manager-board-fixture.tar.gz
+          retention-days: 14
+      - uses: actions/cache/save@v4
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}

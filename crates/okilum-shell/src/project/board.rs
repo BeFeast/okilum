@@ -5,13 +5,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod appearance;
 mod columns;
+mod controls;
 mod delivery;
 mod list;
 mod live;
 mod local;
 mod manage;
 mod notes;
+mod presentation;
 mod row_bits;
+mod virtual_cards;
 
 type IssueReader =
     Arc<dyn Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String> + Send + Sync>;
@@ -25,10 +28,22 @@ pub(crate) struct Board {
     binding_loading: bool,
     snapshot: Snapshot,
     manager: Option<Entity<ProjectView>>,
+    _manager_observer: Option<Subscription>,
+    #[cfg(target_os = "linux")]
+    _manager_feed_observer: Option<Subscription>,
+    #[cfg(target_os = "linux")]
+    manager_publication: Option<(Option<ServerIdentity>, Option<String>, u64)>,
+    #[cfg(target_os = "linux")]
+    manager_display: live::ManagerDisplay,
     active: bool,
     ticker: Option<Task<()>>,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    presentation: Option<Arc<presentation::State>>,
+    _presentation_invalidation: Subscription,
+    geometry: Entity<virtual_cards::Geometry>,
+    height_refinement_pending: bool,
+    resizing: bool,
     verified_open: bool,
     filter: Option<String>,
     selected: Option<u64>,
@@ -48,6 +63,17 @@ pub(crate) struct Board {
     next_stage_open: bool,
     columns: columns::State,
     list: list::State,
+    #[cfg(test)]
+    pub(in crate::project) card_calls: std::cell::Cell<usize>,
+    #[cfg(test)]
+    pub(in crate::project) render_calls: std::cell::Cell<usize>,
+    #[cfg(test)]
+    pub(in crate::project) frame_work: std::cell::RefCell<Vec<usize>>,
+    #[cfg(test)]
+    pub(in crate::project) frame_layout_work: std::cell::RefCell<Vec<usize>>,
+    #[cfg(test)]
+    pub(in crate::project) card_focus:
+        std::cell::RefCell<std::collections::BTreeMap<u64, FocusHandle>>,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -135,6 +161,10 @@ impl Board {
     ) -> Self {
         let owner = area.to_string_lossy().into_owned();
         let list = list::State::load(&area, cx);
+        let geometry = cx.new(|_| virtual_cards::Geometry);
+        let presentation_invalidation = cx.observe(&cx.entity(), |this, _, _| {
+            this.presentation = None;
+        });
         Self {
             area,
             binding: None,
@@ -144,10 +174,22 @@ impl Board {
             binding_loading: false,
             snapshot: Snapshot::new(owner),
             manager: None,
+            _manager_observer: None,
+            #[cfg(target_os = "linux")]
+            _manager_feed_observer: None,
+            #[cfg(target_os = "linux")]
+            manager_publication: None,
+            #[cfg(target_os = "linux")]
+            manager_display: live::ManagerDisplay::default(),
             active: false,
             ticker: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
+            presentation: None,
+            _presentation_invalidation: presentation_invalidation,
+            geometry,
+            height_refinement_pending: false,
+            resizing: false,
             verified_open: false,
             filter: None,
             selected: None,
@@ -167,6 +209,16 @@ impl Board {
             next_stage_open: false,
             columns: columns::State::default(),
             list,
+            #[cfg(test)]
+            card_calls: std::cell::Cell::new(0),
+            #[cfg(test)]
+            render_calls: std::cell::Cell::new(0),
+            #[cfg(test)]
+            frame_work: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
+            frame_layout_work: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
+            card_focus: std::cell::RefCell::new(std::collections::BTreeMap::new()),
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -269,9 +321,44 @@ impl Board {
         self.list.invalidate();
         self.delivery_loading = false;
         self.notes_loading = false;
-        self.manager = Some(manager);
+        self.manager = Some(manager.clone());
+        self._manager_observer = Some(cx.observe(&manager, |this, _, cx| {
+            #[cfg(target_os = "linux")]
+            this.sync_manager_display(cx);
+            #[cfg(not(target_os = "linux"))]
+            cx.notify();
+        }));
+        #[cfg(target_os = "linux")]
+        {
+            self.manager_publication = None;
+            let feed = manager.read(cx).feed.clone();
+            self._manager_feed_observer =
+                Some(cx.observe(&feed, |this, _, cx| this.sync_manager_display(cx)));
+            self.sync_manager_display(cx);
+        }
         if self.active {
             self.refresh(window, cx);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    fn sync_manager_display(&mut self, cx: &mut Context<Self>) {
+        let Some(manager) = &self.manager else {
+            return;
+        };
+        let manager = manager.read(cx);
+        let publication = (
+            manager.identity.clone(),
+            manager.chat.as_ref().map(|chat| chat.thread_id.clone()),
+            manager.feed.read(cx).typed_revision(),
+        );
+        if self.manager_publication.as_ref() == Some(&publication) {
+            return;
+        }
+        let display = live::ManagerDisplay::read(manager.identity.as_ref(), manager.chat.as_ref());
+        self.manager_publication = Some(publication);
+        if self.manager_display != display {
+            self.manager_display = display;
+            cx.notify();
         }
     }
     pub(crate) fn set_visible(
@@ -427,10 +514,13 @@ impl Board {
         cx.notify();
     }
     fn projection_time(&self) -> u64 {
+        self.projection_time_at(now())
+    }
+    fn projection_time_at(&self, at: u64) -> u64 {
         if self.snapshot.forgejo.error.is_some() {
-            self.snapshot.forgejo.last_success.unwrap_or_else(now)
+            self.snapshot.forgejo.last_success.unwrap_or(at)
         } else {
-            now()
+            at
         }
     }
     fn problem(&self, at: u64) -> Option<String> {
@@ -700,13 +790,14 @@ impl Board {
         scope: &okilum_t3::board::Scope,
         column: Column,
         binding: &Binding,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mapping = self
             .binding
             .as_ref()
             .and_then(|binding| okilum_t3::board::live::mapping_problem(binding, scope.number));
-        self.card_with_mapping(scope, column, binding, mapping, cx)
+        self.card_with_mapping(scope, column, binding, mapping, window, cx)
     }
     fn card_with_mapping(
         &self,
@@ -714,10 +805,26 @@ impl Board {
         column: Column,
         binding: &Binding,
         mapping: Option<&'static str>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = super::performance::Work::start(1);
+        #[cfg(test)]
+        {
+            self.card_calls.set(self.card_calls.get() + 1);
+            *self
+                .frame_work
+                .borrow_mut()
+                .last_mut()
+                .expect("Board render frame") += 1;
+        }
         let colors = brand::palette(cx);
         let number = scope.number;
+        let (disclosure, _focus) =
+            controls::disclosure(("board-expand", number as usize), window, cx);
+        #[cfg(test)]
+        self.card_focus.borrow_mut().insert(number, _focus);
         let issue = self.snapshot.forgejo.value.get(&number);
         let (kind, glyph) = appearance::kind(issue);
         let tone = appearance::type_color(kind, cx);
@@ -761,6 +868,8 @@ impl Board {
             .debug_selector(move || format!("board-card-{number}"))
             .w_full()
             .min_w_0()
+            .min_h_0()
+            .flex_shrink_0()
             .gap_2()
             .border_1()
             .border_color(if stuck {
@@ -778,31 +887,24 @@ impl Board {
             })
             .overflow_hidden()
             .child(
-                Button::new(("board-expand", number as usize))
+                disclosure
                     .debug_selector(move || format!("board-expand-{number}"))
                     .accessibility_label(format!("Expand issue {number}"))
-                    .ghost()
                     .w_full()
                     .min_w_0()
                     .h_auto()
+                    // The control itself owns the full-width block flow.
+                    .block()
                     .p_3()
+                    .whitespace_normal()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(
-                        v_flex()
-                            .w_full()
-                            .min_w_0()
-                            .gap_2()
-                            .items_start()
-                            .child(meta)
-                            .child(
-                                div()
-                                    .w_full()
-                                    .min_w_0()
-                                    .whitespace_normal()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(scope.expected.clone()),
-                            ),
+                        meta.mb_2()
+                            .font_weight(FontWeight::NORMAL)
+                            .whitespace_nowrap(),
                     )
+                    .child(scope.expected.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_local = None;
                         this.selected = (this.selected != Some(number)).then_some(number);
@@ -810,6 +912,15 @@ impl Board {
                     })),
             )
             .child(if let Some(agent) = &agent {
+                #[cfg(target_os = "linux")]
+                let (url, progress) = (
+                    self.manager_display
+                        .identity
+                        .as_ref()
+                        .map(|identity| identity.thread_url(&agent.thread.thread_id)),
+                    self.manager_display.progress(scope, agent.thread),
+                );
+                #[cfg(not(target_os = "linux"))]
                 let (url, progress) = self
                     .manager
                     .as_ref()
@@ -895,6 +1006,8 @@ impl Board {
                     .gap_2()
                     .px_3()
                     .text_size(px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .debug_selector(move || format!("board-agent-{number}"))
                     .text_color(if stuck {
                         colors.warning
                     } else {
@@ -908,15 +1021,11 @@ impl Board {
                         },
                         colors.text_muted,
                     ))
-                    .child(
-                        div()
-                            .debug_selector(move || format!("board-agent-{number}"))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(scope.executor.clone()),
-                    )
+                    .child(scope.executor.clone())
                     .child(
                         div()
                             .debug_selector(move || format!("board-state-{number}"))
+                            .font_weight(FontWeight::NORMAL)
                             .min_w_0()
                             .truncate()
                             .child(if stuck { "Blocked" } else { column.label() }),
@@ -927,16 +1036,25 @@ impl Board {
         // A single explicit PR link is a link, not a fabricated CI/merge status.
         if let Some(pr) = scope.pull_requests.first() {
             let url = binding.pull_url(*pr);
+            let label: SharedString = format!("PR #{pr}").into();
             card = card.child(
-                h_flex().px_2().pb_2().child(
-                    Button::new(("board-pr-badge", number as usize))
-                        .ghost()
-                        .small()
-                        .min_w_0()
-                        .child(appearance::icon("git-pull-request", colors.accent))
-                        .label(format!("PR #{pr}"))
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                ),
+                controls::compact_action(("board-pr-badge", number as usize), window, cx)
+                    .debug_selector(move || format!("board-pr-badge-{number}"))
+                    .self_start()
+                    .ml_2()
+                    .mb_2()
+                    .min_w_0()
+                    .accessibility_label(label.clone())
+                    .child(
+                        div()
+                            .min_w_0()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .line_height(gpui::relative(1.))
+                            .child(label),
+                    )
+                    .child(appearance::icon("git-pull-request", colors.accent))
+                    .on_click(move |_, _, cx| cx.open_url(&url)),
             );
         }
         if let Some(problem) = mapping {
@@ -1050,6 +1168,14 @@ impl Board {
 }
 impl Render for Board {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = super::performance::Work::start(0);
+        #[cfg(test)]
+        {
+            self.render_calls.set(self.render_calls.get() + 1);
+            self.frame_work.borrow_mut().push(0);
+            self.frame_layout_work.borrow_mut().push(0);
+        }
         if self.local_editor.is_some() {
             return self.render_local_management(window, cx);
         }
@@ -1083,7 +1209,7 @@ impl Render for Board {
                     }
                 }
             }));
-        let Some(binding) = self.binding.as_ref() else {
+        let Some(_) = self.binding.as_ref() else {
             root = root.child(
                 div()
                     .absolute()
@@ -1127,17 +1253,8 @@ impl Render for Board {
             }
             return root.into_any_element();
         };
-        let projected;
-        let binding = if self.snapshot.forgejo.last_success.is_some() {
-            projected = okilum_t3::board::live::project(
-                binding,
-                &self.snapshot.forgejo.value,
-                self.projection_time(),
-            );
-            &projected
-        } else {
-            binding
-        };
+        let presentation = self.presentation();
+        let binding = presentation.binding.as_ref();
         root = root.child(self.view_toggle(cx));
         if binding.repository.is_empty() {
             root = root.child(div().debug_selector(|| "board-local".into())
@@ -1156,7 +1273,8 @@ impl Render for Board {
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
         }
-        let mut counts = self.column_counts(binding);
+        let shared_binding = presentation.binding.clone();
+        let mut counts = presentation.counts;
         let ready = self.column_sources_ready(binding);
         self.columns.observe(counts, ready);
         let mut compact = h_flex()
@@ -1169,6 +1287,11 @@ impl Render for Board {
             .id("board-columns")
             .debug_selector(|| "board-columns".into())
             .items_start()
+            // The row is scroll content, so it must keep its natural height.
+            // Avoid asking flexbox for the min-content height of every rich
+            // card while trying (and failing) to shrink the entire Board.
+            .flex_shrink_0()
+            .min_h_0()
             .gap_3()
             .w_full()
             .min_w_0();
@@ -1182,24 +1305,7 @@ impl Render for Board {
             stages.push(Column::Verified);
         }
         for column in stages {
-            let mut scopes: Vec<_> = binding
-                .issues
-                .iter()
-                .filter(|scope| {
-                    self.filter.as_ref().is_none_or(|f| f == &scope.executor)
-                        && self.delivery_column(scope) == column
-                })
-                .collect();
-            scopes.sort_by(|a, b| {
-                let issue_a = self.snapshot.forgejo.value.get(&a.number);
-                let issue_b = self.snapshot.forgejo.value.get(&b.number);
-                match (issue_a, issue_b) {
-                    (Some(x), Some(y)) => okilum_t3::board::order::compare(x, y),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => b.number.cmp(&a.number),
-                }
-            });
+            let scopes = &presentation.columns[column as usize];
             let local_cards: Vec<_> = self
                 .local_cards
                 .value
@@ -1236,6 +1342,8 @@ impl Render for Board {
                 .child(
                     h_flex()
                         .min_w_0()
+                        .text_size(px(12.))
+                        .text_color(colors.text_muted)
                         .gap_2()
                         .flex_wrap()
                         .child(appearance::icon(glyph, color))
@@ -1243,14 +1351,10 @@ impl Render for Board {
                             div()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_size(px(13.))
+                                .text_color(colors.text)
                                 .child(column.label()),
                         )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(colors.text_muted)
-                                .child(count.to_string()),
-                        )
+                        .child(count.to_string())
                         .when(count == 0 && self.columns.known_empty(column), |header| {
                             header.child(self.collapse_empty_column(column, cx))
                         })
@@ -1272,11 +1376,27 @@ impl Render for Board {
                         .child("No cards"),
                 );
             }
-            for scope in scopes {
-                lane = lane.child(self.card(scope, column, binding, cx));
+            let mut cards = Vec::new();
+            for &index in scopes {
+                let scope = &binding.issues[index];
+                cards.push(virtual_cards::Card::issue(
+                    &cx.entity(),
+                    scope,
+                    index,
+                    column,
+                    shared_binding.clone(),
+                    self.selected == Some(scope.number),
+                ));
             }
             for card in local_cards {
-                lane = lane.child(self.local_card(card, cx));
+                cards.push(virtual_cards::Card::local(
+                    &cx.entity(),
+                    card,
+                    self.selected_local.as_ref() == Some(&card.id),
+                ));
+            }
+            if !cards.is_empty() {
+                lane = lane.child(virtual_cards::Lane::new(column, cards));
             }
             if column == Column::Queue {
                 lane = lane.child(self.add_card_button(cx));
@@ -1338,14 +1458,8 @@ impl Render for Board {
                     }),
             );
         }
-        let verified = binding
-            .issues
-            .iter()
-            .filter(|scope| {
-                self.delivery_column(scope) == Column::Verified
-                    && self.filter.as_ref().is_none_or(|f| f == &scope.executor)
-            })
-            .count();
+        // The lane snapshot already classified and filtered these issues.
+        let verified = presentation.columns[Column::Verified as usize].len();
         // A narrow native strip leaves all working columns inside the center.
         // Its full accessible label/tooltip remain readable when space is tight.
         let toggle = Button::new("board-verified-toggle")
@@ -1399,7 +1513,8 @@ impl Render for Board {
         let line = problem_line(forgejo_problem.into_iter().collect()).unwrap_or_default();
         // Keep the quiet source line at the viewport's lower edge. Its reserved
         // bottom padding preserves card geometry without restoring a header.
-        root.pb_8()
+        let root = root
+            .pb_8()
             .child(columns.child(end.child(self.source_indicator(cx)).child(toggle)))
             .child(
                 div()
@@ -1415,7 +1530,25 @@ impl Render for Board {
                     .text_color(colors.text_muted)
                     .child(line),
             )
-            .into_any_element()
+            .into_any_element();
+        let root = div()
+            .relative()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .child(root)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size(px(1.))
+                    .child(self.geometry.clone()),
+            )
+            .into_any_element();
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let root = super::performance::Trace::new(root, 0).into_any_element();
+        root
     }
 }
 
@@ -1563,7 +1696,17 @@ impl Reader {
         if self.project_navigation.section == reader_project_navigation::Section::Reader {
             if let Some(board) = board {
                 if self.project_navigation.board_visible {
-                    return div().size_full().child(board.clone()).into_any_element();
+                    let resizing = self.resizing_panel.is_some();
+                    board.update(cx, |board, cx| {
+                        if board.resizing != resizing {
+                            board.resizing = resizing;
+                            cx.notify();
+                        }
+                    });
+                    return div()
+                        .size_full()
+                        .child(board.clone().cached(StyleRefinement::default().size_full()))
+                        .into_any_element();
                 }
                 return v_flex()
                     .size_full()
@@ -1597,3 +1740,88 @@ mod tests;
 
 #[cfg(all(test, target_os = "linux"))]
 mod discuss_tests;
+
+#[cfg(all(target_os = "linux", any(test, feature = "project-ui-harness")))]
+impl Board {
+    #[cfg(test)]
+    pub(in crate::project) fn performance_resizing(&self) -> bool {
+        self.resizing
+    }
+    #[cfg(test)]
+    pub(in crate::project) fn performance_selected(&self) -> Option<u64> {
+        self.selected
+    }
+    pub(in crate::project) fn performance_fixture(
+        area: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut board = Self::with_reader(
+            area,
+            |_| panic!("synthetic Board must never read a server"),
+            window,
+            cx,
+        );
+        board.list.preferences.mode = list::Mode::Board;
+        let mut source: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../okilum-t3/tests/fixtures/board-legacy.yaml"
+        ))
+        .unwrap();
+        source["issues"] = serde_json::json!([]);
+        source["attention"] = serde_json::json!([]);
+        source["stage_note"] = serde_json::json!("home.md");
+        let mut binding = Binding::parse(&source.to_string()).unwrap();
+        for number in 1..=240 {
+            let value = serde_json::json!({
+                "number":number,"expected":format!("Synthetic task {number}: retain source identity and verify the next delivery with a realistic wrapping title"),
+                "executor":"Fixture", "notes":["home.md"],"pull_requests":[],
+                "stage": if number % 4 == 0 { serde_json::json!("ready") } else { serde_json::Value::Null }
+            });
+            binding
+                .issues
+                .push(serde_json::from_value(value.clone()).unwrap());
+            source["issues"].as_array_mut().unwrap().push(value);
+            board.snapshot.forgejo.value.insert(
+                number,
+                okilum_t3::board::Issue {
+                    number,
+                    title: format!("Synthetic task {number}"),
+                    state: "open".into(),
+                    body: String::new(),
+                    labels: vec![],
+                    open_pull_requests: if number % 4 == 2 {
+                        vec![1000 + number]
+                    } else {
+                        vec![]
+                    },
+                    live_pulls: if matches!(number % 4, 2 | 3) {
+                        vec![okilum_t3::board::live::Pull {
+                            number: 1000 + number,
+                            merged_at: None,
+                            checks: if number % 4 == 2 {
+                                "success"
+                            } else {
+                                "pending"
+                            }
+                            .into(),
+                        }]
+                    } else {
+                        vec![]
+                    },
+                },
+            );
+        }
+        let issues: Vec<_> = board.snapshot.forgejo.value.values().cloned().collect();
+        board.read_issues = Arc::new(move |_| Ok(issues.clone()));
+        // Reader's initial note load may hide the Board. Re-enter through the
+        // real Board action and retain the same synthetic sources on refresh.
+        std::fs::create_dir_all(board.area.join("ops")).unwrap();
+        std::fs::write(board.area.join("ops/board.yaml"), source.to_string()).unwrap();
+        board.snapshot.forgejo.last_success = Some(now());
+        board.snapshot.t3.last_success = Some(now());
+        board.local_cards.last_success = Some(now());
+        board.binding = Some(binding);
+        board.active = true;
+        board
+    }
+}
