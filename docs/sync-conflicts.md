@@ -75,7 +75,9 @@ claimed when storage rejects it.
 The primary Reader process runs interrupted-resolution recovery **once at startup,
 under its instance lock, before requested-path validation, warm-cache reads,
 indexing or managed Sync initialization**. A second launch forwards to that process
-and cannot repair an operation still in progress. Recovery recreates only missing
+and cannot repair an operation still in progress. Terminal records are skipped
+before decoding their source bytes or accessing their vaults, so completed decisions
+do not warn about an intentionally deleted/disconnected vault. Recovery recreates only missing
 canonical/copy names from durable preimages, never overwrites present versions,
 and never resumes a choice. This also repairs a crash between moving the canonical
 note away and publishing its replacement, without opening Settings or the note.
