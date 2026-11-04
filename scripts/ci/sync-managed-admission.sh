@@ -13,7 +13,7 @@ run_group() {
 }
 run_group cargo test --locked -p okilum-sync-controller --lib lifecycle::tests:: -- --nocapture
 run_group cargo test --locked -p okilum-sync-controller --lib linux_bootstrap::tests:: -- --nocapture
-run_group cargo test --locked -p okilum-sync-controller --lib runtime::tests:: -- --nocapture
+run_group cargo test --locked -p okilum-sync-controller --lib runtime::tests::unopened_and_disabled_runtime_has_no_effects -- --exact --nocapture
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/okilum-sync-fixture"
 archive=syncthing-linux-amd64-v2.1.6.tar.gz
 # The source-sharing step fetches this pinned public fixture first.

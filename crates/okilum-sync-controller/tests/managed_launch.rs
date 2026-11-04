@@ -650,6 +650,17 @@ fn issue2582_linux_bootstrap_and_replaced_bindings_fail_closed() -> Result<()> {
             .is_err(),
         "source resume capable entrance must refuse"
     );
+    let before_policy = identity.connect()?.config()?;
+    assert!(
+        okilum_sync_controller::network_policy::reconcile(
+            &state.join("prepared"),
+            &identity,
+            Some(okilum_sync_controller::network_policy::Policy::LocalNetworkAndVpn)
+        )
+        .is_err(),
+        "runtime-wide configuration must retain admission for every affected vault"
+    );
+    assert_eq!(identity.connect()?.config()?, before_policy);
     fixture_process::stop(&mut holder.0)?;
     services.crash_runtime()?;
     // Bootstrap's retry path must use exactly the same fence-aware command.
