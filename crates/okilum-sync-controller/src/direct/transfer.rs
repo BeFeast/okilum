@@ -689,7 +689,13 @@ fn interval_complete(a: &Receipt, b: &Receipt, local: &Value) -> Result<bool> {
             .iter()
             .all(|k| local[*k].as_str() == Some(""))
         && local["globalTotalItems"].as_u64() == status.global_total_items
-        && local["localTotalItems"].as_u64() == status.global_total_items
+        // A fresh receiver never holds records of files deleted before it joined,
+        // so totals that include deletions never match (#2589: 9556 local vs 9706
+        // global for brain with 150 old deletions). Compare existing entries only.
+        && ["Files", "Directories", "Symlinks"].iter().all(|kind| {
+            let local_count = local[format!("local{kind}")].as_u64();
+            local_count.is_some() && local_count == local[format!("global{kind}")].as_u64()
+        })
         && local["globalBytes"].as_u64() == status.global_bytes
         && local["localBytes"].as_u64() == status.global_bytes)
 }
@@ -976,7 +982,8 @@ mod tests {
         let folder = json!({"id":"fixture","label":owned_label(&transfer)?,"path":root.path(),"type":"receiveonly","paused":false,
             "devices":[{"deviceID":"receiver"},{"deviceID":"sender"}],"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}});
         let status = json!({"state":"idle","sequence":5,"globalTotalItems":2,"localTotalItems":2,"globalDirectories":1,
-            "globalSymlinks":0,"globalBytes":12,"localBytes":12,"needTotalItems":0,"receiveOnlyTotalItems":0,
+            "globalSymlinks":0,"globalBytes":12,"localBytes":12,"globalFiles":1,"localFiles":1,
+            "localDirectories":1,"localSymlinks":0,"globalDeleted":0,"localDeleted":0,"needTotalItems":0,"receiveOnlyTotalItems":0,
             "errors":0,"pullErrors":0,"error":"","invalid":"","watchError":""});
         let observation = Observation {
             id: Uuid::new_v4(),
@@ -998,6 +1005,25 @@ mod tests {
         let mut local = status;
         local["remoteSequence"] = json!({"sender":5});
         Ok((root, transfer, folder, observation, local))
+    }
+    #[test]
+    fn fresh_receiver_without_old_deletion_records_is_ready() -> Result<()> {
+        // #2589: brain on idunn carries 150 deletion records a fresh muninn never had.
+        let (_root, transfer, _folder, mut observation, mut local) = fixture()?;
+        observation.status["globalTotalItems"] = json!(4);
+        observation.status["globalDeleted"] = json!(2);
+        observation.status["localTotalItems"] = json!(4); // the sender keeps its tombstones
+        let first = Receipt::new(observation.clone(), &transfer)?;
+        let mut next = observation;
+        next.id = Uuid::new_v4();
+        let second = Receipt::new(next, &transfer)?;
+        local["globalTotalItems"] = json!(4);
+        local["globalDeleted"] = json!(2);
+        local["localTotalItems"] = json!(2);
+        assert!(interval_complete(&first, &second, &local)?);
+        local["localFiles"] = json!(0);
+        assert!(!interval_complete(&first, &second, &local)?, "a missing file is not ready");
+        Ok(())
     }
     #[test]
     fn direct_21_interval_counts_directory_without_legacy_synthetic_bytes() -> Result<()> {
