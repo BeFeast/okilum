@@ -443,7 +443,12 @@ impl Board {
             .as_ref()
             .and_then(|binding| okilum_t3::board::live::mapping_problem(binding, number))
         {
-            body = body.child(div().text_color(p.warning).child(problem));
+            body = body.child(
+                div()
+                    .debug_selector(move || format!("board-mapping-{number}"))
+                    .text_color(p.warning)
+                    .child(problem),
+            );
         }
         let mut timeline = Vec::<(String, String)>::new();
         if let Some(issue) = issue {

@@ -1352,7 +1352,7 @@ fn release_table_stays_compact_at_normal_and_wide_widths_in_both_themes(cx: &mut
 }
 
 #[gpui::test]
-fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_recovery(
+fn peek_2531_live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_recovery(
     cx: &mut TestAppContext,
 ) {
     cx.update(crate::test_init);
@@ -1389,10 +1389,16 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
             board.snapshot.forgejo.error = Some("HTTP 503; showing last good Board".into());
             board
         });
-        Root::new(board, window, cx)
+        Root::new(cx.new(|cx| peek::Harness::new(board, cx)), window, cx)
     });
-    let board = root.read_with(visual, |root, _| {
-        root.view().clone().downcast::<Board>().unwrap()
+    let board = root.read_with(visual, |root, cx| {
+        root.view()
+            .clone()
+            .downcast::<peek::Harness>()
+            .unwrap()
+            .read(cx)
+            .board
+            .clone()
     });
     visual.simulate_resize(size(px(1200.), px(1000.)));
     visual.run_until_parked();
@@ -1409,14 +1415,18 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
     visual.run_until_parked();
     assert!(
         visual.debug_bounds("board-mapping-42").is_some(),
-        "generated-card mapping diagnostics remain reachable in its disclosure"
+        "generated-card mapping diagnostics remain reachable in the issue dock"
     );
+    assert!(visual.debug_bounds("board-peek-content").is_some());
+    assert!(visual.debug_bounds("board-kanban-details").is_none());
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(
         visual.debug_bounds("board-live-status").is_some(),
         "source failure has a quiet inline status, not only a popover"
     );
+    assert!(visual.debug_bounds("board-peek-content").is_none());
+    assert!(visual.debug_bounds("board-mapping-42").is_none());
     let center = visual.debug_bounds("project-board").unwrap();
     let status = visual.debug_bounds("board-live-status").unwrap();
     let columns = visual.debug_bounds("board-columns").unwrap();
