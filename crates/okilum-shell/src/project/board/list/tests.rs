@@ -356,6 +356,9 @@ fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
             "providerInstanceId": "codex", "model": "synthetic", "runtimeMode": "full-access"
         }))
         .unwrap()];
+        // Agent activity alone does not promote a backlog issue. Open Queue
+        // explicitly so this typography fixture exercises the real source rules.
+        board.list.preferences.collapsed[Column::Queue as usize] = false;
         board.list.invalidate();
         cx.notify();
     });
