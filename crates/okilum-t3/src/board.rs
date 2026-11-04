@@ -13,6 +13,7 @@ pub mod live;
 pub mod local;
 pub mod manage;
 pub mod order;
+pub mod waiting;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -459,6 +460,8 @@ pub struct Issue {
     pub body: String,
     #[serde(default)]
     pub labels: Vec<IssueLabel>,
+    #[serde(flatten)]
+    pub report: waiting::Report,
     /// Verified open references from this refresh, never inferred from a URL badge.
     #[serde(skip)]
     pub open_pull_requests: Vec<u64>,

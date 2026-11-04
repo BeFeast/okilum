@@ -36,8 +36,8 @@ impl Board {
                     .line_height(px(18.))
                     .child(scope.expected.clone()),
             );
-            if self.delivery.enabled() {
-                card = card.child(self.delivery_details(scope, binding, cx));
+            if let Some(delivery) = self.delivery_details(scope, binding, cx) {
+                card = card.child(delivery);
             }
             let url = binding.issue_url(number);
             let context = self.context(scope);

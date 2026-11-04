@@ -722,3 +722,363 @@ fn filtered_list_reuses_projection_and_bounds_rows_through_resize(cx: &mut TestA
         assert_eq!(board.list.publications, filtered_publications);
     });
 }
+
+#[gpui::test]
+fn issue2533_list_waiting_is_first_collapsible_group_with_three_kinds_and_full_line_boxes(
+    cx: &mut TestAppContext,
+) {
+    let state = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        cx.set_global(reader_history::TestSessionDirectory(state.path().into()));
+    });
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(0));
+    board.update(visual, |board, cx| {
+        super::super::waiting::fixture::populate(board);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    board.read_with(visual, |board, _| {
+        use okilum_t3::board::waiting::Kind;
+        assert!(matches!(
+            board.list.prepared.as_ref().unwrap().rows[0],
+            Row::WaitingGroup
+        ));
+        assert_eq!(
+            board
+                .waiting
+                .items
+                .iter()
+                .map(|item| item.kind)
+                .collect::<Vec<_>>(),
+            [Kind::Decision, Kind::Try, Kind::New]
+        );
+    });
+    let group = visual.debug_bounds("board-list-waiting-group").unwrap();
+    let stage = visual.debug_bounds("board-list-group-Working").unwrap();
+    assert!(
+        group.bottom()
+            <= visual
+                .debug_bounds("board-list-waiting-row-0")
+                .unwrap()
+                .top()
+    );
+    assert!(
+        visual
+            .debug_bounds("board-list-waiting-row-2")
+            .unwrap()
+            .bottom()
+            <= stage.top()
+    );
+    for index in 0..3 {
+        let row = visual
+            .debug_bounds(format!("board-list-waiting-row-{index}").leak())
+            .unwrap();
+        assert_eq!(row.size.height, px(HEIGHT));
+        for field in ["kind", "title", "source", "time", "action"] {
+            let text = visual
+                .debug_bounds(format!("board-list-waiting-{field}-{index}").leak())
+                .unwrap();
+            assert!(
+                text.size.height >= px(20.),
+                "full line box: {field} {index} {text:?}"
+            );
+            assert!(
+                text.top() >= row.top() && text.bottom() <= row.bottom(),
+                "unclipped {field}"
+            );
+        }
+    }
+    assert!(
+        visual
+            .debug_bounds("board-list-waiting-label")
+            .unwrap()
+            .size
+            .height
+            >= px(20.)
+    );
+    let notes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = notes.clone();
+    let _subscription = visual.update(|_, cx| {
+        cx.subscribe(&board, move |_, event, _| {
+            if let Action::Note(path) = event {
+                observed.borrow_mut().push(path.clone());
+            }
+        })
+    });
+    click(visual, "board-list-waiting-open-0");
+    click(visual, "board-list-waiting-open-1");
+    assert_eq!(*notes.borrow(), ["ops/questions.md", "try.md"]);
+    click(visual, "board-list-waiting-open-2");
+    assert_eq!(
+        visual.opened_url().as_deref(),
+        Some("https://git.example.test/team/project/issues/43")
+    );
+    click(visual, "board-list-waiting-video-1");
+    assert_eq!(
+        visual.opened_url().as_deref(),
+        Some("https://video.example.test/editing.mp4")
+    );
+    click(visual, "board-list-waiting-group");
+    assert!(visual.debug_bounds("board-list-waiting-row-0").is_none());
+    assert!(visual.debug_bounds("board-list-waiting-group").is_some());
+    board.read_with(visual, |board, cx| {
+        assert!(board.list.preferences.waiting_collapsed);
+        assert!(State::load(&board.area, cx).preferences.waiting_collapsed);
+        // Old preference files remain readable when the new field is absent.
+        let old = serde_json::to_value(Preferences::new(board.area.clone())).unwrap();
+        let mut old = old.as_object().unwrap().clone();
+        old.remove("waiting_collapsed");
+        let restored: Preferences = serde_json::from_value(old.into()).unwrap();
+        assert!(!restored.waiting_collapsed);
+    });
+    click(visual, "board-list-waiting-group");
+    assert!(visual.debug_bounds("board-list-waiting-row-0").is_some());
+    click(visual, "board-view-board");
+    assert!(visual.debug_bounds("board-waiting").is_some());
+    click(visual, "board-view-list");
+    board.update(visual, |board, cx| {
+        board.project_notes = Default::default();
+        board.snapshot.forgejo.value.clear();
+        board.refresh_waiting();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-waiting-group").is_none());
+    assert!(visual.debug_bounds("board-list-waiting-row-0").is_none());
+    assert!(visual.debug_bounds("board-waiting-problem").is_none());
+    board.read_with(visual, |board, _| {
+        assert!(matches!(
+            board.list.prepared.as_ref().unwrap().rows[0],
+            Row::Group(_)
+        ))
+    });
+    board.update(visual, |board, cx| {
+        board.snapshot.forgejo.error = Some("Comments unavailable".into());
+        board.refresh_waiting();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-waiting-group").is_none());
+    assert!(visual.debug_bounds("board-waiting-problem").is_some());
+}
+
+#[gpui::test]
+fn issue2533_waiting_survives_zero_match_chips_and_search(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(0));
+    board.update(visual, |board, cx| {
+        super::super::waiting::fixture::populate(board);
+        board.list.preferences.collapsed[Column::Queue as usize] = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-row-43").is_some());
+    assert!(visual.debug_bounds("board-list-waiting-row-2").is_some());
+    click(visual, "board-chip-bugs");
+    board.read_with(visual, |board, _| {
+        assert_eq!(board.filter.chip, filters::Chip::Bugs);
+        assert!(board
+            .list
+            .prepared
+            .as_ref()
+            .unwrap()
+            .counts
+            .iter()
+            .all(|n| *n == 0));
+    });
+    assert!(visual.debug_bounds("board-list-row-43").is_none());
+    for selector in [
+        "board-list-waiting-row-0",
+        "board-list-waiting-row-1",
+        "board-list-waiting-row-2",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "waiting survives chip: {selector}"
+        );
+    }
+    visual.simulate_keystrokes("/");
+    visual.simulate_input("#999999");
+    visual.run_until_parked();
+    board.read_with(visual, |board, _| {
+        assert_eq!(board.filter.search, "#999999")
+    });
+    assert!(visual.debug_bounds("board-list-waiting-row-2").is_some());
+    click(visual, "board-view-board");
+    assert!(visual.debug_bounds("board-waiting").is_some());
+    assert!(visual.debug_bounds("board-filter-empty").is_some());
+    click(visual, "board-view-list");
+    assert!(visual.debug_bounds("board-list-waiting-row-2").is_some());
+    click(visual, "board-chip-all");
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-row-43").is_some());
+}
+
+#[gpui::test]
+fn issue2533_list_waiting_refresh_invalidates_cache_but_repaint_and_scroll_do_not(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(0));
+    board.update(visual, |board, cx| {
+        super::super::waiting::fixture::populate(board);
+        let source = board
+            .project_notes
+            .questions
+            .get_mut("ops/questions.md")
+            .unwrap();
+        let mut question = source.value[0].clone();
+        question.title = "Typography: gypqj, руцф, Дёрнуть строку".into();
+        source.value = vec![question; 240];
+        board.refresh_waiting();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-waiting-row-0").is_some());
+    assert!(visual.debug_bounds("board-list-waiting-row-239").is_none());
+    let before = board.read_with(visual, |board, _| board.list.publications);
+    board.update(visual, |board, cx| {
+        board.list.rendered_rows = 0;
+        board
+            .list
+            .scroll
+            .scroll_to_item_strict(240, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-waiting-row-239").is_some());
+    assert!(visual.debug_bounds("board-list-waiting-row-0").is_none());
+    board.read_with(visual, |board, _| {
+        assert_eq!(board.list.publications, before);
+        assert!(board.list.rendered_rows > 0 && board.list.rendered_rows < 100);
+    });
+    board.update(visual, |board, cx| {
+        board
+            .project_notes
+            .questions
+            .get_mut("ops/questions.md")
+            .unwrap()
+            .value
+            .truncate(1);
+        board.refresh_waiting();
+        board
+            .list
+            .scroll
+            .scroll_to_item_strict(0, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    board.read_with(visual, |board, _| {
+        assert_eq!(board.list.publications, before + 1);
+        assert_eq!(board.waiting.items.len(), 3);
+    });
+    assert!(visual.debug_bounds("board-list-waiting-row-2").is_some());
+    assert!(visual.debug_bounds("board-list-waiting-row-3").is_none());
+    board.update(visual, |board, cx| {
+        board.project_notes = Default::default();
+        std::fs::write(
+            board.area.join("ops/board-context.toml"),
+            "version=1\nquestions_note='missing.md'\n",
+        )
+        .unwrap();
+        board
+            .project_notes
+            .accept(okilum_t3::board::context::refresh(&board.area), now());
+        board.snapshot.forgejo.value.clear();
+        board.refresh_waiting();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-waiting-problem").is_some());
+    assert!(visual.debug_bounds("board-list-waiting-group").is_none());
+}
+
+#[gpui::test]
+fn issue2533_delivery_omits_empty_platforms_channels_cells_and_table(cx: &mut TestAppContext) {
+    use okilum_t3::board::delivery as d;
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(0));
+    board.update(visual, |board, cx| {
+        super::super::waiting::fixture::populate(board);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // Positive control: the production table rendered the only populated track.
+    assert!(visual.debug_bounds("board-delivery-Linux-Beta").is_some());
+    assert!(visual.debug_bounds("board-delivery-channel-Beta").is_some());
+    assert!(visual
+        .debug_bounds("board-delivery-channel-Stable")
+        .is_none());
+    for platform in ["Mac", "Windows"] {
+        assert!(visual
+            .debug_bounds(format!("board-delivery-platform-{platform}").leak())
+            .is_none());
+        assert!(visual
+            .debug_bounds(format!("delivery-problem-{platform}").leak())
+            .is_none());
+    }
+    board.update(visual, |board, cx| {
+        // Missing cells in an otherwise populated row/column stay absent too.
+        let mut feed = board.delivery.config.value.as_ref().unwrap().feeds[0].clone();
+        feed.platform = d::Platform::Macos;
+        feed.channel = d::Channel::Stable;
+        board
+            .delivery
+            .config
+            .value
+            .as_mut()
+            .unwrap()
+            .feeds
+            .push(feed);
+        let mut source = board.delivery.feeds[&(d::Platform::Linux, d::Channel::Beta)].clone();
+        source.value.as_mut().unwrap().platform = d::Platform::Macos;
+        source.value.as_mut().unwrap().channel = d::Channel::Stable;
+        board
+            .delivery
+            .feeds
+            .insert((d::Platform::Macos, d::Channel::Stable), source);
+        board.list.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-delivery-Mac-Stable").is_some());
+    assert!(visual.debug_bounds("board-delivery-Linux-Beta").is_some());
+    assert!(visual.debug_bounds("board-delivery-Mac-Beta").is_none());
+    assert!(visual.debug_bounds("board-delivery-Linux-Stable").is_none());
+    board.update(visual, |board, cx| {
+        // Failed refresh retains real data and the quiet source diagnostic.
+        board
+            .delivery
+            .feeds
+            .get_mut(&(d::Platform::Linux, d::Channel::Beta))
+            .unwrap()
+            .error = Some("Unavailable".into());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-delivery-Linux-Beta").is_some());
+    assert!(visual.debug_bounds("delivery-problem-Linux").is_some());
+    board.update(visual, |board, cx| {
+        for source in board.delivery.feeds.values_mut() {
+            source.value = None;
+        }
+        board.project_notes = Default::default();
+        board.snapshot.forgejo.value.clear();
+        board.refresh_waiting();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-delivery").is_none());
+    assert!(visual.debug_bounds("board-list-waiting-group").is_none());
+    assert!(visual.debug_bounds("board-waiting-problem").is_some());
+    click(visual, "board-view-board");
+    assert!(visual.debug_bounds("board-delivery").is_none());
+    assert!(visual.debug_bounds("board-waiting").is_none());
+    assert!(visual.debug_bounds("board-waiting-problem").is_some());
+}

@@ -19,6 +19,7 @@ pub struct Config {
     #[serde(default)]
     pub notes: Vec<String>,
     pub next_stage: Option<String>,
+    pub questions_note: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +62,7 @@ pub struct Meta {
     pub channel: Option<delivery::Channel>,
     /// Only an explicit resolution note can close this exact question revision.
     pub resolution: Option<String>,
+    pub video: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Note {
@@ -68,6 +70,7 @@ pub struct Note {
     pub meta: Meta,
     pub revision: String,
     pub evidence: Vec<delivery::Evidence>,
+    pub modified_at: Option<u64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -83,11 +86,13 @@ pub struct Snapshot {
     pub config: Source<Option<Config>>,
     pub notes: BTreeMap<String, Source<Option<Note>>>,
     pub resolutions: BTreeMap<String, Source<Option<Resolution>>>,
+    pub questions: BTreeMap<String, Source<Vec<super::waiting::Question>>>,
 }
 pub struct Update {
     pub config: Result<Option<Config>, String>,
     pub notes: delivery::Reads<String, Option<Note>>,
     pub resolutions: delivery::Reads<String, Option<Resolution>>,
+    pub questions: delivery::Reads<String, Vec<super::waiting::Question>>,
 }
 pub struct Item {
     pub path: String,
@@ -115,7 +120,11 @@ impl Snapshot {
         if self.config.error.is_none() && self.config.value.is_none() {
             self.notes.clear();
             self.resolutions.clear();
+            self.questions.clear();
             return;
+        }
+        for (path, value) in update.questions {
+            self.questions.entry(path).or_default().accept(value, at);
         }
         for (path, value) in update.notes {
             self.notes.entry(path).or_default().accept(value, at);
@@ -125,6 +134,8 @@ impl Snapshot {
         }
         if self.config.error.is_none() {
             if let Some(config) = &self.config.value {
+                self.questions
+                    .retain(|path, _| config.questions_note.as_ref() == Some(path));
                 self.notes.retain(|path, _| {
                     config.notes.contains(path) || config.next_stage.as_ref() == Some(path)
                 });
@@ -235,6 +246,15 @@ fn text(area: &Path, path: &str, total: &mut usize) -> Result<String> {
     );
     Ok(String::from_utf8(bytes)?)
 }
+fn modified_at(area: &Path, path: &str) -> Option<u64> {
+    std::fs::metadata(area.join(path))
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
 fn frontmatter(source: &str) -> Result<(serde_yaml::Value, String)> {
     let source = source.replace("\r\n", "\n");
     let rest = source
@@ -299,6 +319,10 @@ pub fn parse_note(path: &str, source: &str) -> Result<Note> {
     .into_iter()
     .collect();
     let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&fields)?));
+    ensure!(
+        meta.video.as_ref().is_none_or(|url| super::https_link(url)),
+        "Video must be a public HTTPS link"
+    );
     let evidence = if meta.kind == Kind::Try && front.get("delivery").is_some() {
         delivery::parse_evidence(source, path)?
     } else {
@@ -309,6 +333,7 @@ pub fn parse_note(path: &str, source: &str) -> Result<Note> {
         meta,
         revision,
         evidence,
+        modified_at: None,
     })
 }
 fn resolution(source: &str) -> Result<Resolution> {
@@ -346,7 +371,12 @@ fn config(area: &Path, total: &mut usize) -> Result<Option<Config>> {
         "Unsupported context version or too many notes"
     );
     let mut seen = BTreeSet::new();
-    for path in config.notes.iter().chain(config.next_stage.iter()) {
+    for path in config
+        .notes
+        .iter()
+        .chain(config.next_stage.iter())
+        .chain(config.questions_note.iter())
+    {
         ensure!(
             relative_note(path) && seen.insert(path),
             "Context note paths must be unique project-relative Markdown"
@@ -361,6 +391,7 @@ pub fn refresh(area: &Path) -> Update {
         config,
         notes: Vec::new(),
         resolutions: Vec::new(),
+        questions: Vec::new(),
     };
     let Some(config) = update
         .config
@@ -371,11 +402,19 @@ pub fn refresh(area: &Path) -> Update {
     else {
         return update;
     };
+    if let Some(path) = &config.questions_note {
+        let result = text(area, path, &mut total)
+            .and_then(|text| super::waiting::parse_questions(&text, modified_at(area, path)));
+        update
+            .questions
+            .push((path.clone(), result.map_err(|e| format!("{path}: {e:#}"))));
+    }
     let mut resolved = BTreeSet::new();
     for path in config.notes.iter().chain(config.next_stage.iter()) {
         let result = text(area, path, &mut total)
             .and_then(|text| parse_note(path, &text))
-            .and_then(|note| {
+            .and_then(|mut note| {
+                note.modified_at = modified_at(area, path);
                 ensure!(
                     (config.next_stage.as_ref() == Some(path))
                         == (note.meta.kind == Kind::NextStage),
