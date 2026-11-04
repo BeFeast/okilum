@@ -89,7 +89,10 @@ fn issue2589_headless_inviter_sees_when_the_joiner_received_approval() -> Result
     while !source.approval_delivered()? && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(source.approval_delivered()?, "the approval reply was written");
+    assert!(
+        source.approval_delivered()?,
+        "the approval reply was written"
+    );
     assert_eq!(source.snapshot()?.peers.len(), 1);
     Ok(())
 }

@@ -2,7 +2,7 @@
 //! shell script. Every step runs the same executor and controller calls as the
 //! Settings → Sync buttons, before any window or GPUI initialization.
 use super::*;
-use okilum_sync_controller::direct::{Pending, Peer};
+use okilum_sync_controller::direct::{Peer, Pending};
 use std::{collections::HashSet, io::Write as _, time::Instant};
 
 const USAGE: &str = "\
@@ -183,7 +183,10 @@ fn parse(arguments: &[String]) -> anyhow::Result<Option<Request>> {
             (approve.is_some(), "--approve"),
             (approve_first, "--approve-first"),
         ] {
-            ensure!(!set || allowed.contains(&option), "{option} does not apply to {verb}");
+            ensure!(
+                !set || allowed.contains(&option),
+                "{option} does not apply to {verb}"
+            );
         }
         Ok(())
     };
@@ -408,7 +411,11 @@ fn execute(verb: Verb) -> anyhow::Result<i32> {
             let [chosen] = matches.as_slice() else {
                 bail!(
                     "vault {vault:?} is {} in this computer's catalog: {}",
-                    if matches.is_empty() { "not" } else { "ambiguous" },
+                    if matches.is_empty() {
+                        "not"
+                    } else {
+                        "ambiguous"
+                    },
                     serde_json::to_string(&catalog)?
                 );
             };
@@ -424,7 +431,8 @@ fn execute(verb: Verb) -> anyhow::Result<i32> {
                 .context("destination unavailable")?;
             let deadline = Instant::now() + wait;
             // The Settings view opens the vault once this is true.
-            while output.snapshot.preparing || !output.snapshot.attached.iter().any(|v| v.path == path)
+            while output.snapshot.preparing
+                || !output.snapshot.attached.iter().any(|v| v.path == path)
             {
                 if Instant::now() >= deadline {
                     print_json(&status(&output));
@@ -601,7 +609,11 @@ fn find_peer(peers: &[Peer], wanted: &str) -> anyhow::Result<uuid::Uuid> {
         [peer] => Ok(peer.id),
         _ => anyhow::bail!(
             "computer {wanted:?} is {} among paired computers: {}",
-            if matches.is_empty() { "not found" } else { "ambiguous" },
+            if matches.is_empty() {
+                "not found"
+            } else {
+                "ambiguous"
+            },
             serde_json::to_string(&peers.iter().map(peer_json).collect::<Vec<_>>())?
         ),
     }
@@ -694,9 +706,11 @@ mod tests {
                 quit_app: true,
             }
         );
-        let connect = parse(&args("connect okilum-sync://pair/10.0.0.2:4000#ab --name Mac"))
-            .unwrap()
-            .unwrap();
+        let connect = parse(&args(
+            "connect okilum-sync://pair/10.0.0.2:4000#ab --name Mac",
+        ))
+        .unwrap()
+        .unwrap();
         assert_eq!(
             connect.verb,
             Verb::Connect {
@@ -706,7 +720,10 @@ mod tests {
             }
         );
         assert_eq!(
-            parse(&args("invite --approve idunn")).unwrap().unwrap().verb,
+            parse(&args("invite --approve idunn"))
+                .unwrap()
+                .unwrap()
+                .verb,
             Verb::Invite {
                 name: None,
                 approval: Approval::Named("idunn".into()),
@@ -714,7 +731,10 @@ mod tests {
             }
         );
         assert_eq!(
-            parse(&args("choose idunn Notes -- -odd")).unwrap().unwrap().verb,
+            parse(&args("choose idunn Notes -- -odd"))
+                .unwrap()
+                .unwrap()
+                .verb,
             Verb::Choose {
                 peer: "idunn".into(),
                 vault: "Notes".into(),
@@ -751,9 +771,17 @@ mod tests {
     #[test]
     fn issue2589_sync_cli_detects_a_running_app_through_its_instance_lock() {
         let directory = tempfile::tempdir().unwrap();
-        assert_eq!(running_app(directory.path()).unwrap(), None, "never started");
+        assert_eq!(
+            running_app(directory.path()).unwrap(),
+            None,
+            "never started"
+        );
         let lock = std::fs::File::create(directory.path().join("reader-instance.lock")).unwrap();
-        assert_eq!(running_app(directory.path()).unwrap(), None, "stale lock file");
+        assert_eq!(
+            running_app(directory.path()).unwrap(),
+            None,
+            "stale lock file"
+        );
         lock.lock().unwrap();
         std::fs::write(
             directory.path().join("reader-instance.json"),
@@ -761,11 +789,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(running_app(directory.path()).unwrap(), Some(4242));
-        assert!(running_message(4242).contains(if cfg!(target_os = "macos") {
-            "osascript -e 'quit app \"Okilum\"'"
-        } else {
-            "kill 4242"
-        }));
+        assert!(
+            running_message(4242).contains(if cfg!(target_os = "macos") {
+                "osascript -e 'quit app \"Okilum\"'"
+            } else {
+                "kill 4242"
+            })
+        );
         drop(lock);
         assert_eq!(running_app(directory.path()).unwrap(), None, "app quit");
     }
