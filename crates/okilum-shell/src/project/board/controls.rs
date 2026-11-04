@@ -76,30 +76,6 @@ pub(super) fn compact_action(
     disclosure(id, window, cx).0.h_6().px_2().text_sm().gap_1()
 }
 
-/// A rich agent link already owns its complete inner row/column layout. Keep
-/// that tree directly in Base instead of negotiating another 100%-height row
-/// inside the auto-height control on every lane-width change.
-pub(super) fn agent_link(
-    id: impl Into<ElementId>,
-    disabled: bool,
-    window: &mut Window,
-    cx: &mut App,
-) -> gpui_base::Button {
-    let (button, _) = disclosure(id, window, cx);
-    button
-        .h_auto()
-        .px_3()
-        .py_1()
-        .text_sm()
-        .whitespace_nowrap()
-        .disabled(disabled)
-        .when(disabled, |button| {
-            button
-                .hover(|style| style.bg(cx.theme().transparent))
-                .active(|style| style.bg(cx.theme().transparent))
-        })
-}
-
 /// Small Ghost options share the styled Button's geometry and interaction,
 /// with their label/count laid out directly instead of a full-size inner row.
 pub(super) fn compact_option(
