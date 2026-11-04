@@ -515,7 +515,7 @@ impl Board {
                     .child(title),
             )
             .child(div().flex_none().text_color(p.text_muted).child(id))
-            .on_click(cx.listener(move |this, _event, window, cx| {
+            .on_click(cx.listener(move |this, event, window, cx| {
                 if let Some(number) = number {
                     this.selected = Some(number);
                     this.selected_local = None;
@@ -523,7 +523,9 @@ impl Board {
                     this.selected = None;
                     this.selected_local = Some(id.clone());
                 }
-                this.focus.focus(window, cx);
+                if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                    this.focus.focus(window, cx);
+                }
                 this.open_peek(window, cx);
             }))
             .into_any_element();

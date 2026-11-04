@@ -70,10 +70,12 @@ impl Board {
                             .child(card.state.label()),
                     ),
             )
-            .on_click(cx.listener(move |this, _, window, cx| {
+            .on_click(cx.listener(move |this, event, window, cx| {
                 this.selected = None;
                 this.selected_local = Some(id.clone());
-                this.focus.focus(window, cx);
+                if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                    this.focus.focus(window, cx);
+                }
                 this.open_peek(window, cx);
             }))
             .into_any_element();
@@ -291,10 +293,12 @@ impl Board {
             .w_full()
             .min_w_0()
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _event, window, cx| {
+            .on_click(cx.listener(move |this, event, window, cx| {
                 this.selected_local = None;
                 this.selected = Some(number);
-                this.focus.focus(window, cx);
+                if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                    this.focus.focus(window, cx);
+                }
                 this.open_peek(window, cx);
             }))
             .child(
