@@ -234,6 +234,23 @@ fn issue1588_source_command_click_and_live_preview_disclosure(cx: &mut TestAppCo
         .visual
         .debug_bounds("agent-expanded-imports/rules.md")
         .is_some());
+    f.visual
+        .update(|_, cx| reader_features::set_enabled(reader_features::Feature::Agents, false, cx));
+    f.draw();
+    assert!(f
+        .visual
+        .debug_bounds("agent-disclosure-imports/rules.md")
+        .is_none());
+    f.visual
+        .update(|_, cx| reader_features::set_enabled(reader_features::Feature::Agents, true, cx));
+    f.draw();
+    f.click("agent-disclosure-imports/rules.md");
+    assert!(
+        f.visual
+            .debug_bounds("agent-expanded-imports/rules.md")
+            .is_some(),
+        "enabling Agents updates the existing Live Preview without a source edit"
+    );
 }
 
 #[gpui::test]
