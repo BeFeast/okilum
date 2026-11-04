@@ -38,3 +38,7 @@ populated cookie-source spy and require zero reads, verify the MCP-only path,
 and prevent read-only or rejected native grants from falling back for writes.
 Both macOS and Linux run these tests; the macOS gate explicitly includes the
 existing navigation, session and Board suites with non-empty filter controls.
+
+Navigation fixtures use the canonical temporary root so Reader and project paths
+share identity on macOS (`/var` is an alias of `/private/var`). Assertions and
+product path handling stay the same.

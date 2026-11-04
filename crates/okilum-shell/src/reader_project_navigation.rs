@@ -16,6 +16,12 @@ mod token_tests;
 #[cfg(test)]
 mod workspace_tests;
 
+/// Reader normalizes vault roots; macOS's /var alias must not change fixture identity.
+#[cfg(test)]
+fn canonical_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+}
+
 /// Local metadata and logo paths are available before any network operation.
 fn cached_project_icons(
     state: Option<&Path>,
@@ -1602,7 +1608,7 @@ mod icon_save_tests {
             crate::test_init(cx);
             bind_keys(cx);
         });
-        let temp = tempfile::tempdir().unwrap();
+        let temp = canonical_tempdir();
         let root = temp.path().join("vault");
         let state = temp.path().join("state");
         std::fs::create_dir_all(&root).unwrap();
@@ -1689,7 +1695,7 @@ mod icon_save_tests {
             crate::test_init(cx);
             bind_keys(cx);
         });
-        let temp = tempfile::tempdir().unwrap();
+        let temp = canonical_tempdir();
         let root = temp.path().join("vault");
         let state = temp.path().join("state");
         let folder = root.join("Dev/Areas/okilum");
@@ -1816,7 +1822,7 @@ mod icon_save_tests {
             crate::test_init(cx);
             bind_keys(cx);
         });
-        let temp = tempfile::tempdir().unwrap();
+        let temp = canonical_tempdir();
         let root = temp.path().join("vault");
         let folder = root.join("Dev/Areas/okilum");
         std::fs::create_dir_all(folder.join("ops")).unwrap();
