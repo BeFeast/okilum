@@ -269,6 +269,13 @@ async fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_vie
         "positive control: the actual List viewport scrolled"
     );
     click(visual, "board-note-230-0");
+    // Opening the note prepares its document off the UI thread too.
+    visual
+        .condition(&reader, |reader, _| {
+            reader.current_rel == "project/note.md" && !reader.project_navigation.board_visible
+        })
+        .await;
+    visual.run_until_parked();
     reader.read_with(visual, |r, _| {
         assert_eq!(r.current_rel, "project/note.md");
         assert!(!r.project_navigation.board_visible);
