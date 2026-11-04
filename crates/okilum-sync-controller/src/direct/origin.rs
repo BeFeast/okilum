@@ -8,6 +8,27 @@ impl Controller {
         rel: &str,
         reviewed: &str,
     ) -> Result<Option<String>> {
+        self.file_version_origin_inner(root, rel, reviewed, false)
+    }
+
+    /// Source-bound attribution for a conflict comparison. Unlike the incoming
+    /// change notice, the local computer is also a meaningful origin here.
+    pub fn file_version_origin(
+        &self,
+        root: &Path,
+        rel: &str,
+        reviewed: &str,
+    ) -> Result<Option<String>> {
+        self.file_version_origin_inner(root, rel, reviewed, true)
+    }
+
+    fn file_version_origin_inner(
+        &self,
+        root: &Path,
+        rel: &str,
+        reviewed: &str,
+        include_local: bool,
+    ) -> Result<Option<String>> {
         self.check()?;
         let _access = self.shared.access.enter();
         let path = Path::new(rel);
@@ -57,7 +78,11 @@ impl Controller {
             return Ok(None);
         }
         let config = api.config()?;
-        let name = origin_name(&config, global["modifiedBy"].as_str(), &identity.device_id);
+        let name = if include_local {
+            origin_name_any(&config, global["modifiedBy"].as_str())
+        } else {
+            origin_name(&config, global["modifiedBy"].as_str(), &identity.device_id)
+        };
         ensure!(
             std::fs::read_to_string(file)? == reviewed,
             "conflict changed during lookup"
@@ -111,6 +136,12 @@ fn matches_reviewed_bytes(
 }
 
 fn origin_name(config: &serde_json::Value, short: Option<&str>, local: &str) -> Option<String> {
+    if short.is_some_and(|short| local.starts_with(short)) {
+        return None;
+    }
+    origin_name_any(config, short)
+}
+fn origin_name_any(config: &serde_json::Value, short: Option<&str>) -> Option<String> {
     let short = short.filter(|s| {
         s.len() == 7
             && s.bytes()
@@ -122,7 +153,7 @@ fn origin_name(config: &serde_json::Value, short: Option<&str>, local: &str) -> 
             .is_some_and(|id| id.starts_with(short))
     });
     let device = matching.next()?;
-    if matching.next().is_some() || device["deviceID"].as_str() == Some(local) {
+    if matching.next().is_some() {
         return None;
     }
     device["name"]
@@ -170,6 +201,11 @@ mod tests {
             Some("Laptop".into())
         );
         assert_eq!(origin_name(&config, Some("AAAAAAA"), "AAAAAAA-LOCAL"), None);
+        assert_eq!(
+            origin_name_any(&config, Some("AAAAAAA")),
+            Some("Desktop".into()),
+            "a conflict pane can identify a byte-matched local origin"
+        );
         assert_eq!(origin_name(&config, Some("CCCCCCC"), "AAAAAAA-LOCAL"), None);
         assert_eq!(origin_name(&config, None, "AAAAAAA-LOCAL"), None);
         let ambiguous = json!({"devices":[{"deviceID":"BBBBBBB-ONE", "name":"One"}, {"deviceID":"BBBBBBB-TWO", "name":"Two"}]});

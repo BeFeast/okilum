@@ -9,6 +9,8 @@ pub struct HistoryEntry {
     pub versions: [RetainedVersion; 2],
     pub pending: bool,
     pub record: PathBuf,
+    directory_identity: Option<(u64, u64)>,
+    modes: [u32; 2],
 }
 #[derive(Default)]
 pub struct History {
@@ -51,11 +53,11 @@ pub fn history(directory: &Path, root: &Path) -> Result<History> {
         }
         let record = directory.join(OsStr::from_bytes(entry.file_name().to_bytes()));
         let load = || -> Result<Option<HistoryEntry>> {
-            let versions = retained_versions(&record)?;
+            let value = record_value(&record)?;
+            let versions = retained_from_value(value.clone())?;
             if versions[0].root != root {
                 return Ok(None);
             }
-            let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&record)?)?;
             let canonical = versions[0].path.clone();
             let created = value["created"].as_u64().unwrap_or(0);
             let pending = match std::fs::read(completed(&record)) {
@@ -72,6 +74,12 @@ pub fn history(directory: &Path, root: &Path) -> Result<History> {
                 versions,
                 pending,
                 record: record.clone(),
+                directory_identity: serde_json::from_value(value["directory_identity"].clone())
+                    .ok(),
+                modes: [
+                    value["this_mode"].as_u64().unwrap_or(0o600) as u32 & 0o777,
+                    value["that_mode"].as_u64().unwrap_or(0o600) as u32 & 0o777,
+                ],
             }))
         };
         match load() {
@@ -99,8 +107,9 @@ pub fn recover_interrupted(directory: &Path, root: &Path) -> Result<Vec<String>>
     let mut messages = history.warnings;
     for entry in history.entries.into_iter().filter(|entry| entry.pending) {
         let result = (|| -> Result<()> {
-            let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&entry.record)?)?;
-            let expected: (u64, u64) = serde_json::from_value(value["directory_identity"].clone())?;
+            let expected = entry
+                .directory_identity
+                .context("Missing directory identity; use Recover notes")?;
             let fd = parent(root, &entry.canonical)?;
             ensure!(
                 identity(&fd)? == expected,
@@ -117,8 +126,7 @@ pub fn recover_interrupted(directory: &Path, root: &Path) -> Result<Vec<String>>
                     Err(rustix::io::Errno::NOENT) => {}
                     Err(error) => return Err(error.into()),
                 }
-                let key = if index == 0 { "this_mode" } else { "that_mode" };
-                let mode = value[key].as_u64().unwrap_or(0o600) as u32 & 0o777;
+                let mode = entry.modes[index];
                 publish(&fd, &version.path, &version.bytes, mode)?;
             }
             Ok(())

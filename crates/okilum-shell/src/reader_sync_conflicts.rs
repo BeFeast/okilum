@@ -345,6 +345,7 @@ impl crate::Reader {
         cx: &mut gpui::Context<Self>,
     ) -> Option<gpui::AnyElement> {
         use gpui::{prelude::*, *};
+        use gpui_base::ElementExt as _;
         use gpui_component::{button::Button, h_flex, Sizable};
         let (root, rel, copies, complete) = self.sync_note_conflicts.as_ref()?;
         if *root != self.vault_root || *rel != self.current_rel || (copies.is_empty() && *complete)

@@ -730,7 +730,6 @@ fn managed_real_conflicts_resolve_each_choice_with_hashes() -> Result<()> {
                     }))
             },
         )?;
-        println!("Real conflict {choice:?}: canonical and retained SHA-256 hashes match; both runtimes converged");
     }
     Ok(())
 }
