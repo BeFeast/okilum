@@ -109,16 +109,9 @@ fn processes(deadline: Instant) -> Result<()> {
             )
         };
         if read != size {
-            // A disappearing process is harmless. A live process this account may not
-            // signal (EPERM) belongs to another account, e.g. a protected endpoint
-            // security agent on a managed Mac (#2589); it cannot be this account's Sync
-            // daemon. Only an unreadable process of this account remains uncertainty.
-            let alive = unsafe { libc::kill(pid, 0) };
-            let errno = std::io::Error::last_os_error().raw_os_error();
-            ensure!(
-                alive == -1 && matches!(errno, Some(libc::ESRCH) | Some(libc::EPERM)),
-                "live process inventory unreadable"
-            );
+            // Managed Macs hide some processes, including ones of this account (#2589).
+            // An unreadable process is skipped: a running Syncthing is still detected
+            // by its configuration files and launchd definitions below.
             continue;
         }
         let name: Vec<u8> = info
