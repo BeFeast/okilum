@@ -8410,6 +8410,7 @@ okilum — a reader for a plain-Markdown vault
 
 USAGE:
     okilum [FILE.md | FOLDER] [--vault <PATH>] [OPTIONS]
+    okilum sync <COMMAND>   Pair computers without a window (Linux, macOS; see okilum sync --help)
 
 OPTIONS:
     --managed-workspace       Open the saved Brain/workspace chooser explicitly.
@@ -8458,6 +8459,12 @@ fn main() {
     // SAFETY: mallopt only adjusts allocator parameters; no other thread runs yet.
     unsafe {
         libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
+    // `okilum sync …` is headless: it exits before the updater, single-instance
+    // handoff, AppImage re-exec or any GPUI initialization (#2589).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(code) = reader_settings_sync::cli::entry() {
+        std::process::exit(code);
     }
     #[cfg(windows)]
     let startup_reservation = reader_instance::reserve_windows_launch();

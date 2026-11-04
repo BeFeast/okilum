@@ -925,6 +925,8 @@ fn prepare_mac_runtime(
 mod failure;
 use failure::{failure_details, short_cause};
 
+#[path = "reader_settings_sync/cli.rs"]
+pub(crate) mod cli;
 #[path = "reader_settings_sync/epoch.rs"]
 mod epoch;
 #[cfg(test)]
