@@ -135,3 +135,21 @@ identity, boundedness, cancellation, live reconciliation and outage-recovery
 assertions are retained in shared-server transport/worker tests. Existing Discover,
 source storage, immutable export and native panel recovery/selection/Start-consent
 tests remain in place, with quality fields added to their fixtures.
+
+### Live fixture synchronization (#2565)
+
+Core live fixtures await the worker's update channel, rather than polling it
+against a wall-clock deadline. An unexpected terminal update fails immediately;
+process-level test watchdogs bound a genuinely stuck worker. Cancellation waits
+for fake-server poll notifications, a Stop acknowledgement and worker sender
+closure. The server holds each observed response until the test releases it,
+proving Stop/Drop abort in-flight HTTP and preventing another poll from racing
+with the observer. Server shutdown joins outstanding handlers before the final
+poll-count assertion. These signals cover actual work and stale-generation rejection.
+
+The private cycle clock is injectable in test builds. Ordinary fixtures freeze
+it so host scheduling cannot accidentally turn a successful cycle into a timeout.
+The deadline fixture first completes below budget, then advances to the exact
+deadline after a page and checks that timed-out rows stay visible and following
+stops. Production uses the same monotonic `Instant` clock and existing budgets.
+No row-loss or stalled-cycle product race was established by this repair.

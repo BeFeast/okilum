@@ -25,25 +25,32 @@ fn key() -> ApiKey {
     ApiKey::new(b"test-secret".to_vec()).unwrap()
 }
 fn timing() -> Timing {
+    // Ordinary fixtures test completed work, not how quickly the host schedules it.
+    let now = Instant::now();
     Timing {
         poll: Duration::from_millis(40),
         retry: Duration::from_millis(20),
         cycle: Duration::from_secs(20),
         idle: Duration::from_secs(60),
         after_page: None,
+        cycle_clock: Some(Arc::new(move || now)),
     }
 }
-fn receive(rx: &async_channel::Receiver<Update>, predicate: impl Fn(&Update) -> bool) -> Update {
-    let deadline = Instant::now() + Duration::from_secs(20);
+fn receive(
+    rx: &async_channel::Receiver<Update>,
+    generation: u64,
+    predicate: impl Fn(&Update) -> bool,
+) -> Update {
     loop {
-        match rx.try_recv() {
-            Ok(update) if predicate(&update) => return update,
-            Ok(_) => {}
-            Err(_) => {
-                assert!(Instant::now() < deadline, "worker update never arrived");
-                std::thread::sleep(Duration::from_millis(2));
-            }
+        let update = rx.recv_blocking().expect("worker exited before its update");
+        if predicate(&update) {
+            return update;
         }
+        assert!(
+            update.generation != generation || update.following,
+            "worker stopped before the expected completion: {:?}",
+            update.status
+        );
     }
 }
 #[test]
@@ -52,12 +59,12 @@ fn live_reconciles_every_page_new_and_late_documents_once_without_timestamp_wate
     let source = make_source(&server);
     let (worker, rx) = Worker::spawn(timing(), None);
     let generation = worker.apply(source.clone(), key());
-    let initial = receive(&rx, |u| {
+    let initial = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     });
     assert_eq!(initial.loaded.unwrap().window.events.len(), 200);
     let generation = worker.start_live(Mode::Fixed(source.discover.time.clone()), &source);
-    let first = receive(&rx, |u| {
+    let first = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::Complete { .. })
     });
     let old = first.loaded.unwrap();
@@ -70,7 +77,7 @@ fn live_reconciles_every_page_new_and_late_documents_once_without_timestamp_wate
     current["sort"][0] = json!(1793750400000000001i64);
     server.add(late);
     server.add(current);
-    let updated = receive(&rx, |u| {
+    let updated = receive(&rx, generation, |u| {
         u.generation == generation
             && matches!(u.status, Status::Complete { .. })
             && u.loaded
@@ -95,15 +102,20 @@ fn live_reconciles_every_page_new_and_late_documents_once_without_timestamp_wate
         "immutable loaded snapshot is retained by existing details/export owners"
     );
     let start = server.state.lock().unwrap().searches;
-    receive(&rx, |u| {
-        u.generation == generation && matches!(u.status, Status::Complete { .. })
-    });
+    // The latest-value channel can hold a completion while one more cycle is
+    // already in flight. Three deliveries guarantee a new traversal after start,
+    // even if both existing cycles finished their HTTP before we were scheduled.
+    for _ in 0..3 {
+        receive(&rx, generation, |u| {
+            u.generation == generation && matches!(u.status, Status::Complete { .. })
+        });
+    }
     assert!(
         server.state.lock().unwrap().searches > start,
         "positive control: another full reconciliation ran"
     );
     let generation = worker.stop();
-    receive(&rx, |u| {
+    receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::Stopped { .. })
     });
     assert!(server
@@ -122,7 +134,7 @@ fn typed_auth_then_replacement_replays_same_query_retaining_loaded_state_and_ign
     source.discover.filters = vec![json!({"query":{"term":{"service.keyword":"checkout"}}})];
     let (worker, rx) = Worker::spawn(timing(), None);
     let generation = worker.apply(source.clone(), key());
-    let old = receive(&rx, |u| {
+    let old = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     })
     .loaded
@@ -130,7 +142,7 @@ fn typed_auth_then_replacement_replays_same_query_retaining_loaded_state_and_ign
     let mut failed = source.clone();
     failed.discover.filters = vec![json!({"query":{"term":{"level":"INFO"}}})];
     let generation = worker.apply(failed.clone(), ApiKey::new(b"bad-key".to_vec()).unwrap());
-    let denied = receive(&rx, |u| {
+    let denied = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::AuthError(_))
     });
     assert!(Arc::ptr_eq(&denied.loaded.unwrap().window, &old.window));
@@ -139,7 +151,7 @@ fn typed_auth_then_replacement_replays_same_query_retaining_loaded_state_and_ign
         Status::AuthError(AuthError { status: 401 })
     ));
     let generation = worker.replace_key(key());
-    let restored = receive(&rx, |u| {
+    let restored = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     })
     .loaded
@@ -156,41 +168,60 @@ fn stop_and_drop_cancel_real_async_polling_and_stale_generations_cannot_replace_
     let source = make_source(&server);
     let (worker, rx) = Worker::spawn(timing(), None);
     let generation = worker.apply(source.clone(), key());
-    let old = receive(&rx, |u| {
+    let old = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     })
     .loaded
     .unwrap();
-    server.state.lock().unwrap().scenario.never_complete = true;
-    worker.apply(source.clone(), key());
-    let start = Instant::now();
-    while server.state.lock().unwrap().polls < 2 {
-        assert!(start.elapsed() < Duration::from_secs(3));
-        std::thread::sleep(Duration::from_millis(2));
+    let (arrived, polls) = std::sync::mpsc::channel();
+    let (release, permits) = std::sync::mpsc::channel();
+    let permits = Mutex::new(permits);
+    let diagnostics = worker.diagnostics();
+    {
+        let mut state = server.state.lock().unwrap();
+        state.scenario.never_complete = true;
+        state.after_poll = Some(Arc::new(move |count| {
+            if count >= 2 {
+                arrived.send(count).unwrap();
+                permits.lock().unwrap().recv().unwrap();
+            }
+        }));
     }
+    worker.apply(source.clone(), key());
+    assert_eq!(polls.recv().unwrap(), 2);
+    // The server holds this response: Stop must abort real in-flight HTTP,
+    // and the worker cannot race ahead to another poll while we are descheduled.
     let generation = worker.stop();
-    let stopped = receive(&rx, |u| {
+    let stopped = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::Stopped { .. })
     });
     assert!(Arc::ptr_eq(&stopped.loaded.unwrap().window, &old.window));
+    assert!(
+        !diagnostics.lock().unwrap().timeouts,
+        "Stop must cancel HTTP before its transport deadline"
+    );
     let before = server.state.lock().unwrap().polls;
-    std::thread::sleep(Duration::from_millis(120));
+    release.send(()).unwrap();
+    // A second acknowledged command makes the stopped engine run again.
+    let generation = worker.stop();
+    receive(&rx, generation, |u| {
+        u.generation == generation && matches!(u.status, Status::Stopped { .. })
+    });
     assert_eq!(server.state.lock().unwrap().polls, before);
     worker.apply(source, key());
-    let start = Instant::now();
-    while server.state.lock().unwrap().polls <= before {
-        assert!(start.elapsed() < Duration::from_secs(3));
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    assert!(polls.recv().unwrap() > before);
     drop(worker);
-    let start = Instant::now();
-    while !rx.is_closed() {
-        assert!(start.elapsed() < Duration::from_secs(3));
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    let before = server.state.lock().unwrap().polls;
-    std::thread::sleep(Duration::from_millis(120));
-    assert_eq!(server.state.lock().unwrap().polls, before);
+    // Sender closure acknowledges worker exit; server Drop joins its handlers.
+    while rx.recv_blocking().is_ok() {}
+    assert!(
+        !diagnostics.lock().unwrap().timeouts,
+        "Drop must cancel HTTP before its transport deadline"
+    );
+    let state = server.state.clone();
+    let before = state.lock().unwrap().polls;
+    release.send(()).unwrap();
+    drop(server);
+    assert_eq!(state.lock().unwrap().polls, before);
 }
 #[test]
 fn live_partial_rows_are_shown_and_following_stops_instead_of_hiding_them() {
@@ -198,13 +229,13 @@ fn live_partial_rows_are_shown_and_following_stops_instead_of_hiding_them() {
     let source = make_source(&server);
     let (worker, rx) = Worker::spawn(timing(), None);
     let generation = worker.apply(source.clone(), key());
-    receive(&rx, |u| {
+    receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     });
     server.add(record(101));
     server.state.lock().unwrap().scenario.partial = true;
     let generation = worker.start_live(Mode::Fixed(source.discover.time.clone()), &source);
-    let update = receive(&rx, |u| {
+    let update = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     });
     assert!(!update.following);
@@ -219,20 +250,20 @@ fn reconnect_after_observed_outage_reconciles_the_whole_window() {
     let source = make_source(&server);
     let (worker, rx) = Worker::spawn(timing(), None);
     let generation = worker.apply(source.clone(), key());
-    let initial = receive(&rx, |u| {
+    let initial = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     })
     .loaded
     .unwrap();
     server.state.lock().unwrap().scenario.unavailable = true;
     let generation = worker.start_live(Mode::Fixed(source.discover.time.clone()), &source);
-    let outage = receive(&rx, |u| {
+    let outage = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::Reconnecting { .. })
     });
     assert!(Arc::ptr_eq(&outage.loaded.unwrap().window, &initial.window));
     server.add(record(8));
     server.state.lock().unwrap().scenario.unavailable = false;
-    let recovered = receive(&rx, |u| {
+    let recovered = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::Complete { .. })
     });
     assert_eq!(recovered.loaded.unwrap().window.events.len(), 8);
@@ -259,18 +290,37 @@ fn row_cap_and_cycle_deadline_are_explicit_and_leave_visible_bounded_rows() {
     let source = make_source(&server);
     let mut short = timing();
     short.cycle = Duration::from_millis(1);
-    short.after_page = Some(Arc::new(|_| std::thread::sleep(Duration::from_millis(5))));
+    let clock = Arc::new(Mutex::new(Instant::now()));
+    let read = clock.clone();
+    let expire = Arc::new(AtomicBool::new(false));
+    let advance = expire.clone();
+    short.cycle_clock = Some(Arc::new(move || *read.lock().unwrap()));
+    short.after_page = Some(Arc::new(move |_| {
+        if advance.load(Ordering::Acquire) {
+            *clock.lock().unwrap() += Duration::from_millis(1);
+        }
+    }));
     let (worker, rx) = Worker::spawn(short, None);
     let generation = worker.apply(source.clone(), key());
-    receive(&rx, |u| {
+    receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     });
     let generation = worker.start_live(Mode::Fixed(source.discover.time.clone()), &source);
-    let limited = receive(&rx, |u| {
+    let complete = receive(&rx, generation, |u| {
+        u.generation == generation && matches!(u.status, Status::Complete { .. })
+    });
+    assert_eq!(complete.loaded.unwrap().window.events.len(), 21);
+    // Positive control above completes below budget; crossing the exact injected
+    // deadline below must retain the rows and stop following explicitly.
+    expire.store(true, Ordering::Release);
+    let generation = worker.start_live(Mode::Fixed(source.discover.time.clone()), &source);
+    let limited = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     });
     assert!(!limited.following);
-    assert!(limited.loaded.unwrap().quality.timed_out);
+    let loaded = limited.loaded.unwrap();
+    assert!(loaded.quality.timed_out);
+    assert_eq!(loaded.window.events.len(), 21);
 }
 #[test]
 fn fixed_rolling_modes_keep_absolute_bounds_and_reject_zero_duration() {
@@ -300,14 +350,14 @@ fn replacing_key_preserves_the_loaded_extent_of_a_multi_page_investigation() {
     let source = make_source(&server);
     let (worker, rx) = Worker::spawn(timing(), None);
     let mut generation = worker.apply(source.clone(), key());
-    let mut loaded = receive(&rx, |u| {
+    let mut loaded = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     })
     .loaded
     .unwrap();
     while loaded.more {
         generation = worker.more();
-        loaded = receive(&rx, |u| {
+        loaded = receive(&rx, generation, |u| {
             u.generation == generation && matches!(u.status, Status::History { .. })
         })
         .loaded
@@ -324,13 +374,13 @@ fn replacing_key_preserves_the_loaded_extent_of_a_multi_page_investigation() {
     };
     server.state.lock().unwrap().scenario.failure_status = Some(401);
     generation = worker.start_live(Mode::Fixed(retry_range.clone()), &source);
-    let denied = receive(&rx, |u| {
+    let denied = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::AuthError(_))
     });
     assert!(Arc::ptr_eq(&denied.loaded.unwrap().window, &loaded.window));
     server.state.lock().unwrap().scenario.failure_status = None;
     generation = worker.replace_key(key());
-    let refreshed = receive(&rx, |u| {
+    let refreshed = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     })
     .loaded
@@ -365,7 +415,7 @@ fn navigate_reads_every_request_page_and_back_restores_without_http_then_live_ke
         .push(json!({"query":{"term":{"service":"Checkout"}}}));
     let (worker, rx) = Worker::spawn(timing(), None);
     let generation = worker.apply(source.clone(), key());
-    let previous = receive(&rx, |u| {
+    let previous = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     })
     .loaded
@@ -382,7 +432,7 @@ fn navigate_reads_every_request_page_and_back_restores_without_http_then_live_ke
         .filters
         .push(json!({"query":crate::log::correlation::server_query("request-0", "flow")}));
     let generation = worker.navigate(request.clone());
-    let loaded = receive(&rx, |u| {
+    let loaded = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     })
     .loaded
@@ -406,7 +456,7 @@ fn navigate_reads_every_request_page_and_back_restores_without_http_then_live_ke
         .all(|pair| pair[0]["sort"][0].as_i64() <= pair[1]["sort"][0].as_i64()));
     let searches = server.state.lock().unwrap().searches;
     let generation = worker.restore(previous.clone());
-    let restored = receive(&rx, |u| {
+    let restored = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::Stopped { .. })
     })
     .loaded
@@ -420,14 +470,14 @@ fn navigate_reads_every_request_page_and_back_restores_without_http_then_live_ke
     );
     // A restored query is usable by Start, including its original sort/scope.
     let generation = worker.start_live(Mode::Fixed(source.discover.time.clone()), &source);
-    let parent_live = receive(&rx, |u| {
+    let parent_live = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::Complete { .. })
     })
     .loaded
     .unwrap();
     assert_eq!(parent_live.window.events.len(), 752);
     let generation = worker.navigate(request.clone());
-    receive(&rx, |u| {
+    receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::History { .. })
     });
     let mut fresh = crate::remote_log::fake::investigation_record(1506);
@@ -435,7 +485,7 @@ fn navigate_reads_every_request_page_and_back_restores_without_http_then_live_ke
     server.add(fresh.clone());
     server.add(fresh); // Same identity is emitted twice by the server.
     let generation = worker.start_live(Mode::Fixed(request.discover.time.clone()), &request);
-    let live = receive(&rx, |u| {
+    let live = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::Complete { .. })
     })
     .loaded
@@ -452,7 +502,7 @@ fn navigate_reads_every_request_page_and_back_restores_without_http_then_live_ke
     let mut other = request;
     other.endpoint = "https://other.example".into();
     let generation = worker.navigate(other);
-    let denied = receive(&rx, |u| {
+    let denied = receive(&rx, generation, |u| {
         u.generation == generation && matches!(u.status, Status::Error(_))
     });
     assert!(
@@ -477,7 +527,7 @@ fn request_drill_down_retains_partial_and_truncated_quality() {
         let source = make_source(&server);
         let (worker, rx) = Worker::spawn(timing(), None);
         let generation = worker.apply(source.clone(), key());
-        receive(&rx, |u| {
+        receive(&rx, generation, |u| {
             u.generation == generation && matches!(u.status, Status::History { .. })
         });
         let mut request = source;
@@ -485,7 +535,7 @@ fn request_drill_down_retains_partial_and_truncated_quality() {
             json!({"query":crate::log::correlation::server_query("request-0", "request_id")}),
         );
         let generation = worker.navigate(request);
-        let loaded = receive(&rx, |u| {
+        let loaded = receive(&rx, generation, |u| {
             u.generation == generation && matches!(u.status, Status::History { .. })
         })
         .loaded
