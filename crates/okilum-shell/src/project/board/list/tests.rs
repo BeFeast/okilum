@@ -378,12 +378,12 @@ fn issue2533_list_waiting_is_first_collapsible_group_with_three_kinds_and_full_l
     );
     for index in 0..3 {
         let row = visual
-            .debug_bounds(&format!("board-list-waiting-row-{index}"))
+            .debug_bounds(format!("board-list-waiting-row-{index}").leak())
             .unwrap();
         assert_eq!(row.size.height, px(HEIGHT));
         for field in ["kind", "title", "source", "time", "action"] {
             let text = visual
-                .debug_bounds(&format!("board-list-waiting-{field}-{index}"))
+                .debug_bounds(format!("board-list-waiting-{field}-{index}").leak())
                 .unwrap();
             assert!(
                 text.size.height >= px(20.),
@@ -568,10 +568,10 @@ fn issue2533_delivery_omits_empty_platforms_channels_cells_and_table(cx: &mut Te
         .is_none());
     for platform in ["Mac", "Windows"] {
         assert!(visual
-            .debug_bounds(&format!("board-delivery-platform-{platform}"))
+            .debug_bounds(format!("board-delivery-platform-{platform}").leak())
             .is_none());
         assert!(visual
-            .debug_bounds(&format!("delivery-problem-{platform}"))
+            .debug_bounds(format!("delivery-problem-{platform}").leak())
             .is_none());
     }
     board.update(visual, |board, cx| {
