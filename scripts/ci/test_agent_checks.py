@@ -162,6 +162,9 @@ class HelperFlowTests(unittest.TestCase):
                              '  touch "$FAIL_MARKER"; exit 7\n'
                              'fi\n')
             cargo.chmod(0o755)
+            # The shared suite also runs web reachability checks. Stub every
+            # test runner so this failure-propagation control stays isolated.
+            shutil.copy2(cargo, fake / 'node')
             counts = []
             for fail in ('0', '1'):
                 log = root / ('calls-' + fail)
@@ -174,6 +177,7 @@ class HelperFlowTests(unittest.TestCase):
                 calls = log.read_text().splitlines()
                 self.assertGreater(len(calls), 20)  # positive control: the full list fired
                 self.assertTrue(any('sprint=1' in call for call in calls))
+                self.assertTrue(any('retired-sync.test.js' in call for call in calls))
                 self.assertIn('vendor-tests', calls)
                 self.assertIn('sidecar::macos::preparation::', calls[-1])
                 counts.append(len(calls))

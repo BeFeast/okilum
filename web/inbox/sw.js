@@ -1,5 +1,5 @@
-const CACHE = 'okilum-inbox-shell-v20';
-const SHELL = ['/', '/sync-pairing.js', '/devices.js', '/app.js', '/launches.js', '/forgejo.js', '/projects.js', '/ui.js', '/noto-sans-400.ttf', '/noto-sans-600.ttf', '/questions.js', '/questions-view.js', '/outbox.js', '/publication-form.js', '/webauthn.js', '/style.css', '/manifest.webmanifest', '/icon.svg', '/icon-dark.svg'];
+const CACHE = 'okilum-inbox-shell-v21';
+const SHELL = ['/', '/sync-links.js', '/devices.js', '/app.js', '/launches.js', '/forgejo.js', '/projects.js', '/ui.js', '/noto-sans-400.ttf', '/noto-sans-600.ttf', '/questions.js', '/questions-view.js', '/outbox.js', '/publication-form.js', '/webauthn.js', '/style.css', '/manifest.webmanifest', '/icon.svg', '/icon-dark.svg'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 });
