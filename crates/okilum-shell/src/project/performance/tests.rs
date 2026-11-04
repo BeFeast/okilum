@@ -48,6 +48,9 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         });
         reader.project_navigation.active =
             Some(okilum_t3::projects::Project::read(&vault).unwrap());
+        // Match ensure_project_board_using: dock state/source publications also
+        // update Reader, while composer-only changes leave Board silent.
+        cx.observe(&board, |_, _, cx| cx.notify()).detach();
         reader
             .project_navigation
             .boards
