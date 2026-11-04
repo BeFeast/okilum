@@ -30,7 +30,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LIFETIME: u64 = 600;
+const LIFETIME: u64 = 3600;
 const PAIRING_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PEERS: usize = 64;
 
