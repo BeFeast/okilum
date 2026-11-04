@@ -470,6 +470,7 @@ fn macos_project_lifecycle_keeps_native_restore_explicit(cx: &mut TestAppContext
                 None,
                 Some(files.path().join("state")),
                 files.path().to_owned(),
+                std::time::Instant::now(),
                 window,
                 cx,
             );
