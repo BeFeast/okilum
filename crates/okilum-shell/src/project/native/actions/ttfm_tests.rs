@@ -41,10 +41,8 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let (release, released) = mpsc::channel();
     let (stop, stopped) = mpsc::channel();
-    let subscribed = Arc::new(AtomicBool::new(false));
-    let seen = subscribed.clone();
-    let warm_subscribed = Arc::new(AtomicBool::new(false));
-    let warm_seen = warm_subscribed.clone();
+    let (subscribed, subscription) = futures::channel::oneshot::channel();
+    let (warm_subscribed, warm_subscription) = futures::channel::oneshot::channel();
     let server = thread::spawn(move || {
         let sockets = RecoverySockets::new(listener);
         let (mut shell, request) = sockets.shells.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -59,7 +57,7 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
             ]),
         );
         let mut manager = socket(&sockets, None);
-        seen.store(true, Ordering::SeqCst);
+        subscribed.send(()).unwrap();
         released.recv_timeout(Duration::from_secs(10)).unwrap();
         let item = json!({"id":"ttfm-message","threadId":THREAD,"ordinal":1,
             "type":"assistant_message","text":"TTFM fixture message","status":"completed"});
@@ -78,7 +76,7 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
             .recv_timeout(Duration::from_secs(10))
             .unwrap();
         ping(&mut warm_shell);
-        warm_seen.store(true, Ordering::SeqCst);
+        warm_subscribed.send(()).unwrap();
         stopped.recv_timeout(Duration::from_secs(10)).unwrap();
     });
     let (view, visual, _temp) = fixture(cx, &origin);
@@ -88,14 +86,13 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
         let expiry = view.native.expires_at.unwrap();
         view.install_native(client, expiry, window, cx);
     });
+    subscription.await.unwrap();
     visual
         .condition(&view, |view, _| {
-            subscribed.load(Ordering::SeqCst)
-                && view
-                    .threads
-                    .model
-                    .as_ref()
-                    .is_some_and(|model| model.lock().unwrap().synchronized)
+            view.threads
+                .model
+                .as_ref()
+                .is_some_and(|model| model.lock().unwrap().synchronized)
         })
         .await;
     for _ in 0..3 {
@@ -150,9 +147,7 @@ async fn manager_ttfm_records_real_paint_once_per_open_and_waits_for_snapshot(
         view.set_active(true, window, cx);
     });
     draw(visual);
-    visual
-        .condition(&view, |_, _| warm_subscribed.load(Ordering::SeqCst))
-        .await;
+    warm_subscription.await.unwrap();
     let warm = wait_events(diagnostics.path(), "manager_ttfm", 2);
     assert_eq!(warm.len(), 2);
     assert_eq!(warm[1]["details"]["reused_connection"], true);
