@@ -6009,6 +6009,7 @@ mod tests {
         let state = fixture.path().join("state");
         let recovery = state.join("sync-conflicts");
         std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&state).unwrap();
         conflicts::prepare_recovery(&recovery).unwrap();
         let copy = Path::new("note.sync-conflict-20261104-123456-ABC2345.md");
         std::fs::write(root.join("note.md"), b"this").unwrap();
