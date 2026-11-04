@@ -173,6 +173,32 @@ Native tests cover defaults, independent persisted project choices, collapse,
 The sibling peek/filter/attention/compact-card/ordering issues remain independent.
 
 
+### Compact Board (#2534)
+
+**Доска** shares the List's cached projection and row primitives. Working,
+Checks and Can try have 268 px lanes; Queue has 240 px. Lanes scroll horizontally
+inside the center and virtualise their card streams. Snapshot/filter publications
+rebuild the groups; ordinary scrolling and selection build only visible cards.
+The Verified control remains a 34 px rail at the right edge and explicitly opens
+its lane, including when empty. Existing empty-stage controls remain available.
+
+Each issue card has three rows: number/type/up to two origin/epic pills and the
+bound agent avatar; a regular 13 px source title clamped to two 18 px lines; and
+existing state or exactly matched cached progress beside the PR number/actual CI
+dot. Active stale threads (four hours since their last source update) show amber
+with ⚠; failed CI shows red. Missing CI remains unknown. Selection uses an accent
+border and hover a subtle theme surface. Shared text primitives reserve full
+16 px line boxes, including descenders. No mockup colour constants are used.
+
+Queue builds just the first eight 30 px mini rows. **＋ ещё N · открыть списком**
+switches to List, expands Queue, scrolls to its heading and saves that view choice.
+Local cards and annotation problems participate in the same count and remain
+reachable. Clicking a card opens the existing bounded disclosure below the lanes,
+with outcome, links, notes and draft-only Discuss; Escape closes it. Native GPUI
+regressions cover card geometry, two-line clamping, bounded Queue work and view
+handoff, actual CI/live/stale evidence, virtualised lanes and Verified expansion.
+
+
 The compact card contains its issue title/number, a small agent tag and one
 existing stage-state line. The expected result and issue/PR/build/note/Discuss
 actions are inside the expanded card. Related-note navigation retains the same one-action return to Board. Escape
@@ -192,10 +218,8 @@ a steady indicator replace browser effects. Cards show the explicit expected
 outcome, agent and state, and at most one PR link badge; a PR link never claims
 that its CI passed or it merged. The expanded card retains notes and draft actions.
 
-Nonempty and explicitly expanded columns have zero minimum width and equal
-flexible bases. Once card sources have completed a successful read, empty columns
-collapse into compact name/count controls above the lanes (#2219), giving their
-width to useful content. Each control expands its empty lane with the keyboard
+Once card sources have completed a successful read, empty columns
+collapse into compact name/count controls above the lanes (#2219), leaving room for useful content. Each control expands its empty lane with the keyboard
 or pointer; the empty lane offers Collapse. Explicit expansion is window-local,
 not a persisted setting. A newly nonempty lane always opens. Initial loading is
 not zero cards; refreshes retain the last completed layout decision. An all-empty

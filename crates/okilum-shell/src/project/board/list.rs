@@ -15,7 +15,7 @@ const STAGES: [Column; 5] = [
     Column::Queue,
     Column::Verified,
 ];
-fn label(stage: Column) -> &'static str {
+pub(super) fn label(stage: Column) -> &'static str {
     match stage {
         Column::Working => "В работе",
         Column::Checks => "Проверки",
@@ -25,25 +25,28 @@ fn label(stage: Column) -> &'static str {
     }
 }
 #[derive(Clone, Copy, Debug)]
-enum Row {
+pub(super) enum Row {
     Group(Column),
     Issue(usize),
     Local(usize),
     Problem(usize),
 }
-struct Prepared {
-    binding: Binding,
-    rows: Vec<Row>,
-    counts: [usize; 5],
+pub(super) struct Prepared {
+    pub binding: Binding,
+    pub rows: Vec<Row>,
+    pub counts: [usize; 5],
+    pub groups: [Arc<[Row]>; 5],
+    local_count: usize,
+    ready: bool,
     filter: Option<String>,
     collapsed: [bool; 5],
     roles: Arc<[String]>,
     local_indices: std::collections::BTreeMap<String, usize>,
     source_problem: Option<String>,
-    sources_ready: bool,
-    mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
+    pub sources_ready: bool,
+    pub mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
     invalid_annotations: std::collections::BTreeSet<u64>,
-    issue_indices: std::collections::BTreeMap<u64, usize>,
+    pub issue_indices: std::collections::BTreeMap<u64, usize>,
 }
 pub(super) struct State {
     pub preferences: Preferences,
@@ -82,6 +85,10 @@ impl State {
             rendered_rows: 0,
         }
     }
+    #[cfg(test)]
+    pub(super) fn publication_count(&self) -> usize {
+        self.publications
+    }
     pub fn invalidate(&mut self) {
         self.prepared = None;
     }
@@ -93,7 +100,7 @@ impl State {
     }
 }
 impl Board {
-    fn save_presentation(&mut self) {
+    pub(super) fn save_presentation(&mut self) {
         if let Err(error) = self.list.save() {
             self.notice = Some(format!("Could not save Board presentation: {error:#}"));
         }
@@ -129,10 +136,12 @@ impl Board {
         }
         control.into_any_element()
     }
-    fn prepare_list(&mut self) -> Arc<Prepared> {
+    pub(super) fn prepare_list(&mut self) -> Arc<Prepared> {
         if let Some(prepared) = &self.list.prepared {
             if prepared.filter == self.filter
                 && prepared.collapsed == self.list.preferences.collapsed
+                && prepared.local_count == self.local_cards.value.cards.len()
+                && prepared.ready == self.column_sources_ready(&prepared.binding)
             {
                 return prepared.clone();
             }
@@ -182,6 +191,7 @@ impl Board {
             groups[Column::Queue as usize].push(Row::Problem(i));
         }
         let counts = std::array::from_fn(|i| groups[i].len());
+        let kanban_groups = groups.clone().map(|group| group.into());
         let mut rows = Vec::new();
         for stage in STAGES {
             rows.push(Row::Group(stage));
@@ -211,6 +221,9 @@ impl Board {
         let source_problem = self.problem(now());
         let sources_ready = self.column_sources_ready(&binding);
         let prepared = Arc::new(Prepared {
+            groups: kanban_groups,
+            local_count: self.local_cards.value.cards.len(),
+            ready: sources_ready,
             source_problem,
             sources_ready,
             mappings,
@@ -709,15 +722,7 @@ impl Board {
             );
         }
         if let Some(agent) = &agent {
-            let active = matches!(
-                agent.thread.status.as_str(),
-                "preparing" | "starting" | "running" | "waiting"
-            ) && agent
-                .thread
-                .active_run_id
-                .as_ref()
-                .is_some_and(|id| !id.is_empty())
-                && !agent.thread.settled;
+            let active = row_bits::active(agent.thread);
             let url = self.manager.as_ref().and_then(|m| {
                 m.read(cx)
                     .identity

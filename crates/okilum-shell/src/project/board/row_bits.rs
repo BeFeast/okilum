@@ -10,6 +10,7 @@ pub(super) fn type_tag(issue: Option<&okilum_t3::board::Issue>, cx: &App) -> Any
         .py(px(1.))
         .rounded(px(5.))
         .text_size(px(12.))
+        .line_height(px(16.))
         .text_color(tone)
         .bg(appearance::tint(tone))
         .child(if kind == "fr" { "FR" } else { kind })
@@ -25,6 +26,7 @@ pub(super) fn label_pill(label: impl Into<SharedString>, tone: Hsla, cx: &App) -
         .border_color(brand::palette(cx).border_subtle)
         .rounded_full()
         .text_size(px(12.))
+        .line_height(px(16.))
         .text_color(brand::palette(cx).text_muted)
         .child(div().size(px(6.)).rounded_full().bg(tone))
         .child(label.into())
@@ -68,6 +70,7 @@ pub(super) fn agent_avatar(name: &str, active: bool, cx: &App) -> AnyElement {
         .items_center()
         .justify_center()
         .text_size(px(12.))
+        .line_height(px(16.))
         .child(
             name.chars()
                 .next()
@@ -105,4 +108,16 @@ pub(super) fn relative_time(timestamp: &str, at: u64) -> Option<String> {
     } else {
         format!("{} д", age / 86400)
     })
+}
+
+/// A live dot needs a current unsettled run, not just an assigned agent.
+pub(super) fn active(thread: &okilum_t3::ThreadSummary) -> bool {
+    matches!(
+        thread.status.as_str(),
+        "preparing" | "starting" | "running" | "waiting"
+    ) && thread
+        .active_run_id
+        .as_ref()
+        .is_some_and(|id| !id.is_empty())
+        && !thread.settled
 }
