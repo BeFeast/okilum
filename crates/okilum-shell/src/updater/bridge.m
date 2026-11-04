@@ -421,7 +421,9 @@ static TSTerminationDelegate *TSTermination;
     }
 }
 - (void)cancelForReplacement:(void (^)(SPUUserUpdateChoice))reply error:(NSError *)error {
-    if (self.restartRequested) TSSend(13, error.localizedDescription ?: @"A newer update is being downloaded. Choose Restart now when it is ready.");
+    // This attempt ends here. Replacement may download, but needs a new
+    // explicit Restart; do not keep promising automatic continuation in Rust.
+    if (self.restartRequested) TSSend(14, error.localizedDescription ?: @"A newer update is being downloaded. Choose Restart now when it is ready.");
     self.restartRequested = NO;
     self.restartReply = nil;
     self.retryTermination = nil;

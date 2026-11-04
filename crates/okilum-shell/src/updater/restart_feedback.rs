@@ -61,7 +61,8 @@ pub(super) fn report(kind: i32, reason: &str) {
         return;
     }
     match kind {
-        2 | 10 | 14 => refused(if reason.is_empty() {
+        2 => refused(format!("{reason} Open Settings → Updates and check for updates again. Okilum is staying open.")),
+        10 | 14 => refused(if reason.is_empty() {
             "Okilum is still open. Save or close any pending dialog, then choose Restart now again."
         } else { reason }),
         4 => notify("verifying", "Verifying the update. Restart will continue automatically; your edits will be protected first."),
@@ -130,6 +131,7 @@ mod tests {
             cx.set_reduce_motion(true);
             crate::test_init(cx);
         });
+        let app = cx.clone();
         let (_, visual) = cx.add_window_view(|window, cx| {
             let host = cx.new(|_| NoticeHost);
             Root::new(host, window, cx)
@@ -141,7 +143,7 @@ mod tests {
             // The production scheduler owns App, without borrowing a Window.
             // Holding this window while the presenter updates every window
             // would correctly reject its reentrant handle.update call.
-            cx.update(present);
+            app.update(present);
             visual.run_until_parked();
             visual.update(|window, cx| {
                 window.activate_window();

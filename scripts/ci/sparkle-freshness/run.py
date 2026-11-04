@@ -621,6 +621,11 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         assert callbacks.count('protect current editor after verification') == 2, callbacks
                         assert callbacks.count('persist UI after editor protection') == 2, callbacks
                         assert sum('GET /appcast.xml' in r for r in requests) >= 5, requests
+                    if scenario == 'restart-newest':
+                        callbacks = trace.read_text()
+                        refusal = 'report 14 A newer update is being downloaded. Choose Restart now when it is ready.'
+                        assert refusal in callbacks, callbacks
+                        assert callbacks.index('verified-ready 2') < callbacks.index(refusal) < callbacks.index('verified-ready 4'), callbacks
                     if scenario in ('guard-refusal', 'quit-guard-refusal'):
                         assert 'editor changed after verification' in trace.read_text()
                         assert 'protect current editor after verification' in trace.read_text()
