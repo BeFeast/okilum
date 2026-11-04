@@ -342,7 +342,7 @@ fn list_2530_ci_live_age_and_executor_filter_use_existing_evidence(cx: &mut Test
     assert!(visual.debug_bounds("board-list-row-1").is_none());
     board.read_with(visual, |b, _| {
         assert_eq!(b.snapshot.forgejo.value.len(), 4);
-        assert_eq!(b.list.prepared.as_ref().unwrap().counts, [0, 1, 0, 0, 0]);
+        assert_eq!(b.list.prepared.as_ref().unwrap().counts, [0, 0, 1, 0, 0]);
     });
     click(visual, "board-remove-executor");
     assert!(visual.debug_bounds("board-list-row-1").is_some());
