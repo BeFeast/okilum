@@ -63,7 +63,7 @@ diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/st
  
      use crate::input::{EditorMode, InputMode, TextareaMode};
  
-@@ -5077,6 +5081,265 @@
+@@ -5077,6 +5081,266 @@
                  f(crate::input::InputState::new(window, cx))
              })
          }
@@ -173,8 +173,9 @@ diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/st
 +            }))
 +        });
 +        cx.run_until_parked();
-+        // GPUI 0.3.3 publishes initial paint geometry on the next root frame.
-+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
++        // Seed the consumer after initial paint: GPUI 0.3.3 registers cached
++        // dependencies only after that first frame has finished.
++        window.update(cx, |_, window, _| window.refresh()).unwrap();
 +        let input = input.unwrap();
 +        let before = input.read_with(cx, |state, _| state.cursor_layout());
 +        assert!(before.is_some(), "positive control: initial caret was painted");

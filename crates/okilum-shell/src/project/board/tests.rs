@@ -1504,6 +1504,20 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
         visual.debug_bounds("board-agent-link-1").is_some(),
         "positive control: real agent renderer reads progress"
     );
+    let agent = visual.debug_bounds("board-agent-link-1").unwrap();
+    visual.simulate_click(agent.center(), Modifiers::default());
+    assert_eq!(
+        visual.opened_url(),
+        Some(
+            ServerIdentity {
+                environment_id: "fixture".into(),
+                label: "Fixture".into()
+            }
+            .thread_url(&thread_id)
+        ),
+        "rich agent controls retain their explicit source URL"
+    );
+    assert_eq!(board.read_with(visual, |board, _| board.selected), None);
     board.read_with(visual, |board, _| {
         board.render_calls.set(0);
         board.card_calls.set(0);

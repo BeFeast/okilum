@@ -933,30 +933,32 @@ impl Board {
                             .child(progress),
                     );
                 }
-                Button::new(("board-agent-link", number as usize))
-                    .mt_2()
-                    .debug_selector(move || format!("board-agent-link-{number}"))
-                    .small()
-                    .ghost()
-                    .w_full()
-                    .min_w_0()
-                    .h_auto()
-                    .px_3()
-                    .py_1()
-                    .text_color(if stuck {
-                        colors.warning
-                    } else {
-                        colors.text_muted
-                    })
-                    .disabled(url.is_none())
-                    .tooltip("Open the explicitly bound agent thread")
-                    .child(text)
-                    .on_click(move |_, _, cx| {
-                        if let Some(url) = &url {
-                            cx.open_url(url);
-                        }
-                    })
-                    .into_any_element()
+                controls::agent_link(
+                    ("board-agent-link", number as usize),
+                    url.is_none(),
+                    window,
+                    cx,
+                )
+                .mt_2()
+                .debug_selector(move || format!("board-agent-link-{number}"))
+                .w_full()
+                .min_w_0()
+                .text_color(if stuck {
+                    colors.warning
+                } else {
+                    colors.text_muted
+                })
+                .managed_tooltip(|window, cx| {
+                    gpui_component::tooltip::Tooltip::new("Open the explicitly bound agent thread")
+                        .build(window, cx)
+                })
+                .child(text)
+                .on_click(move |_, _, cx| {
+                    if let Some(url) = &url {
+                        cx.open_url(url);
+                    }
+                })
+                .into_any_element()
             } else {
                 h_flex()
                     .mt_2()

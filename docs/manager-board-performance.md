@@ -65,3 +65,13 @@ notifications across its cached Panel on pinned GPUI 0.3.3. It still requires a
 nonempty initial painted caret, a real selection movement, and the render
 consumer observing the updated geometry. This fixture adaptation does not alter
 the upstream production notification guards or force the consumer to render.
+
+Rich agent links use the same Base Ghost interaction directly around their
+existing complete row/column content. They keep auto height, padding, typography,
+source URL, tooltip, disabled behavior and keyboard/focus ownership, while
+avoiding a redundant full-height flex wrapper inside each virtual card.
+
+The caret fixture seeds its cached consumer once after initial paint, because
+pinned GPUI registers the first frame's dependencies after paint completes.
+Subsequent selection changes must update the render consumer through ordinary
+notifications; no refresh is forced for that assertion.
