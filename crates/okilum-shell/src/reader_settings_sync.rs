@@ -542,12 +542,22 @@ fn ensure_private_sync_directory(path: &Path) -> anyhow::Result<()> {
         }
         Err(error) => return Err(error.into()),
     }
-    let metadata = std::fs::symlink_metadata(path)?;
+    let mut metadata = std::fs::symlink_metadata(path)?;
     anyhow::ensure!(
         metadata.is_dir()
             && !metadata.file_type().is_symlink()
-            && metadata.uid() == rustix::process::geteuid().as_raw()
-            && metadata.mode() & 0o077 == 0,
+            && metadata.uid() == rustix::process::geteuid().as_raw(),
+        "private Sync state parent required"
+    );
+    // The app's own state folder is normally created 0755 by the platform; an
+    // owner-held real directory is tightened instead of blocking Sync (#2589).
+    if metadata.mode() & 0o077 != 0 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        metadata = std::fs::symlink_metadata(path)?;
+    }
+    anyhow::ensure!(
+        metadata.mode() & 0o077 == 0,
         "private Sync state parent required"
     );
     Ok(())
