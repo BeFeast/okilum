@@ -90,6 +90,7 @@ pub(in crate::project::board) fn populate(board: &mut Board) {
         },
         at,
     );
+    board.filter_cache.invalidate();
     board.refresh_waiting();
 }
 
