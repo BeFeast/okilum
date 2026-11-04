@@ -1,4 +1,5 @@
 use super::*;
+use ::core::prelude::v1::test;
 use gpui::{TestAppContext, VisualTestContext};
 
 fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut VisualTestContext) {
