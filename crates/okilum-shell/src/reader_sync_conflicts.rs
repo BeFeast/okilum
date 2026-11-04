@@ -107,15 +107,6 @@ impl ConflictPanel {
         })
     }
 
-    /// Read durable exact preimages for the host's existing History surface.
-    #[cfg(test)]
-    pub fn previous_versions(&self) -> anyhow::Result<Vec<conflicts::RetainedVersion>> {
-        match &self.recovery {
-            Some(receipt) => Ok(conflicts::retained_versions(&receipt.recovery_record)?.into()),
-            None => Ok(Vec::new()),
-        }
-    }
-
     /// Returns false for a completion from another/reopened panel. Failures never
     /// report resolution and never authorize a retry against fresh unseen bytes.
     pub fn finish(&mut self, completion: Completion) -> bool {
@@ -257,7 +248,9 @@ mod tests {
             "\u{feff}same\r\nthat\r\n".as_bytes()
         );
         assert!(panel.recovery.is_some());
-        let versions = panel.previous_versions().unwrap();
+        let versions =
+            conflicts::retained_versions(&panel.recovery.as_ref().unwrap().recovery_record)
+                .unwrap();
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].bytes, "\u{feff}same\r\nthis\r\n".as_bytes());
         assert_eq!(versions[1].bytes, "\u{feff}same\r\nthat\r\n".as_bytes());
@@ -351,7 +344,7 @@ impl crate::Reader {
         &self,
         cx: &mut gpui::Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        use gpui::prelude::*;
+        use gpui::*;
         use gpui_component::{button::Button, h_flex, Sizable};
         let (root, rel, copies, complete) = self.sync_note_conflicts.as_ref()?;
         if *root != self.vault_root || *rel != self.current_rel || (copies.is_empty() && *complete)

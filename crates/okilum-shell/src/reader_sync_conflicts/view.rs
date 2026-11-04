@@ -500,7 +500,7 @@ mod tests {
                 });
                 view.read_with(visual, |v, _| {
                     assert!(v.complete);
-                    assert_eq!(v.copies, std::slice::from_ref(&copy));
+                    assert_eq!(v.copies.as_slice(), std::slice::from_ref(&copy));
                 });
                 view.update(visual, |v, cx| v.preview(copy.clone(), cx));
                 visual.run_until_parked();
@@ -607,7 +607,7 @@ mod tests {
         visual.run_until_parked();
         inventory.read_with(visual, |view, _| {
             assert_eq!(view.root, root.canonicalize().unwrap());
-            assert_eq!(view.copies, std::slice::from_ref(&copy));
+            assert_eq!(view.copies.as_slice(), std::slice::from_ref(&copy));
         });
         inventory.update(visual, |view, cx| view.preview(copy.clone(), cx));
         visual.run_until_parked();
@@ -669,7 +669,7 @@ mod tests {
         visual.run_until_parked();
         view.read_with(visual, |v, _| {
             assert_eq!(v.pending, 0);
-            assert_eq!(v.copies, std::slice::from_ref(&copy));
+            assert_eq!(v.copies.as_slice(), std::slice::from_ref(&copy));
             assert!(v.complete);
         });
         assert_eq!(
