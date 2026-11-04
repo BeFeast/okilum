@@ -9,57 +9,7 @@ impl Render for SyncSettings {
             .w_full()
             .flex_shrink_0()
             .gap_2();
-        let mut content = v_flex()
-            .id("sync-steps")
-            .debug_selector(|| "sync-steps".into())
-            .w_full()
-            .min_h_0()
-            .flex_1()
-            .gap_4()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll);
-        #[cfg(target_os = "linux")]
-        {
-            let mut roots: Vec<_> = self
-                .snapshot
-                .as_ref()
-                .map(|s| s.attached.iter().map(|v| v.path.clone()).collect())
-                .unwrap_or_default();
-            let readers = reader_open::readers(cx);
-            roots.extend(
-                readers
-                    .iter()
-                    .map(|r| r.read(cx).vault_root.clone())
-                    .filter(|r| !r.as_os_str().is_empty()),
-            );
-            roots.sort();
-            roots.dedup();
-            content = content.child(div().text_base().child("Conflicts"));
-            for root in roots {
-                if !self.conflicts.contains_key(&root) {
-                    let owner = readers.iter().find(|r| r.read(cx).vault_root == root);
-                    let state = owner
-                        .and_then(|r| r.read(cx).session_directory.clone())
-                        .map(Ok)
-                        .unwrap_or_else(|| reader_ui_state::state_directory(cx));
-                    if let Ok(state) = state {
-                        let owner = owner.map(Entity::downgrade);
-                        let view = cx.new(|cx| {
-                            crate::reader_sync_conflicts::InventoryView::new(
-                                root.clone(),
-                                state,
-                                owner,
-                                cx,
-                            )
-                        });
-                        self.conflicts.insert(root.clone(), view);
-                    }
-                }
-                if let Some(view) = self.conflicts.get(&root) {
-                    content = content.child(view.clone());
-                }
-            }
-        }
+        let mut content = v_flex().id("sync-flow").w_full().flex_shrink_0().gap_4();
         if let Some(error) = &self.error {
             result = result.child(
                 div()
@@ -113,7 +63,7 @@ impl Render for SyncSettings {
                 result = result.child(
                     v_flex()
                         .gap_2()
-                        .child("Open this pairing URL on your other computer")
+                        .child("Open this pairing URL on the computer receiving your notes")
                         .child(
                             div()
                                 .id("sync-pairing-url")
@@ -331,9 +281,9 @@ impl Render for SyncSettings {
             .is_some_and(|s| s.pending.is_some() || s.offer_url.is_some())
         {
             content = content
-            .child(crate::reader_sync_help::entry())
             .child(div().text_base().child("Connect your computers"))
-            .child(div().text_sm().text_color(p.text_muted).child("Pair computers once, then choose which vaults to sync. Confirm each new computer on the computer that shared the URL."))
+            .child(div().text_sm().text_color(p.text_muted).child("On the computer with your notes, share a vault below, then choose Add computer. On the computer receiving notes, paste that URL and choose Connect. Confirm the request on the computer with your notes."))
+            .child(crate::reader_sync_help::entry())
             .child(v_flex().gap_2().child("This computer").child(Input::new(&self.name).disabled(self.busy)))
             .when(!self.receiving, |content| content.child(h_flex().gap_2()
                 .child(Button::new("sync-add-computer")
@@ -483,11 +433,7 @@ impl Render for SyncSettings {
                             Button::new(("sync-share-vault", index))
                                 .debug_selector(move || format!("sync-share-vault-{index}"))
                                 .label(label)
-                                .disabled(
-                                    self.busy
-                                        || attached.is_some()
-                                        || !self.runtimes.iter().any(|r| r.selected),
-                                )
+                                .disabled(self.busy || attached.is_some())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.run(Operation::Share(path.clone()), cx)
                                 })),
@@ -508,7 +454,7 @@ impl Render for SyncSettings {
                 .child(format!("Use {} with Okilum?", vault.label))
                 .child(div().text_sm().text_color(p.text_muted).child(format!("{}\nSyncthing {} · {}", vault.path.display(), vault.version, vault.daemon.device_id)))
                 .child(div().text_sm().text_color(p.text_muted)
-                    .child("This saves the connection and makes the vault available to computers you approve. The existing daemon keeps control of its lifecycle and configuration."))
+                    .child("This shares the existing vault with your approved computers. Your existing Syncthing keeps its folders, peers and settings. Next, choose Add computer here, then paste its URL on the computer receiving these notes."))
                 .child(h_flex().gap_2()
                     .child(Button::new("sync-consent-existing")
                                         .debug_selector(|| "sync-consent-existing".into()).label("Use this connection").disabled(self.busy)
@@ -520,6 +466,57 @@ impl Render for SyncSettings {
                                         .debug_selector(|| "sync-dismiss-existing".into()).label("Cancel").ghost().disabled(self.busy)
                         .on_click(cx.listener(|this, _, _, cx| { this.inspected = None; cx.notify(); })))));
         }
+        #[cfg(target_os = "linux")]
+        {
+            let mut roots: Vec<_> = self
+                .snapshot
+                .as_ref()
+                .map(|s| s.attached.iter().map(|v| v.path.clone()).collect())
+                .unwrap_or_default();
+            let readers = reader_open::readers(cx);
+            roots.extend(
+                readers
+                    .iter()
+                    .map(|r| r.read(cx).vault_root.clone())
+                    .filter(|r| !r.as_os_str().is_empty()),
+            );
+            roots.sort();
+            roots.dedup();
+            content = content.child(div().text_base().child("Conflicts"));
+            for root in roots {
+                if !self.conflicts.contains_key(&root) {
+                    let owner = readers.iter().find(|r| r.read(cx).vault_root == root);
+                    let state = owner
+                        .and_then(|r| r.read(cx).session_directory.clone())
+                        .map(Ok)
+                        .unwrap_or_else(|| reader_ui_state::state_directory(cx));
+                    if let Ok(state) = state {
+                        let owner = owner.map(Entity::downgrade);
+                        let view = cx.new(|cx| {
+                            crate::reader_sync_conflicts::InventoryView::new(
+                                root.clone(),
+                                state,
+                                owner,
+                                cx,
+                            )
+                        });
+                        self.conflicts.insert(root.clone(), view);
+                    }
+                }
+                if let Some(view) = self.conflicts.get(&root) {
+                    content = content.child(view.clone());
+                }
+            }
+        }
+        let scroll = v_flex()
+            .id("sync-steps")
+            .debug_selector(|| "sync-steps".into())
+            .w_full()
+            .min_h_0()
+            .flex_1()
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(content);
         v_flex()
             .id("sync-panel")
             .debug_selector(|| "sync-panel".into())
@@ -527,7 +524,7 @@ impl Render for SyncSettings {
             .min_h_0()
             .gap_4()
             .child(result)
-            .child(content)
+            .child(scroll)
     }
 }
 

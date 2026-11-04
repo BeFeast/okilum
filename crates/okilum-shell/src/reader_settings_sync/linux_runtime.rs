@@ -31,6 +31,43 @@ pub(super) struct Runtime {
     pub configs: Vec<PathBuf>,
     pub choices: Vec<Choice>,
 }
+/// An explicit Share click on an existing replica opens inspection/consent;
+/// it must never try to prepare a second daemon over that replica.
+pub(super) fn route_share(operation: Operation, runtime: &Runtime) -> anyhow::Result<Operation> {
+    let Operation::Share(path) = &operation else {
+        return Ok(operation);
+    };
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("resolve vault to share {}", path.display()))?;
+    let managed_selected = runtime
+        .choices
+        .iter()
+        .any(|choice| choice.selected && choice.managed);
+    let marker = canonical.join(".stfolder");
+    let marked = match std::fs::symlink_metadata(&marker) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect Syncthing marker {}", marker.display()))
+        }
+    };
+    let external = runtime.inventory.candidates.iter().any(|candidate| {
+        candidate
+            .folders
+            .iter()
+            .any(|(_, folder)| folder == &canonical)
+            && !runtime
+                .choices
+                .iter()
+                .any(|choice| choice.managed && choice.identity == candidate.identity)
+    });
+    if external || marked && !managed_selected {
+        return Ok(Operation::Inspect(path.clone()));
+    }
+    Ok(operation)
+}
 pub(super) fn state_path(profile: &Path) -> anyhow::Result<PathBuf> {
     // Reader owns the profile and may legitimately create it with mode 0755.
     // Only Sync's child directory must be private; never chmod an existing profile.
