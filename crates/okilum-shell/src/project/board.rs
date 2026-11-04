@@ -6,6 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod appearance;
 mod columns;
 mod delivery;
+mod filters;
+#[cfg(feature = "project-ui-harness")]
+pub(super) mod fixture;
 mod list;
 mod live;
 mod local;
@@ -30,7 +33,9 @@ pub(crate) struct Board {
     focus: FocusHandle,
     scroll: ScrollHandle,
     verified_open: bool,
-    filter: Option<String>,
+    filter: filters::Model,
+    filter_ui: filters::Controls,
+    filter_cache: filters::Cache,
     selected: Option<u64>,
     notice: Option<String>,
     editor: Option<manage::Editor>,
@@ -130,11 +135,12 @@ impl Board {
             + Send
             + Sync
             + 'static,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let owner = area.to_string_lossy().into_owned();
         let list = list::State::load(&area, cx);
+        let (filter, filter_ui) = filters::Controls::new(&area, window, cx);
         Self {
             area,
             binding: None,
@@ -149,7 +155,9 @@ impl Board {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             verified_open: false,
-            filter: None,
+            filter,
+            filter_ui,
+            filter_cache: Default::default(),
             selected: None,
             notice: None,
             editor: None,
@@ -232,6 +240,7 @@ impl Board {
                                         }
                                     }
                                 }
+                                this.filter_cache.invalidate();
                                 this.binding = binding;
                                 this.binding_read = Some(now());
                                 this.binding_error = None;
@@ -267,6 +276,7 @@ impl Board {
         self.snapshot.invalidate();
         self.snapshot.t3 = Source::default();
         self.list.invalidate();
+        self.filter_cache.invalidate();
         self.delivery_loading = false;
         self.notes_loading = false;
         self.manager = Some(manager);
@@ -348,6 +358,7 @@ impl Board {
                     let _ = this.update_in(cx, |this, window, cx| {
                         this.list.invalidate();
                         this.snapshot.live_issues(&forgejo_ticket, result, now());
+                        this.filter_cache.invalidate();
                         if this.snapshot.matches(&forgejo_ticket) {
                             this.refresh_delivery(forgejo_ticket.clone(), window, cx);
                         }
@@ -362,6 +373,7 @@ impl Board {
         // report a transport failure for a source the Board does not use.
         if !needs_threads {
             self.snapshot.threads(&ticket, Ok(Vec::new()), now());
+            self.filter_cache.invalidate();
             cx.notify();
             return;
         }
@@ -412,6 +424,7 @@ impl Board {
                         this.list.invalidate();
                         let previous = this.snapshot.t3.error.clone();
                         this.snapshot.threads(&ticket, result, now());
+                        this.filter_cache.invalidate();
                         if this.snapshot.t3.error != previous {
                             if let Some(detail) = &this.snapshot.t3.error {
                                 eprintln!("Board T3 error: {detail}");
@@ -556,58 +569,6 @@ impl Board {
             })
             .into_any_element()
     }
-    fn agent_filter(&self, binding: &Binding, compact: bool, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let roles: std::collections::BTreeSet<_> =
-            binding.issues.iter().map(|i| i.executor.clone()).collect();
-        let selected = self.filter.clone();
-        let weak = cx.entity().downgrade();
-        let label = selected.clone().unwrap_or_else(|| "All agents".into());
-        let mut button = Button::new("board-agent-filter")
-            .debug_selector(|| "board-agent-filter".into())
-            .small()
-            .ghost()
-            .accessibility_label(format!("Agent filter: {label}"))
-            .tooltip(format!("Agent filter: {label}"));
-        if compact {
-            button = button.size(px(28.)).child(appearance::icon(
-                "list-filter",
-                brand::palette(cx).text_muted,
-            ));
-        } else {
-            button = button.label(label).max_w(px(150.)).min_w_0();
-        }
-        button
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
-                let all = weak.clone();
-                menu = menu.item(
-                    PopupMenuItem::new("All agents")
-                        .checked(selected.is_none())
-                        .on_click(move |_, _, cx| {
-                            let _ = all.update(cx, |board, cx| {
-                                board.filter = None;
-                                cx.notify();
-                            });
-                        }),
-                );
-                for role in &roles {
-                    let owner = weak.clone();
-                    let role = role.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(role.clone())
-                            .checked(selected.as_ref() == Some(&role))
-                            .on_click(move |_, _, cx| {
-                                let _ = owner.update(cx, |board, cx| {
-                                    board.filter = Some(role.clone());
-                                    cx.notify();
-                                });
-                            }),
-                    );
-                }
-                menu
-            })
-            .into_any_element()
-    }
     fn attention(&self, binding: &Binding, cx: &mut Context<Self>) -> Option<AnyElement> {
         if binding.attention.is_empty() {
             return None;
@@ -686,10 +647,7 @@ impl Board {
                         .child(appearance::icon("sparkles", colors.accent))
                         .child("Waiting for you")
                         .child(binding.attention.len().to_string())
-                        .child(div().flex_1())
-                        .when(self.list.preferences.mode == list::Mode::Board, |header| {
-                            header.child(self.agent_filter(binding, false, cx))
-                        }),
+                        .child(div().flex_1()),
                 )
                 .child(cards)
                 .into_any_element(),
@@ -1073,6 +1031,9 @@ impl Render for Board {
             .track_scroll(&self.scroll)
             .bg(colors.canvas)
             .text_color(colors.text)
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.filter_key(event, window, cx);
+            }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
                     let issue = this.selected.take().is_some();
@@ -1083,7 +1044,7 @@ impl Render for Board {
                     }
                 }
             }));
-        let Some(binding) = self.binding.as_ref() else {
+        let Some(_) = self.binding.as_ref() else {
             root = root.child(
                 div()
                     .absolute()
@@ -1127,18 +1088,9 @@ impl Render for Board {
             }
             return root.into_any_element();
         };
-        let projected;
-        let binding = if self.snapshot.forgejo.last_success.is_some() {
-            projected = okilum_t3::board::live::project(
-                binding,
-                &self.snapshot.forgejo.value,
-                self.projection_time(),
-            );
-            &projected
-        } else {
-            binding
-        };
-        root = root.child(self.view_toggle(cx));
+        let projection = self.filtered_projection();
+        let binding = &projection.binding;
+        root = root.child(self.filter_bar(&projection, cx));
         if binding.repository.is_empty() {
             root = root.child(div().debug_selector(|| "board-local".into())
                 .text_size(px(12.)).text_color(colors.text_muted)
@@ -1156,7 +1108,15 @@ impl Render for Board {
         if let Some(notice) = &self.notice {
             root = root.child(notice.clone());
         }
-        let mut counts = self.column_counts(binding);
+        if self.filter.is_active()
+            && (!self.binding_loading || self.binding_read.is_some())
+            && (!self.local_loading || self.local_cards.last_success.is_some())
+            && (!self.snapshot.busy() || self.snapshot.forgejo.last_success.is_some())
+            && projection.counts.iter().all(|n| *n == 0)
+        {
+            return root.child(self.filter_empty(cx)).into_any_element();
+        }
+        let counts = projection.counts;
         let ready = self.column_sources_ready(binding);
         self.columns.observe(counts, ready);
         let mut compact = h_flex()
@@ -1182,41 +1142,14 @@ impl Render for Board {
             stages.push(Column::Verified);
         }
         for column in stages {
-            let mut scopes: Vec<_> = binding
-                .issues
+            let scopes = projection.scopes[column as usize]
                 .iter()
-                .filter(|scope| {
-                    self.filter.as_ref().is_none_or(|f| f == &scope.executor)
-                        && self.delivery_column(scope) == column
-                })
-                .collect();
-            scopes.sort_by(|a, b| {
-                let issue_a = self.snapshot.forgejo.value.get(&a.number);
-                let issue_b = self.snapshot.forgejo.value.get(&b.number);
-                match (issue_a, issue_b) {
-                    (Some(x), Some(y)) => okilum_t3::board::order::compare(x, y),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => b.number.cmp(&a.number),
-                }
-            });
-            let local_cards: Vec<_> = self
-                .local_cards
-                .value
-                .cards
+                .map(|index| &binding.issues[*index]);
+            let local_cards = projection.locals[column as usize]
                 .iter()
-                .filter(|card| self.filter.is_none() && card.state.column() == column)
-                .collect();
-            let count = scopes.len()
-                + local_cards.len()
-                + if column == Column::Queue {
-                    binding.card_problems.len()
-                } else {
-                    0
-                };
-            counts[column as usize] = count;
-            // Never fold a lane that actually has a rendered card, even if a
-            // delivery freshness boundary changed since the count snapshot.
+                .map(|index| &self.local_cards.value.cards[*index]);
+            let count = counts[column as usize];
+            // Counts and membership come from the same cached projection.
             if column != Column::Verified && self.columns.collapsed(column, count) {
                 compact = compact.child(self.expand_empty_column(column, cx));
                 collapsed += 1;
@@ -1331,21 +1264,10 @@ impl Render for Board {
                     .rounded_md()
                     .bg(colors.surface_raised)
                     .text_color(colors.text_muted)
-                    .child(if self.filter.is_some() {
-                        "No cards for this executor. Expand a column to view it."
-                    } else {
-                        "No cards yet. Add a card to get started, or expand a column."
-                    }),
+                    .child("No cards yet. Add a card to get started, or expand a column."),
             );
         }
-        let verified = binding
-            .issues
-            .iter()
-            .filter(|scope| {
-                self.delivery_column(scope) == Column::Verified
-                    && self.filter.as_ref().is_none_or(|f| f == &scope.executor)
-            })
-            .count();
+        let verified = counts[Column::Verified as usize];
         // A narrow native strip leaves all working columns inside the center.
         // Its full accessible label/tooltip remain readable when space is tight.
         let toggle = Button::new("board-verified-toggle")
@@ -1381,9 +1303,6 @@ impl Render for Board {
                 cx.notify();
             }));
         let mut end = v_flex().w(px(36.)).flex_none().gap_2();
-        if binding.attention.is_empty() {
-            end = end.child(self.agent_filter(binding, true, cx));
-        }
         end = end.child(
             Button::new("board-manage")
                 .debug_selector(|| "board-manage".into())

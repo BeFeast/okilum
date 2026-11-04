@@ -53,7 +53,7 @@ same refresh cycle. The earlier selected-scope descriptions below document the
 historical Board slices; this live membership rule supersedes them.
 
 Entering a project opens a native Board in its existing center pane. Notes and
-Board share that center. Returning with **Board** retains the executor filter,
+Board share that center. Returning with **Board** retains the filters and search,
 selected card and scroll. The existing right-hand Manager and its draft stay in
 place. Note opens still use the Reader's ordinary revision/save/refusal path;
 only a successfully accepted Markdown document hides the Board.
@@ -150,7 +150,7 @@ outside the vault and the disposable index.
 The list groups the unchanged Snapshot in this order: В работе, Проверки,
 Можно попробовать, Очередь, Проверено. Queue and Verified start collapsed.
 All rows are 38 px high and use GPUI `uniform_list`; a cached projection and
-row index rebuild only on source publications, executor-filter or collapse
+row index rebuild only on source publications, filter/search or collapse
 changes. Scrolling and resizing build only viewport rows, including when the
 240-issue synthetic fixture's Queue is expanded.
 
@@ -165,13 +165,43 @@ identifying the age as time since thread update, not measured run duration.
 Up/Down selects visible issues and skips group headings. Enter and row click
 open the existing card actions in a bounded disclosure below the list; Escape
 closes it while retaining selection. Board → related note → Board retains the
-selection, executor filter, disclosure and list scroll. Existing local cards,
+selection, shared filters, disclosure and list scroll. Existing local cards,
 invalid annotations, attention, delivery and project-note context remain reachable.
 No new read, dispatch, membership, stage rule or delivery claim is introduced.
 Native tests cover defaults, independent persisted project choices, collapse,
 240-row viewport work, keyboard reachability and actual Reader note round trips.
-The sibling peek/filter/attention/compact-card/ordering issues remain independent.
+The sibling peek/attention/compact-card/ordering issues remain independent.
 
+### Shared filter bar (#2532)
+
+The native header places the shared chip bar immediately after Список / Доска
+and replaces the executor icon with one selected chip: Все,
+От Олега (`from-oleg`), Баги (`bug`), От testers (`from-tester`), or Агенты сейчас.
+The last chip requires a unique bound thread, an unsettled active run and this
+issue's explicit current-task mapping; an agent's backlog is not current work.
+Counts show each chip's matches within the current search and extra filters.
+The selected chip, all selected labels and the optional executor intersect.
+＋ Фильтр lists the snapshot's labels (including epic labels) and executors;
+selected extra filters remain visible as removable chips even if a refresh no
+longer contains that value.
+
+`/` focuses the native search input. Title matching uses Unicode lowercase
+(including Cyrillic); `#123` and `123` also match the exact issue number.
+Escape clears search and returns focus to the Board. Zero matches show
+«Ничего не найдено · Сбросить фильтр». Local tasks participate in Все and title
+search; issue-only label/agent filters do not invent metadata for them.
+Invalid annotation diagnostics remain visible independently of filtering.
+
+Filter and search preferences are stored per canonical project path in app-owned
+state, outside the vault and disposable index, and survive note navigation and
+reopening. Both List and Board consume the narrowed issue binding before grouping.
+List rows and group counts consume the same cached membership as kanban. The List
+row index follows projection identity and collapse state, rebuilding on filter or
+source changes rather than on each frame or scroll.
+The cached projection owns chip counts, column counts and membership; unchanged
+frames reuse it. Snapshot, filter and delivery changes invalidate it, with merge
+expiry and delivery freshness still respected. No additional source polling is
+introduced. This header supersedes the historical single executor control below.
 
 The compact card contains its issue title/number, a small agent tag and one
 existing stage-state line. The expected result and issue/PR/build/note/Discuss
