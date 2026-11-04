@@ -88,6 +88,8 @@ run_tests okilum-shell --bins 'project::' "${manager_skip[@]}"
 # #2442: release-profile dependency fixtures and Sync macro imports must also run.
 run_tests okilum-shell --bins reader_log::remote::
 run_tests okilum-shell --bins reader_settings_sync::
+run_tests okilum-sync-controller --test=first_computer ""
+run_tests okilum-sync-controller --lib direct::lan::tests::
 run_tests okilum-core --lib capture::attachments::tests::receipt_lookup_bounds_and_exact_ledger_binding_fail_closed --exact
 
 run_tests okilum-shell --bins reader_manager_compatibility::tests::
