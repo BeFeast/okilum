@@ -121,7 +121,7 @@ mod tests {
                 "intent": "Pair", "exchange_started": true, "vault": null,
                 "descriptor": null, "removal": null,
                 "registration": {"id": uuid::Uuid::new_v4(), "vault": uuid::Uuid::new_v4(),
-                    "device_id": ["AAAAAAA"; 8].join("-"), "name": "Old computer",
+                    "device_id": (["AAAAAAA"; 8].join("-")), "name": "Old computer",
                     "state": "hub_ready", "last_error": null}
             }))?,
         )?;
