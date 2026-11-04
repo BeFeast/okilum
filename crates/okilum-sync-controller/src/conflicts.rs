@@ -23,7 +23,8 @@ pub fn inspect(root: &Path) -> Result<Inventory> {
     inspect_with_limit(root, 100_000)
 }
 fn inspect_with_limit(root: &Path, limit: usize) -> Result<Inventory> {
-    let fd = open(root, flags(), Mode::empty())?;
+    let root = root.canonicalize()?;
+    let fd = open(&root, flags(), Mode::empty())?;
     let mut scan = Scan {
         inventory: Inventory {
             copies: vec![],
@@ -98,7 +99,7 @@ fn conflict_marker(name: &[u8]) -> Option<(usize, usize)> {
         name.windows(marker.len())
             .enumerate()
             .filter_map(move |(index, part)| {
-                if index == 0 || part != marker {
+                if part != marker {
                     return None;
                 }
                 let suffix = &name[index + marker.len()..];
@@ -122,7 +123,19 @@ fn conflict_marker(name: &[u8]) -> Option<(usize, usize)> {
 pub fn canonical_path(copy: &Path) -> Option<PathBuf> {
     let name = copy.file_name()?.as_bytes();
     let (index, length) = conflict_marker(name)?;
-    let original = [&name[..index], &name[index + length..]].concat();
+    // Syncthing inserts its marker before the extension, including the
+    // leading dot of a hidden extensionless file. Legacy editor copies of
+    // extensionless notes carried an accidental trailing dot.
+    let suffix = &name[index + length..];
+    let suffix = if name[index..].starts_with(b".okilum-conflict-") && suffix == b"." {
+        b"".as_slice()
+    } else {
+        suffix
+    };
+    let original = [&name[..index], suffix].concat();
+    if original.is_empty() || matches!(original.as_slice(), b"." | b"..") {
+        return None;
+    }
     if conflict_marker(&original).is_some() {
         return None;
     }
@@ -132,7 +145,8 @@ pub fn canonical_path(copy: &Path) -> Option<PathBuf> {
 /// Shallow selected-note inventory: sibling changes must update the banner even
 /// when the canonical note itself is unchanged. No content or daemon IO.
 pub fn inspect_note(root: &Path, note: &Path) -> Result<Inventory> {
-    let fd = parent(root, note)?;
+    let root = root.canonicalize()?;
+    let fd = parent(&root, note)?;
     let mut inventory = Inventory {
         copies: vec![],
         complete: true,
@@ -432,7 +446,26 @@ fn apply_with_hooks(
     before_capture: impl FnOnce(),
     before_publish: impl FnOnce(),
 ) -> Result<ApplyOutcome> {
+    apply_with_recheck_hook(
+        preview,
+        choice,
+        recovery_directory,
+        || {},
+        before_capture,
+        before_publish,
+    )
+}
+
+fn apply_with_recheck_hook(
+    preview: &Preview,
+    choice: Choice,
+    recovery_directory: &Path,
+    before_recheck: impl FnOnce(),
+    before_capture: impl FnOnce(),
+    before_publish: impl FnOnce(),
+) -> Result<ApplyOutcome> {
     let directory = parent(&preview.root, &preview.this.path)?;
+    require_local_retention_policy(&preview.root)?;
     ensure!(
         identity(&directory)? == preview.directory_identity,
         "Source directory was replaced"
@@ -470,7 +503,7 @@ fn apply_with_hooks(
             .path
             .with_file_name(format!("{stem}-kept-{id}{extension}"))
     });
-    let receipt = Applied {
+    let mut receipt = Applied {
         canonical: preview.this.path.clone(),
         kept_both,
         recovery_record: state.join(&record_name),
@@ -486,19 +519,32 @@ fn apply_with_hooks(
         "directory_identity":preview.directory_identity,
         "this_mode":preview.this.mode, "that_mode":preview.that.mode,
         "created":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros() as u64});
+    // Refusals cannot leave a recoverable transaction behind. Recheck after
+    // preparing the receipt, before creating any durable recovery record.
+    before_recheck();
+    check(&directory, &preview.this)?;
+    check(&directory, &preview.that)?;
     let mut journal = File::from(openat(
         &state_fd,
         record_name.as_str(),
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::from_raw_mode(0o600),
     )?);
-    journal.write_all(&serde_json::to_vec(&record)?)?;
-    journal.sync_all()?;
-    rustix::fs::fsync(&state_fd)?;
+    let persist = (|| -> Result<()> {
+        journal.write_all(&serde_json::to_vec(&record)?)?;
+        journal.sync_all()?;
+        rustix::fs::fsync(&state_fd)?;
+        Ok(())
+    })();
+    if let Err(error) = persist {
+        let terminal = recovery::refused(&mut receipt.recovery_record);
+        return Err(error).context(format!(
+            "Journal refused before source mutation; terminal acknowledgement: {terminal:?}"
+        ));
+    }
     checkpoint("journal");
-    // A failed journal write never authorizes any source mutation.
-    check(&directory, &preview.this)?;
-    check(&directory, &preview.that)?;
+    // A failed journal write never authorizes any source mutation. A race
+    // after this point is a partial operation, handled by capture validation.
     before_capture();
     let mutation = || -> Result<()> {
         let mut captures = Vec::new();
@@ -576,9 +622,15 @@ fn apply_with_hooks(
     match mutation() {
         Ok(()) => {
             if let Err(error) = recovery::complete(&receipt.recovery_record) {
+                // Publication succeeded. Disable path recreation even when the
+                // normal acknowledgement fails; retain both preimages in History.
+                let terminal = recovery::refused(&mut receipt.recovery_record);
                 return Ok(ApplyOutcome::NeedsAttention {
                     recovery: receipt,
-                    reason: error.to_string(),
+                    reason: match terminal {
+                        Ok(()) => format!("Published decision retained; completion failed: {error}"),
+                        Err(marker) => format!("Completion failed: {error}; cannot acknowledge retained decision: {marker}"),
+                    },
                 });
             }
             Ok(ApplyOutcome::Applied(receipt))
@@ -672,7 +724,7 @@ fn retained_from_value(mut value: serde_json::Value) -> Result<[RetainedVersion;
 }
 
 mod recovery;
-pub use recovery::{history, recover_interrupted, History, HistoryEntry};
+pub use recovery::{history, recover_interrupted, recover_startup, History, HistoryEntry};
 
 /// Private durable app-state directory. Its parent is supplied by the shell,
 /// never a deletable index directory or a path selected from the vault.
@@ -687,4 +739,35 @@ fn checkpoint(_step: &str) {
         // process stop between durable steps. No fixture daemon runs here.
         std::process::exit(86);
     }
+}
+
+/// Managed enrollment seeds this exclusion on both computers. Existing/external
+/// folders must prove it too before a local-only retention name can be created.
+fn require_local_retention_policy(root: &Path) -> Result<()> {
+    let fd = open(root, flags(), Mode::empty())?;
+    match rustix::fs::statat(&fd, ".stfolder", rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) => return Ok(()),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let policy = read_version(&fd, Path::new(".stignore"))
+        .context("Add .okilum-save-* to this computer's .stignore before resolving conflicts")?;
+    let text = std::str::from_utf8(&policy.bytes)?;
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        // Syncthing uses first-match precedence. Includes and earlier negations
+        // can override a later exclusion; do not guess at their meaning.
+        ensure!(!line.starts_with("#include") && !line.contains('!'),
+            "Cannot prove local retention policy; put .okilum-save-* before includes/negations in .stignore");
+        let pattern = line
+            .trim_start_matches("(?i)")
+            .trim_start_matches("(?d)")
+            .trim_start_matches("(?i)");
+        if matches!(pattern, ".okilum-save-*" | "**/.okilum-save-*") {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("Add .okilum-save-* to this computer's .stignore before resolving conflicts")
 }

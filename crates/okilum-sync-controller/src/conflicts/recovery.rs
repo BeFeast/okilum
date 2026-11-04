@@ -18,7 +18,33 @@ pub struct History {
     pub warnings: Vec<String>,
 }
 pub(super) fn complete(record: &Path) -> Result<()> {
+    #[cfg(test)]
+    if FAIL_COMPLETE.with(|fail| fail.get()) {
+        anyhow::bail!("injected completion marker failure");
+    }
     marker(record, "complete", b"complete\n")
+}
+#[cfg(test)]
+thread_local! { pub(super) static FAIL_COMPLETE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+pub(super) fn refused(record: &mut PathBuf) -> Result<()> {
+    if marker(record, "refused", b"refused\n").is_ok() {
+        return Ok(());
+    }
+    // A blocked/partial marker must not turn a published decision into an
+    // interrupted operation. Renaming the record itself is the fallback terminal
+    // state; History still retains its bytes and never grants recreation authority.
+    let terminal = record.with_extension("refused.json");
+    renameat_with(
+        rustix::fs::CWD,
+        &*record,
+        rustix::fs::CWD,
+        &terminal,
+        RenameFlags::NOREPLACE,
+    )?;
+    *record = terminal;
+    File::open(record.parent().context("Missing recovery directory")?)?.sync_all()?;
+    Ok(())
 }
 fn marker(record: &Path, extension: &str, contents: &[u8]) -> Result<()> {
     let mut file = File::options()
@@ -79,7 +105,9 @@ pub fn history(directory: &Path, root: &Path) -> Result<History> {
             }
             let canonical = versions[0].path.clone();
             let created = value["created"].as_u64().unwrap_or(0);
-            let pending = !has_marker(&record, "complete", b"complete\n")?
+            let pending = !name.ends_with(".refused.json")
+                && !has_marker(&record, "refused", b"refused\n")?
+                && !has_marker(&record, "complete", b"complete\n")?
                 && !has_marker(&record, "recovered", b"recovered\n")?;
             Ok(Some(HistoryEntry {
                 canonical,
@@ -116,14 +144,16 @@ pub fn history(directory: &Path, root: &Path) -> Result<History> {
 /// Keep-both proposals are never removed. Old records without directory identity
 /// remain recoverable through History but cannot authorize path recreation.
 pub fn recover_interrupted(directory: &Path, root: &Path) -> Result<Vec<String>> {
-    let history = history(directory, root)?;
+    let root = root.canonicalize()?;
+    let history = history(directory, &root)?;
     let mut messages = history.warnings;
     for entry in history.entries.into_iter().filter(|entry| entry.pending) {
         let result = (|| -> Result<()> {
             let expected = entry
                 .directory_identity
                 .context("Missing directory identity; use Recover notes")?;
-            let fd = parent(root, &entry.canonical)?;
+            require_local_retention_policy(&root)?;
+            let fd = parent(&root, &entry.canonical)?;
             ensure!(
                 identity(&fd)? == expected,
                 "Source directory was replaced; use Recover notes"
@@ -143,7 +173,7 @@ pub fn recover_interrupted(directory: &Path, root: &Path) -> Result<Vec<String>>
                 publish(&fd, &version.path, &version.bytes, mode)?;
             }
             ensure!(
-                identity(&parent(root, &entry.canonical)?)? == expected,
+                identity(&parent(&root, &entry.canonical)?)? == expected,
                 "Source directory changed during recovery; originals remain in History"
             );
             marker(&entry.record, "recovered", b"recovered\n")?;
@@ -153,6 +183,52 @@ pub fn recover_interrupted(directory: &Path, root: &Path) -> Result<Vec<String>>
             Ok(()) => format!("Recovered interrupted resolution for {}. Review the versions again; both originals remain in Note history.", entry.canonical.display()),
             Err(error) => format!("Recovery for {} needs attention: {error}. Both originals remain in Recover notes.", entry.canonical.display()),
         });
+    }
+    Ok(messages)
+}
+
+/// Called once by the primary Reader process, while its instance lock is held,
+/// before path validation, warm snapshots, indexing or managed Sync startup.
+/// Only canonical roots already authorized by durable resolution records qualify.
+pub fn recover_startup(directory: &Path) -> Result<Vec<String>> {
+    if !directory.try_exists()? {
+        return Ok(Vec::new());
+    }
+    let fd = open(directory, flags(), Mode::empty())?;
+    let mut roots = std::collections::BTreeSet::new();
+    let mut messages = Vec::new();
+    for (index, entry) in Dir::read_from(&fd)?.enumerate() {
+        ensure!(
+            index < 100_000,
+            "Conflict recovery exceeds enumeration limit"
+        );
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy();
+        if !name.starts_with("sync-conflict-")
+            || !name.ends_with(".json")
+            || entry.file_type() != FileType::RegularFile
+        {
+            continue;
+        }
+        let record = directory.join(OsStr::from_bytes(entry.file_name().to_bytes()));
+        match retained_versions(&record) {
+            Ok(versions) => {
+                roots.insert(versions[0].root.clone());
+            }
+            Err(error) => messages.push(format!(
+                "Cannot read {}: {error}; use Recover notes.",
+                record.display()
+            )),
+        }
+    }
+    for root in roots {
+        match recover_interrupted(directory, &root) {
+            Ok(recovered) => messages.extend(recovered),
+            Err(error) => messages.push(format!(
+                "Recovery for {} needs attention: {error}; use Recover notes.",
+                root.display()
+            )),
+        }
     }
     Ok(messages)
 }
