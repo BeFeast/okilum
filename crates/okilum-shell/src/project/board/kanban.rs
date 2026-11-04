@@ -108,6 +108,7 @@ impl Board {
             .items_stretch()
             .gap_3()
             .overflow_x_scroll()
+            .restrict_scroll_to_axis()
             .track_scroll(&self.kanban.horizontal);
         for stage in [
             Column::Working,
@@ -187,6 +188,7 @@ impl Board {
                     .w_full()
                     .gap_2()
                     .overflow_y_scroll()
+                    .restrict_scroll_to_axis()
                     .track_scroll(&self.kanban.queue);
                 for (index, row) in prepared.groups[stage as usize]
                     .iter()
@@ -249,6 +251,7 @@ impl Board {
                         }),
                     )
                     .track_scroll(&self.kanban.lanes[stage as usize])
+                    .restrict_scroll_to_axis()
                     .flex_1()
                     .min_h_0()
                     .w_full(),
@@ -384,6 +387,10 @@ impl Board {
                 ),
         )
         .into_any_element()
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(in crate::project) fn performance_horizontal_offset(&self) -> Point<Pixels> {
+        self.kanban.horizontal.offset()
     }
     fn open_queue_list(&mut self, problem: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.list.preferences.mode = list::Mode::List;

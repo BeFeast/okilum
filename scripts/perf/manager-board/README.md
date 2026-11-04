@@ -103,9 +103,9 @@ unchanged card crops or missing click presentation produce **no verdict**.
 Acceptance requires scroll and resize CPU draw p95 ≤ 8 ms; report the share of
 frames over 16.7 ms and click latency separately. Keep platform submission costs
 separate so a headless compositor's pacing cannot be mistaken for CPU layout.
-The reference retains natural card heights and actual text reflow throughout a
-splitter drag; it does not freeze content until release. Offscreen lane state
-retains height/focus hints only, with no offscreen interaction tree. Source
+The reference retains #2555's compact fixed-pitch cards, bounded details and
+actual Manager text reflow throughout a splitter drag. Independent uniform
+lists retain lane scroll/focus with no offscreen interaction tree. Source
 projection and column membership are reused between publications, with a
 second-resolution freshness boundary. Splitter geometry invalidates its own
 layout signal; actual Reader publications still invalidate the fixed header.
@@ -116,8 +116,8 @@ released on pointer-up, cancellation, panel closure and focus loss.
 Repaints transfer only an owned grab and cannot reacquire a released pointer.
 Measured lane extents invalidate a rendered geometry leaf, preserving the
 canonical projection cache while still updating the real scroll extent.
-Height/focus hints are window-local cells inside one retained lane map. They do
-not register an entity dependency for every offscreen card on each resize step.
+Vertical wheel input stays in its lane; horizontal input navigates between
+lanes without remapping onto their vertical scroll axes.
 Linux uses bundled mimalloc for Rust and native C allocations, including the
 short-lived layout and interaction nodes;
 its effect is checked in the actual release artifact on the same reference rig.

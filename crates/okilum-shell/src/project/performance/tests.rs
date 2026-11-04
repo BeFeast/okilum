@@ -384,6 +384,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     let offset = board.read_with(visual, |board, _| {
         board.performance_lane_offset(okilum_t3::board::Column::Working)
     });
+    let horizontal = board.read_with(visual, |board, _| board.performance_horizontal_offset());
     visual.simulate_event(gpui::ScrollWheelEvent {
         position: point(lane.center().x, lane.top() + px(100.)),
         delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-100_000.))),
@@ -395,6 +396,24 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
             .performance_lane_offset(okilum_t3::board::Column::Working)),
         offset,
         "positive control: physical wheel scrolls the independent Working lane"
+    );
+    assert_eq!(
+        board.read_with(visual, |board, _| board.performance_horizontal_offset()),
+        horizontal,
+        "vertical wheel must not pan sibling lanes out of the viewport"
+    );
+    // Cached paints can retain the native scene without replaying selectors.
+    // The wheel must already have moved the real lane before collecting bounds.
+    let tail_offset = board.read_with(visual, |board, _| {
+        board.performance_lane_offset(okilum_t3::board::Column::Working)
+    });
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    assert_eq!(
+        board.read_with(visual, |board, _| board
+            .performance_lane_offset(okilum_t3::board::Column::Working)),
+        tail_offset,
+        "collecting selectors must preserve the physical lane scroll"
     );
     let (discuss, bounds) = [
         ("board-expand-238", "board-discuss-238"),
@@ -422,5 +441,26 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     assert!(
         visual.debug_bounds(discuss).is_some(),
         "offscreen card source and Discuss action remain available after virtualization"
+    );
+    let lane = visual.debug_bounds("board-lane-Working").unwrap();
+    let vertical = board.read_with(visual, |board, _| {
+        board.performance_lane_offset(okilum_t3::board::Column::Working)
+    });
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(lane.center().x, lane.top() + px(100.)),
+        delta: gpui::ScrollDelta::Pixels(point(px(-1000.), px(0.))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    assert_ne!(
+        board.read_with(visual, |board, _| board.performance_horizontal_offset()),
+        horizontal,
+        "positive control: horizontal input still reaches the other lanes"
+    );
+    assert_eq!(
+        board.read_with(visual, |board, _| board
+            .performance_lane_offset(okilum_t3::board::Column::Working)),
+        vertical,
+        "horizontal input must not change an independent lane's vertical position"
     );
 }

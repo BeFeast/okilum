@@ -62,6 +62,12 @@ Regressions require nonempty initial/source/filter preparations and none during
 splitter geometry changes. Independent build and actual request-layout probes
 require nonzero viewport work bounded to 64 rows per frame. Real physical wheel
 input must move the Working lane and reveal a final source card with actions.
+GPUI's default wheel handling remaps input onto a container's scroll axis. The
+horizontal Kanban container and its vertical lanes/Queue explicitly restrict
+input to the original axis, so a vertical wheel cannot also pan sibling lanes
+away, and horizontal navigation cannot move a lane vertically. The mounted
+regression exercises both axes, retains the real lane offset while collecting
+cached debug selectors, and activates the final Working card after scrolling.
 
 The backported caret-consumer regression subscribes explicitly to input
 notifications across its cached Panel on pinned GPUI 0.3.3. It still requires a
