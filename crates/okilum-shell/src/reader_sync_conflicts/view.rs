@@ -262,13 +262,27 @@ impl InventoryView {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { conflicts::recover_interrupted(&state, &root) })
+                .spawn(async move {
+                    let messages = conflicts::recover_interrupted(&state, &root)?;
+                    let remaining = conflicts::history(&state, &root)?
+                        .entries
+                        .iter()
+                        .filter(|entry| entry.pending)
+                        .count();
+                    Ok::<_, anyhow::Error>((messages, remaining))
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 this.message = match result {
-                    Ok(messages) if messages.is_empty() => "No interrupted resolutions.".into(),
-                    Ok(messages) => messages.join("\n"),
+                    Ok((messages, remaining)) if messages.is_empty() => {
+                        this.pending = remaining;
+                        "No interrupted resolutions.".into()
+                    }
+                    Ok((messages, remaining)) => {
+                        this.pending = remaining;
+                        messages.join("\n")
+                    }
                     Err(error) => format!("Cannot recover: {error}"),
                 };
                 cx.notify();

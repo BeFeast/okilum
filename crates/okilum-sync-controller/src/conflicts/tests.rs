@@ -326,7 +326,10 @@ fn issue2044_crashes_recover_exact_bytes_without_overwriting_intervening_writers
             for (version, bytes) in entries[0].versions.iter().zip(before) {
                 assert_eq!(Sha256::digest(&version.bytes), Sha256::digest(bytes));
             }
-            recover_interrupted(&state, &vault).unwrap();
+            assert!(
+                recover_interrupted(&state, &vault).unwrap().is_empty(),
+                "recovered journals cannot resurrect future deletions"
+            );
             assert_eq!(
                 std::fs::read(vault.join(COPY)).unwrap(),
                 before[1],

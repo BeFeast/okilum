@@ -32,7 +32,9 @@ identity, file modes and retained-original paths. Both displaced inodes remain
 under unique `.okilum-save-*` names; ordinary Sync ignore policy excludes these.
 Publication uses exclusive staging and NOREPLACE, followed by directory fsync.
 The conflict-named extra copy disappears only as part of the explicit decision.
-A separate fsynced `.complete` marker acknowledges successful publication.
+A separate fsynced `.complete` marker acknowledges successful publication. A
+`.recovered` marker acknowledges explicit repair of an interrupted operation,
+so later recovery cannot resurrect an intentionally deleted note.
 
 Both preimages appear under the canonical note in Note history and in Recover
 notes, including if the canonical file is missing. They stay protected and are
