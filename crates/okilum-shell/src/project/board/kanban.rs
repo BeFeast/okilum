@@ -251,7 +251,10 @@ impl Board {
                         }),
                     )
                     .track_scroll(&self.kanban.lanes[stage as usize])
-                    .restrict_scroll_to_axis()
+                    .map(|mut list| {
+                        list.style().restrict_scroll_to_axis = Some(true);
+                        list
+                    })
                     .flex_1()
                     .min_h_0()
                     .w_full(),
