@@ -178,7 +178,8 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
         bind_keys(cx);
         cx.set_reduce_motion(true);
     });
-    let temp = tempfile::tempdir().unwrap();
+    // Reader and project keys must share macOS's canonical /private/var root.
+    let temp = crate::project::fixture::canonical_tempdir();
     let vault = temp.path().join("vault");
     let area = vault.join("project");
     std::fs::create_dir_all(area.join("ops")).unwrap();
@@ -688,7 +689,18 @@ fn filtered_list_reuses_projection_and_bounds_rows_through_resize(cx: &mut TestA
             );
         });
     }
-    visual.simulate_keystrokes("ctrl-a");
+    visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    });
+    board.read_with(visual, |board, cx| {
+        assert_eq!(
+            board.filter_ui.search.read(cx).selected_range(),
+            0.."Synthetic task".len(),
+            "positive control: the platform shortcut selected the entire query"
+        );
+    });
     visual.simulate_input("#240");
     visual.run_until_parked();
     let (filtered, filtered_publications) = board.update(visual, |board, _| {
