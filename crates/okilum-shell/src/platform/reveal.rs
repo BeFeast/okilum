@@ -286,21 +286,22 @@ mod tests {
             let server = bus.connect().await;
             let (received, receipt) = async_channel::unbounded();
             let (release, blocked) = async_channel::unbounded();
-            server
-                .object_server()
-                .at(
-                    "/org/freedesktop/FileManager1",
-                    FakeFileManager {
-                        received,
-                        release: Some(blocked),
-                    },
-                )
-                .await
-                .unwrap();
-            server
-                .request_name("org.freedesktop.FileManager1")
-                .await
-                .unwrap();
+            deadline("withholding manager setup", async {
+                server
+                    .object_server()
+                    .at(
+                        "/org/freedesktop/FileManager1",
+                        FakeFileManager {
+                            received,
+                            release: Some(blocked),
+                        },
+                    )
+                    .await?;
+                server.request_name("org.freedesktop.FileManager1").await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
             let started = Instant::now();
             let error = show_items(&client, Path::new("/vault/a.md"))
                 .await

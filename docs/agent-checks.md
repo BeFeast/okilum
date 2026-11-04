@@ -140,3 +140,11 @@ Hosted run `41845308559` exhausted the stock image's disk during shell-test
 compilation, before any stress verdict (helper 75). The lane now records free
 space and removes only the image's unused Android/.NET/CodeQL SDKs before cache
 restoration. Rust, system libraries, fixtures and test inventories are retained.
+
+The full-shell baseline trace (`41844245238`) also completed every reveal stage:
+missing-manager error at 14:40:37.142Z, fake-manager receipt at 14:40:37.147Z and
+normal test completion at 14:40:37.150Z. The diagnostic run was then cancelled
+intentionally to collect its trace. The historical trigger was not reproduced;
+only the indefinite authentication/reply waits were reproduced by controlled
+stalls. This distinction is retained in the evidence rather than attributing the
+old failure to a file manager that was absent from the isolated bus.
