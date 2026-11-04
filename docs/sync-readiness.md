@@ -1,5 +1,9 @@
 # First-receive readiness (#587)
 
+> Historical service/hub implementation notes. The desktop service/passkey flow
+> is superseded by [direct computer pairing](sync-pairing.md) (#2049). For the
+> shipped Linux setup and current limits, see [Sync between your computers](sync-enrollment.md).
+
 Approved direction: extend the pairing service and hub adapter with a scoped,
 read-only readiness observation. No marker is written to a vault. Development
 and proof use only the independent CT141 hub and synthetic data. The endpoint and explicit controller promotion are implemented in this local

@@ -1,7 +1,8 @@
 # Sync slice 1 compatibility evidence
 
-Measured on Linux amd64 on 2026-10-06 using the reproducible
-[sync enrollment commands](sync-enrollment.md). Real unchanged hub **1.29.5** and
+Historical Linux amd64 evidence from 2026-10-06, reproduced with
+[`scripts/sync-compatibility.sh`](../scripts/sync-compatibility.sh). For today's
+setup see [Sync between your computers](sync-enrollment.md). Real unchanged hub **1.29.5** and
 client **2.1.6**, separate ephemeral identities and vaults, no live infrastructure.
 The API version responses are asserted, independently of binary filenames.
 
