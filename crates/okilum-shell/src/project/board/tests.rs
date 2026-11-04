@@ -244,6 +244,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
             vec![(
                 1767,
                 Ok(okilum_t3::board::Issue {
+                    created_at: String::new(),
                     number: 1767,
                     title: "late".into(),
                     updated_at: String::new(),
@@ -366,6 +367,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                     .issues
                     .iter()
                     .map(|s| okilum_t3::board::Issue {
+                        created_at: String::new(),
                         number: s.number,
                         title: format!("Fixture issue {}", s.number),
                         updated_at: String::new(),
@@ -514,7 +516,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             );
         }
     }
-    // Compact cards expose only the summary; links and notes need expansion.
+    // Compact cards expose only the summary; links and notes live in the dock.
     assert!(visual.debug_bounds("board-plan").is_none());
     assert!(visual.debug_bounds("board-discuss-1767").is_none());
     // Queue uses the dense title/number row; full state stays in its disclosure.
@@ -528,8 +530,8 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         "Stage note has no hidden replacement"
     );
     assert!(
-        visual.debug_bounds("board-note-1767-1").is_none(),
-        "Stage note alias is not a Note button"
+        visual.debug_bounds("board-peek-content").is_some(),
+        "Issue details live in the right dock"
     );
     let discuss = visual
         .debug_bounds("board-discuss-1767")
@@ -553,6 +555,9 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         #[cfg(not(target_os = "linux"))]
         assert_eq!(value.as_str(), "Keep my draft");
     });
+    let tab = visual.debug_bounds("board-peek-tab").unwrap();
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
     let note = visual
         .debug_bounds("board-note-1767-0")
         .expect("explicit related note action");
@@ -1038,6 +1043,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
                 now(),
             );
             b.selected = Some(number);
+            b.peek.open = true;
             assert_ne!(
                 b.delivery_column(&binding.issues[0]),
                 Column::Verified,
@@ -1046,7 +1052,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
             b
         });
         entity = Some(board.clone());
-        Root::new(board, window, cx)
+        Root::new(cx.new(|cx| peek::Harness::new(board, cx)), window, cx)
     });
     let board = entity.unwrap();
     visual.simulate_resize(size(px(1000.), px(1000.)));
@@ -1075,7 +1081,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     ] {
         assert!(
             visual.debug_bounds(id).is_some(),
-            "expanded card control: {id}"
+            "issue panel delivery control: {id}"
         );
     }
     for id in [
@@ -1370,6 +1376,10 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
             }))
             .unwrap();
             issue.live_pulls.push(okilum_t3::board::live::Pull {
+                title: String::new(),
+                state: String::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
                 number: 7,
                 merged_at: Some(1),
                 checks: String::new(),

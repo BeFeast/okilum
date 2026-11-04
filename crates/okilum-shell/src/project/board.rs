@@ -16,6 +16,7 @@ mod live;
 mod local;
 mod manage;
 mod notes;
+mod peek;
 mod row_bits;
 
 type IssueReader =
@@ -56,11 +57,13 @@ pub(crate) struct Board {
     columns: columns::State,
     list: list::State,
     kanban: kanban::State,
+    peek: peek::State,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
     Note(String),
     Discuss(String),
+    Peek,
 }
 impl EventEmitter<Action> for Board {}
 impl Focusable for Board {
@@ -179,6 +182,13 @@ impl Board {
             columns: columns::State::default(),
             list,
             kanban: kanban::State::default(),
+            peek: {
+                #[allow(unused_mut)]
+                let mut state = peek::State::default();
+                #[cfg(test)]
+                state.set_test_reader();
+                state
+            },
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -213,6 +223,7 @@ impl Board {
                                     this.snapshot.invalidate();
                                     this.snapshot.forgejo = Source::default();
                                     this.selected = None;
+                                    this.close_peek(cx);
                                     this.delivery = Default::default();
                                     this.delivery_loading = false;
                                     this.project_notes = Default::default();
@@ -298,6 +309,9 @@ impl Board {
             return;
         }
         self.active = visible;
+        if !visible {
+            self.close_peek(cx);
+        }
         self.local_loading = false;
         self.local_generation = self.local_generation.wrapping_add(1);
         self.delivery_loading = false;
@@ -703,14 +717,14 @@ impl Render for Board {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.filter_key(event, window, cx);
             }))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    let issue = this.selected.take().is_some();
-                    let local = this.selected_local.take().is_some();
-                    if issue || local {
-                        cx.stop_propagation();
-                        cx.notify();
-                    }
+            .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_peek(window, cx)))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.peek_key(event, window, cx);
+                if matches!(event.keystroke.key.as_str(), "space" | "enter")
+                    && this.focus.is_focused(window)
+                {
+                    this.open_peek(window, cx);
+                    cx.stop_propagation();
                 }
             }));
         let Some(_) = self.binding.as_ref() else {
@@ -804,6 +818,10 @@ impl Reader {
         cx.subscribe_in(&board, window, move |this, board, action: &Action, window, cx| {
             if this.project_navigation.active.as_ref().map(|p| &p.folder) != Some(&owner) { return; }
             match action {
+                Action::Peek => {
+                    this.panels.open(reader_layout::Panel::Backlinks);
+                    cx.notify();
+                }
                 Action::Note(note) => {
                     let target = owner.join(note);
                     let opened = (|| -> anyhow::Result<String> {
@@ -819,6 +837,7 @@ impl Reader {
                     }
                 }
                 Action::Discuss(text) => {
+                    board.update(cx, |board,cx| { board.peek.manager_tab = true; cx.notify(); });
                     #[cfg(target_os = "linux")]
                     let result = this.project.clone().ok_or(okilum_t3::draft_handoff::Refusal::Unavailable)
                         .and_then(|manager| {
@@ -835,6 +854,7 @@ impl Reader {
                             let visible = this.project_open && this.project_navigation.active.is_some()
                                 && this.workspace_panels().visible(reader_layout::Panel::Backlinks, available);
                             manager.update(cx, |manager, cx| {
+                                manager.select_section(ProjectSection::Manager, cx);
                                 manager.draft_handoff_surface_visible(visible, cx);
                                 manager.append_board_context(&owner, text.clone(), window, cx)
                             })

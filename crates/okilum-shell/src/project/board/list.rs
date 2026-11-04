@@ -50,7 +50,6 @@ pub(super) struct State {
     path: Option<PathBuf>,
     prepared: Option<Arc<Prepared>>,
     pub scroll: gpui::UniformListScrollHandle,
-    details_open: bool,
     #[cfg(test)]
     publications: usize,
     #[cfg(test)]
@@ -75,7 +74,6 @@ impl State {
             path,
             prepared: None,
             scroll: gpui::UniformListScrollHandle::new(),
-            details_open: false,
             #[cfg(test)]
             publications: 0,
             #[cfg(test)]
@@ -183,12 +181,6 @@ impl Board {
                 rows.append(&mut groups[stage as usize]);
             }
         }
-        let issue_indices = binding
-            .issues
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.number, i))
-            .collect();
         let mappings = binding
             .issues
             .iter()
@@ -209,19 +201,14 @@ impl Board {
             sources_ready,
             mappings,
             invalid_annotations,
-            issue_indices,
+            issue_indices: binding.issues.iter().enumerate().map(|(i,s)| (s.number,i)).collect(),
+            local_indices: projection.locals.iter().flatten().map(|i| (self.local_cards.value.cards[*i].id.clone(),*i)).collect(),
             binding,
             rows,
             counts,
             groups: kanban_groups,
             projection: projection.clone(),
             collapsed: self.list.preferences.collapsed,
-            local_indices: projection
-                .locals
-                .iter()
-                .flatten()
-                .map(|i| (self.local_cards.value.cards[*i].id.clone(), *i))
-                .collect(),
         });
         self.list.prepared = Some(prepared.clone());
         #[cfg(test)]
@@ -271,7 +258,9 @@ impl Board {
                         }
                         _ => unreachable!(),
                     }
-                    self.list.details_open = false;
+                    if self.peek.open {
+                        self.open_peek(window, cx);
+                    }
                     self.list
                         .scroll
                         .scroll_to_item(index, gpui::ScrollStrategy::Nearest);
@@ -280,15 +269,15 @@ impl Board {
                 cx.stop_propagation();
                 cx.notify();
             }
-            "enter" if self.focus.is_focused(window) => {
+            "enter" | "space" if self.focus.is_focused(window) => {
                 if self.selected.is_some() || self.selected_local.is_some() {
-                    self.list.details_open = !self.list.details_open;
+                    self.open_peek(window, cx);
                     cx.stop_propagation();
                     cx.notify();
                 }
             }
-            "escape" if self.list.details_open => {
-                self.list.details_open = false;
+            "escape" if self.peek.open => {
+                self.close_peek(cx);
                 cx.stop_propagation();
                 cx.notify();
             }
@@ -315,6 +304,7 @@ impl Board {
             .capture_key_down(cx.listener(|this, event, window, cx| {
                 this.filter_key(event, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_peek(window, cx)))
             .on_key_down(cx.listener(|this, event, window, cx| this.list_key(event, window, cx)))
             .child(
                 h_flex()
@@ -429,41 +419,6 @@ impl Board {
                     .size_full(),
                 ),
         );
-        // Existing expanded card actions remain available; this bounded disclosure
-        // is separate from fixed-height rows, not the sibling peek panel.
-        if self.list.details_open {
-            let details = if let Some(scope) = self
-                .selected
-                .and_then(|number| prepared.issue_indices.get(&number))
-                .map(|i| &prepared.binding.issues[*i])
-            {
-                Some(self.card_with_mapping(
-                    scope,
-                    self.delivery_column(scope),
-                    &prepared.binding,
-                    prepared.mappings.get(&scope.number).copied().flatten(),
-                    cx,
-                ))
-            } else {
-                self.selected_local
-                    .as_ref()
-                    .and_then(|id| prepared.local_indices.get(id))
-                    .map(|index| self.local_card(&self.local_cards.value.cards[*index], cx))
-            };
-            if let Some(details) = details {
-                root = root.child(
-                    div()
-                        .id("board-list-details")
-                        .debug_selector(|| "board-list-details".into())
-                        .h(px(260.))
-                        .flex_none()
-                        .overflow_y_scroll()
-                        .px_4()
-                        .py_2()
-                        .child(details),
-                );
-            }
-        }
         let problem = source_problem("Forgejo", &self.snapshot.forgejo, 30, now());
         root.child(
             div()
@@ -589,10 +544,9 @@ impl Board {
                             ),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.list.details_open =
-                            this.selected_local.as_ref() != Some(&id) || !this.list.details_open;
                         this.selected = None;
                         this.selected_local = Some(id.clone());
+                        this.open_peek(window, cx);
                         this.focus.focus(window, cx);
                         cx.notify();
                     }))
@@ -814,9 +768,9 @@ impl Board {
             ))
             .child(row)
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.list.details_open = this.selected != Some(number) || !this.list.details_open;
                 this.selected_local = None;
                 this.selected = Some(number);
+                this.open_peek(window, cx);
                 this.focus.focus(window, cx);
                 cx.notify();
             }))

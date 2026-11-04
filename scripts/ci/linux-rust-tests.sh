@@ -23,6 +23,9 @@ suite cargo test --locked -p okilum-shell --bin okilum settings_2487_ -- --nocap
 suite cargo test --locked -p okilum-shell --bin okilum kanban_2534_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum list_2548_ -- --nocapture
 suite cargo test --locked -p okilum-t3 board::order:: -- --nocapture
+# Keep issue-peek interactions visible even if a later full-shell test aborts.
+suite cargo test --locked -p okilum-shell --bin okilum peek_2531_ -- --nocapture
+suite cargo test --locked -p okilum-t3 peek_2531_ -- --nocapture
 # Run the source/input acceptance groups independently, so an unrelated native
 # task abort cannot hide their verdict behind an unfinished full shell binary.
 # A non-UTC process timezone makes the conflict-copy local timestamp check
