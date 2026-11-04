@@ -381,15 +381,16 @@ mod managed_configuration_tests {
     }
 
     #[test]
-    fn incomplete_unsafe_and_linked_configuration_is_not_absence() -> Result<()> {
+    fn unprepared_is_absence_but_unsafe_and_linked_configuration_is_not() -> Result<()> {
         let root = tempfile::tempdir()?;
         let state = root.path();
         fs::set_permissions(state, fs::Permissions::from_mode(0o700))?;
-        assert!(managed_configuration_path(state).is_err());
+        // An interrupted first preparation (#2589) is "not prepared", not an error.
+        assert_eq!(managed_configuration_path(state)?, None);
         let config = state.join("config");
         fs::create_dir(&config)?;
         fs::set_permissions(&config, fs::Permissions::from_mode(0o700))?;
-        assert!(managed_configuration_path(state).is_err());
+        assert_eq!(managed_configuration_path(state)?, None);
         let file = config.join("config.xml");
         fs::write(&file, b"fixture")?;
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600))?;
