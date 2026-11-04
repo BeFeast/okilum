@@ -558,58 +558,6 @@ impl Board {
             })
             .into_any_element()
     }
-    fn agent_filter(&self, binding: &Binding, compact: bool, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let roles: std::collections::BTreeSet<_> =
-            binding.issues.iter().map(|i| i.executor.clone()).collect();
-        let selected = self.filter.clone();
-        let weak = cx.entity().downgrade();
-        let label = selected.clone().unwrap_or_else(|| "All agents".into());
-        let mut button = Button::new("board-agent-filter")
-            .debug_selector(|| "board-agent-filter".into())
-            .small()
-            .ghost()
-            .accessibility_label(format!("Agent filter: {label}"))
-            .tooltip(format!("Agent filter: {label}"));
-        if compact {
-            button = button.size(px(28.)).child(appearance::icon(
-                "list-filter",
-                brand::palette(cx).text_muted,
-            ));
-        } else {
-            button = button.label(label).max_w(px(150.)).min_w_0();
-        }
-        button
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
-                let all = weak.clone();
-                menu = menu.item(
-                    PopupMenuItem::new("All agents")
-                        .checked(selected.is_none())
-                        .on_click(move |_, _, cx| {
-                            let _ = all.update(cx, |board, cx| {
-                                board.filter = None;
-                                cx.notify();
-                            });
-                        }),
-                );
-                for role in &roles {
-                    let owner = weak.clone();
-                    let role = role.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(role.clone())
-                            .checked(selected.as_ref() == Some(&role))
-                            .on_click(move |_, _, cx| {
-                                let _ = owner.update(cx, |board, cx| {
-                                    board.filter = Some(role.clone());
-                                    cx.notify();
-                                });
-                            }),
-                    );
-                }
-                menu
-            })
-            .into_any_element()
-    }
     fn attention(&self, binding: &Binding, cx: &mut Context<Self>) -> Option<AnyElement> {
         if binding.attention.is_empty() {
             return None;

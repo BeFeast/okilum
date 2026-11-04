@@ -2,7 +2,12 @@ use super::*;
 use gpui::{TestAppContext, VisualTestContext};
 
 fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut VisualTestContext) {
-    cx.update(crate::test_init);
+    cx.update(|cx| {
+        crate::test_init(cx);
+        cx.set_global(reader_history::TestSessionDirectory(
+            area.join("presentation-state"),
+        ));
+    });
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
             let mut board = Board::with_kanban_reader(area.into(), |_| Ok(Vec::new()), window, cx);
@@ -126,9 +131,12 @@ fn kanban_2534_queue_eight_rows_more_opens_expanded_list_and_saves(cx: &mut Test
     assert!(visual.debug_bounds("board-queue-row-8").is_none());
     assert!(visual.debug_bounds("board-card-17").is_none());
     click(visual, "board-queue-more");
-    board.read_with(visual, |b, _| {
+    board.read_with(visual, |b, cx| {
         assert_eq!(b.list.preferences.mode, list::Mode::List);
         assert!(!b.list.preferences.collapsed[Column::Queue as usize]);
+        let restored = list::State::load(area.path(), cx);
+        assert_eq!(restored.preferences.mode, list::Mode::List);
+        assert!(!restored.preferences.collapsed[Column::Queue as usize]);
     });
     assert!(visual.debug_bounds("board-list-group-Queue").is_some());
     assert!(visual.debug_bounds("board-list-row-17").is_some());

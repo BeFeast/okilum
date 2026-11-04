@@ -113,13 +113,15 @@ impl Board {
                 .gap_2()
                 .child(header);
             if count == 0 {
-                lane = lane.child(
-                    div()
-                        .text_size(px(12.))
-                        .line_height(px(16.))
-                        .text_color(p.text_muted)
-                        .child("No cards"),
-                );
+                if self.columns.known_empty(stage) {
+                    lane = lane.child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(p.text_muted)
+                            .child("No cards"),
+                    );
+                }
             } else if stage == Column::Queue {
                 for (index, row) in prepared.groups[stage as usize]
                     .iter()
@@ -281,8 +283,8 @@ impl Board {
             .or_else(|| {
                 self.selected_local
                     .as_ref()
-                    .and_then(|id| self.local_cards.value.cards.iter().find(|c| &c.id == id))
-                    .map(|c| self.local_card(c, cx))
+                    .and_then(|id| prepared.local_indices.get(id))
+                    .map(|i| self.local_card(&self.local_cards.value.cards[*i], cx))
             });
         if let Some(details) = details {
             root = root.child(

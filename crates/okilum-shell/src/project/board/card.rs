@@ -2,19 +2,6 @@
 use super::*;
 
 impl Board {
-    pub(super) fn card(
-        &self,
-        scope: &okilum_t3::board::Scope,
-        column: Column,
-        binding: &Binding,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mapping = self
-            .binding
-            .as_ref()
-            .and_then(|binding| okilum_t3::board::live::mapping_problem(binding, scope.number));
-        self.card_with_mapping(scope, column, binding, mapping, cx)
-    }
     pub(super) fn card_with_mapping(
         &self,
         scope: &okilum_t3::board::Scope,
