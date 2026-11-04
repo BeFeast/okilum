@@ -70,3 +70,11 @@ The caret fixture seeds its cached consumer once after initial paint, because
 pinned GPUI registers the first frame's dependencies after paint completes.
 Subsequent selection changes must update the render consumer through ordinary
 notifications; no refresh is forced for that assertion.
+
+Chat message surfaces also use block flow at the scroller's resolved width.
+The two existing 4px gaps become leading margins on Markdown and attachments;
+user surfaces retain their 640px maximum and trailing alignment, while Manager
+surfaces retain their 720px maximum and leading alignment. Header controls,
+Markdown selection, code actions, attachment transfers and scroller ownership
+are unchanged. This removes nested flex intrinsic-size negotiation for the
+rich rows actually exercised during native splitter measurement.

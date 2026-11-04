@@ -701,11 +701,13 @@ impl Feed {
                 // One reading column and quiet role chrome carry the hierarchy.
                 // The user prompt has a distinct accent surface; assistant prose
                 // stays directly on the shared conversation surface.
-                let body = v_flex()
+                // The scroller has already resolved the reading width. Block
+                // flow avoids asking the complete rich message for flex
+                // intrinsic sizes again as the splitter changes that width.
+                let body = div()
                     .w_full()
                     .min_w_0()
                     .max_w(px(if message.user { 640. } else { 720. }))
-                    .gap(px(design::GAP * 0.5))
                     .debug_selector(move || format!("project-message-surface-{position}"))
                     .text_color(colors.text)
                     .when(message.user, |row| {
@@ -715,24 +717,27 @@ impl Feed {
                     })
                     .when(!message.user, |row| row.py(px(design::GAP)))
                     .child(heading)
-                    .child(self.markdown(
-                        ("project-message", position as usize),
-                        message.text.clone(),
-                        cx,
-                    ))
-                    .child(self.render_attachments(position, cx));
-                v_flex()
+                    .child(
+                        self.markdown(
+                            ("project-message", position as usize),
+                            message.text.clone(),
+                            cx,
+                        )
+                        .mt(px(design::GAP * 0.5)),
+                    )
+                    .child(
+                        self.render_attachments(position, cx)
+                            .mt(px(design::GAP * 0.5)),
+                    );
+                div()
                     .id(SharedString::from(format!("project-message-{position}")))
                     .debug_selector(move || format!("project-message-{position}"))
                     .w_full()
                     .min_w_0()
                     .px(px(design::INSET))
                     .mb(px(design::GAP * 2.5))
-                    .when(message.user, |row| {
-                        row.pl(px(design::INSET * 2.)).items_end()
-                    })
-                    .when(!message.user, |row| row.items_start())
-                    .child(body)
+                    .when(message.user, |row| row.pl(px(design::INSET * 2.)))
+                    .child(body.when(message.user, |body| body.ml_auto()))
                     .into_any_element()
             }
             Some(Row::WorkSummary(key)) => self.work_summary(key, cx),
