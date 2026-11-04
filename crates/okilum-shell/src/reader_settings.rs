@@ -1459,10 +1459,10 @@ impl Settings {
                                         .child(h_flex().flex_wrap().gap_2()
                                             .child(div().font_weight(FontWeight::MEDIUM).child(name))
                                             .child(div().debug_selector(|| "settings-vault-current-badge".into())
-                                                .text_xs().text_color(p.accent).child("Current"))
+                                                .text_xs().px_1().rounded(px(3.)).bg(p.selected).text_color(p.accent).child("Current"))
                                             .when(self.vaults.as_ref().is_some_and(|vaults| vaults.read(cx).is_default(&color_root)), |row| {
                                                 row.child(div().debug_selector(|| "settings-vault-default-badge".into())
-                                                    .text_xs().text_color(p.text_muted).child("Default"))
+                                                    .text_xs().px_1().rounded(px(3.)).bg(p.sidebar).text_color(p.text_muted).child("Default"))
                                             }))
                                         .child(
                                             div()

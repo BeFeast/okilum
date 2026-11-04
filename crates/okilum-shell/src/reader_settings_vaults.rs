@@ -1,5 +1,6 @@
 //! Settings management of the same app-owned list as the vault-name menu.
 use super::*;
+use gpui_component::menu::DropdownMenu as _;
 use reader_history::{KnownVault, ReadingHistory};
 
 #[derive(Clone)]
@@ -296,6 +297,7 @@ impl Render for Vaults {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+    use gpui_component::menu::DropdownMenu as _;
 
     #[test]
     fn unknown_opening_dates_are_not_fabricated() {
