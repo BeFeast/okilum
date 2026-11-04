@@ -240,13 +240,17 @@ The newer owner-authorized #2581 supersedes #2580's fifteen-minute PR gate:
 Forgejo fast.yml has no PR trigger and main has no required status checks.
 Workers validate the exact committed HEAD with
 `H=github scripts/agent/gh-check.sh`, wait for green, then squash-merge through
-Forgejo. The larger additive envelopes here therefore apply only to main pushes,
-nightly runs, manual dispatches and source-pinned certification. No PR workloads
-are restored. Main concurrency keeps the active run and newest pending run;
-feedback-ci remains on main. Open #2576 owns moving Sync off fast-linux; whichever
-change lands second must carry these wrappers to the actual test execution and
-recheck additive hosted/bridge job budgets. The 120 s network-policy limit's
-observed timeout remains visible in #2578 pending the Sync owner's diagnosis.
+Forgejo. The larger additive envelopes here apply to nightly runs, manual dispatches
+and source-pinned certification. Newer #2583 also removes heavy main push runs,
+gives certification dispatches unique concurrency groups so they always report,
+and lets ordinary manual retries supersede only other ordinary manual runs on
+the same ref. Its feedback-ci and worker-owned GitHub gate are retained. No PR
+or push workloads are restored. The Sync owner closed #2576 as superseded by
+#2581 without merging its proposed move off fast-linux; no hosted routing from
+that branch is imported here. A future move must carry these wrappers to the
+actual execution and recheck additive hosted/bridge budgets. The 120 s
+network-policy limit's observed timeout remains visible in #2578 pending the
+Sync owner's diagnosis.
 
 ### Resizing evidence, PR #2510
 
