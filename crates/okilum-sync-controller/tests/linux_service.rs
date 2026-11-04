@@ -65,7 +65,8 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
     let units =
         PathBuf::from(std::env::var_os("HOME").context("user home")?).join(".config/systemd/user");
     let state = root.path().join("controller");
-    let controller = Lifecycle::new(state.clone(), units.clone(), Systemd);
+    let controller = Lifecycle::new(state.clone(), units.clone(), Systemd)
+        .with_launcher(PathBuf::from(env!("CARGO_BIN_EXE_okilum-sync-launch")));
     assert!(!controller.desired_enabled()?);
     controller.disable()?;
     assert!(!state.exists());
@@ -141,7 +142,8 @@ fn real_service_enable_disable_reenable_and_identity() -> Result<()> {
     assert_eq!(property("ActiveState")?, "active");
     assert_eq!(fs::read(home.join("cert.pem"))?, certificate);
     controller.disable()?;
-    let reopened = Lifecycle::new(state, units.clone(), Systemd);
+    let reopened = Lifecycle::new(state, units.clone(), Systemd)
+        .with_launcher(PathBuf::from(env!("CARGO_BIN_EXE_okilum-sync-launch")));
     reopened.reconcile()?;
     assert_eq!(property("UnitFileState")?, "");
     assert_eq!(property("ActiveState")?, "inactive");

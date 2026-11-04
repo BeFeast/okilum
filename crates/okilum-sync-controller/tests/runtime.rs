@@ -13,7 +13,12 @@ fn settings_runtime_enable_disable_and_restart() -> Result<()> {
     let state = root.path().join("runtime");
     let units =
         PathBuf::from(std::env::var_os("HOME").context("home")?).join(".config/systemd/user");
-    let runtime = Runtime::new(state.clone(), units.clone());
+    let runtime = Runtime::with_services(
+        state.clone(),
+        units.clone(),
+        okilum_sync_controller::lifecycle::Systemd,
+        PathBuf::from(env!("CARGO_BIN_EXE_okilum-sync-launch")),
+    );
     assert!(runtime.snapshot()?.is_none());
     assert!(!state.exists());
     let rest = TcpListener::bind("127.0.0.1:0")?;
@@ -45,7 +50,12 @@ fn settings_runtime_enable_disable_and_restart() -> Result<()> {
         anyhow::bail!("runtime REST not ready")
     };
     ready()?;
-    let reopened = Runtime::new(state.clone(), units);
+    let reopened = Runtime::with_services(
+        state.clone(),
+        units,
+        okilum_sync_controller::lifecycle::Systemd,
+        PathBuf::from(env!("CARGO_BIN_EXE_okilum-sync-launch")),
+    );
     assert!(reopened.snapshot()?.unwrap().desired_enabled);
     reopened.disable()?;
     ensure!(
