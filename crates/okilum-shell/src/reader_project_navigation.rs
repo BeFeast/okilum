@@ -550,7 +550,7 @@ impl Reader {
             .collect()
     }
 
-    fn refresh_project_statuses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn refresh_project_statuses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !reader_features::enabled(reader_features::Feature::Agents, cx) {
             return;
         }

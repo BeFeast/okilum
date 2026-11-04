@@ -496,6 +496,7 @@ impl ProjectView {
         self.native_load_actions(window, cx);
         self.start_thread_directory(window, cx);
         self.native_start(window, cx);
+        cx.emit(NativeConnected);
         cx.notify();
     }
     pub(super) fn native_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
