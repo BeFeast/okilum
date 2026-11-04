@@ -243,64 +243,6 @@ impl Board {
         .detach();
         cx.notify();
     }
-    pub(super) fn local_card(
-        &self,
-        card: &model::Card,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = brand::palette(cx);
-        let id = card.id.clone();
-        let (disclosure, _) = super::controls::disclosure(
-            SharedString::from(format!("local-expand-{id}")),
-            window,
-            cx,
-        );
-        let view = v_flex()
-            .min_w_0()
-            .min_h_0()
-            .flex_shrink_0()
-            .gap_2()
-            .p_3()
-            .rounded_md()
-            .bg(colors.surface_raised)
-            .debug_selector({
-                let id = id.clone();
-                move || format!("board-local-card-{id}")
-            })
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(colors.text_muted)
-                    .child(format!("Local · {}", card.state.label())),
-            )
-            .child(
-                disclosure
-                    .h_auto()
-                    .w_full()
-                    .min_w_0()
-                    .debug_selector({
-                        let id = id.clone();
-                        move || format!("board-local-expand-{id}")
-                    })
-                    .child(
-                        div()
-                            .whitespace_normal()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(card.title.clone()),
-                    )
-                    .on_click(cx.listener({
-                        let id = id.clone();
-                        move |this, _, window, cx| {
-                            this.selected = None;
-                            this.selected_local = Some(id.clone());
-                            this.open_peek(window, cx);
-                            cx.notify();
-                        }
-                    })),
-            );
-        view.into_any_element()
-    }
     pub(super) fn local_details(&self, card: &model::Card, cx: &mut Context<Self>) -> AnyElement {
         let colors = brand::palette(cx);
         let id = card.id.clone();
