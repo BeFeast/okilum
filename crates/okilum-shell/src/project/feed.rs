@@ -13,6 +13,8 @@ pub(super) mod content;
 mod details;
 mod groups;
 mod message_actions;
+mod rich_cache;
+mod viewport_paint;
 
 #[derive(Clone, PartialEq)]
 struct Message {
@@ -78,6 +80,7 @@ pub(super) struct Feed {
     copy_lease: Arc<()>,
     next_native_position: u64,
     scroller: Entity<MessageScrollerState>,
+    rich: std::cell::RefCell<rich_cache::Cache>,
     enabled: bool,
     busy: bool,
     typed_revision: u64,
@@ -94,7 +97,10 @@ pub(super) struct Feed {
 impl Feed {
     pub(super) fn new(parent: WeakEntity<ProjectView>, cx: &mut Context<Self>) -> Self {
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
-        let scroll = cx.observe(&scroller, |_, _, cx| cx.notify());
+        let scroll = cx.observe(&scroller, |this, _, cx| {
+            this.prewarm_markdown(cx);
+            cx.notify();
+        });
         Self {
             parent,
             actions: None,
@@ -118,6 +124,7 @@ impl Feed {
             copy_lease: Arc::new(()),
             next_native_position: 1,
             scroller,
+            rich: Default::default(),
             enabled: false,
             busy: false,
             typed_revision: 0,
@@ -131,6 +138,10 @@ impl Feed {
             #[cfg(test)]
             render_calls: std::cell::Cell::new(0),
         }
+    }
+    #[cfg(test)]
+    pub(in crate::project) fn performance_scroll_position(&self, cx: &App) -> usize {
+        self.scroller.read(cx).logical_scroll_top().item_ix
     }
     #[cfg(test)]
     pub(in crate::project) fn test_scroll_anchor(
@@ -348,6 +359,7 @@ impl Feed {
     }
 
     pub(super) fn reset(&mut self, cx: &mut Context<Self>) {
+        self.rich.borrow_mut().clear();
         self.typed_data_changed();
         self.request_cards.clear();
         self.messages.clear();
@@ -645,6 +657,8 @@ impl Feed {
         }
     }
     fn row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = super::performance::Work::start(2);
         #[cfg(test)]
         self.row_calls.set(self.row_calls.get() + 1);
         match self.rows.get(index) {
@@ -687,11 +701,13 @@ impl Feed {
                 // One reading column and quiet role chrome carry the hierarchy.
                 // The user prompt has a distinct accent surface; assistant prose
                 // stays directly on the shared conversation surface.
-                let body = v_flex()
+                // The scroller has already resolved the reading width. Block
+                // flow avoids asking the complete rich message for flex
+                // intrinsic sizes again as the splitter changes that width.
+                let body = div()
                     .w_full()
                     .min_w_0()
                     .max_w(px(if message.user { 640. } else { 720. }))
-                    .gap(px(design::GAP * 0.5))
                     .debug_selector(move || format!("project-message-surface-{position}"))
                     .text_color(colors.text)
                     .when(message.user, |row| {
@@ -701,24 +717,27 @@ impl Feed {
                     })
                     .when(!message.user, |row| row.py(px(design::GAP)))
                     .child(heading)
-                    .child(self.markdown(
-                        ("project-message", position as usize),
-                        message.text.clone(),
-                        cx,
-                    ))
-                    .child(self.render_attachments(position, cx));
-                v_flex()
+                    .child(
+                        self.markdown(
+                            ("project-message", position as usize),
+                            message.text.clone(),
+                            cx,
+                        )
+                        .mt(px(design::GAP * 0.5)),
+                    )
+                    .child(
+                        self.render_attachments(position, cx)
+                            .mt(px(design::GAP * 0.5)),
+                    );
+                div()
                     .id(SharedString::from(format!("project-message-{position}")))
                     .debug_selector(move || format!("project-message-{position}"))
                     .w_full()
                     .min_w_0()
                     .px(px(design::INSET))
                     .mb(px(design::GAP * 2.5))
-                    .when(message.user, |row| {
-                        row.pl(px(design::INSET * 2.)).items_end()
-                    })
-                    .when(!message.user, |row| row.items_start())
-                    .child(body)
+                    .when(message.user, |row| row.pl(px(design::INSET * 2.)))
+                    .child(body.when(message.user, |body| body.ml_auto()))
                     .into_any_element()
             }
             Some(Row::WorkSummary(key)) => self.work_summary(key, cx),
@@ -792,6 +811,7 @@ impl Render for Feed {
             self.scroller.clone(),
             move |index, _, cx| {
                 let row = entity.update(cx, |feed, cx| feed.row(index, cx));
+                let row = viewport_paint::RowPaint::new(row).into_any_element();
                 if index != 0 {
                     return row;
                 }
@@ -818,7 +838,7 @@ impl Render for Feed {
         .with_jump_button_renderer(|button| button.debug_selector(|| "project-jump-latest".into()))
         .size_full()
         .min_h_0();
-        div()
+        let root = div()
             .debug_selector(|| "project-history".into())
             .bg(brand::palette(cx).surface)
             .size_full()
@@ -831,6 +851,10 @@ impl Render for Feed {
                 )
             })
             .child(scroller)
+            .into_any_element();
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let root = super::performance::Trace::new(root, 1).into_any_element();
+        root
     }
 }
 

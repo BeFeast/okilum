@@ -1044,6 +1044,8 @@ impl Composer {
 }
 impl Render for Composer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = super::performance::Work::start(27);
         let validation = self.prompt_validation(cx);
         let palette = brand::palette(cx);
         let send = send_presentation(
@@ -1054,7 +1056,7 @@ impl Render for Composer {
                 && (self.has_attachments || !self.input.read(cx).value().trim().is_empty()),
             palette,
         );
-        v_flex()
+        let root = v_flex()
             .id("project-composer")
             .relative()
             .w_full()
@@ -1217,6 +1219,10 @@ impl Render for Composer {
                         .child(message),
                 )
             })
+            .into_any_element();
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let root = super::performance::Trace::new(root, 3).into_any_element();
+        root
     }
 }
 

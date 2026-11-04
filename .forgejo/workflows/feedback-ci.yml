@@ -1,14 +1,9 @@
 # The portable harness imports production Feedback sources without linking GPUI.
-# Run it when either side changes, including the exact post-merge main source.
+# Run nightly or on demand; workers validate changes through GitHub checks.
 name: feedback-ci
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'crates/okilum-http/**'
-      - 'crates/okilum-shell/src/reader_feedback/**'
-      - 'Cargo.lock'
-      - '.forgejo/workflows/feedback-ci.yml'
+  schedule:
+    - cron: '45 22 * * *'
   workflow_dispatch:
 concurrency:
   group: feedback-ci-${{ github.ref }}

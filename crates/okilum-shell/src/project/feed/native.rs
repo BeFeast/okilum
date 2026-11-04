@@ -8,6 +8,7 @@ impl Feed {
     ) {
         let first = self.native_order.is_none();
         if first {
+            self.rich.borrow_mut().clear();
             self.messages.clear();
             self.ids.clear();
             self.projected.clear();
