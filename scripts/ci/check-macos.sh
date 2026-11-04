@@ -69,5 +69,6 @@ run_tests() {
 cargo "${cargo_args[@]}" --workspace --no-run
 run_tests okilum-shell --bins reader_project_navigation::token_tests::
 run_tests okilum-t3 --lib session::tests::native_
+run_tests okilum-shell --bins native_pairing_immediately_replaces_the_boards_unpaired_gateway_2520
 [[ "$macos_rust_failed" == 0 ]]
 python3 scripts/ci/issue-2520-negative-control.py
