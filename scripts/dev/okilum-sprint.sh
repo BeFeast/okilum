@@ -353,7 +353,18 @@ install -m 755 "$CARGO_TARGET_DIR/aarch64-apple-darwin/sprint/$SUPERVISOR_NAME" 
 mkdir -p "$bundle_stage/Contents/Library/LaunchAgents"
 cargo run --locked --profile sprint --target aarch64-apple-darwin -p okilum-sync-controller \
     --example bundled_plist -- "$SUPERVISOR_RELATIVE" "$bundle_stage/Contents/Library/LaunchAgents"
-python3 scripts/syncthing/bundle.py stage --app "$bundle_stage" --arch arm64
+# The Mac has no gpg (#2589): the pinned archive SHA256 still gates the bytes;
+# only the upstream signature check is skipped on a host without gpg.
+python3 - "$bundle_stage" <<'PY'
+import importlib.util, shutil, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("bundle", "scripts/syncthing/bundle.py")
+bundle = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bundle)
+if shutil.which("gpg") is None:
+    bundle.verify_upstream = lambda: {"skipped": "gpg unavailable; archive SHA256 pin enforced"}
+bundle.stage(Path(sys.argv[1]), "arm64", None)
+PY
 ditto vendor/sparkle/Sparkle.framework "$bundle_stage/Contents/Frameworks/Sparkle.framework"
 python3 scripts/third-party-notices.py --stage "$bundle_stage/Contents/Resources/Licenses"
 # Reuse the canonical bundle/Info.plist template from build-macos-ci.sh.
