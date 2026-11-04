@@ -181,6 +181,9 @@ and save/recovery guards.
 Linux managed AppImage (#2100): `~/.local/share/okilum/Okilum.AppImage`, its
 `.appimage-owner` marker, `.appimage-build` record (#2455), installation lock and the owned `~/.local/bin/okilum`
 symlink are removed by `--uninstall-data` after the existing quit/Sync guards.
+The managed directory's private updater stages (including retained rollback
+images) and update lock are removed too. An active updater prevents removal;
+its replacement and recovery data remain intact until the transaction finishes.
 Foreign command files and unmarked installed images are refused, never deleted.
 The shared `.local/bin`, `.local/share` and legacy `~/Applications` directories
 are not recursively removed.

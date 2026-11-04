@@ -124,6 +124,8 @@ pub struct Kibana {
     diagnostics: Arc<Mutex<super::result::ConnectionDetails>>,
     #[cfg(test)]
     test_clock: Option<Arc<TestClock>>,
+    #[cfg(test)]
+    polls_started: Arc<std::sync::atomic::AtomicUsize>,
 }
 impl Kibana {
     pub fn new(source: &Source, key: ApiKey, cancelled: Arc<AtomicBool>) -> Result<Self> {
@@ -165,6 +167,8 @@ impl Kibana {
             diagnostics: Default::default(),
             #[cfg(test)]
             test_clock: None,
+            #[cfg(test)]
+            polls_started: Default::default(),
         })
     }
     #[cfg(test)]
@@ -279,6 +283,10 @@ impl Kibana {
             }
         };
         let execute = async {
+            #[cfg(test)]
+            if diagnostic_route == "async poll" {
+                self.polls_started.fetch_add(1, Ordering::AcqRel);
+            }
             let mut response = request.send().await.map_err(|error| {
                 if error.is_timeout() {
                     anyhow::anyhow!(SearchTimeout)

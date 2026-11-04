@@ -1213,6 +1213,38 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn managed_appimage_uninstall_removes_installation_and_update_artifacts() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let download = home.path().join("download.AppImage");
+        std::fs::write(&download, b"not executed").unwrap();
+        std::fs::set_permissions(&download, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let image = okilum_appimage::installation::install(home.path(), &download, 7547).unwrap();
+        let (_, command) = okilum_appimage::installation::paths(home.path()).unwrap();
+        let (desktop, icon) = okilum_appimage::desktop::paths(home.path()).unwrap();
+        let stage = image.parent().unwrap().join(".okilum-update-completed");
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(stage.join("previous.AppImage"), b"rollback").unwrap();
+        assert_eq!(
+            desktop_payload(home.path()),
+            vec![
+                desktop.clone(),
+                icon.clone(),
+                image.clone(),
+                command.clone()
+            ]
+        );
+        let mut report = Report::default();
+        remove_appimage_desktop(home.path(), &mut report);
+        assert_eq!(report.removed, vec![desktop, icon, image.clone(), command]);
+        assert!(report.failed.is_empty());
+        assert!(!image.parent().unwrap().exists());
+        assert!(download.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn appimage_desktop_lifecycle_reports_exact_owned_files_and_keeps_foreign_payloads() {
         use std::os::unix::fs::PermissionsExt;
         let sandbox = tempfile::tempdir().unwrap();

@@ -196,13 +196,16 @@ fn async_deadline_retains_rows_and_timeout_status_and_no_poll_after_close() {
     assert!(page.status.timed_out && page.status.partial && !page.complete);
     assert_eq!(page.events.len(), 7);
     history.close().unwrap();
-    let count = server.state.lock().unwrap().polls;
     assert!(
-        count > 0,
+        server.state.lock().unwrap().polls > 0,
         "positive control: async polling reached the server"
     );
+    // A poll already sent before the timeout can reach the loopback server
+    // after close. Measure new client sends, not delayed server arrivals.
+    let count = history.kibana.polls_started.load(Ordering::Acquire);
+    assert!(count > 0, "positive control: client started async polls");
     std::thread::sleep(Duration::from_millis(120));
-    assert_eq!(server.state.lock().unwrap().polls, count);
+    assert_eq!(history.kibana.polls_started.load(Ordering::Acquire), count);
 }
 #[test]
 fn cancellation_stops_active_async_polling_without_any_cleanup_route() {
@@ -215,6 +218,7 @@ fn cancellation_stops_active_async_polling_without_any_cleanup_route() {
     );
     let kibana = client(&server);
     let cancel = kibana.cancelled.clone();
+    let polls_started = kibana.polls_started.clone();
     let source = source(&server);
     let thread = std::thread::spawn(move || History::for_source(kibana, &source).unwrap().page());
     let start = std::time::Instant::now();
@@ -229,10 +233,11 @@ fn cancellation_stops_active_async_polling_without_any_cleanup_route() {
         .unwrap_err()
         .to_string()
         .contains("cancelled"));
-    let count = server.state.lock().unwrap().polls;
+    let count = polls_started.load(Ordering::Acquire);
+    assert!(count > 0, "positive control: client started async polls");
     std::thread::sleep(Duration::from_millis(100));
     let s = server.state.lock().unwrap();
-    assert_eq!(s.polls, count);
+    assert_eq!(polls_started.load(Ordering::Acquire), count);
     assert!(s.calls.iter().all(|c| c.method != "DELETE"));
 }
 #[test]

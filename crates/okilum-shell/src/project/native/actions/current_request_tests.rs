@@ -723,6 +723,8 @@ fn approval_fallback_buttons_send_exact_decisions_and_only_server_resolution_adv
             let start = std::time::Instant::now();
             loop {
                 if let Ok((stream, _)) = listener.accept() {
+                    // BSD/macOS inherits the listener's nonblocking mode.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(4)))
                         .unwrap();
