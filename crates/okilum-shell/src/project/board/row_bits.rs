@@ -22,7 +22,7 @@ pub(super) fn type_tag(issue: Option<&okilum_t3::board::Issue>, cx: &App) -> Any
 }
 pub(super) fn label_pill(label: impl Into<SharedString>, tone: Hsla, cx: &App) -> AnyElement {
     let label = label.into();
-    let selector = format!("board-pill-label-{label}");
+    let debug_label = label.clone();
     h_flex()
         .flex_none()
         .gap(px(5.))
@@ -37,8 +37,8 @@ pub(super) fn label_pill(label: impl Into<SharedString>, tone: Hsla, cx: &App) -
         .child(div().size(px(6.)).rounded_full().bg(tone))
         .child(
             div()
-                .debug_selector(move || selector.clone())
-                .child(label.clone()),
+                .debug_selector(move || format!("board-pill-label-{debug_label}"))
+                .child(label),
         )
         .into_any_element()
 }

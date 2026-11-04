@@ -709,6 +709,8 @@ impl Board {
                     .child(
                         h_flex()
                             .gap(px(5.))
+                            .text_size(px(12.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .child(row_bits::ci_dot(checks, cx))
                             .child(format!("PR {pr}")),
                     )
