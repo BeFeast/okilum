@@ -30,12 +30,18 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
             b.local_cards.accept(Ok(model::read(area).unwrap()), now());
             b
         });
-        Root::new(board, window, cx)
+        Root::new(cx.new(|cx| peek::Harness::new(board, cx)), window, cx)
     });
     visual.simulate_resize(size(px(1200.), px(1000.)));
     visual.run_until_parked();
-    let board = root.read_with(visual, |root, _| {
-        root.view().clone().downcast::<Board>().unwrap()
+    let board = root.read_with(visual, |root, _cx| {
+        root.view()
+            .clone()
+            .downcast::<peek::Harness>()
+            .unwrap()
+            .read(_cx)
+            .board
+            .clone()
     });
     (board, visual)
 }

@@ -59,9 +59,9 @@ place. Note opens still use the Reader's ordinary revision/save/refusal path;
 only a successfully accepted Markdown document hides the Board.
 
 The stage is an explicit selection, independent of whether issues are open or
-closed. An issue card shows its expected result and executor, expands in place,
-and opens explicit issue/PR/build links or related area notes. Escape closes its
-details. The horizontal lane scroll is local to the center.
+closed. An issue card shows its expected result and executor. Its right-hand issue
+panel opens explicit issue/PR/build links or related area notes. Escape closes
+the issue panel. The horizontal lane scroll is local to the center.
 
 **Discuss with Manager · draft** appends a separate block to the existing native
 Manager composer. It preserves existing text and uses an atomic input insertion,
@@ -167,15 +167,50 @@ CI state stays grey. A live dot requires an active run. Active/waiting agents
 with no update for four hours show amber «⚠ долго», with the existing tooltip
 identifying the age as time since thread update, not measured run duration.
 
-Up/Down selects visible issues and skips group headings. Enter and row click
-open the existing card actions in a bounded disclosure below the list; Escape
-closes it while retaining selection. Board → related note → Board retains the
-selection, shared filters, disclosure and list scroll. Existing local cards,
+Up/Down selects visible issues and skips group headings. Space, Enter and row
+click open the issue panel described below. With the panel open, Up/Down updates
+its issue. Board → related note → Board retains selection, shared filters and
+list scroll. Existing local cards,
 invalid annotations, attention, delivery and project-note context remain reachable.
 No new read, dispatch, membership, stage rule or delivery claim is introduced.
 Native tests cover defaults, independent persisted project choices, collapse,
 240-row viewport work, keyboard reachability and actual Reader note round trips.
-The sibling peek/attention/compact-card/ordering issues remain independent.
+The sibling attention/compact-card/ordering issues remain independent.
+
+
+### Issue panel (#2531)
+
+Clicking a List row or kanban card, or Space/Enter on the selection, opens the
+right dock and selects **Задача**, beside **Manager**, using gpui-kit tabs.
+Switching tabs retains the selected issue and the existing Manager entity,
+composer draft and Undo state. Escape or **Esc закрыть** removes the issue tab
+and returns to Manager without changing its draft. Project/source changes close
+the panel and invalidate outstanding comment results. Local task details and
+Edit/Discuss are available in the same dock, without inventing execution facts.
+
+The panel uses theme tokens, a 17 px semibold title with a 23 px line box, source
+labels, the bound live agent/avatar and exactly matched cached current step.
+The source-age label identifies time since update; amber after four hours is
+not a measured run duration. Stage, all linked PRs with their actual state/title
+and CI indicator, related/stage notes, expected result, description, build links
+and existing delivery details remain reachable. **В beta** lists exact builds
+only from ready Beta rows in the existing delivery projection; otherwise it
+says **ещё нет**. Merge alone never claims delivery.
+
+**Что было** combines source creation/PR timestamps, verified Beta publication
+and a bounded comments excerpt. Opening an issue makes at most one extra public
+Forgejo request (first 12 comments, 256 KiB, 10 seconds, no redirects or tokens).
+It runs off the UI thread, with at most one request in flight; rapid selection
+changes coalesce to the latest issue. Project, repository, issue and generation
+must all match before publication. No per-frame request or all-issue detail read
+is added. Missing history and comment errors remain visible; full history opens
+through **Issue ↗**. The timeline shows at most 16 source events.
+
+**Обсудить с Manager** switches to Manager and uses the existing protected
+append-to-draft path, with Undo. It never sends or creates a thread. Issue, PR,
+agent, note and build actions keep their existing destinations. Native GPUI
+regressions exercise click/Space, tabs, arrows, Escape/draft retention, stale
+owner/generation rejection, and real Reader Discuss without a send.
 
 ### Shared filter bar (#2532)
 
@@ -210,8 +245,8 @@ introduced. This header supersedes the historical single executor control below.
 
 The compact card contains its issue title/number, a small agent tag and one
 existing stage-state line. The expected result and issue/PR/build/note/Discuss
-actions are inside the expanded card. Related-note navigation retains the same one-action return to Board. Escape
-still collapses the card. Refresh is automatic and silent.
+actions are in the issue panel. Related-note navigation retains the same one-action
+return to Board. Escape closes the issue panel. Refresh is automatic and silent.
 There is no new source poll, execution inference, delivery claim or status mapping.
 The human-attention lane, item/stage colours and richer live-agent presentation
 remain separate product work; this slice adds none of them.
@@ -225,7 +260,7 @@ danger, important, muted, information, warning and success roles supply the pink
 violet, slate and stage colours in both appearance modes. Native Lucide icons and
 a steady indicator replace browser effects. Cards show the explicit expected
 outcome, agent and state, and at most one PR link badge; a PR link never claims
-that its CI passed or it merged. The expanded card retains notes and draft actions.
+that its CI passed or it merged. The issue panel retains notes and draft actions.
 
 Nonempty and explicitly expanded columns have zero minimum width and equal
 flexible bases. Once card sources have completed a successful read, empty columns

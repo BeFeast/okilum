@@ -4,7 +4,7 @@ use ::core::prelude::v1::test;
 use std::{cell::RefCell, rc::Rc};
 
 #[gpui::test]
-fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_close_revokes(
+fn peek_2531_real_reader_opens_collapsed_dock_and_preserves_manager_draft_without_send(
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
@@ -82,6 +82,7 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
                     .issues
                     .iter()
                     .map(|scope| okilum_t3::board::Issue {
+                        created_at: String::new(),
                         number: scope.number,
                         title: "Exact Board context".into(),
                         updated_at: String::new(),
@@ -113,6 +114,26 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
         .expect("positive control: real Board card mounted");
     visual.simulate_click(expand.center(), Modifiers::default());
     visual.run_until_parked();
+    assert!(visual.debug_bounds("board-peek-content").is_some());
+    assert!(visual.debug_bounds("board-peek-tab").is_some());
+    manager.update(visual, |view, cx| {
+        assert_eq!(
+            view.composer.read(cx).typed_source_text(cx),
+            "Keep my draft\n"
+        )
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-peek-dock").is_none());
+    manager.update(visual, |view, cx| {
+        assert_eq!(
+            view.composer.read(cx).typed_source_text(cx),
+            "Keep my draft\n"
+        )
+    });
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-peek-content").is_some());
     let contexts = Rc::new(RefCell::new(Vec::new()));
     let observed = contexts.clone();
     let board = reader.read_with(visual, |reader, _| {
@@ -132,6 +153,8 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
     visual.simulate_click(discuss.center(), Modifiers::default());
     visual.run_until_parked();
     assert_eq!(contexts.borrow().len(), 1);
+    assert!(visual.debug_bounds("board-peek-content").is_none());
+    board.read_with(visual, |b, _| assert!(b.peek.manager_tab));
     let expected = format!("Keep my draft\n\n\n---\n{}", contexts.borrow()[0]);
     let target = manager.update(visual, |view, cx| {
         assert_eq!(

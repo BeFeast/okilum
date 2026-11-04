@@ -14,6 +14,7 @@ mod live;
 mod local;
 mod manage;
 mod notes;
+mod peek;
 mod row_bits;
 
 type IssueReader =
@@ -53,11 +54,13 @@ pub(crate) struct Board {
     next_stage_open: bool,
     columns: columns::State,
     list: list::State,
+    peek: peek::State,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
     Note(String),
     Discuss(String),
+    Peek,
 }
 impl EventEmitter<Action> for Board {}
 impl Focusable for Board {
@@ -175,6 +178,13 @@ impl Board {
             next_stage_open: false,
             columns: columns::State::default(),
             list,
+            peek: {
+                #[allow(unused_mut)]
+                let mut state = peek::State::default();
+                #[cfg(test)]
+                state.set_test_reader();
+                state
+            },
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -209,6 +219,7 @@ impl Board {
                                     this.snapshot.invalidate();
                                     this.snapshot.forgejo = Source::default();
                                     this.selected = None;
+                                    this.close_peek(cx);
                                     this.delivery = Default::default();
                                     this.delivery_loading = false;
                                     this.project_notes = Default::default();
@@ -294,6 +305,9 @@ impl Board {
             return;
         }
         self.active = visible;
+        if !visible {
+            self.close_peek(cx);
+        }
         self.local_loading = false;
         self.local_generation = self.local_generation.wrapping_add(1);
         self.delivery_loading = false;
@@ -714,7 +728,7 @@ impl Board {
                     .child(origin),
             );
         }
-        let mut card = v_flex()
+        let card = v_flex()
             .id(("board-card", number as usize))
             .debug_selector(move || format!("board-card-{number}"))
             .w_full()
@@ -761,10 +775,11 @@ impl Board {
                                     .child(scope.expected.clone()),
                             ),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.selected_local = None;
-                        this.selected = (this.selected != Some(number)).then_some(number);
-                        cx.notify();
+                        this.selected = Some(number);
+                        this.focus.focus(window, cx);
+                        this.open_peek(window, cx);
                     })),
             )
             .child(if let Some(agent) = &agent {
@@ -908,84 +923,6 @@ impl Board {
                     .child(problem),
             );
         }
-        if self.selected == Some(number) {
-            if self.delivery.enabled() {
-                card = card.child(self.delivery_details(scope, binding, cx));
-            }
-            let url = binding.issue_url(number);
-            let context = self.context(scope);
-            let mut actions = h_flex()
-                .px_2()
-                .pb_2()
-                .gap_1()
-                .flex_wrap()
-                .child(
-                    Button::new(("board-open-issue", number as usize))
-                        .ghost()
-                        .small()
-                        .label("Issue")
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                )
-                .child(
-                    Button::new(("board-discuss", number as usize))
-                        .debug_selector(move || format!("board-discuss-{number}"))
-                        .ghost()
-                        .small()
-                        .label("Discuss")
-                        .tooltip("Discuss with Manager · draft")
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(Action::Discuss(context.clone()))
-                        })),
-                );
-            for pr in &scope.pull_requests {
-                let url = binding.pull_url(*pr);
-                actions = actions.child(
-                    Button::new(("board-pr", *pr as usize))
-                        .ghost()
-                        .small()
-                        .label(format!("PR #{pr}"))
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                );
-            }
-            for (index, build) in scope.builds.iter().enumerate() {
-                let url = build.url.clone();
-                actions = actions.child(
-                    Button::new((SharedString::from(format!("board-build-{number}")), index))
-                        .ghost()
-                        .small()
-                        .label("Build")
-                        .tooltip(build.label.clone())
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                );
-            }
-            for (index, note) in scope.notes.iter().enumerate() {
-                if note == &binding.stage_note {
-                    continue;
-                }
-                let note = note.clone();
-                actions = actions.child(
-                    Button::new((SharedString::from(format!("board-note-{number}")), index))
-                        .ghost()
-                        .small()
-                        .debug_selector(move || format!("board-note-{number}-{index}"))
-                        .label(if okilum_t3::board::https_link(&note) {
-                            "Link"
-                        } else {
-                            "Note"
-                        })
-                        .tooltip(note.clone())
-                        .on_click(cx.listener(move |this, _, _, cx| this.note(&note, cx))),
-                );
-            }
-            card = card.child(actions);
-            if let Some(issue) = issue {
-                card = card.child(
-                    div()
-                        .text_size(px(12.))
-                        .child(issue.body.chars().take(1800).collect::<String>()),
-                );
-            }
-        }
         card.into_any_element()
     }
     fn note(&mut self, target: &str, cx: &mut Context<Self>) {
@@ -1034,14 +971,14 @@ impl Render for Board {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.filter_key(event, window, cx);
             }))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    let issue = this.selected.take().is_some();
-                    let local = this.selected_local.take().is_some();
-                    if issue || local {
-                        cx.stop_propagation();
-                        cx.notify();
-                    }
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.peek_key(event, window, cx);
+                if matches!(event.keystroke.key.as_str(), "space" | "enter")
+                    && this.focus.is_focused(window)
+                {
+                    this.open_peek(window, cx);
+                    cx.stop_propagation();
+
                 }
             }));
         let Some(_) = self.binding.as_ref() else {
@@ -1381,6 +1318,10 @@ impl Reader {
         cx.subscribe_in(&board, window, move |this, board, action: &Action, window, cx| {
             if this.project_navigation.active.as_ref().map(|p| &p.folder) != Some(&owner) { return; }
             match action {
+                Action::Peek => {
+                    this.panels.open(reader_layout::Panel::Backlinks);
+                    cx.notify();
+                }
                 Action::Note(note) => {
                     let target = owner.join(note);
                     let opened = (|| -> anyhow::Result<String> {

@@ -162,6 +162,10 @@ fn discovered_merge_enters_can_try_only_with_existing_exact_build_delivery_proof
     binding.issues.clear();
     let mut merged: Issue = serde_json::from_value(issue(42, "closed")).unwrap();
     merged.live_pulls.push(Pull {
+        title: String::new(),
+        state: String::new(),
+        created_at: String::new(),
+        updated_at: String::new(),
         number: 7,
         merged_at: Some(86400),
         checks: String::new(),
