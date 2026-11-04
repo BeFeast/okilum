@@ -132,7 +132,11 @@ impl SyncSettings {
             controller: None,
             snapshot: None,
             inspected: None,
-            name: cx.new(|cx| InputState::new(window, cx).placeholder("This computer’s name")),
+            name: cx.new(|cx| {
+                let mut input = InputState::new(window, cx).placeholder("This computer’s name");
+                input.set_value(default_computer_name(), window, cx);
+                input
+            }),
             invitation: cx.new(|cx| InputState::new(window, cx).placeholder("Paste pairing URL")),
             selected_peer: None,
             busy: false,
@@ -494,6 +498,11 @@ fn destination_name(label: &str) -> String {
         name.into()
     }
 }
+fn default_computer_name() -> String {
+    sysinfo::System::host_name()
+        .filter(|name| direct::validate_name(name).is_ok())
+        .unwrap_or_else(|| "This computer".into())
+}
 fn sync_pairing_in_progress(snapshot: &Snapshot) -> bool {
     snapshot.offer_url.is_some() || snapshot.pending.is_some()
 }
@@ -605,6 +614,7 @@ fn perform_with_locations(
     ticket: &Ticket,
     resolve: impl FnOnce() -> anyhow::Result<(PathBuf, Vec<PathBuf>)>,
 ) -> anyhow::Result<Output> {
+    use anyhow::Context as _;
     ticket.run(|| {
         anyhow::ensure!(
             okilum_t3::NetworkAccess::current().allowed(),
@@ -616,7 +626,7 @@ fn perform_with_locations(
             Operation::Redeem(url, name) => direct::validate_pairing_input(url, name)?,
             _ => {}
         }
-        let (state, configs) = resolve()?;
+        let (state, configs) = resolve().context("resolve local Sync state and connections")?;
         // The old desktop stored service enrollment alongside `direct`, not
         // inside it. Do not bootstrap a second daemon over that saved setup.
         #[cfg(target_os = "linux")]
@@ -625,6 +635,8 @@ fn perform_with_locations(
         let complete_configs = configs.clone();
         #[cfg(target_os = "linux")]
         let mut runtime = linux_runtime::inspect(&state, &configs)?;
+        #[cfg(target_os = "linux")]
+        let operation = linux_runtime::route_share(operation, &runtime)?;
         #[cfg(target_os = "linux")]
         let configs = runtime.configs.clone();
         ticket.check()?;
@@ -644,7 +656,10 @@ fn perform_with_locations(
         {
             if matches!(
                 &operation,
-                Operation::EnterPairing | Operation::Begin(_) | Operation::Redeem(_, _)
+                Operation::EnterPairing
+                    | Operation::Begin(_)
+                    | Operation::Redeem(_, _)
+                    | Operation::Share(_)
             ) {
                 // Pairing is explicit Sync consent. Reuse the bootstrap's complete
                 // inventory and packaged-runtime guards, including its final rescan.
@@ -747,7 +762,13 @@ fn perform_with_locations(
                     .parent()
                     .ok_or_else(|| anyhow::anyhow!("Sync state parent unavailable"))?
                     .join("managed/prepared");
-                controller.share_vault(&prepared, &path)?
+                controller.share_vault(&prepared, &path).with_context(|| {
+                    format!(
+                        "share vault {} using {}",
+                        path.display(),
+                        prepared.display()
+                    )
+                })?
             }
             Operation::Begin(name) => controller.begin_pairing(&name)?,
             Operation::Redeem(url, name) => controller.redeem(&url, &name)?,
