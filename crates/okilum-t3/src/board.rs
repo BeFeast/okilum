@@ -12,6 +12,7 @@ pub mod delivery;
 pub mod live;
 pub mod local;
 pub mod manage;
+pub mod order;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -450,6 +451,9 @@ fn validate_scope(scope: &Scope) -> Result<()> {
 pub struct Issue {
     pub number: u64,
     pub title: String,
+    /// Source timestamp, retained for presentation; never used to infer a stage.
+    #[serde(default)]
+    pub updated_at: String,
     pub state: String,
     #[serde(default)]
     pub body: String,

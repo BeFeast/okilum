@@ -10,7 +10,7 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
             let mut board =
-                Board::with_reader(area.into(), okilum_t3::board::live::read, window, cx);
+                Board::with_kanban_reader(area.into(), okilum_t3::board::live::read, window, cx);
             board.binding = Some(Binding::parse("version: 1\ntitle: Empty\nissues: []\n").unwrap());
             board.local_loading = true;
             board
@@ -165,7 +165,8 @@ fn empty_column_can_be_expanded_from_the_keyboard(cx: &mut TestAppContext) {
     loaded(&board, visual);
     board.update_in(visual, |board, window, cx| board.focus.focus(window, cx));
     visual.run_until_parked();
-    visual.simulate_keystrokes("tab");
+    // The new List/Board control precedes the first empty-column control.
+    visual.simulate_keystrokes("tab tab tab");
     let keystroke = gpui::Keystroke::parse("enter").unwrap();
     visual.simulate_event(gpui::KeyDownEvent {
         keystroke: keystroke.clone(),

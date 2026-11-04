@@ -101,6 +101,7 @@ impl Board {
                             return;
                         }
                         let previous = this.local_cards.error.clone();
+                        this.list.invalidate();
                         this.local_cards.accept(result, now());
                         this.local_loading = false;
                         if this.local_cards.error != previous {
@@ -217,6 +218,7 @@ impl Board {
                                 Ok(session) => {
                                     this.local_generation = this.local_generation.wrapping_add(1);
                                     this.local_loading = false;
+                                    this.list.invalidate();
                                     this.local_cards
                                         .accept(Ok(session.projection.clone()), now());
                                     editor.session = session;

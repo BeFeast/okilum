@@ -49,6 +49,7 @@ impl Board {
                             return;
                         }
                         let old = this.delivery.problems(now(), binding_refresh(this));
+                        this.list.invalidate();
                         this.delivery.accept(update, now());
                         this.delivery_loading = false;
                         let current = this.delivery.problems(now(), binding_refresh(this));

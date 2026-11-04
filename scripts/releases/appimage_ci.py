@@ -159,7 +159,8 @@ def main(directory):
                     assert publish(store, 9002) == descriptor
                 assert before == {k: store.call('GET', k) for k in store.writes}
                 # A client crossing the moving descriptor/signature pair fails closed.
-                old = b'{"build":5000}\n'
+                # Real beta descriptors always carry their source (#2536 compares it).
+                old = b'{"build":5000,"source":"' + b'0' * 40 + b'"}\n'
                 store.put(beta + '/latest.json', old)
                 store.fail = beta + '/latest.json.sig'
                 rejected(lambda: publish(store), (RuntimeError,))

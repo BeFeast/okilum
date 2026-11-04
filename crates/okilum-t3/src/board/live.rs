@@ -15,7 +15,7 @@ impl Pull {
             .is_some_and(|merged| at.checked_sub(merged).is_some_and(|age| age < 86400))
     }
 }
-fn timestamp(value: &str) -> Option<u64> {
+pub(super) fn timestamp(value: &str) -> Option<u64> {
     chrono::DateTime::parse_from_rfc3339(value)
         .ok()
         .and_then(|date| u64::try_from(date.timestamp()).ok())
