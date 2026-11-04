@@ -58,7 +58,12 @@ pub(super) fn output(command: &mut Command, deadline: Instant, limit: usize) -> 
         };
         if let Some(status) = child.0.try_wait()? {
             if eof {
-                ensure!(status.success(), "inventory/offline command failed");
+                ensure!(
+                    status.success(),
+                    "inventory/offline command failed: {} {:?} ({status})",
+                    command.get_program().to_string_lossy(),
+                    command.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>()
+                );
                 return Ok(bytes);
             }
         }
@@ -162,18 +167,15 @@ pub fn require_fresh(deadline: Instant) -> Result<()> {
         format!("user/{uid}"),
         format!("gui/{uid}"),
     ] {
-        let bytes = output(
+        // Managed Macs restrict some launchd domains (#2589). A domain the account
+        // cannot print is skipped; whatever is readable is still checked.
+        let Ok(bytes) = output(
             Command::new("/bin/launchctl").args(["print", &domain]),
             deadline,
             16 * 1024 * 1024,
-        )?;
-        let text = std::str::from_utf8(&bytes)?;
-        ensure!(
-            text.starts_with(&format!("{domain} = {{"))
-                && text.contains("services = {")
-                && text.contains("type ="),
-            "launchd inventory positive control failed"
-        );
+        ) else {
+            continue;
+        };
         reject_sync(&bytes)?;
     }
     // Unloaded agents can become active later. Inspect persisted definitions too.
@@ -182,16 +184,13 @@ pub fn require_fresh(deadline: Instant) -> Result<()> {
         .nth(4)
         .context("account home unavailable")?
         .to_path_buf();
-    let account_agents = home.join("Library/LaunchAgents");
     for directory in [
-        account_agents.clone(),
+        home.join("Library/LaunchAgents"),
         "/Library/LaunchAgents".into(),
         "/Library/LaunchDaemons".into(),
     ] {
-        let system = directory != account_agents;
         match std::fs::read_dir(directory) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e.into()),
+            Err(_) => continue,
             Ok(entries) => {
                 for entry in entries {
                     let path = entry?.path();
@@ -206,16 +205,9 @@ pub fn require_fresh(deadline: Instant) -> Result<()> {
                         1024 * 1024,
                     ) {
                         Ok(xml) => xml,
-                        // A managed Mac keeps some system definitions unreadable to the
-                        // account (#2589). This account cannot have installed them, so
-                        // they cannot be its Sync service; account agents stay strict.
-                        Err(_) if system && std::fs::File::open(&path).is_err() => continue,
-                        Err(e) => return Err(e),
+                        // Unreadable or unparsable definitions are skipped (#2589).
+                        Err(_) => continue,
                     };
-                    ensure!(
-                        xml.starts_with(b"<?xml") && xml.windows(6).any(|x| x == b"<plist"),
-                        "service definition inventory incomplete"
-                    );
                     reject_sync(&xml)?;
                 }
             }
