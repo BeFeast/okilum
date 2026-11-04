@@ -231,7 +231,7 @@ impl Board {
                 groups[self.delivery_column(scope) as usize].push(Row::Issue(i));
             }
         }
-        // #2539 order is shared by both presentations and runs only when this
+        // #2535 order is shared by both presentations and runs only when this
         // publication is rebuilt. Local cards and diagnostics retain their order.
         for group in &mut groups {
             group.sort_by(|a, b| {

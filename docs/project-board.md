@@ -196,7 +196,7 @@ border and hover a subtle theme surface. Shared text primitives reserve full
 Queue builds just the first eight 30 px mini rows. **＋ ещё N · открыть списком**
 switches to List, expands Queue, scrolls to its heading and saves that view choice.
 Local cards and annotation problems participate in the same count and remain
-reachable. Both views apply the shared #2539 priority order at publication time;
+reachable. Both views apply the shared #2535 priority order at publication time;
 Queue retains the «от Олега сначала» hint. The source timestamp stays lossless for
 List age labels while ordering compares its parsed time. Clicking a card opens the existing bounded disclosure below the lanes,
 with outcome, links, notes and draft-only Discuss; Escape closes it. Native GPUI
