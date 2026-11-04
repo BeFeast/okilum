@@ -19,6 +19,7 @@ An optional owner-authored `ops/board-context.toml` sits beside the Board manife
 version = 1
 notes = ["decisions/choice.md", "scenarios/try.md"]
 next_stage = "planning/next.md" # optional; never included as an attention item
+questions_note = "ops/questions.md" # optional; explicit owner-question list
 ```
 
 An absent file quietly disables this projection; `notes = []` is valid. This
@@ -29,6 +30,42 @@ Paths must be unique, project-relative Markdown notes, including through symlink
 The reader bounds the list to 64 notes, each read to 256 KiB, and a refresh to
 2 MiB. File work uses the Board's existing off-thread, visible-only refresh and
 owner/generation guard.
+
+## Waiting for you (#2533)
+
+The optional `questions_note` names one project-relative Markdown note; it is never
+inferred from a project name or scanned from the vault. The existing context reader
+loads it within the same path, symlink and byte budgets and visible-only refresh.
+Only top-level `- [owner] question — options — consequence` bullets in the exact
+`## Open` section become **Решить** rows. Text stops at the first ` — `; later
+sections, nested bullets and fenced examples are excluded. Missing/malformed
+sections are source errors; a valid empty Open section supplies zero questions.
+**Ответить** opens the original note through the ordinary Reader route.
+
+The cached **Ждёт тебя** projection combines these questions, unresolved existing
+context decisions/attention/blockers, existing exact-build try notes (**Попробуй**),
+and fresh reports (**Новое**). Try rows retain the existing delivery proof rules;
+a confirmed row names its platform/channel/build, while unconfirmed evidence says
+Try unavailable. An optional `board_context.video` is a public HTTPS video link.
+The row's primary action opens its scenario note; the video is a separate link.
+The original context details and draft-only Discuss remain explicitly expandable.
+
+New reports are open `from-tester` or `from-oleg` issues created less than 24 hours
+ago, without comments from another account than the filing bot. The existing
+Forgejo reader checks all comment pages only for recent labelled candidates,
+using its existing deadline/cache/bounds; it adds no poller. Missing identity,
+count mismatches and failed/incomplete comment reads retain the previous complete
+Forgejo snapshot. A source failure freezes report expiry at the last successful
+issue read. **Разобрать** opens the explicit issue URL. Source/owner and relative
+time accompany every timestamped row; note times are the file modification time,
+confirmed build times use publication time, and reports use creation time.
+
+The shell recomputes this projection when source snapshots or binding change.
+Board shows at most four cards initially, with explicit paging for the rest.
+An empty projection has no waiting heading or strip. Context source failures show
+one quiet line, retaining successful source values; a failed first read never
+masquerades as an empty waiting group. Next stage remains independently collapsed.
+No note, issue, stage, Manager message or execution is changed by the projection.
 
 ## Attention and decision notes
 

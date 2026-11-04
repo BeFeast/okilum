@@ -4,6 +4,7 @@ use super::*;
 #[cfg(feature = "project-ui-harness")]
 mod fixture;
 mod preferences;
+mod waiting;
 pub(super) use preferences::Mode;
 use preferences::Preferences;
 
@@ -26,6 +27,8 @@ pub(super) fn label(stage: Column) -> &'static str {
 }
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Row {
+    WaitingGroup,
+    Waiting(usize),
     Group(Column),
     Issue(usize),
     Local(usize),
@@ -38,6 +41,7 @@ pub(super) struct Prepared {
     pub groups: [Arc<[Row]>; 5],
     pub projection: Arc<filters::Projection>,
     collapsed: [bool; 5],
+    waiting_collapsed: bool,
     pub local_indices: std::collections::BTreeMap<String, usize>,
     pub source_problem: Option<String>,
     pub sources_ready: bool,
@@ -143,6 +147,7 @@ impl Board {
         if let Some(prepared) = &self.list.prepared {
             if Arc::ptr_eq(&prepared.projection, &projection)
                 && prepared.collapsed == self.list.preferences.collapsed
+                && prepared.waiting_collapsed == self.list.preferences.waiting_collapsed
             {
                 return prepared.clone();
             }
@@ -177,6 +182,12 @@ impl Board {
         let counts = projection.counts;
         let kanban_groups = groups.clone().map(Arc::from);
         let mut rows = Vec::new();
+        if self.waiting.visible() {
+            rows.push(Row::WaitingGroup);
+            if !self.list.preferences.waiting_collapsed {
+                rows.extend((0..self.waiting.items.len()).map(Row::Waiting));
+            }
+        }
         for stage in STAGES {
             rows.push(Row::Group(stage));
             if !self.list.preferences.collapsed[stage as usize] {
@@ -216,6 +227,7 @@ impl Board {
             groups: kanban_groups,
             projection: projection.clone(),
             collapsed: self.list.preferences.collapsed,
+            waiting_collapsed: self.list.preferences.waiting_collapsed,
             local_indices: projection
                 .locals
                 .iter()
@@ -357,12 +369,8 @@ impl Board {
         if let Some(attention) = self.attention(&prepared.binding, cx) {
             root = root.child(div().px_4().py_2().child(attention));
         }
-        if self.delivery.enabled() {
-            root = root.child(
-                div()
-                    .px_4()
-                    .child(self.delivery_summary(&prepared.binding, cx)),
-            );
+        if let Some(delivery) = self.delivery_summary(&prepared.binding, cx) {
+            root = root.child(div().px_4().child(delivery));
         }
         if let Some(notes) = self.render_project_notes(&prepared.binding, cx) {
             root = root.child(div().px_4().child(notes));
@@ -381,6 +389,7 @@ impl Board {
             && (!self.local_loading || self.local_cards.last_success.is_some())
             && (!self.snapshot.busy() || self.snapshot.forgejo.last_success.is_some())
             && prepared.counts.iter().all(|count| *count == 0)
+            && !self.waiting.visible()
         {
             return root
                 .child(
@@ -392,7 +401,10 @@ impl Board {
                 )
                 .into_any_element();
         }
-        if prepared.counts.iter().all(|count| *count == 0) && prepared.sources_ready {
+        if prepared.counts.iter().all(|count| *count == 0)
+            && prepared.sources_ready
+            && !self.waiting.visible()
+        {
             root = root.child(
                 div()
                     .debug_selector(|| "board-empty-state".into())
@@ -464,7 +476,13 @@ impl Board {
                 );
             }
         }
-        let problem = source_problem("Forgejo", &self.snapshot.forgejo, 30, now());
+        let problem = self.waiting.problem.clone().or_else(|| {
+            problem_line(
+                source_problem("Forgejo", &self.snapshot.forgejo, 30, now())
+                    .into_iter()
+                    .collect(),
+            )
+        });
         root.child(
             div()
                 .debug_selector(|| "board-live-status".into())
@@ -475,13 +493,21 @@ impl Board {
                 .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                 .text_color(p.text_muted)
                 .truncate()
-                .child(problem_line(problem.into_iter().collect()).unwrap_or_default()),
+                .child(
+                    div()
+                        .when(self.waiting.problem.is_some(), |line| {
+                            line.debug_selector(|| "board-waiting-problem".into())
+                        })
+                        .child(problem.unwrap_or_default()),
+                ),
         )
         .into_any_element()
     }
     fn list_row(&self, row: Row, prepared: &Prepared, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
         match row {
+            Row::WaitingGroup => self.waiting_list_group(cx),
+            Row::Waiting(index) => self.waiting_list_row(index, cx),
             Row::Group(stage) => {
                 let count = prepared.counts[stage as usize];
                 let collapsed = self.list.preferences.collapsed[stage as usize];

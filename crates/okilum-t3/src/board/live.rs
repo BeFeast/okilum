@@ -250,6 +250,40 @@ fn read_with(
             "Conflicting issue pagination; previous Board retained"
         );
     }
+    // The same deadline/cache/refresh owns these bounded reads. Unknown or
+    // incomplete comments fail the snapshot rather than inventing "unanswered".
+    for issue in issues
+        .values_mut()
+        .filter(|issue| waiting::recent_report(issue, at))
+    {
+        let count = issue
+            .report
+            .comments
+            .context("Fresh report has no comment count")?;
+        if count == 0 {
+            continue;
+        }
+        let comments = pages(&format!("issues/{}/comments?", issue.number), None, fetch)?;
+        ensure!(
+            comments.len() as u64 == count,
+            "Report comments changed during refresh"
+        );
+        let filer = issue
+            .report
+            .user
+            .as_ref()
+            .and_then(|user| user.id)
+            .context("Fresh report has no filing identity")?;
+        ensure!(
+            comments
+                .iter()
+                .all(|comment| comment["user"]["id"].as_u64().is_some_and(|id| id > 0)),
+            "Report comment has no author identity"
+        );
+        issue.report.filing_bot_only = comments
+            .iter()
+            .all(|comment| comment["user"]["id"].as_u64() == Some(filer));
+    }
     for scope in &binding.issues {
         if (scope.pinned || scope.stage.is_some()) && !issues.contains_key(&scope.number) {
             let issue: Issue = serde_json::from_value(fetch(&format!("issues/{}", scope.number))?)?;

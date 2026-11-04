@@ -410,6 +410,9 @@ fn open_mounted_header(state: PathBuf, gateway: Arc<Fake>, cx: &mut App) {
 
 #[cfg(feature = "project-ui-harness")]
 pub(super) fn open(cx: &mut App) -> bool {
+    if board::waiting::fixture::open(cx) {
+        return true;
+    }
     if board::fixture::open(cx) {
         return true;
     }

@@ -151,7 +151,7 @@ control retains the existing kanban as an explicit choice. View and group
 collapse preferences are saved per canonical project path in app-owned state,
 outside the vault and the disposable index.
 
-The list groups the unchanged Snapshot in this order: В работе, Проверки,
+After the optional Ждёт тебя group, the list groups the unchanged Snapshot in this order: В работе, Проверки,
 Можно попробовать, Очередь, Проверено. Queue and Verified start collapsed.
 All rows are 38 px high and use GPUI `uniform_list`; a cached projection and
 row index rebuild only on source publications, filter/search or collapse
@@ -166,17 +166,19 @@ CI state stays grey. A live dot requires an active run. Active/waiting agents
 with no update for four hours show amber «⚠ долго», with the existing tooltip
 identifying the age as time since thread update, not measured run duration.
 
-Up/Down selects visible issues and skips group headings. Enter and row click
+Up/Down selects visible issues and skips group headings and waiting rows. Enter and row click
 open the existing card actions in a bounded disclosure below the list; Escape
 closes it while retaining selection. Board → related note → Board retains the
 selection, shared filters, disclosure and list scroll. Existing local cards,
 invalid annotations, attention, delivery and project-note context remain reachable.
-No new read, dispatch, membership, stage rule or delivery claim is introduced.
+Switching presentation introduces no new read, dispatch, membership, stage rule or delivery claim.
 Native tests cover defaults, independent persisted project choices, collapse,
 240-row viewport work, keyboard reachability and actual Reader note round trips.
 The sibling peek and attention issues remain independent.
 
 ### Shared filter bar (#2532)
+
+Waiting rows remain visible independently of the stage chip and search filters.
 
 The native header places the shared chip bar immediately after Список / Доска
 and replaces the executor icon with one selected chip: Все,
@@ -246,6 +248,33 @@ pills and mini rows retain #2548's full font line boxes.
 
 No source poll, execution inference, membership/stage mapping or delivery claim
 is added by either presentation.
+
+### Waiting for you (#2533)
+
+The **Ждёт тебя** group (#2533) is the first group in the default List view;
+in Board view it is a strip above the columns. It contains Решить (explicit
+`questions_note` Open bullets and existing unresolved context decisions), Попробуй
+(existing exact-build scenario notes, build label and optional video), and Новое
+(unanswered from-tester/from-oleg reports younger than 24 hours). The optional
+`questions_note` belongs in `ops/board-context.toml`; see [the binding and rules](board-context.md#waiting-for-you-2533).
+List uses distinct fixed-height waiting rows: kind, text, source/owner, one action
+button, relative time when known, and an optional scenario video link. The group
+collapses independently of stages; its state is saved per project in app state,
+with older presentation preferences defaulting to expanded. Waiting rows share
+the virtualised stream with stages and keep full text line boxes for descenders.
+The Board strip renders up to four compact cards, with explicit paging.
+Empty means no group; source failure retains the last snapshot and shows one quiet
+line. Projection work runs on snapshot changes and reuses the existing refresh,
+not a new per-frame scan or poller. Every waiting publication invalidates the
+cached List row index; repaint and scrolling reuse it. A failed first source shows
+the quiet status line without an empty group.
+The delivery summary in either view and expanded cards omits tracks without a
+build, hides platforms/channels with no data, and disappears if no build exists.
+Last-known builds and their source diagnostics remain visible on refresh failure.
+If a failed delivery source has no last-known build, its diagnostic remains on
+the same quiet status line even though the table and empty waiting group are hidden.
+Item/stage colours and richer live-agent
+presentation retain their existing independent sources.
 
 ## Accepted look, push 1
 
