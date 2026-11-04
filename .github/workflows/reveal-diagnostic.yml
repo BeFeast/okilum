@@ -1,0 +1,81 @@
+name: reveal-diagnostic
+on:
+  push:
+    branches: ['agent-reveal-diagnostic/**']
+permissions:
+  contents: read
+jobs:
+  reveal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and trace unchanged reveal modules without desktop build
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, tempfile
+          root = pathlib.Path.cwd()
+          work = pathlib.Path(tempfile.mkdtemp(prefix='reveal-diagnostic-'))
+          source = (root / 'crates/okilum-shell/src/platform/reveal.rs').read_text()
+          source = source[source.index('#[cfg(target_os = "linux")]\nmod linux'):]
+          (work / 'lib.rs').write_text('mod platform { mod reveal {\n' + source + '\n}}')
+          (work / 'Cargo.toml').write_text('''[package]
+          name = "reveal-diagnostic"
+          version = "0.0.0"
+          edition = "2021"
+          [workspace]
+          [lib]
+          path = "lib.rs"
+          [dependencies]
+          anyhow = "=1.0.104"
+          async-io = "=2.6.0"
+          futures = "0.3"
+          zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
+          async-channel = "=2.5.0"
+          tempfile = "=3.27.0"
+          url = "=2.5.8"
+          uuid = { version = "=1.26.0", features = ["v4"] }
+          ''')
+          (work / 'Cargo.lock').write_bytes((root / 'Cargo.lock').read_bytes())
+          built = subprocess.run(['cargo', 'test', '--manifest-path', str(work / 'Cargo.toml'),
+                                  '--no-run', '--message-format=json'], check=True, text=True,
+                                 stdout=subprocess.PIPE)
+          binaries = [m['executable'] for line in built.stdout.splitlines()
+                      if (m := json.loads(line)).get('executable')]
+          assert len(binaries) == 1, binaries
+          subprocess.run(['python3', 'scripts/ci/test-group.py', '--kill-after', '1',
+                          'fixed-timeout-controls', '20', binaries[0], '--nocapture'], check=True)
+          fixed = binaries[0]
+          # Remove only the shared deadline implementation; keep both socket/
+          # handler controls intact. Each must now hang and be killed, proving
+          # that the measured paths actually depend on the product fix.
+          a = source.index('    pub(super) async fn deadline<T>(')
+          b = source.index('    pub(super) async fn connect(', a)
+          broken = source[:a] + """    pub(super) async fn deadline<T>(
+              _stage: &str, operation: impl Future<Output = anyhow::Result<T>>,
+          ) -> anyhow::Result<T> { operation.await }
+          """ + source[b:]
+          (work / 'lib.rs').write_text('mod platform { mod reveal {\n' + broken + '\n}}')
+          mutated = subprocess.run(['cargo', 'test', '--manifest-path', str(work / 'Cargo.toml'),
+                                    '--no-run', '--message-format=json'], check=True, text=True,
+                                   stdout=subprocess.PIPE)
+          binary = [m['executable'] for line in mutated.stdout.splitlines()
+                    if (m := json.loads(line)).get('executable')][0]
+          for test in ['silent_bus_authentication_times_out', 'show_items_times_out_when_manager_never_answers']:
+              control = subprocess.run(['python3', 'scripts/ci/test-group.py', '--kill-after', '1',
+                                        f'without-deadline-{test}', '10', binary, test, '--nocapture'])
+              assert control.returncode == 124, control.returncode
+          print('DEADLINE_MUTATION both_controls_hang_without_fix=confirmed')
+          # Restore and rebuild before the unchanged positive/no-manager stress.
+          (work / 'lib.rs').write_text('mod platform { mod reveal {\n' + source + '\n}}')
+          subprocess.run(['cargo', 'test', '--manifest-path', str(work / 'Cargo.toml'), '--no-run'], check=True)
+          for i in range(50):
+              subprocess.run(['python3', 'scripts/ci/test-group.py', '--kill-after', '1',
+                              f'unchanged-reveal-{i+1}', '10', binaries[0],
+                              'show_items_selects_the_item_and_fails_without_a_file_manager',
+                              '--nocapture'], check=True)
+          print('UNCHANGED_REVEAL runs=50 hangs=0')
+          PY
