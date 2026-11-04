@@ -4,6 +4,12 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+/// Document behavior is independent of tree/search visibility. The root contract
+/// participates in Rules, while remaining an ordinary visible vault entry.
+pub fn is_agent_document(path: &str) -> bool {
+    path == "_AgentContract.md" || crate::quick_open::is_agent_file(path)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Import {
     pub line: Range<usize>,
@@ -1217,5 +1223,18 @@ mod windows_policy_tests {
             windows_policy::ancestry(&root, &[(1, 2, 3)]),
             Err(Failure::Changed)
         );
+    }
+}
+
+#[cfg(test)]
+mod document_classification_tests {
+    #[test]
+    fn root_contract_is_an_agent_document_without_changing_browser_visibility() {
+        assert!(super::is_agent_document("_AgentContract.md"));
+        assert!(!super::is_agent_document("project/_AgentContract.md"));
+        assert!(super::is_agent_document("project/AGENTS.md"));
+        assert!(!super::is_agent_document("project/not-AGENTS.md"));
+        assert!(crate::quick_open::FileFilter::Default.admits("_AgentContract.md"));
+        assert!(!crate::quick_open::FileFilter::AgentFiles.admits("_AgentContract.md"));
     }
 }

@@ -29,7 +29,9 @@ gpui-kit/comrak patch trees, fetches public dependencies with the workspace lock
 then builds the Linux desktop/sync supervisor and runs the full `okilum-core`
 suite and `scripts/ci/linux-rust-tests.sh` with Cargo offline. These are the same
 Rust suites called by full Linux acceptance (`scripts/ci/check-linux.sh`); the
-nightly acceptance Python/packaging checks retain their existing scope. Both test shells raise their soft nofile limit via `test-nofile.sh`.
+nightly acceptance Python/packaging checks retain their existing scope. AppImage process fixtures run serially so a
+concurrent fork cannot temporarily retain another fixture's installation lock
+before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
 
 Rust downloads, verified generated vendor trees and `target/` are cached with the toolchain, dependency/manifests,

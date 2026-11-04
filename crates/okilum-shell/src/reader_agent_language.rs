@@ -8,7 +8,7 @@ pub const POLICY_PATH: &str = "_Schema/language.yaml";
 /// `status_text` plus range/hover decorations. Call on current source or policy
 /// changes, and discard a result if the editor revision changed before display.
 pub fn diagnostics(enabled: bool, path: &str, source: &str, policy: Result<&str, &str>) -> Report {
-    if !enabled || !okilum_core::quick_open::is_agent_file(path) {
+    if !enabled || !okilum_core::agent_imports::is_agent_document(path) {
         return Report {
             status: Status::NotApplicable,
             diagnostics: Vec::new(),
@@ -164,7 +164,7 @@ impl Controller {
             return false;
         }
         self.retire();
-        if !okilum_core::quick_open::is_agent_file(&snapshot.path) {
+        if !okilum_core::agent_imports::is_agent_document(&snapshot.path) {
             return true;
         }
         let cancelled = Arc::new(AtomicBool::new(false));
