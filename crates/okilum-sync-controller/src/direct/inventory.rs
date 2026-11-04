@@ -309,7 +309,9 @@ impl Controller {
             id,
             &peer.key,
             &peer.public,
-            Operation::Inspect { request },
+            Operation::Inspect {
+                request: Box::new(request),
+            },
         )? {
             Reply::Inspection { response } => Ok(response),
             Reply::Error { message } if message == PAUSED || message == NOT_PROMOTED => anyhow::bail!(message),
@@ -518,6 +520,7 @@ impl Controller {
         );
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn inspection_binding(
         &self,
         pair: Uuid,

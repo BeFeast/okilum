@@ -108,6 +108,7 @@ impl TypedDraft {
         true
     }
     /// Suggestions remain suggestions until explicitly accepted by the user.
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub fn accept_suggestion(&mut self, kind: MessageType) {
         if self.selection.is_none() {
             self.selection = Some(Metadata {
@@ -183,6 +184,7 @@ pub fn filtered_messages<'a>(
 /// Compare the full original snapshot before preparing a correction. Persistence
 /// and its revision check belong to the parent; the UI must not publish this
 /// result until that write succeeds. Duplicate identities are ambiguous.
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 pub fn corrected_message(
     messages: &[okilum_t3::message_types::Message],
     expected: &okilum_t3::message_types::Message,
@@ -315,8 +317,12 @@ mod tests {
                 author: Author::Manager,
             }),
         };
-        let corrected =
-            corrected_message(&[source.clone()], &source, MessageType::Decision).unwrap();
+        let corrected = corrected_message(
+            std::slice::from_ref(&source),
+            &source,
+            MessageType::Decision,
+        )
+        .unwrap();
         assert_eq!(corrected.key, source.key);
         assert_eq!(corrected.text, source.text);
         assert_eq!(
@@ -337,7 +343,9 @@ mod tests {
             metadata: None,
             ..source
         };
-        assert!(corrected_message(&[legacy.clone()], &legacy, MessageType::Bug).is_err());
+        assert!(
+            corrected_message(std::slice::from_ref(&legacy), &legacy, MessageType::Bug).is_err()
+        );
     }
     #[test]
     fn token_edit_undo_and_restore_preserve_source() {

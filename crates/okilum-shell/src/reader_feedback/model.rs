@@ -564,6 +564,7 @@ fn send_using_cancellable(
         send_to_cancellable(endpoint, report, cancel.clone())
     })
 }
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 fn send_to(endpoint: &str, report: &Report) -> Result<Receipt> {
     send_to_cancellable(endpoint, report, None)
 }
@@ -815,6 +816,7 @@ fn bounded(reader: impl Read, maximum: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 pub(super) fn log_tail(path: &Path) -> Result<String> {
     log_tail_with_limit(path, MAX_LOG)
 }

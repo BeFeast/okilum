@@ -89,10 +89,12 @@ impl Panel {
                 self.generation = self.worker.navigate(source);
             }
             Navigation::Back(loaded, context) => {
-                let context = context.unwrap_or_else(|| RemoteGuided {
-                    source: loaded.source.clone(),
-                    scope: Default::default(),
-                });
+                let context = context
+                    .map(|context| *context)
+                    .unwrap_or_else(|| RemoteGuided {
+                        source: loaded.source.clone(),
+                        scope: Default::default(),
+                    });
                 self.choose_navigation(context.source.clone(), context.scope, window, cx);
                 self.applied_definition = Some(context.source.clone());
                 self.requested_definition = Some(context.source);

@@ -44,6 +44,7 @@ impl DiscussHandoff {
 
     /// Synchronous native/supported bridge adapter. An asynchronous webview uses
     /// begin + acknowledge instead, retaining the exact request through its IPC.
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub fn deliver(
         &mut self,
         project: &str,

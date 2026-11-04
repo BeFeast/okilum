@@ -12,6 +12,7 @@
 //! Missing selection returns None; never translate it into held Enter on row 0.
 //! Existing `AgentSearch::{open,set_filter,filter,label,search}` signatures remain
 //! stable; provider integration adds the two snapshot types without replacing them.
+#![allow(dead_code, reason = "provider inventory not wired yet")]
 use okilum_core::{agent_search, quick_open::FileFilter, SearchHit, Searcher};
 
 /// Store in the search palette, independently of Tree's hidden-file setting and

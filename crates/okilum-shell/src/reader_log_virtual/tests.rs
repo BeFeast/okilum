@@ -70,7 +70,7 @@ fn virtual_start_reads_prepared_snapshots_and_preserves_results_on_failure_and_s
         let view = panel.view.as_ref().unwrap().read(cx);
         assert_eq!(view.source_count(), 2);
         assert_eq!(view.total(), 2);
-        assert_eq!(source_a(&view).raw(0).unwrap(), b"first");
+        assert_eq!(source_a(view).raw(0).unwrap(), b"first");
         assert!(view.source_locked);
         assert_eq!(
             panel
@@ -94,7 +94,7 @@ fn virtual_start_reads_prepared_snapshots_and_preserves_results_on_failure_and_s
             assert!(view._indexing.is_none());
             assert!(view.follow.is_none());
             assert_eq!(view.source_count(), 2);
-            assert_eq!(source_a(&view).raw(0).unwrap(), b"first");
+            assert_eq!(source_a(view).raw(0).unwrap(), b"first");
         });
         let id = view.entity_id();
         let generation = panel.generation;

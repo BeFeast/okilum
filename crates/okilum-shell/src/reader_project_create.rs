@@ -543,6 +543,7 @@ impl Reader {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn save_local_project_binding(
         &mut self,
         project: Project,
