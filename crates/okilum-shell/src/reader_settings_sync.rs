@@ -162,6 +162,8 @@ impl SyncSettings {
             _ => None,
         };
         let refresh = matches!(operation, Operation::Read);
+        let action = operation.action_name();
+        let trace = reader_diagnostics::trace(cx);
         if !refresh {
             self.scroll.set_offset(point(px(0.), px(0.)));
         }
@@ -256,6 +258,9 @@ impl SyncSettings {
                             this.publish(output, cx);
                         }
                         Err(error) => {
+                            if let Some(trace) = &trace {
+                                trace.event("sync_action_failed", failure_details(action, &error));
+                            }
                             if !refresh {
                                 this.awaiting_open = None;
                             }
@@ -537,12 +542,22 @@ fn ensure_private_sync_directory(path: &Path) -> anyhow::Result<()> {
         }
         Err(error) => return Err(error.into()),
     }
-    let metadata = std::fs::symlink_metadata(path)?;
+    let mut metadata = std::fs::symlink_metadata(path)?;
     anyhow::ensure!(
         metadata.is_dir()
             && !metadata.file_type().is_symlink()
-            && metadata.uid() == rustix::process::geteuid().as_raw()
-            && metadata.mode() & 0o077 == 0,
+            && metadata.uid() == rustix::process::geteuid().as_raw(),
+        "private Sync state parent required"
+    );
+    // The app's own state folder is normally created 0755 by the platform; an
+    // owner-held real directory is tightened instead of blocking Sync (#2589).
+    if metadata.mode() & 0o077 != 0 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        metadata = std::fs::symlink_metadata(path)?;
+    }
+    anyhow::ensure!(
+        metadata.mode() & 0o077 == 0,
         "private Sync state parent required"
     );
     Ok(())
@@ -623,13 +638,7 @@ fn perform_with_locations(
         };
         guard.check()?;
         #[cfg(target_os = "macos")]
-        if matches!(
-            &operation,
-            Operation::EnterPairing | Operation::Begin(_) | Operation::Redeem(_, _)
-        ) && controller.configuration_paths()?.is_empty()
-        {
-            connect_managed_runtime(&controller)?;
-        }
+        prepare_mac_runtime(&controller, &operation, connect_managed_runtime)?;
         guard.check()?;
         #[cfg(target_os = "linux")]
         {
@@ -809,7 +818,9 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
         helper: CodeRequirement::team_and_identifier(team, &format!("{identifier}.sync"))?,
         runtime: CodeRequirement::team_and_identifier(team, &format!("{identifier}.syncthing"))?,
     };
-    match connect_current_app(true, policy, Duration::from_secs(45))? {
+    match connect_current_app(true, policy, Duration::from_secs(45))
+        .context("macOS Sync connection setup failed")?
+    {
         ConnectOutcome::Ready {
             config_path,
             device_id,
@@ -829,8 +840,10 @@ fn user_error(error: &anyhow::Error) -> String {
     if error.is::<legacy::PreviousConnection>() {
         return legacy::MESSAGE.into();
     }
-    let text = error.to_string().to_lowercase();
-    if text.contains("local sync folder") {
+    let text = format!("{error:#}").to_lowercase();
+    if text.contains("sync is disabled") {
+        "Sync is disabled. Enable Sync in Settings → Features, then try Add computer again.".into()
+    } else if text.contains("local sync folder") {
         "The local folder could not be created or checked. Choose a location you can write to with an existing parent folder, or use an existing empty folder.".into()
     } else if text.contains("network policy") {
         "The network setting could not be verified. Refresh and try again. Custom connection addresses may need review in Syncthing.".into()
@@ -864,10 +877,32 @@ fn user_error(error: &anyhow::Error) -> String {
     } else if text.contains("reject") {
         "The other computer declined pairing. Create a new pairing URL to try again.".into()
     } else {
-        "Sync could not finish this step. Check that both computers are reachable and try again."
-            .into()
+        format!("Sync could not finish this step. {}", short_cause(error))
     }
 }
+
+#[cfg(any(target_os = "macos", test))]
+fn prepare_mac_runtime(
+    controller: &Controller,
+    operation: &Operation,
+    connect: impl FnOnce(&Controller) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    // Creating an invitation uses the app's pairing listener and identity only.
+    // Opening Settings and Add computer must not depend on SMAppService approval,
+    // global process inventory, signing checks or the 45-second runtime startup.
+    if matches!(
+        operation,
+        Operation::Redeem(..) | Operation::Attach(..) | Operation::AttachNew(..)
+    ) && controller.configuration_paths()?.is_empty()
+    {
+        connect(controller)?;
+    }
+    Ok(())
+}
+
+#[path = "reader_settings_sync/failure.rs"]
+mod failure;
+use failure::{failure_details, short_cause};
 
 #[path = "reader_settings_sync/epoch.rs"]
 mod epoch;

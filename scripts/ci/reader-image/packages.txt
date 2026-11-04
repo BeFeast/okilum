@@ -5,6 +5,7 @@ curl
 git
 mold
 zstd
+python3-venv
 libwayland-dev
 libxkbcommon-dev
 libxkbcommon-x11-dev

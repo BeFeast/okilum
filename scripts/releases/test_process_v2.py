@@ -29,7 +29,7 @@ class ProcessV2(unittest.TestCase):
         local = workflow('.forgejo/workflows/fast.yml')
         job = local['jobs']['check']
         self.assertEqual(job['runs-on'], 'fast-linux')
-        self.assertEqual(job['timeout-minutes'], '15')
+        self.assertEqual(job['timeout-minutes'], '55')
         text = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         self.assertNotIn('github-pr.py', text)
         self.assertIn('fast-local.sh', text)

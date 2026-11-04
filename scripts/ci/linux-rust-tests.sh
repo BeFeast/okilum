@@ -10,6 +10,9 @@ suite() {
     "$@" || failed=1
 }
 suite bash scripts/ci/local-writer-admission.sh
+# #2589: a real app pairing listener, fresh identity and repeated Add computer.
+suite cargo test --locked -p okilum-sync-controller --test first_computer -- --nocapture
+suite cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
 suite node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
 suite cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture
@@ -32,6 +35,9 @@ suite cargo test --locked -p okilum-shell --bin okilum list_2548_ -- --nocapture
 suite cargo test --locked -p okilum-t3 board::order:: -- --nocapture
 # Keep the inline agent-document regression verdict non-empty and independent.
 suite cargo test --locked -p okilum-shell --bin okilum issue1588_ -- --nocapture --test-threads=1
+# #2533: explicit non-empty waiting verdicts before shared package tests.
+suite cargo test --locked -p okilum-shell --bin okilum issue2533_ -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum waiting_2533_ -- --nocapture
 # Run the source/input acceptance groups independently, so an unrelated native
 # task abort cannot hide their verdict behind an unfinished full shell binary.
 # A non-UTC process timezone makes the conflict-copy local timestamp check
