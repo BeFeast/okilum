@@ -60,6 +60,7 @@ class VerdictTests(unittest.TestCase):
                                ("Run complete okilum-core suite offline", 1),
                                ("Prepare and verify pinned vendor and comrak", 1),
                                ("Install system libraries", 75),
+                               ("Reclaim unused hosted SDKs for Rust artifacts", 75),
                                ("actions/checkout@v4", 75)):
             data = receipt()
             data["conclusion"] = "failure"
@@ -70,6 +71,15 @@ class VerdictTests(unittest.TestCase):
             data = receipt()
             data["conclusion"] = conclusion
             self.assertEqual(helper.verdict(data, SHA), 75)
+
+    def test_watchdog_kill_is_a_test_failure_while_real_resource_failures_are_infra(self):
+        timeout = 'TEST_GROUP_TIMEOUT group=workspace-full limit=1320s kill_after=30s\n'
+        for killed in ('exit code 137', 'signal: 9, SIGKILL'):
+            self.assertTrue(helper.infrastructure_failure(killed))
+            self.assertFalse(helper.infrastructure_failure(timeout + killed))
+        for real in ('No space left on device', 'Cannot allocate memory',
+                     'Could not resolve host', 'Connection timed out'):
+            self.assertTrue(helper.infrastructure_failure(timeout + real))
 
     def test_partial_empty_or_skipped_jobs_are_not_success(self):
         for jobs in ([], [{"name": "linux", "conclusion": "skipped", "steps": []}]):
