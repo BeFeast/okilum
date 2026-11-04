@@ -169,7 +169,8 @@ async fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_vie
         bind_keys(cx);
         cx.set_reduce_motion(true);
     });
-    let temp = tempfile::tempdir().unwrap();
+    // Reader normalizes its root; keep project identities in that same form.
+    let temp = crate::project::fixture::canonical_tempdir();
     let vault = temp.path().join("vault");
     let area = vault.join("project");
     std::fs::create_dir_all(area.join("ops")).unwrap();
