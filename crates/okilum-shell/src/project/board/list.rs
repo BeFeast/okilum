@@ -15,7 +15,7 @@ const STAGES: [Column; 5] = [
     Column::Queue,
     Column::Verified,
 ];
-fn label(stage: Column) -> &'static str {
+pub(super) fn label(stage: Column) -> &'static str {
     match stage {
         Column::Working => "В работе",
         Column::Checks => "Проверки",
