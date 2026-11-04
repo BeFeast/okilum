@@ -443,6 +443,18 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
     visual.simulate_input("#999");
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-filter-empty").is_some());
+    board.update(visual, |board, cx| {
+        board.snapshot.forgejo.error = Some("Synthetic source unavailable".into());
+        board.filter_cache.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let center = visual.debug_bounds("project-board").unwrap();
+    let status = visual.debug_bounds("board-live-status").unwrap();
+    assert!(
+        status.bottom() <= center.bottom() && status.top() >= center.bottom() - px(32.),
+        "empty List results keep source diagnostics at the visible lower edge"
+    );
     click(visual, "board-reset-filters");
     assert!(visual.debug_bounds("board-list-count-Queue-2").is_some());
     assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());

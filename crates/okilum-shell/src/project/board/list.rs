@@ -364,7 +364,13 @@ impl Board {
             && prepared.counts.iter().all(|count| *count == 0)
         {
             return root
-                .child(div().flex_1().px_4().child(self.filter_empty(cx)))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .px_4()
+                        .child(self.filter_empty(cx)),
+                )
                 .into_any_element();
         }
         if prepared.counts.iter().all(|count| *count == 0) && prepared.sources_ready {
