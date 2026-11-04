@@ -42,7 +42,6 @@ pub(super) struct Prepared {
     pub projection: Arc<filters::Projection>,
     collapsed: [bool; 5],
     waiting_collapsed: bool,
-    pub local_indices: std::collections::BTreeMap<String, usize>,
     pub source_problem: Option<String>,
     pub sources_ready: bool,
     pub mappings: std::collections::BTreeMap<u64, Option<&'static str>>,
@@ -216,12 +215,6 @@ impl Board {
                 .iter()
                 .enumerate()
                 .map(|(i, s)| (s.number, i))
-                .collect(),
-            local_indices: projection
-                .locals
-                .iter()
-                .flatten()
-                .map(|i| (self.local_cards.value.cards[*i].id.clone(), *i))
                 .collect(),
             binding,
             rows,
