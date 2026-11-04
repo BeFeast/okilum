@@ -95,6 +95,8 @@ print(g.find('apikey').text)
     pub fn managed_lan(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
         Self::managed_with_listener(root, name, binary, true, true)
     }
+    // Shared test helper: only network_policy.rs uses it, direct_bidirectional.rs does not.
+    #[allow(dead_code)]
     pub fn managed_network(root: &Path, name: &str, binary: PathBuf) -> Result<(Self, PathBuf)> {
         Self::managed_with_listener(root, name, binary, true, false)
     }

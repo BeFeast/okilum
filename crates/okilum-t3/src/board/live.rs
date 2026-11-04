@@ -367,9 +367,10 @@ pub fn project(binding: &Binding, issues: &BTreeMap<u64, Issue>, at: u64) -> Bin
                 .get(&issue.number)
                 .map(Vec::as_slice)
                 .unwrap_or_default();
-            let mut scope = (matching.len() == 1)
-                .then(|| matching[0].clone())
-                .unwrap_or_else(|| Scope {
+            let mut scope = if matching.len() == 1 {
+                matching[0].clone()
+            } else {
+                Scope {
                     number: issue.number,
                     pinned: false,
                     expected: issue.title.clone(),
@@ -382,7 +383,8 @@ pub fn project(binding: &Binding, issues: &BTreeMap<u64, Issue>, at: u64) -> Bin
                     pull_requests: Vec::new(),
                     builds: Vec::new(),
                     execution: None,
-                });
+                }
+            };
             scope.pull_requests = issue
                 .live_pulls
                 .iter()

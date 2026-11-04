@@ -239,6 +239,7 @@ impl ProjectView {
         }));
     }
 
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub(super) fn select_manager_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Returning to the configured Manager is a surface transition, not a
         // request to transfer another thread's draft or retarget an old handoff.

@@ -1,7 +1,7 @@
 //! Shared, deterministic completion grammar and ranking (#1638).
 //! No filesystem or UI work: providers insert ordinary Markdown source.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Kind {
+pub(in crate::reader_editor) enum Kind {
     Note,
     Heading(String),
     Emoji,

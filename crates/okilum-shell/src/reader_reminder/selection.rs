@@ -298,6 +298,18 @@ impl Request {
     }
 }
 
+impl Reader {
+    pub(super) fn refresh_reminder_source(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.queue_vault_mutation(
+            okilum_core::Changes {
+                changed: [path.to_owned()].into_iter().collect(),
+                ..Default::default()
+            },
+            cx,
+        );
+    }
+}
+
 #[cfg(test)]
 pub(super) mod test_hooks {
     use super::*;
@@ -338,17 +350,5 @@ pub(super) mod test_hooks {
             .entry(root.to_owned())
             .or_default()
             .push((ok, current));
-    }
-}
-
-impl Reader {
-    pub(super) fn refresh_reminder_source(&mut self, path: &str, cx: &mut Context<Self>) {
-        self.queue_vault_mutation(
-            okilum_core::Changes {
-                changed: [path.to_owned()].into_iter().collect(),
-                ..Default::default()
-            },
-            cx,
-        );
     }
 }

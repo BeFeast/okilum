@@ -183,7 +183,7 @@ fn three_files_of_100k_entries() {
                 .map(|_| {
                     let r = next();
                     t += (r % 4) as i64;
-                    (r % 50 != 0).then_some(t)
+                    (!r.is_multiple_of(50)).then_some(t)
                 })
                 .collect();
             json(&times)
@@ -214,7 +214,7 @@ fn three_files_of_100k_entries() {
     for _ in 0..N / BATCH {
         for file in &mut times {
             for i in 0..BATCH {
-                clock += i64::from(i % 3 == 0);
+                clock += i64::from(i.is_multiple_of(3));
                 file.push((i % 10 != 9).then_some(clock));
             }
         }
@@ -334,8 +334,8 @@ fn any_append_sequence_equals_a_build() {
                 let times: Vec<_> = (0..len)
                     .map(|_| {
                         let r = next();
-                        t += (r % 5) as i64 - i64::from(r % 13 == 0) * 6;
-                        (r % 4 != 0).then_some(t)
+                        t += (r % 5) as i64 - i64::from(r.is_multiple_of(13)) * 6;
+                        (!r.is_multiple_of(4)).then_some(t)
                     })
                     .collect();
                 json(&times)

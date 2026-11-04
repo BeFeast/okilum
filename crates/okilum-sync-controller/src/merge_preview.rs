@@ -1165,15 +1165,18 @@ pub mod completion {
         value: Option<T>,
         reservation: Option<Reservation>,
     }
-    impl<T> Returned<T> {
+    impl<T> AsRef<T> for Returned<T> {
         /// Borrow without releasing the ownership/cleanup reservation.
-        pub fn as_ref(&self) -> &T {
+        fn as_ref(&self) -> &T {
             self.value.as_ref().expect("owned value already consumed")
         }
-        pub fn as_mut(&mut self) -> &mut T {
+    }
+    impl<T> AsMut<T> for Returned<T> {
+        fn as_mut(&mut self) -> &mut T {
             self.value.as_mut().expect("owned value already consumed")
         }
-
+    }
+    impl<T> Returned<T> {
         /// Transfer into a reservation acquired BEFORE dequeueing the resource.
         /// Both leases overlap through construction; there is no uncounted gap.
         pub fn into_queued<U>(

@@ -10530,7 +10530,11 @@ mod document_link_landing_tests {
         let actions = |visual: &mut gpui::VisualTestContext| {
             SidebarAction::available()
                 .iter()
-                .map(|action| visual.debug_bounds(action.id()).expect(action.id()))
+                .map(|action| {
+                    visual
+                        .debug_bounds(action.id())
+                        .unwrap_or_else(|| panic!("{}", action.id()))
+                })
                 .collect::<Vec<_>>()
         };
         let actions_before = actions(&mut first);

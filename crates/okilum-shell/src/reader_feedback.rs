@@ -333,6 +333,7 @@ impl Render for FeedbackWindow {
     }
 }
 /// The video slot's hint; the size is the client cap (pomoi's limit).
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 fn video_hint() -> String {
     video_hint_for(model::Limits::default())
 }

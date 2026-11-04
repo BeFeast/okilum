@@ -1,4 +1,5 @@
 //! Reader integration model for agent imports. No editing or execution actions.
+#![cfg_attr(not(test), allow(dead_code, reason = "#1588, not wired yet"))]
 use okilum_core::agent_imports::{self, Expansion, Failure, Import, Limits, Source};
 use std::{
     collections::BTreeSet,

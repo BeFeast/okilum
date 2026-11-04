@@ -6,7 +6,7 @@ use okilum_core::remote_log::live::Loaded;
 #[derive(Clone)]
 pub(crate) enum Navigation {
     Follow(correlation::RequestId),
-    Back(Arc<Loaded>, Option<RemoteGuided>),
+    Back(Arc<Loaded>, Option<Box<RemoteGuided>>),
     Saved(Box<SavedQuery>),
 }
 impl EventEmitter<Navigation> for LogView {}
@@ -226,7 +226,10 @@ impl LogView {
             self.state = State::Remote(remote.window.clone());
             self.investigation.remote = Some(remote.clone());
             self.investigation.live = false;
-            cx.emit(Navigation::Back(remote, self.investigation.guided.clone()));
+            cx.emit(Navigation::Back(
+                remote,
+                self.investigation.guided.clone().map(Box::new),
+            ));
         }
         if let Some(key) = self.history_key() {
             reader_ui_state::set_log_columns(&key, frame.columns, cx);

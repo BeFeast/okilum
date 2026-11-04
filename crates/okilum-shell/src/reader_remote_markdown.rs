@@ -278,6 +278,9 @@ mod view {
         .map_err(|error| io::Error::other(error.to_string()))
     }
 
+    #[cfg(test)]
+    type FixtureLoader = fn(&mut Controller, &str) -> io::Result<async_channel::Receiver<Reply>>;
+
     pub(super) struct Panel {
         pub(super) browser: Option<folders::Browser>,
         pub(super) folder_serial: u64,
@@ -285,8 +288,7 @@ mod view {
         pub(super) folder_cancel: Option<Arc<AtomicBool>>,
         pub(super) lister: folders::Lister,
         #[cfg(test)]
-        fixture_loader:
-            Option<fn(&mut Controller, &str) -> io::Result<async_channel::Receiver<Reply>>>,
+        fixture_loader: Option<FixtureLoader>,
         pub(super) controller: Controller,
         pub(super) content: Option<Entity<TextViewState>>,
         pub(super) prepared: Option<Prepared>,

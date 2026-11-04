@@ -43,7 +43,7 @@ fn binding(reader: &Reader) -> Binding {
             && reader
                 .cache_lease
                 .as_ref()
-                .map_or(true, |lease| lease.root == reader.vault_root),
+                .is_none_or(|lease| lease.root == reader.vault_root),
     }
 }
 fn current(reader: &WeakEntity<Reader>, snapshot: &Snapshot, cx: &App) -> anyhow::Result<()> {
@@ -346,7 +346,7 @@ pub(crate) struct CaptureComposer {
 impl EventEmitter<CaptureClosed> for CaptureComposer {}
 
 enum PreviewSource {
-    Composer(ComposerDraft),
+    Composer(Box<ComposerDraft>),
     Legacy(CopySource),
 }
 
@@ -734,7 +734,7 @@ impl CaptureComposer {
             if self.draft.attempt.is_none() {
                 return;
             }
-            PreviewSource::Composer(self.draft.clone())
+            PreviewSource::Composer(Box::new(self.draft.clone()))
         };
         self.busy = true;
         self.copy_preview = None;

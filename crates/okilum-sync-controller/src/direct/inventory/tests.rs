@@ -565,9 +565,9 @@ fn slow_inspection_does_not_block_second_peer_pairing_or_controller_locks() -> R
             &keys[0],
             &public,
             Operation::Inspect {
-                request: Request::Open {
+                request: Box::new(Request::Open {
                     vault: "vault".into(),
-                },
+                }),
             },
         )
     });
@@ -599,9 +599,9 @@ fn slow_inspection_does_not_block_second_peer_pairing_or_controller_locks() -> R
                     &keys[1],
                     &public,
                     Operation::Inspect {
-                        request: Request::Open {
+                        request: Box::new(Request::Open {
                             vault: "vault".into()
-                        }
+                        })
                     }
                 )?,
                 Reply::Error { .. }

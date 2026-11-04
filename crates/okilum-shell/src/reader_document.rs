@@ -1,4 +1,5 @@
 //! Pane-owned document storage (#773). No vault, watcher or editor is cloned.
+#![allow(dead_code, reason = "#773 model, not wired into Reader yet")]
 use std::path::{Component, PathBuf};
 
 /// Identity must come from normal Reader resolution, not from a link's raw text.

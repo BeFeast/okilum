@@ -140,8 +140,7 @@ fn read<T: for<'a> Deserialize<'a>>(p: &Path) -> Result<T> {
         bytes.len() <= 64 * 1024,
         "Writer authority record is oversized"
     );
-    Ok(serde_json::from_slice(&bytes)
-        .context("Invalid writer authority; explicit recovery required")?)
+    serde_json::from_slice(&bytes).context("Invalid writer authority; explicit recovery required")
 }
 fn persist(p: &Path, v: &impl Serialize, create: bool) -> Result<()> {
     let parent = p.parent().context("Authority parent missing")?;

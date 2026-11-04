@@ -192,7 +192,7 @@ impl Panel {
                     );
                     let row = div()
                         .id(("remote-folder-entry", index))
-                        .debug_selector(move || format!("remote-folder-entry-{index}").into())
+                        .debug_selector(move || format!("remote-folder-entry-{index}"))
                         .px_3()
                         .py_2()
                         .when(markdown, |row| row.text_color(cx.theme().primary))

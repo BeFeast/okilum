@@ -90,7 +90,7 @@ impl Host for Fake {
         Ok(())
     }
     fn supervisor_scope(&mut self, binding: &Binding) -> Result<Option<Scope>> {
-        Ok((self.ipc && self.running).then(|| Scope {
+        Ok((self.ipc && self.running).then_some(Scope {
             installation: binding.installation,
             instance: binding.instance,
             generation: self.generation,
