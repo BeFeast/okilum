@@ -31,8 +31,17 @@ fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserv
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-card-problem-0").is_some());
-    assert!(visual.debug_bounds("board-expand-1733").is_some());
+    assert!(visual.debug_bounds("board-expand-1762").is_some());
     assert!(visual.debug_bounds("board-expand-1731").is_none());
+    board.read_with(visual, |board, _| {
+        assert!(board
+            .binding
+            .as_ref()
+            .unwrap()
+            .issues
+            .iter()
+            .all(|scope| scope.number != 1731))
+    });
     board.update(visual, |board, cx| {
         board.binding_error =
             Some("ops/board.toml: Invalid TOML: line 7, column 2: invalid array".into());
@@ -48,7 +57,7 @@ fn invalid_card_stays_visible_beside_healthy_cards_and_binding_detail_is_preserv
     visual.simulate_click(status.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-source-problem").is_some());
-    assert!(visual.debug_bounds("board-expand-1733").is_some());
+    assert!(visual.debug_bounds("board-expand-1762").is_some());
     assert_eq!(visual.opened_url(), None);
     board.update(visual, |board, cx| {
         board.note("https://git.oklabs.uk/BeFeast/okilum/issues/1859", cx)
@@ -97,7 +106,7 @@ fn source_error_and_recovery_keep_board_geometry_stable(cx: &mut TestAppContext)
     });
     visual.run_until_parked();
     let columns = visual.debug_bounds("board-columns").unwrap();
-    let card = visual.debug_bounds("board-expand-1733").unwrap();
+    let card = visual.debug_bounds("board-expand-1762").unwrap();
     let indicator = visual.debug_bounds("board-source-status").unwrap();
     assert!(visual.debug_bounds("board-source-problem").is_none());
 
@@ -113,7 +122,7 @@ fn source_error_and_recovery_keep_board_geometry_stable(cx: &mut TestAppContext)
         });
         visual.run_until_parked();
         assert_eq!(visual.debug_bounds("board-columns").unwrap(), columns);
-        assert_eq!(visual.debug_bounds("board-expand-1733").unwrap(), card);
+        assert_eq!(visual.debug_bounds("board-expand-1762").unwrap(), card);
         assert_eq!(visual.debug_bounds("board-source-status").unwrap(), indicator);
         assert!(visual.debug_bounds("board-source-problem").is_none());
     }
@@ -128,7 +137,7 @@ fn source_error_and_recovery_keep_board_geometry_stable(cx: &mut TestAppContext)
     assert!(visual.debug_bounds("board-source-details").is_some());
     assert!(visual.debug_bounds("board-source-problem").is_some());
     assert_eq!(visual.debug_bounds("board-columns").unwrap(), columns);
-    assert_eq!(visual.debug_bounds("board-expand-1733").unwrap(), card);
+    assert_eq!(visual.debug_bounds("board-expand-1762").unwrap(), card);
 }
 
 #[gpui::test]
@@ -1166,7 +1175,7 @@ fn project_note_try_without_build_evidence_does_not_add_unselected_issues_or_sta
     assert!(visual.debug_bounds("board-note-try-state-0").is_some());
     assert!(visual.debug_bounds("board-note-open-0").is_some());
     assert!(
-        visual.debug_bounds("board-expand-1733").is_some(),
+        visual.debug_bounds("board-expand-1762").is_some(),
         "positive control: real selected issues still render"
     );
     assert!(visual.debug_bounds("board-expand-99999").is_none());
