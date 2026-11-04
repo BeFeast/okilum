@@ -4,6 +4,7 @@ use super::*;
 #[cfg(feature = "project-ui-harness")]
 mod fixture;
 mod preferences;
+mod waiting;
 pub(super) use preferences::Mode;
 use preferences::Preferences;
 
@@ -26,6 +27,8 @@ fn label(stage: Column) -> &'static str {
 }
 #[derive(Clone, Copy, Debug)]
 enum Row {
+    WaitingGroup,
+    Waiting(usize),
     Group(Column),
     Issue(usize),
     Local(usize),
@@ -37,6 +40,7 @@ struct Prepared {
     counts: [usize; 5],
     filter: Option<String>,
     collapsed: [bool; 5],
+    waiting_collapsed: bool,
     roles: Arc<[String]>,
     local_indices: std::collections::BTreeMap<String, usize>,
     source_problem: Option<String>,
@@ -133,6 +137,7 @@ impl Board {
         if let Some(prepared) = &self.list.prepared {
             if prepared.filter == self.filter
                 && prepared.collapsed == self.list.preferences.collapsed
+                && prepared.waiting_collapsed == self.list.preferences.waiting_collapsed
             {
                 return prepared.clone();
             }
@@ -183,6 +188,12 @@ impl Board {
         }
         let counts = std::array::from_fn(|i| groups[i].len());
         let mut rows = Vec::new();
+        if self.waiting.visible() {
+            rows.push(Row::WaitingGroup);
+            if !self.list.preferences.waiting_collapsed {
+                rows.extend((0..self.waiting.items.len()).map(Row::Waiting));
+            }
+        }
         for stage in STAGES {
             rows.push(Row::Group(stage));
             if !self.list.preferences.collapsed[stage as usize] {
@@ -221,6 +232,7 @@ impl Board {
             counts,
             filter: self.filter.clone(),
             collapsed: self.list.preferences.collapsed,
+            waiting_collapsed: self.list.preferences.waiting_collapsed,
             roles: roles.into_iter().collect::<Vec<_>>().into(),
             local_indices: self
                 .local_cards
@@ -348,12 +360,8 @@ impl Board {
         if let Some(attention) = self.attention(&prepared.binding, cx) {
             root = root.child(div().px_4().py_2().child(attention));
         }
-        if self.delivery.enabled() {
-            root = root.child(
-                div()
-                    .px_4()
-                    .child(self.delivery_summary(&prepared.binding, cx)),
-            );
+        if let Some(delivery) = self.delivery_summary(&prepared.binding, cx) {
+            root = root.child(div().px_4().child(delivery));
         }
         if let Some(notes) = self.render_project_notes(&prepared.binding, cx) {
             root = root.child(div().px_4().child(notes));
@@ -436,7 +444,13 @@ impl Board {
                 );
             }
         }
-        let problem = source_problem("Forgejo", &self.snapshot.forgejo, 30, now());
+        let problem = self.waiting.problem.clone().or_else(|| {
+            problem_line(
+                source_problem("Forgejo", &self.snapshot.forgejo, 30, now())
+                    .into_iter()
+                    .collect(),
+            )
+        });
         root.child(
             div()
                 .debug_selector(|| "board-live-status".into())
@@ -444,9 +458,16 @@ impl Board {
                 .flex_none()
                 .px_4()
                 .text_size(px(12.))
+                .line_height(px(18.))
                 .text_color(p.text_muted)
                 .truncate()
-                .child(problem_line(problem.into_iter().collect()).unwrap_or_default()),
+                .child(
+                    div()
+                        .when(self.waiting.problem.is_some(), |line| {
+                            line.debug_selector(|| "board-waiting-problem".into())
+                        })
+                        .child(problem.unwrap_or_default()),
+                ),
         )
         .into_any_element()
     }
@@ -481,6 +502,8 @@ impl Board {
     fn list_row(&self, row: Row, prepared: &Prepared, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
         match row {
+            Row::WaitingGroup => self.waiting_list_group(cx),
+            Row::Waiting(index) => self.waiting_list_row(index, cx),
             Row::Group(stage) => {
                 let count = prepared.counts[stage as usize];
                 let collapsed = self.list.preferences.collapsed[stage as usize];

@@ -1045,10 +1045,10 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     assert!(visual.debug_bounds("board-delivery-details").is_some());
     assert!(visual.debug_bounds("board-delivery-line").is_some());
     assert!(visual.debug_bounds("board-delivery-details-line").is_some());
-    assert!(visual.debug_bounds("delivery-problem-Mac").is_some());
+    assert!(visual.debug_bounds("delivery-problem-Mac").is_none());
     assert!(visual
         .debug_bounds("board-delivery-details-problem-Mac")
-        .is_some());
+        .is_none());
     for id in ["delivery-problem-Mac-Stable", "delivery-problem-Mac-Beta"] {
         assert!(
             visual.debug_bounds(id).is_none(),
@@ -1063,9 +1063,11 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
         "board-delivery-details-Linux-Stable",
         "board-delivery-details-Linux-Beta",
     ] {
-        assert!(
+        let expected = id == format!("board-delivery-details-{}-Beta", platform.label());
+        assert_eq!(
             visual.debug_bounds(id).is_some(),
-            "expanded card control: {id}"
+            expected,
+            "expanded card: {id}"
         );
     }
     for id in [
@@ -1076,7 +1078,8 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
         "board-delivery-Linux-Stable",
         "board-delivery-Linux-Beta",
     ] {
-        assert!(visual.debug_bounds(id).is_some(), "visible {id}");
+        let expected = id == format!("board-delivery-{}-Beta", platform.label());
+        assert_eq!(visual.debug_bounds(id).is_some(), expected, "visible {id}");
     }
     for id in [
         "board-delivery-Mac-Sprint",

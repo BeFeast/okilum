@@ -7,7 +7,7 @@ fn waiting_2533_three_kinds_actions_empty_and_failure_line(cx: &mut TestAppConte
     let area = tempfile::tempdir().unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(
+            let mut board = Board::with_kanban_reader(
                 area.path().into(),
                 |_| panic!("offline fixture"),
                 window,
@@ -149,7 +149,7 @@ fn waiting_2533_failed_first_forgejo_read_is_one_line_without_empty_group(cx: &m
     let area = tempfile::tempdir().unwrap();
     let (_, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
-            let mut board = Board::with_reader(
+            let mut board = Board::with_kanban_reader(
                 area.path().into(),
                 |_| panic!("offline fixture"),
                 window,

@@ -958,8 +958,8 @@ impl Board {
             );
         }
         if self.selected == Some(number) {
-            if self.delivery.enabled() {
-                card = card.child(self.delivery_details(scope, binding, cx));
+            if let Some(delivery) = self.delivery_details(scope, binding, cx) {
+                card = card.child(delivery);
             }
             let url = binding.issue_url(number);
             let context = self.context(scope);
@@ -1157,8 +1157,8 @@ impl Render for Board {
         if let Some(attention) = self.attention(binding, cx) {
             root = root.child(attention);
         }
-        if self.delivery.enabled() {
-            root = root.child(self.delivery_summary(binding, cx));
+        if let Some(delivery) = self.delivery_summary(binding, cx) {
+            root = root.child(delivery);
         }
         if let Some(notes) = self.render_project_notes(binding, cx) {
             root = root.child(notes);
