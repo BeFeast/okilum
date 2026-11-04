@@ -240,6 +240,10 @@ pub(crate) fn initialize(instance: &ManagedInstance) -> Result<Reference> {
         let id = e.attributes.get("id").context("folder ID missing")?;
         let root = PathBuf::from(e.attributes.get("path").context("folder root missing")?)
             .canonicalize()?;
+        ensure!(
+            !dir.starts_with(&root) && !instance.home.starts_with(&root),
+            "managed launch state must be outside the vault"
+        );
         let authority = Authority::for_root(&root)?.durable_binding()?;
         ensure!(
             b.folders
@@ -299,6 +303,10 @@ pub(crate) fn configuration(
         "managed daemon binding differs"
     );
     let root = root.canonicalize()?;
+    ensure!(
+        !r.directory.starts_with(&root) && !b.home.starts_with(&root),
+        "managed launch state must be outside the vault"
+    );
     let operation = if let Some(saved) = b.folders.get(folder) {
         ensure!(
             saved.root == root && identity(&root)? == saved.identity,
@@ -487,6 +495,10 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
             .folders
             .get(&id)
             .context("unbound managed folder; recovery required")?;
+        ensure!(
+            !r.directory.starts_with(&saved.root) && !b.home.starts_with(&saved.root),
+            "managed launch state must be outside the vault"
+        );
         let root = Path::new(e.attributes.get("path").context("folder root missing")?);
         ensure!(
             root.canonicalize()? == saved.root && identity(root)? == saved.identity,
