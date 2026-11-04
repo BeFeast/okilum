@@ -318,6 +318,13 @@ export SDKROOT
 export CARGO_TARGET_DIR="$root/target" CARGO_INCREMENTAL=1
 export OKILUM_SOURCE_COMMIT="$sha" OKILUM_BUILD_VERSION=1
 export OKILUM_RELEASE_VERSION="Sprint $short_sha"
+# Sync needs the Developer ID-signed helper and the bundled Syncthing runtime;
+# the app compiles this team and bundle into its helper policy (#2589).
+SPRINT_BUNDLE_ID=com.befeast.okilum.sprint
+SPRINT_IDENTITY="${OKILUM_SIGNING_IDENTITY:-Developer ID Application: Oleg Kossoy (LA9V2K2376)}"
+source scripts/ci/supervisor-bundle.sh
+SPRINT_TEAM_ID=$(supervisor_team_id "$SPRINT_IDENTITY")
+export OKILUM_SIGNING_TEAM_ID="$SPRINT_TEAM_ID" OKILUM_BUNDLE_ID="$SPRINT_BUNDLE_ID"
 set_stage vendor
 python3 "$reporter" --repair-cache "$root"
 bash scripts/vendor-setup.sh
@@ -333,11 +340,18 @@ if ! cargo build --locked --profile sprint --target aarch64-apple-darwin -p okil
     awk '/^error/ {print; n=8} n>0 {if ($0 !~ /^error/) print; n--}' "$log" | head -25 >&2 || true
     exit 1
 fi
+# Same warm incremental sprint profile as the app: no release rebuilds.
+cargo build --locked --profile sprint --target aarch64-apple-darwin -p okilum-sync-supervisor
 set_stage assemble-sign
 bundle_stage="$root/Okilum Sprint.app"
 rm -rf "$bundle_stage"
 mkdir -p "$bundle_stage/Contents/MacOS" "$bundle_stage/Contents/Resources" "$bundle_stage/Contents/Frameworks"
 cp "$CARGO_TARGET_DIR/aarch64-apple-darwin/sprint/okilum" "$bundle_stage/Contents/MacOS/okilum"
+install -m 755 "$CARGO_TARGET_DIR/aarch64-apple-darwin/sprint/$SUPERVISOR_NAME" "$bundle_stage/$SUPERVISOR_RELATIVE"
+mkdir -p "$bundle_stage/Contents/Library/LaunchAgents"
+cargo run --locked --profile sprint --target aarch64-apple-darwin -p okilum-sync-controller \
+    --example bundled_plist -- "$SUPERVISOR_RELATIVE" "$bundle_stage/Contents/Library/LaunchAgents"
+python3 scripts/syncthing/bundle.py stage --app "$bundle_stage" --arch arm64
 ditto vendor/sparkle/Sparkle.framework "$bundle_stage/Contents/Frameworks/Sparkle.framework"
 python3 scripts/third-party-notices.py --stage "$bundle_stage/Contents/Resources/Licenses"
 # Apply isolation on every launch, including Finder launches after this terminal closes.
@@ -403,7 +417,19 @@ for path in Path(sys.argv[1]).glob('*.rgba'):
     path.write_bytes(rgba)
 PY
 python3 scripts/macos-icon.py "$root/icon-rasters" "$bundle_stage/Contents/Resources/Okilum.icns"
-codesign --force --deep --sign - "$bundle_stage"
+# Inside-out Developer ID signing, as in scripts/updater/sign-bundle.sh, without
+# notarization: Sync only trusts a helper and runtime signed by this team.
+framework="$bundle_stage/Contents/Frameworks/Sparkle.framework"
+for component in \
+    "$framework/Versions/B/XPCServices/Downloader.xpc" \
+    "$framework/Versions/B/XPCServices/Installer.xpc" \
+    "$framework/Versions/B/Updater.app" \
+    "$framework/Versions/B/Autoupdate" \
+    "$framework"; do
+    codesign --force --preserve-metadata=identifier,entitlements --options runtime --sign "$SPRINT_IDENTITY" "$component"
+done
+supervisor_sign "$bundle_stage" "$SPRINT_IDENTITY" "$SPRINT_BUNDLE_ID"
+codesign --force --options runtime --sign "$SPRINT_IDENTITY" "$bundle_stage"
 codesign --verify --deep --strict "$bundle_stage"
 # Target only the Sprint bundle ID. Quit must finish before replacing its bundle.
 if [[ -d $app ]]; then

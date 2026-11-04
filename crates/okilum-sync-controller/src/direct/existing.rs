@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 pub(super) struct VaultRoot(std::fs::File);
 impl VaultRoot {
     pub(super) fn open(path: &Path) -> Result<Self> {
-        let root = Self(std::fs::File::open(path)?);
+        let root = Self(
+            std::fs::File::open(path)
+                .with_context(|| format!("open vault root {}", path.display()))?,
+        );
         root.verify(path)?;
         Ok(root)
     }
@@ -27,8 +30,12 @@ impl VaultRoot {
 
     pub(super) fn verify(&self, path: &Path) -> Result<()> {
         use std::os::unix::fs::MetadataExt;
-        let current = std::fs::symlink_metadata(path)?;
-        let original = self.0.metadata()?;
+        let current = std::fs::symlink_metadata(path)
+            .with_context(|| format!("inspect vault root {}", path.display()))?;
+        let original = self
+            .0
+            .metadata()
+            .with_context(|| format!("inspect original vault root {}", path.display()))?;
         ensure!(
             current.is_dir()
                 && original.is_dir()
