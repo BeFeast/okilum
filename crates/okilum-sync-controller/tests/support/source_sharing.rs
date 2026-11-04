@@ -872,6 +872,5 @@ fn managed_history_2045_restore_retention_and_migration() -> Result<()> {
         pair.target.api.folder(&id)?["versioning"]["params"]["maxAge"],
         "7776000"
     );
-    println!("#2045: two pinned 2.1.6 runtimes; delete/restore/overwrite hashes, stale edit refusal, both migrations, idempotence, 90d control retains 31d, 30d trims 31d and keeps 29d, external unchanged");
     Ok(())
 }
