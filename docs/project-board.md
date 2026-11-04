@@ -170,7 +170,7 @@ invalid annotations, attention, delivery and project-note context remain reachab
 No new read, dispatch, membership, stage rule or delivery claim is introduced.
 Native tests cover defaults, independent persisted project choices, collapse,
 240-row viewport work, keyboard reachability and actual Reader note round trips.
-The sibling peek/filter/attention/compact-card/ordering issues remain independent.
+The sibling peek/filter/attention/ordering issues remain independent.
 
 
 ### Compact Board (#2534)
@@ -198,14 +198,8 @@ with outcome, links, notes and draft-only Discuss; Escape closes it. Native GPUI
 regressions cover card geometry, two-line clamping, bounded Queue work and view
 handoff, actual CI/live/stale evidence, virtualised lanes and Verified expansion.
 
-
-The compact card contains its issue title/number, a small agent tag and one
-existing stage-state line. The expected result and issue/PR/build/note/Discuss
-actions are inside the expanded card. Related-note navigation retains the same one-action return to Board. Escape
-still collapses the card. Refresh is automatic and silent.
-There is no new source poll, execution inference, delivery claim or status mapping.
-The human-attention lane, item/stage colours and richer live-agent presentation
-remain separate product work; this slice adds none of them.
+No source poll, execution inference, membership/stage mapping or delivery claim
+is added by either presentation.
 
 ## Accepted look, push 1
 
@@ -214,8 +208,8 @@ origin chips use the issue labels already returned by the public Forgejo read;
 missing type metadata stays a neutral issue, not an invented bug/task. The theme's
 danger, important, muted, information, warning and success roles supply the pink,
 violet, slate and stage colours in both appearance modes. Native Lucide icons and
-a steady indicator replace browser effects. Cards show the explicit expected
-outcome, agent and state, and at most one PR link badge; a PR link never claims
+a steady indicator replace browser effects. Cards show the source title, agent and state, with the explicit expected
+outcome inside the disclosure, and at most one PR link badge; a PR link never claims
 that its CI passed or it merged. The expanded card retains notes and draft actions.
 
 Once card sources have completed a successful read, empty columns
