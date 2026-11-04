@@ -1152,6 +1152,7 @@ impl Board {
                 number,
                 okilum_t3::board::Issue {
                     number,
+                    created_at: String::new(),
                     title: format!("Synthetic task {number}"),
                     report: Default::default(),
                     updated_at: chrono::DateTime::from_timestamp(1_700_000_000 - number as i64, 0)
@@ -1175,6 +1176,7 @@ impl Board {
                                 "pending"
                             }
                             .into(),
+                            ..Default::default()
                         }]
                     } else {
                         vec![]

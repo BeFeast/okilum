@@ -251,6 +251,11 @@ impl Board {
     ) -> AnyElement {
         let colors = brand::palette(cx);
         let id = card.id.clone();
+        let (disclosure, _) = super::controls::disclosure(
+            SharedString::from(format!("local-expand-{id}")),
+            window,
+            cx,
+        );
         let view = v_flex()
             .min_w_0()
             .min_h_0()
