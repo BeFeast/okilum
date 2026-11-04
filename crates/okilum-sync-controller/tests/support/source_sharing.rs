@@ -633,7 +633,7 @@ fn fixture_lifecycle_control() -> Result<()> {
 fn managed_real_conflicts_resolve_each_choice_with_hashes() -> Result<()> {
     use okilum_sync_controller::conflicts::{self, ApplyOutcome, Choice};
     use std::time::{Duration, SystemTime};
-    let mut pair = Pair::loopback()?;
+    let pair = Pair::loopback()?;
     pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
     let id = pair.shared_catalog()?;
     pair.second.attach(pair.peer, &id, &pair.target.vault)?;
