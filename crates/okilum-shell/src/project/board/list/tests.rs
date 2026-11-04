@@ -375,11 +375,9 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
         cx.notify();
     });
     visual.run_until_parked();
-    for number in 1..=3 {
+    for selector in ["board-list-row-1", "board-list-row-2", "board-list-row-3"] {
         assert!(
-            visual
-                .debug_bounds(&format!("board-list-row-{number}"))
-                .is_some(),
+            visual.debug_bounds(selector).is_some(),
             "positive control: all source rows rendered"
         );
     }
