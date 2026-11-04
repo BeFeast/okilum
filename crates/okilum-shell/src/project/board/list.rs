@@ -303,6 +303,7 @@ impl Board {
             .capture_key_down(cx.listener(|this, event, window, cx| {
                 this.filter_key(event, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_peek(window, cx)))
             .on_key_down(cx.listener(|this, event, window, cx| this.list_key(event, window, cx)))
             .child(
                 h_flex()

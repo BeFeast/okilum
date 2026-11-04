@@ -971,6 +971,7 @@ impl Render for Board {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.filter_key(event, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_peek(window, cx)))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.peek_key(event, window, cx);
                 if matches!(event.keystroke.key.as_str(), "space" | "enter")

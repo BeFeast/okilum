@@ -119,6 +119,14 @@ impl Board {
                 .as_ref()
                 .is_some_and(|b| b.repository == ticket.repository)
     }
+    pub(super) fn dismiss_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.peek.open {
+            self.close_peek(cx);
+            self.focus.focus(window, cx);
+        } else {
+            cx.propagate();
+        }
+    }
     pub(super) fn peek_key(
         &mut self,
         event: &KeyDownEvent,
@@ -171,6 +179,7 @@ impl Board {
             .min_h_0()
             .bg(p.surface)
             .text_color(p.text)
+            .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_peek(window, cx)))
             .on_key_down(cx.listener(|this, event, window, cx| this.peek_key(event, window, cx)))
             .child(
                 h_flex()
@@ -218,7 +227,10 @@ impl Board {
                 .find(|c| &c.id == id)
                 .cloned()
             {
-                return body.child(self.local_details(&card, cx)).into_any_element();
+                return body
+                    .h_full()
+                    .child(self.local_details(&card, cx))
+                    .into_any_element();
             }
         }
         let prepared = self.prepare_list();
@@ -316,7 +328,14 @@ impl Board {
             let pull = issue.and_then(|i| i.live_pulls.iter().find(|p| p.number == *number));
             let url = binding.pull_url(*number);
             let text = pull
-                .map(|p| format!("#{number} · {} · {}", p.state, p.title))
+                .map(|p| {
+                    format!(
+                        "#{number} · {} · {} · {}",
+                        p.state,
+                        row_bits::ci_label(Some(&p.checks)),
+                        p.title
+                    )
+                })
                 .unwrap_or_else(|| format!("#{number} · состояние не прочитано"));
             prs = prs.child(
                 h_flex()
@@ -324,7 +343,13 @@ impl Board {
                     .gap_2()
                     .min_w_0()
                     .child(row_bits::ci_dot(pull.map(|p| p.checks.as_str()), cx))
-                    .child(link_button(format!("peek-pr-{number}"), text, url)),
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            link_button(format!("peek-pr-{number}"), text, url)
+                                .w_full()
+                                .justify_start(),
+                        ),
+                    ),
             );
         }
         if scope.pull_requests.is_empty() {
@@ -493,16 +518,12 @@ impl Board {
                 "Issue ↗".into(),
                 binding.issue_url(number),
             ))
-            .when_some(scope.pull_requests.first(), |v, pr| {
-                v.child(link_button(
-                    "peek-open-pr".into(),
-                    "PR ↗".into(),
-                    binding.pull_url(*pr),
-                ))
-            })
-            .when_some(agent_url, |v, url| {
-                v.child(link_button("peek-open-agent".into(), "Агент ↗".into(), url))
-            });
+            .child(optional_link(
+                "peek-open-pr",
+                "PR ↗",
+                scope.pull_requests.first().map(|pr| binding.pull_url(*pr)),
+            ))
+            .child(optional_link("peek-open-agent", "Агент ↗", agent_url));
         v_flex()
             .size_full()
             .min_h_0()
@@ -541,6 +562,18 @@ fn link_button(id: String, text: String, url: String) -> Button {
                 .child(text),
         )
         .on_click(move |_, _, cx| cx.open_url(&url))
+}
+fn optional_link(id: &'static str, label: &'static str, url: Option<String>) -> Button {
+    Button::new(id)
+        .ghost()
+        .small()
+        .label(label)
+        .disabled(url.is_none())
+        .on_click(move |_, _, cx| {
+            if let Some(url) = &url {
+                cx.open_url(url);
+            }
+        })
 }
 fn beta_rows(
     board: &Board,
