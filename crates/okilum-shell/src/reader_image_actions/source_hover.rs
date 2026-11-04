@@ -265,10 +265,10 @@ mod tests {
                 "native mouse hover reaches the provider"
             )
         });
-        assert!(
-            visual.debug_bounds("source-embed-hover").is_some(),
-            "Source hint is painted in Reader's overlay layer"
-        );
+        // The toolkit popover has no debug selector. Native screenshot
+        // acceptance checks its painted content; here assert the actual
+        // mouse lifecycle rather than a direct provider-only invocation.
+
         // Copy path acts on the clicked attachment, and never changes the note.
         reader.update_in(visual, |reader, window, cx| {
             let reference = okilum_core::render::image_reference::references(
@@ -388,50 +388,4 @@ mod tests {
             source
         );
     }
-}
-
-/// Source hints belong to Reader's overlay layer. The editor's internal LSP
-/// overlay is clipped by the note pane; the source range remains its anchor.
-pub(crate) fn overlay(reader: &Reader, cx: &App) -> Option<AnyElement> {
-    if reader.file_menu.is_some() {
-        return None;
-    }
-    let input = reader.source_input()?;
-    let input = input.read(cx);
-    input.lsp().hover_provider.as_ref()?;
-    let hover = input.hover_popover()?;
-    let bounds = input.range_to_bounds(&hover.symbol_range)?;
-    let lsp_types::HoverContents::Markup(content) = &hover.hover.contents else {
-        return None;
-    };
-    let theme = cx.theme();
-    Some(
-        deferred(
-            anchored()
-                .position(point(bounds.left(), bounds.bottom() + px(4.)))
-                .child(
-                    v_flex()
-                        .id("source-embed-hover")
-                        .debug_selector(|| "source-embed-hover".into())
-                        .gap_1()
-                        .p_2()
-                        .rounded(theme.radius)
-                        .border_1()
-                        .border_color(theme.border)
-                        .bg(theme.popover)
-                        .text_color(theme.popover_foreground)
-                        .text_size(px(12.))
-                        .max_w(px(500.))
-                        .shadow_md()
-                        .children(
-                            content
-                                .value
-                                .split("\n\n")
-                                .map(|line| div().child(line.to_owned())),
-                        ),
-                ),
-        )
-        .with_priority(gpui_base::POPUP_PRIORITY - 1)
-        .into_any_element(),
-    )
 }

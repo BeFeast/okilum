@@ -9,7 +9,7 @@ use std::io::Read;
 
 mod metadata;
 mod source_hover;
-pub(super) use source_hover::{overlay as source_hover_overlay, provider as source_hover};
+pub(super) use source_hover::provider as source_hover;
 mod save;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
