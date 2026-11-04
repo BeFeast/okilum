@@ -3,6 +3,7 @@
 //! It never reads external files.
 use serde_json::{json, Value};
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
@@ -551,14 +552,34 @@ fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
         return a.cmp(&b);
     }
     if let (Some(a), Some(b)) = (a.as_str(), b.as_str()) {
-        let parse =
-            |s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339);
-        if let (Ok(a), Ok(b)) = (parse(a), parse(b)) {
+        if let (Some(a), Some(b)) = (cached_timestamp(a), cached_timestamp(b)) {
             return a.cmp(&b);
         }
         return a.cmp(b);
     }
     a.to_string().cmp(&b.to_string())
+}
+fn cached_timestamp(value: &str) -> Option<time::OffsetDateTime> {
+    // One response handler repeatedly compares the same bounds and timestamps.
+    // Bound both entry count and key size; long inputs retain the original parser.
+    std::thread_local! {
+        static TIMES: RefCell<BTreeMap<String, Option<time::OffsetDateTime>>> =
+            const { RefCell::new(BTreeMap::new()) };
+    }
+    TIMES.with_borrow_mut(|times| {
+        if let Some(parsed) = times.get(value) {
+            return *parsed;
+        }
+        let parsed =
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok();
+        if value.len() <= 64 {
+            if times.len() >= 256 {
+                times.clear();
+            }
+            times.insert(value.to_owned(), parsed);
+        }
+        parsed
+    })
 }
 fn sort_cmp(a: &Value, b: &Value, sort: &[Value]) -> std::cmp::Ordering {
     for (i, spec) in sort.iter().enumerate() {
@@ -595,7 +616,6 @@ fn search_response(records: &[Value], params: &Value, scenario: &Scenario) -> Va
                 && !excluded.iter().any(|g| g.is_match(index))
                 && matches(r, &params["query"])
         })
-        .cloned()
         .collect();
     let total = rows.len();
     let cap = params["track_total_hits"].as_u64();

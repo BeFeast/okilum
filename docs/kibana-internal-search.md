@@ -153,3 +153,10 @@ The deadline fixture first completes below budget, then advances to the exact
 deadline after a page and checks that timed-out rows stay visible and following
 stops. Production uses the same monotonic `Instant` clock and existing budgets.
 No row-loss or stalled-cycle product race was established by this repair.
+
+The synthetic server borrows matching records until serializing the final page,
+and memoizes timestamp parsing in a bounded response-thread cache. Boundary replay
+otherwise clones the whole matching window and parses the same timestamp/bounds
+thousands of times per request; loaded debug fixtures can exhaust the real HTTP
+budget before reaching their worker-completion checks. These changes preserve
+query, ordering, totals and response data while keeping HTTP deadlines intact.
