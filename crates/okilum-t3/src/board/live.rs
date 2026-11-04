@@ -346,23 +346,27 @@ fn read_with(
 
 /// Presentation-only copy: never persist generated membership or PR links.
 pub fn project(binding: &Binding, issues: &BTreeMap<u64, Issue>, at: u64) -> Binding {
+    // Build one annotation index. A redraw/refresh must not scan the complete
+    // manifest once per live issue; duplicates remain explicitly ambiguous.
+    let mut annotations: BTreeMap<u64, Vec<&Scope>> = BTreeMap::new();
+    for scope in &binding.issues {
+        annotations.entry(scope.number).or_default().push(scope);
+    }
     let mut projected = binding.clone();
     projected.issues = issues
         .values()
         .filter(|issue| {
             issue.state == "open"
                 || issue.live_pulls.iter().any(|p| p.recent(at))
-                || binding
-                    .issues
-                    .iter()
-                    .any(|s| s.number == issue.number && (s.pinned || s.stage.is_some()))
+                || annotations
+                    .get(&issue.number)
+                    .is_some_and(|scopes| scopes.iter().any(|s| s.pinned || s.stage.is_some()))
         })
         .map(|issue| {
-            let matching: Vec<_> = binding
-                .issues
-                .iter()
-                .filter(|s| s.number == issue.number)
-                .collect();
+            let matching = annotations
+                .get(&issue.number)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             let mut scope = (matching.len() == 1)
                 .then(|| matching[0].clone())
                 .unwrap_or_else(|| Scope {

@@ -82,6 +82,10 @@ fn write_project(vault: &Path, folder: &str) {
 }
 
 fn click(visual: &mut VisualTestContext, selector: &'static str) {
+    // Cached views replay interaction state, but GPUI does not replay debug
+    // selectors. Rebuild the selector map before asserting the target bounds.
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
     let bounds = visual
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("{selector} rendered"));

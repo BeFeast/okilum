@@ -24,7 +24,10 @@ and release-tag mirror is unchanged. Push the implementation branch to Forgejo
 and open its PR there as usual. Before merge, require gh-check green on this
 exact HEAD, then merge the PR yourself. Any later commit needs a new check.
 Forgejo CI does not run on PRs; main has no required status checks. Forgejo
-continues main, nightly and Stable certification independently.
+runs nightly and on workflow_dispatch; hourly Beta and pre-Stable certification
+remain source-pinned. Main pushes only mirror source or publish releases.
+Ordinary fast manual retries on one ref supersede older manual runs; each
+certification dispatch has its own concurrency group and is never cancelled.
 
 The standard public `ubuntu-24.04` runner has 4 vCPUs. The job records its CPU,
 memory and exact source SHA, verifies the pinned Rust toolchain and the complete

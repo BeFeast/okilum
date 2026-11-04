@@ -46,8 +46,16 @@ pub(super) fn markdown(
     on_link: LinkHandler,
     cx: &App,
 ) -> TextView {
-    TextView::markdown(id, text)
-        .selectable(true)
+    configured(TextView::markdown(id, text), confirmed_root, on_link, cx)
+}
+
+fn configured(
+    view: TextView,
+    confirmed_root: Option<PathBuf>,
+    on_link: LinkHandler,
+    cx: &App,
+) -> TextView {
+    view.selectable(true)
         .selection_format(SelectionFormat::Plain)
         .style(
             reader_text_style(cx.theme())
@@ -202,15 +210,15 @@ impl super::Feed {
         &self,
         id: impl Into<ElementId>,
         text: impl Into<SharedString>,
-        cx: &App,
+        cx: &mut App,
     ) -> TextView {
+        let state = self.rich.borrow_mut().prepare(id.into(), text.into(), cx);
         let root = self
             .parent
             .upgrade()
             .and_then(|parent| parent.read(cx).area.clone());
-        markdown(
-            id,
-            text,
+        configured(
+            TextView::new(&state),
             root,
             crate::project::ProjectView::chat_link_handler(self.parent.clone()),
             cx,

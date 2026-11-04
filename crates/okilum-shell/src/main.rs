@@ -7,6 +7,16 @@
 //! decide the framework (self-driven scroll sweeps, height dumps, frame
 //! timing) is deliberately gone: it measured a decision that has been made.
 
+// Keep transient native frame allocations local to the rendering thread.
+// The test allocation meter wraps this same backend instead of replacing it.
+#[cfg(target_os = "linux")]
+pub(crate) const NATIVE_ALLOCATION: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[cfg(all(test, not(target_os = "linux")))]
+pub(crate) const NATIVE_ALLOCATION: std::alloc::System = std::alloc::System;
+#[cfg(all(target_os = "linux", not(test)))]
+#[global_allocator]
+static NATIVE_ALLOCATOR: mimalloc::MiMalloc = NATIVE_ALLOCATION;
+
 mod about;
 mod app_footprint;
 #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
@@ -67,6 +77,8 @@ mod reader_external_changes;
 mod reader_feedback;
 mod reader_files;
 mod reader_fonts;
+#[cfg(target_os = "linux")]
+mod reader_header_cache;
 mod reader_history;
 mod reader_hover;
 #[cfg(any(target_os = "macos", test))]
@@ -104,6 +116,8 @@ mod reader_open;
 mod reader_open_windows;
 mod reader_outline;
 mod reader_owned_windows;
+#[cfg(target_os = "linux")]
+mod reader_panel_resize;
 mod reader_panes;
 mod reader_pdf;
 mod reader_plain_text;
@@ -366,6 +380,7 @@ actions!(
         FindNext,
         FindPrev,
         Dismiss,
+        DismissManagerModel,
         QuickOpen,
         FullTextSearch,
         SwitchWindowMode,
@@ -663,6 +678,8 @@ fn bind_keys(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-f", FindInNote, Some("Reader > Input")),
         KeyBinding::new("ctrl-k", QuickOpen, Some("Reader > Input")),
+        KeyBinding::new("escape", DismissManagerModel, Some("ManagerModels > Input")),
+        KeyBinding::new("escape", DismissManagerModel, Some("ManagerModels")),
         KeyBinding::new("escape", Dismiss, ctx),
         KeyBinding::new("ctrl-k", QuickOpen, ctx),
         #[cfg(target_os = "macos")]
@@ -1629,6 +1646,12 @@ fn markdown_plugins_at(
 }
 
 struct Reader {
+    #[cfg(target_os = "linux")]
+    header_cache: Entity<reader_header_cache::Header>,
+    #[cfg(target_os = "linux")]
+    layout_signal: Entity<()>,
+    #[cfg(target_os = "linux")]
+    panel_capture: reader_panel_resize::Capture,
     navigation: reader_navigation::State,
     ui_state: reader_ui_state::Session,
     single_file: bool,
@@ -2001,7 +2024,20 @@ impl Reader {
 
         let content_sub = cx.observe(&content, |this, _, cx| this.content_changed(cx));
 
+        #[cfg(target_os = "linux")]
+        let header_cache = {
+            let parent = cx.weak_entity();
+            cx.new(|cx| reader_header_cache::Header::new(parent, cx))
+        };
+        #[cfg(target_os = "linux")]
+        let layout_signal = cx.new(|_| ());
         let mut this = Self {
+            #[cfg(target_os = "linux")]
+            header_cache,
+            #[cfg(target_os = "linux")]
+            layout_signal,
+            #[cfg(target_os = "linux")]
+            panel_capture: Default::default(),
             navigation: Default::default(),
             ui_state: Default::default(),
             loading: None,
@@ -2249,6 +2285,10 @@ impl Reader {
             // Re-entry can precede a compositor's delayed modifier release.
             // Never carry an unfinished gesture across activation boundaries.
             this.recent_switcher.cancel();
+            #[cfg(target_os = "linux")]
+            if !window.is_window_active() && this.resizing_panel.take().is_some() {
+                this.release_panel_pointer(window);
+            }
             cx.notify();
             this.record_ui_state(window.is_window_active(), cx);
             if window.is_window_active() {
@@ -7158,8 +7198,10 @@ fn preserve_reader_selection(id: &'static str, control: impl IntoElement) -> imp
         )
 }
 
+#[cfg(not(target_os = "linux"))]
 #[derive(Clone)]
 struct ReaderPanelDrag;
+#[cfg(not(target_os = "linux"))]
 impl Render for ReaderPanelDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -7536,6 +7578,19 @@ impl Reader {
 
 impl Render for Reader {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = project::performance::Work::start(30);
+        #[cfg(target_os = "linux")]
+        {
+            let _ = self.layout_signal.read(cx);
+            if self.resizing_panel.is_some() && self.panel_capture.get() != window.captured_hitbox()
+            {
+                self.resizing_panel = None;
+            }
+            if self.resizing_panel.is_none() {
+                self.release_panel_pointer(window);
+            }
+        }
         let _render_timing =
             platform::text_diagnostics::time(platform::text_diagnostics::Work::UiRender);
         platform::shaped_line_cache::ShapedLineCache::note_scale_factor(window, cx);
@@ -7748,26 +7803,35 @@ impl Render for Reader {
                                 .w(px(8.))
                                 .h_full(),
                             )
-                            .child(
-                                gpui_base::resize_handle(
-                                    if left {
-                                        "reader-notes-resize"
-                                    } else {
-                                        "reader-backlinks-resize"
+                            .child({
+                                let id = if left {
+                                    "reader-notes-resize"
+                                } else {
+                                    "reader-backlinks-resize"
+                                };
+                                #[cfg(target_os = "linux")]
+                                let handle = reader_panel_resize::handle(
+                                    id,
+                                    self.resizing_panel == Some(panel),
+                                    self.panel_capture.clone(),
+                                    move |_, _, cx| {
+                                        let _ = resize_view.update(cx, |this, cx| {
+                                            this.resizing_panel = Some(panel);
+                                            cx.notify();
+                                        });
                                     },
-                                    Axis::Horizontal,
-                                )
-                                .on_drag(
-                                    ReaderPanelDrag,
-                                    move |drag, _, _, cx| {
+                                );
+                                #[cfg(not(target_os = "linux"))]
+                                let handle = gpui_base::resize_handle(id, Axis::Horizontal)
+                                    .on_drag(ReaderPanelDrag, move |drag, _, _, cx| {
                                         let _ = resize_view.update(cx, |this, cx| {
                                             this.resizing_panel = Some(panel);
                                             cx.notify();
                                         });
                                         cx.new(|_| drag.as_ref().clone())
-                                    },
-                                ),
-                            ),
+                                    });
+                                handle
+                            }),
                     )
                     .into_any_element()
             })
@@ -8019,6 +8083,23 @@ impl Render for Reader {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .map(|view| {
+                #[cfg(target_os = "linux")]
+                let header = if self.board_manager_header_cache(available) {
+                    self.header_cache
+                        .update(cx, |header, cx| header.set_available(available, cx));
+                    self.header_cache
+                        .clone()
+                        .cached(
+                            gpui::StyleRefinement::default()
+                                .w_full()
+                                .h(px(READER_HEADER_HEIGHT))
+                                .flex_shrink_0(),
+                        )
+                        .into_any_element()
+                } else {
+                    self.render_header(available, window, cx)
+                };
+                #[cfg(not(target_os = "linux"))]
                 let header = self.render_header(available, window, cx);
                 let view = if self.embedded_in_workspace {
                     // Workspace owns the window title bar; this is a plain row.
@@ -8145,7 +8226,7 @@ impl Render for Reader {
                                 });
                                 let drag_view = view.clone();
                                 window.on_mouse_event(
-                                    move |event: &MouseMoveEvent, phase, _, cx| {
+                                    move |event: &MouseMoveEvent, phase, window, cx| {
                                         if !phase.bubble() {
                                             return;
                                         }
@@ -8153,14 +8234,23 @@ impl Render for Reader {
                                             let Some(panel) = this.resizing_panel else {
                                                 return;
                                             };
-                                            if !event.dragging()
-                                                || !cx.has_active_drag()
+                                            #[cfg(target_os = "linux")]
+                                            let dragging =
+                                                event.pressed_button == Some(MouseButton::Left);
+                                            #[cfg(not(target_os = "linux"))]
+                                            let dragging = event.dragging() && cx.has_active_drag();
+                                            if !dragging
                                                 || !this.panels.visible(
                                                     panel,
                                                     f32::from(this.body_bounds.size.width),
                                                 )
                                             {
                                                 this.resizing_panel = None;
+                                                #[cfg(target_os = "linux")]
+                                                {
+                                                    this.release_panel_pointer(window);
+                                                    cx.notify();
+                                                }
                                                 return;
                                             }
                                             let requested = if panel == reader_layout::Panel::Notes
@@ -8176,10 +8266,37 @@ impl Render for Reader {
                                                 f32::from(this.body_bounds.size.width),
                                             );
                                             this.set_panel_width(panel, width);
+                                            #[cfg(target_os = "linux")]
+                                            if this.board_manager_header_cache(f32::from(
+                                                this.body_bounds.size.width,
+                                            )) {
+                                                // Geometry changed; Reader source observers and
+                                                // the fixed header have no new presentation data.
+                                                this.layout_signal.update(cx, |_, cx| cx.notify());
+                                            } else {
+                                                cx.notify();
+                                            }
+                                            #[cfg(not(target_os = "linux"))]
                                             cx.notify();
                                         });
                                     },
                                 );
+                                #[cfg(target_os = "linux")]
+                                {
+                                    let exit_view = view.clone();
+                                    window.on_mouse_event(
+                                        move |_: &gpui::MouseExitEvent, phase, window, cx| {
+                                            if phase.capture() {
+                                                let _ = exit_view.update(cx, |this, cx| {
+                                                    if this.resizing_panel.take().is_some() {
+                                                        this.release_panel_pointer(window);
+                                                        cx.notify();
+                                                    }
+                                                });
+                                            }
+                                        },
+                                    );
+                                }
                                 window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
                                     if !phase.bubble() {
                                         return;
@@ -8255,6 +8372,11 @@ impl Render for Reader {
                     .map(|(menu, position)| anchored().position(*position).child(menu.clone())),
             )
             .children(self.render_title_nav_overlay(cx))
+            .map(|view| {
+                #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+                let view = project::performance::Trace::new(view.into_any_element(), 2);
+                view
+            })
     }
 }
 
@@ -12411,7 +12533,7 @@ mod document_link_landing_tests {
                 assert!(v.sidebar_search_focus.is_focused(window));
             });
         }
-        // Drive the actual toolkit drag handle, not a direct state setter.
+        // Drive the production drag handle, not a direct state setter.
         let preference = root.with_extension("layout.json");
         let handle = view.update_in(visual, |v, _, _| {
             v.panel_settings = Some(preference.clone());
@@ -12475,6 +12597,11 @@ mod document_link_landing_tests {
         visual.run_until_parked();
         view.update_in(visual, |v, window, cx| {
             assert!(v.resizing_panel.is_some(), "active drag positive control");
+            #[cfg(target_os = "linux")]
+            assert!(
+                window.captured_hitbox().is_some(),
+                "native capture positive control"
+            );
             v.close_panel(reader_layout::Panel::Notes, window, cx);
             assert!(v.resizing_panel.is_none());
             v.toggle_panel(reader_layout::Panel::Backlinks, window, cx);
@@ -12485,6 +12612,11 @@ mod document_link_landing_tests {
         view.update_in(visual, |v, window, cx| {
             assert_eq!(v.panel_widths.backlinks, reader_layout::DEFAULT_PANEL_WIDTH);
             assert!(v.resizing_panel.is_none());
+            #[cfg(target_os = "linux")]
+            assert!(
+                window.captured_hitbox().is_none(),
+                "closing a panel releases its pointer"
+            );
             cx.stop_active_drag(window);
             v.toggle_panel(reader_layout::Panel::Notes, window, cx);
         });

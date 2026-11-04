@@ -17,6 +17,8 @@ mod agent_skills;
 mod attachments;
 pub(crate) mod board;
 mod chat_ui;
+#[cfg(target_os = "linux")]
+mod chrome;
 #[cfg(native_manager)]
 mod composer;
 mod connections;
@@ -40,6 +42,8 @@ mod message_types;
 mod models;
 #[cfg(native_manager)]
 mod native;
+#[cfg(all(target_os = "linux", any(test, feature = "project-ui-harness")))]
+pub(crate) mod performance;
 #[cfg(native_manager)]
 mod rotation;
 mod rules_reread;
@@ -165,6 +169,8 @@ pub(crate) struct ProjectView {
     last_poll_status: Option<GatewayStatus>,
     #[cfg(native_manager)]
     feed: Entity<feed::Feed>,
+    #[cfg(target_os = "linux")]
+    chrome: Entity<chrome::Chrome>,
     #[cfg(native_manager)]
     composer: Entity<composer::Composer>,
     #[cfg(native_manager)]
@@ -319,6 +325,8 @@ impl ProjectView {
         let parent = cx.entity().downgrade();
         #[cfg(native_manager)]
         let feed = cx.new(|cx| feed::Feed::new(parent.clone(), cx));
+        #[cfg(target_os = "linux")]
+        let chrome = cx.new(|cx| chrome::Chrome::new(parent.clone(), cx));
         #[cfg(native_manager)]
         let composer = cx.new(|cx| {
             let mut composer = composer::Composer::new(compose.clone(), cx);
@@ -495,6 +503,8 @@ impl ProjectView {
             last_poll_status: None,
             #[cfg(native_manager)]
             feed,
+            #[cfg(target_os = "linux")]
+            chrome,
             #[cfg(native_manager)]
             composer,
             #[cfg(native_manager)]
@@ -2117,21 +2127,6 @@ impl Render for ProjectView {
         {
             self.invalidate_rotation(cx);
         }
-        let mut tabs = h_flex().id("project-sections").gap_2().p_2();
-        for (id, label, section) in [
-            ("project-section-manager", "Chat", ProjectSection::Manager),
-            ("project-section-rules", "Rules", ProjectSection::Rules),
-            ("project-section-skills", "Skills", ProjectSection::Skills),
-        ] {
-            tabs = tabs.child(
-                Button::new(id)
-                    .debug_selector(move || format!("project-section-label-{label}"))
-                    .ghost()
-                    .label(label)
-                    .selected(self.section == section)
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_section(section, cx))),
-            );
-        }
         let content = if self.section == ProjectSection::Manager {
             let content = self.render_body(window, cx);
             #[cfg(native_manager)]
@@ -2151,22 +2146,20 @@ impl Render for ProjectView {
         };
         // The mounted workspace owns the identity header. Section navigation
         // and notices follow it, so the conversation aligns with the panel top.
-        let status = self
-            .gateway
-            .as_ref()
-            .map(|gateway| gateway.status())
-            .unwrap_or(GatewayStatus::NotConnected);
-        let open = self
-            .identity
-            .as_ref()
-            .zip(self.chat.as_ref())
-            .map(|(identity, chat)| identity.thread_url(&chat.thread_id));
-        let surface = v_flex()
-            .size_full()
-            .min_w_0()
-            .min_h_0()
-            .child(self.render_chat_header(&status, open, cx))
-            .child(tabs);
+        #[cfg(target_os = "linux")]
+        let chrome = self
+            .chrome
+            .clone()
+            .cached(
+                StyleRefinement::default()
+                    .w_full()
+                    .h(px(40.) + window.rem_size() * 3.)
+                    .flex_shrink_0(),
+            )
+            .into_any_element();
+        #[cfg(not(target_os = "linux"))]
+        let chrome = self.render_chrome(cx);
+        let surface = v_flex().size_full().min_w_0().min_h_0().child(chrome);
         #[cfg(native_manager)]
         let surface = surface
             .when_some(self.rotation_notice.clone(), |surface, error| {
