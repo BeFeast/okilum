@@ -1133,6 +1133,7 @@ impl Board {
                 okilum_t3::board::Issue {
                     number,
                     title: format!("Synthetic task {number}"),
+                    report: Default::default(),
                     updated_at: chrono::DateTime::from_timestamp(1_700_000_000 - number as i64, 0)
                         .unwrap()
                         .to_rfc3339(),
