@@ -311,6 +311,8 @@ pub(super) struct State {
     pub loading: bool,
     /// The T3 connections of the last status sweep, kept for icon writes.
     pub t3_gateways: Gateways,
+    /// Credential changes invalidate remote results without cancelling discovery.
+    pub gateway_generation: u64,
     /// `discovery` holds this vault's scan, possibly empty (#1518).
     pub discovered: bool,
     pub generation: u64,
@@ -557,6 +559,7 @@ impl Reader {
         let projects = self.project_navigation.discovery.projects.clone();
         let state = self.session_directory.clone();
         let generation = self.project_navigation.generation;
+        let gateway_generation = self.project_navigation.gateway_generation;
         let vault = self.vault_root.clone();
         cx.spawn_in(window, async move |this, cx| {
             let Some(gateways) = t3_gateways(&this, state.clone(), cx).await else {
@@ -578,7 +581,9 @@ impl Reader {
                 .await;
             let current = this
                 .update_in_own_window(cx, |this, _, cx| {
-                    if this.vault_root != vault || this.project_navigation.generation != generation
+                    if this.vault_root != vault
+                        || this.project_navigation.generation != generation
+                        || this.project_navigation.gateway_generation != gateway_generation
                     {
                         return false;
                     }
@@ -599,7 +604,10 @@ impl Reader {
                 .spawn(async move { okilum_t3::projects::statuses(&projects, &gateways) })
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
-                if this.vault_root == vault && this.project_navigation.generation == generation {
+                if this.vault_root == vault
+                    && this.project_navigation.generation == generation
+                    && this.project_navigation.gateway_generation == gateway_generation
+                {
                     this.project_navigation.statuses = statuses;
                     this.project_navigation.status_managers = managers;
                     this.sync_projects_picker_statuses(cx);
@@ -641,6 +649,7 @@ impl Reader {
         let state = self.session_directory.clone();
         let vault = self.vault_root.clone();
         let known = self.project_navigation.t3_gateways.clone();
+        let gateway_generation = self.project_navigation.gateway_generation;
         cx.spawn_in(window, async move |this, cx| {
             let gateways = if known.is_empty() {
                 match t3_gateways(&this, state.clone(), cx).await {
@@ -664,7 +673,9 @@ impl Reader {
                 })
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
-                if this.vault_root != vault {
+                if this.vault_root != vault
+                    || this.project_navigation.gateway_generation != gateway_generation
+                {
                     return;
                 }
                 if this.project_navigation.t3_gateways.is_empty() {

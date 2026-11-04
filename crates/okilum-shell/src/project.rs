@@ -2266,8 +2266,8 @@ impl Reader {
                                 |this, _, _: &NativeConnected, window, cx| {
                                     // Discard pre-pairing snapshots before refreshing
                                     // project status and icon gateways with the saved bearer.
-                                    this.project_navigation.generation =
-                                        this.project_navigation.generation.wrapping_add(1);
+                                    this.project_navigation.gateway_generation =
+                                        this.project_navigation.gateway_generation.wrapping_add(1);
                                     this.project_navigation.t3_gateways.clear();
                                     this.refresh_project_statuses(window, cx);
                                 },
