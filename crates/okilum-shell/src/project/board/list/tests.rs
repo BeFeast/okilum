@@ -105,12 +105,13 @@ fn list_2530_virtualises_240_rows_and_keyboard_reaches_tail_without_reprojection
     cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
     let (board, visual) = open(cx, area.path(), fixture(240));
+    // No live issues are loaded: main orders missing-source rows descending.
     click(visual, "board-list-group-Queue");
-    assert!(visual.debug_bounds("board-list-row-1").is_some());
-    assert!(visual.debug_bounds("board-list-row-240").is_none());
+    assert!(visual.debug_bounds("board-list-row-240").is_some());
+    assert!(visual.debug_bounds("board-list-row-1").is_none());
     board.update_in(visual, |board, window, cx| {
         board.focus.focus(window, cx);
-        board.selected = Some(239);
+        board.selected = Some(2);
         board.list.rendered_rows = 0;
         cx.notify();
     });
@@ -123,10 +124,10 @@ fn list_2530_virtualises_240_rows_and_keyboard_reaches_tail_without_reprojection
     board.update_in(visual, |board, window, _| {
         assert!(board.focus.is_focused(window))
     });
-    assert!(visual.debug_bounds("board-list-row-240").is_some());
-    assert!(visual.debug_bounds("board-list-row-1").is_none());
+    assert!(visual.debug_bounds("board-list-row-1").is_some());
+    assert!(visual.debug_bounds("board-list-row-240").is_none());
     board.read_with(visual, |board, _| {
-        assert_eq!(board.selected, Some(240));
+        assert_eq!(board.selected, Some(1));
         assert_eq!(board.list.publications, before);
         assert!(
             board.list.rendered_rows > 0,
@@ -140,11 +141,11 @@ fn list_2530_virtualises_240_rows_and_keyboard_reaches_tail_without_reprojection
     visual.simulate_keystrokes("up enter");
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-list-details").is_some());
-    assert!(visual.debug_bounds("board-note-239-0").is_some());
+    assert!(visual.debug_bounds("board-note-2-0").is_some());
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-list-details").is_none());
-    board.read_with(visual, |board, _| assert_eq!(board.selected, Some(239)));
+    board.read_with(visual, |board, _| assert_eq!(board.selected, Some(2)));
 }
 #[test]
 fn list_2530_source_time_does_not_invent_age_and_ci_type_is_theme_role() {
