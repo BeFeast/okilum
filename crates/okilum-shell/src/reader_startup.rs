@@ -436,7 +436,16 @@ fn show_entry(roots: Vec<PathBuf>, state: EntryState, cx: &mut App) {
         super::window_state::track(&root, frame_key, window, cx);
         root
     }) {
-        Ok(window) => cx.global_mut::<Startup>().entry = Some(window.into()),
+        Ok(window) => {
+            // Updating a typed WindowHandle<Root> also borrows Root. Notifications
+            // update Root themselves, so use the window-only handle here.
+            let window = AnyWindowHandle::from(window);
+            cx.global_mut::<Startup>().entry = Some(window);
+            #[cfg(target_os = "linux")]
+            let _ = window.update(cx, |_, window, cx| {
+                super::reader_sync_conflicts::show_startup_notice(window, cx);
+            });
+        }
         Err(error) => eprintln!("Cannot open Reader entry: {error:#}"),
     }
 }
@@ -878,6 +887,45 @@ mod tests {
                 .downcast::<Entry>()
                 .unwrap()
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    #[gpui::test]
+    fn issue2044_startup_recovery_notice_is_visible_without_a_vault(cx: &mut TestAppContext) {
+        use gpui_component::WindowExt;
+        cx.update(|cx| {
+            crate::test_init(cx);
+            cx.set_global(Startup::default());
+            cx.set_global(super::super::reader_sync_conflicts::StartupNotice(vec![
+                "Recovery needs attention; use Recover notes.".into(),
+            ]));
+            show_entry(
+                Vec::new(),
+                EntryState {
+                    directory: None,
+                    missing: Default::default(),
+                    notice: None,
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let window = cx.global::<Startup>().entry.unwrap();
+            window
+                .update(cx, |_, window, cx| {
+                    assert_eq!(
+                        window.notifications(cx).len(),
+                        1,
+                        "global notice on the start screen"
+                    );
+                })
+                .unwrap();
+            assert!(cx
+                .global::<super::super::reader_sync_conflicts::StartupNotice>()
+                .0
+                .is_empty());
+        });
     }
 
     #[gpui::test]

@@ -205,7 +205,7 @@ enum Operation {
     },
     #[cfg(target_os = "linux")]
     Inspect {
-        request: inventory::Request,
+        request: Box<inventory::Request>,
     },
 }
 #[derive(Serialize, Deserialize)]
@@ -812,7 +812,7 @@ impl Controller {
             #[cfg(target_os = "linux")]
             Operation::Inspect { request } => {
                 drop(db);
-                self.inspect_request(scope, &signer, request)
+                self.inspect_request(scope, &signer, *request)
                     .map(|response| Reply::Inspection { response })
             }
             operation => self.dispatch(&mut db, scope, operation, signer),
@@ -1132,7 +1132,7 @@ fn decode_url(input: &str) -> Result<Offer> {
     );
     let encoded = url.fragment().context("pairing capability missing")?;
     ensure!(
-        encoded.len() % 2 == 0 && encoded.bytes().all(|b| b.is_ascii_hexdigit()),
+        encoded.len().is_multiple_of(2) && encoded.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid pairing capability"
     );
     let bytes = (0..encoded.len())

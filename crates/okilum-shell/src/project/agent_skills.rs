@@ -71,7 +71,7 @@ pub(super) fn render<R: Clone + Eq>(
     {
         section = section.child(
             div()
-                .debug_selector(move || format!("project-skills-diagnostic-{index}").into())
+                .debug_selector(move || format!("project-skills-diagnostic-{index}"))
                 .child(diagnostic.clone()),
         );
     }
@@ -93,7 +93,7 @@ pub(super) fn render<R: Clone + Eq>(
         let on_open = on_open.clone();
         section = section.child(
             div()
-                .debug_selector(move || format!("project-skill-{index}").into())
+                .debug_selector(move || format!("project-skill-{index}"))
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -103,7 +103,7 @@ pub(super) fn render<R: Clone + Eq>(
                 .child(source)
                 .child(
                     Button::new(("open-project-skill", index))
-                        .debug_selector(move || format!("open-project-skill-{index}").into())
+                        .debug_selector(move || format!("open-project-skill-{index}"))
                         .ghost()
                         .label("Open SKILL.md")
                         .on_click(move |_, window, cx| {

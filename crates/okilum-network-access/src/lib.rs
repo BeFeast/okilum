@@ -116,10 +116,6 @@ mod tests {
     }
     #[test]
     fn future_poll_carries_permission_to_a_worker_and_does_not_leak_it() {
-        struct Wake;
-        impl std::task::Wake for Wake {
-            fn wake(self: Arc<Self>) {}
-        }
         let access = NetworkAccess::new(true);
         let retained = access.clone();
         let future = scoped(access, async { NetworkAccess::current().allowed() });
@@ -129,7 +125,7 @@ mod tests {
                 NetworkAccess::current().allowed(),
                 "standalone worker starts unbound"
             );
-            let waker = std::task::Waker::from(Arc::new(Wake));
+            let waker = std::task::Waker::noop().clone();
             let mut cx = std::task::Context::from_waker(&waker);
             let mut future = Box::pin(future);
             assert_eq!(

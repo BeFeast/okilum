@@ -6,8 +6,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 
 // Exact existing bounded UTF-8/BOM codec and escaping fence builder. No new reader.
-#[path = "../reader_plain_text/source.rs"]
-mod source;
+use crate::reader_plain_text::source;
 
 mod policy {
     use std::path::PathBuf;

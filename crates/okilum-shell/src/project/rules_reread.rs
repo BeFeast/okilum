@@ -15,6 +15,7 @@ use okilum_t3::{
 /// it to `acknowledge` only on matching queue acceptance. Retry uses that same
 /// retained journal record. Neither queue acceptance nor a send failure asserts
 /// that the Manager actually reloaded rules.
+#[allow(dead_code, reason = "offer click adapter, not wired yet")]
 pub fn rules_reread_intent(
     refresh: &RulesRefresh,
     clicked: &RulesOffer,

@@ -4,12 +4,14 @@ use gpui_component::input::clipboard::ClipboardReadError as Error;
 pub(crate) const MAX_IMAGE: usize = crate::note_paste::offer::MAX_IMAGE_BYTES;
 
 pub(crate) fn unicode(bytes: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
-    if bytes.len() % 2 != 0 || bytes.len() > limit * 2 + 64 {
+    if !bytes.len().is_multiple_of(2) || bytes.len() > limit * 2 + 64 {
         return Err(Error::TooLarge);
     }
     let mut words = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair));
     let mut terminated = false;
     let words: Vec<_> = words
         .by_ref()

@@ -325,6 +325,7 @@ impl Form {
 
     /// Parent loads the approved exact target on its serial worker first.
     /// Listing/selecting never overwrites this form's independent draft.
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub(super) fn begin_session_chooser(&mut self, target: SessionTarget, cx: &mut Context<Self>) {
         if self.chooser_target.as_ref() != Some(&target) {
             self.selection_revision = None;
@@ -1336,7 +1337,7 @@ impl ProjectView {
                                 view.express_selected(form.clone(), chosen, false, window, cx);
                             } else {
                                 view.express_hold(
-                                    &form,
+                                    form,
                                     "Choose an exact retained session before refreshing",
                                     cx,
                                 );
@@ -1351,7 +1352,7 @@ impl ProjectView {
                                 view.express_selected(form.clone(), chosen, true, window, cx);
                             } else {
                                 view.express_hold(
-                                    &form,
+                                    form,
                                     "Choose an exact retained session before reading history",
                                     cx,
                                 );

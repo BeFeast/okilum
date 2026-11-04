@@ -544,13 +544,9 @@ mod filesystem_regressions {
         use std::{
             future::Future,
             pin::Pin,
-            sync::{mpsc, Arc},
-            task::{Context, Poll, Wake, Waker},
+            sync::mpsc,
+            task::{Context, Poll, Waker},
         };
-        struct Noop;
-        impl Wake for Noop {
-            fn wake(self: Arc<Self>) {}
-        }
         let sandbox = Sandbox::new();
         let work = Work::default();
         let owner = work.reserve().unwrap().owned(sandbox.open());
@@ -567,7 +563,7 @@ mod filesystem_regressions {
         let queued = owner.into_queued(next, |session| session);
         work.close();
         let mut job = Box::pin(queued.job(std::future::ready));
-        let waker = Waker::from(Arc::new(Noop));
+        let waker = Waker::noop().clone();
         let Poll::Ready(output) = Pin::as_mut(&mut job).poll(&mut Context::from_waker(&waker))
         else {
             panic!("fixture returns");
@@ -751,10 +747,6 @@ mod completion_regressions {
             self.1.store(true, Ordering::Release);
         }
     }
-    struct Wake;
-    impl std::task::Wake for Wake {
-        fn wake(self: Arc<Self>) {}
-    }
     #[test]
     fn cancel_and_return_signal_wait_for_actual_future_cleanup() {
         let work = Work::default();
@@ -766,7 +758,7 @@ mod completion_regressions {
                 .queued(PendingCleanup(release.clone(), cleaned.clone()))
                 .join(|future| future),
         );
-        let waker = std::task::Waker::from(Arc::new(Wake));
+        let waker = std::task::Waker::noop().clone();
         let mut cx = Context::from_waker(&waker);
         assert!(future.as_mut().poll(&mut cx).is_pending());
         let (send, receive) = std::sync::mpsc::channel();
@@ -854,7 +846,7 @@ mod completion_regressions {
         drop(parent);
         assert_eq!(work.snapshot().pending, 1);
         assert!(receive.try_recv().is_err());
-        let waker = std::task::Waker::from(Arc::new(Wake));
+        let waker = std::task::Waker::noop().clone();
         let mut cx = Context::from_waker(&waker);
         let Poll::Ready(returned) = job.as_mut().poll(&mut cx) else {
             panic!("positive control: worker returns");
@@ -900,7 +892,7 @@ mod completion_ownership_regressions {
             atomic::{AtomicBool, Ordering},
             mpsc, Arc,
         },
-        task::{Context, Poll, Wake, Waker},
+        task::{Context, Poll, Waker},
     };
     struct Resource {
         cleaned: Arc<AtomicBool>,
@@ -911,12 +903,8 @@ mod completion_ownership_regressions {
             self.cleaned.store(true, Ordering::Release);
         }
     }
-    struct Noop;
-    impl Wake for Noop {
-        fn wake(self: Arc<Self>) {}
-    }
     fn poll<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
-        future.poll(&mut Context::from_waker(&Waker::from(Arc::new(Noop))))
+        future.poll(&mut Context::from_waker(Waker::noop()))
     }
     fn fixture() -> (Work, Resource, mpsc::Receiver<Snapshot>) {
         let work = Work::default();

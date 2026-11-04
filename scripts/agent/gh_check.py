@@ -39,7 +39,7 @@ def verdict(info, sha, benchmark=False, publication_controls=False):
     if len(jobs) != 1 or jobs[0].get("name") != "linux":
         return 75
     steps = jobs[0].get("steps", [])
-    required = {"Prepare and verify pinned vendor and comrak",
+    required = {"Prepare and verify pinned vendor and comrak", "Lint every workspace target offline",
                 "Build Linux desktop offline", "Run complete okilum-core suite offline", "Run Linux Rust suites offline"}
     if publication_controls:
         required.add("Compare editor publication with pinned main on this host")

@@ -32,7 +32,9 @@ certification dispatch has its own concurrency group and is never cancelled.
 The standard public `ubuntu-24.04` runner has 4 vCPUs. The job records its CPU,
 memory and exact source SHA, verifies the pinned Rust toolchain and the complete
 gpui-kit/comrak patch trees, fetches public dependencies with the workspace lock,
-then builds the Linux desktop/sync supervisor and runs the full `okilum-core`
+then runs the scheduled shared gate's exact lint command,
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, builds the
+Linux desktop/sync supervisor and runs the full `okilum-core`
 suite and `scripts/ci/linux-rust-tests.sh` with Cargo offline. These are the same
 Rust suites called by full Linux acceptance (`scripts/ci/check-linux.sh`); the
 nightly acceptance Python/packaging checks retain their existing scope. AppImage process fixtures run serially so a
