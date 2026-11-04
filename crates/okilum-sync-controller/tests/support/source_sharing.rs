@@ -983,7 +983,7 @@ fn managed_history_2045_broken_folder_warns_while_other_vault_receives() -> Resu
 fn managed_real_conflicts_resolve_each_choice_with_hashes() -> Result<()> {
     use okilum_sync_controller::conflicts::{self, ApplyOutcome, Choice};
     use std::time::{Duration, SystemTime};
-    let mut pair = Pair::loopback()?;
+    let pair = Pair::loopback()?;
     pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
     let id = pair.shared_catalog()?;
     pair.second.attach(pair.peer, &id, &pair.target.vault)?;

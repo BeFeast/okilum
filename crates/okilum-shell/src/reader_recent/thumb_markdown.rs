@@ -17,9 +17,7 @@ use std::{
 };
 
 // Reuse the existing bounded, lossless UTF-8 reader, including BOM/binary handling.
-// It is private to its original preview, so include that exact implementation.
-#[path = "../reader_plain_text/source.rs"]
-mod source;
+use crate::reader_plain_text::source;
 
 mod policy {
     use std::path::PathBuf;

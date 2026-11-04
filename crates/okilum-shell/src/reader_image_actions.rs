@@ -493,6 +493,7 @@ struct SourceSnapshot {
     generation: u64,
 }
 impl SourceFacts {
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub(super) fn refresh(
         &self,
         reader: &Reader,

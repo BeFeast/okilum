@@ -94,7 +94,7 @@ fn list_2530_default_and_groups_persist_per_project(cx: &mut TestAppContext) {
     visual.run_until_parked();
     board.read_with(visual, |board, _| assert!(!board.list.details_open));
     assert!(visual.debug_bounds("board-columns").is_some());
-    board.read_with(visual, |board, cx| {
+    board.read_with(visual, |_board, cx| {
         let restored = State::load(area.path(), cx);
         assert_eq!(restored.preferences.mode, Mode::Board);
         assert!(!restored.preferences.collapsed[Column::Queue as usize]);

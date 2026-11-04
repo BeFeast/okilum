@@ -1,6 +1,9 @@
 //! Explicit memory-only credentials after an OS-store failure. Never serialized.
 use super::*;
 
+/// Credential kind label and secret bytes read from the platform store.
+type KeyEntry = (String, Vec<u8>);
+
 #[derive(Default)]
 pub(super) struct Credentials {
     identity: String,
@@ -66,11 +69,7 @@ impl Panel {
         }
         cx.write_credentials(identity, "ApiKey", key.as_bytes())
     }
-    pub(super) fn read_key(
-        &self,
-        identity: &str,
-        cx: &App,
-    ) -> Task<Result<Option<(String, Vec<u8>)>>> {
+    pub(super) fn read_key(&self, identity: &str, cx: &App) -> Task<Result<Option<KeyEntry>>> {
         #[cfg(test)]
         if let Some(store) = &self.credentials.store {
             let store = store.lock().unwrap();

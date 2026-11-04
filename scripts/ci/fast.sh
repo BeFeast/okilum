@@ -6,10 +6,10 @@ export CARGO_INCREMENTAL=0
 export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
 export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
 phase() {
-    local name=$1 started=$SECONDS result=0
-    shift
+    local name=$1 limit=$2 started=$SECONDS result=0
+    shift 2
     echo "FAST_PHASE_START=$name unix=$(date +%s)"
-    "$@" || result=$?
+    bash scripts/ci/test-group.sh "$name" "$limit" "$@" || result=$?
     echo "FAST_PHASE_END=$name elapsed=$((SECONDS - started)) status=$result"
     return "$result"
 }
@@ -31,19 +31,19 @@ if [ "${RUNNER_OS:-}" = macOS ]; then
 fi
 if [ "${RUNNER_OS:-Linux}" = Linux ]; then
     # #2369: report the executed regressions even if a later desktop phase times out.
-    phase appimage-channel-tests cargo test --locked -p okilum-appimage --lib channel -- --test-threads=1
+    phase appimage-channel-tests 300 cargo test --locked -p okilum-appimage --lib channel -- --test-threads=1
 fi
-phase build "$@"
+phase build 540 "$@"
 # Compile every workspace test target; fixture/API drift must block merge even
 # when its suite runs only during full overnight acceptance. Do not execute it.
-phase workspace-test-check cargo check --locked --workspace --tests
+phase workspace-test-check 540 cargo check --locked --workspace --tests
 # Pure HTML/Markdown parsing tests, no UI, process trees, network or timers.
-phase list-tests cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
+phase list-tests 120 cargo test --locked -p okilum-paste --lib -- --list | tee "${RUNNER_TEMP:?}/fast-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/fast-tests.txt"
-phase paste-tests cargo test --locked -p okilum-paste --lib -- --test-threads=1
+phase paste-tests 120 cargo test --locked -p okilum-paste --lib -- --test-threads=1
 
 # The scoped Live Preview gate uses the same locked warm build helper. Ordinary
 # fast admission keeps its existing scope; the separate gate executes GUI tests.
 if [ "${OKILUM_LIVE_PREVIEW_TESTS:-0}" = 1 ]; then
-    phase live-preview-regressions bash scripts/ci/live-preview-tests.sh
+    phase live-preview-regressions 360 bash scripts/ci/live-preview-tests.sh
 fi

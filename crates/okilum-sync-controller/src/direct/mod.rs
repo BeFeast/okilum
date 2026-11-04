@@ -6,6 +6,7 @@ mod history;
 pub use history::{HistoryWarning, RetentionDays, RetentionSetting};
 #[cfg(target_os = "linux")]
 pub mod inventory;
+mod lan;
 mod origin;
 #[cfg(target_os = "linux")]
 mod source;
@@ -20,7 +21,7 @@ pub use existing::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    net::{IpAddr, SocketAddr, TcpListener, UdpSocket},
+    net::{IpAddr, SocketAddr, TcpListener},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -210,7 +211,7 @@ enum Operation {
     },
     #[cfg(target_os = "linux")]
     Inspect {
-        request: inventory::Request,
+        request: Box<inventory::Request>,
     },
 }
 #[derive(Serialize, Deserialize)]
@@ -388,10 +389,9 @@ impl Controller {
         Ok(fresh)
     }
     pub fn begin_pairing(&self, name: &str) -> Result<Snapshot> {
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        // UDP connect selects a local route; no datagram or discovery is sent.
-        socket.connect("192.0.2.1:9")?;
-        let ip = socket.local_addr()?.ip();
+        self.check()?;
+        validate_name(name)?;
+        let ip = lan::address().context("cannot select a LAN address for pairing")?;
         self.begin_pairing_at(name, "0.0.0.0:0".parse()?, ip)
     }
     pub fn begin_pairing_at(
@@ -409,14 +409,17 @@ impl Controller {
         self.listen(bind, advertised)?;
         let mut db = self.shared.db.lock().unwrap();
         ensure!(db.peers.len() < MAX_PEERS, "paired computer limit reached");
-        ensure!(
-            db.invitation
-                .as_ref()
-                .is_none_or(|i| i.offer.expires <= now().unwrap_or(0)
-                    || i.rejected
-                    || i.approved.is_some()),
-            "cancel the current invitation before creating another"
-        );
+        // Add computer is retryable, including after reopening Settings. Keep
+        // an in-flight request's capability so its approval remains valid.
+        let time = now()?;
+        if db.invitation.as_ref().is_some_and(|i| {
+            i.offer.expires > time
+                && !i.rejected
+                && i.approved.is_none()
+                && Some(i.offer.endpoint) == db.endpoint
+        }) {
+            return snapshot(&db);
+        }
         db.name = name.to_owned();
         db.invitation = Some(Invitation {
             offer: Offer {
@@ -439,7 +442,19 @@ impl Controller {
         if current.is_some() {
             return Ok(());
         }
-        let listener = TcpListener::bind(bind).context("cannot start LAN pairing listener")?;
+        let listener = TcpListener::bind(bind)
+            .or_else(|wildcard_error| {
+                if bind.ip().is_unspecified() && bind.port() == 0 {
+                    // Some host policies disallow wildcard listeners but permit the
+                    // actual LAN interface. Still ask the OS for an unused port.
+                    TcpListener::bind(SocketAddr::new(advertised, 0)).with_context(|| {
+                        format!("wildcard pairing listener failed: {wildcard_error}")
+                    })
+                } else {
+                    Err(wildcard_error.into())
+                }
+            })
+            .context("cannot start LAN pairing listener")?;
         listener.set_nonblocking(true)?;
         let endpoint = SocketAddr::new(advertised, listener.local_addr()?.port());
         self.shared.db.lock().unwrap().endpoint = Some(endpoint);
@@ -820,7 +835,7 @@ impl Controller {
             #[cfg(target_os = "linux")]
             Operation::Inspect { request } => {
                 drop(db);
-                self.inspect_request(scope, &signer, request)
+                self.inspect_request(scope, &signer, *request)
                     .map(|response| Reply::Inspection { response })
             }
             operation => self.dispatch(&mut db, scope, operation, signer),
@@ -1142,7 +1157,7 @@ fn decode_url(input: &str) -> Result<Offer> {
     );
     let encoded = url.fragment().context("pairing capability missing")?;
     ensure!(
-        encoded.len() % 2 == 0 && encoded.bytes().all(|b| b.is_ascii_hexdigit()),
+        encoded.len().is_multiple_of(2) && encoded.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid pairing capability"
     );
     let bytes = (0..encoded.len())

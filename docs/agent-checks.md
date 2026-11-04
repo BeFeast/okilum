@@ -32,13 +32,43 @@ certification dispatch has its own concurrency group and is never cancelled.
 The standard public `ubuntu-24.04` runner has 4 vCPUs. The job records its CPU,
 memory and exact source SHA, verifies the pinned Rust toolchain and the complete
 gpui-kit/comrak patch trees, fetches public dependencies with the workspace lock,
-then builds the Linux desktop/sync supervisor and runs the full `okilum-core`
+then runs the scheduled shared gate's exact lint command,
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, builds the
+Linux desktop/sync supervisor and runs the full `okilum-core`
 suite and `scripts/ci/linux-rust-tests.sh` with Cargo offline. These are the same
 Rust suites called by full Linux acceptance (`scripts/ci/check-linux.sh`); the
-nightly acceptance Python/packaging checks retain their existing scope. AppImage process fixtures run serially so a
+nightly acceptance packaging checks retain their existing scope. The agent job
+also runs complete discovery of `scripts/ci`, `scripts/releases` and
+`scripts/updater`, and the helper requires that step to pass. AppImage process fixtures run serially so a
 concurrent fork cannot temporarily retain another fixture's installation lock
 before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
+
+Every job that discovers these Python suites, including local/hosted full gates
+and the fast and Sync fixture lanes, runs `scripts/ci/setup-python-tests.sh`
+first. It creates a fresh venv, installs `scripts/ci/requirements.txt` and adds
+its executables to the Actions `GITHUB_PATH`. `PyYAML==6.0.3` is explicit;
+host site-packages and pip configuration are excluded. Keeping the full YAML
+parser preserves workflow expressions, flow collections, block scalars and
+the existing BaseLoader/safe_load semantics without maintaining a partial
+parser in our tests. A guard rejects missing or mismatched dependencies with
+the installation command. Setup failure stops the job before discovery.
+
+For local Python-only checks, start with a fresh venv (no host PyYAML), install
+the same requirements and run all three suites:
+
+```bash
+test_env=$(mktemp -d)
+python3 -m venv "$test_env"
+"$test_env/bin/python3" -I -m pip --isolated install -r scripts/ci/requirements.txt
+"$test_env/bin/python3" -I scripts/ci/python_dependencies.py
+for suite in ci releases updater; do
+  "$test_env/bin/python3" -I -m unittest discover -s "scripts/$suite" -p 'test_*.py'
+done
+```
+
+Debian/Ubuntu jobs install `python3-venv` explicitly. Job-created environments
+are temporary; Actions owns their lifetime.
 
 Rust downloads, verified generated vendor trees and `target/` are cached with the toolchain, dependency/manifests,
 vendor patches and workflow configuration in the key. Each source SHA can save a

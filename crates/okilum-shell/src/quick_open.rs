@@ -2505,7 +2505,7 @@ mod tests {
         visual.run_until_parked();
         release.try_send(()).unwrap();
         visual.run_until_parked();
-        reader.update_in(visual, |v, window, cx| {
+        reader.update_in(visual, |v, _window, _cx| {
             let paths: Vec<_> = v
                 .quick_open
                 .rows

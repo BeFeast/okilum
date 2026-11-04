@@ -81,6 +81,7 @@ fn ghost_button(
 
 /// Compact links retain the same Ghost colors/focus/keyboard contract without
 /// adding a second full-size flex container around an icon and a label.
+#[allow(dead_code, reason = "Board compact link; no caller yet")]
 pub(super) fn compact_action(
     id: impl Into<ElementId>,
     window: &mut Window,

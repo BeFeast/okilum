@@ -344,7 +344,7 @@ mod tests {
             let query = combined_query(std::slice::from_ref(&chip), &[]);
             assert_eq!(
                 split_query(&Query::parse(&query.to_string()).unwrap()).0,
-                [chip.clone()]
+                std::slice::from_ref(&chip)
             );
             let excluded = FilterChip {
                 mode: FilterMode::Exclude,
@@ -371,7 +371,7 @@ mod tests {
         );
         assert_eq!(hits(&text, &chip), [0, 1]);
         let query = combined_query(std::slice::from_ref(&chip), &[]);
-        assert_eq!(split_query(&query).0, [chip.clone()]);
+        assert_eq!(split_query(&query).0, std::slice::from_ref(&chip));
         assert_eq!(hits(&(text.clone() + &text), &chip), [0, 1, 5, 6]);
         assert!(combined_query(
             &[FilterChip {

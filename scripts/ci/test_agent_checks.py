@@ -23,8 +23,9 @@ def receipt():
     return {"headSha": SHA, "status": "completed", "conclusion": "success", "jobs": [
         {"name": "linux", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
-                "Prepare and verify pinned vendor and comrak", "Build Linux desktop offline",
-                "Run complete okilum-core suite offline", "Run Linux Rust suites offline")]}]}
+                "Prepare and verify pinned vendor and comrak", "Lint every workspace target offline", "Build Linux desktop offline",
+                "Run complete okilum-core suite offline", "Run Linux Rust suites offline",
+                "Run CI, releases and updater Python suites")]}]}
 
 
 class VerdictTests(unittest.TestCase):
@@ -45,16 +46,19 @@ class VerdictTests(unittest.TestCase):
 
     def test_other_head_or_missing_tests_cannot_pass(self):
         self.assertEqual(helper.verdict(receipt(), "b" * 40), 75)
-        for index in range(4):
+        for index in range(6):
             data = receipt()
             data["jobs"][0]["steps"].pop(index)
             self.assertEqual(helper.verdict(data, SHA), 75)
 
     def test_failure_vs_infrastructure_and_cancelled(self):
-        for name, expected in (("Run Linux Rust suites offline", 1),
+        for name, expected in (("Lint every workspace target offline", 1),
+                               ("Run CI, releases and updater Python suites", 1),
+                               ("Run Linux Rust suites offline", 1),
                                ("Run complete okilum-core suite offline", 1),
                                ("Prepare and verify pinned vendor and comrak", 1),
                                ("Install system libraries", 75),
+                               ("Prepare isolated Python test dependencies", 75),
                                ("actions/checkout@v4", 75)):
             data = receipt()
             data["conclusion"] = "failure"

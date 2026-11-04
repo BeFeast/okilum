@@ -129,11 +129,11 @@ pub fn record(id: usize) -> Value {
         .unwrap()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap();
-    let mut source = json!({"@timestamp":stamp,"service":if id % 2 == 0 {"Checkout"} else {"Worker"},"level":"INFO","category":if id % 2 == 0 {"Web"} else {"Batch"},"request_id":format!("request-{id}"),"details":format!("Synthetic investigation event {id}: a worker completed a read operation and emitted a structured result with full context."),"active":id % 2 == 0,"text_only":"analyzed content", "labels":["synthetic","demo"], "context":{"operation":"read"},"pod.info":{"name":"synthetic-pod"}});
-    if id % 2 == 0 {
+    let mut source = json!({"@timestamp":stamp,"service":if id.is_multiple_of(2) {"Checkout"} else {"Worker"},"level":"INFO","category":if id.is_multiple_of(2) {"Web"} else {"Batch"},"request_id":format!("request-{id}"),"details":format!("Synthetic investigation event {id}: a worker completed a read operation and emitted a structured result with full context."),"active":id.is_multiple_of(2),"text_only":"analyzed content", "labels":["synthetic","demo"], "context":{"operation":"read"},"pod.info":{"name":"synthetic-pod"}});
+    if id.is_multiple_of(2) {
         source["duration"] = json!(id);
     }
-    json!({"_index":if id % 2 == 0 {"remote-a:events"} else {"remote-b:events"},"_id":id.to_string(),"_source":source,"sort":[nanos,id % 37]})
+    json!({"_index":if id.is_multiple_of(2) {"remote-a:events"} else {"remote-b:events"},"_id":id.to_string(),"_source":source,"sort":[nanos,id % 37]})
 }
 /// Investigation fixture: repeated ids across hours, aliases and long text without message.
 pub fn investigation_record(id: usize) -> Value {
@@ -146,7 +146,7 @@ pub fn investigation_record(id: usize) -> Value {
     let source = event["_source"].as_object_mut().unwrap();
     source.remove("request_id");
     source.insert(
-        if id % 4 == 0 {
+        if id.is_multiple_of(4) {
             "request_id"
         } else {
             "trace_id"
@@ -640,17 +640,14 @@ fn search_response(records: &[Value], params: &Value, scenario: &Scenario) -> Va
             );
             let mut values: BTreeMap<String, (Value, u64)> = BTreeMap::new();
             for row in &rows {
-                match mapped
+                if let Some(value) = mapped
                     .then(|| lookup(row, name))
                     .flatten()
                     .filter(|v| !v.is_null())
                 {
-                    Some(value) => {
-                        for value in value.as_array().cloned().unwrap_or_else(|| vec![value]) {
-                            values.entry(value.to_string()).or_insert((value, 0)).1 += 1;
-                        }
+                    for value in value.as_array().cloned().unwrap_or_else(|| vec![value]) {
+                        values.entry(value.to_string()).or_insert((value, 0)).1 += 1;
                     }
-                    None => {}
                 }
             }
             let mut values: Vec<_> = values.into_values().collect();

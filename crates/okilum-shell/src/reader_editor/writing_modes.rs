@@ -551,7 +551,7 @@ mod tests {
             let row = i.text().offset_to_point(i.cursor()).row;
             assert_eq!(
                 i.focus_lines(),
-                &[row..row + 1],
+                std::slice::from_ref(&(row..row + 1)),
                 "only the final paragraph stays bright"
             );
         });

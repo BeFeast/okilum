@@ -476,11 +476,30 @@ class WorkflowContract(unittest.TestCase):
             self.assertEqual(job['runs-on'], 'fast-linux')
             self.assertNotIn("!= 'push'", job.get('if', ''))
         self.assertEqual(data['jobs']['shell-full']['needs'], ['check'])
-        check = data['jobs']['check']['steps']
-        validation = next(s for s in check if s.get('run') == 'python3 scripts/releases/hourly_beta.py certify-source')
-        self.assertEqual(validation['env']['CERTIFICATION_SOURCE'], '${{ inputs.certification_source }}')
-        self.assertLess(check.index(validation), next(i for i, s in enumerate(check)
-                        if s.get('name') == 'Prepare local Linux toolchain'))
+        # Main, nightly and manual certification share bounded test entrypoints.
+        for name, command in [
+            ('check', 'fast-local-check 2100 bash scripts/ci/fast-local.sh'),
+            ('shell-full', 'fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full'),
+        ]:
+            step = data['jobs'][name]['steps'][-1]
+            self.assertNotIn('if', step)
+            self.assertIn('bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ' + command, step['run'])
+        for directory in ['ci', 'releases', 'updater']:
+            limit = 180 if directory == 'ci' else 90
+            command = ('bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ' + f'{directory}-python {limit} '
+                       f"python3 -I -m unittest discover -s scripts/{directory} -p 'test_*.py' -v")
+            step = next(s for s in data['jobs']['check']['steps'] if s.get('run') == command)
+            self.assertNotIn('if', step)
+            self.assertEqual(step['timeout-minutes'], '5')
+        for name in ['check', 'shell-full']:
+            steps = data['jobs'][name]['steps']
+            validation = next(s for s in steps if 'certification-source ' in s.get('run', ''))
+            self.assertIn('bash "$OKILUM_TEST_GROUP" certification-source 90 '
+                          'python3 scripts/releases/hourly_beta.py certify-source', validation['run'])
+            self.assertEqual(validation['timeout-minutes'], '2')
+            self.assertEqual(validation['env']['CERTIFICATION_SOURCE'], '${{ inputs.certification_source }}')
+            self.assertLess(steps.index(validation), next(i for i, s in enumerate(steps)
+                            if s.get('name') == 'Prepare local Linux toolchain'))
         self.assertIn("inputs.certification_source == ''", data['jobs']['sync-source-sharing']['if'])
         # Beta's gate reports right after check; shell-full reports on its own.
         for name, needs in [('certification-status', ['check']), ('shell-full-status', ['shell-full'])]:

@@ -129,7 +129,7 @@ fn rotation_1473_held_mount_refuses_a_closed_surface_and_fresh_mount_still_works
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
-    cx.update(|cx| crate::test_init(cx));
+    cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
     let mut store = None;
     let mut owner = None;

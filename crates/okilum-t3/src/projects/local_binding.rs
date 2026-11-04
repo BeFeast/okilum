@@ -708,12 +708,20 @@ mod tests {
             workspace_root: root.to_str().unwrap().into(),
             ..Default::default()
         };
-        let selection =
-            Selection::select("verified-server", "chosen", &root, &[project.clone()]).unwrap();
+        let selection = Selection::select(
+            "verified-server",
+            "chosen",
+            &root,
+            std::slice::from_ref(&project),
+        )
+        .unwrap();
         assert!(selection.check_environment("verified-server").is_ok());
         assert!(selection.check_environment("replacement-server").is_err());
         assert!(selection.check_environment("").is_err());
-        assert!(Selection::select("verified-server", "", &root, &[project.clone()]).is_err());
+        assert!(
+            Selection::select("verified-server", "", &root, std::slice::from_ref(&project))
+                .is_err()
+        );
         assert!(Selection::select("verified-server", "chosen", &root, &[]).is_err());
         let mut other = project.clone();
         other.id = "other-owner".into();
