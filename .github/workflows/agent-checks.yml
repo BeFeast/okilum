@@ -92,6 +92,8 @@ jobs:
           python3 scripts/rebrand/check_brand.py
       - name: Verify pinned Sync fixture lifecycle and source sharing
         run: bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
+      - name: Verify managed launch and configuration admission
+        run: bash scripts/ci/sync-managed-admission.sh
       - name: Reject and reap surviving agent fixture daemons
         if: always()
         run: python3 scripts/ci/sync-fixture-processes.py --root "$RUNNER_TEMP" --cleanup

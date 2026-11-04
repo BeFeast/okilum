@@ -101,8 +101,9 @@ closed state and must be surfaced to the caller.
 Reader/MCP remain read-only. Drafts, source/capture intents, chat/outbox records,
 source-history archives and recovery journals outside the vault remain writable
 under a hold. Derived cache/index writes and external code-block scratch files
-are not canonical publishers. Transport receive/promotion, service lifecycle and
-autonomous restart fencing belong to #2508; this slice does not manufacture a
+are not canonical publishers. Transport configuration, service launch and autonomous restart admission are
+integrated by #2582; see [Linux managed launch](sync-managed-launch.md). Scoped
+transport drain receipts remain #2508; neither slice manufactures a
 transport-exclusive claim from local locks.
 
 ## Verification

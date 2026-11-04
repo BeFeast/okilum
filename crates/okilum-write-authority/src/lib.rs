@@ -201,7 +201,37 @@ pub struct Authority {
     directory: PathBuf,
     binding: Binding,
 }
+/// Durable operational reference for autonomous publishers. Reopening never
+/// registers a root or repairs a missing/replaced authority. Keep outside the
+/// vault and disposable indexes, alongside the consumer's own identity binding.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DurableBinding {
+    account: PathBuf,
+    binding: Binding,
+}
+impl DurableBinding {
+    pub fn open(&self) -> Result<Authority> {
+        let authority = Authority {
+            account: self.account.clone(),
+            binding_path: self
+                .account
+                .join(format!("{}.json", key(&self.binding.root))),
+            directory: self.account.join(key(&self.binding.root)),
+            binding: self.binding.clone(),
+        };
+        authority.validate()?;
+        Ok(authority)
+    }
+}
 impl Authority {
+    pub fn durable_binding(&self) -> Result<DurableBinding> {
+        let (authority, _lock) = self.locked()?;
+        Ok(DurableBinding {
+            account: authority.account,
+            binding: authority.binding,
+        })
+    }
     /// Register/open an actual vault before opening editors. Nested publishers
     /// resolve to the existing enclosing authority rather than inventing one.
     pub fn for_root(root: &Path) -> Result<Self> {
@@ -717,6 +747,20 @@ mod tests {
         fs::create_dir(t.path().join("vault")).unwrap();
         let a = Authority::open_in(&t.path().join("account"), &t.path().join("vault")).unwrap();
         (t, a)
+    }
+    #[test]
+    fn local_writer_admission_durable_sync_binding_never_recreates_missing_authority() -> Result<()>
+    {
+        let (_temp, authority) = fixture();
+        let binding = authority.durable_binding()?;
+        let encoded = serde_json::to_vec(&binding)?;
+        let reopened: DurableBinding = serde_json::from_slice(&encoded)?;
+        let lease = reopened.open()?.admit()?;
+        drop(lease);
+        fs::remove_file(&authority.binding_path)?;
+        assert!(reopened.open().is_err());
+        assert!(!authority.binding_path.exists());
+        Ok(())
     }
     #[test]
     fn local_writer_admission_review_parallel_normal_writers_all_succeed() {

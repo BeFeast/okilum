@@ -353,6 +353,10 @@ fn prepare_with_policy(
         device_id: id,
         certificate_hash: fingerprint(&config)?,
     };
+    crate::managed_launch::initialize(&ManagedInstance {
+        home: home.clone(),
+        executable: request.executable.clone(),
+    })?;
     private::write(
         &receipt,
         &serde_json::to_vec(&Prepared {

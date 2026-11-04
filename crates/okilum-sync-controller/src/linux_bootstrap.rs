@@ -2,7 +2,7 @@
 //! never call this module's Connect entry. No fallback to PATH or another daemon.
 use crate::{
     daemon::{self, DaemonIdentity, Preparation},
-    lifecycle::{Lifecycle, Systemd},
+    lifecycle::{Lifecycle, Systemd, UserServices},
     private,
 };
 use anyhow::{ensure, Context, Result};
@@ -88,6 +88,30 @@ pub fn connect(
     configs: &[PathBuf],
     check: impl Fn() -> Result<()>,
 ) -> Result<DaemonIdentity> {
+    connect_with(
+        confirmed,
+        state,
+        units,
+        configs,
+        check,
+        packaged_runtime,
+        Systemd,
+        None,
+    )
+}
+/// Inject package/service boundaries for isolated fixtures. Consent, inventory,
+/// pinned binary, preparation and the production launch path remain identical.
+#[doc(hidden)]
+pub fn connect_with<S: UserServices>(
+    confirmed: bool,
+    state: &Path,
+    units: &Path,
+    configs: &[PathBuf],
+    check: impl Fn() -> Result<()>,
+    package: impl Fn() -> Result<PathBuf>,
+    services: S,
+    launcher: Option<PathBuf>,
+) -> Result<DaemonIdentity> {
     ensure!(
         state.is_absolute() && units.is_absolute(),
         "absolute managed paths required"
@@ -112,7 +136,7 @@ pub fn connect(
             !state.join("prepared").try_exists()?,
             "partial Sync preparation requires recovery"
         );
-        let packaged = packaged_runtime()?;
+        let packaged = package()?;
         let runtime = state.join("syncthing");
         let mut input = fs::OpenOptions::new()
             .read(true)
@@ -159,7 +183,12 @@ pub fn connect(
         "Sync is disabled"
     );
     check()?;
-    Lifecycle::new(state.join("service"), units.to_owned(), Systemd).enable(instance)?;
+    let lifecycle = Lifecycle::new(state.join("service"), units.to_owned(), services);
+    let lifecycle = match launcher {
+        Some(path) => lifecycle.with_launcher(path),
+        None => lifecycle,
+    };
+    lifecycle.enable(instance)?;
     wait_for_rest(&check, || identity.connect().map(|_| ()))?;
     check()?;
     crate::network_policy::reconcile(&state.join("prepared"), &identity, None)?;

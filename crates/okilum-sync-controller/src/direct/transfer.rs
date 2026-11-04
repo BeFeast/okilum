@@ -54,6 +54,8 @@ pub(super) fn share(
         device != source.daemon.device_id,
         "cannot share with the source daemon"
     );
+    let _admission =
+        crate::admission::configuration(&source.daemon, &source.folder_id, &source.path)?;
     let api = source.daemon.connect()?;
     let folder = api.folder(&source.folder_id)?;
     ensure!(
@@ -164,6 +166,7 @@ impl Controller {
         );
         let selected = &inventory.candidates[0];
         let daemon = selected.identity.clone();
+        let _admission = crate::admission::configuration(&daemon, vault_id, &path)?;
         let api = daemon.connect()?;
         let (paired, mut transfer) = {
             let mut db = self.shared.db.lock().unwrap();
@@ -826,6 +829,8 @@ impl Controller {
         Ok(())
     }
     fn reconcile_one(&self, transfer: &mut Transfer) -> Result<()> {
+        let _admission =
+            crate::admission::configuration(&transfer.daemon, &transfer.vault, &transfer.path)?;
         transfer.daemon.verify_local()?;
         let configs = self.configuration_paths()?;
         ensure!(

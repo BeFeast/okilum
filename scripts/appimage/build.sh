@@ -18,7 +18,7 @@ build_features=()
 if [[ "${GITHUB_REF_NAME:-}" == forgejo-linux-pr/* && "${GITHUB_REF_NAME}" != forgejo-linux-pr/hourly-* ]]; then
     build_features=(--features appimage-acceptance-harness)
 fi
-cargo build --release --locked -p okilum-shell "${build_features[@]}"
+cargo build --release --locked -p okilum-shell -p okilum-sync-controller --bin okilum --bin okilum-sync-launch "${build_features[@]}"
 mkdir -p dist/appimage/evidence
 python3 scripts/appimage/check-elf.py target/release/okilum \
     2>&1 | tee dist/appimage/evidence/elf-before-deploy.log
@@ -50,6 +50,7 @@ echo 'APPIMAGE_STATIC_RUNTIME_PASS (dynamic shell positive control passed)'
 # Extraction mode avoids any FUSE requirement on the build runner.
 export APPIMAGE_EXTRACT_AND_RUN=1
 ./tools/linuxdeploy --appdir AppDir --executable ../../target/release/okilum \
+    --executable ../../target/release/okilum-sync-launch \
     --executable /usr/bin/gpgv \
     --desktop-file ../../scripts/arch/okilum.desktop \
     --icon-file ../../crates/okilum-shell/assets/brand/app-icon-light.svg \
