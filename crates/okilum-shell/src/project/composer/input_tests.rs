@@ -1,5 +1,6 @@
 //! Focused native editing through the same actions used by AppKit's Edit menu.
 use super::*;
+use ::core::prelude::v1::test;
 use gpui::{TestAppContext, VisualTestContext};
 
 pub(in crate::project) fn menu(visual: &mut VisualTestContext, label: &str) {
@@ -105,14 +106,7 @@ fn issue2521_edit_menu_and_command_shortcuts_follow_composer_focus(cx: &mut Test
         let keys = if cfg!(target_os = "macos") {
             ["cmd-a", "cmd-c", "cmd-x", "cmd-v", "cmd-z", "cmd-shift-z"]
         } else {
-            [
-                "ctrl-a",
-                "ctrl-c",
-                "ctrl-x",
-                "ctrl-v",
-                "ctrl-z",
-                "ctrl-y",
-            ]
+            ["ctrl-a", "ctrl-c", "ctrl-x", "ctrl-v", "ctrl-z", "ctrl-y"]
         };
         for (index, label) in ["Select All", "Copy", "Cut", "Paste", "Undo", "Redo"]
             .into_iter()
