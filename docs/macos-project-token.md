@@ -25,7 +25,9 @@ and are removed. No cookie export bridge is needed for Open in T3.
 A Mac with only the old webview session now shows the same native connect state
 as Linux for Board/Projects. Existing Settings > T3 sign-in can connect MCP;
 explicit native pairing stores its separate bearer through #2519's Keychain
-path. Reopening a project reads the saved credentials again without authorizing
+path. Installing a newly paired native client also replaces the current Board gateway
+immediately; Board does not need to be reopened first. Reopening a project reads
+the saved credentials again without authorizing
 or pairing automatically. It does not require a Manager webview to exist.
 
 Tests exercise the production shell gateway over loopback HTTP with no MCP

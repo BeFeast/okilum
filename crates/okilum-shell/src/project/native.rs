@@ -457,6 +457,14 @@ impl ProjectView {
         let Some(binding) = &self.binding else {
             return;
         };
+        let gateway = match client.project_gateway(self.gateway.clone()) {
+            Ok(gateway) => gateway,
+            Err(error) => {
+                self.native.setup_error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
         let target = binding
             .manager
             .thread_id
@@ -466,6 +474,7 @@ impl ProjectView {
             self.set_threads_active(false, window, cx);
         }
         self.native.pause();
+        self.gateway = Some(gateway);
         self.native.client = Some(client);
         self.attachments.connection_changed();
         self.native.setup_error = None;
