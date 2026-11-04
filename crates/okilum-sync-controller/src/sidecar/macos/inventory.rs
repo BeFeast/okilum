@@ -19,9 +19,14 @@ pub(super) fn output(command: &mut Command, deadline: Instant, limit: usize) -> 
             let _ = self.0.wait();
         }
     }
+    // A cleared environment keeps HOME only: Syncthing panics at start-up without
+    // it ("Failed to get user home dir", exit 2), even for --version (#2589).
+    command.env_clear();
+    if let Some(home) = std::env::var_os("HOME") {
+        command.env("HOME", home);
+    }
     let mut child = Child(
         command
-            .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

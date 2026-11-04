@@ -91,6 +91,19 @@ pub fn connect_current_app(
         "Connect requires its signed installed app"
     );
     let state = super::account_state_directory()?;
+    // A failed first preparation can leave the state folder without a generated
+    // configuration. Keep it aside for diagnosis and prepare from scratch (#2589).
+    if fs::symlink_metadata(&state).is_ok()
+        && fs::symlink_metadata(state.join("config/config.xml")).is_err()
+    {
+        let aside = state.with_file_name(format!(
+            "Sync.incomplete-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs()
+        ));
+        fs::rename(&state, &aside)?;
+    }
     let fresh = match fs::symlink_metadata(&state) {
         Ok(_) => false,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
