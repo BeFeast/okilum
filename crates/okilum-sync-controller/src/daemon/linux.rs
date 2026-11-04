@@ -299,6 +299,17 @@ fn prepare_with_policy(
         !state.join("managed-launch").try_exists()?,
         "managed preparation receipt missing; explicit recovery required"
     );
+    if home.try_exists()? {
+        let existing = Element::parse(private::read(&home.join("config.xml"))?.as_slice())?;
+        ensure!(
+            !existing
+                .children
+                .iter()
+                .filter_map(XMLNode::as_element)
+                .any(|e| e.name == "folder"),
+            "prepared folder configuration has no receipt; explicit recovery required"
+        );
+    }
     private::directory(&home)?;
     let output = Command::new(&request.executable)
         .args(["generate", "--home"])
