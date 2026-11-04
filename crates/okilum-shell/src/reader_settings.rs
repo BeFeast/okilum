@@ -61,9 +61,9 @@ pub(crate) fn show_updates(cx: &mut App) {
     show_section(None, Some(Section::Updates), cx);
 }
 
-/// Settings on the Vault pane: the sidebar's vault menu (#1512).
+/// Open the current vault card at the top of Vaults (#2572).
 pub(crate) fn show_vault(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
-    show_section(reader, Some(Section::Vault), cx);
+    show_section(reader, Some(Section::Vaults), cx);
 }
 
 #[cfg(any(
@@ -427,6 +427,13 @@ fn compact_vault_path(root: &Path) -> String {
 }
 
 /// Settings → Inbox (#1356): what it is, and that there is nothing to set up.
+fn log_sources_heading(root: Option<&Path>, cx: &App) -> String {
+    match root {
+        Some(root) => format!("Log sources · {}", vault_name::shown(root, cx)),
+        None => "Log sources".into(),
+    }
+}
+
 const INBOX_HELP: &str =
     "Inbox brings in notes you send from your phone or other apps. Connecting to it will come later.";
 
@@ -438,9 +445,7 @@ enum Section {
     Appearance,
     /// Editing notes: pasting and dropping files (#1611).
     Editor,
-    /// The vault's name, colour and files (#1355: was «Files»).
-    Vault,
-    /// Application-wide known vault management (#2002).
+    /// Current vault settings and the other known vaults (#2572).
     Vaults,
     /// Log source links: for logs of software you build (#1355).
     Logs,
@@ -463,7 +468,6 @@ impl Section {
             Self::T3 => "t3",
             Self::Editor => "editor",
             Self::Appearance => "appearance",
-            Self::Vault => "vault",
             Self::Vaults => "vaults",
             Self::Logs => "logs",
             Self::Updates => "updates",
@@ -479,7 +483,6 @@ impl Section {
             Some("t3") => Self::T3,
             Some("editor") => Self::Editor,
             Some("appearance") => Self::Appearance,
-            Some("vault") => Self::Vault,
             Some("vaults") => Self::Vaults,
             Some("logs") => Self::Logs,
             Some("updates") => Self::Updates,
@@ -496,7 +499,6 @@ impl Section {
             Self::T3 => Icon::new(IconName::SquareTerminal),
             Self::Appearance => Icon::new(IconName::Palette),
             Self::Editor => Icon::new(IconName::FileText),
-            Self::Vault => Icon::new(IconName::Folder),
             Self::Vaults => Icon::new(IconName::Folder),
             Self::Logs => Icon::new(IconName::SquareTerminal),
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
@@ -512,7 +514,6 @@ impl Section {
             Self::T3 => "T3",
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
-            Self::Vault => "Vault",
             Self::Vaults => "Vaults",
             Self::Logs => "Logs",
             Self::Updates => "Updates",
@@ -525,6 +526,8 @@ impl Section {
 }
 struct Settings {
     vaults: Option<Entity<reader_settings_vaults::Vaults>>,
+    _vaults_changes: Option<Subscription>,
+    content_scroll: ScrollHandle,
     t3: Option<Entity<reader_t3_settings::T3Settings>>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     sync: Option<Entity<reader_settings_sync::SyncSettings>>,
@@ -592,6 +595,7 @@ impl Settings {
             cx.notify();
             return;
         }
+        self.content_scroll.set_offset(point(px(0.), px(0.)));
         self.section = if section.available(cx) {
             section
         } else {
@@ -614,6 +618,7 @@ impl Settings {
             cx.notify();
             return;
         }
+        self.content_scroll.set_offset(point(px(0.), px(0.)));
         self.section = if section.available(cx) {
             section
         } else {
@@ -645,6 +650,8 @@ impl Settings {
                 cx.notify();
             }),
             vaults: None,
+            _vaults_changes: None,
+            content_scroll: ScrollHandle::new(),
 
             t3: None,
             section: Section::remembered(cx),
@@ -724,6 +731,7 @@ impl Settings {
         self.reader = reader;
         self.t3 = None;
         self.vaults = None;
+        self._vaults_changes = None;
         // Another vault: the field starts from that vault's own colour.
         self.vault_color_input = None;
         self.vault_color_picker = None;
@@ -1250,7 +1258,6 @@ impl Settings {
                 }))
                 .children(reader_features::error(cx).map(|error| div().text_color(p.danger).child(error)))
                 .into_any_element(),
-            Section::Vaults => content.children(self.vaults.clone()).into_any_element(),
 
             Section::Appearance => {
                 let current = cx.try_global::<AppearancePreference>().and_then(|p| p.0);
@@ -1422,8 +1429,8 @@ impl Settings {
                     ), cx,
                 ))
                 .into_any_element(),
-            Section::Vault => {
-                if let Some(reader) = self.vault(cx) {
+            Section::Vaults => {
+                let card = if let Some(reader) = self.vault(cx) {
                     let state = reader.read(cx);
                     let hidden = state.sidebar.show_hidden;
                     let root = state.vault_root.clone();
@@ -1435,17 +1442,28 @@ impl Settings {
                     let weak = reader.downgrade();
                     let now_reader = weak.clone();
                     let now_enabled = state.sidebar.now_enabled();
-                    content
+                    v_flex()
+                        .debug_selector(|| "settings-current-vault".into())
+                        .gap_4().p_3().border_1().border_color(p.accent).rounded(px(6.))
                         .child(
                             h_flex()
                                 .gap_3()
-                                .child(Icon::new(IconName::Folder).size_5())
+                                .children(reader_ui_state::vault_color(&color_root, cx).map(|color| {
+                                    div().size_2().flex_none().rounded_full().bg(color.color(cx))
+                                }))
                                 .child(
                                     v_flex()
                                         .flex_1()
                                         .min_w_0()
                                         .gap_1()
-                                        .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                                        .child(h_flex().flex_wrap().gap_2()
+                                            .child(div().font_weight(FontWeight::MEDIUM).child(name))
+                                            .child(div().debug_selector(|| "settings-vault-current-badge".into())
+                                                .text_xs().text_color(p.accent).child("Current"))
+                                            .when(self.vaults.as_ref().is_some_and(|vaults| vaults.read(cx).is_default(&color_root)), |row| {
+                                                row.child(div().debug_selector(|| "settings-vault-default-badge".into())
+                                                    .text_xs().text_color(p.text_muted).child("Default"))
+                                            }))
                                         .child(
                                             div()
                                                 .id("settings-vault-path")
@@ -1502,6 +1520,9 @@ impl Settings {
                                         }),
                                 ),
                         )
+                        .children(self.vaults.as_ref().map(|vaults| {
+                            reader_settings_vaults::Vaults::current_actions(vaults, &color_root, cx)
+                        }))
                         .child(setting_row(
                             "Now sidebar",
                             "Show project activity alongside the file tree in this vault.",
@@ -1576,10 +1597,9 @@ impl Settings {
                         }))
                         .into_any_element()
                 } else {
-                    content
-                        .child("Open a vault to change its name, colour and files.")
-                        .into_any_element()
-                }
+                    div().child("Open a vault to change its name, colour and files.").into_any_element()
+                };
+                content.child(card).children(self.vaults.clone()).into_any_element()
             }
             Section::Logs => {
                 let root = self
@@ -1591,6 +1611,7 @@ impl Settings {
                             "For log files of software you build: where file:line links open.",
                         ),
                     )
+                    .child(self.log_editor_controls(cx))
                     .child(div().text_sm().child("Saved regex definitions. Create and apply them from the Regex button in a log file. One saved regex applies automatically to Plain text files; with several, choose one."))
                     .children(reader_ui_state::log_regex_definitions(cx).into_iter().map(|definition| {
                         let name = definition.name.clone();
@@ -1601,21 +1622,32 @@ impl Settings {
                                 cx.notify();
                             })))
                     }))
-                    .child(Button::new("settings-https-log-sources").label("HTTPS log files…").disabled(self.vault(cx).is_none()).on_click(cx.listener(|this, _, _, cx| {
+                    .child(v_flex().gap_3().border_t_1().border_color(p.border_subtle).pt_4()
+                        .debug_selector(|| "settings-log-sources".into())
+                        .child(h_flex().gap_2()
+                            .children(root.as_ref().and_then(|root| reader_ui_state::vault_color(root, cx)).map(|color| {
+                                div().size_2().flex_none().rounded_full().bg(color.color(cx))
+                            }))
+                            .child(div().debug_selector(|| "settings-log-sources-heading".into())
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(log_sources_heading(root.as_deref(), cx))))
+                        .child(div().text_sm().text_color(p.text_muted)
+                            .child("Stored with this vault. Switch vault to edit another vault's sources."))
+                        .when(root.is_none(), |block| block.child("Open a vault to edit its log sources."))
+                    .child(Button::new("settings-https-log-sources").debug_selector(|| "settings-https-log-sources".into()).label("HTTPS log files…").disabled(self.vault(cx).is_none()).on_click(cx.listener(|this, _, _, cx| {
                         if let Some(reader) = this.vault(cx) {
                             let root = reader.read(cx).vault_root.clone();
                             reader_log::http::show(root, cx);
                         }
                     })))
-                    .child(Button::new("settings-kibana-sources").label("Kibana sources…").disabled(self.vault(cx).is_none()).on_click(cx.listener(|this,_,_,cx| {
+                    .child(Button::new("settings-kibana-sources").debug_selector(|| "settings-kibana-sources".into()).label("Kibana sources…").disabled(self.vault(cx).is_none()).on_click(cx.listener(|this,_,_,cx| {
                         if let Some(reader)=this.vault(cx) {
                             let root=reader.read(cx).vault_root.clone();
                             reader_log::remote::show(root,cx);
                         }
                     })))
                     .child(div().text_sm().child("Import Discover URLs for the current vault. API keys stay in OS credential storage; loaded events stay in memory."))
-                    .child(self.log_editor_controls(cx))
-                    .children(root.map(|root| self.source_map_controls(&root, cx)))
+                    .children(root.map(|root| self.source_map_controls(&root, cx))))
                     .into_any_element()
             }
             Section::Updates => {
@@ -1916,10 +1948,10 @@ impl Render for Settings {
                 .and_then(|reader| reader.read(cx).session_directory.clone())
                 .map(Ok)
                 .unwrap_or_else(|| reader_ui_state::state_directory(cx));
-            self.vaults =
-                Some(cx.new(|cx| {
-                    reader_settings_vaults::Vaults::new(directory, self.reader.clone(), cx)
-                }));
+            let vaults = cx
+                .new(|cx| reader_settings_vaults::Vaults::new(directory, self.reader.clone(), cx));
+            self._vaults_changes = Some(cx.observe(&vaults, |_, _, cx| cx.notify()));
+            self.vaults = Some(vaults);
         }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
@@ -1949,7 +1981,6 @@ impl Render for Settings {
                             Section::Features,
                             Section::Appearance,
                             Section::Editor,
-                            Section::Vault,
                             Section::Vaults,
                             Section::T3,
                             Section::Updates,
@@ -1991,6 +2022,7 @@ impl Render for Settings {
             .child(
                 div()
                     .id("settings-content")
+                    .track_scroll(&self.content_scroll)
                     .debug_selector(|| "settings-content".into())
                     .flex_1()
                     .min_w_0()
@@ -2425,7 +2457,7 @@ mod tests {
             (show_updates, Section::Updates),
             (
                 (|cx: &mut App| show_vault(None, cx)) as fn(&mut App),
-                Section::Vault,
+                Section::Vaults,
             ),
         ] {
             cx.update(entry);
@@ -2455,13 +2487,13 @@ mod tests {
                 assert!(settings.read(cx).section == Section::About);
                 // Navigating afterwards is a real choice and is remembered.
                 settings.update(cx, |settings, cx| {
-                    settings.select_section(Section::Vault, cx)
+                    settings.select_section(Section::Vaults, cx)
                 });
             })
             .unwrap();
         cx.update(reader_ui_state::flush);
         cx.update(|cx| reader_ui_state::install(&directory, cx));
-        assert!(cx.read(Section::remembered) == Section::Vault);
+        assert!(cx.read(Section::remembered) == Section::Vaults);
         // A pane unavailable on this platform/newer build never breaks Settings.
         cx.update(|cx| {
             reader_ui_state::set_settings_section("future-pane", cx);
@@ -2690,7 +2722,7 @@ mod tests {
         let (_, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(Some(weak), cx);
-                settings.section = Section::Vault;
+                settings.section = Section::Vaults;
                 settings
             });
             Root::new(settings, window, cx)
@@ -2774,7 +2806,7 @@ mod tests {
         let (_, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(Some(weak), cx);
-                settings.section = Section::Vault;
+                settings.section = Section::Vaults;
                 settings
             });
             Root::new(settings, window, cx)
@@ -2866,7 +2898,7 @@ mod tests {
         let (_, visual) = cx.add_window_view(|window, cx| {
             let settings = cx.new(|cx| {
                 let mut settings = Settings::new(Some(weak), cx);
-                settings.section = Section::Vault;
+                settings.section = Section::Vaults;
                 settings
             });
             Root::new(settings, window, cx)
@@ -2900,12 +2932,31 @@ mod tests {
     /// #1355: the vault's settings and the log options live apart, and a
     /// templates folder that is not in the vault says so.
     #[gpui::test]
-    fn vault_and_log_settings_are_separate_sections(cx: &mut TestAppContext) {
+    fn issue2572_current_vault_card_and_named_log_sources_are_separate(cx: &mut TestAppContext) {
         let temp = std::env::temp_dir().join(format!("okilum-settings-{}", uuid::Uuid::new_v4()));
         let (root, state) = (temp.join("vault"), temp.join("state"));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(root.join("start.md"), "# Start\n").unwrap();
+        let other = temp.join("other-vault");
+        std::fs::create_dir_all(&other).unwrap();
+        reader_history::ReadingHistory::record_document_opened(
+            &state,
+            &other,
+            "note.md",
+            false,
+            Some(1),
+        )
+        .unwrap();
+        reader_history::ReadingHistory::record_document_opened(
+            &state,
+            &root,
+            "start.md",
+            false,
+            Some(2),
+        )
+        .unwrap();
+        reader_history::ReadingHistory::set_default_vault(&state, Some(&root)).unwrap();
         cx.update(|cx| {
             crate::test_init(cx);
             reader_ui_state::install(&state, cx);
@@ -2933,7 +2984,7 @@ mod tests {
         let (_, visual) = cx.add_window_view(|window, cx| {
             let view = cx.new(|cx| {
                 let mut settings = Settings::new(Some(weak), cx);
-                settings.section = Section::Vault;
+                settings.section = Section::Vaults;
                 settings
             });
             settings = Some(view.clone());
@@ -2949,6 +3000,24 @@ mod tests {
             visual.debug_bounds(selector).is_some()
         };
         assert!(shown(visual, "Vault colour"), "positive control");
+        assert!(visual.debug_bounds("settings-section-Vaults").is_some());
+        assert!(visual.debug_bounds("settings-section-Vault").is_none());
+        assert!(visual.debug_bounds("settings-current-vault").is_some());
+        assert!(visual
+            .debug_bounds("settings-vault-current-badge")
+            .is_some());
+        assert!(visual.debug_bounds("settings-log-sources").is_none());
+        assert!(visual
+            .debug_bounds("settings-vault-default-badge")
+            .is_some());
+        assert!(
+            visual.debug_bounds("settings-vault-row-0").is_none(),
+            "current vault is not duplicated in Other vaults"
+        );
+        assert!(
+            visual.debug_bounds("settings-vault-row-1").is_some(),
+            "other vault remains listed"
+        );
         assert!(shown(visual, "Templates folder"));
         assert!(!shown(visual, "Open log source links in"));
         assert!(!shown(visual, "Log source paths"));
@@ -2965,7 +3034,81 @@ mod tests {
         assert!(shown(visual, "Open log source links in"));
         assert!(shown(visual, "Log source paths"));
         assert!(!shown(visual, "Vault colour"));
+        assert!(visual
+            .debug_bounds("settings-log-sources-heading")
+            .is_some());
+        settings.read_with(visual, |_, cx| {
+            assert_eq!(log_sources_heading(Some(&root), cx), "Log sources · vault");
+            assert_eq!(log_sources_heading(None, cx), "Log sources");
+        });
+        let app_setting = visual
+            .debug_bounds("setting-help-Open log source links in")
+            .unwrap();
+        let sources = visual.debug_bounds("settings-log-sources").unwrap();
+        assert!(
+            app_setting.bottom() <= sources.top(),
+            "app-wide settings precede vault sources"
+        );
+        assert!(visual.debug_bounds("settings-https-log-sources").is_some());
+        assert!(visual.debug_bounds("settings-kibana-sources").is_some());
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[gpui::test]
+    fn issue2572_legacy_vault_sections_open_unified_vaults(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        cx.update(crate::test_init);
+        for key in ["vault", "vaults"] {
+            std::fs::write(
+                directory.path().join("reader-ui.json"),
+                serde_json::to_vec(&serde_json::json!({"version": 1, "settings_section": key}))
+                    .unwrap(),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                reader_ui_state::install(directory.path(), cx);
+                assert!(Section::remembered(cx) == Section::Vaults);
+            });
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let settings = cx.new(|cx| Settings::new(None, cx));
+                assert!(settings.read(cx).section == Section::Vaults);
+                Root::new(settings, window, cx)
+            });
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("settings-section-Vaults").is_some());
+            assert!(visual.debug_bounds("settings-vaults-list").is_some());
+            assert!(visual.debug_bounds("settings-section-Vault").is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn issue2572_no_vault_log_sources_are_disabled(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let settings = cx.new(|cx| {
+                let mut settings = Settings::new(None, cx);
+                settings.section = Section::Logs;
+                settings
+            });
+            Root::new(settings, window, cx)
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("settings-log-sources-heading")
+                .is_some(),
+            "positive control"
+        );
+        let windows = visual.read(|cx| cx.windows().len());
+        for selector in ["settings-https-log-sources", "settings-kibana-sources"] {
+            let bounds = visual.debug_bounds(selector).unwrap();
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(visual.read(|cx| cx.windows().len()), windows);
+        }
+        assert!(visual
+            .debug_bounds("setting-help-Log source paths")
+            .is_none());
     }
 
     #[gpui::test]
@@ -3070,8 +3213,8 @@ mod tests {
         let settings = root.read_with(visual, |root, _| {
             root.view().clone().downcast::<Settings>().unwrap()
         });
+        assert!(visual.debug_bounds("settings-section-Vault").is_none());
         for (section, selector) in [
-            (Section::Vault, "settings-section-Vault"),
             (Section::Vaults, "settings-section-Vaults"),
             (Section::Logs, "settings-section-Logs"),
             (Section::Updates, "settings-section-Updates"),
@@ -3251,7 +3394,7 @@ mod tests {
             let (view, visual) = cx.add_window_view(|window, cx| {
                 let settings = cx.new(|cx| {
                     let mut settings = Settings::new(Some(reader), cx);
-                    settings.section = Section::Vault;
+                    settings.section = Section::Vaults;
                     settings
                 });
                 Root::new(settings, window, cx)
@@ -3590,7 +3733,7 @@ mod tests {
         });
         settings.update(visual, |settings, cx| {
             settings.set_reader(Some(reader.downgrade()), cx);
-            settings.section = Section::Vault;
+            settings.section = Section::Vaults;
         });
         visual.run_until_parked();
         reader.read_with(visual, |reader, _| assert!(!reader.sidebar.show_hidden));
@@ -3643,7 +3786,7 @@ mod tests {
         visual.run_until_parked();
         settings.update(visual, |settings, cx| {
             settings.set_reader(Some(reader.downgrade()), cx);
-            settings.section = Section::Vault;
+            settings.section = Section::Vaults;
         });
         visual.run_until_parked();
         // The offer's own toast goes away first, so the button clicked is the Settings one.

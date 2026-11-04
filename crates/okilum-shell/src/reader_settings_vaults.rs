@@ -113,6 +113,87 @@ impl Vaults {
         cx.notify();
     }
 
+    pub(super) fn is_default(&self, root: &Path) -> bool {
+        self.rows
+            .iter()
+            .any(|row| row.vault.root == root && row.vault.is_default)
+    }
+
+    /// Keep the current vault's list actions reachable from its card.
+    pub(super) fn current_actions(entity: &Entity<Self>, root: &Path, cx: &App) -> AnyElement {
+        let this = entity.read(cx);
+        let Some(row) = this.rows.iter().find(|row| row.vault.root == root) else {
+            return div().into_any_element();
+        };
+        let default_root = (!row.vault.is_default).then(|| root.to_path_buf());
+        let remove_root = root.to_path_buf();
+        let open_root = root.to_path_buf();
+        let directory = this.directory.clone();
+        let default_entity = entity.clone();
+        let remove_entity = entity.clone();
+        let is_default = row.vault.is_default;
+        h_flex()
+            .gap_2()
+            .justify_between()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(brand::palette(cx).text_muted)
+                    .child(format!(
+                        "Last opened: {}",
+                        opened_label(row.vault.last_opened)
+                    )),
+            )
+            .child(
+                Button::new("current-vault-actions")
+                    .debug_selector(|| "settings-current-vault-actions".into())
+                    .ghost()
+                    .small()
+                    .label("More…")
+                    .disabled(this.pending)
+                    .dropdown_menu(move |menu, _, _| {
+                        use gpui_component::menu::PopupMenuItem;
+                        let directory = directory.clone();
+                        let open_root = open_root.clone();
+                        let default_root = default_root.clone();
+                        let remove_root = remove_root.clone();
+                        let default_entity = default_entity.clone();
+                        let remove_entity = remove_entity.clone();
+                        menu.item(PopupMenuItem::new("Open in new window").on_click(
+                            move |_, _, cx| {
+                                if let Some(directory) = &directory {
+                                    reader_open::open_vault_in_new_window(
+                                        open_root.clone(),
+                                        directory.clone(),
+                                        cx,
+                                    );
+                                }
+                            },
+                        ))
+                        .item(
+                            PopupMenuItem::new(if is_default {
+                                "Clear default"
+                            } else {
+                                "Make default"
+                            })
+                            .on_click(move |_, _, cx| {
+                                default_entity.update(cx, |this, cx| {
+                                    this.change(Change::Default(default_root.clone()), cx)
+                                });
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new("Remove from list").on_click(move |_, _, cx| {
+                                remove_entity.update(cx, |this, cx| {
+                                    this.change(Change::Remove(remove_root.clone()), cx)
+                                });
+                            }),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn change(&mut self, change: Change, cx: &mut Context<Self>) {
         if self.pending {
             return;
@@ -172,27 +253,26 @@ impl Render for Vaults {
         let palette = brand::palette(cx);
         v_flex().gap_3()
             .debug_selector(|| "settings-vaults-list".into())
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("Other vaults"))
             .child("Removing a vault from this list keeps its files and last reading position.")
             .child(div().text_sm().text_color(palette.text_muted).child("The default opens when no previous window can be restored. Explicit file and folder opens take priority."))
             .child(h_flex().gap_2()
                 .child(Button::new("vaults-open-folder").label("Open folder…").on_click(|_, window, cx| window.dispatch_action(Box::new(reader_open::OpenFolder), cx)))
                 .child(Button::new("vaults-refresh").label("Refresh").disabled(self.pending || self.loading).on_click(cx.listener(|this, _, _, cx| this.reload(cx)))))
             .when(self.loading, |view| view.child("Loading vaults…"))
-            .when(!self.loading && self.rows.is_empty(), |view| view.child("No known vaults. Open a folder to add one."))
+            .when(!self.loading && self.rows.iter().all(|row| current.as_ref() == Some(&row.vault.root)), |view| view.child("No other vaults. Open a folder to add one."))
             .children(self.error.as_ref().map(|error| div().text_color(palette.danger).child(error.clone())))
-            .children(self.rows.iter().enumerate().map(|(index, row)| {
+            .children(self.rows.iter().enumerate().filter(|(_, row)| current.as_ref() != Some(&row.vault.root)).map(|(index, row)| {
                 let root = row.vault.root.clone();
                 let open_root = root.clone();
                 let remove_root = root.clone();
                 let default_root = (!row.vault.is_default).then_some(root.clone());
-                let is_current = current.as_ref() == Some(&root);
                 let status = match row.available { Some(true) => None, Some(false) => Some("Unavailable"), None => Some("Checking…") };
                 let directory = self.directory.clone();
                 v_flex().gap_2().p_3().border_1().border_color(palette.border_subtle).rounded(px(6.))
                     .debug_selector(move || format!("settings-vault-row-{index}"))
                     .child(h_flex().gap_2()
                         .child(div().font_weight(FontWeight::SEMIBOLD).child(vault_name::shown(&root, cx)))
-                        .when(is_current, |view| view.child("Current"))
                         .when(row.vault.is_default, |view| view.child("Default"))
                         .children(status.map(|status| div().debug_selector(move || format!("settings-vault-status-{index}")).text_color(palette.text_muted).child(status))))
                     .child(div().text_sm().text_color(palette.text_muted).child(vault_name::path_tooltip(&root)))
