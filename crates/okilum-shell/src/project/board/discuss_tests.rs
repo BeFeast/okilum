@@ -84,6 +84,7 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
                     .map(|scope| okilum_t3::board::Issue {
                         number: scope.number,
                         title: "Exact Board context".into(),
+                        updated_at: String::new(),
                         state: "open".into(),
                         body: String::new(),
                         labels: Vec::new(),
@@ -95,6 +96,10 @@ fn discuss_1784_real_board_click_opens_existing_panel_before_exact_append_and_cl
             window,
             cx,
         );
+        reader.project_navigation.boards[&area].update(cx, |board, cx| {
+            board.list.preferences.mode = list::Mode::Board;
+            cx.notify();
+        });
         reader.close_panel(reader_layout::Panel::Backlinks, window, cx);
         cx.notify();
         manager

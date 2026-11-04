@@ -20,7 +20,7 @@ STEP = 'Build, sign and notarize exact product source'
 
 def beta_publication(env, source):
     return (env.get('VERIFY_ONLY') != 'true' and env.get('GITHUB_REF') == 'refs/heads/main'
-            and source == env.get('GITHUB_SHA')
+            and (source == env.get('GITHUB_SHA') or source == env.get('HOURLY_SOURCE'))
             and env.get('GITHUB_EVENT_NAME') in ('push', 'schedule', 'workflow_dispatch'))
 
 

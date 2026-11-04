@@ -704,7 +704,7 @@ mod tests {
         std::fs::write(area.path().join("ops/project.yaml"), project).unwrap();
         let (root, visual) = cx.add_window_view(|window, cx| {
             let board = cx.new(|cx| {
-                let mut board = Board::with_reader(
+                let mut board = Board::with_kanban_reader(
                     area.path().into(),
                     |binding| {
                         Ok(binding
@@ -713,6 +713,7 @@ mod tests {
                             .map(|scope| okilum_t3::board::Issue {
                                 number: scope.number,
                                 title: format!("Fixture issue {}", scope.number),
+                                updated_at: String::new(),
                                 state: "open".into(),
                                 body: String::new(),
                                 labels: Vec::new(),
@@ -865,7 +866,8 @@ mod tests {
         std::fs::write(area.path().join("ops/project.yaml"), project).unwrap();
         let (root, visual) = cx.add_window_view(|window, cx| {
             let board = cx.new(|cx| {
-                let mut b = Board::with_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
+                let mut b =
+                    Board::with_kanban_reader(area.path().into(), |_| Ok(Vec::new()), window, cx);
                 b.active = true;
                 b
             });

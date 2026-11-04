@@ -8,6 +8,7 @@ import runpy
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import MagicMock, Mock, patch
 
 import yaml
@@ -20,280 +21,281 @@ SOURCE, OLD = 'a' * 40, 'b' * 40
 
 class Admission(unittest.TestCase):
     def setUp(self):
-        self.status = {'sha': SOURCE, 'total_count': 2, 'statuses': [
-            {'context': context, 'status': 'success'} for context in hourly.REQUIRED]}
+        self.tip = SOURCE
+        self.parents = {SOURCE: OLD, OLD: None}
+        self.statuses = {SOURCE: [dict(context=c, status='success') for c in hourly.REQUIRED]}
         self.calls = []
+        self.runs = []
+        self.now = datetime(2026, 11, 3, 17, 17, tzinfo=timezone.utc)
+        self.env = dict(GITHUB_REF='refs/heads/main', GITHUB_RUN_ID='100')
+        self.descriptor = Mock(return_value=None)
         def api(path, method='GET', body=None):
             self.calls.append((path, method, body))
             if path == '/branches/main':
-                return {'commit': {'id': SOURCE}}
-            if path == f'/commits/{SOURCE}/status?limit=100':
-                return self.status
-            if method == 'POST' and path.endswith('/dispatches'):
-                return None
-            raise AssertionError((path, method, body))
-        guard = patch.object(hourly, 'api', side_effect=api)
-        guard.start(); self.addCleanup(guard.stop)
-        network = patch('urllib.request.urlopen', side_effect=AssertionError('Offline fixture'))
-        network.start(); self.addCleanup(network.stop)
-        self.descriptor = Mock(return_value=None)
-        self.env = {'GITHUB_REF': 'refs/heads/main', 'GITHUB_RUN_ID': '100'}
-
-    def select(self, source=SOURCE, platform='macos', event='schedule', **env):
-        return hourly.select(event, source, platform, {**self.env, **env}, self.descriptor)
-
-    def test_positive_control_builds_all_three_only_with_both_merge_checks(self):
-        for platform in hourly.WORKFLOWS:
-            self.assertEqual(self.select(platform=platform)[:2], (True, SOURCE))
-        self.assertEqual(self.descriptor.call_args_list[0].args, (SOURCE, 'linux-appimage'))
-        self.assertFalse(any(method == 'POST' for _, method, _ in self.calls))
-
-    def test_red_pending_missing_skipped_pr_only_or_duplicate_checks_cannot_build(self):
-        original = copy.deepcopy(self.status)
-        for index in range(2):
-            for state in ['failure', 'pending', 'error', 'cancelled', 'skipped']:
-                self.status = copy.deepcopy(original)
-                self.status['statuses'][index]['status'] = state
-                build, source, reason = self.select(source=OLD)
-                self.assertFalse(build)
-                self.assertEqual(source, OLD)  # no fallback to older green source
-                self.assertIn('retry next hour', reason)
-        for statuses in [[], original['statuses'][:1],
-                         [{'context': c.replace('(workflow_dispatch)', '(pull_request)'), 'status': 'success'}
-                          for c in hourly.REQUIRED], original['statuses'] * 2]:
-            self.status = {'sha': SOURCE, 'total_count': len(statuses), 'statuses': statuses}
-            self.assertFalse(self.select()[0])
-        self.descriptor.assert_not_called()
-        self.assertFalse(any(method == 'POST' for _, method, _ in self.calls))
-
-    def test_incomplete_wrong_sha_or_network_error_fails_closed(self):
-        for field, value in [('sha', OLD), ('total_count', 3)]:
-            with self.subTest(field=field), patch.dict(self.status, {field: value}):
-                with self.assertRaises(ValueError):
-                    self.select()
-        with patch.object(hourly, 'api', side_effect=TimeoutError('offline')):
-            with self.assertRaises(TimeoutError):
-                self.select()
-        self.descriptor.assert_not_called()
-
-    def test_unchanged_hour_skips_every_platform_and_uses_appimage_not_frozen_pacman(self):
-        for platform in hourly.WORKFLOWS:
-            published_platform = 'linux-appimage' if platform == 'linux' else platform
-            self.descriptor.return_value = {'platform': published_platform, 'source': SOURCE}
-            self.assertFalse(self.select(platform=platform)[0])
-            self.descriptor.assert_called_with(SOURCE, published_platform)
-        self.assertFalse(any(method == 'POST' for _, method, _ in self.calls))
-        for bad in [{'source': OLD, 'platform': 'macos'}, {'source': SOURCE, 'platform': 'linux'}]:
-            self.descriptor.return_value = bad
-            with self.assertRaises(ValueError):
-                self.select()
-
-    def test_stale_tick_dispatches_current_source_and_dispatch_race_cannot_build(self):
-        for platform, workflow in hourly.WORKFLOWS.items():
-            self.assertEqual(self.select(source=OLD, platform=platform)[:2], (False, OLD))
-            self.assertEqual(self.calls[-1], ('/actions/workflows/' + workflow + '/dispatches',
-                'POST', {'ref': 'main', 'inputs': {'hourly_source': SOURCE}}))
-            self.assertTrue(self.select(platform=platform, event='workflow_dispatch', HOURLY_SOURCE=SOURCE)[0])
-            self.assertFalse(self.select(source=OLD, platform=platform,
-                                         event='workflow_dispatch', HOURLY_SOURCE=OLD)[0])
-        count = len(self.calls)
-        self.assertFalse(self.select(source=OLD, event='workflow_dispatch')[0])
-        self.assertFalse(any(method == 'POST' for _, method, _ in self.calls[count:]))
-        with self.assertRaises(ValueError):
-            self.select(GITHUB_REF='refs/heads/untrusted')
-
-    def test_macos_coalesce_reaches_shared_admission_and_never_routes_to_m4(self):
-        for event in ['schedule', 'workflow_dispatch']:
-            with patch.object(hourly, 'published_beta', self.descriptor):
-                result = coalesce.select_macos(event, SOURCE, self.env, coalesce.datetime.now(coalesce.timezone.utc))
-            self.assertEqual(result[:3], (True, SOURCE, False))
-
-    def test_real_coalesce_entrypoints_publish_exact_source_outputs_for_all_platforms(self):
-        for platform in hourly.WORKFLOWS:
-            for event in ['schedule', 'workflow_dispatch']:
-                with self.subTest(platform=platform, event=event), tempfile.TemporaryDirectory() as directory:
-                    output = Path(directory) / 'outputs'
-                    env = {**self.env, 'GITHUB_SHA': SOURCE, 'GITHUB_EVENT_NAME': event,
-                        'GITHUB_OUTPUT': str(output), 'OKILUM_SOURCE': '', 'OKILUM_RESIGN_BUILD': '',
-                        'MACOS_PREVIEW_PR': '', 'HOURLY_SOURCE': ''}
-                    with patch.dict(os.environ, env), patch.object(sys, 'argv', ['coalesce.py', platform]), \
-                            patch.object(hourly, 'published_beta', self.descriptor):
-                        runpy.run_path(str(ROOT / 'scripts/releases/coalesce.py'), run_name='__main__')
-                    values = dict(line.split('=', 1) for line in output.read_text().splitlines())
-                    self.assertEqual(values['source'], SOURCE)
-                    self.assertEqual(values['build'], 'true')
-                    self.assertEqual(values['resign'], '')
-                    if platform == 'macos':
-                        self.assertEqual(values['local'], 'false')
-                        self.assertEqual(values['preview'], 'false')
-
-    def test_github_mirror_uses_same_green_gate_and_preserves_trusted_pr_proxy(self):
-        env = {**self.env, 'GITHUB_SHA': SOURCE}
-        with patch.object(hourly, 'github_produced', return_value=False) as produced:
-            self.assertTrue(hourly.github_main('linux', env, self.descriptor)[0])
-            produced.assert_called_once_with('linux', SOURCE, env)
-            self.assertFalse(hourly.github_main('linux', {**env, 'GITHUB_SHA': OLD}, self.descriptor)[0])
-            self.assertFalse(hourly.github_main('linux', {**env, 'HOURLY_SOURCE': OLD}, self.descriptor)[0])
-        self.assertTrue(hourly.github_main('linux', {**env, 'GITHUB_REF': 'refs/heads/forgejo-linux-pr/1'},
-                                          self.descriptor)[0])
-        self.status['statuses'][0]['status'] = 'pending'
-        with patch.object(hourly, 'github_produced') as produced:
-            self.assertFalse(hourly.github_main('macos', env, self.descriptor)[0])
-            produced.assert_not_called()
-
-
-class Certification(unittest.TestCase):
-    def setUp(self):
-        self.now = datetime(2026, 11, 3, 17, 17, tzinfo=timezone.utc)
-        self.tip = SOURCE
-        self.statuses = {}
-        self.runs, self.dispatches, self.writes = [], [], []
-        self.descriptor = Mock(return_value=None)
-        self.env = {'GITHUB_REF': 'refs/heads/main', 'GITHUB_RUN_ID': '100'}
-        def api(path, method='GET', body=None):
-            if path == '/branches/main':
                 return {'commit': {'id': self.tip}}
+            if path.startswith('/git/commits/'):
+                source = path.rsplit('/', 1)[1]
+                parent = self.parents[source]
+                return dict(sha=source, parents=[dict(sha=parent)] if parent else [])
             if path.startswith('/commits/'):
                 source = path.split('/')[2]
                 statuses = self.statuses.get(source, [])
-                return {'sha': source, 'statuses': statuses, 'total_count': len(statuses)}
+                return dict(sha=source, total_count=len(statuses), statuses=statuses)
             if path.startswith('/actions/runs?'):
-                return {'total_count': len(self.runs), 'workflow_runs': self.runs}
-            if path.startswith('/statuses/') and method == 'POST':
-                self.writes.append((path, copy.deepcopy(body)))
-                return None
-            if path == '/actions/workflows/fast.yml/dispatches' and method == 'POST':
-                self.dispatches.append(copy.deepcopy(body))
-                self.runs.insert(0, self.make_run(body['inputs']['certification_source']))
+                return dict(total_count=len(self.runs), workflow_runs=self.runs)
+            if method == 'POST':
+                if path == '/actions/workflows/fast.yml/dispatches':
+                    self.runs.insert(0, dict(workflow_id='fast.yml', prettyref='main',
+                        trigger_event='workflow_dispatch', is_fork_pull_request=False,
+                        created=self.now.isoformat(), status='running',
+                        event_payload={'inputs': body['inputs']}))
                 return None
             raise AssertionError((path, method, body))
         guard = patch.object(hourly, 'api', side_effect=api)
         guard.start(); self.addCleanup(guard.stop)
-        clock = patch.object(hourly, 'datetime', wraps=datetime)
-        self.clock = clock.start(); self.addCleanup(clock.stop)
-        self.clock.now.side_effect = lambda *args: self.now
-        network = patch('urllib.request.urlopen', side_effect=AssertionError('Offline fixture'))
-        network.start(); self.addCleanup(network.stop)
+        guard = patch.object(hourly, 'datetime', wraps=datetime)
+        clock = guard.start(); self.addCleanup(guard.stop)
+        clock.now.return_value = self.now
+        guard = patch('urllib.request.urlopen', side_effect=AssertionError('Offline fixture'))
+        guard.start(); self.addCleanup(guard.stop)
 
-    def make_run(self, source, state='running', created=None):
-        return dict(workflow_id='fast.yml', prettyref='main', trigger_event='workflow_dispatch',
-                    is_fork_pull_request=False, commit_sha=source, status=state,
-                    created=(created or self.now).isoformat(),
-                    event_payload=json.dumps({'inputs': {'certification_source': source}}))
-
-    def select(self, platform='linux', event='schedule', source=None, **extra):
+    def select(self, platform='macos', event='workflow_dispatch', source=None, **extra):
         return hourly.select(event, source or self.tip, platform, {**self.env, **extra}, self.descriptor)
 
-    def green(self, source):
-        self.statuses[source] = [dict(context=c, status='success') for c in hourly.REQUIRED]
+    def writes(self, path=None):
+        return [(p, b) for p, m, b in self.calls if m == 'POST' and (path is None or p == path)]
 
-    def test_sixty_merges_and_all_platform_ticks_request_at_most_one_certification_per_hour(self):
-        # Merges themselves cannot run fast (see WorkflowContract). Only the
-        # current tip at the hourly tick is certified, never intermediate heads.
-        for n in range(60):
-            self.tip = f'{n:040x}'
-        first = self.tip
-        for _ in range(2):  # A replayed Linux tick cannot dispatch a duplicate.
-            for platform in hourly.WORKFLOWS:
-                build, _, reason = self.select(platform)
-                self.assertFalse(build)
-                self.assertIn('no fallback', reason)
-        self.assertEqual(self.dispatches, [{'ref': 'main', 'inputs': {'certification_source': first}}])
-        self.assertEqual([path for path, _ in self.writes], ['/statuses/' + first] * 2)
-        self.assertTrue(all(body['state'] == 'pending' for _, body in self.writes))
-        self.descriptor.assert_not_called()
-        # More merges in this hour still cannot allocate another certification.
-        self.tip = 'c' * 40
-        self.assertFalse(self.select()[0])
-        self.assertEqual(len(self.dispatches), 1)
-        self.now += timedelta(hours=1)
-        self.assertFalse(self.select()[0])
-        self.assertEqual(len(self.dispatches), 2)
-        self.assertEqual(self.dispatches[-1]['inputs']['certification_source'], self.tip)
-
-    def test_red_certification_never_builds_and_retry_waits_for_another_hour(self):
-        self.assertFalse(self.select()[0])
-        self.runs[0]['status'] = 'failure'
-        self.green(SOURCE)
-        self.statuses[SOURCE][1]['status'] = 'failure'
-        for platform in hourly.WORKFLOWS:
-            self.assertFalse(self.select(platform)[0])
-        self.assertEqual(len(self.dispatches), 1)
-        self.descriptor.assert_not_called()
-        self.now += timedelta(hours=1)
-        self.assertFalse(self.select()[0])
-        self.assertEqual(len(self.dispatches), 2)
-
-    def test_success_builds_later_tick_but_old_success_never_certifies_newest_main(self):
-        self.assertFalse(self.select()[0])
-        self.green(SOURCE)
-        self.runs[0]['status'] = 'success'
-        self.now += timedelta(hours=1)
+    def test_positive_control_builds_each_platform_with_both_certification_checks(self):
         for platform in hourly.WORKFLOWS:
             self.assertEqual(self.select(platform)[:2], (True, SOURCE))
-        self.assertEqual(len(self.dispatches), 1)
-        self.tip = OLD
-        for platform in hourly.WORKFLOWS:
-            self.assertFalse(self.select(platform, source=SOURCE)[0])
-        self.assertEqual(len(self.dispatches), 2)
-        self.assertEqual(self.dispatches[-1]['inputs']['certification_source'], OLD)
+        self.assertFalse(self.writes())
 
-    def test_pending_same_source_is_not_restarted_and_manual_or_pinned_retries_never_dispatch(self):
-        self.runs = [self.make_run(SOURCE, created=self.now - timedelta(hours=1))]
+    def test_main_advances_during_certification_and_each_platform_builds_certified_source(self):
+        newer = 'c' * 40
+        self.tip = newer
+        self.parents[newer] = SOURCE
+        for platform in hourly.WORKFLOWS:
+            self.assertEqual(self.select(platform, HOURLY_SOURCE=SOURCE)[:2], (True, SOURCE))
+        self.assertFalse(any(path == '/git/commits/' + OLD for path, _, _ in self.calls))
+        # Also recover from a missed completion dispatch at the next ordinary tick.
+        for platform in hourly.WORKFLOWS:
+            self.assertEqual(self.select(platform, event='schedule')[:2], (False, newer))
+        self.assertEqual(len(self.writes('/actions/workflows/fast.yml/dispatches')), 1)
+        self.assertEqual(self.writes('/actions/workflows/fast.yml/dispatches')[0][1],
+                         dict(ref='main', inputs={'certification_source': newer}))
+
+    def test_newest_green_ahead_of_each_feed_wins_and_already_published_never_repeats(self):
+        newer = 'c' * 40
+        self.tip = newer
+        self.parents[newer] = SOURCE
+        self.statuses[newer] = copy.deepcopy(self.statuses[SOURCE])
+        self.descriptor.return_value = dict(source=OLD, platform='macos')
+        self.assertEqual(self.select()[:2], (True, newer))
+        # A queued pin remains valid across red main merges, but a newer
+        # certified candidate wins admission once it is available.
+        self.assertFalse(self.select(HOURLY_SOURCE=SOURCE)[0])
+        self.descriptor.return_value = dict(source=newer, platform='macos')
         self.assertFalse(self.select()[0])
-        self.assertFalse(self.dispatches)
-        self.runs.clear()
+        self.assertFalse(self.select(HOURLY_SOURCE=SOURCE)[0])
+        self.assertFalse(self.writes())
+
+    def test_source_and_build_cannot_go_backwards_when_a_newer_beta_exists(self):
+        self.statuses[OLD] = copy.deepcopy(self.statuses[SOURCE])
+        self.statuses[SOURCE][0]['status'] = 'failure'
+        self.descriptor.return_value = dict(source=SOURCE, platform='macos')
+        self.assertFalse(self.select()[0])
+        self.assertFalse(self.select(HOURLY_SOURCE=OLD)[0])
+        self.descriptor.return_value = dict(source='f' * 40, platform='macos')
+        with self.assertRaises(ValueError):
+            self.select()
+
+    def test_red_missing_pending_duplicate_or_pr_checks_never_authorize_beta(self):
+        original = copy.deepcopy(self.statuses[SOURCE])
+        for state in ['failure', 'pending', 'error', 'cancelled', 'skipped']:
+            self.statuses[SOURCE] = copy.deepcopy(original)
+            self.statuses[SOURCE][0]['status'] = state
+            self.assertFalse(self.select()[0])
+        for statuses in [[], original[1:], original * 2,
+                         [dict(context=c.replace('workflow_dispatch', 'pull_request'), status='success')
+                          for c in hourly.REQUIRED]]:
+            self.statuses[SOURCE] = statuses
+            self.assertFalse(self.select()[0])
+        self.assertFalse(self.writes())
+
+    def test_red_or_missing_shell_full_never_holds_beta_once_check_is_green(self):
+        original = copy.deepcopy(self.statuses[SOURCE])
+        for statuses in [original[:1], [original[0], dict(original[1], status='failure')],
+                         [original[0], dict(original[1], status='pending')]]:
+            self.statuses[SOURCE] = copy.deepcopy(statuses)
+            self.assertEqual(self.select()[:2], (True, SOURCE))
+        self.assertFalse(self.writes())
+
+    def test_only_linux_tick_certifies_at_most_once_in_an_hour(self):
+        self.statuses.clear()
+        for _ in range(2):
+            for platform in hourly.WORKFLOWS:
+                self.assertFalse(self.select(platform, event='schedule')[0])
+        self.assertEqual(len(self.writes('/actions/workflows/fast.yml/dispatches')), 1)
+        self.tip = OLD
+        self.assertFalse(self.select('linux', event='schedule')[0])
+        self.assertEqual(len(self.writes('/actions/workflows/fast.yml/dispatches')), 1)
+        self.runs[0]['status'] = 'failure'
+        self.assertFalse(self.select('linux', event='schedule')[0])
         for platform in hourly.WORKFLOWS:
             self.assertFalse(self.select(platform, event='workflow_dispatch')[0])
-            self.assertFalse(self.select(platform, event='workflow_dispatch', HOURLY_SOURCE=SOURCE)[0])
-        env = {**self.env, 'GITHUB_SHA': SOURCE}
+        self.assertEqual(len(self.writes('/actions/workflows/fast.yml/dispatches')), 1)
+
+    def test_pinned_and_red_candidates_never_trigger_certification_from_github_or_manual(self):
+        self.statuses.clear()
         for platform in ['linux', 'macos']:
+            env = dict(self.env, GITHUB_SHA=SOURCE)
             self.assertFalse(hourly.github_main(platform, env, self.descriptor)[0])
-        self.assertFalse(self.dispatches)
+            self.assertFalse(self.select(platform, event='workflow_dispatch', HOURLY_SOURCE=SOURCE)[0])
+        self.assertFalse(self.writes())
 
-    def test_capture_race_never_compiles_or_certifies_a_different_commit(self):
-        env = {**self.env, 'CERTIFICATION_SOURCE': SOURCE,
-               'GITHUB_SHA': SOURCE, 'GITHUB_EVENT_NAME': 'workflow_dispatch'}
-        # Positive control reaches the executable validation entrypoint.
-        response = MagicMock()
-        response.__enter__.return_value.read.return_value = json.dumps({'commit': {'id': SOURCE}}).encode()
-        with patch.dict(os.environ, env), patch.object(sys, 'argv', ['hourly_beta.py', 'certify-source']), \
-                patch('urllib.request.urlopen', return_value=response):
-            with self.assertRaises(SystemExit) as result:
-                runpy.run_path(str(ROOT / 'scripts/releases/hourly_beta.py'), run_name='__main__')
-            self.assertEqual(result.exception.code, 0)
-        for changes in [dict(CERTIFICATION_SOURCE=OLD), dict(GITHUB_SHA=OLD),
-                        dict(CERTIFICATION_SOURCE='main'), dict(GITHUB_REF='refs/heads/feature'),
-                        dict(GITHUB_EVENT_NAME='pull_request')]:
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                hourly.certification_source({**env, **changes})
-        self.tip = OLD
+    def test_github_uses_certified_ancestor_while_ordinary_pr_proxy_keeps_contract(self):
+        newer = 'c' * 40
+        self.tip = newer
+        self.parents[newer] = SOURCE
+        env = dict(self.env, GITHUB_SHA=SOURCE)
+        with patch.object(hourly, 'github_produced', return_value=False):
+            self.assertTrue(hourly.github_main('linux', env, self.descriptor)[0])
+            pinned = dict(env, GITHUB_REF='refs/heads/forgejo-linux-pr/hourly-' + SOURCE)
+            # Forgejo is LAN-only: the pinned ref is admitted without its API.
+            # Forgejo verified the source before it created/dispatched the ref.
+            self.calls.clear()
+            self.assertTrue(hourly.github_main('linux', pinned, self.descriptor)[0])
+            self.assertTrue(hourly.github_main('linux', dict(pinned, HOURLY_SOURCE=SOURCE), self.descriptor)[0])
+            self.assertFalse(self.calls)
+            self.assertFalse(hourly.github_main('linux', dict(pinned, HOURLY_SOURCE=OLD), self.descriptor)[0])
+            self.descriptor.return_value = dict(source=SOURCE, platform='linux-appimage')
+            self.assertFalse(hourly.github_main('linux', pinned, self.descriptor)[0])
+            self.descriptor.return_value = None
+            self.statuses[SOURCE][0]['status'] = 'failure'
+            self.assertFalse(hourly.github_main('linux', env, self.descriptor)[0])
+            # An unreachable Forgejo never authorizes, and never crashes, a main build.
+            with patch.object(hourly, 'api', side_effect=urllib.error.URLError('timed out')):
+                self.assertFalse(hourly.github_main('linux', env, self.descriptor)[0])
+        self.assertTrue(hourly.github_main('linux', dict(env, GITHUB_REF='refs/heads/forgejo-linux-pr/1'),
+                                          self.descriptor)[0])
+
+    def test_stale_scheduler_dispatches_current_tooling_without_compiling_wrong_source(self):
+        for platform, workflow in hourly.WORKFLOWS.items():
+            self.assertEqual(self.select(platform, source=OLD)[:2], (False, OLD))
+            self.assertEqual(self.writes()[-1], ('/actions/workflows/' + workflow + '/dispatches',
+                dict(ref='main', inputs={'hourly_source': SOURCE})))
+
+    def test_coalesce_entrypoints_emit_selected_ancestor_for_each_platform(self):
+        newer = 'c' * 40
+        self.tip = newer
+        self.parents[newer] = SOURCE
+        for platform in hourly.WORKFLOWS:
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / 'outputs'
+                env = dict(self.env, GITHUB_SHA=newer, GITHUB_EVENT_NAME='workflow_dispatch',
+                    GITHUB_OUTPUT=str(output), OKILUM_SOURCE='', OKILUM_RESIGN_BUILD='',
+                    MACOS_PREVIEW_PR='', HOURLY_SOURCE=SOURCE)
+                with patch.dict(os.environ, env), patch.object(sys, 'argv', ['coalesce.py', platform]), \
+                        patch.object(hourly, 'published_beta', self.descriptor):
+                    runpy.run_path(str(ROOT / 'scripts/releases/coalesce.py'), run_name='__main__')
+                values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                self.assertEqual(values['source'], SOURCE)
+                self.assertEqual(values['build'], 'true')
+
+    def test_bad_status_inventory_history_or_network_fails_closed(self):
+        for data in [dict(sha=OLD, total_count=0, statuses=[]),
+                     dict(sha=SOURCE, total_count=1, statuses=[])]:
+            with patch.object(hourly, 'api', return_value=data), self.assertRaises(ValueError):
+                hourly.green(SOURCE)
+        with patch.object(hourly, 'api', side_effect=TimeoutError('offline')), self.assertRaises(TimeoutError):
+            self.select()
+        self.parents[OLD] = SOURCE
         with self.assertRaises(ValueError):
-            hourly.certification_source(env)
-        with patch.object(hourly, 'api', side_effect=[{'total_count': 0, 'workflow_runs': []},
-                                                    {'commit': {'id': OLD}}]) as api:
-            self.assertIn('advanced', hourly.certify(SOURCE, self.now))
-            self.assertFalse(any(call.args[1:] for call in api.call_args_list))
+            list(hourly.main_history(SOURCE))
 
-    def test_inventory_pages_and_failures_cannot_duplicate_a_request(self):
-        # A page full of unrelated manual dispatches must not hide this hour's
-        # certification on the next page, nor prevent the first real request.
-        manual = self.make_run(SOURCE)
-        manual['event_payload'] = {'inputs': {}}
-        pages = [{'total_count': 101, 'workflow_runs': [manual] * 100},
-                 {'total_count': 101, 'workflow_runs': [self.make_run(OLD, 'cancelled')]}]
+    def test_certification_validates_pinned_checkout_after_main_and_run_snapshot_advance(self):
+        self.tip = 'c' * 40
+        self.parents[self.tip] = SOURCE
+        env = dict(self.env, CERTIFICATION_SOURCE=SOURCE, GITHUB_SHA=self.tip,
+                   GITHUB_EVENT_NAME='workflow_dispatch')
+        with patch.object(hourly.subprocess, 'check_output', side_effect=[self.tip, SOURCE]), \
+                patch.object(hourly.subprocess, 'run') as run:
+            hourly.certification_source(env)
+            self.assertEqual(run.call_args_list[-1].args[0], ['git', 'checkout', '--detach', SOURCE])
+        for change in [dict(CERTIFICATION_SOURCE='main'), dict(GITHUB_REF='refs/heads/feature'),
+                       dict(GITHUB_EVENT_NAME='pull_request')]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                hourly.certification_source(dict(env, **change))
+        with patch.object(hourly.subprocess, 'check_output', return_value=SOURCE), self.assertRaises(ValueError):
+            hourly.certification_source(env)
+        with patch.object(hourly.subprocess, 'check_output', side_effect=[self.tip, self.tip]), \
+                patch.object(hourly.subprocess, 'run'), self.assertRaises(ValueError):
+            hourly.certification_source(env)
+
+    def test_pending_certification_and_paginated_hourly_inventory_cannot_duplicate_requests(self):
+        self.statuses.clear()
+        self.select('linux', event='schedule')
+        self.runs[0]['created'] = (self.now - timedelta(hours=1)).isoformat()
+        self.assertFalse(self.select('linux', event='schedule')[0])
+        self.assertEqual(len(self.writes('/actions/workflows/fast.yml/dispatches')), 1)
+        manual = dict(self.runs[0], created=self.now.isoformat(), event_payload={'inputs': {}})
+        pages = [dict(total_count=101, workflow_runs=[manual] * 100),
+                 dict(total_count=101, workflow_runs=[dict(self.runs[0], created=self.now.isoformat())])]
         with patch.object(hourly, 'api', side_effect=pages) as api:
             self.assertIn('already requested', hourly.certify(SOURCE, self.now))
             self.assertIn('page=2', api.call_args.args[0])
-            self.assertEqual(api.call_count, 2)
-        for data in [{'total_count': 1, 'workflow_runs': []},
-                     {'total_count': 0, 'workflow_runs': [manual]},
-                     {'total_count': 1, 'workflow_runs': [{**manual, 'prettyref': 'feature'}]}]:
+        for data in [dict(total_count=1, workflow_runs=[]), dict(total_count=0, workflow_runs=[manual])]:
             with patch.object(hourly, 'api', return_value=data), self.assertRaises(ValueError):
                 hourly.certify(SOURCE, self.now)
-        with patch.object(hourly, 'api', side_effect=TimeoutError('offline')), self.assertRaises(TimeoutError):
-            hourly.certify(SOURCE, self.now)
-        self.assertFalse(self.dispatches)
+
+
+class PublicationGuards(unittest.TestCase):
+    def test_certified_older_product_reaches_beta_and_red_or_regressive_product_does_not(self):
+        import io
+        import zipfile
+        from types import SimpleNamespace
+        import publication
+        newer = 'c' * 40
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('payload.zip', b'fixture')
+            archive.writestr('release-source.txt', SOURCE)
+            archive.writestr('release.json', json.dumps({'SOURCE_SHA': SOURCE}))
+        for platform in ['macos', 'windows']:
+            run = dict(workflow_id=hourly.WORKFLOWS[platform], prettyref='main',
+                is_fork_pull_request=False, trigger_event='workflow_dispatch', status='success',
+                commit_sha=newer, index_in_repo=42, event_payload={'inputs': {'hourly_source': SOURCE}})
+            names = list(publication.ARTIFACTS[platform])
+            artifacts = [dict(id=i, name=n, expired=False, run_id=12) for i, n in enumerate(names)]
+            def api(method, path, raw=False):
+                if path == '/actions/runs/12': return run
+                if path == '/branches/main': return {'commit': {'id': newer}}
+                if path.endswith('/artifacts'): return artifacts
+                if path.endswith('/zip'): return data.getvalue()
+                raise AssertionError(path)
+            for state, prior, relation, publishes in [
+                    (True, OLD, 0, True), (False, OLD, 0, False),
+                    (True, newer, 1, False), (True, SOURCE, 0, False)]:
+                client = Mock(); client.call.side_effect = api
+                with self.subTest(platform=platform, green=state, prior=prior), \
+                        patch.object(hourly, 'main_source'), patch.object(hourly, 'green', return_value=(state, 'gate')), \
+                        patch.object(publication, 'R2') as store, \
+                        patch.object(publication.release_notes, 'predecessor', return_value=dict(source=prior, build=5041)), \
+                        patch.object(publication.release_notes, 'prepare', return_value=dict(previous_source=prior, previous_build=5041)), \
+                        patch.object(publication.release_notes, 'record'), patch.object(publication.prepare, 'complete'), \
+                        patch.object(publication.subprocess, 'run', side_effect=lambda command, **kw: SimpleNamespace(
+                            returncode=relation if command == ['git', 'merge-base', '--is-ancestor', prior, SOURCE] else 0)) as launch:
+                    store.return_value.call.return_value = None
+                    if not state:
+                        with self.assertRaisesRegex(ValueError, 'certified green'):
+                            publication.publish(client, platform, 12)
+                    else:
+                        publication.publish(client, platform, 12)
+                    commands = [c for c in launch.call_args_list if c.args[0][0] == publication.sys.executable]
+                    self.assertEqual(bool(commands), publishes)
+                    if publishes:
+                        self.assertEqual(commands[0].kwargs['env']['GITHUB_SHA'], SOURCE)
+                        self.assertNotIn('--archive-only', commands[0].args[0])
 
 
 class StatusReporting(unittest.TestCase):
@@ -301,6 +303,8 @@ class StatusReporting(unittest.TestCase):
         self.env = dict(GITHUB_SHA=SOURCE, GITHUB_REF='refs/heads/main',
                         GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_RUN_NUMBER='123',
                         GITHUB_SERVER_URL='https://git.oklabs.uk')
+        guard = patch.object(hourly, 'main_source')
+        guard.start(); self.addCleanup(guard.stop)
         guard = patch.object(hourly, 'api')
         self.api = guard.start(); self.addCleanup(guard.stop)
         network = patch('urllib.request.urlopen', side_effect=AssertionError('Offline fixture'))
@@ -308,24 +312,24 @@ class StatusReporting(unittest.TestCase):
 
     def test_both_certification_results_are_explicitly_reported_on_the_requested_sha(self):
         for result in ['success', 'failure', 'skipped', 'cancelled']:
-            self.api.reset_mock()
-            env = dict(self.env, CERTIFICATION_SOURCE=SOURCE, JOB_RESULTS=json.dumps({
-                'check': {'result': 'success'}, 'shell-full': {'result': result}}))
-            hourly.report_certification(env)
-            calls = self.api.call_args_list
-            self.assertEqual([call.args[:2] for call in calls], [('/statuses/' + SOURCE, 'POST')] * 2)
-            self.assertEqual([call.args[2]['context'] for call in calls], list(hourly.REQUIRED))
-            self.assertEqual([call.args[2]['state'] for call in calls],
-                             ['success', 'failure' if result == 'cancelled' else result])
-            self.assertEqual(calls[0].args[2]['target_url'],
-                             'https://git.oklabs.uk/BeFeast/okilum/actions/runs/123')
-        # A capture race reports failure on the requested SHA, never success on
-        # the newer captured commit, even with seemingly successful job inputs.
+            for job, context in zip(['check', 'shell-full'], hourly.REQUIRED):
+                self.api.reset_mock()
+                env = dict(self.env, CERTIFICATION_SOURCE=SOURCE,
+                           JOB_RESULTS=json.dumps({job: {'result': result}}))
+                hourly.report_certification(env)
+                calls = [c for c in self.api.call_args_list if c.args[0].startswith('/statuses/')]
+                self.assertEqual([call.args[:2] for call in calls], [('/statuses/' + SOURCE, 'POST')])
+                self.assertEqual([call.args[2]['context'] for call in calls], [context])
+                self.assertEqual([call.args[2]['state'] for call in calls],
+                                 ['failure' if result == 'cancelled' else result])
+                self.assertEqual(calls[0].args[2]['target_url'],
+                                 'https://git.oklabs.uk/BeFeast/okilum/actions/runs/123')
+        # The dispatch snapshot may advance; results still belong to the pinned checkout.
         self.api.reset_mock()
         hourly.report_certification({**env, 'GITHUB_SHA': OLD})
-        self.assertTrue(all(call.args[0] == '/statuses/' + SOURCE and call.args[2]['state'] == 'failure'
-                            for call in self.api.call_args_list))
-        for broken in [dict(JOB_RESULTS='{}'), dict(CERTIFICATION_SOURCE='main')]:
+        self.assertTrue(all(call.args[0] == '/statuses/' + SOURCE for call in self.api.call_args_list))
+        both = json.dumps({j: {'result': 'success'} for j in ['check', 'shell-full']})
+        for broken in [dict(JOB_RESULTS='{}'), dict(JOB_RESULTS=both), dict(CERTIFICATION_SOURCE='main')]:
             self.api.reset_mock()
             with self.assertRaises(ValueError):
                 hourly.report_certification({**env, **broken})
@@ -338,18 +342,32 @@ class StatusReporting(unittest.TestCase):
                 results = {job: {'result': 'skipped' if job.endswith('github') else 'success'} for job in jobs}
                 env = dict(self.env, SOURCE=SOURCE, GITHUB_EVENT_NAME=event, JOB_RESULTS=json.dumps(results))
                 hourly.report_shipping(platform, env)
-                calls = self.api.call_args_list
+                calls = [c for c in self.api.call_args_list if c.args[0].startswith('/statuses/')]
                 self.assertEqual(len(calls), len(jobs))
                 self.assertEqual([call.args[2]['context'] for call in calls],
                                  [f'{platform}-release / {job} ({event})' for job in jobs])
                 self.assertTrue(all(call.args[:2] == ('/statuses/' + SOURCE, 'POST') for call in calls))
                 self.assertEqual([call.args[2]['state'] for call in calls], [results[j]['result'] for j in jobs])
-                for broken in [dict(SOURCE=OLD), dict(GITHUB_SHA=OLD), dict(GITHUB_EVENT_NAME='pull_request'),
+                for broken in [dict(GITHUB_EVENT_NAME='pull_request'),
                                dict(GITHUB_REF='refs/heads/feature'), dict(JOB_RESULTS='{}')]:
                     self.api.reset_mock()
                     with self.assertRaises(ValueError):
                         hourly.report_shipping(platform, {**env, **broken})
                     self.api.assert_not_called()
+
+    def test_green_certification_immediately_dispatches_all_platforms_even_after_main_moves(self):
+        env = dict(self.env, GITHUB_SHA=OLD, CERTIFICATION_SOURCE=SOURCE,
+                   JOB_RESULTS=json.dumps({'check': {'result': 'success'}}))
+        hourly.report_certification(env)
+        dispatches = [c.args for c in self.api.call_args_list if c.args[0].endswith('/dispatches')]
+        self.assertEqual(dispatches, [('/actions/workflows/' + w + '/dispatches', 'POST',
+            {'ref': 'main', 'inputs': {'hourly_source': SOURCE}}) for w in hourly.WORKFLOWS.values()])
+        # Red check, or any shell-full result, never dispatches release work.
+        for results in [{'check': {'result': 'failure'}}, {'shell-full': {'result': 'success'}},
+                        {'shell-full': {'result': 'failure'}}]:
+            self.api.reset_mock()
+            hourly.report_certification(dict(env, JOB_RESULTS=json.dumps(results)))
+            self.assertFalse(any(c.args[0].endswith('/dispatches') for c in self.api.call_args_list))
 
     def test_red_or_cancelled_shipping_job_cannot_be_reported_as_green(self):
         for state in ['failure', 'cancelled']:
@@ -382,22 +400,37 @@ class ProducerInventory(unittest.TestCase):
             self.assertEqual(request.get_header('Cache-control'), 'no-cache')
             self.assertEqual(request.get_header('Authorization'), 'Bearer read-fixture')
 
-    def test_urgent_manual_linux_dispatch_is_source_pinned_and_does_not_duplicate_bytes(self):
+    def test_linux_producer_pins_source_ref_after_main_advance_and_reuses_existing_bytes(self):
         import appimage_artifact
         client = Mock(token='fixture')
-        client.request.return_value = {'object': {'sha': SOURCE}}
+        branch = 'forgejo-linux-pr/hourly-' + SOURCE
         with patch.object(appimage_artifact.transport, 'GitHub', return_value=client), \
+                patch.object(hourly, 'main_source'), patch.object(hourly, 'green', return_value=(True, 'green')), \
                 patch.object(hourly, 'github_produced', return_value=False) as produced:
+            client.request.return_value = []
+            hourly.dispatch_linux(SOURCE)
+            self.assertEqual(client.request.call_args.args, ('git/refs', 'POST',
+                {'ref': 'refs/heads/' + branch, 'sha': SOURCE}))
+            client.reset_mock()
+            client.request.return_value = [dict(ref='refs/heads/' + branch, object={'sha': SOURCE})]
             hourly.dispatch_linux(SOURCE)
             self.assertEqual(client.request.call_args.args, ('actions/workflows/forgejo-linux.yml/dispatches',
-                'POST', {'ref': 'main', 'inputs': {'source': SOURCE}}))
+                'POST', {'ref': branch, 'inputs': {'source': SOURCE}}))
             client.reset_mock()
             produced.return_value = True
             hourly.dispatch_linux(SOURCE)
-            client.request.assert_called_once_with('git/ref/heads/main')
-            client.request.return_value = {'object': {'sha': OLD}}
+            client.request.assert_not_called()
+            produced.return_value = False
+            client.request.return_value = [dict(ref='refs/heads/' + branch, object={'sha': OLD})]
             with self.assertRaises(ValueError):
                 hourly.dispatch_linux(SOURCE)
+
+    def test_queued_source_producer_prevents_a_second_dispatch_before_jobs_exist(self):
+        run = dict(id=9, head_sha=SOURCE, head_branch='main', path='.github/workflows/forgejo-linux.yml',
+                   event='schedule', run_attempt=1, conclusion=None, status='queued')
+        with patch.object(hourly, 'github_api', return_value={'total_count': 1, 'workflow_runs': [run]}) as api:
+            self.assertTrue(hourly.github_produced('linux', SOURCE, {'GITHUB_RUN_ID': ''}, pending=True))
+            self.assertEqual(api.call_count, 1)
 
     def test_only_executed_original_exact_source_jobs_suppress_duplicate_builds(self):
         for platform, workflow, job, step in [
@@ -434,7 +467,7 @@ class WorkflowContract(unittest.TestCase):
         data = self.load('.forgejo/workflows/fast.yml')
         self.assertEqual(set(data['on']), {'pull_request', 'workflow_dispatch'})
         self.assertIn('certification_source', data['on']['workflow_dispatch']['inputs'])
-        self.assertIn("inputs.certification_source != '' && 'hourly-main'", data['concurrency']['group'])
+        self.assertIn("inputs.certification_source != '' && inputs.certification_source", data['concurrency']['group'])
         self.assertEqual(data['concurrency']['cancel-in-progress'], 'true')
         for name in ['check', 'shell-full']:
             job = data['jobs'][name]
@@ -447,11 +480,13 @@ class WorkflowContract(unittest.TestCase):
         self.assertLess(check.index(validation), next(i for i, s in enumerate(check)
                         if s.get('name') == 'Prepare local Linux toolchain'))
         self.assertIn("inputs.certification_source == ''", data['jobs']['sync-source-sharing']['if'])
-        report = data['jobs']['certification-status']
-        self.assertEqual(report['needs'], ['check', 'shell-full'])
-        self.assertEqual(report['if'], "always() && inputs.certification_source != ''")
-        self.assertEqual(report['steps'][-1]['run'], 'python3 scripts/releases/hourly_beta.py certification-status')
-        self.assertEqual(report['steps'][-1]['env']['JOB_RESULTS'], '${{ toJSON(needs) }}')
+        # Beta's gate reports right after check; shell-full reports on its own.
+        for name, needs in [('certification-status', ['check']), ('shell-full-status', ['shell-full'])]:
+            report = data['jobs'][name]
+            self.assertEqual(report['needs'], needs)
+            self.assertEqual(report['if'], "always() && inputs.certification_source != ''")
+            self.assertEqual(report['steps'][-1]['run'], 'python3 scripts/releases/hourly_beta.py certification-status')
+            self.assertEqual(report['steps'][-1]['env']['JOB_RESULTS'], '${{ toJSON(needs) }}')
 
     def test_stable_selector_shipping_contexts_remain_on_the_beta_source_commit(self):
         # Dispatch/schedule runs need explicit reporting on this Forgejo. Stale
@@ -468,7 +503,7 @@ class WorkflowContract(unittest.TestCase):
             if platform == 'linux':
                 self.assertNotIn('release', report['needs'])  # Independent Arch cannot delay AppImage.
             self.assertIn("needs.select.outputs.build == 'true'", report['if'])
-            self.assertIn('needs.select.outputs.source == github.sha', report['if'])
+            self.assertNotIn('needs.select.outputs.source == github.sha', report['if'])
             self.assertEqual(report['steps'][-1]['run'], 'python3 scripts/releases/hourly_beta.py shipping-status ' + platform)
             self.assertEqual(report['steps'][-1]['env']['SOURCE'], '${{ needs.select.outputs.source }}')
             self.assertEqual(report['steps'][-1]['env']['JOB_RESULTS'], '${{ toJSON(needs) }}')
@@ -511,7 +546,7 @@ class CurrentFeeds(unittest.TestCase):
             f'okilum/releases/{SOURCE}/macos.json': json.dumps(dict(source=SOURCE, build=800)).encode()})
         with patch.object(hourly, 'PublicFeeds', return_value=store):
             for platform in ['linux-appimage', 'macos', 'windows']:
-                self.assertIsNone(hourly.published_beta(SOURCE, platform))
+                self.assertEqual(hourly.published_beta(SOURCE, platform), dict(source=OLD, build=700, platform=platform))
                 self.assertEqual(hourly.published_beta(OLD, platform),
                                  dict(source=OLD, build=700, platform=platform))
         with patch.object(hourly.subprocess, 'run') as run:
