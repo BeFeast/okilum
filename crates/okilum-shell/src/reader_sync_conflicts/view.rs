@@ -206,7 +206,7 @@ impl InventoryView {
         let root = self.root.clone();
         let drafts = self.state.join("editor-drafts");
         cx.spawn(async move |this, cx| {
-            let completion = cx
+            let (completion, history) = cx
                 .background_executor()
                 .spawn(async move {
                     let prepare = || -> anyhow::Result<()> {
@@ -224,13 +224,18 @@ impl InventoryView {
                         conflicts::prepare_recovery(&recovery)?;
                         Ok(())
                     };
-                    match prepare() {
+                    let completion = match prepare() {
                         Ok(()) => job.run(),
                         Err(error) => Completion {
                             id: job.id,
                             result: Err(error),
                         },
-                    }
+                    };
+                    // NeedsAttention can be terminal (failed completion marker)
+                    // or recoverable (partial capture). Use durable authority,
+                    // rather than labelling every error an interrupted decision.
+                    let history = conflicts::history(&recovery, &root);
+                    (completion, history)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -240,8 +245,14 @@ impl InventoryView {
                 this.busy = false;
                 if let Some(panel) = this.panel.as_mut() {
                     panel.finish(completion);
-                    if matches!(panel.state, State::NeedsAttention) {
-                        this.pending += 1;
+                }
+                match history {
+                    Ok(history) => {
+                        this.pending = history.entries.iter().filter(|entry| entry.pending).count();
+                        this.message = history.warnings.join("\n");
+                    }
+                    Err(error) => {
+                        this.message = format!("Cannot refresh interrupted decisions: {error}");
                     }
                 }
                 cx.notify();
