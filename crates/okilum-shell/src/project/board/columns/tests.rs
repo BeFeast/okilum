@@ -174,8 +174,10 @@ fn empty_column_can_be_expanded_from_the_keyboard(cx: &mut TestAppContext) {
     loaded(&board, visual);
     board.update_in(visual, |board, window, cx| board.focus.focus(window, cx));
     visual.run_until_parked();
-    // Two view controls, five chips, extra filters and search precede columns.
-    for _ in 0..10 {
+    // Nine header controls precede the empty-stage controls. Compact Board
+    // presents Working, Checks and Ready before the named Queue control.
+    assert!(visual.debug_bounds("board-lane-Queue").is_none());
+    for _ in 0..13 {
         visual.simulate_keystrokes("tab");
     }
     let keystroke = gpui::Keystroke::parse("enter").unwrap();
@@ -188,7 +190,7 @@ fn empty_column_can_be_expanded_from_the_keyboard(cx: &mut TestAppContext) {
     visual.run_until_parked();
     assert!(
         visual.debug_bounds("board-lane-Queue").is_some(),
-        "first named empty-column control works with Tab/Enter"
+        "named Queue control works with Tab/Enter"
     );
     assert!(visual.debug_bounds("board-collapse-empty-Queue").is_some());
 }
