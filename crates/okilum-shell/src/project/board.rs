@@ -1786,6 +1786,7 @@ impl Board {
                 okilum_t3::board::Issue {
                     number,
                     title: format!("Synthetic task {number}"),
+                    updated_at: String::new(),
                     state: "open".into(),
                     body: String::new(),
                     labels: vec![],
