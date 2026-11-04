@@ -46,3 +46,9 @@ keeps full prepaint whenever any history control holds focus; keyboard modality
 and active text selection also keep the full tree. Visible rows always prepaint.
 This avoids the remaining rich-Markdown overscan cost on splitter frames without
 reducing the measured workload or freezing text reflow.
+
+Issue cards use vertical block flow at the lane's resolved width. Existing
+8px inter-child gaps become leading margins, and the PR link keeps its intrinsic
+width in a horizontal row. Titles, status content, source links, disclosures and
+natural reflow retain the same geometry; the extra outer flex intrinsic-size
+negotiation is unnecessary because the lane already measures at a definite width.

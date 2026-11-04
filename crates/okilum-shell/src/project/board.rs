@@ -813,14 +813,16 @@ impl Board {
                     .child(origin),
             );
         }
-        let mut card = v_flex()
+        // The lane already resolves this card's width. A vertical block flow
+        // preserves natural heights without another flex intrinsic-size pass.
+        let mut card = div()
+            .block()
             .id(("board-card", number as usize))
             .debug_selector(move || format!("board-card-{number}"))
             .w_full()
             .min_w_0()
             .min_h_0()
             .flex_shrink_0()
-            .gap_2()
             .border_1()
             .border_color(if stuck {
                 colors.warning
@@ -928,6 +930,7 @@ impl Board {
                     );
                 }
                 Button::new(("board-agent-link", number as usize))
+                    .mt_2()
                     .debug_selector(move || format!("board-agent-link-{number}"))
                     .small()
                     .ghost()
@@ -952,6 +955,7 @@ impl Board {
                     .into_any_element()
             } else {
                 h_flex()
+                    .mt_2()
                     .min_w_0()
                     .gap_2()
                     .px_3()
@@ -982,34 +986,37 @@ impl Board {
                     )
                     .into_any_element()
             })
-            .child(div().h(px(2.)));
+            .child(div().mt_2().h(px(2.)));
         // A single explicit PR link is a link, not a fabricated CI/merge status.
         if let Some(pr) = scope.pull_requests.first() {
             let url = binding.pull_url(*pr);
             let label: SharedString = format!("PR #{pr}").into();
             card = card.child(
-                controls::compact_action(("board-pr-badge", number as usize), window, cx)
-                    .debug_selector(move || format!("board-pr-badge-{number}"))
-                    .self_start()
-                    .ml_2()
-                    .mb_2()
-                    .min_w_0()
-                    .accessibility_label(label.clone())
-                    .child(
-                        div()
-                            .min_w_0()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .line_height(gpui::relative(1.))
-                            .child(label),
-                    )
-                    .child(appearance::icon("git-pull-request", colors.accent))
-                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                h_flex().mt_2().child(
+                    controls::compact_action(("board-pr-badge", number as usize), window, cx)
+                        .debug_selector(move || format!("board-pr-badge-{number}"))
+                        .self_start()
+                        .ml_2()
+                        .mb_2()
+                        .min_w_0()
+                        .accessibility_label(label.clone())
+                        .child(
+                            div()
+                                .min_w_0()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .line_height(gpui::relative(1.))
+                                .child(label),
+                        )
+                        .child(appearance::icon("git-pull-request", colors.accent))
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                ),
             );
         }
         if let Some(problem) = mapping {
             card = card.child(
                 div()
+                    .mt_2()
                     .debug_selector(move || format!("board-mapping-{number}"))
                     .px_3()
                     .pb_2()
@@ -1020,11 +1027,16 @@ impl Board {
         }
         if self.selected == Some(number) {
             if self.delivery.enabled() {
-                card = card.child(self.delivery_details(scope, binding, cx));
+                card = card.child(
+                    div()
+                        .mt_2()
+                        .child(self.delivery_details(scope, binding, cx)),
+                );
             }
             let url = binding.issue_url(number);
             let context = self.context(scope);
             let mut actions = h_flex()
+                .mt_2()
                 .px_2()
                 .pb_2()
                 .gap_1()
@@ -1091,6 +1103,7 @@ impl Board {
             if let Some(issue) = issue {
                 card = card.child(
                     div()
+                        .mt_2()
                         .text_size(px(12.))
                         .child(issue.body.chars().take(1800).collect::<String>()),
                 );
