@@ -312,11 +312,17 @@ pub(crate) fn append_history(
     listing.warnings.extend(history.warnings);
     for entry in history.entries {
         for (index, version) in entry.versions.into_iter().enumerate() {
-            let text = String::from_utf8_lossy(&version.bytes).into_owned();
+            let (text, raw) = match String::from_utf8(version.bytes) {
+                Ok(text) => (text, None),
+                Err(error) => (
+                    String::from_utf8_lossy(error.as_bytes()).into_owned(),
+                    Some(error.into_bytes()),
+                ),
+            };
             listing.versions.push(okilum_core::source_history::Version {
                 note: root.join(&entry.canonical),
                 text,
-                raw: Some(version.bytes),
+                raw,
                 created: entry.created,
                 label: format!(
                     "Sync conflict · {}{}",

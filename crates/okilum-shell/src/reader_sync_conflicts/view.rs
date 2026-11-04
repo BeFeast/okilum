@@ -539,6 +539,12 @@ mod tests {
                 let mut listing = okilum_core::source_history::Listing::default();
                 append_history(&state, &root, &mut listing).unwrap();
                 assert_eq!(listing.versions.len(), 2);
+                assert_eq!(listing.versions[0].bytes(), b"same\r\nthis\r\n");
+                assert_eq!(listing.versions[1].bytes(), b"same\r\nthat\r\n");
+                assert!(
+                    listing.versions.iter().all(|version| version.raw.is_none()),
+                    "valid UTF-8 history must not claim a lossy preview"
+                );
                 assert!(listing
                     .versions
                     .iter()
