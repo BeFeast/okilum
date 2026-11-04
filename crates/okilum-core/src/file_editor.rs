@@ -219,6 +219,7 @@ impl DiskStamp {
 pub struct DiskStamp(());
 
 pub struct FileEditor {
+    authority: okilum_write_authority::Authority,
     raw_transaction: Option<Arc<raw_transaction::ByteTransaction>>,
     directory: Directory,
     draft: Draft,
@@ -302,9 +303,18 @@ impl DraftWrite {
             }
             crate::source_state::persist(&self.journal, &serde_json::to_vec(&self.draft)?)?;
         }
+        #[cfg(test)]
+        JOURNAL_COMMITS.with(|commits| {
+            commits
+                .borrow_mut()
+                .push(self.draft.base == self.draft.text)
+        });
         Ok(())
     }
 }
+
+#[cfg(test)]
+thread_local! { static JOURNAL_COMMITS: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) }; }
 
 pub(crate) fn lock_busy(error: &anyhow::Error) -> bool {
     #[cfg(unix)]
@@ -425,6 +435,7 @@ impl FileEditor {
         #[cfg(windows)]
         let (_, original) = directory.read(path.file_name().context("Missing source filename")?)?;
         let path = path.canonicalize()?;
+        let authority = okilum_write_authority::Authority::for_path(&path)?;
         #[cfg(unix)]
         let directory = Directory::open(path.parent().context("Missing source folder")?)?;
         fs::create_dir_all(state).context(RECOVERY_UNAVAILABLE)?;
@@ -481,6 +492,7 @@ impl FileEditor {
         };
         let on_disk = opened_stamp.filter(|_| holds_base);
         Ok(Self {
+            authority,
             directory,
             draft,
             on_disk,
@@ -783,6 +795,7 @@ impl FileEditor {
     /// the journal order; `save` still refuses to replace a changed file.
     pub fn save_copy(&self) -> Result<Self> {
         Ok(Self {
+            authority: self.authority.clone(),
             directory: self.directory.try_clone()?,
             draft: self.draft.clone(),
             on_disk: self.on_disk,
@@ -855,6 +868,14 @@ impl FileEditor {
             }
         }
         let requested_generation = self.generation;
+        // A clean navigation/close needs no canonical admission. Dirty drafts
+        // are durable before refusal, with one pre-publication journal flush.
+        let _admission = if self.dirty() || self.draft.pending_input {
+            self.persist()?;
+            Some(self.authority.operation()?)
+        } else {
+            None
+        };
         let result = self.save_before_exchange_locked(before_exchange);
         if matches!(result, Ok(Save::Saved)) {
             order.saved = Some((self.draft.base.clone(), self.on_disk, requested_generation));
@@ -880,7 +901,6 @@ impl FileEditor {
             self.draft.base = self.draft.text.clone();
             return Ok(Save::Saved);
         }
-        self.persist()?;
         self.directory.validate(self.draft.path.parent().unwrap())?;
         let (current, metadata) = self
             .directory
@@ -1292,7 +1312,6 @@ impl FileEditor {
             self.draft.base = self.draft.text.clone();
             return Ok(Save::Saved);
         }
-        self.persist()?;
         self.directory.validate(self.draft.path.parent().unwrap())?;
         let (current, _) = self
             .directory
@@ -2863,5 +2882,173 @@ mod issue2404_crash_revert_control {
             Save::Saved
         );
         assert_eq!(fs::read(&path).unwrap(), BASE.as_bytes());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod local_writer_admission_tests {
+    use super::*;
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    #[test]
+    fn local_writer_admission_actual_save_reaches_exchange_before_drain_can_finish() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("note.md"), b"original").unwrap();
+        let a = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let ready = t.path().join("save-ready");
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "file_editor::local_writer_admission_tests::admitted_save_process",
+                "--nocapture",
+            ])
+            .env("LOCAL_SAVE_ROOT", &root)
+            .env("LOCAL_SAVE_DRAFTS", t.path().join("drafts"))
+            .env("LOCAL_SAVE_READY", &ready)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        struct Owned(std::process::Child);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Owned(child);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !ready.exists() {
+            assert!(child.0.try_wait().unwrap().is_none());
+            assert!(Instant::now() < deadline, "save hook never fired");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut hold = a.begin_drain("actual-editor-save").unwrap();
+        let token = hold.token().clone();
+        assert!(!hold.try_hold(&token).unwrap());
+        assert!(crate::note_files::create(&root, Path::new("next.md")).is_err());
+        assert_eq!(fs::read(root.join("note.md")).unwrap(), b"original");
+        child.0.stdin.as_mut().unwrap().write_all(b"go\n").unwrap();
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "admitted save blocked behind its drain"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            fs::read(root.join("note.md")).unwrap(),
+            b"saved by another process"
+        );
+        assert!(hold.try_hold(&token).unwrap());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        crate::note_files::create(&root, Path::new("next.md")).unwrap();
+    }
+    #[test]
+    #[ignore = "production save subprocess, selected by parent test"]
+    fn admitted_save_process() {
+        let root = PathBuf::from(std::env::var_os("LOCAL_SAVE_ROOT").unwrap());
+        let drafts = PathBuf::from(std::env::var_os("LOCAL_SAVE_DRAFTS").unwrap());
+        let ready = PathBuf::from(std::env::var_os("LOCAL_SAVE_READY").unwrap());
+        let mut editor = FileEditor::open(&root.join("note.md"), &drafts).unwrap();
+        editor.set_text("saved by another process".into()).unwrap();
+        assert_eq!(
+            editor
+                .save_before_exchange(|| {
+                    fs::write(ready, b"real FileEditor save reached exchange hook").unwrap();
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).unwrap();
+                    assert_eq!(line, "go\n");
+                })
+                .unwrap(),
+            Save::Saved
+        );
+    }
+}
+
+#[cfg(test)]
+mod local_writer_review_tests {
+    use super::*;
+    #[test]
+    fn windows_local_writer_review_vault_discovery_promotes_subfolder_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let sub = root.join("Sub");
+        let sibling = root.join("Other");
+        fs::create_dir_all(&sub).unwrap();
+        fs::create_dir(&sibling).unwrap();
+        fs::write(sub.join("note.md"), b"original").unwrap();
+        let mut editor =
+            FileEditor::open(&sub.join("note.md"), &temp.path().join("drafts")).unwrap();
+        crate::Vault::scan_metadata(&root).unwrap();
+        let vault = okilum_write_authority::Authority::for_root(&root).unwrap();
+        assert_eq!(
+            okilum_write_authority::Authority::for_root(&sibling)
+                .unwrap()
+                .root(),
+            vault.root()
+        );
+        editor.queue_text("promoted editor".into());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        let hold = vault.begin_drain("promoted-root").unwrap();
+        editor.queue_text("held draft".into());
+        assert!(editor.save().is_err());
+        assert!(okilum_write_authority::Authority::for_root(&sibling)
+            .unwrap()
+            .admit()
+            .is_err());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+    }
+
+    #[test]
+    fn windows_local_writer_review_clean_save_during_hold_and_single_draft_flush() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        let path = root.join("note.md");
+        fs::write(&path, b"original").unwrap();
+        let authority = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let mut editor = FileEditor::open(&path, &temp.path().join("drafts")).unwrap();
+        let hold = authority.begin_drain("clean-navigation").unwrap();
+        JOURNAL_COMMITS.with(|commits| commits.borrow_mut().clear());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        assert!(JOURNAL_COMMITS.with(|commits| commits.borrow().is_empty()));
+        editor.queue_text("held draft".into());
+        assert!(editor.save().is_err());
+        assert_eq!(
+            JOURNAL_COMMITS.with(|commits| commits.borrow().clone()),
+            vec![false]
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        JOURNAL_COMMITS.with(|commits| commits.borrow_mut().clear());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        // One recovery flush before publication, one clean acknowledgement.
+        // No duplicate pre-publication temp-file/fsync sequence was added.
+        assert_eq!(
+            JOURNAL_COMMITS.with(|commits| commits.borrow().clone()),
+            vec![false, true]
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"held draft");
+        editor.queue_text("ordinary autosave".into());
+        JOURNAL_COMMITS.with(|commits| commits.borrow_mut().clear());
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        assert_eq!(
+            JOURNAL_COMMITS.with(|commits| commits.borrow().clone()),
+            vec![false, true]
+        );
     }
 }

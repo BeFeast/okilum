@@ -397,3 +397,35 @@ fn local_board_creates_without_goal_repository_stage_or_executor_and_never_fetch
         "positive control: explicit binding enables Forgejo cards"
     );
 }
+
+#[test]
+fn local_writer_admission_board_create_update_and_undo_are_fenced() {
+    let a = Area::new();
+    let authority = okilum_write_authority::Authority::for_root(&a.0).unwrap();
+    let session = a.session();
+    let h = authority.begin_drain("board-create").unwrap();
+    assert!(session.save(&Change::Details(session.details())).is_err());
+    assert!(!a.file("board.toml").exists());
+    let token = h.token().clone();
+    h.release(&token).unwrap();
+    let created = session.save(&Change::Details(session.details())).unwrap();
+    let original = std::fs::read_to_string(a.file("board.toml")).unwrap();
+    let h = authority.begin_drain("board-update").unwrap();
+    assert!(created.save(&Change::Add(card("#42"))).is_err());
+    assert_eq!(
+        std::fs::read_to_string(a.file("board.toml")).unwrap(),
+        original
+    );
+    let token = h.token().clone();
+    h.release(&token).unwrap();
+    let updated = created.save(&Change::Add(card("#42"))).unwrap();
+    let h = authority.begin_drain("board-undo").unwrap();
+    assert!(updated.undo(&original).is_err());
+    let token = h.token().clone();
+    h.release(&token).unwrap();
+    updated.undo(&original).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(a.file("board.toml")).unwrap(),
+        original
+    );
+}

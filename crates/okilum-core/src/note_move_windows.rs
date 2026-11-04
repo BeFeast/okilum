@@ -49,6 +49,7 @@ pub struct Moved {
     pub warning: Option<String>,
 }
 pub struct MovePlan {
+    authority: okilum_write_authority::Authority,
     source: Directory,
     source_name: OsString,
     target: Directory,
@@ -63,6 +64,7 @@ impl MovePlan {
         vacant(&target, &target_name)?;
         let expected = snapshot(&source, &source_name)?;
         Ok(Self {
+            authority: okilum_write_authority::Authority::for_root(root)?,
             source,
             source_name,
             target,
@@ -79,6 +81,7 @@ impl MovePlan {
         Ok(plan)
     }
     pub fn commit(self) -> Result<Moved> {
+        let _admission = self.authority.operation()?;
         // Retain the read handle through publication to exclude in-place writes.
         // DELETE sharing permits publication; replacement races are checked below.
         let (_guard, bytes, info) = self.source.read(&self.source_name)?;
@@ -185,6 +188,7 @@ impl DirectorySnapshot {
     }
 }
 pub struct DirectoryMovePlan {
+    authority: okilum_write_authority::Authority,
     source: Directory,
     source_name: OsString,
     target: Directory,
@@ -210,6 +214,7 @@ impl DirectoryMovePlan {
         );
         vacant(&target, &target_name)?;
         Ok(Self {
+            authority: okilum_write_authority::Authority::for_root(root)?,
             source,
             source_name,
             target,
@@ -218,6 +223,7 @@ impl DirectoryMovePlan {
         })
     }
     pub fn commit(self) -> Result<Moved> {
+        let _admission = self.authority.operation()?;
         ensure!(
             DirectorySnapshot::at(&self.source, &self.source_name)? == self.expected,
             "Folder changed after preview; nothing was moved"

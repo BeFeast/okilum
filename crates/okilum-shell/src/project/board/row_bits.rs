@@ -24,7 +24,8 @@ pub(super) fn label_pill(label: impl Into<SharedString>, tone: Hsla, cx: &App) -
     let label = label.into();
     let debug_label = label.clone();
     h_flex()
-        .flex_none()
+        .min_w_0()
+        .max_w(px(100.))
         .gap(px(5.))
         .px(px(7.))
         .py(px(1.))
@@ -34,10 +35,12 @@ pub(super) fn label_pill(label: impl Into<SharedString>, tone: Hsla, cx: &App) -
         .text_size(px(12.))
         .line_height(relative(TEXT_LINE_HEIGHT))
         .text_color(brand::palette(cx).text_muted)
-        .child(div().size(px(6.)).rounded_full().bg(tone))
+        .child(div().flex_none().size(px(6.)).rounded_full().bg(tone))
         .child(
             div()
                 .debug_selector(move || format!("board-pill-label-{debug_label}"))
+                .min_w_0()
+                .truncate()
                 .child(label),
         )
         .into_any_element()
@@ -118,4 +121,16 @@ pub(super) fn relative_time(timestamp: &str, at: u64) -> Option<String> {
     } else {
         format!("{} д", age / 86400)
     })
+}
+
+/// A live dot needs a current unsettled run, not just an assigned agent.
+pub(super) fn active(thread: &okilum_t3::ThreadSummary) -> bool {
+    matches!(
+        thread.status.as_str(),
+        "preparing" | "starting" | "running" | "waiting"
+    ) && thread
+        .active_run_id
+        .as_ref()
+        .is_some_and(|id| !id.is_empty())
+        && !thread.settled
 }

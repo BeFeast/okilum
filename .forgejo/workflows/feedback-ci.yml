@@ -2,12 +2,6 @@
 # Run it when either side changes, including the exact post-merge main source.
 name: feedback-ci
 on:
-  pull_request:
-    paths:
-      - 'crates/okilum-http/**'
-      - 'crates/okilum-shell/src/reader_feedback/**'
-      - 'Cargo.lock'
-      - '.forgejo/workflows/feedback-ci.yml'
   push:
     branches: [main]
     paths:
@@ -16,6 +10,9 @@ on:
       - 'Cargo.lock'
       - '.forgejo/workflows/feedback-ci.yml'
   workflow_dispatch:
+concurrency:
+  group: feedback-ci-${{ github.ref }}
+  cancel-in-progress: false
 permissions:
   contents: read
 jobs:

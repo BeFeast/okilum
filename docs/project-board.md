@@ -45,8 +45,7 @@ API while meeting the one-minute closure target on a healthy source. A failed/in
 the last complete snapshot and reports its source error in one quiet line with
 the last-success time; full details remain in the existing source disclosure.
 Merge expiry also freezes at that last-success time during failure, so an offline
-Board cannot silently empty itself. Generated cards explicitly identify missing
-manual annotations. Invalid or duplicate annotations stay visible and never supply
+Board cannot silently empty itself. Generated cards identify missing manual annotations in their card disclosure. Invalid or duplicate annotations stay visible and never supply
 an arbitrary owner. Delivery refresh follows
 the issue read so newly discovered PRs reach the existing delivery verifier in the
 same refresh cycle. The earlier selected-scope descriptions below document the
@@ -175,7 +174,7 @@ invalid annotations, attention, delivery and project-note context remain reachab
 No new read, dispatch, membership, stage rule or delivery claim is introduced.
 Native tests cover defaults, independent persisted project choices, collapse,
 240-row viewport work, keyboard reachability and actual Reader note round trips.
-The sibling peek/attention/compact-card/ordering issues remain independent.
+The sibling peek and attention issues remain independent.
 
 ### Shared filter bar (#2532)
 
@@ -208,13 +207,45 @@ frames reuse it. Snapshot, filter and delivery changes invalidate it, with merge
 expiry and delivery freshness still respected. No additional source polling is
 introduced. This header supersedes the historical single executor control below.
 
-The compact card contains its issue title/number, a small agent tag and one
-existing stage-state line. The expected result and issue/PR/build/note/Discuss
-actions are inside the expanded card. Related-note navigation retains the same one-action return to Board. Escape
-still collapses the card. Refresh is automatic and silent.
-There is no new source poll, execution inference, delivery claim or status mapping.
-The human-attention lane, item/stage colours and richer live-agent presentation
-remain separate product work; this slice adds none of them.
+### Compact Board (#2534)
+
+**Доска** shares the List's cached projection and row primitives. Working,
+Checks and Can try have 268 px lanes; Queue has 240 px. Lanes scroll horizontally
+inside the center and virtualise their card streams. Snapshot/filter publications
+rebuild the groups; ordinary scrolling and selection build only visible cards.
+Lane, horizontal and Queue scroll handles belong to the project Board entity,
+so switching views or returning from a note retains their offsets. Queue has a
+bounded scroll body when context or card details leave less vertical space.
+The Verified control remains a 34 px rail at the right edge and explicitly opens
+its lane, including when empty. Existing empty-stage controls remain available.
+
+Cards occupy an 88 px virtualised row including spacing; ten complete cards
+fit a 1000 px fixture window without context disclosures. Each issue card has three rows: number/type/up to two origin/epic pills and the
+bound agent avatar; a regular 13 px source title clamped to two 19.5 px lines; and
+existing state or exactly matched cached progress beside the PR number/actual CI
+dot. Active stale threads (four hours since their last source update) show amber
+with ⚠; failed CI shows red. Missing CI remains unknown. Selection uses an accent
+border and hover a subtle theme surface. Shared text primitives reserve full
+18 px line boxes at 12 px text, including descenders. No mockup colour constants are used.
+
+Queue builds just the first eight 30 px mini rows. **＋ ещё N · открыть списком**
+switches to List, expands Queue, scrolls to its heading and saves that view choice.
+Local cards and annotation problems participate in the same count and remain
+reachable. Both views apply the shared #2535 priority order at publication time;
+Queue retains the «от Олега сначала» hint. The source timestamp stays lossless for
+List age labels while ordering compares its parsed time. Clicking a card opens the existing bounded disclosure below the lanes,
+with outcome, links, notes and draft-only Discuss; Escape closes it. Native GPUI
+regressions cover card geometry, two-line clamping, bounded Queue work and view
+handoff, actual CI/live/stale evidence, virtualised lanes and Verified expansion.
+
+The compact Board consumes the same cached filtered projection as List, including
+column membership, counts and #2535 stage order. It never re-sorts cards during
+render. Shared chips and `/` search remain above both views; Queue's remaining-count
+action preserves the active filters when opening expanded List. Compact metadata
+pills and mini rows retain #2548's full font line boxes.
+
+No source poll, execution inference, membership/stage mapping or delivery claim
+is added by either presentation.
 
 ## Accepted look, push 1
 
@@ -223,14 +254,12 @@ origin chips use the issue labels already returned by the public Forgejo read;
 missing type metadata stays a neutral issue, not an invented bug/task. The theme's
 danger, important, muted, information, warning and success roles supply the pink,
 violet, slate and stage colours in both appearance modes. Native Lucide icons and
-a steady indicator replace browser effects. Cards show the explicit expected
-outcome, agent and state, and at most one PR link badge; a PR link never claims
+a steady indicator replace browser effects. Cards show the source title, agent and state, with the explicit expected
+outcome inside the disclosure, and at most one PR link badge; a PR link never claims
 that its CI passed or it merged. The expanded card retains notes and draft actions.
 
-Nonempty and explicitly expanded columns have zero minimum width and equal
-flexible bases. Once card sources have completed a successful read, empty columns
-collapse into compact name/count controls above the lanes (#2219), giving their
-width to useful content. Each control expands its empty lane with the keyboard
+Once card sources have completed a successful read, empty columns
+collapse into compact name/count controls above the lanes (#2219), leaving room for useful content. Each control expands its empty lane with the keyboard
 or pointer; the empty lane offers Collapse. Explicit expansion is window-local,
 not a persisted setting. A newly nonempty lane always opens. Initial loading is
 not zero cards; refreshes retain the last completed layout decision. An all-empty

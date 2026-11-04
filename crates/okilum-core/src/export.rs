@@ -77,6 +77,7 @@ pub fn save_download(
         !destination.try_exists()?,
         "export destination already exists"
     );
+    let _admission = okilum_write_authority::operation(&parent)?;
     let mut temporary = tempfile::NamedTempFile::new_in(&parent)?;
     let mut offset = 0;
     let mut hash = Sha256::new();
@@ -141,6 +142,7 @@ impl SourceStore {
             "export destination already exists"
         );
         let _lock = self.lock()?;
+        let _admission = okilum_write_authority::operation(&parent)?;
         let mut temporary = tempfile::NamedTempFile::new_in(&parent)?;
         let mut archive = tar::Builder::new(temporary.as_file_mut());
         let mut notes = BTreeMap::new();

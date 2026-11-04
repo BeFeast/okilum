@@ -146,6 +146,7 @@ mod windows {
     }
 
     pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
+        let _admission = okilum_write_authority::operation(root)?;
         let root = root.canonicalize()?;
         let source = checked(&root, relative)?;
         let metadata = fs::symlink_metadata(&source)?;
@@ -220,6 +221,7 @@ mod windows {
 
     impl Trashed {
         pub fn restore(&self) -> Result<()> {
+            let _admission = okilum_write_authority::operation(&self.root)?;
             let identity =
                 identity(&self.location).context("The item is no longer in the Recycle Bin")?;
             ensure!(

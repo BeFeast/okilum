@@ -201,6 +201,7 @@ impl Operation {
     pub fn revert(path: &Path, state: &Path) -> Result<()> {
         let _guard = Self::lock(path)?;
         let mut operation = Self::load(path)?;
+        let _admission = okilum_write_authority::operation(&operation.root)?;
         ensure!(!operation.reverted, "This operation was already reverted");
         let moved = operation.move_completed()?;
         if let Some(snapshot) = &operation.directory {
@@ -321,6 +322,7 @@ impl Preview {
         open: &mut BTreeMap<String, &mut FileEditor>,
         mut before_file: impl FnMut(&str) -> Result<()>,
     ) -> Result<Applied> {
+        let _admission = okilum_write_authority::operation(root)?;
         let _destination =
             FileEditor::reserve_destination(&root.join(&self.to), &state.join("editor-drafts"))?;
         let mut destination_children = vec![];

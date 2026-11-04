@@ -730,6 +730,7 @@ pub fn ide_code_block(hint: &VsCodeHint, plain: &str) -> Option<String> {
 /// Converted rich text ready to insert (not yet fitted to the caret).
 #[derive(Debug, Default)]
 pub struct RichText {
+    pub admission: Option<okilum_write_authority::WriterLease>,
     /// [`Route::IdeCode`] for all-monospace code, else [`Route::RichText`].
     pub route: Option<Route>,
     pub markdown: String,
@@ -740,6 +741,8 @@ pub struct RichText {
     pub saved: usize,
     /// Images that could not be saved; their alt text was kept.
     pub failed: usize,
+    /// Images retained in the draft because canonical publication is held.
+    pub deferred: usize,
     /// The files saved, removed again if the text is never inserted.
     pub files: Vec<PathBuf>,
 }
@@ -812,7 +815,13 @@ fn rich_text_with(
     if converted.markdown.trim().is_empty() {
         return None;
     }
+    let admission = okilum_write_authority::Authority::for_root(vault_root)
+        .and_then(|a| a.admit())
+        .ok();
+    let _admission = admission.as_ref().and_then(|a| a.enter().ok());
+    let admitted = _admission.is_some();
     let mut rich = RichText {
+        admission,
         route: Some(Route::RichText),
         block: converted.block,
         ..RichText::default()
@@ -833,19 +842,71 @@ fn rich_text_with(
                 }
             }
             AssetSource::Data { mime, bytes } => {
-                let saved = save_data_image(&mime, bytes, vault_root, note_rel, stamp, options);
-                let text = rich.account(saved, &asset.alt);
+                let text = if admitted {
+                    let saved = save_data_image(&mime, bytes, vault_root, note_rel, stamp, options);
+                    rich.account(saved, &asset.alt)
+                } else {
+                    rich.deferred += 1;
+                    inline_image(&mime, &bytes, &asset.alt)
+                };
                 markdown = markdown.replacen(&asset.placeholder, &text, 1);
             }
             AssetSource::LocalFile(path) => {
-                let saved = save_local_image(&path, vault_root, note_rel, stamp, options);
-                let text = rich.account(saved, &asset.alt);
+                let text = if admitted {
+                    let saved = save_local_image(&path, vault_root, note_rel, stamp, options);
+                    rich.account(saved, &asset.alt)
+                } else {
+                    rich.deferred += 1;
+                    retained_local_image(&path, &asset.alt)
+                };
                 markdown = markdown.replacen(&asset.placeholder, &text, 1);
             }
         }
     }
     rich.markdown = markdown;
     Some(rich)
+}
+
+pub const DEFERRED_IMAGES_TEXT: &str = "Vault writes are paused. Pasted image data and references were kept in the draft. Save after writes resume.";
+
+fn inline_image(mime: &str, bytes: &[u8], alt: &str) -> String {
+    use base64::Engine as _;
+    let payload = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let alt = alt.replace(['[', ']', '\n'], " ");
+    format!("![{alt}](data:{mime};base64,{payload})")
+}
+
+fn retained_local_image(path: &Path, alt: &str) -> String {
+    use std::io::Read;
+    // Copy bounded local payloads into the durable text draft. Clipboard cache
+    // files may disappear before the hold releases. If unreadable/oversized,
+    // preserve the original image reference instead of reducing it to alt text.
+    let bytes = (|| {
+        let file = std::fs::File::open(path).ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_LOCAL_IMAGE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (bytes.len() as u64 <= MAX_LOCAL_IMAGE_BYTES).then_some(bytes)
+    })();
+    match bytes {
+        Some(bytes) => {
+            let mime = attachments::sniff_image(&bytes)
+                .map(|kind| format!("image/{}", kind.extension()))
+                .unwrap_or_else(|| "application/octet-stream".into());
+            inline_image(&mime, &bytes, alt)
+        }
+        None => {
+            let alt = alt.replace(['[', ']', '\n'], " ");
+            let url = url::Url::from_file_path(path)
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| format!("file://{}", path.to_string_lossy()));
+            format!("![{alt}](<{url}>)")
+        }
+    }
 }
 
 impl RichText {
@@ -1018,7 +1079,9 @@ fn rich_routed(
         rich.failed,
         rich.remote.len()
     );
-    if rich.failed > 0 {
+    if rich.deferred > 0 {
+        routed = routed.notice(DEFERRED_IMAGES_TEXT, false);
+    } else if rich.failed > 0 {
         routed = routed.notice(failed_images_text(rich.failed), false);
     }
     if let (Some(note_rel), false) = (cx.note_rel, rich.remote.is_empty()) {
@@ -1044,6 +1107,7 @@ fn rich_routed(
 /// What a background conversion inserts.
 #[derive(Debug, Default)]
 pub struct RichJobDone {
+    pub admission: Option<okilum_write_authority::WriterLease>,
     pub text: String,
     pub block: bool,
     /// Fit as Markdown ([`fit_markdown`]) rather than as plain text.
@@ -1051,6 +1115,8 @@ pub struct RichJobDone {
     pub remote: Vec<RemoteImage>,
     pub saved: usize,
     pub failed: usize,
+    /// Images retained in the draft because canonical publication is held.
+    pub deferred: usize,
     /// The images saved, removed again if the text is never inserted.
     pub files: Vec<PathBuf>,
     pub convert_ms: f64,
@@ -1079,12 +1145,14 @@ pub fn run_rich_job(job: RichJob) -> RichJobDone {
     let convert_ms = started.elapsed().as_secs_f64() * 1000.0;
     if let Some(rich) = rich {
         return RichJobDone {
+            admission: rich.admission,
             text: rich.markdown,
             block: rich.block,
             markdown: true,
             remote: rich.remote,
             saved: rich.saved,
             failed: rich.failed,
+            deferred: rich.deferred,
             files: rich.files,
             convert_ms,
         };
@@ -1110,6 +1178,49 @@ pub fn run_rich_job(job: RichJob) -> RichJobDone {
 mod tests {
     use super::*;
     use crate::note_paste::files::FileAction;
+
+    #[test]
+    fn local_writer_review_paste_during_hold_keeps_data_and_local_image_payloads() {
+        use base64::Engine as _;
+        let note = Note::new();
+        let local = note.vault.path().join("source.png");
+        let png = super::super::image_import::fixture_png();
+        std::fs::write(&local, &png).unwrap();
+        let payload = base64::engine::general_purpose::STANDARD.encode(&png);
+        let html = format!("<p>Keep <img alt=\"data\" src=\"data:image/png;base64,{payload}\"> and <img alt=\"local\" src=\"{}\"></p>", url::Url::from_file_path(&local).unwrap());
+        let job = || RichJob {
+            image_options: super::super::image_import::Options::disabled(),
+            html: html.clone(),
+            base_url: None,
+            plain: None,
+            vault_root: note.vault.path().to_owned(),
+            note_rel: "note.md".into(),
+            stamp: "20261103".into(),
+        };
+        let authority = okilum_write_authority::Authority::for_root(note.vault.path()).unwrap();
+        let hold = authority.begin_drain("rich-paste").unwrap();
+        let done = run_rich_job(job());
+        assert_eq!((done.saved, done.failed, done.deferred), (0, 0, 2));
+        assert_eq!(done.text.matches(&payload).count(), 2);
+        assert_eq!(done.text.matches("data:image/png;base64,").count(), 2);
+        assert!(done.files.is_empty());
+        assert!(!note.vault.path().join("attachments").exists());
+        assert!(DEFERRED_IMAGES_TEXT.contains("draft"));
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        let saved = run_rich_job(job());
+        assert_eq!((saved.saved, saved.failed, saved.deferred), (2, 0, 0));
+        assert!(
+            !saved.files.is_empty(),
+            "post-release import is the positive control"
+        );
+        std::fs::remove_file(&local).unwrap();
+        assert_eq!(
+            done.text.matches(&payload).count(),
+            2,
+            "cache-file removal cannot erase the retained payload"
+        );
+    }
 
     #[test]
     fn webp_policy_is_captured_for_raw_file_and_rich_image_jobs() {

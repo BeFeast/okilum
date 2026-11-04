@@ -59,6 +59,7 @@ struct ColoredProvider {
     colors: ProjectionColors,
     code_font: String,
     syntax_theme: Option<Arc<gpui_component::highlighter::HighlightTheme>>,
+    agent_imports: bool,
 }
 impl ProjectionProvider for ColoredProvider {
     fn compose(
@@ -66,12 +67,13 @@ impl ProjectionProvider for ColoredProvider {
         source: &SourceSnapshot,
         active: &ActiveSource,
     ) -> Option<Arc<dyn SourceProjection>> {
-        self.provider.compose_with_syntax(
+        self.provider.compose_document_syntax(
             source,
             active,
             Some(self.colors),
             &self.code_font,
             self.syntax_theme.as_deref(),
+            self.agent_imports,
         )
     }
 }
@@ -86,6 +88,7 @@ pub struct CachedProvider {
     /// (S7, #936).
     tables: Vec<(Range<usize>, String)>,
     fenced_blocks: HashMap<String, String>,
+    document_imports: Vec<okilum_core::agent_imports::Import>,
     syntax: code_syntax::CodeSyntax,
     /// One-line renderings of inline formulas by their TeX, None when the TeX
     /// cannot be drawn (#1645). Filled on first use; bounded.
@@ -122,6 +125,7 @@ impl CachedProvider {
             colors,
             code_font,
             syntax_theme: None,
+            agent_imports: false,
         })
     }
     /// Reuse worker-produced semantic captures with the active Reader theme.
@@ -132,11 +136,23 @@ impl CachedProvider {
         code_font: String,
         theme: Arc<gpui_component::highlighter::HighlightTheme>,
     ) -> Arc<dyn ProjectionProvider> {
+        self.with_document_syntax(colors, code_font, theme, false)
+    }
+    /// Agent-document decorations are opt-in; ordinary prose and code examples
+    /// retain their existing projection. Imports were parsed on the worker.
+    pub fn with_document_syntax(
+        self: Arc<Self>,
+        colors: ProjectionColors,
+        code_font: String,
+        theme: Arc<gpui_component::highlighter::HighlightTheme>,
+        agent_imports: bool,
+    ) -> Arc<dyn ProjectionProvider> {
         Arc::new(ColoredProvider {
             provider: self,
             colors,
             code_font,
             syntax_theme: Some(theme),
+            agent_imports,
         })
     }
     /// Call only from a background classification task.
@@ -199,6 +215,11 @@ impl CachedProvider {
                 }),
         );
         let classified = source_classifier::classify_reusing(&snapshot, predecessor.as_ref());
+        let document_imports = if source.text.len() <= source_classifier::MAX_BYTES {
+            okilum_core::agent_imports::parse(&source.text)
+        } else {
+            Vec::new()
+        };
         let tables = classified
             .decorations_for(&snapshot)
             .unwrap_or_default()
@@ -231,6 +252,7 @@ impl CachedProvider {
             source,
             syntax,
             fenced_blocks,
+            document_imports,
             retained: Mutex::new(RetainedPresentation::new_reusing(
                 &classified,
                 predecessor.as_ref(),
@@ -382,6 +404,17 @@ impl CachedProvider {
         code_font: &str,
         syntax_theme: Option<&gpui_component::highlighter::HighlightTheme>,
     ) -> Option<Arc<dyn SourceProjection>> {
+        self.compose_document_syntax(source, active, colors, code_font, syntax_theme, false)
+    }
+    fn compose_document_syntax(
+        &self,
+        source: &SourceSnapshot,
+        active: &ActiveSource,
+        colors: Option<ProjectionColors>,
+        code_font: &str,
+        syntax_theme: Option<&gpui_component::highlighter::HighlightTheme>,
+        agent_imports: bool,
+    ) -> Option<Arc<dyn SourceProjection>> {
         // #214's stricter cap is a presentation limit, not a buffer limit.
         if source.text.len() > source_classifier::MAX_BYTES {
             return None;
@@ -455,7 +488,28 @@ impl CachedProvider {
             styles = math.restyle(styles);
         }
         let line_indents = metadata.indents(&projection);
-        let blocks = metadata.blocks(&projection, active);
+        let mut blocks = metadata.blocks(&projection, active);
+        // A different revision must wait for its worker classification. Never
+        // apply old directive offsets to a newer draft, even if lengths match.
+        if agent_imports && source.stamp == self.source.stamp && source.text == self.source.text {
+            let ranges = self
+                .document_imports
+                .iter()
+                .map(|import| import.line.clone())
+                .collect();
+            let active_ranges = [
+                Some(active.anchor.0.min(active.head.0)..active.anchor.0.max(active.head.0)),
+                active.composition.as_ref().map(raw_range),
+                active.replacement.as_ref().map(raw_range),
+            ];
+            blocks.extend(table_blocks_indexed(
+                &source.text,
+                ranges,
+                active_ranges.into_iter().flatten(),
+                |at| projection.source_line_at(at),
+            ));
+            blocks.sort_by_key(|block| block.source.start.0);
+        }
         Some(Arc::new(MappedProjection {
             source: source.clone(),
             // Retained with the styles, so a revision not yet classified keeps
@@ -1331,6 +1385,58 @@ mod tests {
             head: SourceByte(source.text.len()),
             ..ActiveSource::default()
         }
+    }
+
+    #[test]
+    fn issue1588_import_blocks_are_opt_in_revision_bound_and_editable_at_caret() {
+        let original = source("@rules.md\n\n```text\n@excluded.md\n```\n\nend");
+        let provider = CachedProvider::classify(original.clone());
+        let compose = |snapshot: &SourceSnapshot, active: &ActiveSource, enabled| {
+            provider
+                .compose_document_syntax(snapshot, active, None, CODE_FONT, None, enabled)
+                .unwrap()
+        };
+        let has_import = |projection: &Arc<dyn SourceProjection>| {
+            projection
+                .blocks()
+                .iter()
+                .any(|block| block.source == (SourceByte(0)..SourceByte(9)))
+        };
+        let decorated = compose(&original, &inactive(&original), true);
+        assert!(
+            has_import(&decorated),
+            "positive control: directive is a rendered document block"
+        );
+        assert!(
+            !decorated
+                .blocks()
+                .iter()
+                .any(|block| block.source.start.0 == 19),
+            "fenced examples are not imports"
+        );
+        assert!(
+            !has_import(&compose(&original, &inactive(&original), false)),
+            "ordinary documents retain stock projection"
+        );
+        assert!(
+            !has_import(&compose(&original, &ActiveSource::default(), true)),
+            "caret exposes exact editable source"
+        );
+        let changed = SourceSnapshot {
+            stamp: SourceStamp {
+                generation: original.stamp.generation + 1,
+                ..original.stamp
+            },
+            text: original
+                .text
+                .as_ref()
+                .replace("@rules.md", "@other.md")
+                .into(),
+        };
+        assert!(
+            !has_import(&compose(&changed, &inactive(&changed), true)),
+            "unclassified same-length edits cannot reuse directive ranges"
+        );
     }
 
     #[test]

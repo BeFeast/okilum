@@ -323,8 +323,11 @@ fn read(path: &Path) -> anyhow::Result<Saved> {
         std::fs::metadata(path)?.len() <= MAX_BYTES,
         "UI state exceeds size limit"
     );
-    let saved: Saved = serde_json::from_slice(&std::fs::read(path)?)?;
+    let mut saved: Saved = serde_json::from_slice(&std::fs::read(path)?)?;
     anyhow::ensure!(saved.version == VERSION, "Unsupported UI state version");
+    // #2572: both old panes now open the unified Vaults pane. Normalize on
+    // every read so merging another process's state cannot resurrect the key.
+    saved.settings_section = migrated_settings_section(&saved.settings_section).into();
     Ok(saved)
 }
 
@@ -2315,6 +2318,45 @@ mod tests {
     }
 
     #[gpui::test]
+    fn issue2572_settings_section_migrates_legacy_vault_keys(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reader-ui.json");
+        for (old, expected) in [
+            ("vault", "vaults"),
+            ("vaults", "vaults"),
+            ("logs", "logs"),
+            ("future-pane", "future-pane"),
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({
+                    "version": VERSION, "settings_section": old, "appearance": "dark"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                install(directory.path(), cx);
+                assert_eq!(settings_section(cx), Some(expected));
+                // A normal unrelated preference save persists the migration and
+                // preserves the user's other settings.
+                set_emoji_completion(false, cx);
+                flush(cx);
+                install(directory.path(), cx);
+                assert_eq!(settings_section(cx), Some(expected));
+            });
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["settings_section"], expected);
+            assert_eq!(saved["appearance"], "dark");
+        }
+        cx.update(|cx| {
+            set_settings_section("vault", cx);
+            assert_eq!(settings_section(cx), Some("vaults"));
+        });
+    }
+
+    #[gpui::test]
     fn emoji_completion_defaults_on_and_persists_independently(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("reader-ui.json"), br#"{"version":1}"#).unwrap();
@@ -3583,6 +3625,13 @@ pub(crate) fn set_vault_open(value: &str, cx: &mut App) {
     cx.refresh_windows();
 }
 
+fn migrated_settings_section(value: &str) -> &str {
+    match value {
+        "vault" => "vaults",
+        _ => value,
+    }
+}
+
 /// Last explicitly visited Settings pane, shared by every window in this profile.
 pub(crate) fn settings_section(cx: &App) -> Option<&str> {
     cx.try_global::<Store>()
@@ -3590,6 +3639,7 @@ pub(crate) fn settings_section(cx: &App) -> Option<&str> {
 }
 
 pub(crate) fn set_settings_section(value: &str, cx: &mut App) {
+    let value = migrated_settings_section(value);
     if !installed(cx) || settings_section(cx) == Some(value) {
         return;
     }

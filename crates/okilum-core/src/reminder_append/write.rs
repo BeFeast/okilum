@@ -29,6 +29,7 @@ impl Receipt {
             .plan
             .undo_source(editor.text())
             .map_err(anyhow::Error::msg)?;
+        let _admission = okilum_write_authority::operation(&self.root)?;
         editor.set_text(before.to_owned())?;
         save(&mut editor)
     }
@@ -39,11 +40,13 @@ impl Receipt {
 /// Missing destinations refuse: exclusive creation is a separate operation.
 pub fn apply(root: &Path, drafts: &Path, relative: &str, plan: &Plan) -> Result<Receipt> {
     let root = root.canonicalize()?;
+    okilum_write_authority::Authority::for_root(&root)?;
     let path = bound_path(&root, relative)?;
     let mut editor = open_clean(&path, drafts)?;
     let after = plan
         .apply_source(editor.text())
         .map_err(anyhow::Error::msg)?;
+    let _admission = okilum_write_authority::operation(&root)?;
     editor.set_text(after.to_owned())?;
     save(&mut editor)?;
     Ok(Receipt {
@@ -90,6 +93,7 @@ pub fn add(root: &Path, drafts: &Path, relative: &str, reminder: &str) -> Result
 /// based delete cannot be made race-free against a concurrent writer.
 pub fn create_and_apply(root: &Path, relative: &str, plan: &Plan) -> Result<Receipt> {
     let root = root.canonicalize()?;
+    okilum_write_authority::Authority::for_root(&root)?;
     let rel = checked_relative(relative)?;
     let after = plan.apply_source("").map_err(anyhow::Error::msg)?;
     crate::note_files::create_with_source(&root, rel, after.as_bytes())?;
@@ -115,6 +119,7 @@ fn checked_relative(relative: &str) -> Result<&Path> {
 }
 
 fn bound_path(root: &Path, relative: &str) -> Result<PathBuf> {
+    okilum_write_authority::Authority::for_root(root)?;
     let rel = checked_relative(relative)?;
     let mut path = root.to_owned();
     for component in rel.components() {
@@ -168,6 +173,26 @@ mod tests {
         let drafts = temp.path().join("state/editor-drafts");
         let plan = Plan::new(source, TASK).unwrap();
         (temp, root, drafts, plan)
+    }
+
+    #[test]
+    fn windows_local_writer_review_reminder_refusal_does_not_block_retry() {
+        let (_temp, root, drafts, plan) = fixture("Original\n");
+        let path = root.join("Reminders.md");
+        let a = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let hold = a.begin_drain("reminder-refusal").unwrap();
+        assert!(apply(&root, &drafts, "Reminders.md", &plan).is_err());
+        assert!(!FileEditor::has_unsaved_draft(&path, &drafts).unwrap());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        let receipt = apply(&root, &drafts, "Reminders.md", &plan).unwrap();
+        let hold = a.begin_drain("reminder-undo-refusal").unwrap();
+        assert!(receipt.undo(&root, &drafts).is_err());
+        assert!(!FileEditor::has_unsaved_draft(&path, &drafts).unwrap());
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        receipt.undo(&root, &drafts).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "Original\n");
     }
 
     #[test]

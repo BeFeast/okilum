@@ -133,6 +133,16 @@ pub fn install(home: &Path, source: &Path, build: u64) -> Result<PathBuf> {
             "Refusing to replace unowned okilum command"
         );
     }
+    let legacy = home.join("Applications/Okilum.AppImage");
+    // A new download can retire a previous install too. Do not infer ownership
+    // from the filename alone: require our old launcher or the running image.
+    let legacy_metadata = if source == legacy {
+        Some(metadata.clone())
+    } else if crate::desktop::points_to(home, &legacy)? {
+        regular(&legacy).ok()
+    } else {
+        None
+    };
     if image.symlink_metadata().is_ok() {
         regular(&image)?;
         // Running a manually downloaded image at the final path is an explicit
@@ -191,16 +201,16 @@ pub fn install(home: &Path, source: &Path, build: u64) -> Result<PathBuf> {
     if command.symlink_metadata().is_err() {
         std::os::unix::fs::symlink(&image, &command)?;
     }
-    let legacy = home.join("Applications/Okilum.AppImage");
-    if source == legacy {
-        let current = regular(source)?;
+    // Publish both the launcher and folder action before removing their old
+    // executable. A failed refresh leaves the legacy installation launchable.
+    crate::desktop::install(home, &image)?;
+    if let Some(before) = legacy_metadata {
+        let current = regular(&legacy)?;
         ensure!(
-            current.ino() == metadata.ino()
-                && current.dev() == metadata.dev()
-                && current.len() == metadata.len(),
+            current.dev() == before.dev() && identity(&current) == identity(&before),
             "Legacy AppImage changed during migration"
         );
-        fs::remove_file(source)?;
+        fs::remove_file(&legacy)?;
         // An absent/empty legacy directory may go; foreign files always survive.
         let _ = fs::remove_dir(legacy.parent().unwrap());
     }
@@ -212,6 +222,16 @@ pub fn remove(home: &Path) -> Result<()> {
     if image.symlink_metadata().is_ok() {
         regular(&image)?;
         owned(&image)?;
+        // Never erase an active update's payload or rollback copy. Use the
+        // same lock order as install (installation, then updater).
+        let install_lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(image.with_file_name(".install-lock"))?;
+        install_lock.lock()?;
+        let _update = crate::update_lock(&image)?;
         if command.symlink_metadata().is_ok() {
             ensure!(
                 fs::read_link(&command).is_ok_and(|p| p == image),
@@ -219,10 +239,14 @@ pub fn remove(home: &Path) -> Result<()> {
             );
             fs::remove_file(&command)?;
         }
+        for stage in crate::private_stages(image.parent().context("Missing install directory")?)? {
+            fs::remove_dir_all(stage)?;
+        }
         fs::remove_file(&image)?;
         fs::remove_file(marker(&image))?;
         let _ = fs::remove_file(build_record(&image));
         let _ = fs::remove_file(image.with_file_name(".install-lock"));
+        fs::remove_file(image.with_file_name(".Okilum.AppImage.update-lock"))?;
         let _ = fs::remove_dir(image.parent().context("Missing install directory")?);
     }
     Ok(())
@@ -231,6 +255,105 @@ pub fn remove(home: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_install_and_legacy_migration_publish_both_launchers_before_removal() {
+        for other_file in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            let legacy = home.path().join("Applications/Okilum.AppImage");
+            executable(&legacy, b"legacy image");
+            if other_file {
+                fs::write(legacy.parent().unwrap().join("other.AppImage"), b"keep").unwrap();
+            }
+            crate::desktop::install(home.path(), &legacy).unwrap();
+            let (desktop, _) = crate::desktop::paths(home.path()).unwrap();
+            assert!(fs::read_to_string(&desktop)
+                .unwrap()
+                .contains("Applications/"));
+            let image = install(home.path(), &legacy, 7547).unwrap();
+            assert_eq!(
+                image,
+                home.path().join(".local/share/okilum/Okilum.AppImage")
+            );
+            let command = home.path().join(".local/bin/okilum");
+            assert_eq!(fs::read_link(&command).unwrap(), image);
+            let entry = fs::read_to_string(&desktop).unwrap();
+            assert!(!entry.contains("Applications/"));
+            assert_eq!(
+                entry.matches(&image.to_string_lossy().to_string()).count(),
+                2
+            );
+            assert!(entry.contains("--vault %f"));
+            assert!(!legacy.exists());
+            assert_eq!(legacy.parent().unwrap().exists(), other_file);
+            crate::desktop::remove(home.path()).unwrap();
+            remove(home.path()).unwrap();
+            assert!(!image.parent().unwrap().exists());
+            assert!(!command.exists());
+            assert!(!desktop.exists());
+            if other_file {
+                assert_eq!(
+                    fs::read(legacy.parent().unwrap().join("other.AppImage")).unwrap(),
+                    b"keep"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_download_retires_only_a_legacy_image_referenced_by_our_launcher() {
+        for owned_launcher in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            let legacy = home.path().join("Applications/Okilum.AppImage");
+            executable(&legacy, b"legacy");
+            if owned_launcher {
+                crate::desktop::install(home.path(), &legacy).unwrap();
+            }
+            let download = home.path().join("Downloads/new.AppImage");
+            executable(&download, b"new");
+            let image = install(home.path(), &download, 7548).unwrap();
+            assert_eq!(fs::read(&image).unwrap(), b"new");
+            assert_eq!(fs::read(&download).unwrap(), b"new");
+            assert_eq!(legacy.exists(), !owned_launcher);
+            assert!(crate::desktop::points_to(home.path(), &image).unwrap());
+        }
+    }
+
+    #[test]
+    fn failed_desktop_refresh_preserves_the_launchable_legacy_image() {
+        let home = tempfile::tempdir().unwrap();
+        let legacy = home.path().join("Applications/Okilum.AppImage");
+        executable(&legacy, b"legacy");
+        let (desktop, _) = crate::desktop::paths(home.path()).unwrap();
+        fs::create_dir_all(desktop.parent().unwrap()).unwrap();
+        fs::write(&desktop, b"foreign launcher").unwrap();
+        assert!(install(home.path(), &legacy, 7547).is_err());
+        assert_eq!(fs::read(&legacy).unwrap(), b"legacy");
+        assert_eq!(fs::read(desktop).unwrap(), b"foreign launcher");
+    }
+
+    #[test]
+    fn uninstall_removes_completed_updates_but_refuses_an_active_transaction() {
+        let home = tempfile::tempdir().unwrap();
+        let download = home.path().join("download.AppImage");
+        executable(&download, b"old");
+        let image = install(home.path(), &download, 7547).unwrap();
+        let update = crate::update_lock(&image).unwrap();
+        let stage = crate::stage_directory(image.parent().unwrap())
+            .unwrap()
+            .keep();
+        fs::write(stage.join("previous.AppImage"), b"rollback").unwrap();
+        assert!(remove(home.path()).is_err());
+        assert_eq!(fs::read(&image).unwrap(), b"old");
+        assert!(stage.exists());
+        drop(update);
+        crate::desktop::remove(home.path()).unwrap();
+        remove(home.path()).unwrap();
+        remove(home.path()).unwrap();
+        assert!(!image.parent().unwrap().exists());
+        assert!(download.exists());
+    }
+
     #[test]
     fn migrates_legacy_updates_and_removes_only_owned_payload() {
         let home = tempfile::tempdir().unwrap();

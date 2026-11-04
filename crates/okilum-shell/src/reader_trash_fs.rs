@@ -94,6 +94,7 @@ pub fn stamp(_path: &Path, meta: &fs::Metadata) -> (u64, u64, u64, i64, i64) {
 }
 
 pub fn move_to_trash(root: &Path, relative: &Path) -> Result<Trashed> {
+    let _admission = okilum_write_authority::operation(root)?;
     let root = root.canonicalize()?;
     let (source_parent, source_name) = parent(&root, relative)?;
     let source = root.join(relative);
@@ -172,6 +173,7 @@ impl Trashed {
     }
 
     pub fn restore(&self) -> Result<()> {
+        let _admission = okilum_write_authority::operation(&self.root)?;
         let kept_in = self.kept_in();
         let metadata = fs::symlink_metadata(&self.location)
             .with_context(|| format!("The item is no longer in {kept_in}"))?;
@@ -909,5 +911,54 @@ mod vault_trash_inventory_tests {
         saved.restore()?;
         assert_eq!(fs::read(root.join("removed.md"))?, b"deletedcontrol");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod local_writer_admission_tests {
+    use super::*;
+    use okilum_write_authority::Authority;
+    #[test]
+    fn local_writer_admission_trash_restore_and_attachment_publication_resume_after_release() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("vault");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("note.md"), b"exact\r\n").unwrap();
+        let a = Authority::for_root(&root).unwrap();
+        INJECT_NO_VOLUME_TRASH.with(|v| v.set(true));
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                INJECT_NO_VOLUME_TRASH.with(|v| v.set(false));
+            }
+        }
+        let _reset = Reset;
+        let h = a.begin_drain("shell-publication").unwrap();
+        assert!(move_to_trash(&root, Path::new("note.md")).is_err());
+        assert!(crate::note_paste::files::write_into(
+            &root.join("attachments"),
+            "file.bin",
+            b"asset"
+        )
+        .is_err());
+        assert!(root.join("note.md").exists());
+        assert!(!root.join("attachments").exists());
+        let token = h.token().clone();
+        h.release(&token).unwrap();
+        let trashed = move_to_trash(&root, Path::new("note.md")).unwrap();
+        assert!(!root.join("note.md").exists());
+        let h = a.begin_drain("restore-held").unwrap();
+        assert!(trashed.restore().is_err());
+        assert!(trashed.location.exists());
+        let token = h.token().clone();
+        h.release(&token).unwrap();
+        trashed.restore().unwrap();
+        crate::note_paste::files::write_into(&root.join("attachments"), "file.bin", b"asset")
+            .unwrap();
+        assert_eq!(fs::read(root.join("note.md")).unwrap(), b"exact\r\n");
+        assert_eq!(
+            fs::read(root.join("attachments/file.bin")).unwrap(),
+            b"asset"
+        );
     }
 }

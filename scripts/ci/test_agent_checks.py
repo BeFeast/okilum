@@ -151,6 +151,8 @@ class HelperFlowTests(unittest.TestCase):
             for name in ('linux-rust-tests.sh', 'test-nofile.sh'):
                 shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
             (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
+            (scripts / 'local-writer-admission.sh').write_text(
+                'echo local-writer-admission >> "$CALL_LOG"\n')
             fake = root / 'bin'
             fake.mkdir()
             cargo = fake / 'cargo'
@@ -160,6 +162,9 @@ class HelperFlowTests(unittest.TestCase):
                              '  touch "$FAIL_MARKER"; exit 7\n'
                              'fi\n')
             cargo.chmod(0o755)
+            # The shared suite also runs web reachability checks. Stub every
+            # test runner so this failure-propagation control stays isolated.
+            shutil.copy2(cargo, fake / 'node')
             counts = []
             for fail in ('0', '1'):
                 log = root / ('calls-' + fail)
@@ -172,10 +177,48 @@ class HelperFlowTests(unittest.TestCase):
                 calls = log.read_text().splitlines()
                 self.assertGreater(len(calls), 20)  # positive control: the full list fired
                 self.assertTrue(any('sprint=1' in call for call in calls))
+                self.assertTrue(any('retired-sync.test.js' in call for call in calls))
                 self.assertIn('vendor-tests', calls)
                 self.assertIn('sidecar::macos::preparation::', calls[-1])
                 counts.append(len(calls))
             self.assertEqual(counts[0], counts[1])
+
+
+    def test_local_writer_regression_groups_require_nonzero_passed_counts(self):
+        for passed, status in [('1', 0), ('0', 0), ('1', 7)]:
+            with self.subTest(passed=passed, status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                scripts = root / 'scripts/ci'
+                scripts.mkdir(parents=True)
+                for name in ('local-writer-admission.sh', 'test-nofile.sh'):
+                    shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
+                fake = root / 'bin'
+                fake.mkdir()
+                cargo = fake / 'cargo'
+                cargo.write_text('#!/usr/bin/env bash\n'
+                                 'echo "$*" >> "$CALL_LOG"\n'
+                                 'echo "test result: ok. $PASSED passed; 0 failed;"\n'
+                                 'exit "$STATUS"\n')
+                cargo.chmod(0o755)
+                calls = root / 'calls'
+                result = subprocess.run(['bash', str(scripts / 'local-writer-admission.sh')],
+                    cwd=root, env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
+                        'CALL_LOG': str(calls), 'PASSED': passed, 'STATUS': str(status)},
+                    capture_output=True, text=True, timeout=30)
+                success = passed == '1' and status == 0
+                self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
+                expected = [
+                    'test --locked -p okilum-write-authority local_writer_admission -- --nocapture',
+                    'test --locked -p okilum-core --lib file_editor::local_writer_admission_tests -- --nocapture',
+                    'test --locked -p okilum-core --test local_writer_admission -- --nocapture',
+                    'test --locked -p okilum-shell --bin okilum local_writer_admission -- --nocapture',
+                    'test --locked -p okilum-t3 local_writer_admission -- --nocapture',
+                    'test --locked -p okilum-core --lib local_writer_review -- --nocapture',
+                    'test --locked -p okilum-shell --bin okilum local_writer_review -- --nocapture',
+                ]
+                self.assertEqual(calls.read_text().splitlines(), expected if success else expected[:1])
+                if passed == '0' and status == 0:
+                    self.assertIn('No non-zero passing test count', result.stderr)
 
 
 if __name__ == "__main__":

@@ -597,6 +597,10 @@ fn perform_with_locations(
             _ => {}
         }
         let (state, configs) = resolve()?;
+        // The old desktop stored service enrollment alongside `direct`, not
+        // inside it. Do not bootstrap a second daemon over that saved setup.
+        #[cfg(target_os = "linux")]
+        legacy::check(&state)?;
         #[cfg(target_os = "linux")]
         let complete_configs = configs.clone();
         #[cfg(target_os = "linux")]
@@ -816,6 +820,10 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
     }
 }
 fn user_error(error: &anyhow::Error) -> String {
+    #[cfg(target_os = "linux")]
+    if error.is::<legacy::PreviousConnection>() {
+        return legacy::MESSAGE.into();
+    }
     let text = error.to_string().to_lowercase();
     if text.contains("local sync folder") {
         "The local folder could not be created or checked. Choose a location you can write to with an existing parent folder, or use an existing empty folder.".into()
@@ -867,6 +875,10 @@ mod view;
 #[cfg(target_os = "linux")]
 #[path = "reader_settings_sync/linux_runtime.rs"]
 mod linux_runtime;
+
+#[cfg(target_os = "linux")]
+#[path = "reader_settings_sync/legacy.rs"]
+mod legacy;
 
 #[path = "reader_settings_sync/destination.rs"]
 mod destination;
