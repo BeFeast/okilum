@@ -125,6 +125,7 @@ impl Board {
     pub(in super::super) fn filter_bar(
         &self,
         projection: &Arc<Projection>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = brand::palette(cx);
@@ -132,28 +133,28 @@ impl Board {
         for (index, chip) in Chip::ALL.into_iter().enumerate() {
             let count = projection.chip_counts[index];
             chips = chips.child(
-                Button::new(("board-chip", index))
-                    .debug_selector(move || format!("board-chip-{}", chip.id()))
-                    .ghost()
-                    .small()
-                    .rounded_full()
-                    .text_size(px(12.))
-                    .selected(self.filter.chip == chip)
-                    .accessibility_label(format!("{}: {count}", chip.label()))
-                    .child(chip.label())
-                    .child(
-                        div()
-                            .debug_selector(move || {
-                                format!("board-chip-count-{}-{count}", chip.id())
-                            })
-                            .text_color(colors.text_muted)
-                            .child(count.to_string()),
-                    )
-                    .on_click(cx.listener(move |board, _, window, cx| {
-                        board.filter.chip = chip;
-                        window.focus(&board.focus, cx);
-                        board.filter_changed(cx);
-                    })),
+                controls::compact_option(
+                    ("board-chip", index),
+                    self.filter.chip == chip,
+                    window,
+                    cx,
+                )
+                .debug_selector(move || format!("board-chip-{}", chip.id()))
+                .rounded_full()
+                .text_size(px(12.))
+                .accessibility_label(format!("{}: {count}", chip.label()))
+                .child(chip.label())
+                .child(
+                    div()
+                        .debug_selector(move || format!("board-chip-count-{}-{count}", chip.id()))
+                        .text_color(colors.text_muted)
+                        .child(count.to_string()),
+                )
+                .on_click(cx.listener(move |board, _, window, cx| {
+                    board.filter.chip = chip;
+                    window.focus(&board.focus, cx);
+                    board.filter_changed(cx);
+                })),
             );
         }
         let choices = projection.clone();
@@ -244,7 +245,7 @@ impl Board {
             .flex_wrap()
             .items_center()
             .gap_2()
-            .child(div().flex_none().child(self.view_toggle(cx)))
+            .child(div().flex_none().child(self.view_toggle(window, cx)))
             .child(chips)
             .child(div().flex_1())
             .child(

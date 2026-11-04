@@ -1,6 +1,53 @@
 //! Existing list snapshots and already cached messages only: no requests or timer.
 use okilum_t3::{board::Scope, chat::Conversation, ThreadSummary};
 
+/// Board-owned presentation data. Rendering a card must not read the Manager
+/// entity: doing so ties the cached Board to every composer notification.
+#[cfg(target_os = "linux")]
+#[derive(Default, PartialEq)]
+pub(super) struct ManagerDisplay {
+    pub identity: Option<okilum_t3::ServerIdentity>,
+    thread: Option<String>,
+    progress: std::collections::BTreeMap<String, String>,
+}
+#[cfg(target_os = "linux")]
+impl ManagerDisplay {
+    pub fn read(
+        identity: Option<&okilum_t3::ServerIdentity>,
+        cached: Option<&Conversation>,
+    ) -> Self {
+        let mut display = Self {
+            identity: identity.cloned(),
+            thread: cached.map(|chat| chat.thread_id.clone()),
+            ..Self::default()
+        };
+        if let Some(cached) = cached {
+            for item in cached.items.values().rev() {
+                let Some(run) = item
+                    .run_id
+                    .as_ref()
+                    .filter(|_| item.kind == "assistant_message")
+                else {
+                    continue;
+                };
+                if display.progress.contains_key(run) {
+                    continue;
+                }
+                if let Some(text) = item.text.as_deref().and_then(progress_preview) {
+                    display.progress.insert(run.clone(), text);
+                }
+            }
+        }
+        display
+    }
+    pub fn progress(&self, scope: &Scope, thread: &ThreadSummary) -> Option<String> {
+        let run = progress_run(scope, thread)?;
+        (self.thread.as_deref() == Some(run.thread_id.as_str()))
+            .then(|| self.progress.get(&run.run_id).cloned())
+            .flatten()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum State {
     Working,
@@ -101,15 +148,7 @@ pub(super) fn progress(
     thread: &ThreadSummary,
     cached: Option<&Conversation>,
 ) -> Option<String> {
-    if thread_id(scope)? != thread.thread_id {
-        return None;
-    }
-    let run = scope.execution.as_ref()?;
-    if run.thread_id != thread.thread_id
-        || thread.latest_run_id.as_deref() != Some(run.run_id.as_str())
-    {
-        return None;
-    }
+    let run = progress_run(scope, thread)?;
     let cached = cached.filter(|c| c.thread_id == thread.thread_id)?;
     let text = cached
         .items
@@ -122,6 +161,24 @@ pub(super) fn progress(
         })?
         .text
         .as_ref()?;
+    progress_preview(text)
+}
+fn progress_run<'a>(
+    scope: &'a Scope,
+    thread: &ThreadSummary,
+) -> Option<&'a okilum_t3::board::Execution> {
+    if thread_id(scope)? != thread.thread_id {
+        return None;
+    }
+    let run = scope.execution.as_ref()?;
+    if run.thread_id != thread.thread_id
+        || thread.latest_run_id.as_deref() != Some(run.run_id.as_str())
+    {
+        return None;
+    }
+    Some(run)
+}
+fn progress_preview(text: &str) -> Option<String> {
     Some(
         text.lines()
             .find(|line| !line.trim().is_empty())?
@@ -237,5 +294,41 @@ mod tests {
         );
         scope.execution.as_mut().unwrap().run_id = "other-run".into();
         assert!(progress(&scope, &thread, Some(&cached)).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retained_manager_display_matches_progress_and_ignores_hidden_suffix_changes() {
+        let (mut scope, mut thread) = fixture();
+        scope.agent_thread_id = Some("agent-a".into());
+        scope.execution = Some(okilum_t3::board::Execution {
+            thread_id: "agent-a".into(),
+            run_id: "run-a".into(),
+        });
+        let mut cached = Conversation::new("agent-a");
+        cached.items.insert(1, serde_json::from_value(serde_json::json!({
+            "position":1,"itemId":"i","runId":"run-a","type":"assistant_message","status":"completed","text":"Writing the regression\nLong details","updatedAt":"now"
+        })).unwrap());
+        let first = ManagerDisplay::read(None, Some(&cached));
+        assert_eq!(
+            first.progress(&scope, &thread),
+            progress(&scope, &thread, Some(&cached))
+        );
+        cached.items.get_mut(&1).unwrap().text =
+            Some("Writing the regression\nUpdated long details".into());
+        assert!(
+            first == ManagerDisplay::read(None, Some(&cached)),
+            "invisible suffix changes must not redraw the Board"
+        );
+        thread.latest_run_id = Some("other-run".into());
+        assert!(first.progress(&scope, &thread).is_none());
+        thread.latest_run_id = Some("run-a".into());
+        scope.execution.as_mut().unwrap().thread_id = "other-thread".into();
+        assert!(first.progress(&scope, &thread).is_none());
+        scope.execution.as_mut().unwrap().thread_id = "agent-a".into();
+        cached.thread_id = "other-thread".into();
+        assert!(ManagerDisplay::read(None, Some(&cached))
+            .progress(&scope, &thread)
+            .is_none());
     }
 }

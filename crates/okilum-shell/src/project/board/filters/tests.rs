@@ -334,3 +334,60 @@ fn issue2532_merge_cache_preserves_the_exact_recent_window_and_future_boundary()
     assert!(!pull.recent(86500));
     assert_eq!(merge_expiry(86500, 100), None);
 }
+
+#[gpui::test]
+fn cached_kanban_membership_reuses_binding_until_filter_or_source_changes(cx: &mut TestAppContext) {
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path());
+    let prepared = board.read_with(visual, |board, _| board.lane_preparations.get());
+    assert!(
+        prepared > 0,
+        "positive control: actual Kanban lanes prepare shared row membership"
+    );
+    let first = board.update(visual, |board, _| board.filtered_projection_at(100));
+    let later = board.update(visual, |board, _| board.filtered_projection_at(101));
+    assert!(
+        Arc::ptr_eq(&first, &later),
+        "viewport time alone must not clone the source"
+    );
+    board.update(visual, |board, cx| {
+        board.binding.as_mut().unwrap().issues[0].expected = "Published context".into();
+        board.filter_cache.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let changed = board.update(visual, |board, _| board.filtered_projection_at(101));
+    assert!(
+        board.read_with(visual, |board, _| board.lane_preparations.get()) > prepared,
+        "source publication prepares the new membership"
+    );
+    assert!(!Arc::ptr_eq(&first, &changed));
+    assert_eq!(changed.binding.issues[0].expected, "Published context");
+    assert_ne!(
+        first.binding.issues[0].expected,
+        changed.binding.issues[0].expected
+    );
+    let prepared = board.read_with(visual, |board, _| board.lane_preparations.get());
+    click(visual, "board-chip-bugs");
+    let filtered = board.update(visual, |board, _| board.filtered_projection());
+    let filtered_prepared = board.read_with(visual, |board, _| board.lane_preparations.get());
+    assert!(
+        filtered_prepared > prepared,
+        "filter interaction prepares its changed membership"
+    );
+    assert_eq!(filtered.counts.iter().sum::<usize>(), 2);
+    for width in [1300., 1100., 1400.] {
+        visual.simulate_resize(size(px(width), px(900.)));
+        visual.run_until_parked();
+        board.update(visual, |board, _| {
+            let current = board.filtered_projection();
+            assert!(Arc::ptr_eq(&filtered, &current));
+            assert!(Arc::ptr_eq(&filtered.binding, &current.binding));
+            assert_eq!(
+                board.lane_preparations.get(),
+                filtered_prepared,
+                "resize must not rehash/rebuild filtered row membership"
+            );
+        });
+    }
+}

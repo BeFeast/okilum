@@ -151,7 +151,7 @@ impl History {
     }
 }
 impl Feed {
-    pub(super) fn render_attachments(&self, position: u64, cx: &mut App) -> AnyElement {
+    pub(super) fn render_attachments(&self, position: u64, cx: &mut App) -> gpui::Div {
         let origin = self.parent.upgrade().and_then(|parent| {
             parent
                 .read(cx)
@@ -365,7 +365,6 @@ impl Feed {
             .w_full()
             .when(image_count > 0, |tray| tray.child(images))
             .child(files)
-            .into_any_element()
     }
 
     fn download_attachment(

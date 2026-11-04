@@ -8,6 +8,7 @@ impl Board {
         column: Column,
         binding: &Binding,
         mapping: Option<&'static str>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = brand::palette(cx);
@@ -17,7 +18,7 @@ impl Board {
             .w_full()
             .min_w_0()
             .gap_2()
-            .child(self.compact_card(scope, column, binding, cx));
+            .child(self.compact_card_control(scope, column, binding, false, window, cx));
         if let Some(problem) = mapping {
             card = card.child(
                 div()
@@ -117,13 +118,19 @@ impl Board {
     pub(super) fn compact_local_card(
         &self,
         card: &okilum_t3::board::local::Card,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let p = brand::palette(cx);
         let id = card.id.clone();
         let selected = self.selected_local.as_ref() == Some(&id);
-        Button::new(SharedString::from(format!("local-summary-{id}")))
-            .ghost()
+        self.card_rendered();
+        let (button, _) = controls::disclosure(
+            SharedString::from(format!("local-summary-{id}")),
+            window,
+            cx,
+        );
+        let card = button
             .h_auto()
             .p_0()
             .w_full()
@@ -182,7 +189,8 @@ impl Board {
                 this.focus.focus(window, cx);
                 cx.notify();
             }))
-            .into_any_element()
+            .into_any_element();
+        self.track_card_layout(card, cx)
     }
     /// Exactly three rows; selection opens actions outside the virtualised lane.
     pub(super) fn compact_card(
@@ -190,8 +198,23 @@ impl Board {
         scope: &okilum_t3::board::Scope,
         column: Column,
         binding: &Binding,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.compact_card_control(scope, column, binding, true, window, cx)
+    }
+    fn compact_card_control(
+        &self,
+        scope: &okilum_t3::board::Scope,
+        column: Column,
+        binding: &Binding,
+        record_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = super::super::performance::Work::start(1);
+        self.card_rendered();
         let p = brand::palette(cx);
         let number = scope.number;
         let issue = self.snapshot.forgejo.value.get(&number);
@@ -223,6 +246,13 @@ impl Board {
         }
         meta = meta.child(labels);
         if let Some(agent) = &agent {
+            #[cfg(target_os = "linux")]
+            let url = self
+                .manager_display
+                .identity
+                .as_ref()
+                .map(|identity| identity.thread_url(&agent.thread.thread_id));
+            #[cfg(not(target_os = "linux"))]
             let url = self.manager.as_ref().and_then(|m| {
                 m.read(cx)
                     .identity
@@ -267,12 +297,20 @@ impl Board {
                     .child(row_bits::agent_avatar(&scope.executor, false, cx)),
             );
         }
-        let pr = scope.pull_requests.first();
+        let pr = scope
+            .pull_requests
+            .first()
+            .or_else(|| issue.and_then(|issue| issue.open_pull_requests.first()));
         let checks = pr
             .and_then(|pr| issue.and_then(|i| i.live_pulls.iter().find(|pull| pull.number == *pr)))
             .map(|p| p.checks.as_str());
         let failed = matches!(checks, Some("failure" | "error"));
         let stale = scope.stuck || agent.as_ref().is_some_and(|a| a.stuck);
+        #[cfg(target_os = "linux")]
+        let progress = agent
+            .as_ref()
+            .and_then(|a| self.manager_display.progress(scope, a.thread));
+        #[cfg(not(target_os = "linux"))]
         let progress = agent.as_ref().and_then(|a| {
             self.manager
                 .as_ref()
@@ -336,6 +374,7 @@ impl Board {
             now_row = now_row.child(
                 div()
                     .id(("board-pr-badge", number as usize))
+                    .debug_selector(move || format!("board-pr-badge-{number}"))
                     .flex_none()
                     .cursor_pointer()
                     .child(
@@ -350,8 +389,14 @@ impl Board {
                     }),
             );
         }
-        Button::new(("board-expand", number as usize))
-            .ghost()
+        let (button, focus) = controls::disclosure(("board-expand", number as usize), window, cx);
+        #[cfg(test)]
+        if record_focus {
+            self.card_focus.borrow_mut().insert(number, focus);
+        }
+        #[cfg(not(test))]
+        let _ = (record_focus, focus);
+        let card = button
             .h_auto()
             .p_0()
             .accessibility_label(format!("Expand issue {number}"))
@@ -359,10 +404,12 @@ impl Board {
             .w_full()
             .min_w_0()
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _, window, cx| {
+            .on_click(cx.listener(move |this, event, window, cx| {
                 this.selected_local = None;
                 this.selected = (this.selected != Some(number)).then_some(number);
-                this.focus.focus(window, cx);
+                if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                    this.focus.focus(window, cx);
+                }
                 cx.notify();
             }))
             .child(
@@ -403,7 +450,8 @@ impl Board {
                     )
                     .child(now_row.debug_selector(move || format!("board-card-now-{number}"))),
             )
-            .into_any_element()
+            .into_any_element();
+        self.track_card_layout(card, cx)
     }
 }
 

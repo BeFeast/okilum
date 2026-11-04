@@ -34,7 +34,11 @@ impl Default for State {
 }
 
 impl Board {
-    pub(super) fn render_kanban(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_kanban(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = brand::palette(cx);
         let prepared = self.prepare_list();
         let binding = &prepared.binding;
@@ -66,7 +70,7 @@ impl Board {
                     }
                 }
             }))
-            .child(self.filter_bar(&prepared.projection, cx));
+            .child(self.filter_bar(&prepared.projection, window, cx));
         if binding.repository.is_empty() {
             root = root.child(div().debug_selector(|| "board-local".into()).text_size(px(12.))
                 .child("Local Board · PR and CI links are inactive. Add Repository in Manage board → Board details when needed."));
@@ -189,7 +193,7 @@ impl Board {
                     .take(QUEUE_LIMIT)
                     .enumerate()
                 {
-                    body = body.child(self.queue_row(*row, index, &prepared, cx));
+                    body = body.child(self.queue_row(*row, index, &prepared, window, cx));
                 }
                 if count > QUEUE_LIMIT {
                     body = body.child(
@@ -230,13 +234,14 @@ impl Board {
                     gpui::uniform_list(
                         ("board-stage-list", stage as usize),
                         count,
-                        cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                        cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                             range
                                 .map(|index| {
                                     div().h(px(CARD_PITCH)).pb(px(4.)).child(this.kanban_row(
                                         rows.groups[stage as usize][index],
                                         stage,
                                         &rows,
+                                        window,
                                         cx,
                                     ))
                                 })
@@ -339,6 +344,7 @@ impl Board {
                     self.delivery_column(scope),
                     binding,
                     prepared.mappings.get(&scope.number).copied().flatten(),
+                    window,
                     cx,
                 )
             })
@@ -346,7 +352,7 @@ impl Board {
                 self.selected_local
                     .as_ref()
                     .and_then(|id| prepared.local_indices.get(id))
-                    .map(|i| self.local_card(&self.local_cards.value.cards[*i], cx))
+                    .map(|i| self.local_card(&self.local_cards.value.cards[*i], window, cx))
             });
         if let Some(details) = details {
             root = root.child(
@@ -406,13 +412,18 @@ impl Board {
         row: Row,
         stage: Column,
         prepared: &Prepared,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match row {
-            Row::Issue(i) => {
-                self.compact_card(&prepared.binding.issues[i], stage, &prepared.binding, cx)
-            }
-            Row::Local(i) => self.compact_local_card(&self.local_cards.value.cards[i], cx),
+            Row::Issue(i) => self.compact_card(
+                &prepared.binding.issues[i],
+                stage,
+                &prepared.binding,
+                window,
+                cx,
+            ),
+            Row::Local(i) => self.compact_local_card(&self.local_cards.value.cards[i], window, cx),
             Row::Problem(_) | Row::Group(_) => unreachable!("non-Queue issue lane"),
         }
     }
@@ -421,8 +432,12 @@ impl Board {
         row: Row,
         index: usize,
         prepared: &Prepared,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
+        let _work = super::super::performance::Work::start(1);
+        self.card_rendered();
         let p = brand::palette(cx);
         let (title, id, issue, number, local) = match row {
             Row::Issue(i) => {
@@ -470,8 +485,15 @@ impl Board {
         };
         let local_title = local.clone();
         let local_root = local.clone();
-        let mini = div()
-            .id(("board-queue-row", index))
+        let (button, focus) = controls::disclosure(("board-queue-row", index), window, cx);
+        #[cfg(test)]
+        if let Some(number) = number {
+            self.card_focus.borrow_mut().insert(number, focus);
+        }
+        #[cfg(not(test))]
+        let _ = focus;
+        let mini = button
+            .rounded_none()
             .debug_selector(move || format!("board-queue-row-{index}"))
             .h(px(30.))
             .flex_none()
@@ -484,6 +506,7 @@ impl Board {
             .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
             .cursor_pointer()
             .hover(|s| s.bg(p.surface))
+            .active(|s| s.bg(p.surface))
             .child(row_bits::type_tag(issue, cx))
             .child(
                 div()
@@ -503,7 +526,7 @@ impl Board {
                     .child(title),
             )
             .child(div().flex_none().text_color(p.text_muted).child(id))
-            .on_click(cx.listener(move |this, _, window, cx| {
+            .on_click(cx.listener(move |this, event, window, cx| {
                 if let Some(number) = number {
                     this.selected = (this.selected != Some(number)).then_some(number);
                     this.selected_local = None;
@@ -512,11 +535,13 @@ impl Board {
                     this.selected_local =
                         (this.selected_local.as_ref() != Some(id)).then(|| id.clone());
                 }
-                this.focus.focus(window, cx);
+                if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                    this.focus.focus(window, cx);
+                }
                 cx.notify();
             }))
             .into_any_element();
-        if let Some(id) = local_root {
+        let row = if let Some(id) = local_root {
             div()
                 .debug_selector(move || format!("board-local-card-{id}"))
                 .w_full()
@@ -527,6 +552,7 @@ impl Board {
                 .into_any_element()
         } else {
             mini
-        }
+        };
+        self.track_card_layout(row, cx)
     }
 }
