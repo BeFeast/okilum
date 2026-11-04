@@ -472,6 +472,7 @@ pub fn write_archive(package: &GeneratedPackage, destination: &Path) -> Result<E
     let parent = destination
         .parent()
         .context("export_destination_needs_parent")?;
+    let _admission = okilum_core::local_writer_authority::operation_for_path(destination)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     let mut archive = tar::Builder::new(temporary.as_file_mut());
     let mut files = Vec::new();

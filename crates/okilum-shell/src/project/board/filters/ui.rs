@@ -49,6 +49,7 @@ pub(in super::super) use Ui as Controls;
 impl Board {
     pub(in super::super) fn filter_changed(&mut self, cx: &mut Context<Self>) {
         self.scroll.set_offset(point(px(0.), px(0.)));
+        self.kanban.reset_scroll();
         self.list
             .scroll
             .0

@@ -431,7 +431,12 @@ the current transaction coexist until the following preparation.
 Ordinary AppImage launch installs the executable at
 `~/.local/share/okilum/Okilum.AppImage` and creates `~/.local/bin/okilum`.
 The owned desktop entry and OpenVault action point at the installed image.
-Launching the legacy `~/Applications/Okilum.AppImage` migrates that exact file;
-other downloaded copies are retained. Foreign files in `~/Applications` survive.
+Launching the legacy `~/Applications/Okilum.AppImage` migrates that exact file.
+Installing a new download also retires that legacy file when the previous owned
+desktop launcher points to it. The image, command, desktop launcher and folder
+action are published before deleting the old executable; a desktop refresh
+failure keeps the legacy executable. Other downloaded copies and unreferenced
+legacy files are retained. Foreign files in `~/Applications` survive; only an
+empty legacy directory is removed.
 An active updater restart receipt is acknowledged at its original target before
 migration on the next ordinary launch. CLI-only commands do not install files.

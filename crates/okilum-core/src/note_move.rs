@@ -116,6 +116,7 @@ fn check_destination(
 }
 
 pub struct MovePlan {
+    authority: okilum_write_authority::Authority,
     source_dir: File,
     source_name: OsString,
     target_dir: File,
@@ -146,6 +147,7 @@ impl MovePlan {
         // Atomic NOREPLACE below is authoritative; this only improves the preview.
         check_destination(&source_dir, &source_name, &target_dir, &target_name)?;
         Ok(Self {
+            authority: okilum_write_authority::Authority::for_root(root)?,
             source_dir,
             source_name,
             target_dir,
@@ -168,6 +170,7 @@ impl MovePlan {
     }
 
     fn commit_before_rename(self, before: impl FnOnce()) -> Result<Moved> {
+        let _admission = self.authority.operation()?;
         if snapshot(&self.source_dir, &self.source_name)
             .context("The source is no longer readable. Nothing was moved; preview again")?
             != self.expected

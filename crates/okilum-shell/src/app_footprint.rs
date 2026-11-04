@@ -429,14 +429,14 @@ fn blocked(state: Option<&Path>, units: Option<&Path>) -> Option<String> {
                 return Some("Quit Okilum first, then run this again.".into());
             }
         }
-        // Sync must be removed through the controller so the hub forgets this
-        // computer and the user service is stopped, never by deleting files.
+        // Preserve the old connection authority and running daemon. The retired
+        // Settings controls cannot safely remove them; never imply they can.
         let sync = state.join("sync/setup.json");
         let active = read_json(&sync).is_some_and(|record| record["retired"] != true);
         if active {
             return Some(
-                "Sync is still set up on this computer. Open Okilum → Settings → Sync → \
-                 Remove this computer first, then run this again."
+                "Sync is still set up on this computer. Automatic cleanup is unavailable \
+                 for this older connection. Your files and saved connection have been kept."
                     .into(),
             );
         }
@@ -449,8 +449,8 @@ fn blocked(state: Option<&Path>, units: Option<&Path>) -> Option<String> {
     });
     unit.map(|unit| {
         format!(
-            "The sync service {} is still installed. Open Okilum → Settings → Sync → \
-             Remove this computer first, then run this again.",
+            "An existing file sync process ({}) is still installed. Automatic cleanup is \
+             unavailable while it is present. Your files and connection settings have been kept.",
             unit.file_name().to_string_lossy()
         )
     })
@@ -899,6 +899,8 @@ mod tests {
             reason.as_deref().unwrap().contains("Sync is still set up"),
             "{reason:?}"
         );
+        assert!(!reason.as_deref().unwrap().contains("Settings"));
+        assert!(reason.as_deref().unwrap().contains("have been kept"));
         write(&state.join("sync/setup.json"), r#"{"retired":true}"#);
         assert_eq!(
             blocked(Some(&state), Some(&units)),
@@ -925,6 +927,8 @@ mod tests {
                 .contains("okilum-syncthing-abc.service"),
             "{reason:?}"
         );
+        assert!(!reason.as_deref().unwrap().contains("Settings"));
+        assert!(reason.as_deref().unwrap().contains("have been kept"));
     }
 
     #[cfg(unix)]
@@ -1209,6 +1213,38 @@ mod tests {
             production.contains("b dirs::z"),
             "positive control: code after the module stays"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_appimage_uninstall_removes_installation_and_update_artifacts() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let download = home.path().join("download.AppImage");
+        std::fs::write(&download, b"not executed").unwrap();
+        std::fs::set_permissions(&download, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let image = okilum_appimage::installation::install(home.path(), &download, 7547).unwrap();
+        let (_, command) = okilum_appimage::installation::paths(home.path()).unwrap();
+        let (desktop, icon) = okilum_appimage::desktop::paths(home.path()).unwrap();
+        let stage = image.parent().unwrap().join(".okilum-update-completed");
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(stage.join("previous.AppImage"), b"rollback").unwrap();
+        assert_eq!(
+            desktop_payload(home.path()),
+            vec![
+                desktop.clone(),
+                icon.clone(),
+                image.clone(),
+                command.clone()
+            ]
+        );
+        let mut report = Report::default();
+        remove_appimage_desktop(home.path(), &mut report);
+        assert_eq!(report.removed, vec![desktop, icon, image.clone(), command]);
+        assert!(report.failed.is_empty());
+        assert!(!image.parent().unwrap().exists());
+        assert!(download.exists());
     }
 
     #[cfg(target_os = "linux")]

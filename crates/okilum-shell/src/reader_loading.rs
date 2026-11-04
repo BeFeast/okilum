@@ -1467,6 +1467,9 @@ impl Reader {
             self.sel_format,
             Arc::default(),
             &self.link_identities,
+            !self.single_file
+                && reader_features::enabled(reader_features::Feature::Agents, cx)
+                && okilum_core::agent_imports::is_agent_document(&rel),
         );
         let _phase = self.loading.as_ref().and_then(|load| {
             load.opts
@@ -5068,6 +5071,7 @@ mod tests {
                 v.sel_format,
                 v.prepared_links.clone(),
                 &v.link_identities,
+                v.agent_document_enabled(cx),
             );
             v.content.update(cx, |state, cx| {
                 configured.prepare_state(state, cx);
@@ -6644,6 +6648,16 @@ mod tests {
             snapshot.map(|snapshot| *snapshot),
         )
         .unwrap();
+        let Event::Ready { move_snapshot, .. } = &ready else {
+            panic!("ready source bank")
+        };
+        assert_eq!(move_snapshot.source_paths().count(), 5001);
+        assert!(
+            move_snapshot
+                .source_paths()
+                .all(|path| move_snapshot.source_revision(path).is_some()),
+            "every unchanged/read source must retain a verified stamp regardless of ctime age"
+        );
         let ready_ms = started.elapsed().as_secs_f64() * 1000.;
         if launch == 0 && std::env::var("OKILUM_RELAUNCH_TOPOLOGY_DELTA").as_deref() == Ok("1") {
             let Event::Ready {
@@ -6764,6 +6778,12 @@ mod tests {
             .unwrap()["details"]
             .clone();
         assert!(!stats.is_empty());
+        for s in &stats {
+            assert_eq!(
+                s["reuse"]["invalidated_revision"], 0,
+                "elapsed time must not invalidate saved revisions: {s}"
+            );
+        }
         if launch == 0 {
             assert_eq!(stats[0]["read"], 5001, "cold read counter positive control");
             assert_eq!(stats[0]["reused"], 0);

@@ -343,6 +343,16 @@ fn copy_files(input: Target, plan: FilePlan, anchor: Anchor, window: &mut Window
     let task = cx.background_executor().spawn(async move {
         // The vault's names before the copies, so a copy's link is its path
         // when its name alone would also match another file.
+        let _admission = match okilum_write_authority::operation(&work_plan.vault_root) {
+            Ok(admission) => admission,
+            Err(error) => {
+                return (
+                    vec![None; work_plan.copies()],
+                    vec![error.to_string()],
+                    vec![],
+                )
+            }
+        };
         let existing = files::vault_names(&work_plan.vault_root);
         let mut copied = Vec::new();
         let mut errors = Vec::new();
@@ -598,13 +608,19 @@ fn convert_in_background(
             );
             let Some(region) = region else {
                 // Not inserted: its saved images would be linked from nowhere.
-                for file in &done.files {
-                    let _ = std::fs::remove_file(file);
+                if let Some(lease) = &done.admission {
+                    if let Ok(_admission) = lease.enter() {
+                        for file in &done.files {
+                            let _ = std::fs::remove_file(file);
+                        }
+                    }
                 }
                 note_closed("", window, cx);
                 return;
             };
-            if done.failed > 0 {
+            if done.deferred > 0 {
+                reader_toast::transient(router::DEFERRED_IMAGES_TEXT, window, cx);
+            } else if done.failed > 0 {
                 reader_toast::transient(router::failed_images_text(done.failed), window, cx);
             }
             if !done.remote.is_empty() {
@@ -761,8 +777,10 @@ fn download_images(
                 .unwrap_or(0);
             if hits == 0 {
                 // The remote image was edited away: no file without a link.
-                for path in name.paths {
-                    let _ = std::fs::remove_file(path);
+                if let Ok(_admission) = name.admission.enter() {
+                    for path in name.paths {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
             }
             replaced += hits;

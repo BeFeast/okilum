@@ -716,6 +716,12 @@ impl Vault {
         checkpoint: &mut impl FnMut(&str, usize) -> Result<()>,
     ) -> Result<Vault> {
         checkpoint("Discovering notes", 0)?;
+        // Register the vault scope before a nested editor/publisher resolves it.
+        // Surface scope/identity failures instead of silently leaving sibling
+        // folders registered under independent authorities.
+        okilum_write_authority::Authority::for_root(root).with_context(|| {
+            format!("Cannot establish local writer scope for {}", root.display())
+        })?;
         #[cfg(unix)]
         let _ = crate::unix_publish::register_vault(root);
         // A bad root is a failed open, not an empty successful inventory.

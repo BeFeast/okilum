@@ -19,12 +19,8 @@ const FILES: &[(&str, &[u8])] = &[
         include_bytes!("../../../docs/help/sync/captions.vtt"),
     ),
     (
-        "assets/sync-v6.mp4",
-        include_bytes!("../../../docs/help/sync/assets/sync-v6.mp4"),
-    ),
-    (
-        "assets/poster-v6.png",
-        include_bytes!("../../../docs/help/sync/assets/poster-v6.png"),
+        "assets/okilum-sync-tutorial.mp4",
+        include_bytes!("../../../docs/help/sync/assets/okilum-sync-tutorial.mp4"),
     ),
     (
         "assets/sync-settings.png",
@@ -108,7 +104,7 @@ impl Render for SyncHelp {
             .child(Button::new("sync-help-local-video").label(if self.busy { "Preparing local guide…" } else { "Open local video guide" })
                 .disabled(self.busy).on_click(cx.listener(|this, _, _, cx| this.open_video(cx))))
             .child(div().text_sm().text_color(p.text_muted)
-                .child("Optional: opens a bundled local page in your browser. Existing pair only; no first connection recording. No hosted media is loaded."));
+                .child("Optional: opens a bundled local page in your browser. First connection tutorial with English narration and captions. No hosted media is loaded."));
         if self.failed {
             content = content.child(div().id("sync-help-local-error").text_sm()
                 .child("Could not open the local video guide. The written steps above remain available; you can copy them."));

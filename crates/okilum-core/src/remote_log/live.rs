@@ -151,6 +151,8 @@ struct Timing {
     idle: Duration,
     #[cfg(test)]
     after_page: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+    #[cfg(test)]
+    cycle_clock: Option<Arc<super::transport::TestClock>>,
 }
 impl Default for Timing {
     fn default() -> Self {
@@ -161,7 +163,18 @@ impl Default for Timing {
             idle: Duration::from_secs(45),
             #[cfg(test)]
             after_page: None,
+            #[cfg(test)]
+            cycle_clock: None,
         }
+    }
+}
+impl Timing {
+    fn cycle_now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(clock) = &self.cycle_clock {
+            return clock.now();
+        }
+        Instant::now()
     }
 }
 impl Worker {
@@ -415,6 +428,11 @@ impl Engine {
             Some(endpoint) => Kibana::with_endpoint(endpoint.clone(), key, cancel)?,
             None => Kibana::new(&source, key, cancel)?,
         };
+        #[cfg(test)]
+        let client = match &self.timing.cycle_clock {
+            Some(clock) => client.with_test_clock(clock.clone())?,
+            None => client,
+        };
         let client = client.with_diagnostics(self.diagnostics.lock().unwrap().clone());
         let source = client.resolve_source(&source)?;
         self.retry_source = Some(source.clone());
@@ -623,7 +641,7 @@ impl Engine {
         let now = OffsetDateTime::now_utc();
         let range = self.mode.as_ref().context("Live is stopped")?.range(now)?;
         let began = now.format(&time::format_description::well_known::Rfc3339)?;
-        let clock = Instant::now();
+        let clock = self.timing.cycle_now();
         let applied = self.applied.as_ref().context("Apply history first")?;
         let display_source = applied.source.clone();
         let mut source = display_source.clone();
@@ -653,7 +671,7 @@ impl Engine {
                 hook(pages);
             }
             let mut quality = page.status;
-            if clock.elapsed() >= self.timing.cycle {
+            if self.timing.cycle_now().duration_since(clock) >= self.timing.cycle {
                 quality.timed_out = true;
             }
             let ended = page.complete || quality.incomplete();
@@ -688,7 +706,7 @@ impl Engine {
                 return Ok(Status::Complete {
                     range,
                     began,
-                    seconds: clock.elapsed().as_secs_f64(),
+                    seconds: self.timing.cycle_now().duration_since(clock).as_secs_f64(),
                     pages,
                     quality,
                 });

@@ -9,13 +9,27 @@ suite() {
     printf '\nLinux suite: %s\n' "$*"
     "$@" || failed=1
 }
-suite cargo test -p okilum-appimage --all-features --no-fail-fast
+suite bash scripts/ci/local-writer-admission.sh
+# #2049: explicit non-empty UI and compatibility verdicts before the full shell.
+suite node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
+suite cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture
+# Process fixtures fork with live descriptors. Isolate their lock lifecycle:
+# a sibling test's child can retain another fixture's flock until exec.
+suite cargo test -p okilum-appimage --all-features --no-fail-fast -- --test-threads=1
 suite cargo test --locked -p okilum-http --features updates --no-fail-fast
+# #2572: retain a separate non-empty verdict for unified Vaults and log sources.
+suite cargo test --locked -p okilum-shell --bin okilum issue2572_ -- --nocapture
 # Keep an explicit non-empty Settings dismissal verdict ahead of the full shell.
 # Keep Board filter interaction and model verdicts explicit and non-empty.
 suite cargo test --locked -p okilum-shell --bin okilum issue2532_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum list_2530_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum settings_2487_ -- --nocapture
+# #2534: an explicit native compact-card group must execute before the full shell.
+suite cargo test --locked -p okilum-shell --bin okilum kanban_2534_ -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum list_2548_ -- --nocapture
+suite cargo test --locked -p okilum-t3 board::order:: -- --nocapture
+# Keep the inline agent-document regression verdict non-empty and independent.
+suite cargo test --locked -p okilum-shell --bin okilum issue1588_ -- --nocapture --test-threads=1
 # Run the source/input acceptance groups independently, so an unrelated native
 # task abort cannot hide their verdict behind an unfinished full shell binary.
 # A non-UTC process timezone makes the conflict-copy local timestamp check

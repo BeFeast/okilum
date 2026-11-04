@@ -26,8 +26,8 @@ pub(super) fn origin(issue: Option<&okilum_t3::board::Issue>) -> Option<&'static
     let issue = issue?;
     match (issue.has_label("from-oleg"), issue.has_label("from-tester")) {
         (true, true) => Some("Oleg / tester"),
-        (true, false) => Some("from Oleg"),
-        (false, true) => Some("from tester"),
+        (true, false) => Some("Oleg"),
+        (false, true) => Some("tester"),
         _ => None,
     }
 }

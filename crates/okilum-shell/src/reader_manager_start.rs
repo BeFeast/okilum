@@ -107,6 +107,7 @@ fn start_inner(
     project: &Project,
     launch: impl FnOnce(&str, &str, &str) -> Result<String>,
 ) -> Result<String> {
+    let _admission = okilum_write_authority::operation(area)?;
     let project_id = project
         .manager_project
         .as_deref()

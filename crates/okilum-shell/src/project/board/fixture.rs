@@ -48,7 +48,7 @@ issues:
                 "providerInstanceId":"codex","model":"model","runtimeMode":"full-access",
                 "updatedAt":chrono::Utc::now().to_rfc3339()
             })).unwrap()];
-            board.list.preferences.mode = list::Mode::List;
+            board.list.preferences.mode = if mode == "kanban" { list::Mode::Board } else { list::Mode::List };
             board.list.preferences.collapsed[Column::Queue as usize] = false;
             board.filter.chip = filters::Chip::Oleg;
             board

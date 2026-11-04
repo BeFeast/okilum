@@ -925,6 +925,7 @@ async fn web_shell_is_explicit_and_keeps_api_private() {
     for (path, mime) in [
         ("/", "text/html"),
         ("/app.js", "text/javascript"),
+        ("/sync-links.js", "text/javascript"),
         ("/ui.js", "text/javascript"),
         ("/noto-sans-400.ttf", "font/ttf"),
         ("/noto-sans-600.ttf", "font/ttf"),

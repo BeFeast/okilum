@@ -554,6 +554,10 @@ impl ManagerPanel {
                                 routing.refresh();
                                 routing.focused()
                             });
+                        if event == "open-terminal" && owns_native_focus && !this.closed {
+                            crate::project_terminal::open(&this.project, window, cx);
+                            return;
+                        }
                         if event == "native-focus" {
                             this.native_focus_entered(generation, owns_native_focus, window, cx);
                         } else {

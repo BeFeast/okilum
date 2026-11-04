@@ -6425,9 +6425,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "okilum-write-authority"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "okilum-core"
 version = "0.1.0"
 dependencies = [
+ "okilum-write-authority",
  "anyhow",
  "async-channel",
  "base64 0.22.1",
@@ -6526,6 +6541,7 @@ dependencies = [
 name = "okilum-shell"
 version = "0.1.0"
 dependencies = [
+ "okilum-write-authority",
  "anyhow",
  "arboard",
  "async-channel",
@@ -6573,6 +6589,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
+ "shell-words",
  "signal-hook-registry",
  "similar",
  "smallvec",
@@ -6604,6 +6621,7 @@ dependencies = [
 name = "okilum-sync"
 version = "0.1.0"
 dependencies = [
+ "okilum-write-authority",
  "anyhow",
  "okilum-network-access",
  "reqwest",
@@ -6615,6 +6633,7 @@ dependencies = [
 name = "okilum-sync-controller"
 version = "0.1.0"
 dependencies = [
+ "okilum-write-authority",
  "anyhow",
  "base64 0.22.1",
  "core-foundation-sys",
@@ -6654,6 +6673,7 @@ dependencies = [
 name = "okilum-t3"
 version = "0.1.0"
 dependencies = [
+ "okilum-write-authority",
  "anyhow",
  "base64 0.22.1",
  "chrono",

@@ -1,6 +1,10 @@
 name: fast
 on:
   pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '35 22 * * *'
   workflow_dispatch:
     inputs:
       certification_source:
@@ -8,13 +12,13 @@ on:
         required: false
         default: ''
 concurrency:
-  group: fast-${{ inputs.certification_source != '' && inputs.certification_source || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: fast-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   check:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Dedicated baldr runner: two warm targets, CPUWeight=1000 against release builds.
-    # Runner ceiling=20m; setup and rollback: docs/fast-runner.md.
+    # Dedicated warm runner; keep PR admission within fifteen minutes.
+    # Full suites only run on main, nightly and explicit dispatches.
     runs-on: fast-linux
     # Core changes rebuild the desktop AND workspace test targets (#2378).
     timeout-minutes: 15
@@ -79,10 +83,9 @@ jobs:
           bash scripts/ci/fast-local.sh
 
   shell-full:
-    # Keep the full runtime suite outside check's unchanged fifteen-minute budget.
-    # Queue after this PR's check and reuse the same independently locked targets.
+    # Full runtime coverage never occupies a PR admission slot.
     needs: [check]
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request'
     runs-on: fast-linux
     # Run 20932: test compilation 335s + >394s execution before check timed out.
     # Give this job the runner's full 20m ceiling; record two loaded runs before
@@ -143,7 +146,7 @@ jobs:
     # Beta gates on check alone: report and dispatch as soon as it finishes,
     # never behind shell-full's queue slot and 20-minute runner ceiling.
     needs: [check]
-    if: always() && inputs.certification_source != ''
+    if: always() && github.event_name != 'pull_request' && inputs.certification_source != ''
     runs-on: bridge
     timeout-minutes: 2
     steps:
@@ -162,7 +165,7 @@ jobs:
   shell-full-status:
     # Stable information only; a red or timed-out shell-full never holds Beta.
     needs: [shell-full]
-    if: always() && inputs.certification_source != ''
+    if: always() && github.event_name != 'pull_request' && inputs.certification_source != ''
     runs-on: bridge
     timeout-minutes: 2
     steps:
@@ -181,7 +184,7 @@ jobs:
   sync-source-sharing:
     # Keep this additional compiler/daemon load outside the bounded desktop gate.
     needs: [check]
-    if: inputs.certification_source == '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event_name != 'pull_request' && inputs.certification_source == ''
     runs-on: fast-linux
     timeout-minutes: 15
     env:

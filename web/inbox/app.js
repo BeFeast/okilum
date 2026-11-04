@@ -1,4 +1,4 @@
-import { mountSyncPairing } from './sync-pairing.js';
+import { retiredSyncLinkMessage } from './sync-links.js';
 import { mountDevices } from './devices.js';
 import { mountShell } from './ui.js';
 mountShell();
@@ -11,7 +11,7 @@ import { openOutbox, flushOutbox } from './outbox.js';
 import { creationOptions, requestOptions, credentialJSON } from './webauthn.js';
 
 const $ = id => document.getElementById(id);
-const syncRequestId = new URLSearchParams(location.hash.slice(1)).get('sync');
+const oldSyncLink = retiredSyncLinkMessage(location.hash);
 const deviceToken = new URLSearchParams(location.hash.slice(1)).get('device');
 let enrollmentToken = new URLSearchParams(location.hash.slice(1)).get('enroll');
 if (location.hash) history.replaceState(null, '', location.pathname); // Never retain bootstrap in history.
@@ -20,14 +20,13 @@ let filenameSuggestion = '', publicationAttempted = false;
 let selectedItem = null, discussionBusy = false, publicationBusy = false;
 let publicationFolders = [], publicationReady = false, discussionRendered = null, publicationRecovery = false, publicationConflict = false;
 let syncing = false, captures = new Map(), page = null, synchronizedThrough = 0;
-const syncPairingUI = mountSyncPairing({api,post,owner:()=>sessionOwner,requestId:syncRequestId,signIn:()=>signIn(false)});
 const devicesUI = mountDevices({api,post,owner:()=>sessionOwner,joinToken:deviceToken,signIn:()=>signIn(false)});
 const forgejoUI = mountForgejo({api, owner: () => sessionOwner});
 const launchesUI = mountLaunches({api, post, owner: () => sessionOwner, online: () => online && navigator.onLine});
 const questionsUI = mountQuestions({api, post, owner: () => sessionOwner, online: () => online && navigator.onLine});
 const projectsUI = mountProjects({api,post,owner:()=>sessionOwner,online:()=>online&&navigator.onLine,openQuestion:id=>questionsUI.open(id)});
-function clearRemote() { syncPairingUI.reset(); devicesUI.reset(); projectsUI.reset(); forgejoUI.reset(); launchesUI.reset(); questionsUI.reset(); captures.clear(); page = null; synchronizedThrough = 0; selectedItem = null; $('discussion').hidden = true; $('publication-sheet').close(); }
-function notice(message) { $('notice').textContent = message; $('notice').hidden = !message; }
+function clearRemote() { devicesUI.reset(); projectsUI.reset(); forgejoUI.reset(); launchesUI.reset(); questionsUI.reset(); captures.clear(); page = null; synchronizedThrough = 0; selectedItem = null; $('discussion').hidden = true; $('publication-sheet').close(); }
+function notice(message) { const text = [oldSyncLink, message].filter(Boolean).join(' '); $('notice').textContent = text; $('notice').hidden = !text; }
 function message(error) {
   if (error.name === 'NotAllowedError') return 'Passkey request cancelled or unavailable. You can try again.';
   if (error.status === 401) return 'Sign in to sync. Your unsent thoughts are still on this device.';
@@ -46,12 +45,6 @@ async function api(path, options = {}) {
   if (!response.ok) {
     if (response.status === 401) { sessionOwner = null; clearRemote(); }
     const errors = {
-      sync_not_configured: 'Folder sync is not configured on this service.',
-      sync_request_unavailable: 'This sync request expired or was cancelled. Start again in Okilum.',
-      invalid_sync_request: 'The sync request does not match this computer or vault.',
-      sync_identity_conflict: 'This computer already has a registration or the request changed. Wait for pending removal to finish before starting a fresh approval.',
-      sync_rate_limited: 'Too many pairing requests. Try again later.',
-      sync_capacity_reached: 'This service cannot add more computers. Contact its owner.',
       invalid_passkey_name: 'Enter a name of up to 100 characters.',
       last_passkey: 'Add another passkey before revoking this one.',
       recent_authentication_required: 'Confirm with your passkey, then try again.',
@@ -77,7 +70,6 @@ async function verifySession() {
   sessionOwner = identity.owner_id;
   rememberedOwner = identity.owner_id;
   await outbox.setOwner(rememberedOwner);
-  await syncPairingUI.ready();
 }
 function showDetail(text, status, itemId, time) {
   publicationAttempted = false; $('publication-sheet').close();
@@ -433,3 +425,6 @@ setInterval(() => { if (sessionOwner && online && !document.hidden) launchesUI.r
 setInterval(() => { if (sessionOwner && online && !document.hidden) forgejoUI.refresh(); }, 60000);
 
 setInterval(() => { if(sessionOwner&&online&&!document.hidden) projectsUI.refresh(); }, 30000);
+
+// Keep retired-link guidance visible after asynchronous startup and sign-in.
+if (oldSyncLink) notice('');

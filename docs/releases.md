@@ -6,6 +6,18 @@ No build/signing credentials are needed on GitHub.
 
 ## Build cadence and manual builds
 
+PR admission requires only `fast / check (pull_request)` (15-minute ceiling).
+Full shell and source-sharing suites run on main pushes, nightly schedules and
+manual dispatches. PR concurrency cancels superseded runs. Main runs share one
+ref group: the running certification completes, and only the newest pending run
+is kept. Release/publication concurrency is unchanged.
+
+Before Stable promotion, require a successful `fast / shell-full` on the exact
+source being promoted, including its `(workflow_dispatch)` certification status.
+Never substitute a newer main result or a PR result for that source. If absent,
+dispatch `fast.yml` on main with `certification_source` set to the candidate SHA
+and wait for that source's full-suite result. Beta still uses check alone.
+
 All three beta workflows tick at :17 UTC. The Linux coordinator requests at most
 one automatic fast certification per UTC hour. Both fast suites compile and test
 the requested product checkout, independently of the workflow snapshot or
