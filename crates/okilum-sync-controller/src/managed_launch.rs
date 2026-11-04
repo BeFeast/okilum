@@ -638,12 +638,13 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
 fn set_paused(folder: &mut Element) {
     // Syncthing v2.1.6 serializes paused as a child element (not an attribute).
     folder.attributes.remove("paused");
-    if folder.get_child("paused").is_none() {
-        folder
-            .children
-            .push(XMLNode::Element(Element::new("paused")));
-    }
-    folder.get_mut_child("paused").unwrap().children = vec![XMLNode::Text("true".into())];
+    // Never leave a second paused=false for an XML decoder to select instead.
+    folder
+        .children
+        .retain(|node| !matches!(node, XMLNode::Element(e) if e.name == "paused"));
+    let mut paused = Element::new("paused");
+    paused.children.push(XMLNode::Text("true".into()));
+    folder.children.push(XMLNode::Element(paused));
 }
 
 /// Observe a live authenticated launch generation. A stale file/PID, helper

@@ -568,6 +568,22 @@ fn issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers() 
         live_generation(home).is_err(),
         "stale generation must refuse"
     );
+    // A damaged/stale XML config must not retain a second paused=false that
+    // the runtime could decode after the launch boundary's selected fence.
+    let mut xml = xmltree::Element::parse(fs::read(&identity.config_file)?.as_slice())?;
+    for folder in xml
+        .children
+        .iter_mut()
+        .filter_map(xmltree::XMLNode::as_mut_element)
+        .filter(|e| e.name == "folder" && e.attributes.get("id").is_some_and(|id| id == "selected"))
+    {
+        let mut paused = xmltree::Element::new("paused");
+        paused.children.push(xmltree::XMLNode::Text("false".into()));
+        folder.children.push(xmltree::XMLNode::Element(paused));
+    }
+    let mut bytes = Vec::new();
+    xml.write(&mut bytes)?;
+    fs::write(&identity.config_file, bytes)?;
     // Exact autonomous ExecStart, with no Runtime/controller call to pause.
     services.launch()?;
     wait("autonomous REST ready", || Ok(identity.connect().is_ok()))?;
