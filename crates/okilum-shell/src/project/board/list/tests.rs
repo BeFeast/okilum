@@ -213,7 +213,8 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
                     .iter()
                     .map(|scope| {
                         serde_json::from_value(serde_json::json!({
-                            "number": scope.number, "title": scope.expected, "state": "open"
+                            "number": scope.number, "title": scope.expected, "state": "open",
+                            "labels": [{"name": if scope.number % 2 == 0 { "from-oleg" } else { "from-tester" }}]
                         }))
                         .unwrap()
                     })
@@ -230,12 +231,17 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
     });
     visual.run_until_parked();
     let board = reader.read_with(visual, |r, _| r.project_navigation.boards[&area].clone());
+    click(visual, "board-chip-oleg");
+    visual.simulate_keystrokes("/");
+    visual.simulate_input("Synthetic task");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-count-Queue-120").is_some());
     board.update_in(visual, |board, window, cx| {
         board.selected = Some(230);
         board
             .list
             .scroll
-            .scroll_to_item_strict(233, gpui::ScrollStrategy::Top);
+            .scroll_to_item_strict(118, gpui::ScrollStrategy::Top);
         board.focus.focus(window, cx);
         cx.notify();
     });
@@ -255,8 +261,15 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
     assert!(visual.debug_bounds("board-list-viewport").is_none());
     click(visual, "project-return-board");
     assert!(visual.debug_bounds("board-list-viewport").is_some());
-    board.read_with(visual, |b, _| {
+    board.read_with(visual, |b, cx| {
         assert_eq!(b.selected, Some(230));
+        assert_eq!(b.filter.chip, filters::Chip::Oleg);
+        assert_eq!(b.filter.search, "Synthetic task");
+        assert_eq!(b.list.prepared.as_ref().unwrap().counts, [120, 0, 0, 0, 0]);
+        assert_eq!(
+            b.filter_ui.search.read(cx).value().as_str(),
+            "Synthetic task"
+        );
         assert_eq!(b.list.scroll.0.borrow().base_handle.offset(), offset);
         assert!(!b.list.preferences.collapsed[Column::Queue as usize]);
     });
@@ -285,6 +298,7 @@ fn list_2530_ci_live_age_and_executor_filter_use_existing_evidence(cx: &mut Test
         board.snapshot.forgejo.last_success = Some(at);
         board.snapshot.t3.value = vec![serde_json::from_value(serde_json::json!({"threadId":"synthetic-agent","title":"Not issue progress","status":"running","providerInstanceId":"codex","model":"synthetic","runtimeMode":"full-access","activeRunId":"run","updatedAt":chrono::DateTime::from_timestamp((at-4*3600-1) as i64, 0).unwrap().to_rfc3339()})).unwrap()];
         board.list.invalidate();
+        board.filter_cache.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -319,11 +333,241 @@ fn list_2530_ci_live_age_and_executor_filter_use_existing_evidence(cx: &mut Test
         );
     });
     board.update(visual, |b, cx| {
-        b.filter = Some("Tests".into());
+        b.filter.executor = Some("Tests".into());
+        b.filter_changed(cx);
         cx.notify();
     });
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-list-row-2").is_some());
     assert!(visual.debug_bounds("board-list-row-1").is_none());
-    board.read_with(visual, |b, _| assert_eq!(b.snapshot.forgejo.value.len(), 4));
+    board.read_with(visual, |b, _| {
+        assert_eq!(b.snapshot.forgejo.value.len(), 4);
+        assert_eq!(b.list.prepared.as_ref().unwrap().counts, [0, 0, 1, 0, 0]);
+    });
+    click(visual, "board-remove-executor");
+    assert!(visual.debug_bounds("board-list-row-1").is_some());
+    board.read_with(visual, |b, _| {
+        assert_eq!(b.list.prepared.as_ref().unwrap().counts, [0, 1, 3, 0, 0])
+    });
+}
+
+#[gpui::test]
+fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(3));
+    board.update(visual, |board, cx| {
+        board.list.preferences.collapsed = [false; 5];
+        board.snapshot.forgejo.value = [(1, "Исправить ПОИСК", vec!["from-oleg", "bug"]),
+            (2, "Tester report", vec!["from-tester", "bug"]),
+            (3, "Other task", vec!["task"])]
+            .into_iter().map(|(number, title, labels)| {
+                let mut issue: okilum_t3::board::Issue = serde_json::from_value(serde_json::json!({"number":number,"title":title,"state":"open",
+                    "labels": labels.into_iter().map(|name| serde_json::json!({"name":name})).collect::<Vec<_>>() })).unwrap();
+                if number == 2 {
+                    issue.live_pulls.push(okilum_t3::board::live::Pull {
+                        number: 102, merged_at: None, checks: "failure".into(),
+                    });
+                }
+                (number, issue)
+            }).collect();
+        board.filter_cache.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for selector in ["board-list-row-1", "board-list-row-2", "board-list-row-3"] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "positive control: all source rows rendered"
+        );
+    }
+    assert!(visual.debug_bounds("board-list-count-Queue-2").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
+    let toggle = visual.debug_bounds("board-view-board").unwrap();
+    let chip = visual.debug_bounds("board-chip-all").unwrap();
+    assert!(
+        chip.left() >= toggle.right(),
+        "chip bar follows the view switch"
+    );
+    assert!(
+        chip.top() < toggle.bottom(),
+        "chip bar shares the header row"
+    );
+    click(visual, "board-chip-bugs");
+    assert!(visual.debug_bounds("board-list-row-1").is_some());
+    assert!(visual.debug_bounds("board-list-row-2").is_some());
+    assert!(visual.debug_bounds("board-list-row-3").is_none());
+    assert!(visual.debug_bounds("board-list-count-Queue-1").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
+    let prepared = board.read_with(visual, |b, _| b.list.prepared.clone().unwrap());
+    board.update(visual, |_, cx| cx.notify());
+    visual.run_until_parked();
+    board.read_with(visual, |b, _| {
+        assert!(
+            Arc::ptr_eq(&prepared, b.list.prepared.as_ref().unwrap()),
+            "unchanged frames reuse the List row index"
+        )
+    });
+    visual.simulate_keystrokes("/");
+    visual.simulate_input("пОиСк");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-row-1").is_some());
+    assert!(visual.debug_bounds("board-list-row-2").is_none());
+    assert!(visual.debug_bounds("board-list-count-Queue-1").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-0").is_some());
+    board.read_with(visual, |b, _| {
+        assert!(
+            !Arc::ptr_eq(&prepared, b.list.prepared.as_ref().unwrap()),
+            "search rebuilt the row index"
+        )
+    });
+    click(visual, "board-view-board");
+    assert!(visual.debug_bounds("board-expand-1").is_some());
+    assert!(visual.debug_bounds("board-expand-2").is_none());
+    click(visual, "board-view-list");
+    assert!(visual.debug_bounds("board-list-count-Queue-1").is_some());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    board.update_in(visual, |b, window, _| assert!(b.focus.is_focused(window)));
+    assert!(visual.debug_bounds("board-list-count-Queue-1").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
+    visual.simulate_keystrokes("/");
+    visual.simulate_input("#2");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-list-row-2").is_some());
+    assert!(visual.debug_bounds("board-list-row-1").is_none());
+    assert!(visual.debug_bounds("board-list-count-Queue-0").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
+    visual.simulate_keystrokes("escape /");
+    // Set a query through the actual input after clearing the numeric search.
+    visual.simulate_input("#999");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("board-filter-empty").is_some());
+    board.update(visual, |board, cx| {
+        board.snapshot.forgejo.error = Some("Synthetic source unavailable".into());
+        board.filter_cache.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let center = visual.debug_bounds("project-board").unwrap();
+    let status = visual.debug_bounds("board-live-status").unwrap();
+    assert!(
+        status.bottom() <= center.bottom() && status.top() >= center.bottom() - px(32.),
+        "empty List results keep source diagnostics at the visible lower edge"
+    );
+    click(visual, "board-reset-filters");
+    assert!(visual.debug_bounds("board-list-count-Queue-2").is_some());
+    assert!(visual.debug_bounds("board-list-count-Checks-1").is_some());
+}
+
+/// #2548: exercise the production row and pill builders, including their actual
+/// truncation bounds, rather than a label styled only for the test.
+#[gpui::test]
+fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        crate::test_init(cx);
+        brand::apply_theme(cx);
+    });
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path(), fixture(1));
+    let glyphs = "Jumpy query: g j p q y · у р д щ";
+    let title = glyphs.repeat(12);
+    board.update(visual, |board, cx| {
+        board.binding.as_mut().unwrap().issues[0].agent_thread_id = Some("glyph-agent".into());
+        let issue = serde_json::from_value(serde_json::json!({
+            "number": 1, "state": "open", "title": title,
+            "labels": [{"name": "bug"}, {"name": "epic: g j p q y у р д щ"}]
+        }))
+        .unwrap();
+        board.snapshot.forgejo.value.insert(1, issue);
+        board.snapshot.forgejo.last_success = Some(now());
+        board.snapshot.t3.value = vec![serde_json::from_value(serde_json::json!({
+            "threadId": "glyph-agent", "title": "Synthetic glyph agent",
+            "updatedAt": chrono::DateTime::from_timestamp(now() as i64, 0).unwrap().to_rfc3339(),
+            "status": "running", "activeRunId": "glyph-run",
+            "providerInstanceId": "codex", "model": "synthetic", "runtimeMode": "full-access"
+        }))
+        .unwrap()];
+        // Agent activity alone does not promote a backlog issue. Open Queue
+        // explicitly so this typography fixture exercises the real source rules.
+        board.list.preferences.collapsed[Column::Queue as usize] = false;
+        board.list.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    for width in [1200., 900.] {
+        visual.simulate_resize(size(px(width), px(800.)));
+        visual.run_until_parked();
+        let row = visual
+            .debug_bounds("board-list-row-1")
+            .expect("positive control: issue rendered");
+        assert_eq!(row.size.height, px(HEIGHT));
+        let mut measured = 0;
+        for (selector, font_size, weight) in [
+            ("board-list-title-1", 13., FontWeight::NORMAL),
+            ("board-state-1", 12., FontWeight::NORMAL),
+            (
+                "board-pill-label-epic: g j p q y у р д щ",
+                12.,
+                FontWeight::NORMAL,
+            ),
+            ("board-list-group-label-Working", 13., FontWeight::SEMIBOLD),
+        ] {
+            let bounds = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"));
+            let required = visual.update(|_, cx| {
+                let mut descriptor = gpui::font(brand::SANS_FONT);
+                descriptor.weight = weight;
+                let font = cx.text_system().resolve_font(&descriptor);
+                // Descent is signed in GPUI's test text system. Compare the
+                // full extents so this check cannot accept a one-em clip box.
+                cx.text_system().ascent(font, px(font_size)).abs()
+                    + cx.text_system().descent(font, px(font_size)).abs()
+            });
+            assert!(
+                required > px(font_size),
+                "positive control: font metrics exceed one em"
+            );
+            assert!(
+                bounds.size.height >= required,
+                "{selector}: {:?} line box must fit ascent + descent {required:?}",
+                bounds.size.height
+            );
+            if selector != "board-list-group-label-Working" {
+                assert!(
+                    bounds.top() >= row.top() && bounds.bottom() <= row.bottom(),
+                    "{selector} must fit inside the 38 px row"
+                );
+            }
+            measured += 1;
+        }
+        assert_eq!(
+            measured, 4,
+            "positive control: title, state, pill and group all measured"
+        );
+        let title_bounds = visual.debug_bounds("board-list-title-1").unwrap();
+        let intrinsic_width = visual.update(|window, _| {
+            window
+                .text_system()
+                .shape_line(
+                    title.clone().into(),
+                    px(13.),
+                    &[gpui::TextRun {
+                        len: title.len(),
+                        font: gpui::font(brand::SANS_FONT),
+                        color: gpui::black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width()
+        });
+        assert!(
+            title_bounds.size.width > px(0.) && title_bounds.size.width < intrinsic_width,
+            "positive control: the long title overflows its constrained ellipsis box"
+        );
+    }
 }

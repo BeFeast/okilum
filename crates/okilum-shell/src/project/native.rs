@@ -1,4 +1,4 @@
-//! Linux live history. The background task owns the socket; the retained model
+//! Native live history. The background task owns the socket; the retained model
 //! and cursor are paired under a mutex, including during concurrent history loads.
 use super::*;
 pub(super) mod actions;

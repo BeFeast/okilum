@@ -2,7 +2,7 @@ use super::*;
 use gpui_component::ThemeStyled as _;
 use okilum_t3::{models::Target, ModelSelection};
 
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 pub(super) mod catalog;
 #[cfg(test)]
 mod interaction_tests;
@@ -236,7 +236,7 @@ impl ProjectView {
         true
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     pub(super) fn receive_live_model(&mut self, metadata: &okilum_t3::projection::Metadata) {
         if self
             .chat
@@ -272,7 +272,7 @@ impl ProjectView {
         snapshot.configuration.model_selection = selection.clone();
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     fn reconcile_model_read(
         &self,
         snapshot: &mut okilum_t3::models::Snapshot,
@@ -287,7 +287,7 @@ impl ProjectView {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     pub(super) fn ensure_native_catalog(&mut self, cx: &mut Context<Self>) {
         if self.native.catalog.is_some() {
             return;
@@ -304,7 +304,7 @@ impl ProjectView {
         self.native.catalog = Some(catalog);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     pub(super) fn sync_native_models(&mut self, cx: &App) {
         let Some(target) = self.manager_model_target() else {
             return;
@@ -333,7 +333,7 @@ impl ProjectView {
     }
 
     fn can_read_models(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if let Some(client) = self.native.model_client() {
             return client.access_allowed();
         }
@@ -346,7 +346,7 @@ impl ProjectView {
     }
 
     fn can_write_models(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if let Some(client) = self.native.model_client() {
             return client.access_allowed() && client.can_operate();
         }
@@ -393,7 +393,7 @@ impl ProjectView {
 
     pub(super) fn manager_model_target(&self) -> Option<Target> {
         let binding = self.binding.as_ref()?;
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if self.native.active() {
             return Some(Target {
                 thread_id: self.chat.as_ref()?.thread_id.clone(),
@@ -477,7 +477,7 @@ impl ProjectView {
             .get_or_insert_with(|| gpui_base::GlobalState::register_deferred_popover(cx));
         self.settle_model_layout(true, window, cx);
         self.model_candidate = None;
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.sync_native_models(cx);
         cx.notify();
     }
@@ -505,7 +505,7 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if selection.is_none() && self.native.active() {
             if let Some(catalog) = &self.native.catalog {
                 catalog.update(cx, |catalog, cx| catalog.refresh(cx));
@@ -528,15 +528,15 @@ impl ProjectView {
             return;
         };
         let gateway = self.gateway.clone();
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let native = self.native.model_client();
         let generation = self.generation;
         let applying = selection.is_some();
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let requested_revision = self.native.model_revision;
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let requested_connection = self.native.connection_epoch;
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let requested_scope = self
             .native
             .model_client()
@@ -548,7 +548,7 @@ impl ProjectView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    #[cfg(target_os = "linux")]
+                    #[cfg(native_manager)]
                     if let Some(client) = native {
                         let result = match selection {
                             Some(selection) => client.configure_manager_model(&target,&selection),
@@ -574,7 +574,7 @@ impl ProjectView {
                 .await;
             let (result, observed) = result;
             let _ = this.update_in(cx, |this, window, cx| {
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 if requested_connection != this.native.connection_epoch || requested_scope != this.native.model_client().map(|client| client.catalog_scope()) { return; }
                 if this.generation == generation
                     && this.model_target.as_ref() == Some(&requested_target)
@@ -582,7 +582,7 @@ impl ProjectView {
                     this.model_busy = false;
                     match result {
                         Ok(snapshot) => {
-                            #[cfg(target_os = "linux")]
+                            #[cfg(native_manager)]
                             let snapshot = {
                                 let mut snapshot = snapshot;
                                 this.reconcile_model_read(&mut snapshot, requested_revision);
@@ -600,7 +600,7 @@ impl ProjectView {
                         }
                         Err(error) => {
                             if let Some(observed) = observed {
-                                #[cfg(target_os = "linux")]
+                                #[cfg(native_manager)]
                                 let observed = {
                                     let mut observed = observed;
                                     this.reconcile_model_read(&mut observed, requested_revision);
@@ -683,7 +683,7 @@ impl ProjectView {
                 (compact, full)
             })
             .unwrap_or_else(|| {
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 if let Some(model) = self.native.current_model(&target.thread_id) {
                     return (model.to_owned(), model.to_owned());
                 }

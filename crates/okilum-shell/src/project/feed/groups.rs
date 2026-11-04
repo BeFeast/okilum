@@ -1108,6 +1108,8 @@ mod tests {
                 let deadline = Instant::now() + Duration::from_secs(8);
                 loop {
                     if let Ok((socket, _)) = listener.accept() {
+                        // BSD/macOS inherits the listener's nonblocking mode.
+                        socket.set_nonblocking(false).unwrap();
                         socket
                             .set_read_timeout(Some(Duration::from_secs(4)))
                             .unwrap();

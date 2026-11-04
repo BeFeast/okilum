@@ -751,6 +751,8 @@ fn disclosure_fetches_full_output_from_the_inherited_source_item(cx: &mut TestAp
             let start = Instant::now();
             loop {
                 if let Ok((socket, _)) = listener.accept() {
+                    // BSD/macOS inherits the listener's nonblocking mode.
+                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(4)))
                         .unwrap();

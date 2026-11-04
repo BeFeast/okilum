@@ -1,7 +1,7 @@
 //! The area's remote manager in the existing Reader window (#1418).
 //! Network work stays off the UI thread; questionnaires remain in T3.
 use super::*;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 use anyhow::Context as _;
 use gpui_component::input::{Textarea, TextareaState};
 use okilum_t3::{
@@ -13,39 +13,39 @@ use std::time::Duration;
 
 mod agent_rules;
 mod agent_skills;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod attachments;
 pub(crate) mod board;
 mod chat_ui;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod composer;
 mod connections;
 mod design;
 mod desktop;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod discuss_handoff;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod drafts;
 mod executors;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod express_session;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod feed;
 mod launch;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod links;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod message_types;
 mod models;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod native;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod rotation;
 mod rules_reread;
 mod setup;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod threads;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod ttfm;
 
 pub(super) fn save_browser_environment(
@@ -108,23 +108,23 @@ pub(crate) struct ProjectView {
     skills: okilum_core::agent_skills::Inventory<agent_skills::Publication>,
     skills_owner: Option<agent_skills::Owner>,
     skills_notice: Option<String>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     rotation: Option<Entity<rotation::coordinator::Coordinator>>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     rotation_epoch: u64,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     rotation_connection_epoch: Option<u64>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     rotation_validity: Option<Arc<std::sync::atomic::AtomicBool>>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     rotation_resolver: Option<rotation::coordinator::OwnerResolver>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     rotation_expected_owner: Option<okilum_t3::rotation::Owner>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     rotation_notice: Option<String>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     rotation_policy: rotation::policy_owner::State,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     express: express_session::State,
     state: Option<PathBuf>,
     environment: Option<Environment>,
@@ -158,24 +158,24 @@ pub(crate) struct ProjectView {
     generation: u64,
     _input: Subscription,
     _connection: Subscription,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     _attachment_input: Subscription,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     attachments: attachments::Runtime,
     last_poll_status: Option<GatewayStatus>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     feed: Entity<feed::Feed>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     composer: Entity<composer::Composer>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     typed: message_types::State,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     discuss: discuss_handoff::DiscussHandoff,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     native: native::Native,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     threads: threads::Directory,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     ttfm: ttfm::Ttfm,
 }
 
@@ -193,9 +193,9 @@ impl ProjectView {
     ) -> Self {
         let access = reader_features::access(reader_features::Feature::Agents, cx);
         let mut view = Self::empty(state.clone(), window, cx);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
-            view.threads.enabled = true;
+            view.threads.enabled = cfg!(target_os = "linux");
             view.ttfm_open(opened, cx);
         }
         let area_copy = area.clone();
@@ -324,33 +324,33 @@ impl ProjectView {
         let compose = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 10)
-                .submit_on_enter(cfg!(target_os = "linux"))
+                .submit_on_enter(cfg!(native_manager))
                 .placeholder("Message your manager…")
         });
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let input = cx.subscribe(&compose, |_, _, _: &InputEvent, cx| cx.notify());
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let parent = cx.entity().downgrade();
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let ttfm = ttfm::Ttfm::open(std::time::Instant::now(), false, cx);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let feed = cx.new(|cx| {
             let mut feed = feed::Feed::new(parent.clone(), cx);
             feed.ttfm = Some(ttfm.clone());
             feed
         });
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let composer = cx.new(|cx| {
             let mut composer = composer::Composer::new(compose.clone(), cx);
             composer.bind_history(feed.clone());
             composer.bind_parent(parent.clone(), cx);
             composer
         });
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let native = native::Native::new(window, cx);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         feed.update(cx, |feed, _| feed.actions = Some(native.actions.clone()));
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let input = cx.subscribe_in(
             &composer,
             window,
@@ -358,7 +358,7 @@ impl ProjectView {
                 this.send(None, window, cx);
             },
         );
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let attachment_input = cx.subscribe_in(
             &composer,
             window,
@@ -366,7 +366,7 @@ impl ProjectView {
                 this.attachment_request(request, window, cx)
             },
         );
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             cx.subscribe(&composer, |_, _, _: &composer::TypedPanelChanged, cx| {
                 cx.notify()
@@ -398,7 +398,7 @@ impl ProjectView {
             cx.observe(&feed, |this, _, cx| this.typed_sync(cx))
                 .detach();
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         cx.subscribe_in(
             &composer,
             window,
@@ -457,23 +457,23 @@ impl ProjectView {
             skills: Default::default(),
             skills_owner: None,
             skills_notice: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             rotation: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             rotation_epoch: 0,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             rotation_connection_epoch: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             rotation_validity: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             rotation_resolver: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             rotation_expected_owner: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             rotation_notice: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             rotation_policy: Default::default(),
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             express: Default::default(),
             state,
             environment: None,
@@ -507,29 +507,29 @@ impl ProjectView {
             generation: 0,
             _input: input,
             _connection: connection,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             _attachment_input: attachment_input,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             attachments: attachments::Runtime::default(),
             last_poll_status: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             feed,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             composer,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             typed: Default::default(),
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             discuss: Default::default(),
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             native,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             threads: threads::Directory::default(),
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             ttfm,
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     pub(super) fn invalidate_rotation(&mut self, cx: &mut Context<Self>) {
         // Revoke before dropping/hiding the retained surface, including while a
         // draft barrier or store read is outstanding. Durable claims stay intact.
@@ -541,7 +541,7 @@ impl ProjectView {
 
     /// Also callable from the existing synchronous handoff lifecycle hook,
     /// before the next paint or an async draft/store completion can run.
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     pub(super) fn revoke_rotation(&mut self) {
         self.express.revoke();
         self.rotation_policy.revoke_requests();
@@ -564,7 +564,7 @@ impl ProjectView {
 
     /// The configured policy owner supplies its exact lifecycle revision; never
     /// derive one from a loaded checkpoint or substitute the connection counter.
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     fn rotation_owner(view: &ProjectView, cx: &App) -> Option<okilum_t3::rotation::Owner> {
         if !view.active
             || view.section != ProjectSection::Manager
@@ -607,7 +607,7 @@ impl ProjectView {
     /// Policy owner handoff: the caller supplies its canonical PolicyStore and
     /// resolver, plus only an exact reviewed source (None keeps Resume disabled).
     /// Loading is off-thread; Coordinator::mount captures the fresh typed draft.
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     pub(super) fn mount_pending_rotation(
         &mut self,
         store: Arc<okilum_t3::rotation::PolicyStore>,
@@ -693,7 +693,7 @@ impl ProjectView {
         cx: &mut Context<Self>,
     ) {
         let scope_changed = self.resource_vault.as_ref() != Some(&root);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if scope_changed {
             self.invalidate_rotation(cx);
         }
@@ -729,12 +729,12 @@ impl ProjectView {
         if self.section == section {
             return;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.invalidate_rotation(cx);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.draft_handoff_connection_changing();
         self.section = section;
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.draft_handoff_connection_ready(cx);
         self.sync_resource_lifecycle(cx);
         cx.notify();
@@ -876,12 +876,12 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), okilum_t3::draft_handoff::Refusal> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         {
             let _ = (area, text, window, cx);
             Err(okilum_t3::draft_handoff::Refusal::Unavailable)
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             use okilum_t3::draft_handoff::{ComposerPort, Refusal};
             if self.area.as_deref() != Some(area) {
@@ -924,16 +924,16 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if active && !self.active {
             self.ttfm_open(opened, cx);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if !active {
             self.ttfm.cancel();
             self.invalidate_rotation(cx);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if !active {
             self.draft_suspend_typed(cx);
             self.typed_invalidate(false, cx);
@@ -943,10 +943,10 @@ impl ProjectView {
         if !active {
             self.opening_t3 = false;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.set_threads_active(active, window, cx);
-        #[cfg(target_os = "linux")]
-        if active {
+        #[cfg(native_manager)]
+        if active && (cfg!(target_os = "linux") || self.native.active()) {
             self.draft_restore(window, cx);
             self.native_start(window, cx);
             if self.threads.enabled && !self.native.active() && self.environment.is_some() {
@@ -979,19 +979,19 @@ impl ProjectView {
         }
         match result {
             Ok((env, gateway)) => {
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 self.invalidate_rotation(cx);
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 self.attachments.clear();
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 self.draft_flush(cx);
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 {
                     self.draft_suspend_typed(cx);
                     self.typed_invalidate(true, cx);
                     self.typed_clear_pending(window, cx);
                 }
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 {
                     self.set_threads_active(false, window, cx);
                     self.threads.reset(cx);
@@ -1006,11 +1006,11 @@ impl ProjectView {
                     .as_ref()
                     .and_then(|b| b.manager.thread_id.as_ref())
                     .map(Conversation::new);
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 self.feed.update(cx, |feed, cx| feed.reset(cx));
                 self.last_poll_status = None;
                 self.identity = None;
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 self.draft_prepare_identity(window, cx);
                 self.model_target = None;
                 self.model_ui = Default::default();
@@ -1022,8 +1022,10 @@ impl ProjectView {
                 self.error = None;
                 self.generation += 1;
                 self.start_polling(window, cx);
-                #[cfg(target_os = "linux")]
-                self.native_restore(false, window, cx);
+                #[cfg(native_manager)]
+                if cfg!(target_os = "linux") {
+                    self.native_restore(false, window, cx);
+                }
             }
             Err(error) => self.error = Some(format!("{error:#}")),
         }
@@ -1031,13 +1033,13 @@ impl ProjectView {
     }
 
     fn clear_connection(&mut self, cx: &mut Context<Self>) {
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.invalidate_rotation(cx);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.attachments.clear();
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.draft_flush(cx);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             self.draft_suspend_typed(cx);
             self.typed_invalidate(true, cx);
@@ -1058,7 +1060,7 @@ impl ProjectView {
         self.model_candidate = None;
         self.model_error = None;
         self.error = None;
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             self.threads.reset(cx);
             self.native.clear();
@@ -1086,7 +1088,7 @@ impl ProjectView {
             GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. } => "Connected",
             _ => "Offline",
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let label = if self.native.active() || self.threads.enabled {
             self.native.status_label(cx)
         } else {
@@ -1127,7 +1129,7 @@ impl ProjectView {
                         let launch = owner.clone();
                         let sign_out = env.clone();
                         let terminal_area = terminal_area.clone();
-                        #[cfg(target_os = "linux")]
+                        #[cfg(native_manager)]
                         let menu = menu
                             .item(rotation::policy_owner::menu_item(owner.clone(), cx))
                             .item(express_session::menu_item(owner.clone(), cx));
@@ -1149,7 +1151,7 @@ impl ProjectView {
                         .item(
                             PopupMenuItem::new("Executors").on_click(move |_, window, cx| {
                                 let _ = executors.update(cx, |this, cx| {
-                                    #[cfg(target_os = "linux")]
+                                    #[cfg(native_manager)]
                                     this.invalidate_rotation(cx);
                                     this.executors_open = !this.executors_open;
                                     this.start_polling(window, cx);
@@ -1224,7 +1226,7 @@ impl ProjectView {
                 return;
             }
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if self.threads.enabled {
             self.invalidate_rotation(cx);
             self.set_threads_active(false, window, cx);
@@ -1347,7 +1349,7 @@ impl ProjectView {
                             binding.manager.thread_id = Some(thread.clone());
                         }
                         this.chat = Some(Conversation::new(thread));
-                        #[cfg(target_os = "linux")]
+                        #[cfg(native_manager)]
                         this.feed.update(cx, |feed, cx| feed.reset(cx));
                         this.reason = None;
                         this.start_polling(window, cx);
@@ -1363,14 +1365,14 @@ impl ProjectView {
     }
 
     fn can_send(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if self.native.active() {
             return self.draft_ready()
                 && !self.native.deleted()
                 && self.native.client_can_operate()
                 && self.prepared_attachments().is_ok();
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if !self.draft_is_sendable() {
             return false;
         }
@@ -1393,7 +1395,7 @@ impl ProjectView {
     }
 
     fn start_polling(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if self.threads.enabled && !self.executors_open {
             return;
         }
@@ -1408,7 +1410,7 @@ impl ProjectView {
                         this.polling = false;
                         return None;
                     }
-                    #[cfg(target_os = "linux")]
+                    #[cfg(native_manager)]
                     if (this.native.active() || this.threads.enabled) && !this.executors_open {
                         this.polling = false;
                         return None;
@@ -1433,11 +1435,11 @@ impl ProjectView {
                         this.binding.as_ref()?.manager.project_id.clone()?,
                         (
                             this.models.is_some() && {
-                                #[cfg(target_os = "linux")]
+                                #[cfg(native_manager)]
                                 {
                                     !this.native.active() && !this.threads.enabled
                                 }
-                                #[cfg(not(target_os = "linux"))]
+                                #[cfg(not(native_manager))]
                                 {
                                     true
                                 }
@@ -1523,7 +1525,7 @@ impl ProjectView {
                                 this.records = records;
                             }
                             this.error = None;
-                            #[cfg(target_os = "linux")]
+                            #[cfg(native_manager)]
                             this.feed.update(cx, |feed, cx| {
                                 feed.apply(
                                     changes
@@ -1573,9 +1575,9 @@ impl ProjectView {
                     // MCP fallback warms after authenticated polling, never on
                     // combobox open. Native connections use the shared stream.
                     if this.identity.is_some() && this.model_target.is_none() && !this.model_busy {
-                        #[cfg(target_os = "linux")]
+                        #[cfg(native_manager)]
                         let native = this.native.active() || this.threads.enabled;
-                        #[cfg(not(target_os = "linux"))]
+                        #[cfg(not(native_manager))]
                         let native = false;
                         if !native {
                             this.model_target = this.manager_model_target();
@@ -1606,13 +1608,13 @@ impl ProjectView {
         if !self.active || !reader_features::enabled(reader_features::Feature::Agents, cx) {
             return;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if self.threads.enabled && !self.native.active() {
             self.error = Some("Pair the T3 WebSocket connection before sending.".into());
             cx.notify();
             return;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if retry.is_none() && self.native.active() {
             self.native_send(window, cx);
             return;
@@ -1629,19 +1631,19 @@ impl ProjectView {
         let Some(thread_id) = self.chat.as_ref().map(|chat| chat.thread_id.clone()) else {
             return;
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let draft = self.composer.read(cx).typed_source_text(cx);
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let draft = self.compose.read(cx).value().to_string();
         if retry.is_none() && draft.trim().is_empty() {
             return;
         }
         let is_new = retry.is_none();
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.typed_sync(cx);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let sent_snapshot = is_new.then(|| self.draft_sent(cx));
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let typed_capture = if is_new {
             match self.typed_send_type(&draft, cx) {
                 Ok(capture) => capture,
@@ -1658,7 +1660,7 @@ impl ProjectView {
         self.error = None;
         let generation = self.generation;
         cx.spawn_in(window, async move |this, cx| {
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(native_manager))]
             let sent_text = draft.clone();
             let (result, records, retained_id) = cx
                 .background_executor()
@@ -1669,12 +1671,12 @@ impl ProjectView {
                             Some(record) => record,
                             None => {
                                 let message = okilum_t3::OutgoingMessage::queue(thread_id, draft);
-                                #[cfg(target_os = "linux")]
+                                #[cfg(native_manager)]
                                 let record = match &typed_capture {
                                     Some(capture) => capture.prepare_mcp(&journal, message)?,
                                     None => journal.prepare_message(message)?,
                                 };
-                                #[cfg(not(target_os = "linux"))]
+                                #[cfg(not(native_manager))]
                                 let record = journal.prepare_message(message)?;
                                 record
                             }
@@ -1696,14 +1698,14 @@ impl ProjectView {
                         Some(&record.message.client_request_id) == retained_id.as_ref()
                     })
                 });
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 if is_new && retained {
                     if let Some(sent) = &sent_snapshot {
                         this.draft_clear_after_send(sent, window, cx);
                     }
                     this.typed_reload_annotations(cx);
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(native_manager))]
                 if is_new && retained && this.compose.read(cx).value() == sent_text {
                     this.compose
                         .update(cx, |input, cx| input.set_value("", window, cx));
@@ -1712,7 +1714,7 @@ impl ProjectView {
                     Ok(records) => {
                         if this.records != records {
                             this.records = records;
-                            #[cfg(target_os = "linux")]
+                            #[cfg(native_manager)]
                             this.feed.update(cx, |feed, cx| {
                                 feed.apply(std::iter::empty(), Some(&this.records), cx)
                             });
@@ -1763,9 +1765,9 @@ fn status_note(status: &GatewayStatus) -> Option<&'static str> {
 
 impl ProjectView {
     fn render_body(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.attachment_restore_connection(_window, cx);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.sync_native_action_surface(cx);
         if self.local_setup.is_some() {
             return self.render_local_setup(cx).into_any_element();
@@ -1778,7 +1780,7 @@ impl ProjectView {
         let enabled = self.can_send();
         let note = status_note(&status);
         let compact = self.connection_is_compact(&status);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let (enabled, note, compact) = if self.native.active() {
             (enabled, None, compact)
         } else if self.threads.enabled {
@@ -1786,9 +1788,9 @@ impl ProjectView {
         } else {
             (enabled, note, compact)
         };
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let legacy_controls = !self.threads.enabled && !self.native.active();
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let legacy_controls = true;
         let expiry = self
             .gateway
@@ -1815,7 +1817,7 @@ impl ProjectView {
             .filter(|chat| chat.pending_question_error.is_none())
             .map(|chat| chat.pending_questions)
             .unwrap_or(0);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let history = {
             self.typed_sync(cx);
             self.feed
@@ -1845,7 +1847,7 @@ impl ProjectView {
                 )
                 .child(composer::TypedPanelSlot(self.composer.clone()))
         };
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let history = {
             let mut history = v_flex()
                 .id("project-messages")
@@ -1940,8 +1942,8 @@ impl ProjectView {
             .capture_key_down(cx.listener(|this,event:&gpui::KeyDownEvent,window,cx| { this.model_key(event,window,cx); }))
             .id("project-tab")
             .debug_selector(|| "project-tab".into())
-            .when(cfg!(target_os = "linux"), |view| {
-                #[cfg(target_os = "linux")]
+            .when(cfg!(native_manager), |view| {
+                #[cfg(native_manager)]
                 let view = view.on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                     if this.active
                         && !this.busy
@@ -1983,7 +1985,7 @@ impl ProjectView {
                 },
             )
             .when(self.binding.is_some(),|view| {
-                #[cfg(target_os="linux")] let view=view.child(self.render_native(_window, cx));
+                #[cfg(native_manager)] let view=view.child(self.render_native(_window, cx));
                 view
             })
             .when_some(self.reason.clone(), |view, reason| {
@@ -2058,7 +2060,7 @@ impl ProjectView {
                 },
             )
             .when_some(self.error.clone().or_else(|| self.environment.as_ref().and_then(|env| reader_t3_settings::connection_error(&env.origin(), cx))), |view, error| {
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 if self.native.active() {
                     return if let Some(banner) = self.native_setup_error_banner(error, _window, cx) {
                         view.child(banner)
@@ -2080,9 +2082,9 @@ impl ProjectView {
                 history.into_any_element()
             })
             .when(!self.executors_open, |view| {
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 let composer = self.composer.clone().into_any_element();
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(native_manager))]
                 let composer = h_flex()
                         .items_end()
                         .gap_2()
@@ -2102,9 +2104,9 @@ impl ProjectView {
                                     cx.listener(|this, _, window, cx| this.send(None, window, cx)),
                                 ),
                         ).into_any_element();
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 let attachments = if self.native.active(){self.render_native_attachment_drafts(cx)}else{self.render_draft_attachments(cx)};
-                #[cfg(target_os = "linux")]
+                #[cfg(native_manager)]
                 let composer = v_flex()
                     .w_full().min_w_0().gap(px(design::GAP))
                     .when(self.native.actions.read(cx).has_visible_content(cx), |surface| {
@@ -2112,7 +2114,7 @@ impl ProjectView {
                     })
                     .child(attachments)
                     .child(composer);
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(native_manager))]
                 let composer = v_flex().w_full().min_w_0().gap(px(design::GAP))
                     .child(self.render_model_controls(_window, cx)).child(composer);
                 let palette = brand::palette(cx);
@@ -2140,21 +2142,21 @@ impl Render for ProjectView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = reader_features::enabled(reader_features::Feature::Agents, cx);
         if !enabled {
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             self.invalidate_rotation(cx);
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             if self.composer.read(cx).typed_scope().is_some() {
                 self.draft_suspend_typed(cx);
                 self.typed_invalidate(false, cx);
             }
             return div().into_any_element();
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if self.active {
             self.draft_restore(window, cx);
             self.typed_sync(cx);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if self.rotation_resolver.is_some()
             && Self::rotation_owner(self, cx) != self.rotation_expected_owner
         {
@@ -2177,7 +2179,7 @@ impl Render for ProjectView {
         }
         let content = if self.section == ProjectSection::Manager {
             let content = self.render_body(window, cx);
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             let content = if self.threads.enabled {
                 v_flex()
                     .size_full()
@@ -2210,7 +2212,7 @@ impl Render for ProjectView {
             .min_h_0()
             .child(self.render_chat_header(&status, open, cx))
             .child(tabs);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let surface = surface
             .when_some(self.rotation_notice.clone(), |surface, error| {
                 surface.child(div().text_color(cx.theme().danger).child(error))
@@ -2218,11 +2220,11 @@ impl Render for ProjectView {
             .when_some(self.rotation.clone(), |surface, coordinator| {
                 surface.child(coordinator)
             });
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let surface = surface.when(self.rotation_policy.is_open(), |surface| {
             surface.child(self.render_rotation_policy(window, cx))
         });
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let surface = surface.when(self.express.is_open(), |surface| {
             surface.child(self.render_express_session(cx))
         });
@@ -2336,7 +2338,7 @@ impl Reader {
                                     .replace('\\', "/");
                                 view
                             });
-                            #[cfg(target_os = "linux")]
+                            #[cfg(native_manager)]
                             this.connect_manager_links(&project, window, cx);
                             cx.subscribe_in(
                                 &project,

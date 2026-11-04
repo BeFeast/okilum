@@ -92,7 +92,11 @@ fn discuss_1784_token_only_draft_uses_full_source_separator_and_one_undo(cx: &mu
         metadata
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("ctrl-z");
+    visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    });
     visual.run_until_parked();
     project.read_with(visual, |view, cx| {
         assert_eq!(view.composer.read(cx).typed_source_text(cx), "FR ");

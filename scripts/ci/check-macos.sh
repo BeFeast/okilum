@@ -74,6 +74,21 @@ cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 # Compile every workspace test target, including test-only cfg branches and integration tests.
 cargo "${cargo_args[@]}" --workspace --no-run
 
+# #2518: run the real-paint, missing-snapshot and row-measurement controls as
+# an explicit non-empty group, in addition to their feed/native module suites.
+run_tests okilum-shell --bins manager_ttfm_
+
+# #2517: compile and execute every native Manager module, including GPUI tests.
+# Each filter has its own positive control and libtest passed/failed counts.
+manager_skip=()
+for module in attachments composer discuss_handoff drafts express_session feed links message_types native rotation threads; do
+    run_tests okilum-shell --bins "project::${module}::"
+    manager_skip+=(--skip "project::${module}::")
+done
+# Run every remaining project test once: shared ProjectView, picker, Board,
+# connections, resources and launch/setup, with the same non-empty control.
+run_tests okilum-shell --bins 'project::' "${manager_skip[@]}"
+
 # #2442: release-profile dependency fixtures and Sync macro imports must also run.
 run_tests okilum-shell --bins reader_log::remote::
 run_tests okilum-shell --bins reader_settings_sync::

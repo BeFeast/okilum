@@ -1,4 +1,4 @@
-//! Linux-only bounded rendering of the MCP projection. Data changes arrive by position.
+//! Native bounded rendering of the MCP projection. Data changes arrive by position.
 use super::*;
 use crate::project::design;
 use gpui_component::message_scroller::{MessageScroller, MessageScrollerState};
