@@ -1034,6 +1034,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
                 now(),
             );
             b.selected = Some(number);
+            b.peek.open = true;
             assert_ne!(
                 b.delivery_column(&binding.issues[0]),
                 Column::Verified,
@@ -1042,7 +1043,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
             b
         });
         entity = Some(board.clone());
-        Root::new(board, window, cx)
+        Root::new(cx.new(|cx| peek::Harness::new(board, cx)), window, cx)
     });
     let board = entity.unwrap();
     visual.simulate_resize(size(px(1000.), px(1000.)));
@@ -1071,7 +1072,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
     ] {
         assert!(
             visual.debug_bounds(id).is_some(),
-            "expanded card control: {id}"
+            "issue panel delivery control: {id}"
         );
     }
     for id in [

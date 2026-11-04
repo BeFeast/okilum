@@ -372,6 +372,7 @@ impl Board {
         for (index, note) in scope
             .notes
             .iter()
+            .filter(|note| *note != &binding.stage_note)
             .chain((!binding.stage_note.is_empty()).then_some(&binding.stage_note))
             .enumerate()
         {
@@ -478,7 +479,7 @@ impl Board {
             body = body.child(div().child(format!("• {date} · {text}")));
         }
         body = body.child(div().text_size(px(12.)).text_color(p.text_muted).child(
-            self.peek.error.clone().unwrap_or_else(|| if !self.peek.loaded { "Комментарии загружаются…".into() } else { "Показаны первые 12 комментариев и известные Board события. Полная история — в Issue.".into() })));
+            self.peek.error.clone().unwrap_or_else(|| if !self.peek.loaded { "Комментарии загружаются…".into() } else { "Последние 16 известных событий; комментарии — из первых 12 в Issue. Полная история — в Issue.".into() })));
         if let Some(issue) = issue.filter(|i| !i.body.is_empty()) {
             body = body
                 .child(div().text_color(p.text_muted).child("Описание"))
