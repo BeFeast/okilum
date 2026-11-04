@@ -150,7 +150,7 @@ outside the vault and the disposable index.
 The list groups the unchanged Snapshot in this order: В работе, Проверки,
 Можно попробовать, Очередь, Проверено. Queue and Verified start collapsed.
 All rows are 38 px high and use GPUI `uniform_list`; a cached projection and
-row index rebuild only on source publications, executor-filter or collapse
+row index rebuild only on source publications, filter/search or collapse
 changes. Scrolling and resizing build only viewport rows, including when the
 240-issue synthetic fixture's Queue is expanded.
 
