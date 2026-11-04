@@ -24,6 +24,8 @@ direct controller opening and automatic daemon preparation, with this message:
 
 This read-only boundary does not revoke enrollment, stop an existing daemon,
 change its config, migrate files or claim that a pending enrollment completed.
+Uninstall diagnostics preserve their refusal and no longer redirect users to
+the retired Settings removal action. Bundled Help describes direct Sync settings.
 An absent setup or a retired setup (completed old removal) permits the ordinary
 direct flow. Do not delete a saved setup to bypass the warning: migration of
 existing connections is separate work. macOS's former Settings showed native

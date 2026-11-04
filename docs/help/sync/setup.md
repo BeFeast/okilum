@@ -40,4 +40,4 @@ Open a note, enter the editor, add a recognizable line and save with Ctrl+S. Ope
 
 The optional bundled video shows an already-connected pair. It does not record first-time pairing, folder selection or initial transfer. It is a silent 18.4-second v6 edit with English descriptions and a full transcript. A labelled cut removes 6.3 seconds of waiting; this is not real-time latency evidence or Oleg acceptance.
 
-Opening Help changes no vault, pairing or service settings. Opening the local video guide writes only bundled Help files into Okilum's application state and opens their local page in your default browser. It needs no hosted page or media URL.
+Opening Help does not connect computers or change Sync settings. Opening the local video guide writes only bundled Help files into Okilum's application state and opens their local page in your default browser. It needs no hosted page or media URL.
