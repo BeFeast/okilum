@@ -176,19 +176,19 @@ parent has already exited emits `TEST_GROUP_KILL` with the group and limit.
 Compilation and execution have separate shell budgets. Every enclosing deadline
 covers the sum of its children plus 60 s setup/cleanup overhead; job ceilings
 cover all bounded steps plus 90 s checkout/toolchain/final-cleanup margin.
-Job ceilings are now check 55 min, shell-full 35 min, sync-source-sharing 30 min.
+Job ceilings are now check 55 min, shell-full 37 min, sync-source-sharing 30 min.
 These are ceilings for slow progressing work; a hung phase is still killed by
 its own original deadline plus at most 30 s cleanup:
 
 | Scope | Limit | Basis / margin |
 | --- | ---: | --- |
-| CI tooling Python discovery | 180 s | Recent green baldr runs: 45.595–81.114 s; current main run 21861 was still progressing when its old 120 s step expired. Step ceiling is now 4 min, including the 30 s cleanup grace. |
-| Releases / updater Python discovery | 90 s each | Recent green runs: at most 4.802 / 0.107 s; existing 2 min step ceilings retained. |
+| CI tooling Python discovery | 180 s | Recent green baldr runs: 45.595–81.114 s; current main run 21861 was still progressing when its old 120 s step expired. All three Python step ceilings are 5 min (#2536), including the 30 s cleanup grace. |
+| Releases / updater Python discovery | 90 s each | Recent green runs: at most 4.802 / 0.107 s; #2536's 5 min step ceilings retained. |
 | Entire fast-local check / locked fast.sh | 2100 / 2040 s | 300 + 540 + 540 + 120 + 120 + optional 360 = 1980 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. Optional Live Preview is included conservatively. |
 | Check build / workspace test compilation | 540 s each | Loaded build 300 s in 20289; workspace check 324.35 s in the main probe above. Margins 240 / 215 s. Both phases may consume their full limits. |
 | Channel tests (including compilation) | 300 s | Cold appimage dependency variant took 126.62 s in the main probe; recent warm phases 0–4 s. |
 | Paste inventory / paste tests | 120 s each | Recent green Cargo compilation/listing at most 1.11 s; parsing execution at most 0.07 s. These small commands retain their existing caps. |
-| Entire fast-local shell / locked shell-full.sh | 1980 / 1920 s | 840 + 30 + 990 = 1860 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. The 35 min job adds 120 s for setup and cleanup. |
+| Entire fast-local shell / locked shell-full.sh | 1980 / 1920 s | 840 + 30 + 990 = 1860 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. The 37 min job retains the original 35 min envelope and adds 2 min for certification. |
 | Shell compilation only | 840 s | Historical 335 s compile (20932), recent successful compile/list 180–307 s, and normal compilation censored at 360 s by the broken watchdog (21840). Run 21877 completed compilation in 503.870 s, leaving 336 s headroom; no execution timer runs during compilation. |
 | Shell inventory only / unfiltered execution | 30 / 990 s | Inventory after Cargo's finished marker: 0.119–0.368 s; successful execution phases 445–805 s. Runtime margin is 185 s above the loaded maximum. Neither command invokes Cargo. |
 | Entire sync-local entrypoint | 1440 s | 600 s lock + 120 s setup + 60 s verification + 480 s sharing + 120 s policy = 1380 s, plus 60 s overhead. The 30 min job reserves 360 s beyond the group. |
@@ -213,18 +213,32 @@ and another 90 s for setup/final cleanup. Mutation controls reject the old
 aggregate limits, growth of every child phase/lock, and insufficient step/job
 ceilings. The invariant test fails against the pre-fix limits.
 
-The check job's current bounded steps consume 4 + 2 + 2 min Python step ceilings
-plus 2100 + 30 s for fast-local, leaving 690 s in 55 min. The 55 min job
-also reserves #2536's three 5 min Python steps: 900 + 2100 + 30 + 90 = 3120 s <= 3300 s. A separate compatibility
-control applies those step budgets and verifies the invariant; its certification
-checkout/concurrency lines are independent of this fix.
-Read-only verification on baldr during this follow-up confirmed that
-`/var/lib/forgejo-runner-fast/config.yml` still has `runner.timeout: 20m`.
-That host ceiling can truncate these larger workflow budgets. The runner owner
-must raise it to at least 55 min (60 min leaves runner-level cleanup margin).
-Worker scope explicitly excludes changing baldr host settings; this PR does not
-change them. Until the owner adjusts the ceiling, full-budget operational
-acceptance remains blocked even if a warm CI run fits below 20 min.
+The check job retains #2536's three 5 min Python step ceilings and adds a
+2 min certification step: 900 + 120 + 2100 + 30 + 90 = 3240 s <= 3300 s.
+Shell retains its original 35 min envelope and adds the same 2 min step:
+120 + 1980 + 30 + 90 = 2220 s = 37 min. The invariant conservatively includes
+certification even on PR runs, where that step is skipped.
+
+Both exact-product validation steps use the same process-tree supervisor with a
+90 s limit and a 2 min step ceiling including cleanup. Baldr certification
+[22157/check](https://git.oklabs.uk/BeFeast/okilum/actions/runs/22157/jobs/0/attempt/1)
+completed that step in 3 s on 4 November 2026, leaving 87 s headroom. This single
+measurement is not a tail-latency estimate. Before changing HEAD, the step copies
+only the two supervisor files into a job-owned `mktemp` directory under
+`RUNNER_TEMP`; subsequent workflow entrypoints use that copy. A requested older
+product may predate these files. Its tracked tree stays exact, while its Python
+and compiler entrypoints still receive an outer hard deadline. A real Git/HTTP
+control certifies such an older tree, checks the unchanged main ref and clean
+checkout, then exercises successful, failing and hung discovery through the
+staged supervisor. Phase supervision inside the product scripts applies when
+those scripts contain it.
+
+The documented baldr host setting remains `runner.timeout: 20m` in
+`/var/lib/forgejo-runner-fast/config.yml`; raising it is pending Oleg's OK.
+The original 35/55 min job envelopes (now 37 min for shell certification) only
+become fully usable when the owner raises that host ceiling. Hung tests are
+still hard-killed by their phase/group deadline regardless. This host change
+does not block merging the repository fix. No baldr host setting is changed here.
 
 ### Resizing evidence, PR #2510
 

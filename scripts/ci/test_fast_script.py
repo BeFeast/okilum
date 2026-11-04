@@ -1,17 +1,111 @@
 """Exercise fast orchestration without compiling or altering any host limit."""
 import os
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
 import shlex
 import subprocess
 import tempfile
 import time
+import threading
 import unittest
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 class FastScript(unittest.TestCase):
+    def test_certification_checkout_keeps_supervision_for_a_product_without_watchdogs(self):
+        workflow = yaml.safe_load((ROOT / '.forgejo/workflows/fast.yml').read_text())
+        steps = workflow['jobs']['check']['steps']
+        validation = next(s['run'] for s in steps if 'certification-source ' in s.get('run', ''))
+        discovery = next(s['run'] for s in steps if 'ci-python ' in s.get('run', ''))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / 'product'
+            repo.mkdir()
+
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(repo), *args],
+                                               stderr=subprocess.PIPE, text=True).strip()
+
+            git('init', '-b', 'main')
+            git('config', 'user.name', 'Certification fixture')
+            git('config', 'user.email', 'fixture@example.invalid')
+            git('config', 'commit.gpgsign', 'false')
+            suite = repo / 'scripts/ci'
+            suite.mkdir(parents=True)
+            (suite / 'test_product.py').write_text(
+                'import unittest\nclass Product(unittest.TestCase):\n'
+                '    def test_product(self): pass\n')
+            git('add', '.')
+            git('commit', '-m', 'Product predating watchdog tooling')
+            source = git('rev-parse', 'HEAD')
+            for name in ['test-group.sh', 'test-group.py']:
+                (suite / name).write_text((ROOT / 'scripts/ci' / name).read_text())
+            releases = repo / 'scripts/releases'
+            releases.mkdir()
+            (releases / 'hourly_beta.py').write_text((ROOT / 'scripts/releases/hourly_beta.py').read_text())
+            git('add', '.')
+            git('commit', '-m', 'Queued workflow tooling at a newer revision')
+            tooling = git('rev-parse', 'HEAD')
+            git('remote', 'add', 'origin', str(repo))
+
+            class API(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path.endswith('/branches/main'):
+                        data = {'commit': {'id': tooling}}
+                    elif self.path.endswith('/git/commits/' + tooling):
+                        data = {'sha': tooling, 'parents': [{'sha': source}]}
+                    else:
+                        self.send_error(404)
+                        return
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(json.dumps(data).encode())
+
+                def log_message(self, *args):
+                    pass
+
+            server = ThreadingHTTPServer(('127.0.0.1', 0), API)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            env = dict(os.environ, RUNNER_OS='Linux', RUNNER_TEMP=str(root),
+                       GITHUB_ENV=str(root / 'github-env'), GITHUB_SHA=tooling,
+                       GITHUB_REF='refs/heads/main', GITHUB_EVENT_NAME='workflow_dispatch',
+                       CERTIFICATION_SOURCE=source, FORGEJO_URL=f'http://127.0.0.1:{server.server_port}')
+            try:
+                result = subprocess.run(['bash', '-c', validation], cwd=repo, env=env,
+                                        capture_output=True, text=True, timeout=10)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('TEST_GROUP_START group=certification-source limit=90s', result.stdout)
+            self.assertEqual(git('rev-parse', 'HEAD'), source)
+            self.assertEqual(git('rev-parse', 'main'), tooling)
+            self.assertEqual(git('status', '--porcelain'), '')
+            self.assertFalse((suite / 'test-group.sh').exists())
+            key, value = (root / 'github-env').read_text().strip().split('=', 1)
+            env[key] = value
+            self.assertTrue(Path(value).is_relative_to(root))
+            for outcome, status in [('pass', 0), ('self.fail("positive control")', 1),
+                                    ('__import__("time").sleep(60)', 124)]:
+                with self.subTest(outcome=outcome):
+                    (suite / 'test_product.py').write_text(
+                        'import unittest\nclass Product(unittest.TestCase):\n'
+                        f'    def test_product(self): {outcome}\n')
+                    result = subprocess.run(['bash', '-c', discovery.replace('ci-python 180', 'ci-python 1')],
+                                            cwd=repo, env=env, capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                    self.assertIn('test_product (test_product.Product.test_product)', result.stderr)
+                    self.assertIn('TEST_GROUP_START group=ci-python limit=1s', result.stdout)
+                    if status == 124:
+                        self.assertIn('TEST_GROUP_TIMEOUT group=ci-python limit=1s', result.stdout)
+
     def test_required_check_runs_full_isolated_python_discovery_and_fails_on_errors(self):
         workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         self.assertNotIn('  pull_request:', workflow)
@@ -27,7 +121,7 @@ class FastScript(unittest.TestCase):
                 limit = '180' if directory == 'ci' else '90'
                 self.assertIn('        timeout-minutes: 5\n', step)
                 command = shlex.split(step.split('        run: ', 1)[1].strip())
-                self.assertEqual(command, ['bash', 'scripts/ci/test-group.sh', f'{directory}-python', limit,
+                self.assertEqual(command, ['bash', '${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}', f'{directory}-python', limit,
                                            'python3', '-I', '-m', 'unittest', 'discover',
                                            '-s', f'scripts/{directory}', '-p', 'test_*.py', '-v'])
                 self.assertLess(check.index(name),
@@ -46,7 +140,7 @@ class FastScript(unittest.TestCase):
                             (suite / 'test_discovery.py').write_text(
                                 'import unittest\nclass Discovery(unittest.TestCase):\n'
                                 f'    def test_discovered(self): {outcome}\n')
-                            result = subprocess.run(command, cwd=root, capture_output=True,
+                            result = subprocess.run(['bash', '-c', step.split('        run: ', 1)[1].strip()], cwd=root, capture_output=True,
                                                     text=True, timeout=5)
                             self.assertEqual(result.returncode == 0, outcome == 'pass', result.stderr)
                             self.assertIn(f'TEST_GROUP_START group={directory}-python limit={limit}s', result.stdout)

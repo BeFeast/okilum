@@ -43,7 +43,16 @@ jobs:
         env:
           CERTIFICATION_SOURCE: ${{ inputs.certification_source }}
           FORGEJO_URL: ${{ github.server_url }}
-        run: python3 scripts/releases/hourly_beta.py certify-source
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          # Exact-product checkout may predate the supervisors. Keep workflow
+          # tooling outside that checkout before the validator changes HEAD.
+          supervisor_root=$(mktemp -d "${RUNNER_TEMP:?}/fast-supervisor-XXXXXX")
+          cp scripts/ci/test-group.sh scripts/ci/test-group.py "$supervisor_root/"
+          OKILUM_TEST_GROUP="$supervisor_root/test-group.sh"
+          echo "OKILUM_TEST_GROUP=$OKILUM_TEST_GROUP" >> "$GITHUB_ENV"
+          bash "$OKILUM_TEST_GROUP" certification-source 90 python3 scripts/releases/hourly_beta.py certify-source
       - name: Prepare local Linux toolchain
         run: |
           set -euo pipefail
@@ -65,28 +74,28 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Run the full CI tooling Python suite
         timeout-minutes: 5
-        run: bash scripts/ci/test-group.sh ci-python 180 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+        run: bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ci-python 180 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - name: Run the full releases Python suite
         timeout-minutes: 5
-        run: bash scripts/ci/test-group.sh releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
+        run: bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
       - name: Run the full updater Python suite
         timeout-minutes: 5
-        run: bash scripts/ci/test-group.sh updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
+        run: bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
       - name: Build Linux desktop and run fast unit tests
         env:
           GITHUB_SHA: ${{ inputs.certification_source || github.sha }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/test-group.sh fast-local-check 2100 bash scripts/ci/fast-local.sh
+          bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" fast-local-check 2100 bash scripts/ci/fast-local.sh
 
   shell-full:
     # Full runtime coverage never occupies a PR admission slot.
     needs: [check]
     runs-on: fast-linux
     # 840s compile + 30s list + 990s tests + nested setup/cleanup margins.
-    # Run 21877 compiled for 504s before progressing tests lost their budget.
-    timeout-minutes: 35
+    # Plus the 2m exact-source validation step, including its cleanup grace.
+    timeout-minutes: 37
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -110,7 +119,16 @@ jobs:
         env:
           CERTIFICATION_SOURCE: ${{ inputs.certification_source }}
           FORGEJO_URL: ${{ github.server_url }}
-        run: python3 scripts/releases/hourly_beta.py certify-source
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          # Exact-product checkout may predate the supervisors. Keep workflow
+          # tooling outside that checkout before the validator changes HEAD.
+          supervisor_root=$(mktemp -d "${RUNNER_TEMP:?}/fast-supervisor-XXXXXX")
+          cp scripts/ci/test-group.sh scripts/ci/test-group.py "$supervisor_root/"
+          OKILUM_TEST_GROUP="$supervisor_root/test-group.sh"
+          echo "OKILUM_TEST_GROUP=$OKILUM_TEST_GROUP" >> "$GITHUB_ENV"
+          bash "$OKILUM_TEST_GROUP" certification-source 90 python3 scripts/releases/hourly_beta.py certify-source
       - name: Prepare local Linux toolchain
         run: |
           set -euo pipefail
@@ -136,7 +154,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/test-group.sh fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full
+          bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full
 
   certification-status:
     # Beta gates on check alone: report and dispatch as soon as it finishes,

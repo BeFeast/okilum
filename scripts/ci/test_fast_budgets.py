@@ -8,7 +8,8 @@ import unittest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-GROUP = re.compile(r'^\s*bash scripts/ci/test-group\.sh (\S+) (\d+) (.+)$', re.M)
+WRAPPER = r'(?:scripts/ci/test-group\.sh|"\$OKILUM_TEST_GROUP"|"\$\{OKILUM_TEST_GROUP:-scripts/ci/test-group\.sh\}")'
+GROUP = re.compile(r'^\s*bash ' + WRAPPER + r' (\S+) (\d+) (.+)$', re.M)
 PHASE = re.compile(r'^\s*phase (\S+) (\d+) (.+)$', re.M)
 MARGIN = 60  # Includes the supervisor's 30 s TERM/KILL/reap grace.
 JOB_MARGIN = 90  # Checkout/toolchain/fixture setup plus final cleanup.
@@ -123,4 +124,20 @@ class FastBudgets(unittest.TestCase):
         step = next(s for s in workflow['jobs']['check']['steps'] if 'ci-python' in s.get('run', ''))
         step['timeout-minutes'] = 3
         with self.assertRaisesRegex(AssertionError, 'check step:'):
+            validate(workflow, self.scripts)
+
+    def test_certification_steps_reserve_additive_time_in_both_compiler_jobs(self):
+        for name in ['check', 'shell-full']:
+            with self.subTest(job=name):
+                workflow = copy.deepcopy(self.workflow)
+                step = next(s for s in workflow['jobs'][name]['steps']
+                            if 'certification-source ' in s.get('run', ''))
+                self.assertEqual(GROUP.findall(step['run'])[0][:2], ('certification-source', '90'))
+                step['run'] = step['run'].replace('certification-source 90', 'certification-source 900')
+                step['timeout-minutes'] = 16
+                with self.assertRaisesRegex(AssertionError, name + ' job:'):
+                    validate(workflow, self.scripts)
+        workflow = copy.deepcopy(self.workflow)
+        workflow['jobs']['shell-full']['timeout-minutes'] = 35
+        with self.assertRaisesRegex(AssertionError, 'shell-full job:'):
             validate(workflow, self.scripts)
