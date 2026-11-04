@@ -8,12 +8,23 @@ pub(super) fn disclosure(
     window: &mut Window,
     cx: &mut App,
 ) -> (gpui_base::Button, FocusHandle) {
-    ghost_button(id, false, window, cx)
+    ghost_button(id, false, None, window, cx)
+}
+
+/// Queue keeps its existing surface hover/press color. GPUI requires each
+/// interaction style to be installed once, rather than overwritten later.
+pub(super) fn queue_disclosure(
+    id: impl Into<ElementId>,
+    window: &mut Window,
+    cx: &mut App,
+) -> (gpui_base::Button, FocusHandle) {
+    ghost_button(id, false, Some(brand::palette(cx).surface), window, cx)
 }
 
 fn ghost_button(
     id: impl Into<ElementId>,
     selected: bool,
+    surface: Option<Hsla>,
     window: &mut Window,
     cx: &mut App,
 ) -> (gpui_base::Button, FocusHandle) {
@@ -35,6 +46,8 @@ fn ghost_button(
         secondary.darken(0.2)
     }
     .opacity(0.8);
+    let hover = surface.unwrap_or(hover);
+    let active = surface.unwrap_or(active);
     let button = gpui_base::Button::new(id)
         .track_focus(&focus)
         .cursor_default()
@@ -84,7 +97,7 @@ pub(super) fn compact_option(
     window: &mut Window,
     cx: &mut App,
 ) -> gpui_base::Button {
-    ghost_button(id, selected, window, cx)
+    ghost_button(id, selected, None, window, cx)
         .0
         .h_6()
         .px_2()

@@ -485,7 +485,7 @@ impl Board {
         };
         let local_title = local.clone();
         let local_root = local.clone();
-        let (button, focus) = controls::disclosure(("board-queue-row", index), window, cx);
+        let (button, focus) = controls::queue_disclosure(("board-queue-row", index), window, cx);
         #[cfg(test)]
         if let Some(number) = number {
             self.card_focus.borrow_mut().insert(number, focus);
@@ -505,8 +505,6 @@ impl Board {
             .text_size(px(12.))
             .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
             .cursor_pointer()
-            .hover(|s| s.bg(p.surface))
-            .active(|s| s.bg(p.surface))
             .child(row_bits::type_tag(issue, cx))
             .child(
                 div()
