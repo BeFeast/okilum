@@ -140,6 +140,11 @@ currently appends to the native composer, separately from the visible Mac webvie
 
 ## Board v2: subtractive presentation
 
+List rows stay 38 px tall. Their 12/13 px text, group headers and shared type,
+origin/epic and agent primitives use an explicit 1.5 em line box so Latin and
+Cyrillic descenders fit completely. Title and state overflow still uses ellipsis;
+line height does not expand rows or change viewport-only rendering (#2548).
+
 ### Default List (#2530)
 
 Projects with no saved view choice open **Список**. The **Список / Доска**
