@@ -174,7 +174,7 @@ invalid annotations, attention, delivery and project-note context remain reachab
 No new read, dispatch, membership, stage rule or delivery claim is introduced.
 Native tests cover defaults, independent persisted project choices, collapse,
 240-row viewport work, keyboard reachability and actual Reader note round trips.
-The sibling peek/attention/compact-card/ordering issues remain independent.
+The sibling peek and attention issues remain independent.
 
 ### Shared filter bar (#2532)
 
@@ -470,3 +470,9 @@ and known-project matching. A bound repository cannot be retargeted. No executor
 or stage is required to create the empty Board. Local cards use an independent
 sidecar and draft-only discussion; verified local Manager launch follows
 separately. See [local project start](local-project-start.md).
+
+The compact Board consumes the same cached filtered projection as List, including
+column membership, counts and #2535 stage order. It never re-sorts cards during
+render. Shared chips and `/` search remain above both views; Queue's remaining-count
+action preserves the active filters when opening expanded List. Compact metadata
+pills and mini rows retain #2548's full font line boxes.

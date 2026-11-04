@@ -53,8 +53,10 @@ impl Board {
             .text_color(p.text)
             .text_size(px(13.))
             .line_height(px(18.))
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.filter_key(event, window, cx);
+            }))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
                     let issue = this.selected.take().is_some();
                     let local = this.selected_local.take().is_some();

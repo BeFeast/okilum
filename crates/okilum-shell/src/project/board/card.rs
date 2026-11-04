@@ -23,7 +23,7 @@ impl Board {
                 div()
                     .debug_selector(move || format!("board-mapping-{number}"))
                     .text_size(px(12.))
-                    .line_height(px(16.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                     .text_color(colors.warning)
                     .child(problem),
             );
@@ -140,8 +140,8 @@ impl Board {
                     })
                     .w_full()
                     .min_w_0()
-                    .p(px(4.))
-                    .gap(px(2.))
+                    .p(px(2.))
+                    .gap(px(0.))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(if selected { p.accent } else { p.border_subtle })
@@ -153,25 +153,25 @@ impl Board {
                         div()
                             .h(px(18.))
                             .text_size(px(12.))
-                            .line_height(px(16.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .child("Local"),
                     )
                     .child(
                         div()
-                            .min_h(px(36.))
+                            .min_h(px(39.))
                             .w_full()
                             .min_w_0()
                             .whitespace_normal()
                             .text_size(px(13.))
-                            .line_height(px(18.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .line_clamp(2)
                             .child(card.title.clone()),
                     )
                     .child(
                         div()
-                            .h(px(16.))
+                            .h(px(18.))
                             .text_size(px(12.))
-                            .line_height(px(16.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .text_color(p.text_muted)
                             .child(card.state.label()),
                     ),
@@ -199,10 +199,10 @@ impl Board {
         let mut meta = h_flex()
             .w_full()
             .min_w_0()
-            .h(px(18.))
+            .h(px(20.))
             .gap(px(2.))
             .text_size(px(12.))
-            .line_height(px(16.))
+            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
             .text_color(p.text_muted)
             .child(div().flex_none().child(format!("#{number}")))
             .child(row_bits::type_tag(issue, cx));
@@ -299,10 +299,10 @@ impl Board {
         let mut now_row = h_flex()
             .w_full()
             .min_w_0()
-            .h(px(16.))
+            .h(px(18.))
             .gap(px(8.))
             .text_size(px(12.))
-            .line_height(px(16.))
+            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
             .text_color(p.text_muted)
             .child(
                 div()
@@ -370,8 +370,8 @@ impl Board {
                     .debug_selector(move || format!("board-card-{number}"))
                     .w_full()
                     .min_w_0()
-                    .p(px(4.))
-                    .gap(px(2.))
+                    .p(px(2.))
+                    .gap(px(0.))
                     .border_1()
                     .border_color(if self.selected == Some(number) {
                         p.accent
@@ -389,9 +389,9 @@ impl Board {
                             .debug_selector(move || format!("board-card-title-{number}"))
                             .w_full()
                             .min_w_0()
-                            .min_h(px(36.))
+                            .min_h(px(39.))
                             .text_size(px(13.))
-                            .line_height(px(18.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .whitespace_normal()
                             .line_clamp(2)
                             .child(

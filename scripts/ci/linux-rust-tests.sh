@@ -18,6 +18,8 @@ suite cargo test --locked -p okilum-shell --bin okilum list_2530_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum settings_2487_ -- --nocapture
 # #2534: an explicit native compact-card group must execute before the full shell.
 suite cargo test --locked -p okilum-shell --bin okilum kanban_2534_ -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum list_2548_ -- --nocapture
+suite cargo test --locked -p okilum-t3 board::order:: -- --nocapture
 # Run the source/input acceptance groups independently, so an unrelated native
 # task abort cannot hide their verdict behind an unfinished full shell binary.
 # A non-UTC process timezone makes the conflict-copy local timestamp check

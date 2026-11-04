@@ -68,8 +68,8 @@ fn kanban_2534_three_rows_two_complete_title_lines_and_viewport_work(cx: &mut Te
     let card = visual.debug_bounds("board-card-1").unwrap();
     assert_eq!(
         title.size.height,
-        px(36.),
-        "exactly two full 18 px line boxes"
+        px(39.),
+        "exactly two full 19.5 px line boxes"
     );
     assert!(meta.bottom() <= title.top() && title.bottom() <= now.top());
     assert!(meta.size.height >= px(18.) && now.size.height >= px(16.));
@@ -200,16 +200,62 @@ fn kanban_2534_queue_eight_rows_more_opens_expanded_list_and_saves(cx: &mut Test
             .push(okilum_t3::board::IssueLabel {
                 name: "from-oleg".into(),
             });
+        // Leave one visible Queue neighbour with a different origin so the
+        // active Bug chip still exercises the shared origin-first comparator.
+        board
+            .snapshot
+            .forgejo
+            .value
+            .get_mut(&23)
+            .unwrap()
+            .labels
+            .push(okilum_t3::board::IssueLabel {
+                name: "from-oleg".into(),
+            });
+        board
+            .snapshot
+            .forgejo
+            .value
+            .get_mut(&17)
+            .unwrap()
+            .labels
+            .retain(|label| label.name != "bug");
+        board.filter_cache.invalidate();
         board.list.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
     assert_eq!(
-        visual.debug_bounds("board-expand-24").unwrap().center().y,
+        visual.debug_bounds("board-expand-23").unwrap().center().y,
         visual.debug_bounds("board-queue-row-0").unwrap().center().y
     );
+    // Exercise the actual shared chip control, not just the filter model.
+    assert!(
+        visual.debug_bounds("board-expand-17").is_some(),
+        "unfiltered positive control"
+    );
+    click(visual, "board-chip-bugs");
+    assert!(
+        visual.debug_bounds("board-expand-17").is_none(),
+        "chip removes a non-bug from compact Queue"
+    );
+    assert_eq!(
+        visual.debug_bounds("board-expand-23").unwrap().center().y,
+        visual.debug_bounds("board-queue-row-0").unwrap().center().y,
+        "shared origin then recency order survives filtering"
+    );
+    assert!(
+        visual.debug_bounds("board-expand-23").unwrap().top()
+            < visual.debug_bounds("board-expand-24").unwrap().top()
+    );
+    board.update(visual, |b, _| {
+        let prepared = b.prepare_list();
+        assert_eq!(prepared.counts, b.filtered_projection().counts);
+        assert_eq!(prepared.counts[Column::Queue as usize], 222);
+    });
     click(visual, "board-queue-more");
     board.read_with(visual, |b, cx| {
+        assert_eq!(b.filter.chip, filters::Chip::Bugs);
         assert_eq!(b.list.preferences.mode, list::Mode::List);
         assert!(!b.list.preferences.collapsed[Column::Queue as usize]);
         let restored = list::State::load(area.path(), cx);
@@ -217,10 +263,10 @@ fn kanban_2534_queue_eight_rows_more_opens_expanded_list_and_saves(cx: &mut Test
         assert!(!restored.preferences.collapsed[Column::Queue as usize]);
     });
     assert!(visual.debug_bounds("board-list-group-Queue").is_some());
-    assert!(visual.debug_bounds("board-list-row-17").is_some());
+    assert!(visual.debug_bounds("board-list-row-17").is_none());
     assert!(
-        visual.debug_bounds("board-list-row-24").unwrap().top()
-            < visual.debug_bounds("board-list-row-17").unwrap().top()
+        visual.debug_bounds("board-list-row-23").unwrap().top()
+            < visual.debug_bounds("board-list-row-24").unwrap().top()
     );
     assert!(visual.debug_bounds("board-columns").is_none());
 }
