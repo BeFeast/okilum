@@ -29,6 +29,7 @@ pub(crate) struct InventoryView {
     copies: Vec<PathBuf>,
     preferred: Option<PathBuf>,
     complete: bool,
+    pending: usize,
     busy: bool,
     page: usize,
     generation: u64,
@@ -49,6 +50,7 @@ impl InventoryView {
             copies: vec![],
             preferred: None,
             complete: false,
+            pending: 0,
             busy: false,
             page: 0,
             generation: 0,
@@ -67,10 +69,15 @@ impl InventoryView {
         self.panel = None;
         let generation = self.generation;
         let root = self.root.clone();
+        let state = self.state.join("sync-conflicts");
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { conflicts::inspect(&root) })
+                .spawn(async move {
+                    let inventory = conflicts::inspect(&root)?;
+                    let history = conflicts::history(&state, &root)?;
+                    Ok::<_, anyhow::Error>((inventory, history))
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if generation != this.generation {
@@ -78,10 +85,11 @@ impl InventoryView {
                 }
                 this.busy = false;
                 match result {
-                    Ok(inventory) => {
+                    Ok((inventory, history)) => {
                         this.copies = inventory.copies;
                         this.complete = inventory.complete;
-                        this.message.clear();
+                        this.pending = history.entries.iter().filter(|entry| entry.pending).count();
+                        this.message = history.warnings.join("\n");
                         this.page = 0;
                     }
                     Err(error) => {
@@ -228,6 +236,9 @@ impl InventoryView {
                 this.busy = false;
                 if let Some(panel) = this.panel.as_mut() {
                     panel.finish(completion);
+                    if matches!(panel.state, State::NeedsAttention) {
+                        this.pending += 1;
+                    }
                 }
                 cx.notify();
             });
@@ -321,13 +332,16 @@ impl Render for InventoryView {
                     ),
             )
             .child(self.message.clone());
+        if self.pending > 0 {
+            view = view.child(format!("{} interrupted conflict decision(s) need recovery. Both originals are retained in Note history and Recover notes.", self.pending));
+        }
         if self.busy {
             view = view.child("Loading…");
         }
         if !self.complete {
             view = view.child("Inventory is incomplete. Refresh to retry; absence here does not mean there are no conflicts.");
         }
-        if self.complete && self.copies.is_empty() && self.panel.is_none() {
+        if self.complete && self.copies.is_empty() && self.panel.is_none() && self.pending == 0 {
             view = view.child("No conflict copies found.");
         }
         if let Some(panel) = &self.panel {
