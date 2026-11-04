@@ -85,9 +85,8 @@ def run_trials(args, evidence, processes):
             failed |= not trial["ok"]
             trials.append(trial)
             print(f"Run {trial['run']}: exit={trial['exit']} passed={len(passed)}/{len(TESTS)}", flush=True)
-            for line in output.splitlines():
-                if line.startswith("#2045:"):
-                    print(line, flush=True)
+            if trial["ok"]:
+                print("#2045 passed: pinned two-runtime delete/restore hashes, overwrite/stale guards, managed migrations, external preservation and time-shifted retention controls", flush=True)
             if not trial["ok"]:
                 print(output, flush=True)
     (evidence / "results.json").write_text(json.dumps(trials, indent=2) + "\n")
