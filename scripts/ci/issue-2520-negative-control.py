@@ -8,7 +8,8 @@ def run(*args, check=True):
 
 
 def tests(package, target, filter, expected):
-    command = ["cargo", "test", "--release", "--locked", "--target", "aarch64-apple-darwin", "--workspace", "-p", package, target, filter, "--", "--test-threads=1", "--nocapture"]
+    selection = ["--workspace"] if package == "okilum-shell" else ["-p", package]
+    command = ["cargo", "test", "--release", "--locked", "--target", "aarch64-apple-darwin", *selection, target, filter, "--", "--test-threads=1", "--nocapture"]
     result = run(*command, check=False)
     print(result.stdout, flush=True)
     assert (result.returncode == 0) == expected, (filter, result.returncode, expected)
