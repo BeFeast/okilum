@@ -59,7 +59,7 @@ impl Board {
                 text.push_str(&format!(
                     "Issue: {}{}\n",
                     binding.issue_url(issue),
-                    if binding.issues.iter().any(|scope| scope.number == issue) {
+                    if self.list.contains_issue(issue) {
                         ""
                     } else {
                         " (outside this Board's selected stage)"
@@ -151,7 +151,7 @@ impl Board {
                         .child(short(&meta.consequence)),
                 );
             if let Some(issue) = meta.issue {
-                let outside = !binding.issues.iter().any(|scope| scope.number == issue);
+                let outside = !self.list.contains_issue(issue);
                 let url = binding.issue_url(issue);
                 card = card.child(
                     Button::new(SharedString::from(format!("note-issue-{key}")))
