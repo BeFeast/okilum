@@ -256,7 +256,8 @@ impl Board {
                         (Some(x), Some(y)) => okilum_t3::board::order::compare(x, y),
                         (Some(_), None) => std::cmp::Ordering::Less,
                         (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => b.number.cmp(&a.number),
+                        // No source data: keep the binding's explicit order (stable sort).
+                        (None, None) => std::cmp::Ordering::Equal,
                     }
                 });
             }
