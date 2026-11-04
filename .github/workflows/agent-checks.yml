@@ -112,6 +112,8 @@ jobs:
         run: |
           cargo fmt --check
           cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
+      - name: Stress private reveal bus (20 runs)
+        run: python3 scripts/ci/reveal-stress.py --runs 20
       - name: Run complete okilum-core suite offline
         env:
           CARGO_NET_OFFLINE: 'true'
