@@ -1,11 +1,47 @@
 {
-  "content": "Bundled offline Sync Help; written first-connection guide and separate existing-pair v6 demo",
-  "source": "User-supplied Sync Help v1 and v6 source bundles, 2026-11-02",
-  "media_scope": "Existing pair only; not first-connection recording or Oleg acceptance; labelled 6.3 second wait cut",
+  "content": "Bundled offline Sync Help; written first-connection guide and narrated first-connection tutorial",
+  "source": "Owner-supplied Linux Sync tutorial, 2026-11-04; existing Help layout and Settings still retained",
+  "media_scope": "First connection from fresh installations, initial transfer and edits in both directions; edited tutorial, not real-time latency evidence or Oleg acceptance",
   "files": {
     "assets/befeast.svg": "3e95046a4841f0f474bf7631f2e81b209adbc100f337a1007e6a12440ae64c23",
-    "assets/poster-v6.png": "3c874c4991dd89280df5295bde2d616b87278193c689dcafffe52a75058f6179",
     "assets/sync-settings.png": "e0fbbb1cd93433c0c49b2e80414f5d54e223b4fa13f5e9192d067c727b35c6e1",
-    "assets/sync-v6.mp4": "15e44e0b944fcee95d3b0012e8f84457fe794dfa68695f7bcacf82de6780b20c"
+    "assets/okilum-sync-tutorial.mp4": "f11d5554d16c0b2e3f504743132e111f3c66940cd4facf35c5f2bba43cb2ce7b",
+    "captions.vtt": "32046a8faa3a9ac4e5023b4635703d453a7859a02abb2a3d22e08112ad491a1a"
+  },
+  "tutorial": {
+    "recording": {
+      "platform": "Linux",
+      "beta": 7538,
+      "source_commit": "3a57fdfc",
+      "computers": [
+        "idunn",
+        "muninn"
+      ],
+      "users": "Fresh test users and installations",
+      "firewalls": "On"
+    },
+    "editing": {
+      "waiting": "Cut",
+      "maximum_speed": 3,
+      "masked": "One folder-dialog line containing the recording file name"
+    },
+    "narration": {
+      "provider": "ElevenLabs",
+      "voice": "Alice",
+      "script": "captions.vtt"
+    },
+    "build_script": "/home/god/work/qa-evidence/sync-scratch-linux/video/build.sh",
+    "segments": "/home/god/work/qa-evidence/sync-scratch-linux/video/segments.tsv",
+    "published_page": "https://html.me.uk/t/okilum-sync-tutorial/index.html",
+    "duration_seconds": 77.646333,
+    "size_bytes": 2604476,
+    "video": {
+      "codec": "h264",
+      "width": 1920,
+      "height": 1080
+    },
+    "audio": {
+      "codec": "aac"
+    }
   }
 }
