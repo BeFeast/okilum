@@ -1,5 +1,9 @@
 # Linux Sync controller (#587)
 
+> Historical service/hub implementation notes. The desktop service/passkey flow
+> is superseded by [direct computer pairing](sync-pairing.md) (#2049). For the
+> shipped Linux setup and current limits, see [Sync between your computers](sync-enrollment.md).
+
 The first part of this slice supplies an unconnected service-lifecycle library,
 `okilum-sync-controller`. Reader startup, Settings and package installation do
 not call it. Discovery/reuse, daemon preparation, pairing, folder enrollment,

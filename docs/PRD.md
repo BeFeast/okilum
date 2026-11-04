@@ -27,7 +27,41 @@ provider jobs, canonical enrollment or deployment.
 
 **Sync network policy (2026-11-02, #2047):** [Computer network settings](sync-enrollment.md#computer-network-settings-2047) defaults managed Linux transport to public discovery and encrypted relays, with a per-computer LAN/VPN-only switch and one-time durable migration. External Syncthing network options remain unchanged; first pairing stays within the LAN.
 
-**Sync extension (2026-10-06, #574):** [explicit Sync enrollment](sync-enrollment.md) defines the approved opt-in background/reuse contract. Slice 1 tests compatibility only; it does not enable Sync in the reader.
+**Direct Sync (#2039/#2040, decisions 2026-10-30 and 2026-11-01):**
+[Sync between your computers](sync-enrollment.md) describes the shipped Linux
+flow and unfinished work. On the existing computer, **Share with another
+computer…** → **Share with my computers** shares an ordinary vault; **Add
+computer** produces a private, one-computer pairing URL valid for ten minutes.
+On the new computer, **Get notes from another computer** → paste URL → **Connect**;
+confirm on the old computer, then choose a vault and an empty local folder on the
+new one. First pairing requires the same LAN. The bundled Linux runtime prepares
+automatically when no existing runtime needs selection, receives the vault and
+starts bidirectional Sync. Saved edits and deletions propagate. No account,
+Okilum service or required hub participates; the former service/passkey desktop
+flow is superseded ([#2049](https://git.oklabs.uk/BeFeast/okilum/issues/2049)).
+
+Managed peers keep explicit authenticated Syncthing TCP/QUIC addresses alongside
+`dynamic`. Public discovery/relays are on by default; **Only local network and
+VPN** changes the selected managed connection on this computer (#2047), preserving
+explicit addresses. External Syncthing reuse requires identity/path inspection
+and explicit consent; its lifecycle and network settings remain external.
+Two computers need no server. An optional always-on Linux Okilum computer can
+receive through the same flow and hold another trusted copy; plain Syncthing
+peers require explicit Syncthing configuration. Headless/introducer setup (#2048)
+and a shared all-device list with propagated removal (#2042) remain unfinished.
+Copied data cannot be recalled, and untrusted-server encryption remains open.
+
+A non-empty new destination is refused pending lossless preview/merge (#2043);
+unmerged PRs #2511/#2513 do not enable it. Incoming changes update open reading
+and clean editing views. With unsaved edits, a notice preserves local text;
+explicit Save or **Keep both versions** saves a separate
+`.okilum-conflict-<time>-<random>` copy without replacing the incoming file
+(#2486). The full Sync conflict journey (#2044), shared ignore policy (#2046),
+and 30-day history on every device with Note history restore (#2045) remain
+follow-ups. New managed folders already use Syncthing staggered 30-day versioning;
+that is not a backup of every local edit. macOS is **coming** in
+[#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is **coming** in
+[#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
 
 **Typed note views extension (2026-10-07, #636):** [typed views and Tasks editing](typed-note-views.md) defines native views over plain Markdown, explicit revision-checked task edits and Undo. The reader/MCP protocol remains read-only.
 
@@ -366,7 +400,9 @@ measurable.
 
 ## 10. Still open
 
-- Sync authority, conflict semantics, encryption, and backup/history model.
+- Remaining direct Sync work: non-empty first merge, shared device/ignore lists,
+  propagated removal, complete conflict/history UI, untrusted-server encryption
+  and macOS/Windows delivery (see [the Sync status](sync-enrollment.md)).
 - The maximum corpus, document, and media scale, and the performance bounds that go
   with them.
 - Which Obsidian dialect features define the first acceptance corpus.

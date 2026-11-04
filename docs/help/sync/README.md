@@ -1,6 +1,7 @@
 # Bundled Sync Help
 
-`setup.md` is the in-app written guide. `index.html` and its relative assets are
+`setup.md` is the in-app written guide for the current Linux direct setup,
+including fresh installations and explicit existing Syncthing reuse. `index.html` and its relative assets are
 an offline video companion, adapted from the user-supplied v6 source bundle.
 Media bytes are unchanged; `provenance.json` records their SHA-256 values.
 The original v1/v5 evidence is preserved outside this repository.
