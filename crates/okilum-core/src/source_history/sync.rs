@@ -138,6 +138,21 @@ fn visit(
         if note.is_some_and(|n| n != original) {
             continue;
         }
+        // Recover notes has no current-note selector. Live notes must not use
+        // its version or byte budget and hide unrelated deletions.
+        if note.is_none() {
+            match std::fs::symlink_metadata(root.join(&original)) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(_) => continue,
+                Err(error) => {
+                    listing.warnings.push(format!(
+                        "Cannot inspect original note {}: {error}",
+                        original.display()
+                    ));
+                    continue;
+                }
+            }
+        }
         let read = (|| -> Result<Vec<u8>> {
             let fd = openat(
                 directory,
@@ -235,7 +250,7 @@ mod tests {
         assert!(restore_deleted(&root, Path::new("nested/note.md"), state.path(), raw).is_err());
         assert_eq!(fs::read(&v.note)?, b"new local edit");
         assert!(list(&root, Some(Path::new("../escape.md"))).is_err());
-        assert_eq!(list(&root, None)?.versions.len(), 1);
+        assert!(list(&root, None)?.versions.is_empty());
         let mut editor = crate::file_editor::FileEditor::open(&v.note, state.path())?;
         editor.set_text("unsaved local draft".into())?;
         drop(editor);
@@ -276,6 +291,42 @@ mod tests {
         let l = list(&root, None)?;
         assert_eq!(l.versions.len(), 100);
         assert!(!l.warnings.is_empty());
+        Ok(())
+    }
+    #[test]
+    fn issue2045_live_versions_do_not_hide_deleted_notes() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        fs::create_dir_all(root.join(".stversions/live"))?;
+        fs::create_dir(root.join("live"))?;
+        fs::write(root.join("live/note.md"), "current")?;
+        for n in 0..150 {
+            fs::write(
+                root.join(format!(
+                    ".stversions/live/note~20261102-12{:02}{:02}.md",
+                    n / 60,
+                    n % 60
+                )),
+                "old live version",
+            )?;
+        }
+        // A separate subtree ensures the live archives are encountered as a
+        // group, independently of filesystem directory ordering.
+        fs::create_dir(root.join(".stversions/deleted"))?;
+        fs::write(
+            root.join(".stversions/deleted/note~20261102-130000.md"),
+            "deleted bytes",
+        )?;
+        let listing = list(&root, None)?;
+        assert_eq!(listing.versions.len(), 1);
+        assert_eq!(listing.versions[0].note, root.join("deleted/note.md"));
+        assert_eq!(listing.versions[0].bytes(), b"deleted bytes");
+        assert!(listing.warnings.is_empty());
+        // Specific Note history still discovers live versions and caps them.
+        assert_eq!(
+            list(&root, Some(Path::new("live/note.md")))?.versions.len(),
+            100
+        );
         Ok(())
     }
     #[test]

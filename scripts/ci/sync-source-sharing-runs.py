@@ -15,6 +15,7 @@ lifecycle = runpy.run_path(str(Path(__file__).with_name("sync-fixture-lifecycle.
 check = lifecycle["check"]
 
 TESTS = {
+    "managed_history_2045_broken_folder_warns_while_other_vault_receives",
     "managed_history_2045_restore_retention_and_migration",
     "managed_source_share_empty_receive_and_bidirectional_hashes",
     "managed_source_skipped_share_negative_control",

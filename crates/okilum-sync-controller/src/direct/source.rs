@@ -354,15 +354,13 @@ impl Controller {
         self.apply_source_history(&mut source)?;
         Ok(true)
     }
-    pub(super) fn reconcile_source_history(&self) -> Result<()> {
+    pub(super) fn reconcile_source_history(&self, warnings: &mut Vec<history::HistoryWarning>) {
         let sources = self.shared.db.lock().unwrap().sources.clone();
         for mut source in sources.into_iter().filter(|s| s.active) {
-            match self.apply_source_history(&mut source) {
-                Err(error) if transfer::offline(&error) => {}
-                result => result?,
+            if let Err(error) = self.apply_source_history(&mut source) {
+                warnings.push(history::HistoryWarning { path: source.path.clone(), message: format!("Previous Sync versions could not be updated: {error:#}. Check this folder and its Sync connection.") });
             }
         }
-        Ok(())
     }
 }
 pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {

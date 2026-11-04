@@ -35,6 +35,11 @@ pub struct RetentionSetting {
     pub path: PathBuf,
     pub days: RetentionDays,
 }
+#[derive(Clone, Debug)]
+pub struct HistoryWarning {
+    pub path: PathBuf,
+    pub message: String,
+}
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Policy {
@@ -154,10 +159,14 @@ impl Controller {
         daemon.connect()
     }
     pub(super) fn reconcile_history(&self) -> Result<()> {
+        self.check()?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
+        let mut warnings = Vec::new();
         #[cfg(target_os = "linux")]
-        self.reconcile_source_history()?;
-        self.reconcile_transfer_history()
+        self.reconcile_source_history(&mut warnings);
+        self.reconcile_transfer_history(&mut warnings);
+        *self.shared.history_warnings.lock().unwrap() = warnings;
+        Ok(())
     }
 }
 

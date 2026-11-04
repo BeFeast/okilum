@@ -720,7 +720,16 @@ impl Controller {
         self.check()?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
         let transfers = self.shared.db.lock().unwrap().transfers.clone();
+        let history_warnings = self.shared.history_warnings.lock().unwrap().clone();
         for mut transfer in transfers {
+            // A failed history ownership check must not be retried through a
+            // different mutation path, or stop healthy folders progressing.
+            if history_warnings
+                .iter()
+                .any(|warning| warning.path == transfer.path)
+            {
+                continue;
+            }
             if transfer.legacy_hold() || !transfer.active || transfer.phase == Phase::Preparing {
                 continue;
             }
@@ -1161,18 +1170,16 @@ impl Controller {
         self.apply_transfer_history(&mut transfer)?;
         Ok(true)
     }
-    pub(super) fn reconcile_transfer_history(&self) -> Result<()> {
+    pub(super) fn reconcile_transfer_history(&self, warnings: &mut Vec<history::HistoryWarning>) {
         let transfers = self.shared.db.lock().unwrap().transfers.clone();
         for mut transfer in transfers
             .into_iter()
             .filter(|t| t.active && !t.legacy_hold() && t.phase != Phase::Preparing)
         {
-            match self.apply_transfer_history(&mut transfer) {
-                Err(error) if offline(&error) => {}
-                result => result?,
+            if let Err(error) = self.apply_transfer_history(&mut transfer) {
+                warnings.push(history::HistoryWarning { path: transfer.path.clone(), message: format!("Previous Sync versions could not be updated: {error:#}. Check this folder and its Sync connection.") });
             }
         }
-        Ok(())
     }
 }
 pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {
