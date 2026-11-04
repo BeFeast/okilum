@@ -275,6 +275,7 @@ fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
 /// `_index.md` with the name as its H1 when the folder has none. A folder
 /// that already is a project is refused and nothing is written.
 pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
+    let _admission = okilum_write_authority::operation(vault)?;
     if let Some(problem) = draft.problem() {
         bail!(problem);
     }
@@ -380,6 +381,7 @@ pub fn t3_block(link: &T3Link) -> String {
 /// Add the `t3:` block to `folder`'s manifest, every other byte kept.
 /// Refused when the manifest has a `t3:` block already.
 pub fn link_t3(folder: &Path, link: &T3Link) -> Result<Project> {
+    let _admission = okilum_write_authority::operation(folder)?;
     let document =
         crate::area_files::read(folder, "project")?.context("Area has no project manifest")?;
     ensure!(

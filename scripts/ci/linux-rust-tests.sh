@@ -9,6 +9,7 @@ suite() {
     printf '\nLinux suite: %s\n' "$*"
     "$@" || failed=1
 }
+suite bash scripts/ci/local-writer-admission.sh
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
 suite node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
 suite cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture

@@ -55,6 +55,7 @@ fn publish_created(
     source: &[u8],
     parts: &[Component<'_>],
 ) -> Result<()> {
+    let _admission = okilum_write_authority::operation(root)?;
     #[cfg(windows)]
     {
         // Validate the original root before canonicalization can follow links.
@@ -233,6 +234,7 @@ pub fn typed_path(parent: &Path, name: &str, directory: bool) -> Result<std::pat
 /// Create intermediate real directories via descriptors. Existing final folders
 /// are an error for New Folder; intermediate existing folders are allowed.
 pub fn create_folders(root: &Path, relative: &Path, exclusive_last: bool) -> Result<()> {
+    let _admission = okilum_write_authority::operation(root)?;
     if relative
         .components()
         .any(|p| !matches!(p, Component::Normal(_)))
@@ -299,6 +301,7 @@ pub fn create_from_template(
     catalog: &crate::note_templates::Catalog,
     selected: Option<&str>,
 ) -> Result<String> {
+    let _admission = okilum_write_authority::operation(root)?;
     relative.to_str().context("Use a UTF-8 filename")?;
     let name = crate::vault::note_path(relative);
     let checked = typed_path(Path::new(""), &name, false)?;

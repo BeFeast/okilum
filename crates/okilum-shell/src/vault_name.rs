@@ -49,6 +49,7 @@ pub(crate) fn read(root: &Path) -> Option<String> {
 /// removes the name. Written to a temporary file in the same folder and
 /// renamed, so another machine never syncs half a file.
 fn write(root: &Path, name: Option<&str>) -> anyhow::Result<()> {
+    let _admission = okilum_write_authority::operation(root)?;
     let directory = root.join(DIRECTORY);
     std::fs::create_dir_all(&directory)?;
     let mut value = std::fs::read(file(root))

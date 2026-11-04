@@ -89,6 +89,7 @@ impl FileEditor {
             history: Mutex::default(),
         });
         let mut editor = Self {
+            authority: okilum_write_authority::Authority::for_path(&path)?,
             draft: Draft {
                 path: path.clone(),
                 base: String::from_utf8_lossy(&current).into_owned().into(),
@@ -104,6 +105,27 @@ impl FileEditor {
             base_generation: 0,
             raw_transaction: Some(transaction),
         };
+        editor.persist()?;
+        let lease = match editor.authority.admit() {
+            Ok(lease) => lease,
+            Err(error) => {
+                use base64::{engine::general_purpose::STANDARD, Engine};
+                let record = state
+                    .join("deferred-byte-publications")
+                    .join(format!("{}.json", uuid::Uuid::new_v4()));
+                crate::source_state::persist(
+                    &record,
+                    &serde_json::to_vec(&serde_json::json!({
+                        "path": path, "reviewed_base64": STANDARD.encode(reviewed), "proposed_base64": STANDARD.encode(proposed)
+                    }))?,
+                )?;
+                return Err(error.context(format!(
+                    "Exact byte proposal retained at {}",
+                    record.display()
+                )));
+            }
+        };
+        let _admission = lease.enter()?;
         let result = editor.save_before_exchange(before_exchange);
         let retain_recovery = result.as_ref().err().is_some_and(|error| {
             error.is::<UnconfirmedSave>() || error.is::<PublishedSaveNeedsAttention>()
@@ -1070,6 +1092,7 @@ impl InterruptedSave {
     /// The proposal is never adopted. Reinspect before cleaning recovery.
     pub fn restore_missing_source(&self) -> Result<()> {
         let r = &self.inner;
+        let _admission = okilum_write_authority::operation_for_path(&r.intent.note)?;
         anyhow::ensure!(r.current.is_none(), "Source was present at inspection");
         r.directory.validate(r.intent.note.parent().unwrap())?;
         anyhow::ensure!(

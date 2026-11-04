@@ -196,3 +196,23 @@ fn canonical_save_stale_load_and_noop_conflict_do_not_silently_accept_external_b
         "malformed external content"
     );
 }
+
+#[test]
+fn local_writer_review_virtual_log_refusal_allows_retry_and_reopen() {
+    let f = Fixture::new();
+    let (mut session, mut definition) = f.open();
+    definition.name = "Held criteria".into();
+    let a = okilum_write_authority::Authority::for_root(&f.vault).unwrap();
+    let hold = a.begin_drain("virtual-log-refusal").unwrap();
+    assert!(session.save(&f.vault, &definition).is_err());
+    assert!(!session.review_required);
+    assert!(!session.editor.dirty());
+    assert_eq!(fs::read_to_string(&f.path).unwrap(), ORIGINAL);
+    let token = hold.token().clone();
+    hold.release(&token).unwrap();
+    assert_eq!(session.save(&f.vault, &definition).unwrap(), Outcome::Saved);
+    drop(session);
+    let (mut session, mut definition) = f.open();
+    definition.name = "Retry after reopening".into();
+    assert_eq!(session.save(&f.vault, &definition).unwrap(), Outcome::Saved);
+}

@@ -346,15 +346,11 @@ pub(crate) fn save_all(cx: &mut App) -> bool {
 
 /// Explicit Quit keeps the conflict decision, but an access failure must not
 /// trap the user when the latest recovery draft is already durable.
-#[cfg(any(test, not(feature = "brain")))]
 pub(crate) fn save_all_for_quit(cx: &mut App) -> bool {
     let editors = cx.default_global::<Editors>().0.clone();
     editors.into_iter().fold(true, |allowed, (editor, _)| {
         let result = editor
-            .update(cx, |reader, cx| {
-                let (saved, protected) = reader.save_source_outcome(cx);
-                saved || (protected && reader.editing.as_ref().is_some_and(|e| e.save_failed))
-            })
+            .update(cx, |reader, cx| reader.save_source_for_close(cx))
             .unwrap_or(true);
         allowed && result
     })
@@ -386,7 +382,7 @@ pub(crate) fn save_window(window: AnyWindowHandle, cx: &mut App) -> bool {
         .filter(|(_, owner)| *owner == window)
         .all(|(editor, _)| {
             editor
-                .update(cx, |reader, cx| reader.save_source(cx))
+                .update(cx, |reader, cx| reader.save_source_for_close(cx))
                 .unwrap_or(true)
         })
 }
@@ -1681,6 +1677,11 @@ impl Reader {
         true
     }
 
+    pub(super) fn save_source_for_close(&mut self, cx: &mut Context<Self>) -> bool {
+        let (saved, protected) = self.save_source_outcome(cx);
+        saved || (protected && self.editing.as_ref().is_some_and(|e| e.save_failed))
+    }
+
     pub(super) fn save_source(&mut self, cx: &mut Context<Self>) -> bool {
         self.save_source_outcome(cx).0
     }
@@ -1735,7 +1736,12 @@ impl Reader {
         let text =
             DraftText::from_identified_rope(snapshot.text.rope().clone(), snapshot.text.id());
         editing.draft_stamp = snapshot.stamp;
-        editing.store.queue_snapshot(text);
+        // Lifecycle capture is a bulk equality check, not a new input edit.
+        // Retain a clean native revision as clean instead of manufacturing
+        // pending input that would require canonical admission during a hold.
+        if !editing.store.snapshot().same(&text) {
+            editing.store.queue_reset_snapshot(text);
+        }
         let source_changed = editing.store.dirty();
         let draft = editing.store.flush_draft();
         let protected = draft.is_ok();
@@ -4158,6 +4164,201 @@ mod tests {
             std::fs::read_to_string(root.join("note.md")).unwrap(),
             "latest draft"
         );
+    }
+
+    #[gpui::test]
+    fn local_writer_review_clean_navigation_and_protected_close_during_hold(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let state = temp.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "original").unwrap();
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+            reader_recovery::install(&state, None, cx);
+        });
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        index_dir: Some(temp.path().join("index")),
+                        session_directory: Some(state.clone()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx);
+            assert!(reader.editing.is_some());
+        });
+        let authority = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let hold = authority.begin_drain("reader-clean-close").unwrap();
+        reader.update_in(visual, |reader, window, cx| {
+            assert!(reader.save_source_for_navigation(cx));
+            assert!(reader.save_source_for_close(cx));
+            assert!(reader.leave_source(cx));
+            assert!(reader.editing.is_none());
+            reader.toggle_source(window, cx);
+            assert!(reader.editing.is_some());
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .set_value("held draft", window, cx);
+            assert!(!reader.save_source(cx));
+            assert!(reader.save_source_for_close(cx));
+        });
+        visual.update(|_, cx| assert!(save_all_for_quit(cx)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "original"
+        );
+        assert!(
+            FileEditor::has_unsaved_draft(&root.join("note.md"), &state.join("editor-drafts"))
+                .unwrap()
+        );
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        reader.update_in(visual, |reader, _, cx| assert!(reader.save_source(cx)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "held draft"
+        );
+        cx.update(|cx| cx.shutdown());
+    }
+
+    #[gpui::test]
+    fn local_writer_admission_two_reader_windows_retain_drafts_and_unrelated_vault_saves(
+        cx: &mut TestAppContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let other = temp.path().join("other");
+        let state = temp.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        for (vault, name) in [
+            (&root, "first.md"),
+            (&root, "second.md"),
+            (&other, "other.md"),
+        ] {
+            std::fs::write(vault.join(name), "original").unwrap();
+        }
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+            reader_recovery::install(&state, None, cx);
+        });
+        let mut readers = vec![];
+        for (index, (vault, name)) in [
+            (&root, "first.md"),
+            (&root, "second.md"),
+            (&other, "other.md"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut reader = None;
+            let (_, visual) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    Reader::new(
+                        Opts {
+                            vault: Some(vault.clone()),
+                            note: Some(name.into()),
+                            index_dir: Some(temp.path().join(format!("index-{index}"))),
+                            session_directory: Some(state.clone()),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let reader = reader.unwrap();
+            visual.run_until_parked();
+            reader.update_in(visual, |reader, window, cx| {
+                reader.toggle_source(window, cx);
+                assert!(
+                    reader.editing.is_some(),
+                    "real Source editor positive control"
+                );
+                reader
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .set_value("window draft", window, cx);
+            });
+            readers.push(reader);
+        }
+        let authority = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let mut hold = authority.begin_drain("reader-windows").unwrap();
+        let token = hold.token().clone();
+        assert!(hold.try_hold(&token).unwrap());
+        cx.update(|cx| assert!(!save_all(cx)));
+        for name in ["first.md", "second.md"] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(name)).unwrap(),
+                "original"
+            );
+            assert!(
+                FileEditor::has_unsaved_draft(&root.join(name), &state.join("editor-drafts"))
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(other.join("other.md")).unwrap(),
+            "window draft"
+        );
+        for reader in &readers[..2] {
+            reader.read_with(cx, |reader, cx| {
+                assert!(reader.source_is_dirty(cx));
+                assert_eq!(
+                    reader
+                        .editing
+                        .as_ref()
+                        .unwrap()
+                        .input
+                        .read(cx)
+                        .value()
+                        .as_ref(),
+                    "window draft"
+                );
+            });
+        }
+        drop(hold); // Losing the caller must not reopen publication.
+        let observed = authority.snapshot().unwrap();
+        assert_eq!(
+            observed.phase,
+            okilum_write_authority::Phase::RecoveryPending
+        );
+        cx.update(|cx| assert!(!save_all(cx)));
+        let hold = authority.recover(&observed).unwrap();
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        cx.update(|cx| assert!(save_all(cx)));
+        for name in ["first.md", "second.md"] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(name)).unwrap(),
+                "window draft"
+            );
+        }
+        cx.update(|cx| cx.shutdown());
+        drop(readers);
     }
 
     #[gpui::test]

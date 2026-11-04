@@ -524,6 +524,7 @@ impl Session {
         Self::load(&self.area)
     }
     pub fn save(&self, change: &Change) -> Result<Self> {
+        let _admission = okilum_write_authority::operation(&self.area)?;
         let source = self.preview(change)?;
         self.check_project()?;
         if let Some(document) = &self.document {

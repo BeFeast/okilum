@@ -837,6 +837,7 @@ impl Panel {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    let _admission = okilum_write_authority::operation_for_path(&path)?;
                     let mut temp = tempfile::NamedTempFile::new_in(
                         path.parent().context("Export folder missing")?,
                     )?;

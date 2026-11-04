@@ -91,6 +91,8 @@ jobs:
       - name: Reject and reap surviving agent fixture daemons
         if: always()
         run: python3 scripts/ci/sync-fixture-processes.py --root "$RUNNER_TEMP" --cleanup
+      - name: Verify local writer authority and fencing
+        run: cargo test --offline --locked -p okilum-write-authority local_writer_admission -- --nocapture
       - name: Build Linux desktop offline
         id: build
         env:

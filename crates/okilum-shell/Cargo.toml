@@ -23,6 +23,7 @@ updater-ui-harness = []
 project-ui-harness = []
 
 [dependencies]
+okilum-write-authority = { path = "../okilum-write-authority" }
 tokio = { version = "1", features = ["rt", "net", "time", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"

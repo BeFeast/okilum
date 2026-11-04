@@ -849,6 +849,9 @@ pub fn checked_identity(path: &Path) -> Result<(u64, u64)> {
 /// Undo only an untouched creation, through the checked DELETE handle itself.
 /// No path-based unlink can delete a racing replacement. A nonempty folder is refused.
 pub fn undo_created(path: &Path, expected: (u64, u64), source: Option<&[u8]>) -> Result<()> {
+    // Fence the primitive itself: both creation Undo and startup history cleanup
+    // reach this native unlink. Nested save cleanup inherits its writer lease.
+    let _admission = okilum_write_authority::operation_for_path(path)?;
     let parent = Directory::open(path.parent().context("Missing parent")?)?;
     let child = parent.child(path.file_name().context("Missing filename")?)?;
     let directory = source.is_none();
