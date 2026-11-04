@@ -38,6 +38,10 @@ pub struct DaemonIdentity {
     pub certificate_hash: String,
 }
 impl DaemonIdentity {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn rest_address(&self) -> Result<SocketAddr> {
+        Ok(self.checked_config()?.address)
+    }
     /// Re-read the credential locally and authenticate the same instance.
     pub fn connect(&self) -> Result<Syncthing> {
         let config = self.checked_config()?;

@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::Read,
+    net::{IpAddr, SocketAddr},
     os::unix::{
         fs::{MetadataExt, OpenOptionsExt},
         process::CommandExt,
@@ -375,7 +376,56 @@ pub struct Generation {
     pub start_time: String,
     pub binding: Uuid,
     pub executable_hash: String,
+    pub rest_address: SocketAddr,
+    pub rest_start_time: Option<String>,
 }
+/// Bind authenticated REST to the exact kernel process, not merely to another
+/// process with the same certificate/home. /proc/net alone is insufficient:
+/// require that this child actually owns the listening socket inode.
+fn owns_rest(pid: u32, address: SocketAddr) -> Result<()> {
+    let sockets = fs::read_dir(format!("/proc/{pid}/fd"))?
+        .map(|entry| -> Result<Option<String>> {
+            let path = match fs::read_link(entry?.path()) {
+                Ok(path) => path,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(e.into()),
+            };
+            Ok(path
+                .to_str()
+                .and_then(|s| s.strip_prefix("socket:["))
+                .and_then(|s| s.strip_suffix(']'))
+                .map(str::to_owned))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<BTreeSet<_>>();
+    let listener = rest_listener(pid, address)?;
+    ensure!(
+        listener.is_some_and(|inode| sockets.contains(&inode)),
+        "REST listener is not owned by the admitted runtime generation"
+    );
+    Ok(())
+}
+fn rest_listener(pid: u32, address: SocketAddr) -> Result<Option<String>> {
+    let (table, ip) = match address.ip() {
+        IpAddr::V4(ip) => ("tcp", format!("{:08X}", u32::from_le_bytes(ip.octets()))),
+        IpAddr::V6(ip) => (
+            "tcp6",
+            ip.octets()
+                .chunks_exact(4)
+                .map(|b| format!("{:08X}", u32::from_le_bytes(b.try_into().unwrap())))
+                .collect::<String>(),
+        ),
+    };
+    let local = format!("{ip}:{:04X}", address.port());
+    let table = fs::read_to_string(format!("/proc/{pid}/net/{table}"))?;
+    Ok(table.lines().skip(1).find_map(|line| {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        (fields.len() > 9 && fields[1] == local && fields[3] == "0A").then(|| fields[9].to_owned())
+    }))
+}
+
 fn process_start(pid: u32) -> Result<String> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
     Ok(stat
@@ -404,6 +454,11 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
         daemon.config_file == b.home.join("config.xml")
             && daemon.certificate_hash == b.certificate_hash,
         "managed preparation binding changed"
+    );
+    let rest_address = daemon.rest_address()?;
+    ensure!(
+        rest_listener(std::process::id(), rest_address)?.is_none(),
+        "an external or previous runtime still owns the managed REST endpoint"
     );
     let mut xml = Element::parse(private::read(&b.home.join("config.xml"))?.as_slice())?;
     let mut leases: Vec<WriterLease> = Vec::new();
@@ -481,12 +536,14 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
                     == fs::metadata(&b.executable)?.dev(),
             "spawned runtime package changed"
         );
-        let generation = Generation {
+        let mut generation = Generation {
             id: Uuid::new_v4(),
             pid: child.id(),
             start_time: process_start(child.id())?,
             binding: b.id,
             executable_hash: b.executable_hash.clone(),
+            rest_address,
+            rest_start_time: None,
         };
         private::write(
             &r.directory.join("generation.json"),
@@ -500,6 +557,14 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
             );
             match daemon.connect() {
                 Ok(api) => {
+                    owns_rest(child.id(), rest_address)?;
+                    generation.rest_start_time = Some(
+                        api.identity()?["startTime"]
+                            .as_str()
+                            .filter(|s| !s.is_empty())
+                            .context("runtime REST generation missing")?
+                            .to_owned(),
+                    );
                     for id in &closed {
                         ensure!(
                             api.folder(id)?["paused"] == true,
@@ -516,6 +581,10 @@ pub(crate) fn run(r: &Reference, instance: &ManagedInstance) -> Result<()> {
             }
         }
         r.validate(instance)?;
+        private::write(
+            &r.directory.join("generation.json"),
+            &serde_json::to_vec(&generation)?,
+        )?;
         Ok(())
     })();
     if let Err(e) = startup {
@@ -571,6 +640,19 @@ pub fn live_generation(home: &Path) -> Result<Generation> {
             && running.ino() == expected.ino()
             && digest(&b.executable)? == b.executable_hash,
         "managed process executable replaced"
+    );
+    owns_rest(generation.pid, generation.rest_address)?;
+    let daemon =
+        crate::daemon::managed_transport_identity(home.parent().context("preparation missing")?)?;
+    let started = generation
+        .rest_start_time
+        .as_ref()
+        .context("managed generation is not ready")?;
+    ensure!(
+        daemon.rest_address()? == generation.rest_address
+            && daemon.connect()?.identity()?["startTime"].as_str() == Some(started.as_str())
+            && process_start(generation.pid)? == generation.start_time,
+        "managed REST generation changed"
     );
     Ok(generation)
 }
