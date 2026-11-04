@@ -127,15 +127,17 @@ fn kanban_2534_queue_eight_rows_more_opens_expanded_list_and_saves(cx: &mut Test
         visual.debug_bounds("board-lane-Queue").unwrap().size.width,
         px(240.)
     );
-    for index in 0..8 {
-        assert_eq!(
-            visual
-                .debug_bounds(&format!("board-queue-row-{index}"))
-                .unwrap()
-                .size
-                .height,
-            px(30.)
-        );
+    for selector in [
+        "board-queue-row-0",
+        "board-queue-row-1",
+        "board-queue-row-2",
+        "board-queue-row-3",
+        "board-queue-row-4",
+        "board-queue-row-5",
+        "board-queue-row-6",
+        "board-queue-row-7",
+    ] {
+        assert_eq!(visual.debug_bounds(selector).unwrap().size.height, px(30.));
     }
     assert!(visual.debug_bounds("board-queue-row-8").is_none());
     assert!(visual.debug_bounds("board-card-17").is_none());
