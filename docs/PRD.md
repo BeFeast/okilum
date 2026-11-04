@@ -56,7 +56,8 @@ unmerged PRs #2511/#2513 do not enable it. Incoming changes update open reading
 and clean editing views. With unsaved edits, a notice preserves local text;
 explicit Save or **Keep both versions** saves a separate
 `.okilum-conflict-<time>-<random>` copy without replacing the incoming file
-(#2486). The full Sync conflict journey (#2044), shared ignore policy (#2046),
+(#2486). Linux [in-note conflict review and recoverable decisions](sync-conflicts.md)
+(#2044) handle both copy kinds. Shared ignore policy (#2046)
 and 30-day history on every device with Note history restore (#2045) remain
 follow-ups. New managed folders already use Syncthing staggered 30-day versioning;
 that is not a backup of every local edit. macOS is **coming** in
@@ -401,7 +402,7 @@ measurable.
 ## 10. Still open
 
 - Remaining direct Sync work: non-empty first merge, shared device/ignore lists,
-  propagated removal, complete conflict/history UI, untrusted-server encryption
+  propagated removal, complete cross-platform history UI, untrusted-server encryption
   and macOS/Windows delivery (see [the Sync status](sync-enrollment.md)).
 - The maximum corpus, document, and media scale, and the performance bounds that go
   with them.

@@ -89,7 +89,10 @@ const CONFLICT_NOTICE: &str = "This file changed outside Okilum.";
 fn conflict_copy_rel(current_rel: &str) -> String {
     let path = Path::new(current_rel);
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let extension = path.extension().unwrap_or_default().to_string_lossy();
+    let extension = path
+        .extension()
+        .map(|value| format!(".{}", value.to_string_lossy()))
+        .unwrap_or_default();
     let id = uuid::Uuid::new_v4();
     // This random discriminator is not a claim about a device identity.
     let suffix: String = id
@@ -99,7 +102,7 @@ fn conflict_copy_rel(current_rel: &str) -> String {
         .map(|b| b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"[(b & 31) as usize] as char)
         .collect();
     let name = format!(
-        "{stem}.okilum-conflict-{}-{suffix}.{extension}",
+        "{stem}.okilum-conflict-{}-{suffix}{extension}",
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     );
     // Syncthing prunes *.sync-conflict-*. Even an original named by Syncthing
@@ -3544,6 +3547,30 @@ fn location_notice(_: &anyhow::Error) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn issue2044_editor_copy_names_round_trip_extensionless_and_hidden_notes() {
+        for note in [
+            "TODO",
+            ".hidden",
+            "nested/TODO",
+            "nested/.hidden",
+            "nested/note.md",
+        ] {
+            let copy = super::conflict_copy_rel(note);
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                okilum_sync_controller::conflicts::canonical_path(std::path::Path::new(&copy)),
+                Some(std::path::PathBuf::from(note))
+            );
+            if !note.ends_with(".md") {
+                assert!(
+                    !copy.ends_with('.'),
+                    "extensionless copies cannot gain a trailing dot"
+                );
+            }
+        }
+    }
+
     #[test]
     fn code_blocks_and_tables_keep_one_alignment() {
         let source = "שלום\n```\n# הערה\n```\n| שם | Name |\n|---|---|\nטקסט\n~~~~\nopen";

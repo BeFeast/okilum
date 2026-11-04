@@ -18,6 +18,48 @@ impl Render for SyncSettings {
             .gap_4()
             .overflow_y_scroll()
             .track_scroll(&self.scroll);
+        #[cfg(target_os = "linux")]
+        {
+            let mut roots: Vec<_> = self
+                .snapshot
+                .as_ref()
+                .map(|s| s.attached.iter().map(|v| v.path.clone()).collect())
+                .unwrap_or_default();
+            let readers = reader_open::readers(cx);
+            roots.extend(
+                readers
+                    .iter()
+                    .map(|r| r.read(cx).vault_root.clone())
+                    .filter(|r| !r.as_os_str().is_empty()),
+            );
+            roots.sort();
+            roots.dedup();
+            content = content.child(div().text_base().child("Conflicts"));
+            for root in roots {
+                if !self.conflicts.contains_key(&root) {
+                    let owner = readers.iter().find(|r| r.read(cx).vault_root == root);
+                    let state = owner
+                        .and_then(|r| r.read(cx).session_directory.clone())
+                        .map(Ok)
+                        .unwrap_or_else(|| reader_ui_state::state_directory(cx));
+                    if let Ok(state) = state {
+                        let owner = owner.map(Entity::downgrade);
+                        let view = cx.new(|cx| {
+                            crate::reader_sync_conflicts::InventoryView::new(
+                                root.clone(),
+                                state,
+                                owner,
+                                cx,
+                            )
+                        });
+                        self.conflicts.insert(root.clone(), view);
+                    }
+                }
+                if let Some(view) = self.conflicts.get(&root) {
+                    content = content.child(view.clone());
+                }
+            }
+        }
         if let Some(error) = &self.error {
             result = result.child(
                 div()

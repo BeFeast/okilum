@@ -144,6 +144,8 @@ mod reader_side_panel;
 mod reader_sidebar;
 mod reader_split;
 mod reader_stignore;
+#[cfg(target_os = "linux")]
+mod reader_sync_conflicts;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod reader_sync_merge;
 mod reader_t3_settings;
@@ -1670,6 +1672,8 @@ struct Reader {
     project_views: std::collections::BTreeMap<(PathBuf, String), Entity<project::ProjectView>>,
     file_menu: Option<(Entity<gpui_component::menu::PopupMenu>, Point<Pixels>)>,
     editing: Option<reader_editor::Editing>,
+    #[cfg(target_os = "linux")]
+    sync_note_conflicts: Option<(PathBuf, String, Vec<PathBuf>, bool)>,
     /// Undo history and selection of the editor last left for the Reader, by
     /// file: Edit resumes it when the file's text is unchanged (#1095).
     retained_edit: Option<(String, gpui_component::input::EditHistory)>,
@@ -2094,6 +2098,8 @@ impl Reader {
             zoom_hud: Default::default(),
             content,
             editing: None,
+            #[cfg(target_os = "linux")]
+            sync_note_conflicts: None,
             retained_edit: None,
             #[cfg(any(unix, windows))]
             creation: None,
@@ -8580,6 +8586,15 @@ fn main() {
         (None, None)
     };
     let _instance_lock = instance_lock;
+    // A forwarded launch never races the active Reader's apply operation. The
+    // primary repairs interrupted decisions before any path validation, cache
+    // load, indexing, or managed Sync initialization can observe missing notes.
+    #[cfg(target_os = "linux")]
+    let conflict_startup_messages = if _instance_lock.is_some() {
+        reader_sync_conflicts::recover_before_open(&opts)
+    } else {
+        Vec::new()
+    };
     #[cfg(target_os = "linux")]
     if _instance_lock.is_some() {
         app_footprint::install_appimage_desktop();
@@ -8600,6 +8615,10 @@ fn main() {
     });
     app.on_reopen(reader_startup::reopen);
     app.run(move |cx| {
+        #[cfg(target_os = "linux")]
+        cx.set_global(reader_sync_conflicts::StartupNotice(
+            conflict_startup_messages,
+        ));
         diagnostics.event("app_run_callback", serde_json::json!({}));
         reader_reminder_notify::install(cx);
         cx.set_global(reader_diagnostics::LaunchTrace(diagnostics.clone()));
