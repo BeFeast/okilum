@@ -59,6 +59,7 @@ fn activity_preview(text: &str) -> SharedString {
 
 pub(super) struct Feed {
     parent: WeakEntity<ProjectView>,
+    viewport_focus: FocusHandle,
     pub(super) actions: Option<Entity<super::native::actions::Actions>>,
     request_cards: HashMap<u64, Entity<super::native::actions::RequestCard>>,
     messages: BTreeMap<u64, Message>,
@@ -103,6 +104,7 @@ impl Feed {
         });
         Self {
             parent,
+            viewport_focus: cx.focus_handle(),
             actions: None,
             request_cards: HashMap::new(),
             messages: BTreeMap::new(),
@@ -806,7 +808,8 @@ impl Render for Feed {
             self.scroller.clone(),
             move |index, _, cx| {
                 let row = entity.update(cx, |feed, cx| feed.row(index, cx));
-                let row = viewport_paint::RowPaint::new(row).into_any_element();
+                let focus = entity.read(cx).viewport_focus.clone();
+                let row = viewport_paint::RowPaint::new(row, focus).into_any_element();
                 if index != 0 {
                     return row;
                 }
@@ -834,6 +837,7 @@ impl Render for Feed {
         .size_full()
         .min_h_0();
         let root = div()
+            .track_focus(&self.viewport_focus)
             .debug_selector(|| "project-history".into())
             .bg(brand::palette(cx).surface)
             .size_full()

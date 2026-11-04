@@ -38,3 +38,11 @@ Their labels/counts sit directly in the control, removing the styled Button's
 additional full-height flex wrapper during every splitter layout. Small-control
 size, Ghost/selected colors, focus rings, keyboard activation, accessibility
 labels and all filter/view callbacks are retained in both presentations.
+
+Manager overscan rows still measure at the current width, preserving natural
+height and scroll anchoring, but clipped mouse-driven rows no longer construct
+an invisible interaction tree during prepaint. The retained Feed focus scope
+keeps full prepaint whenever any history control holds focus; keyboard modality
+and active text selection also keep the full tree. Visible rows always prepaint.
+This avoids the remaining rich-Markdown overscan cost on splitter frames without
+reducing the measured workload or freezing text reflow.
