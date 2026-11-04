@@ -24,6 +24,7 @@ impl Board {
                     return;
                 }
                 this.project_notes.accept(update, now());
+                this.refresh_waiting();
                 this.notes_loading = false;
                 cx.notify();
             });
@@ -284,22 +285,24 @@ impl Board {
         }
         let items = self.project_notes.active(now(), binding.refresh_seconds);
         let next = self.project_notes.next(now(), binding.refresh_seconds);
-        let problem =
-            model::source_problem(&self.project_notes.config, now(), binding.refresh_seconds);
-        if items.is_empty() && next.is_none() && problem.is_none() {
+        if items.is_empty() && next.is_none() {
             return None;
         }
-        let colors = brand::palette(cx);
         let mut view = v_flex().w_full().min_w_0().gap_2();
-        if let Some(error) = problem {
+        if !items.is_empty() {
             view = view.child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(colors.warning)
-                    .child(format!("Project notes: {error}")),
+                Button::new("context-details")
+                    .debug_selector(|| "board-context-details".into())
+                    .ghost()
+                    .small()
+                    .label("Context details")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.notes_expanded = !this.notes_expanded;
+                        cx.notify();
+                    })),
             );
         }
-        if !items.is_empty() {
+        if !items.is_empty() && self.notes_expanded {
             view = view.child(
                 div()
                     .debug_selector(|| "board-note-attention".into())

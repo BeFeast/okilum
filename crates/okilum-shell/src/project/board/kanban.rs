@@ -71,11 +71,14 @@ impl Board {
             root = root.child(div().debug_selector(|| "board-local".into()).text_size(px(12.))
                 .child("Local Board · PR and CI links are inactive. Add Repository in Manage board → Board details when needed."));
         }
+        if let Some(waiting) = self.render_waiting(cx) {
+            root = root.child(waiting);
+        }
         if let Some(attention) = self.attention(binding, cx) {
             root = root.child(attention);
         }
-        if self.delivery.enabled() {
-            root = root.child(self.delivery_summary(binding, cx));
+        if let Some(delivery) = self.delivery_summary(binding, cx) {
+            root = root.child(delivery);
         }
         if let Some(notes) = self.render_project_notes(binding, cx) {
             root = root.child(notes);
@@ -369,12 +372,28 @@ impl Board {
                 .text_color(p.text_muted)
                 .truncate()
                 .child(
-                    problem_line(
-                        source_problem("Forgejo", &self.snapshot.forgejo, 30, now())
-                            .into_iter()
-                            .collect(),
-                    )
-                    .unwrap_or_default(),
+                    div()
+                        .when(self.waiting.problem.is_some(), |line| {
+                            line.debug_selector(|| "board-waiting-problem".into())
+                        })
+                        .child(
+                            self.waiting
+                                .problem
+                                .clone()
+                                .or_else(|| {
+                                    problem_line(
+                                        source_problem(
+                                            "Forgejo",
+                                            &self.snapshot.forgejo,
+                                            30,
+                                            now(),
+                                        )
+                                        .into_iter()
+                                        .collect(),
+                                    )
+                                })
+                                .unwrap_or_default(),
+                        ),
                 ),
         )
         .into_any_element()
@@ -413,7 +432,9 @@ impl Board {
                 self.compact_card(&prepared.binding.issues[i], stage, &prepared.binding, cx)
             }
             Row::Local(i) => self.compact_local_card(&self.local_cards.value.cards[i], cx),
-            Row::Problem(_) | Row::Group(_) => unreachable!("non-Queue issue lane"),
+            Row::Problem(_) | Row::Group(_) | Row::WaitingGroup | Row::Waiting(_) => {
+                unreachable!("non-Queue issue lane")
+            }
         }
     }
     fn queue_row(
@@ -466,7 +487,7 @@ impl Board {
                     ))
                     .into_any_element();
             }
-            Row::Group(_) => unreachable!(),
+            Row::Group(_) | Row::WaitingGroup | Row::Waiting(_) => unreachable!(),
         };
         let local_title = local.clone();
         let local_root = local.clone();

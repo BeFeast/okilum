@@ -17,6 +17,7 @@ mod local;
 mod manage;
 mod notes;
 mod row_bits;
+pub(super) mod waiting;
 
 type IssueReader =
     Arc<dyn Fn(&Binding) -> Result<Vec<okilum_t3::board::Issue>, String> + Send + Sync>;
@@ -56,6 +57,8 @@ pub(crate) struct Board {
     columns: columns::State,
     list: list::State,
     kanban: kanban::State,
+    waiting: okilum_t3::board::waiting::Projection,
+    waiting_page: usize,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -179,6 +182,8 @@ impl Board {
             columns: columns::State::default(),
             list,
             kanban: kanban::State::default(),
+            waiting: Default::default(),
+            waiting_page: 0,
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -246,6 +251,7 @@ impl Board {
                                 }
                                 this.filter_cache.invalidate();
                                 this.binding = binding;
+                                this.refresh_waiting();
                                 this.binding_read = Some(now());
                                 this.binding_error = None;
                                 if this.active {
@@ -363,6 +369,7 @@ impl Board {
                         this.list.invalidate();
                         this.snapshot.live_issues(&forgejo_ticket, result, now());
                         this.filter_cache.invalidate();
+                        this.refresh_waiting();
                         if this.snapshot.matches(&forgejo_ticket) {
                             this.refresh_delivery(forgejo_ticket.clone(), window, cx);
                         }
