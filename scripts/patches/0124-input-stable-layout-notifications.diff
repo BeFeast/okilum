@@ -63,7 +63,7 @@ diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/st
  
      use crate::input::{EditorMode, InputMode, TextareaMode};
  
-@@ -5077,6 +5081,259 @@
+@@ -5077,6 +5081,265 @@
                  f(crate::input::InputState::new(window, cx))
              })
          }
@@ -134,6 +134,7 @@ diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/st
 +        struct Panel {
 +            input: Entity<crate::input::EditorState>,
 +            observed: Rc<Cell<Option<(Bounds<Pixels>, Pixels)>>>,
++            _input: gpui::Subscription,
 +        }
 +        impl Render for Panel {
 +            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -161,9 +162,14 @@ diff --git a/crates/base/src/input/base/state.rs b/crates/base/src/input/base/st
 +                state
 +            });
 +            input = Some(state.clone());
-+            Root(cx.new(|_| Panel {
-+                input: state,
-+                observed: observed.clone(),
++            Root(cx.new(|cx| {
++                // Pinned GPUI needs an explicit subscription across this cache.
++                let subscription = cx.observe(&state, |_, _, cx| cx.notify());
++                Panel {
++                    input: state,
++                    observed: observed.clone(),
++                    _input: subscription,
++                }
 +            }))
 +        });
 +        cx.run_until_parked();

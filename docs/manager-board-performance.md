@@ -59,3 +59,9 @@ Scroll and splitter frames sum those mutable hints directly; they do not rebuild
 and probe a hash set/map for every canonical card. Both the filtered Kanban test
 and real 240-card splitter regression check zero membership preparations during
 resize, with nonempty initial/source/filter preparation controls.
+
+The backported caret-consumer regression subscribes explicitly to input
+notifications across its cached Panel on pinned GPUI 0.3.3. It still requires a
+nonempty initial painted caret, a real selection movement, and the render
+consumer observing the updated geometry. This fixture adaptation does not alter
+the upstream production notification guards or force the consumer to render.
