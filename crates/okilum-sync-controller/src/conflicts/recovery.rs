@@ -17,16 +17,35 @@ pub struct History {
     pub entries: Vec<HistoryEntry>,
     pub warnings: Vec<String>,
 }
-fn completed(record: &Path) -> PathBuf {
-    record.with_extension("complete")
-}
 pub(super) fn complete(record: &Path) -> Result<()> {
-    let marker = completed(record);
-    let mut file = File::options().write(true).create_new(true).open(marker)?;
-    file.write_all(b"complete\n")?;
+    marker(record, "complete", b"complete\n")
+}
+fn marker(record: &Path, extension: &str, contents: &[u8]) -> Result<()> {
+    let mut file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(record.with_extension(extension))?;
+    file.write_all(contents)?;
     file.sync_all()?;
     File::open(record.parent().context("Missing recovery directory")?)?.sync_all()?;
     Ok(())
+}
+fn has_marker(record: &Path, extension: &str, contents: &[u8]) -> Result<bool> {
+    let fd = match open(
+        record.with_extension(extension),
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::NOENT) => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let file = File::from(fd);
+    ensure!(file.metadata()?.is_file(), "Invalid recovery marker");
+    let mut bytes = Vec::new();
+    file.take(32).read_to_end(&mut bytes)?;
+    ensure!(bytes == contents, "Invalid recovery marker");
+    Ok(true)
 }
 
 /// All records remain adoptable by previous-version retention (#2045). An
@@ -60,14 +79,8 @@ pub fn history(directory: &Path, root: &Path) -> Result<History> {
             }
             let canonical = versions[0].path.clone();
             let created = value["created"].as_u64().unwrap_or(0);
-            let pending = match std::fs::read(completed(&record)) {
-                Ok(bytes) => {
-                    ensure!(bytes == b"complete\n", "Invalid completion marker");
-                    false
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-                Err(error) => return Err(error.into()),
-            };
+            let pending = !has_marker(&record, "complete", b"complete\n")?
+                && !has_marker(&record, "recovered", b"recovered\n")?;
             Ok(Some(HistoryEntry {
                 canonical,
                 created,
@@ -129,6 +142,11 @@ pub fn recover_interrupted(directory: &Path, root: &Path) -> Result<Vec<String>>
                 let mode = entry.modes[index];
                 publish(&fd, &version.path, &version.bytes, mode)?;
             }
+            ensure!(
+                identity(&parent(root, &entry.canonical)?)? == expected,
+                "Source directory changed during recovery; originals remain in History"
+            );
+            marker(&entry.record, "recovered", b"recovered\n")?;
             Ok(())
         })();
         messages.push(match result {
