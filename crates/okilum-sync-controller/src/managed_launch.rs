@@ -652,6 +652,10 @@ fn set_paused(folder: &mut Element) {
 pub fn live_generation(home: &Path) -> Result<Generation> {
     let r = existing(home)?;
     let b = r.load()?;
+    ensure!(
+        b.home == home,
+        "external home has no managed launch ownership"
+    );
     private::read(&r.directory.join("process.lock"))?;
     let lock = OpenOptions::new()
         .read(true)
