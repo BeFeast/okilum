@@ -216,8 +216,8 @@ ceilings. The invariant test fails against the pre-fix limits.
 The check job retains #2536's three 5 min Python step ceilings and adds a
 2 min certification step: 900 + 120 + 2100 + 30 + 90 = 3240 s <= 3300 s.
 Shell retains its original 35 min envelope and adds the same 2 min step:
-120 + 1980 + 30 + 90 = 2220 s = 37 min. The invariant conservatively includes
-certification even on PR runs, where that step is skipped.
+120 + 1980 + 30 + 90 = 2220 s = 37 min. The invariant conservatively includes certification even on ordinary main/nightly
+runs, where that step is skipped.
 
 Both exact-product validation steps use the same process-tree supervisor with a
 90 s limit and a 2 min step ceiling including cleanup. Baldr certification
@@ -233,12 +233,20 @@ checkout, then exercises successful, failing and hung discovery through the
 staged supervisor. Phase supervision inside the product scripts applies when
 those scripts contain it.
 
-The documented baldr host setting remains `runner.timeout: 20m` in
-`/var/lib/forgejo-runner-fast/config.yml`; raising it is pending Oleg's OK.
-The original 35/55 min job envelopes (now 37 min for shell certification) only
-become fully usable when the owner raises that host ceiling. Hung tests are
-still hard-killed by their phase/group deadline regardless. This host change
-does not block merging the repository fix. No baldr host setting is changed here.
+The owner reports baldr now allows a 60 min runner ceiling. All three job
+ceilings (55/37/30 min) fit it; this change does not modify any host settings.
+
+The newer owner-authorized #2581 supersedes #2580's fifteen-minute PR gate:
+Forgejo fast.yml has no PR trigger and main has no required status checks.
+Workers validate the exact committed HEAD with
+`H=github scripts/agent/gh-check.sh`, wait for green, then squash-merge through
+Forgejo. The larger additive envelopes here therefore apply only to main pushes,
+nightly runs, manual dispatches and source-pinned certification. No PR workloads
+are restored. Main concurrency keeps the active run and newest pending run;
+feedback-ci remains on main. Open #2576 owns moving Sync off fast-linux; whichever
+change lands second must carry these wrappers to the actual test execution and
+recheck additive hosted/bridge job budgets. The 120 s network-policy limit's
+observed timeout remains visible in #2578 pending the Sync owner's diagnosis.
 
 ### Resizing evidence, PR #2510
 

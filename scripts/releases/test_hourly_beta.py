@@ -476,7 +476,7 @@ class WorkflowContract(unittest.TestCase):
             self.assertEqual(job['runs-on'], 'fast-linux')
             self.assertNotIn("!= 'push'", job.get('if', ''))
         self.assertEqual(data['jobs']['shell-full']['needs'], ['check'])
-        # Certification and PR admission share the same bounded test entrypoints.
+        # Main, nightly and manual certification share bounded test entrypoints.
         for name, command in [
             ('check', 'fast-local-check 2100 bash scripts/ci/fast-local.sh'),
             ('shell-full', 'fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full'),
