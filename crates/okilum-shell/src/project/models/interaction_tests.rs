@@ -326,3 +326,63 @@ fn prompt_injected_reasoning_edits_the_visible_draft_and_never_becomes_a_wire_op
     );
     assert!(gateway.sends.lock().unwrap().is_empty());
 }
+
+#[gpui::test]
+fn escape_dismisses_the_picker_when_model_access_or_sending_becomes_unavailable(
+    cx: &mut TestAppContext,
+) {
+    let current = selection("work-account", "same-model", json!([]));
+    let (view, visual, _state, gateway) = fixture(cx, catalog("codex", json!([])), current.clone());
+    let draft = "Keep this **draft** while the connection changes.";
+    for blocked in ["sending", "offline", "inactive", "model-loading"] {
+        view.update_in(visual, |view, window, cx| {
+            view.active = true;
+            view.busy = false;
+            view.model_busy = false;
+            view.gateway = Some(gateway.clone());
+            view.compose
+                .update(cx, |input, cx| input.set_value(draft, window, cx));
+            let target = view.manager_model_target().unwrap();
+            view.open_models(target, window, cx);
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("project-model-panel").is_some(),
+            "positive control: mounted picker before {blocked}"
+        );
+        view.update(visual, |view, cx| {
+            match blocked {
+                "sending" => view.busy = true,
+                "offline" => view.gateway = None,
+                "inactive" => view.active = false,
+                "model-loading" => view.model_busy = true,
+                _ => unreachable!(),
+            }
+            cx.notify();
+        });
+        visual.run_until_parked();
+        key(visual, "escape");
+        view.update_in(visual, |view, window, cx| {
+            assert!(
+                !view.model_open,
+                "Escape must close the picker during {blocked}"
+            );
+            assert!(
+                view.model_ui.overlay.is_none(),
+                "deferred overlay lease must be released"
+            );
+            assert!(
+                view.compose.read(cx).focus_handle(cx).is_focused(window),
+                "Escape returns focus to the composer during {blocked}"
+            );
+            assert_eq!(view.compose.read(cx).value().as_str(), draft);
+            assert_eq!(
+                view.models.as_ref().unwrap().configuration.model_selection,
+                current
+            );
+            assert!(view.model_candidate.is_none());
+        });
+        assert!(gateway.sends.lock().unwrap().is_empty());
+        assert!(gateway.model_writes.lock().unwrap().is_empty());
+    }
+}

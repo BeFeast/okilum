@@ -2,6 +2,7 @@
 from pathlib import Path
 import re
 import unittest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ['linux-release.yml', 'windows-diagnostic.yml', 'macos-release.yml']
@@ -18,6 +19,16 @@ class ReleasePathsTests(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 self.assertEqual(re.findall(r'^  ([\w_]+):', triggers(workflow), re.M),
                                  ['schedule', 'workflow_dispatch'])
+
+    def test_heavy_forgejo_workflows_never_run_on_main_push(self):
+        for path in (ROOT / '.forgejo/workflows').glob('*.yml'):
+            if path.name in ('github-mirror.yml', 'release-publish.yml'):
+                continue
+            with self.subTest(workflow=path.name):
+                self.assertNotIn('push', yaml.load(path.read_text(), Loader=yaml.BaseLoader)['on'])
+        for name in ('fast.yml', 'feedback-ci.yml'):
+            self.assertEqual(re.findall(r'^  ([\w_]+):', triggers(name), re.M),
+                             ['schedule', 'workflow_dispatch'])
 
     def test_hourly_delivery_has_no_path_filters(self):
         # Includes UI/docs, packaging, release logic and shared dependencies.

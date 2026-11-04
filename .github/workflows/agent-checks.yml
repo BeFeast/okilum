@@ -90,8 +90,12 @@ jobs:
         run: |
           python3 docs/help/sync/check.py
           python3 scripts/rebrand/check_brand.py
-      - name: Verify pinned Sync fixture lifecycle and source sharing
-        run: bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
+      - name: Verify pinned Sync fixture lifecycle, source sharing and remote inspection
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: |
+          source scripts/ci/test-nofile.sh
+          tini -s -- bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
       - name: Verify managed launch and configuration admission
         run: bash scripts/ci/sync-managed-admission.sh
       - name: Reject and reap surviving agent fixture daemons

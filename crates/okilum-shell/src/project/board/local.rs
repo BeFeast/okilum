@@ -243,12 +243,24 @@ impl Board {
         .detach();
         cx.notify();
     }
-    pub(super) fn local_card(&self, card: &model::Card, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn local_card(
+        &self,
+        card: &model::Card,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = brand::palette(cx);
         let id = card.id.clone();
+        let (disclosure, _) = super::controls::disclosure(
+            SharedString::from(format!("local-expand-{id}")),
+            window,
+            cx,
+        );
         let expanded = self.selected_local.as_ref() == Some(&id);
         let mut view = v_flex()
             .min_w_0()
+            .min_h_0()
+            .flex_shrink_0()
             .gap_2()
             .p_3()
             .rounded_md()
@@ -264,8 +276,7 @@ impl Board {
                     .child(format!("Local · {}", card.state.label())),
             )
             .child(
-                Button::new(SharedString::from(format!("local-expand-{id}")))
-                    .ghost()
+                disclosure
                     .h_auto()
                     .w_full()
                     .min_w_0()

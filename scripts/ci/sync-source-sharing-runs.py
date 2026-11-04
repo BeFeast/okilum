@@ -20,6 +20,7 @@ TESTS = {
     "managed_source_nonempty_destination_refused_without_writes",
     "managed_peer_addresses_without_discovery_negative_then_hashes_and_restart",
     "managed_receiver_catalog_name_and_7504_label_reconcile",
+    "remote_inventory::managed_remote_inventory_exact_plan_binary_chunks_staleness_and_zero_writes",
 }
 
 
@@ -80,10 +81,10 @@ def run_trials(args, evidence, processes):
             output = Path(trial["log"]).read_text()
             passed = {name for name in TESTS if f"test source_sharing::{name} ... ok" in output.splitlines()}
             trial["passed"] = len(passed)
-            trial["ok"] = trial["exit"] == 0 and passed == TESTS and "test result: ok. 5 passed;" in output
+            trial["ok"] = trial["exit"] == 0 and passed == TESTS and f"test result: ok. {len(TESTS)} passed;" in output
             failed |= not trial["ok"]
             trials.append(trial)
-            print(f"Run {trial['run']}: exit={trial['exit']} passed={len(passed)}/5", flush=True)
+            print(f"Run {trial['run']}: exit={trial['exit']} passed={len(passed)}/{len(TESTS)}", flush=True)
             if not trial["ok"]:
                 print(output, flush=True)
     (evidence / "results.json").write_text(json.dumps(trials, indent=2) + "\n")
