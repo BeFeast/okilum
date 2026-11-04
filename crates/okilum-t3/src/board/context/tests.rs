@@ -233,3 +233,76 @@ fn context_note_symlinks_cannot_escape_the_project() {
     let update = refresh(&area.0);
     assert!(update.notes[0].1.as_ref().unwrap_err().contains("escapes"));
 }
+
+#[test]
+fn waiting_questions_use_explicit_binding_retain_failure_and_clear_on_removal() {
+    let area = Area::new();
+    area.write(
+        "ops/questions.md",
+        "## Open\n- [Owner] Choose an option? — first — waiting\n",
+    );
+    area.write("ops/board-context.toml", "version=1\nnotes=[]\n");
+    let mut snapshot = Snapshot::default();
+    snapshot.accept(refresh(&area.0), 100);
+    assert!(
+        snapshot.questions.is_empty(),
+        "the reader never guesses a questions path"
+    );
+    area.write(
+        "ops/board-context.toml",
+        "version=1\nquestions_note='ops/questions.md'\n",
+    );
+    snapshot.accept(refresh(&area.0), 101);
+    assert_eq!(snapshot.questions["ops/questions.md"].value.len(), 1);
+    area.write("ops/questions.md", "## Open\n- malformed\n");
+    snapshot.accept(refresh(&area.0), 102);
+    let source = &snapshot.questions["ops/questions.md"];
+    assert_eq!(source.value[0].title, "Choose an option?");
+    assert_eq!(source.last_success, Some(101));
+    assert!(source
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("ops/questions.md"));
+    area.write(
+        "ops/questions.md",
+        "## Open\n\n## Later\n- [Owner] Not open\n",
+    );
+    snapshot.accept(refresh(&area.0), 103);
+    assert!(snapshot.questions["ops/questions.md"].value.is_empty());
+    assert!(snapshot.questions["ops/questions.md"].error.is_none());
+    area.write("ops/board-context.toml", "version=1\n");
+    snapshot.accept(refresh(&area.0), 104);
+    assert!(snapshot.questions.is_empty());
+    for path in [
+        "../questions.md",
+        "/questions.md",
+        "https://example.test/questions.md",
+        "ops/file.txt",
+    ] {
+        area.write(
+            "ops/board-context.toml",
+            &format!("version=1\nquestions_note='{path}'\n"),
+        );
+        assert!(refresh(&area.0).config.is_err(), "{path}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn waiting_questions_symlink_escape_is_a_source_failure() {
+    let area = Area::new();
+    let outside = Area::new();
+    outside.write("questions.md", "## Open\n- [Owner] Outside\n");
+    area.write(
+        "ops/board-context.toml",
+        "version=1\nquestions_note='escape.md'\n",
+    );
+    std::os::unix::fs::symlink(outside.0.join("questions.md"), area.0.join("escape.md")).unwrap();
+    let update = refresh(&area.0);
+    assert!(update.questions[0]
+        .1
+        .as_ref()
+        .unwrap_err()
+        .contains("escapes"));
+}
