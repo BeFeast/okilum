@@ -243,6 +243,7 @@ fn hidden_board_retains_filter_selection_scroll_and_rejects_late_source(cx: &mut
                     labels: Vec::new(),
                     open_pull_requests: Vec::new(),
                     live_pulls: Vec::new(),
+                    updated_at: None,
                 }),
             )],
             1,
@@ -365,6 +366,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
                         labels: Vec::new(),
                         open_pull_requests: Vec::new(),
                         live_pulls: Vec::new(),
+                        updated_at: None,
                     })
                     .collect())
             },
