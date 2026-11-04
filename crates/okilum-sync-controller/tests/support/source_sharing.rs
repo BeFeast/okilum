@@ -638,6 +638,13 @@ fn managed_real_conflicts_resolve_each_choice_with_hashes() -> Result<()> {
         pair.tick(&id)?;
         Ok(!pair.second.snapshot()?.preparing)
     })?;
+    for vault in [&pair.source.vault, &pair.target.vault] {
+        let policy = fs::read_to_string(vault.join(".stignore"))?;
+        assert!(
+            policy.lines().any(|line| line == ".okilum-save-*"),
+            "managed enrollment must seed local retention policy on both computers"
+        );
+    }
     for (index, choice) in [Choice::KeepThis, Choice::KeepThat, Choice::KeepBoth]
         .into_iter()
         .enumerate()
@@ -703,6 +710,10 @@ fn managed_real_conflicts_resolve_each_choice_with_hashes() -> Result<()> {
         let ApplyOutcome::Applied(receipt) = conflicts::apply(&p, choice, &state)? else {
             anyhow::bail!("real conflict decision was not completed");
         };
+        for original in &receipt.originals {
+            assert!(pair.target.vault.join(original).is_file());
+            assert!(!pair.source.vault.join(original).exists());
+        }
         let expected = &before[usize::from(choice == Choice::KeepThat)];
         assert!(same_hash(&pair.target.vault, &name, expected));
         assert!(!pair.target.vault.join(actual.as_ref().unwrap()).exists());
@@ -730,6 +741,24 @@ fn managed_real_conflicts_resolve_each_choice_with_hashes() -> Result<()> {
                     }))
             },
         )?;
+        for (original, bytes) in receipt.originals.iter().zip(&before) {
+            assert!(same_hash(
+                &pair.target.vault,
+                &original.to_string_lossy(),
+                bytes
+            ));
+            assert!(
+                !pair.source.vault.join(original).exists(),
+                "retained original must stay on the resolving computer after both scans"
+            );
+            for api in [&pair.source.api, &pair.target.api] {
+                assert!(api.ignores(&id)?["ignore"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|line| line == ".okilum-save-*"));
+            }
+        }
     }
     Ok(())
 }

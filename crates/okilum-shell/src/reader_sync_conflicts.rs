@@ -396,3 +396,32 @@ impl crate::Reader {
         )
     }
 }
+
+/// Startup runs under reader_instance's primary-process lock, once per process.
+pub(crate) fn recover_before_open(opts: &crate::Opts) -> Vec<String> {
+    let directory = opts
+        .session_directory
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(crate::reader_history::state_directory);
+    match directory
+        .and_then(|directory| conflicts::recover_startup(&directory.join("sync-conflicts")))
+    {
+        Ok(messages) => messages,
+        Err(error) => vec![format!(
+            "Sync conflict recovery needs attention: {error}. Use Recover notes."
+        )],
+    }
+}
+
+pub(crate) struct StartupNotice(pub Vec<String>);
+impl gpui::Global for StartupNotice {}
+pub(crate) fn show_startup_notice(window: &mut gpui::Window, cx: &mut gpui::App) {
+    if cx.try_global::<StartupNotice>().is_none() {
+        return;
+    }
+    let messages = std::mem::take(&mut cx.global_mut::<StartupNotice>().0);
+    if !messages.is_empty() {
+        crate::reader_toast::error(messages.join("\n"), window, cx);
+    }
+}

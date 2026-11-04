@@ -379,3 +379,251 @@ fn issue2044_multiple_valid_markers_cannot_silently_choose_a_source() {
         );
     }
 }
+
+#[test]
+fn issue2044_refusal_at_second_check_leaves_no_recovery_authority() {
+    let (vault, state) = fixture();
+    let p = preview(vault.path(), Path::new(COPY)).unwrap();
+    assert!(apply_with_recheck_hook(
+        &p,
+        Choice::KeepThat,
+        state.path(),
+        || {
+            std::fs::write(vault.path().join(COPY), b"later external version").unwrap();
+        },
+        || {},
+        || {}
+    )
+    .is_err());
+    assert!(history(state.path(), vault.path())
+        .unwrap()
+        .entries
+        .is_empty());
+    // Another computer/editor later resolves it. Restart must not resurrect it.
+    std::fs::remove_file(vault.path().join(COPY)).unwrap();
+    assert!(recover_startup(state.path()).unwrap().is_empty());
+    assert!(!vault.path().join(COPY).exists());
+}
+
+#[test]
+fn issue2044_failed_complete_marker_is_terminal_and_preserves_history() {
+    for block_refusal_marker in [false, true] {
+        let (vault, state) = fixture();
+        let p = preview(vault.path(), Path::new(COPY)).unwrap();
+        recovery::FAIL_COMPLETE.with(|fail| fail.set(true));
+        let outcome = apply_with_hooks(
+            &p,
+            Choice::KeepThat,
+            state.path(),
+            || {},
+            || {
+                if block_refusal_marker {
+                    for entry in std::fs::read_dir(state.path()).unwrap() {
+                        let record = entry.unwrap().path();
+                        if record.extension() == Some(OsStr::new("json")) {
+                            std::fs::create_dir(record.with_extension("refused")).unwrap();
+                        }
+                    }
+                }
+            },
+        );
+        recovery::FAIL_COMPLETE.with(|fail| fail.set(false));
+        let ApplyOutcome::NeedsAttention {
+            recovery: receipt,
+            reason,
+        } = outcome.unwrap()
+        else {
+            panic!("failed acknowledgement cannot report success");
+        };
+        assert!(reason.contains("completion failed"));
+        assert_eq!(
+            retained_versions(&receipt.recovery_record).unwrap()[1].bytes,
+            p.that.bytes
+        );
+        let history = history(state.path(), vault.path()).unwrap();
+        assert!(history.warnings.is_empty());
+        assert_eq!(history.entries.len(), 1);
+        assert!(!history.entries[0].pending);
+        assert!(!vault.path().join(COPY).exists());
+        assert_eq!(
+            std::fs::read(vault.path().join("note.md")).unwrap(),
+            p.that.bytes
+        );
+        // Even deleting the resolved canonical file later grants no authority.
+        std::fs::remove_file(vault.path().join("note.md")).unwrap();
+        assert!(recover_startup(state.path()).unwrap().is_empty());
+        assert!(!vault.path().join("note.md").exists());
+        assert!(!vault.path().join(COPY).exists());
+    }
+}
+
+#[test]
+fn issue2044_shared_folders_require_proven_local_retention_before_mutation() {
+    for policy in [
+        None,
+        Some(".okilum-index\n"),
+        Some("!.okilum-save-*\n.okilum-save-*\n"),
+        Some("!*\n.okilum-save-*\n"),
+        Some("#include policy\n.okilum-save-*\n"),
+        Some("/.okilum-save-*\n"),
+    ] {
+        let (vault, state) = fixture();
+        std::fs::create_dir(vault.path().join(".stfolder")).unwrap();
+        if let Some(policy) = policy {
+            std::fs::write(vault.path().join(".stignore"), policy).unwrap();
+        }
+        let p = preview(vault.path(), Path::new(COPY)).unwrap();
+        assert!(
+            apply(&p, Choice::KeepThat, state.path()).is_err(),
+            "{policy:?}"
+        );
+        assert_eq!(
+            std::fs::read(vault.path().join("note.md")).unwrap(),
+            p.this.bytes
+        );
+        assert_eq!(
+            std::fs::read(vault.path().join(COPY)).unwrap(),
+            p.that.bytes
+        );
+        assert_eq!(std::fs::read_dir(state.path()).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_dir(vault.path()).unwrap().count(),
+            3 + usize::from(policy.is_some())
+        );
+    }
+    for policy in [
+        ".okilum-save-*\n",
+        "**/.okilum-save-*\n",
+        "(?i)(?d).okilum-save-*\n",
+        ".okilum-save-*\n!*\n",
+    ] {
+        let (vault, state) = fixture();
+        std::fs::create_dir(vault.path().join(".stfolder")).unwrap();
+        std::fs::write(vault.path().join(".stignore"), policy).unwrap();
+        let p = preview(vault.path(), Path::new(COPY)).unwrap();
+        assert!(
+            matches!(
+                apply(&p, Choice::KeepThat, state.path()).unwrap(),
+                ApplyOutcome::Applied(_)
+            ),
+            "{policy}"
+        );
+    }
+}
+
+#[test]
+fn issue2044_hidden_and_extensionless_notes_have_inventory_preview_and_resolution() {
+    for (note, copy) in [
+        ("TODO", "TODO.okilum-conflict-20261104-123456-ABC2345"),
+        ("TODO", "TODO.okilum-conflict-20261104-123456-ABC2345."),
+        ("TODO", "TODO.sync-conflict-20261104-123456-ABC2345"),
+        (".hidden", ".sync-conflict-20261104-123456-ABC2345.hidden"),
+        (".hidden", ".hidden.okilum-conflict-20261104-123456-ABC2345"),
+    ] {
+        let vault = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::fs::write(vault.path().join(note), b"this").unwrap();
+        std::fs::write(vault.path().join(copy), b"that").unwrap();
+        assert_eq!(canonical_path(Path::new(copy)), Some(note.into()));
+        assert_eq!(
+            inspect_note(vault.path(), Path::new(note)).unwrap().copies,
+            [PathBuf::from(copy)]
+        );
+        let p = preview(vault.path(), Path::new(copy)).unwrap();
+        assert!(matches!(
+            apply(&p, Choice::KeepThat, state.path()).unwrap(),
+            ApplyOutcome::Applied(_)
+        ));
+        assert_eq!(std::fs::read(vault.path().join(note)).unwrap(), b"that");
+    }
+    assert!(canonical_path(Path::new(".sync-conflict-20261104-123456-ABC2345")).is_none());
+    assert!(canonical_path(Path::new(".sync-conflict-20261104-123456-ABC2345.")).is_none());
+}
+
+#[test]
+fn issue2044_symlink_vault_alias_supports_inventory_preview_and_interrupted_recovery() {
+    let (vault, state) = fixture();
+    let aliases = tempfile::tempdir().unwrap();
+    let alias = aliases.path().join("vault-alias");
+    std::os::unix::fs::symlink(vault.path(), &alias).unwrap();
+    assert_eq!(inspect(&alias).unwrap().copies, [PathBuf::from(COPY)]);
+    assert_eq!(
+        inspect_note(&alias, Path::new("note.md")).unwrap().copies,
+        [PathBuf::from(COPY)]
+    );
+    let p = preview(&alias, Path::new(COPY)).unwrap();
+    assert_eq!(p.root, vault.path().canonicalize().unwrap());
+    let ApplyOutcome::Applied(receipt) = apply(&p, Choice::KeepBoth, state.path()).unwrap() else {
+        panic!("not applied")
+    };
+    std::fs::remove_file(receipt.recovery_record.with_extension("complete")).unwrap();
+    std::fs::remove_file(vault.path().join("note.md")).unwrap();
+    assert_eq!(recover_interrupted(state.path(), &alias).unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read(vault.path().join("note.md")).unwrap(),
+        p.this.bytes
+    );
+}
+
+#[test]
+#[ignore = "restart subprocess control; invoked by issue2044_crash_gap_restarts_before_indexing"]
+fn issue2044_startup_child() {
+    let root = PathBuf::from(std::env::var_os("OKILUM_CONFLICT_CRASH_ROOT").unwrap());
+    let messages = recover_startup(&root.join("state")).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        std::fs::read(root.join("vault/note.md")).unwrap(),
+        b"this before crash"
+    );
+    assert_eq!(
+        std::fs::read(root.join("vault").join(COPY)).unwrap(),
+        b"that before crash"
+    );
+    // The first filesystem inventory after restart sees the repaired canonical
+    // path; no UI action or previously opened note is needed.
+    assert!(root.join("vault/note.md").is_file());
+    assert_eq!(
+        inspect(&root.join("vault")).unwrap().copies,
+        [PathBuf::from(COPY)]
+    );
+}
+
+#[test]
+fn issue2044_crash_gap_restarts_before_indexing() {
+    for step in ["capture-this", "capture-that"] {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("vault")).unwrap();
+        std::fs::create_dir(root.path().join("state")).unwrap();
+        std::fs::write(root.path().join("vault/note.md"), b"this before crash").unwrap();
+        std::fs::write(root.path().join("vault").join(COPY), b"that before crash").unwrap();
+        let run = |name: &str, crash: Option<&str>| {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([name, "--exact", "--ignored", "--nocapture"])
+                .env("OKILUM_CONFLICT_CRASH_ROOT", root.path());
+            if let Some(step) = crash {
+                child.env("OKILUM_CONFLICT_CRASH_STEP", step);
+            } else {
+                child.env_remove("OKILUM_CONFLICT_CRASH_STEP");
+            }
+            child.status().unwrap()
+        };
+        assert_eq!(
+            run(
+                "conflicts::resolution_tests::issue2044_crash_child",
+                Some(step)
+            )
+            .code(),
+            Some(86)
+        );
+        assert!(
+            !root.path().join("vault/note.md").exists(),
+            "positive gap control: {step}"
+        );
+        assert!(run("conflicts::resolution_tests::issue2044_startup_child", None).success());
+        assert_eq!(
+            std::fs::read(root.path().join("vault/note.md")).unwrap(),
+            b"this before crash"
+        );
+    }
+}

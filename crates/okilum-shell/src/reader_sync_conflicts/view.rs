@@ -74,9 +74,10 @@ impl InventoryView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    let root = root.canonicalize()?;
                     let inventory = conflicts::inspect(&root)?;
                     let history = conflicts::history(&state, &root)?;
-                    Ok::<_, anyhow::Error>((inventory, history))
+                    Ok::<_, anyhow::Error>((root, inventory, history))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -85,7 +86,8 @@ impl InventoryView {
                 }
                 this.busy = false;
                 match result {
-                    Ok((inventory, history)) => {
+                    Ok((root, inventory, history)) => {
+                        this.root = root;
                         this.copies = inventory.copies;
                         this.complete = inventory.complete;
                         this.pending = history.entries.iter().filter(|entry| entry.pending).count();
@@ -184,6 +186,8 @@ impl InventoryView {
         }
         readers.iter().any(|reader| {
             let reader = reader.read(cx);
+            // Refresh canonicalizes the inventory root on its worker before
+            // enabling actions; Reader roots use that same identity.
             reader.vault_root == self.root && reader.source_is_dirty(cx)
         })
     }
@@ -553,6 +557,77 @@ mod tests {
             }
         }
     }
+    #[gpui::test]
+    fn issue2044_symlink_inventory_blocks_a_dirty_canonical_reader(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("vault");
+        let alias = directory.path().join("vault-alias");
+        let state = directory.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let copy = PathBuf::from("note.sync-conflict-20261104-123456-ABC2345.md");
+        std::fs::write(root.join("note.md"), b"this").unwrap();
+        std::fs::write(root.join(&copy), b"that").unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    crate::Opts {
+                        vault: Some(root.clone()),
+                        note: Some("note.md".into()),
+                        session_directory: Some(state.clone()),
+                        index_dir: Some(directory.path().join("index")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        let inventory = visual.update(|_, cx| {
+            cx.new(|cx| {
+                InventoryView::new(alias.clone(), state.clone(), Some(reader.downgrade()), cx)
+            })
+        });
+        visual.run_until_parked();
+        inventory.read_with(visual, |view, _| {
+            assert_eq!(view.root, root.canonicalize().unwrap());
+            assert_eq!(view.copies, [copy.clone()]);
+        });
+        inventory.update(visual, |view, cx| view.preview(copy.clone(), cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |reader, window, cx| {
+            reader.toggle_source(window, cx);
+            reader
+                .editing
+                .as_ref()
+                .unwrap()
+                .input
+                .clone()
+                .update(cx, |input, cx| {
+                    input.replace_text_in_range(Some(0..0), "unsaved edit", window, cx);
+                });
+            assert!(reader.source_is_dirty(cx), "positive dirty control");
+        });
+        inventory.update(visual, |view, cx| {
+            assert!(
+                view.dirty(cx),
+                "symlink inventory must see the canonical editor"
+            );
+            view.apply(Choice::KeepThat, cx);
+            let panel = view.panel.as_ref().unwrap();
+            assert!(matches!(panel.state, State::Ready));
+            assert!(panel.message.contains("unsaved draft"));
+        });
+        assert_eq!(std::fs::read(root.join("note.md")).unwrap(), b"this");
+        assert_eq!(std::fs::read(root.join(copy)).unwrap(), b"that");
+    }
+
     #[gpui::test]
     fn issue2044_interrupted_inventory_recovery_reveals_recreated_copy(cx: &mut TestAppContext) {
         cx.update(crate::test_init);

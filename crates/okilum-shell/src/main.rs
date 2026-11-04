@@ -8445,6 +8445,15 @@ fn main() {
         (None, None)
     };
     let _instance_lock = instance_lock;
+    // A forwarded launch never races the active Reader's apply operation. The
+    // primary repairs interrupted decisions before any path validation, cache
+    // load, indexing, or managed Sync initialization can observe missing notes.
+    #[cfg(target_os = "linux")]
+    let conflict_startup_messages = if _instance_lock.is_some() {
+        reader_sync_conflicts::recover_before_open(&opts)
+    } else {
+        Vec::new()
+    };
     #[cfg(target_os = "linux")]
     if _instance_lock.is_some() {
         app_footprint::install_appimage_desktop();
@@ -8465,6 +8474,10 @@ fn main() {
     });
     app.on_reopen(reader_startup::reopen);
     app.run(move |cx| {
+        #[cfg(target_os = "linux")]
+        cx.set_global(reader_sync_conflicts::StartupNotice(
+            conflict_startup_messages,
+        ));
         diagnostics.event("app_run_callback", serde_json::json!({}));
         reader_reminder_notify::install(cx);
         cx.set_global(reader_diagnostics::LaunchTrace(diagnostics.clone()));

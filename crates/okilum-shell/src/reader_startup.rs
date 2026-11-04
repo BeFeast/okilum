@@ -433,6 +433,8 @@ fn show_entry(roots: Vec<PathBuf>, state: EntryState, cx: &mut App) {
             .detach();
         let entry = cx.new(|_| Entry { roots, state });
         let root = cx.new(|cx| Root::new(entry, window, cx));
+        #[cfg(target_os = "linux")]
+        super::reader_sync_conflicts::show_startup_notice(window, cx);
         super::window_state::track(&root, frame_key, window, cx);
         root
     }) {
