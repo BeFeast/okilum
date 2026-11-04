@@ -35,18 +35,60 @@ impl Controller {
     pub fn share_vault(&self, prepared: &Path, vault: &Path) -> Result<Snapshot> {
         self.check()?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
-        let root = existing::VaultRoot::open(vault)?;
-        let path = vault.canonicalize()?;
+        let root = existing::VaultRoot::open(vault)
+            .with_context(|| format!("open vault to share {}", vault.display()))?;
+        let path = vault
+            .canonicalize()
+            .with_context(|| format!("resolve vault to share {}", vault.display()))?;
         root.verify(&path)?;
-        let daemon = daemon::managed_identity(prepared)?;
         let configs = self.configuration_paths()?;
+        // Existing external enrollment must be recognized before touching a
+        // managed runtime that may never have been prepared on this computer.
+        let saved = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .sources
+            .iter()
+            .any(|s| s.path == path);
+        if !saved {
+            let marker = path.join(".stfolder");
+            match fs::symlink_metadata(&marker) {
+                Ok(_) => {
+                    anyhow::bail!("existing Syncthing vault requires Choose existing synced vault")
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("inspect Syncthing marker {}", marker.display()))
+                }
+            }
+            if daemon::discover(&configs)
+                .folders()?
+                .iter()
+                .any(|(_, folder)| folder == &path)
+            {
+                anyhow::bail!("existing Syncthing vault requires Choose existing synced vault");
+            }
+        }
+        let daemon = daemon::managed_identity(prepared).with_context(|| {
+            format!("open prepared managed Sync runtime {}", prepared.display())
+        })?;
         ensure!(
-            configs.len() == 1 && configs[0].canonicalize()? == daemon.config_file,
+            configs.len() == 1
+                && configs[0].canonicalize().with_context(|| format!(
+                    "resolve selected Sync configuration {}",
+                    configs[0].display()
+                ))? == daemon.config_file,
             "select the managed Sync connection before sharing"
         );
         for state in [self.shared.state.as_path(), prepared] {
             ensure!(
-                !state.canonicalize()?.starts_with(&path),
+                !state
+                    .canonicalize()
+                    .with_context(|| format!("resolve Sync state {}", state.display()))?
+                    .starts_with(&path),
                 "operational state must be outside the vault"
             );
         }
@@ -60,13 +102,6 @@ impl Controller {
                 );
                 saved.clone()
             } else {
-                match fs::symlink_metadata(path.join(".stfolder")) {
-                    Ok(_) => anyhow::bail!(
-                        "existing Syncthing vault requires Choose existing synced vault"
-                    ),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
                 let id = format!("okilum-{}", Uuid::new_v4());
                 no_overlap(&configs, &path, &id)?;
                 let ignores = policy(&path)?;
@@ -146,12 +181,16 @@ impl Controller {
             folder["id"] == source.id
                 && folder["type"] == "sendreceive"
                 && Path::new(folder["path"].as_str().context("source path missing")?)
-                    .canonicalize()?
+                    .canonicalize()
+                    .context("resolve shared source folder path")?
                     == path,
             "shared source binding changed"
         );
         ensure!(
-            fs::read(path.join(".stignore"))? == source.ignores,
+            fs::read(path.join(".stignore")).with_context(|| format!(
+                "read shared vault ignore policy {}",
+                path.join(".stignore").display()
+            ))? == source.ignores,
             "ignore policy changed; explicit review required"
         );
         root.verify(&path)?;
@@ -230,13 +269,14 @@ fn policy(path: &Path) -> Result<Vec<u8>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             Ok(format!("{}\n", IGNORES.join("\n")).into_bytes())
         }
-        Err(e) => Err(e.into()),
+        Err(e) => Err(e).with_context(|| format!("inspect ignore policy {}", file.display())),
         Ok(m) => {
             ensure!(
                 m.is_file() && !m.file_type().is_symlink() && m.len() <= 65536,
                 "ignore policy requires explicit review"
             );
-            let bytes = fs::read(&file)?;
+            let bytes = fs::read(&file)
+                .with_context(|| format!("read ignore policy {}", file.display()))?;
             let text = std::str::from_utf8(&bytes)?;
             let lines = text.lines().map(str::trim).collect::<Vec<_>>();
             // Do not guess includes or precedence of user negations. Existing
@@ -262,10 +302,16 @@ fn seed_policy(path: &Path, expected: &[u8]) -> Result<()> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(&file)
     {
-        Ok(mut file) => {
-            file.write_all(expected)?;
-            file.sync_all()?;
-            fs::File::open(path)?.sync_all()?;
+        Ok(mut output) => {
+            output
+                .write_all(expected)
+                .with_context(|| format!("write ignore policy {}", file.display()))?;
+            output
+                .sync_all()
+                .with_context(|| format!("persist ignore policy {}", file.display()))?;
+            fs::File::open(path)
+                .and_then(|directory| directory.sync_all())
+                .with_context(|| format!("persist shared vault directory {}", path.display()))?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             ensure!(
@@ -273,7 +319,9 @@ fn seed_policy(path: &Path, expected: &[u8]) -> Result<()> {
                 "ignore policy changed; explicit review required"
             );
         }
-        Err(e) => return Err(e.into()),
+        Err(e) => {
+            return Err(e).with_context(|| format!("create ignore policy {}", file.display()))
+        }
     }
     Ok(())
 }

@@ -264,12 +264,18 @@ impl Board {
     }
     pub(in super::super) fn filter_empty(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = brand::palette(cx);
-        let line = problem_line(
-            source_problem("Forgejo", &self.snapshot.forgejo, 30, now())
-                .into_iter()
-                .collect(),
-        )
-        .unwrap_or_default();
+        let line = self
+            .waiting
+            .problem
+            .clone()
+            .or_else(|| {
+                problem_line(
+                    source_problem("Forgejo", &self.snapshot.forgejo, 30, now())
+                        .into_iter()
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
         v_flex()
             .debug_selector(|| "board-filter-empty".into())
             .flex_1()
@@ -308,12 +314,19 @@ impl Board {
                     .bottom_0()
                     .left_0()
                     .right_8()
-                    .h(px(16.))
+                    .h(px(20.))
                     .min_w_0()
                     .truncate()
                     .text_size(px(12.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                     .text_color(colors.text_muted)
-                    .child(line),
+                    .child(
+                        div()
+                            .when(self.waiting.problem.is_some(), |line| {
+                                line.debug_selector(|| "board-waiting-problem".into())
+                            })
+                            .child(line),
+                    ),
             )
             .into_any_element()
     }

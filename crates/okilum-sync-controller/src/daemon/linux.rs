@@ -152,9 +152,13 @@ struct Prepared {
 /// Authenticate a completed, pinned managed preparation without launching a process.
 /// An existing external home has no preparation receipt and cannot be adopted.
 pub fn managed_identity(state: &Path) -> Result<DaemonIdentity> {
-    let saved = managed_preparation(state)?;
+    let saved = managed_preparation(state)
+        .with_context(|| format!("read prepared managed Sync runtime {}", state.display()))?;
     ensure!(
-        executable_hash(&saved.request.executable)? == saved.binary_hash,
+        executable_hash(&saved.request.executable).with_context(|| format!(
+            "verify managed Sync executable {}",
+            saved.request.executable.display()
+        ))? == saved.binary_hash,
         "selected managed runtime preparation changed"
     );
     saved.identity.connect()?;
@@ -162,9 +166,22 @@ pub fn managed_identity(state: &Path) -> Result<DaemonIdentity> {
 }
 
 fn managed_preparation(state: &Path) -> Result<Prepared> {
-    let saved: Prepared = serde_json::from_slice(&private::read(&state.join("prepared.json"))?)?;
+    let receipt = state.join("prepared.json");
+    let saved: Prepared = serde_json::from_slice(&private::read(&receipt).with_context(|| {
+        format!(
+            "read managed Sync preparation receipt {}",
+            receipt.display()
+        )
+    })?)?;
     ensure!(
-        saved.identity.config_file == state.join("syncthing/config.xml").canonicalize()?
+        saved.identity.config_file
+            == state
+                .join("syncthing/config.xml")
+                .canonicalize()
+                .with_context(|| format!(
+                    "resolve managed Syncthing configuration {}",
+                    state.join("syncthing/config.xml").display()
+                ))?
             && saved.binary_version == CLIENT_VERSION
             && saved.binary_hash == crate::linux_bootstrap::BINARY_SHA,
         "selected managed runtime preparation changed"

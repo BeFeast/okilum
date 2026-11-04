@@ -385,6 +385,13 @@ impl Controller {
         } else {
             db.attached.push(fresh.clone());
         }
+        // Explicit consent also exposes this vault to computers already approved
+        // before enrollment, matching Share with my computers for managed vaults.
+        for peer in db.peers.values_mut() {
+            if !peer.allowed.contains(&fresh.folder_id) {
+                peer.allowed.push(fresh.folder_id.clone());
+            }
+        }
         self.save(&db)?;
         Ok(fresh)
     }
