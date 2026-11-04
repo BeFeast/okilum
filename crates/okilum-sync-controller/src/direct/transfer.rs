@@ -1012,6 +1012,7 @@ mod tests {
         let (_root, transfer, _folder, mut observation, mut local) = fixture()?;
         observation.status["globalTotalItems"] = json!(4);
         observation.status["globalDeleted"] = json!(2);
+        observation.status["localTotalItems"] = json!(4); // the sender keeps its tombstones
         let first = Receipt::new(observation.clone(), &transfer)?;
         let mut next = observation;
         next.id = Uuid::new_v4();
