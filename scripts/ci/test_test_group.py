@@ -122,7 +122,7 @@ class TestGroup(unittest.TestCase):
                 self.assertIn(f'target={temp}/.cache/okilum-sync-source-sharing/target', rows[0])
                 self.assertEqual(len(rows), 1 if status else 2)
                 if not status:
-                    self.assertIn('TEST_GROUP_START group=sync-network-policy limit=120s', result.stdout)
+                    self.assertIn('TEST_GROUP_START group=sync-network-policy limit=180s', result.stdout)
                     self.assertIn('sync-network-policy.sh', rows[1])
                 # All commands, including the daemons' subprocesses, released the lock.
                 lock = root / '.cache/okilum-sync-source-sharing/gate.lock'
@@ -133,7 +133,7 @@ class TestGroup(unittest.TestCase):
         for command in [
             'fast-local-check 2100 bash scripts/ci/fast-local.sh',
             'fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full',
-            'sync-local 1440 bash scripts/ci/sync-source-sharing-fast.sh',
+            'sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh',
         ]:
             wrapper = ('bash scripts/ci/test-group.sh ' if command.startswith('sync-local') else
                        'bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ')

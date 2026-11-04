@@ -220,7 +220,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/test-group.sh sync-local 1440 bash scripts/ci/sync-source-sharing-fast.sh
+          bash scripts/ci/test-group.sh sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh
       - name: Reject and reap surviving job fixture daemons
         if: always()
         run: |

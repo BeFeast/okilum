@@ -191,10 +191,10 @@ its own original deadline plus at most 30 s cleanup:
 | Entire fast-local shell / locked shell-full.sh | 1980 / 1920 s | 840 + 30 + 990 = 1860 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. The 37 min job retains the original 35 min envelope and adds 2 min for certification. |
 | Shell compilation only | 840 s | Historical 335 s compile (20932), recent successful compile/list 180–307 s, and normal compilation censored at 360 s by the broken watchdog (21840). Run 21877 completed compilation in 503.870 s, leaving 336 s headroom; no execution timer runs during compilation. |
 | Shell inventory only / unfiltered execution | 30 / 990 s | Inventory after Cargo's finished marker: 0.119–0.368 s; successful execution phases 445–805 s. Runtime margin is 185 s above the loaded maximum. Neither command invokes Cargo. |
-| Entire sync-local entrypoint | 1440 s | 600 s lock + 120 s setup + 60 s verification + 480 s sharing + 120 s policy = 1380 s, plus 60 s overhead. The 30 min job reserves 360 s beyond the group. |
+| Entire sync-local entrypoint | 1500 s | 600 s lock + 120 s setup + 60 s verification + 480 s sharing + 180 s policy = 1440 s, plus 60 s overhead. The 30 min job reserves 300 s beyond the group; 1500 + 30 + 90 = 1620 <= 1800 s. |
 | Sync target lock / vendor setup / verification | 600 / 120 / 60 s | Preserve the existing lock wait for concurrent jobs; the outer scope bounds the combined wait/setup/tests. |
 | Sync source sharing (two concurrent trials) | 480 s | See same-runner measurements below; nearly 2x the longest complete observed sync step. |
-| Sync network policy | 120 s | ~51 s test execution in the measured loaded run, plus compile/setup margin. |
+| Sync network policy | 180 s | #2578: 20 full groups + 20 isolated pending-choice runs passed on baldr; loaded full-group empirical p95/max 113.561 s. ceil((113.561 + 60) / 30) * 30 = 180 s. |
 
 Run [21877](https://git.oklabs.uk/BeFeast/okilum/actions/runs/21877/jobs/1/attempt/1)
 exposed the old non-additive design: compilation completed in 503.870 s, listing
@@ -248,9 +248,17 @@ the same ref. Its feedback-ci and worker-owned GitHub gate are retained. No PR
 or push workloads are restored. The Sync owner closed #2576 as superseded by
 #2581 without merging its proposed move off fast-linux; no hosted routing from
 that branch is imported here. A future move must carry these wrappers to the
-actual execution and recheck additive hosted/bridge budgets. The 120 s
-network-policy limit's observed timeout remains visible in #2578 pending the
-Sync owner's diagnosis.
+actual execution and recheck additive hosted/bridge budgets. #2578 is resolved
+by measured policy/aggregate limits of 180/1500 s. The Sync owner's
+[measurement series](https://git.oklabs.uk/BeFeast/okilum/pulls/2510#issuecomment-49613)
+passed 20 full groups and 20 isolated pending-choice runs on baldr, including
+15 loaded pairs and an eight-worker CPU-load window. Loaded full-group empirical
+p95/max was 113.561 s (all-group p95 111.341 s); isolated loaded p95/max was
+35.502 s. Reconciliation itself took 94/127 ms baseline/loaded; no product stall
+was reproduced. The small sample is not a fleet p95. The 180 s group provides
+66.439 s headroom above the loaded observed maximum; its additive parent is
+600 + 120 + 60 + 480 + 180 + 60 = 1500 s. Raising the policy cap without its
+parent is correctly rejected by the invariant.
 
 ### Resizing evidence, PR #2510
 
