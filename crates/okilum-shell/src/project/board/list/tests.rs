@@ -25,6 +25,15 @@ fn open<'a>(
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
             let mut board = Board::with_reader(area.into(), |_| Ok(Vec::new()), window, cx);
+            let at = now();
+            board.snapshot.forgejo.value = binding.issues.iter().map(|scope| {
+                let issue = serde_json::from_value(serde_json::json!({
+                    "number":scope.number,"title":scope.expected,"state":"open",
+                    "updated_at":chrono::DateTime::from_timestamp((at-scope.number*60) as i64,0).unwrap().to_rfc3339()
+                })).unwrap();
+                (scope.number, issue)
+            }).collect();
+            board.snapshot.forgejo.last_success = Some(at);
             board.binding = Some(binding);
             board
         });
@@ -213,7 +222,8 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
                     .iter()
                     .map(|scope| {
                         serde_json::from_value(serde_json::json!({
-                            "number": scope.number, "title": scope.expected, "state": "open"
+                            "number": scope.number, "title": scope.expected, "state": "open",
+                            "updated_at": chrono::DateTime::from_timestamp((now()-scope.number*60) as i64,0).unwrap().to_rfc3339()
                         }))
                         .unwrap()
                     })

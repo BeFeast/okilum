@@ -231,6 +231,26 @@ impl Board {
                 groups[self.delivery_column(scope) as usize].push(Row::Issue(i));
             }
         }
+        // #2539 order is shared by both presentations and runs only when this
+        // publication is rebuilt. Local cards and diagnostics retain their order.
+        for group in &mut groups {
+            group.sort_by(|a, b| {
+                let (Row::Issue(a), Row::Issue(b)) = (*a, *b) else {
+                    unreachable!("issue-only groups before local rows")
+                };
+                let a = &binding.issues[a];
+                let b = &binding.issues[b];
+                match (
+                    self.snapshot.forgejo.value.get(&a.number),
+                    self.snapshot.forgejo.value.get(&b.number),
+                ) {
+                    (Some(a), Some(b)) => okilum_t3::board::order::compare(a, b),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => b.number.cmp(&a.number),
+                }
+            });
+        }
         if self.filter.is_none() {
             for (i, card) in self.local_cards.value.cards.iter().enumerate() {
                 groups[card.state.column() as usize].push(Row::Local(i));

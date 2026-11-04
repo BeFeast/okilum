@@ -117,6 +117,19 @@ impl Board {
                         .text_color(p.text_muted)
                         .child(count.to_string()),
                 );
+            if stage == Column::Queue {
+                header = header.child(
+                    div()
+                        .debug_selector(|| "board-queue-order-hint".into())
+                        .ml_auto()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(p.text_muted)
+                        .child("от Олега сначала"),
+                );
+            }
             if count == 0 && self.columns.known_empty(stage) {
                 header = header.child(self.collapse_empty_column(stage, cx));
             }

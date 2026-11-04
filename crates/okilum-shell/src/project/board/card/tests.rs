@@ -25,6 +25,7 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
             board.snapshot.forgejo.value = (1..=240).map(|number| {
                 let mut issue: okilum_t3::board::Issue = serde_json::from_value(serde_json::json!({
                     "number":number,"state":"open",
+                    "updated_at":chrono::DateTime::from_timestamp((at-number*60) as i64,0).unwrap().to_rfc3339(),
                     "title":"Typography gypj: a deliberately long source title wraps over several lines but the compact card must reserve only two complete line boxes with descenders",
                     "labels":[{"name":"bug"},{"name":"from-tester"},{"name":"epic: Board"}]
                 })).unwrap();
@@ -183,6 +184,30 @@ fn kanban_2534_queue_eight_rows_more_opens_expanded_list_and_saves(cx: &mut Test
     }
     assert!(visual.debug_bounds("board-queue-row-8").is_none());
     assert!(visual.debug_bounds("board-card-17").is_none());
+    assert_eq!(
+        visual.debug_bounds("board-expand-17").unwrap().center().y,
+        visual.debug_bounds("board-queue-row-0").unwrap().center().y
+    );
+    // A source publication promotes an Oleg request in both presentations.
+    board.update(visual, |board, cx| {
+        board
+            .snapshot
+            .forgejo
+            .value
+            .get_mut(&24)
+            .unwrap()
+            .labels
+            .push(okilum_t3::board::IssueLabel {
+                name: "from-oleg".into(),
+            });
+        board.list.invalidate();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("board-expand-24").unwrap().center().y,
+        visual.debug_bounds("board-queue-row-0").unwrap().center().y
+    );
     click(visual, "board-queue-more");
     board.read_with(visual, |b, cx| {
         assert_eq!(b.list.preferences.mode, list::Mode::List);
@@ -193,6 +218,10 @@ fn kanban_2534_queue_eight_rows_more_opens_expanded_list_and_saves(cx: &mut Test
     });
     assert!(visual.debug_bounds("board-list-group-Queue").is_some());
     assert!(visual.debug_bounds("board-list-row-17").is_some());
+    assert!(
+        visual.debug_bounds("board-list-row-24").unwrap().top()
+            < visual.debug_bounds("board-list-row-17").unwrap().top()
+    );
     assert!(visual.debug_bounds("board-columns").is_none());
 }
 #[gpui::test]
