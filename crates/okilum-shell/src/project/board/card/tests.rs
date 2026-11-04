@@ -72,7 +72,7 @@ fn kanban_2534_three_rows_two_complete_title_lines_and_viewport_work(cx: &mut Te
     assert!(meta.bottom() <= title.top() && title.bottom() <= now.top());
     assert!(meta.size.height >= px(18.) && now.size.height >= px(16.));
     assert!(now.bottom() < card.bottom());
-    assert!(card.size.height <= px(112.));
+    assert!(card.size.height <= px(84.));
     assert_eq!(
         visual
             .debug_bounds("board-lane-Working")
@@ -100,6 +100,14 @@ fn kanban_2534_three_rows_two_complete_title_lines_and_viewport_work(cx: &mut Te
             "missing evidence renderer: {selector}"
         );
     }
+    let tenth = visual
+        .debug_bounds("board-card-11")
+        .expect("ten full cards on a 1000 px window");
+    let columns = visual.debug_bounds("board-columns").unwrap();
+    assert!(
+        tenth.bottom() <= columns.bottom(),
+        "the tenth card is fully visible"
+    );
     let publications = board.read_with(visual, |b, _| b.list.publication_count());
     click(visual, "board-expand-1");
     assert!(visual.debug_bounds("board-discuss-1").is_some());

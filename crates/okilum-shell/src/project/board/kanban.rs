@@ -2,7 +2,7 @@
 use super::*;
 use list::{Prepared, Row};
 
-const CARD_PITCH: f32 = 120.;
+const CARD_PITCH: f32 = 88.;
 const QUEUE_LIMIT: usize = 8;
 
 impl Board {
@@ -19,8 +19,8 @@ impl Board {
             .size_full()
             .min_h_0()
             .min_w_0()
-            .p_4()
-            .gap_3()
+            .p_3()
+            .gap_2()
             .bg(p.canvas)
             .text_color(p.text)
             .text_size(px(13.))
@@ -171,7 +171,7 @@ impl Board {
                         cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                             range
                                 .map(|index| {
-                                    div().h(px(CARD_PITCH)).pb(px(8.)).child(this.kanban_row(
+                                    div().h(px(CARD_PITCH)).pb(px(4.)).child(this.kanban_row(
                                         rows.groups[stage as usize][index],
                                         stage,
                                         &rows,

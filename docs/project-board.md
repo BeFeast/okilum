@@ -182,7 +182,8 @@ rebuild the groups; ordinary scrolling and selection build only visible cards.
 The Verified control remains a 34 px rail at the right edge and explicitly opens
 its lane, including when empty. Existing empty-stage controls remain available.
 
-Each issue card has three rows: number/type/up to two origin/epic pills and the
+Cards occupy an 88 px virtualised row including spacing; ten complete cards
+fit a 1000 px fixture window without context disclosures. Each issue card has three rows: number/type/up to two origin/epic pills and the
 bound agent avatar; a regular 13 px source title clamped to two 18 px lines; and
 existing state or exactly matched cached progress beside the PR number/actual CI
 dot. Active stale threads (four hours since their last source update) show amber

@@ -140,8 +140,8 @@ impl Board {
                     })
                     .w_full()
                     .min_w_0()
-                    .p(px(10.))
-                    .gap(px(6.))
+                    .p(px(4.))
+                    .gap(px(2.))
                     .rounded(px(8.))
                     .border_1()
                     .border_color(if selected { p.accent } else { p.border_subtle })
@@ -151,7 +151,7 @@ impl Board {
                     .font_weight(FontWeight::NORMAL)
                     .child(
                         div()
-                            .h(px(24.))
+                            .h(px(18.))
                             .text_size(px(12.))
                             .line_height(px(16.))
                             .child("Local"),
@@ -169,7 +169,7 @@ impl Board {
                     )
                     .child(
                         div()
-                            .h(px(18.))
+                            .h(px(16.))
                             .text_size(px(12.))
                             .line_height(px(16.))
                             .text_color(p.text_muted)
@@ -199,14 +199,14 @@ impl Board {
         let mut meta = h_flex()
             .w_full()
             .min_w_0()
-            .h(px(24.))
-            .gap(px(6.))
+            .h(px(18.))
+            .gap(px(2.))
             .text_size(px(12.))
             .line_height(px(16.))
             .text_color(p.text_muted)
             .child(div().flex_none().child(format!("#{number}")))
             .child(row_bits::type_tag(issue, cx));
-        let mut labels = h_flex().min_w_0().flex_1().gap(px(6.)).overflow_hidden();
+        let mut labels = h_flex().min_w_0().flex_1().gap(px(2.)).overflow_hidden();
         if let Some(origin) = appearance::origin(issue) {
             labels = labels.child(row_bits::label_pill(origin, p.warning, cx));
         }
@@ -234,7 +234,7 @@ impl Board {
                     .debug_selector(move || format!("board-agent-link-{number}"))
                     .ghost()
                     .small()
-                    .size(px(24.))
+                    .size(px(22.))
                     .p_0()
                     .flex_none()
                     .disabled(url.is_none())
@@ -299,7 +299,7 @@ impl Board {
         let mut now_row = h_flex()
             .w_full()
             .min_w_0()
-            .h(px(18.))
+            .h(px(16.))
             .gap(px(8.))
             .text_size(px(12.))
             .line_height(px(16.))
@@ -370,8 +370,8 @@ impl Board {
                     .debug_selector(move || format!("board-card-{number}"))
                     .w_full()
                     .min_w_0()
-                    .p(px(10.))
-                    .gap(px(6.))
+                    .p(px(4.))
+                    .gap(px(2.))
                     .border_1()
                     .border_color(if self.selected == Some(number) {
                         p.accent
