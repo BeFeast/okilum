@@ -60,9 +60,60 @@ fn decode(bytes: &[u8]) -> Result<Vec<Comment>> {
     }
     Ok(comments)
 }
+/// Literal same-repository shorthand, never a guessed dependency. Bound work to
+/// the description preview and twelve links; cross-repository URLs are excluded.
+pub fn mentions(body: &str, own: u64) -> Vec<u64> {
+    let preview: String = body.chars().take(6000).collect();
+    let mut numbers = std::collections::BTreeSet::new();
+    for (at, _) in preview.match_indices('#') {
+        if preview[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || "_/.-".contains(c))
+        {
+            continue;
+        }
+        let digits = preview[at + 1..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>();
+        if digits.is_empty()
+            || preview[at + 1 + digits.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        if let Ok(number) = digits.parse::<u64>() {
+            if number > 0 && number != own {
+                numbers.insert(number);
+            }
+        }
+        if numbers.len() == 12 {
+            break;
+        }
+    }
+    numbers.into_iter().collect()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn peek_2531_mentions_are_literal_bounded_and_do_not_invent_dependencies() {
+        assert_eq!(
+            mentions(
+                "Refs #2 and (#3). #2 #1 repo/#4 https://other.test/pull/#5 #6suffix abc#7",
+                1
+            ),
+            vec![2, 3]
+        );
+        assert_eq!(
+            mentions(&(1..=40).map(|n| format!(" #{n}")).collect::<String>(), 99).len(),
+            12
+        );
+        assert!(mentions(&format!("{} #8", "x".repeat(6000)), 1).is_empty());
+    }
     #[test]
     fn peek_2531_comments_are_bounded_and_keep_literal_author_and_date() {
         let comment = serde_json::json!({"created_at":"2026-11-04T09:30:00Z", "user":{"login":"owner"}, "body":"gypд".repeat(100)});

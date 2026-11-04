@@ -193,7 +193,9 @@ labels, the bound live agent/avatar and exactly matched cached current step.
 The source-age label identifies time since update; amber after four hours is
 not a measured run duration. Stage, all linked PRs with their actual state/title
 and CI indicator, related/stage notes, expected result, description, build links
-and existing delivery details remain reachable. **В beta** lists exact builds
+and existing delivery details remain reachable. Literal same-repository issue
+mentions from the bounded description preview appear as labelled links, without
+inferring dependencies. **В beta** lists exact builds
 only from ready Beta rows in the existing delivery projection; otherwise it
 says **ещё нет**. Merge alone never claims delivery.
 
@@ -206,7 +208,7 @@ must all match before publication. No per-frame request or all-issue detail read
 is added. Missing history and comment errors remain visible; full history opens
 through **Issue ↗**. The timeline shows at most 16 source events.
 
-**Обсудить с Manager** switches to Manager and uses the existing protected
+**Обсудить с Manager** switches to Manager → Chat and uses the existing protected
 append-to-draft path, with Undo. It never sends or creates a thread. Issue, PR,
 agent, note and build actions keep their existing destinations. Native GPUI
 regressions exercise click/Space, tabs, arrows, Escape/draft retention, stale

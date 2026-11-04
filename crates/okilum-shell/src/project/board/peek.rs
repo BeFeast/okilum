@@ -369,6 +369,15 @@ impl Board {
                     .on_click(cx.listener(move |this, _, _, cx| this.note(&note, cx))),
             );
         }
+        if let Some(issue) = issue {
+            for referenced in okilum_t3::board::peek::mentions(&issue.body, number) {
+                related = related.child(link_button(
+                    format!("peek-mentioned-{referenced}"),
+                    format!("Упомянуто: #{referenced} ↗"),
+                    binding.issue_url(referenced),
+                ));
+            }
+        }
         body = body
             .child(property("Связано", related, cx))
             .child(div().text_color(p.text_muted).child("Ожидаемый результат"))
@@ -547,6 +556,16 @@ fn beta_rows(
         .collect()
 }
 impl Reader {
+    pub(crate) fn project_issue_peek_visible(&self, cx: &App) -> bool {
+        self.project_navigation
+            .active
+            .as_ref()
+            .and_then(|p| self.project_navigation.boards.get(&p.folder))
+            .is_some_and(|board| {
+                let board = board.read(cx);
+                board.peek.open && !board.peek.manager_tab
+            })
+    }
     pub(crate) fn wrap_project_peek(
         &self,
         manager: AnyElement,

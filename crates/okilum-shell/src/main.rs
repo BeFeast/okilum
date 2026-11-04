@@ -7652,7 +7652,8 @@ impl Render for Reader {
         if let Some(project) = &self.project {
             let visible = self.project_open
                 && self.project_navigation.active.is_some()
-                && workspace_panels.visible(reader_layout::Panel::Backlinks, available);
+                && workspace_panels.visible(reader_layout::Panel::Backlinks, available)
+                && !self.project_issue_peek_visible(cx);
             project.update(cx, |project, cx| {
                 project.draft_handoff_surface_visible(visible, cx)
             });

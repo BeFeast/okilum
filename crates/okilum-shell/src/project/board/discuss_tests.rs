@@ -147,6 +147,9 @@ fn peek_2531_real_reader_opens_collapsed_dock_and_preserves_manager_draft_withou
         })
         .detach();
     });
+    manager.update(visual, |view, cx| {
+        view.select_section(ProjectSection::Rules, cx)
+    });
     let discuss = visual
         .debug_bounds("board-discuss-1767")
         .expect("actual user action is visible");
@@ -161,6 +164,10 @@ fn peek_2531_real_reader_opens_collapsed_dock_and_preserves_manager_draft_withou
             view.composer.read(cx).typed_source_text(cx),
             expected,
             "one exact context append, not both caller and coordinator"
+        );
+        assert!(
+            view.section == ProjectSection::Manager,
+            "Discuss selects Chat before the draft handoff"
         );
         view.draft_handoff_target(cx).unwrap()
     });

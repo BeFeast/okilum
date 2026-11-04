@@ -1337,6 +1337,7 @@ impl Reader {
                     }
                 }
                 Action::Discuss(text) => {
+                    board.update(cx, |board,cx| { board.peek.manager_tab = true; cx.notify(); });
                     #[cfg(target_os = "linux")]
                     let result = this.project.clone().ok_or(okilum_t3::draft_handoff::Refusal::Unavailable)
                         .and_then(|manager| {
@@ -1353,6 +1354,7 @@ impl Reader {
                             let visible = this.project_open && this.project_navigation.active.is_some()
                                 && this.workspace_panels().visible(reader_layout::Panel::Backlinks, available);
                             manager.update(cx, |manager, cx| {
+                                manager.select_section(ProjectSection::Manager, cx);
                                 manager.draft_handoff_surface_visible(visible, cx);
                                 manager.append_board_context(&owner, text.clone(), window, cx)
                             })
