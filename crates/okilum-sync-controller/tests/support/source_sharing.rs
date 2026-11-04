@@ -596,6 +596,9 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
     Ok(())
 }
 
+#[path = "remote_inventory.rs"]
+mod remote_inventory;
+
 /// Driven in separate processes by CI: observe two live daemons before release,
 /// then exercise success, assertion unwinding, and SIGKILL without Drop.
 #[test]

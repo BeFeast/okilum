@@ -7,7 +7,7 @@ use std::{fs, io::Write, os::unix::fs::OpenOptionsExt};
 
 // The Reader's canonical per-machine exclusions, plus the approved worktree
 // exclusions from sync-enrollment.md. Never use FIXTURE_IGNORES as live policy.
-const IGNORES: &[&str] = &[
+pub(super) const IGNORES: &[&str] = &[
     ".okilum-index",
     ".okilum-save-*",
     "/.claude/worktrees",
