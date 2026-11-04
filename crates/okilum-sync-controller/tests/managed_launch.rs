@@ -357,6 +357,26 @@ impl Services {
         state.child = None;
         Ok(())
     }
+    fn crash_helper(&self, home: &Path) -> Result<()> {
+        let mut state = self.0.lock().unwrap();
+        let pid = state.runtime_pid.take().context("no observed runtime")?;
+        let mut helper = OwnedChild(state.child.take().context("no launch helper")?);
+        // Kill only the helper, so process-group cleanup cannot make an unfired
+        // PDEATHSIG control look successful. OwnedChild cleans up on failure.
+        helper.0.kill()?;
+        helper.0.wait()?;
+        assert!(
+            live_generation(home).is_err(),
+            "dead launch ownership invalidates its generation"
+        );
+        wait("PDEATHSIG killed runtime", || {
+            Ok(fs::metadata(format!("/proc/{pid}/exe")).is_err())
+        })?;
+        unsafe {
+            libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), 0);
+        }
+        Ok(())
+    }
 }
 impl UserServices for Services {
     fn reload(&self) -> Result<()> {
@@ -570,7 +590,7 @@ fn issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers() 
     }
     // Application reconcile uses the same managed launch command and never
     // clears the hold/fence. A second crash produces a fresh generation again.
-    services.crash_runtime()?;
+    services.crash_helper(home)?;
     let unit = services.0.lock().unwrap().unit.clone().unwrap();
     let owned_definition = fs::read_to_string(&unit)?;
     fs::write(
