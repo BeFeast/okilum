@@ -221,12 +221,12 @@ its lane, including when empty. Existing empty-stage controls remain available.
 
 Cards occupy an 88 px virtualised row including spacing; ten complete cards
 fit a 1000 px fixture window without context disclosures. Each issue card has three rows: number/type/up to two origin/epic pills and the
-bound agent avatar; a regular 13 px source title clamped to two 18 px lines; and
+bound agent avatar; a regular 13 px source title clamped to two 19.5 px lines; and
 existing state or exactly matched cached progress beside the PR number/actual CI
 dot. Active stale threads (four hours since their last source update) show amber
 with ⚠; failed CI shows red. Missing CI remains unknown. Selection uses an accent
 border and hover a subtle theme surface. Shared text primitives reserve full
-16 px line boxes, including descenders. No mockup colour constants are used.
+18 px line boxes at 12 px text, including descenders. No mockup colour constants are used.
 
 Queue builds just the first eight 30 px mini rows. **＋ ещё N · открыть списком**
 switches to List, expands Queue, scrolls to its heading and saves that view choice.
@@ -237,6 +237,12 @@ List age labels while ordering compares its parsed time. Clicking a card opens t
 with outcome, links, notes and draft-only Discuss; Escape closes it. Native GPUI
 regressions cover card geometry, two-line clamping, bounded Queue work and view
 handoff, actual CI/live/stale evidence, virtualised lanes and Verified expansion.
+
+The compact Board consumes the same cached filtered projection as List, including
+column membership, counts and #2535 stage order. It never re-sorts cards during
+render. Shared chips and `/` search remain above both views; Queue's remaining-count
+action preserves the active filters when opening expanded List. Compact metadata
+pills and mini rows retain #2548's full font line boxes.
 
 No source poll, execution inference, membership/stage mapping or delivery claim
 is added by either presentation.
@@ -470,9 +476,3 @@ and known-project matching. A bound repository cannot be retargeted. No executor
 or stage is required to create the empty Board. Local cards use an independent
 sidecar and draft-only discussion; verified local Manager launch follows
 separately. See [local project start](local-project-start.md).
-
-The compact Board consumes the same cached filtered projection as List, including
-column membership, counts and #2535 stage order. It never re-sorts cards during
-render. Shared chips and `/` search remain above both views; Queue's remaining-count
-action preserves the active filters when opening expanded List. Compact metadata
-pills and mini rows retain #2548's full font line boxes.

@@ -25,7 +25,7 @@ fn label(stage: Column) -> &'static str {
     }
 }
 #[derive(Clone, Copy, Debug)]
-enum Row {
+pub(super) enum Row {
     Group(Column),
     Issue(usize),
     Local(usize),

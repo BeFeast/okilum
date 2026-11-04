@@ -75,6 +75,16 @@ fn kanban_2534_three_rows_two_complete_title_lines_and_viewport_work(cx: &mut Te
     assert!(meta.size.height >= px(18.) && now.size.height >= px(16.));
     assert!(now.bottom() < card.bottom());
     assert!(card.size.height <= px(84.));
+    // Measure production truncation boxes against full UI font metrics. Shared
+    // pills are clipped by their metadata container if it is shorter than 20 px.
+    let required = visual.update(|_, cx| {
+        let font = cx.text_system().resolve_font(&gpui::font(brand::SANS_FONT));
+        cx.text_system().ascent(font, px(12.)).abs() + cx.text_system().descent(font, px(12.)).abs()
+    });
+    assert!(required > px(12.), "positive font-metric control");
+    assert!(meta.size.height >= required + px(2.));
+    assert!(now.size.height >= required);
+
     assert_eq!(
         visual
             .debug_bounds("board-lane-Working")
