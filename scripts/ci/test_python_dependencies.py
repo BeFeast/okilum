@@ -45,6 +45,7 @@ class PythonDependencies(unittest.TestCase):
                        for suite in ['ci', 'releases', 'updater']) or any(
                            entrypoint in run for entrypoint in [
                                'scripts/ci/check-linux.sh', 'scripts/ci/check-shared.sh',
+                               'scripts/ci/sync-source-sharing-fast.sh',
                                'scripts/ci/sync-source-sharing.sh'])
 
         jobs_checked = []
