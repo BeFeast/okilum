@@ -487,6 +487,12 @@ fn issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers() 
     wait("managed REST ready", || Ok(identity.connect().is_ok()))?;
     let home = identity.config_file.parent().unwrap();
     let original_generation = services.remember_pid(home)?;
+    let sibling = state.join("prepared/external-sibling");
+    fs::create_dir(&sibling)?;
+    assert!(
+        live_generation(&sibling).is_err(),
+        "a sibling external home must not inherit managed generation ownership"
+    );
     let generation_file = state.join("prepared/managed-launch/generation.json");
     let original = fs::read(&generation_file)?;
     let mut stale: Value = serde_json::from_slice(&original)?;
