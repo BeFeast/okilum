@@ -1365,6 +1365,7 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
     let board = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<Board>().unwrap()
     });
+    visual.simulate_resize(size(px(1200.), px(1000.)));
     visual.run_until_parked();
     assert!(
         visual.debug_bounds("board-expand-42").is_some(),
