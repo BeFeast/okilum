@@ -19,14 +19,18 @@ def main():
     try:
         bridge.write_bytes(baseline)
         result = subprocess.run([sys.executable, str(Path(__file__).with_name('run.py')), sys.argv[1]],
-                                env={**os.environ, 'SPARKLE_SCENARIOS': 'restart-verifying'}, cwd=ROOT)
+                                env={**os.environ, 'SPARKLE_SCENARIOS': 'restart-verifying'}, cwd=ROOT,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        (evidence / 'baseline-runner.log').write_text(result.stdout)
         assert result.returncode != 0, 'Pre-fix bridge unexpectedly accepted the early Restart click'
+        assert 'AssertionError: Timeout:' in result.stdout, result.stdout
         trace = (evidence / 'restart-verifying.trace').read_text()
         # Compilation/setup failure is not a reproduced regression. Require the
         # actual archive, Ready verification and click, followed by ignored intent.
         for marker in ('downloaded 2', 'prepared 2', 'restart clicked during real Ready verification', 'verified-ready 2'):
             assert marker in trace, trace
         assert 'final editor guard boundary' not in trace and 'report 13 ' not in trace, trace
+        assert 'termination requested' not in trace and 'report 2 ' not in trace, trace
         for path in list(evidence.iterdir()):
             path.rename(path.with_name('negative-control-' + path.name))
         print('PASS negative control: real Sparkle Ready-verification click was silently discarded before #2586', flush=True)
