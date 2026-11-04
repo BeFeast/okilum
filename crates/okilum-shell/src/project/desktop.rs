@@ -86,7 +86,7 @@ impl ProjectView {
             }
             return;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             if self.opening_t3 {
                 return;
@@ -129,7 +129,7 @@ impl ProjectView {
             .detach();
             cx.notify();
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let _ = window;
     }
 }

@@ -1,153 +1,57 @@
-# Desktop pairing and hub adapter (#586)
+# Pair computers directly
 
-This opt-in Inbox extension is separate from passkey enrollment and from the
-native Settings controller. It does not start a desktop daemon or register a
-service. The adapter and all integration evidence use isolated synthetic vaults.
-Installing an adapter or changing a working hub requires its own approved rollout.
+The current Linux setup is [Sync between your computers](sync-enrollment.md).
+On the computer with the notes, open **Share with another computer…**, share the
+vault with **Share with my computers**, and select **Add computer** → **Copy
+pairing URL**. On the new computer, choose **Get notes from another computer**,
+paste the URL and select **Connect**. Confirm the expected computer on the old
+one, then choose a vault and an empty local folder on the new one. First receive
+and bidirectional Sync start automatically.
 
-## Pairing protocol
+The pairing URL is private, usable for one computer and expires after ten minutes.
+Keep both computers on the same LAN for first pairing and keep the old computer's
+Okilum open during confirmation and vault selection. The URL is not a filesystem
+path. If it expires, create a new one on the old computer. A paired computer can
+choose further authorized vaults without another invitation. A non-empty new
+destination remains refused until [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043).
 
-A desktop persists a random request UUID, its Syncthing device ID and display name,
-and **two independent 256-bit secrets**: a verifier and a future grant credential,
-encoded as 64 lowercase hex characters. It sends only their SHA-256 hex digests to
-`POST /api/v1/sync/desktop/start`:
+## What confirmation authorizes
 
-```json
-{"id":"<request UUID>","device_id":"<Syncthing ID>","name":"My computer",
- "verifier_challenge":"<SHA-256(verifier)>","grant_challenge":"<SHA-256(grant secret)>"}
-```
+The new computer supplies its signed name, application identity and selected
+Syncthing device identity. The old computer shows the requesting identities
+before approval. A different requester cannot replace that request silently.
+After confirmation, the new computer gets a private catalog of authorized
+vaults. No unauthenticated request can list that catalog, and no account or
+Okilum service participates.
 
-The response includes an approval URL with a `#sync=<UUID>` fragment, an eight
-character comparison code, and a ten-minute expiry. The desktop shows the code and
-opens the system browser. Exact start retries preserve the request and expiry;
-changed content with the same ID conflicts. Unknown fields are rejected. Pending
-requests are bounded (128 pending, 10,000 durable total) and new requests rate limited; durable grants are capped at
-100 registrations per owner, including tombstones.
+The URL pins the old computer's application public key and carries a random
+invitation secret. Do not post it publicly or save it inside a vault. Approval
+creates a separate durable paired credential; expiry of the invitation does not
+unpair the computers. The original requester may retry within the invitation's
+lifetime to recover a lost approval response, but cannot use it to approve a
+second computer. Syncthing separately authenticates file transfer with its device
+certificates. Public discovery/relays help later transport; they do not carry the
+first pairing handshake or authorize vaults.
 
-The browser uses the existing HTTPS-origin WebAuthn login. Approval shows the
-computer's name, full device ID, comparison code, and the operator-configured
-vault choices. The owner must compare with the requesting desktop and explicitly
-approve with fresh passkey confirmation. Browser approval accepts only request ID,
-code and an allowed vault UUID; it cannot supply owner, filesystem path, folder ID,
-REST endpoint or transport address. Reject cancels the request. No browser session
-is issued to the desktop. Device ID is a Syncthing certificate identity, not a
-passkey identity; actual transfer still requires its private key.
+Implementation and bounds are in
+[the direct-pairing engineering notes](sync-direct-pairing.md),
+[`direct/mod.rs`](../crates/okilum-sync-controller/src/direct/mod.rs) and
+[`direct/wire.rs`](../crates/okilum-sync-controller/src/direct/wire.rs), checked
+against `origin/main` at `547a8c4c96be464a4d66921447c6c93e5ad90162`.
 
-`POST /api/v1/sync/desktop/exchange` takes `{id, verifier, grant_secret}` in its JSON
-body. The service compares both original challenges. Before approval it returns
-`registration: null`; after approval it atomically creates one registration and
-stores only the grant's hash. Exact retries return the same registration without
-minting or returning another credential. Exchange expires with the request, even
-after service restart. The separate grant remains durable. Browser sessions and
-unfinished WebAuthn ceremonies still require fresh login after restart.
+macOS is **coming** in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489);
+Windows is **coming** in [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
+See [remaining work](sync-enrollment.md#removal-ignores-and-remaining-work) for
+non-empty first merge, device-list/removal, conflict/history and server limits.
 
-Native routes reject browser Origin and Cookie headers. They do not enable CORS.
-`POST /api/v1/sync/desktop/status` and `/remove` use `Authorization: Bearer <grant>`;
-the credential selects only its own owner/vault/device registration. Never put it
-in a URL, diagnostic log or command argument. No grant endpoint can execute an
-arbitrary hub operation. The browser has authenticated list/remove endpoints,
-with fresh passkey confirmation required for removal. The computer list includes
-unexpired requests awaiting approval or desktop exchange; a Review action opens
-the separate approval view. Expired, cancelled and exchanged requests leave the
-pending list.
+## Superseded service pairing
 
-States are `provisioning`, `hub_ready`, `removal_pending`, `revoked`.
-`hub_ready` means only that the hub share is configured, **not** that a desktop has
-received the vault. Only this state exposes folder ID, public hub ID/address and
-ignore policy for the later native controller. A revoked grant can only read its
-own removal receipt or repeat Remove; connection parameters are withheld. Source
-files and REST keys are never returned. Passkey revocation does not automatically
-revoke independent sync registrations; use Remove for those registrations.
-
-## Authority and durable state
-
-The Inbox operator explicitly enables `--sync-config <private JSON file>`:
-
-```json
-{"owner_id":"<existing Inbox owner UUID>","vaults":[{
- "id":"<vault UUID>","name":"Test vault","folder_id":"test-folder",
- "hub_device_id":"<hub Syncthing ID>","hub_address":"tcp://127.0.0.1:22440",
- "ignores":["/.okilum-index","/worktrees"],
- "adapter_socket":"/private/adapter/hub.sock"
-}]}
-```
-
-There is no default mapping, real-vault discovery or socket mount. Invalid Sync
-configuration disables only Sync, preserving Inbox login and capture. The mapping
-must match the existing owner; durable scope bindings reject reinterpretation of
-an existing vault UUID's folder/hub/policy. Label changes are allowed; a different
-hub or folder needs a new vault UUID. Requests,
-grants and requested removal state live in the private Inbox SQLite database
-(schema 12), outside vaults and indexes. Secrets are hashed. Expired requests and
-revocation tombstones are durable records, not caches; no automatic tombstone
-expiry is implemented. Fresh owner approval can create a new registration after
-confirmed removal; old credentials and tombstones cannot override it.
-
-An asynchronous worker reconciles saved registrations every five seconds. Intent
-commits before external work. A result from an old Add cannot overwrite a newer
-Remove. Offline/unavailable/conflicting hub configuration remains pending with a
-safe error; restart retries the same registration. A configured vault must remain
-available while its registrations need reconciliation.
-
-## Host adapter
-
-`okilum-sync-hub --config <private JSON file>` is a separate Unix process. Its
-configuration contains owner UUID, vault UUID, folder ID and expected folder path,
-hub device ID, literal loopback REST address, private REST-key file, private data
-directory and socket path. It alone reads the REST key. The socket has mode 0600
-inside a 0700 directory; service access is an OS deployment capability, not an
-unauthenticated TCP proxy. Only one adapter process may own its data directory.
-
-The bounded newline-JSON socket protocol accepts only `{owner_id, vault_id,
-registration_id, device_id, action}`, with actions `add`, `remove`, `status`.
-Unknown fields, wrong scope or replayed registration IDs with different devices
-are rejected. Every hub mutation verifies hub identity, **1.29.5** version and
-configured folder path. Existing external devices/shares are not adopted by Add.
-
-The adapter journals ownership before device creation/share addition, allowing a
-restart between REST calls. New devices are not introducers and do not auto-accept
-folders. Their `dynamic` address does not enable discovery/relay/NAT: transport is
-configured separately by the operator, and the client can initiate a static
-connection to the hub. Adapter code never changes those global transport options.
-Only the configured folder's device array is patched; other folder and device
-settings are retained. It serializes its own mutations and rechecks immediately
-before writing. Syncthing REST offers no compare-and-swap, so concurrent external
-administrative writes still require coordination.
-
-Remove persists a terminal tombstone before touching the hub. A removal received
-before any owned Add does not acquire authority over an external device/share.
-Owned shares are removed again after re-introduction, including after restart.
-Global device records are retained to avoid damaging other roles/folders. This
-is eventual removal from **this hub**, with a possible re-introduction window;
-other peer connections and already copied files may remain. It is not lost-device
-fleet revocation. A terminal registration stays revoked. Re-enrollment requires a new request,
-new grant secret and fresh owner approval after removal completes. Native cooperative shutdown is slice 3.
-
-## Validation and deployment boundary
-
-Normal Inbox tests exercise WebAuthn-backed approval, wrong credentials/origin/
-owner/vault, expiry, duplicate/conflicting requests, restart and stale Add results.
-The ignored `sync_hub` test runs an unchanged pinned Syncthing 1.29.5 in a temporary
-home with loopback-only listeners and discovery/relay/NAT/upgrade disabled. It
-checks interrupted Add, REST read-back, offline Remove/restart, re-introduction,
-external configuration preservation, scope binding and the actual private socket
-transport. All owned children are stopped; the allowed share and live endpoint
-are positive controls before absence assertions.
-
-```sh
-# On the authorized isolated development host, with the build wrapper:
-cd inbox
-cargo fmt --check
-cargo fmt --manifest-path ../crates/okilum-sync/Cargo.toml -p okilum-sync --check
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace
-OKILUM_SYNC_HUB=/path/to/pinned/syncthing-1.29.5 \
-  cargo test --locked -p okilum-inboxd --test sync_hub -- --ignored
-```
-
-Real browser/passkey UX is verified in a separate QA session against the sandbox
-approval screen; test authenticators do not replace that check. No native Settings
-UI, OS service lifecycle, production socket mount or working-vault enrollment is
-part of this slice. Any Inbox deployment must preserve existing owner/credentials
-and use backup → deploy → login check → automatic rollback; none is required to
-exercise the independent development sandbox.
+The former #586 hub adapter and browser/passkey enrollment are gone from the
+desktop user flow ([#2049](https://git.oklabs.uk/BeFeast/okilum/issues/2049)).
+They are not steps for connecting computers. Their code remains for independent
+consumers in [Inbox Sync](../inbox/crates/okilum-inboxd/src/sync.rs),
+[the hub adapter](../inbox/crates/okilum-inboxd/src/sync_hub.rs), and
+[legacy controller enrollment](../crates/okilum-sync-controller/src/enrollment.rs).
+The [older Linux controller notes](sync-linux-controller.md) and
+[service readiness notes](sync-readiness.md) describe that historical implementation,
+not the current desktop setup.

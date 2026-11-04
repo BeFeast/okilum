@@ -35,9 +35,8 @@ struct Prepared {
     binding: Binding,
     rows: Vec<Row>,
     counts: [usize; 5],
-    filter: Option<String>,
+    projection: Arc<filters::Projection>,
     collapsed: [bool; 5],
-    roles: Arc<[String]>,
     local_indices: std::collections::BTreeMap<String, usize>,
     source_problem: Option<String>,
     sources_ready: bool,
@@ -130,8 +129,9 @@ impl Board {
         control.into_any_element()
     }
     fn prepare_list(&mut self) -> Arc<Prepared> {
+        let projection = self.filtered_projection();
         if let Some(prepared) = &self.list.prepared {
-            if prepared.filter == self.filter
+            if Arc::ptr_eq(&prepared.projection, &projection)
                 && prepared.collapsed == self.list.preferences.collapsed
             {
                 return prepared.clone();
@@ -152,32 +152,15 @@ impl Board {
                 .iter()
                 .filter_map(|(n, count)| (*count > 1).then_some(*n)),
         );
-        let binding = if self.snapshot.forgejo.last_success.is_some() {
-            okilum_t3::board::live::project(
-                binding,
-                &self.snapshot.forgejo.value,
-                self.projection_time(),
-            )
-        } else {
-            binding.clone()
-        };
-        let mut groups: [Vec<Row>; 5] = Default::default();
-        let mut roles = std::collections::BTreeSet::new();
-        for (i, scope) in binding.issues.iter().enumerate() {
-            roles.insert(scope.executor.clone());
-            if self
-                .filter
-                .as_ref()
-                .is_none_or(|filter| filter == &scope.executor)
-            {
-                groups[self.delivery_column(scope) as usize].push(Row::Issue(i));
-            }
-        }
-        if self.filter.is_none() {
-            for (i, card) in self.local_cards.value.cards.iter().enumerate() {
-                groups[card.state.column() as usize].push(Row::Local(i));
-            }
-        }
+        let binding = projection.binding.clone();
+        let mut groups: [Vec<Row>; 5] = std::array::from_fn(|column| {
+            projection.scopes[column]
+                .iter()
+                .copied()
+                .map(Row::Issue)
+                .chain(projection.locals[column].iter().copied().map(Row::Local))
+                .collect()
+        });
         for i in 0..binding.card_problems.len() {
             groups[Column::Queue as usize].push(Row::Problem(i));
         }
@@ -219,16 +202,13 @@ impl Board {
             binding,
             rows,
             counts,
-            filter: self.filter.clone(),
+            projection: projection.clone(),
             collapsed: self.list.preferences.collapsed,
-            roles: roles.into_iter().collect::<Vec<_>>().into(),
-            local_indices: self
-                .local_cards
-                .value
-                .cards
+            local_indices: projection
+                .locals
                 .iter()
-                .enumerate()
-                .map(|(i, card)| (card.id.clone(), i))
+                .flatten()
+                .map(|i| (self.local_cards.value.cards[*i].id.clone(), *i))
                 .collect(),
         });
         self.list.prepared = Some(prepared.clone());
@@ -239,6 +219,15 @@ impl Board {
         prepared
     }
     fn list_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .filter_ui
+            .search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            return;
+        }
         match event.keystroke.key.as_str() {
             "up" | "down" => {
                 let prepared = self.prepare_list();
@@ -311,10 +300,14 @@ impl Board {
             .overflow_hidden()
             .bg(p.canvas)
             .text_color(p.text)
+            .capture_key_down(cx.listener(|this, event, window, cx| {
+                this.filter_key(event, window, cx);
+            }))
             .on_key_down(cx.listener(|this, event, window, cx| this.list_key(event, window, cx)))
             .child(
                 h_flex()
-                    .h(px(48.))
+                    .min_h(px(48.))
+                    .flex_wrap()
                     .flex_none()
                     .px(px(18.))
                     .gap(px(10.))
@@ -323,12 +316,16 @@ impl Board {
                     .child(
                         div()
                             .text_size(px(15.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Задачи"),
                     )
-                    .child(self.view_toggle(cx))
-                    .child(div().flex_1())
-                    .child(self.list_filter(prepared.roles.clone(), cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.filter_bar(&prepared.projection, cx)),
+                    )
                     .child(self.add_card_button(cx))
                     .child(
                         Button::new("board-manage")
@@ -359,7 +356,29 @@ impl Board {
             root = root.child(div().px_4().child(notes));
         }
         if let Some(notice) = &self.notice {
-            root = root.child(div().px_4().text_size(px(12.)).child(notice.clone()));
+            root = root.child(
+                div()
+                    .px_4()
+                    .text_size(px(12.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
+                    .child(notice.clone()),
+            );
+        }
+        if self.filter.is_active()
+            && (!self.binding_loading || self.binding_read.is_some())
+            && (!self.local_loading || self.local_cards.last_success.is_some())
+            && (!self.snapshot.busy() || self.snapshot.forgejo.last_success.is_some())
+            && prepared.counts.iter().all(|count| *count == 0)
+        {
+            return root
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .px_4()
+                        .child(self.filter_empty(cx)),
+                )
+                .into_any_element();
         }
         if prepared.counts.iter().all(|count| *count == 0) && prepared.sources_ready {
             root = root.child(
@@ -368,12 +387,9 @@ impl Board {
                     .px_4()
                     .py_2()
                     .text_size(px(12.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                     .text_color(p.text_muted)
-                    .child(if self.filter.is_some() {
-                        "No cards for this executor."
-                    } else {
-                        "No cards yet. Add a card to get started."
-                    }),
+                    .child("No cards yet. Add a card to get started."),
             );
         }
         let rows = prepared.clone();
@@ -444,39 +460,12 @@ impl Board {
                 .flex_none()
                 .px_4()
                 .text_size(px(12.))
+                .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                 .text_color(p.text_muted)
                 .truncate()
                 .child(problem_line(problem.into_iter().collect()).unwrap_or_default()),
         )
         .into_any_element()
-    }
-    fn list_filter(&self, roles: Arc<[String]>, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
-        let selected = self.filter.clone();
-        let weak = cx.entity().downgrade();
-        Button::new("board-agent-filter")
-            .debug_selector(|| "board-agent-filter".into())
-            .small()
-            .ghost()
-            .label(selected.clone().unwrap_or_else(|| "All agents".into()))
-            .accessibility_label("Agent filter")
-            .dropdown_menu_with_anchor(Anchor::TopRight, move |mut menu, _, _| {
-                for role in std::iter::once(None).chain(roles.iter().cloned().map(Some)) {
-                    let owner = weak.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(role.clone().unwrap_or_else(|| "All agents".into()))
-                            .checked(role == selected)
-                            .on_click(move |_, _, cx| {
-                                let _ = owner.update(cx, |this, cx| {
-                                    this.filter = role.clone();
-                                    cx.notify();
-                                });
-                            }),
-                    );
-                }
-                menu
-            })
-            .into_any_element()
     }
     fn list_row(&self, row: Row, prepared: &Prepared, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
@@ -503,6 +492,7 @@ impl Board {
                             .w_full()
                             .gap(px(9.))
                             .text_size(px(13.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .child(appearance::icon(
                                 if collapsed {
                                     "chevron-right"
@@ -512,8 +502,22 @@ impl Board {
                                 p.text_muted,
                             ))
                             .child(appearance::icon(icon, tone))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(label(stage)))
-                            .child(div().text_color(p.text_muted).child(count.to_string())),
+                            .child(
+                                div()
+                                    .debug_selector(move || {
+                                        format!("board-list-group-label-{stage:?}")
+                                    })
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(label(stage)),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(move || {
+                                        format!("board-list-count-{stage:?}-{count}")
+                                    })
+                                    .text_color(p.text_muted)
+                                    .child(count.to_string()),
+                            ),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.list.preferences.collapsed[stage as usize] = !collapsed;
@@ -555,6 +559,7 @@ impl Board {
                             .min_w_0()
                             .gap_2()
                             .text_size(px(13.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .child(row_bits::type_tag(None, cx))
                             .child(
                                 div()
@@ -566,6 +571,7 @@ impl Board {
                             .child(
                                 div()
                                     .text_size(px(12.))
+                                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                                     .text_color(p.text_muted)
                                     .child("Local"),
                             ),
@@ -589,6 +595,7 @@ impl Board {
                     .flex()
                     .items_center()
                     .text_size(px(12.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                     .text_color(p.warning)
                     .truncate()
                     .child(format!(
@@ -621,10 +628,12 @@ impl Board {
             .min_w_0()
             .gap(px(10.))
             .text_size(px(13.))
+            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
             .child(
                 div()
                     .flex_none()
                     .text_size(px(12.))
+                    .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                     .text_color(p.text_muted)
                     .child(format!("#{number}")),
             )
@@ -677,6 +686,7 @@ impl Board {
                 .max_w(px(230.))
                 .truncate()
                 .text_size(px(12.))
+                .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                 .text_color(if mapping.is_some() {
                     p.warning
                 } else {
@@ -699,6 +709,8 @@ impl Board {
                     .child(
                         h_flex()
                             .gap(px(5.))
+                            .text_size(px(12.))
+                            .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                             .child(row_bits::ci_dot(checks, cx))
                             .child(format!("PR {pr}")),
                     )
@@ -760,6 +772,7 @@ impl Board {
                 .w(px(if stale { 108. } else { 52. }))
                 .flex_none()
                 .text_size(px(12.))
+                .line_height(relative(row_bits::TEXT_LINE_HEIGHT))
                 .text_color(if stale { p.warning } else { p.text_muted })
                 .child(if stale {
                     format!("{time} ⚠ долго")

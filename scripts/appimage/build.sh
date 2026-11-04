@@ -13,8 +13,9 @@ scripts/vendor-setup.sh --verify
 python3 scripts/brand-assets.py verify
 # Only PR artifacts expose an explicit local-fixture QA entry. Main/release
 # artifacts cannot accept fixture trust, even with the QA CLI arguments.
+# forgejo-linux-pr/hourly-<sha> is the write-once beta producer ref: production.
 build_features=()
-if [[ "${GITHUB_REF_NAME:-}" == forgejo-linux-pr/* ]]; then
+if [[ "${GITHUB_REF_NAME:-}" == forgejo-linux-pr/* && "${GITHUB_REF_NAME}" != forgejo-linux-pr/hourly-* ]]; then
     build_features=(--features appimage-acceptance-harness)
 fi
 cargo build --release --locked -p okilum-shell "${build_features[@]}"

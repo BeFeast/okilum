@@ -198,6 +198,8 @@ pub(super) fn rpc(ack: bool) -> (Environment, Arc<Mutex<Vec<Value>>>, thread::Jo
             let start = std::time::Instant::now();
             loop {
                 if let Ok((stream, _)) = listener.accept() {
+                    // BSD/macOS inherits the listener's nonblocking mode.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(4)))
                         .unwrap();

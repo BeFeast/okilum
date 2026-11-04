@@ -1,4 +1,4 @@
-//! Linux native reconciliation adapter for frozen slot23 APIs ce1ed704d/5f7c3657e.
+//! Native reconciliation adapter for frozen slot23 APIs ce1ed704d/5f7c3657e.
 //! The configured policy surface retains this Entity and invalidates it before
 //! hide/rebind/feature disable. Persistence uses its canonical identity lock.
 use super::{

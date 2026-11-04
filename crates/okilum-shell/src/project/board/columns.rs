@@ -25,26 +25,6 @@ impl State {
 }
 
 impl Board {
-    pub(super) fn column_counts(&self, binding: &Binding) -> [usize; 5] {
-        let mut counts = [0; 5];
-        for scope in &binding.issues {
-            if self
-                .filter
-                .as_ref()
-                .is_none_or(|filter| filter == &scope.executor)
-            {
-                counts[self.delivery_column(scope) as usize] += 1;
-            }
-        }
-        if self.filter.is_none() {
-            for card in &self.local_cards.value.cards {
-                counts[card.state.column() as usize] += 1;
-            }
-        }
-        counts[Column::Queue as usize] += binding.card_problems.len();
-        counts
-    }
-
     pub(super) fn column_sources_ready(&self, binding: &Binding) -> bool {
         !self.binding_loading
             && !self.local_loading

@@ -263,7 +263,7 @@ fn disconnect_clears_model_loading_and_reconnect_can_load_again(cx: &mut TestApp
 }
 
 #[gpui::test]
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 fn live_instance_and_effort_changes_replace_cached_current_without_refresh(
     cx: &mut TestAppContext,
 ) {

@@ -454,3 +454,39 @@ fn deleted_live_thread_disables_send_with_a_visible_reason(cx: &mut TestAppConte
     );
     drop(root);
 }
+
+// Compiling the native implementation must not silently switch the Mac panel
+// or restore another session behind its retained WKWebView (#2517 / #2522).
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn macos_project_lifecycle_keeps_native_restore_explicit(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    cx.update(reader_features::enable_test_modules);
+    let files = tempfile::tempdir().unwrap();
+    let gateway = Arc::new(fixture::Fake::default());
+    cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = ProjectView::new(
+                None,
+                Some(files.path().join("state")),
+                files.path().to_owned(),
+                window,
+                cx,
+            );
+            assert!(!view.threads.enabled);
+            let environment = Environment::new("fixture", "https://t3.example.test").unwrap();
+            view.finish_connection(Ok((environment, gateway)), window, cx);
+            assert!(!view.native_pairing_busy());
+            assert!(!view.native.active());
+            view.set_active(false, window, cx);
+            view.set_active(true, window, cx);
+            assert!(!view.native_pairing_busy());
+            assert!(!view.native.active());
+            // Positive control: this same view can detect a restore request.
+            view.native_restore(false, window, cx);
+            assert!(view.native_pairing_busy());
+            view
+        });
+        Root::new(view, window, cx)
+    });
+}

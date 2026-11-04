@@ -506,7 +506,7 @@ fn projects_section_is_the_shared_picker_with_quiet_skips_and_row_warnings(
         crate::test_init(cx);
         bind_keys(cx);
     });
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = fixture::canonical_tempdir();
     let vault = fixture.path().join("vault");
     let grisaille_id = "b0728fed-73e6-45c2-9c61-a96f7df467f8";
     for (folder, manifest) in [
@@ -650,7 +650,7 @@ fn projects_menu_scope_switch_and_leave_restore_the_original_tree(cx: &mut TestA
         crate::test_init(cx);
         bind_keys(cx);
     });
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = fixture::canonical_tempdir();
     let vault = fixture.path().join("vault");
     for folder in ["Dev/Areas/App", "Music/Areas/Studio"] {
         std::fs::create_dir_all(vault.join(folder).join("ops")).unwrap();
@@ -833,7 +833,7 @@ fn a_failed_new_intent_keeps_a_draft_even_when_old_text_matches(cx: &mut TestApp
 #[gpui::test]
 fn rotation_deactivates_the_cached_manager_before_polling_its_replacement(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
-    let files = tempfile::tempdir().unwrap();
+    let files = fixture::canonical_tempdir();
     let vault = files.path().join("vault");
     std::fs::create_dir_all(vault.join("ops")).unwrap();
     std::fs::write(vault.join("note.md"), "# Retained note\n").unwrap();
@@ -1056,10 +1056,10 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
     let menu = visual.debug_bounds("project-connection-menu").unwrap();
     visual.simulate_click(menu.center(), Modifiers::default());
     visual.run_until_parked();
-    // Linux also has Rotation policy and Express session before Diagnostics.
-    #[cfg(target_os = "linux")]
+    // The native Manager also has Rotation policy and Express session before Diagnostics.
+    #[cfg(native_manager)]
     visual.simulate_keystrokes("down down down down down enter");
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(native_manager))]
     visual.simulate_keystrokes("down down down enter");
     visual.executor().advance_clock(Duration::from_secs(20));
     visual.run_until_parked();
@@ -1502,7 +1502,7 @@ fn reconnect_browser_guidance_opens_only_the_entered_t3_origin(cx: &mut TestAppC
     assert!(gateway.sends.lock().unwrap().is_empty());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 #[gpui::test]
 fn narrow_manager_keeps_identity_above_history_and_all_message_controls_together(
     cx: &mut TestAppContext,
