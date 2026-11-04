@@ -44,7 +44,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo bash scripts/ci/hosted-ubuntu-apt.sh \
-            build-essential cmake pkg-config curl git mold zstd gnupg gpgv tini ffmpeg \
+            build-essential cmake pkg-config curl git mold zstd python3-venv gnupg gpgv tini ffmpeg \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
       - name: Verify pinned Rust toolchain
@@ -84,8 +84,15 @@ jobs:
           cp vendor/gpui-component/Cargo.lock "$vendor_lock"
           trap 'cp "$vendor_lock" vendor/gpui-component/Cargo.lock; unlink "$vendor_lock"' EXIT
           cargo fetch --manifest-path vendor/gpui-component/Cargo.toml
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Verify agent helper controls
         run: python3 -m unittest discover -s scripts/ci -p test_agent_checks.py
+      - name: Run CI, releases and updater Python suites
+        run: |
+          python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+          python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
+          python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
       - name: Verify bundled Sync Help and brand
         run: |
           python3 docs/help/sync/check.py
