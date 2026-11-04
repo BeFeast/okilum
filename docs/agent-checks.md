@@ -116,3 +116,22 @@ every descendant within 32 s, and continue to the final independent suite.
 `reveal-stress.py` runs the exact compiled shell test at least 20 times, requires
 both its missing-manager assertion and fake-manager receipt, and checks that the
 private daemon's cleanup ran. Each repetition has its own 20 s process deadline.
+
+Reveal's five-second D-Bus deadlines cover the entire connection/authentication
+and ShowItems operations. zbus's `method_timeout` alone starts after a call is
+sent and does not cover the authentication handshake. The private test bus has
+the same connection deadline, a five-second whole-test bound, and bounded startup
+address collection. Its startup address goes to a temporary regular file: pipe
+EOF or a reader-thread join cannot retain the test when another process fixture
+inherits a writer before exec. The child guard is installed before startup
+checks and always kills/waits the daemon, including assertion/timeout unwinding.
+The missing-manager assertion requires ServiceUnknown, so a timeout cannot
+masquerade as the expected no-manager error.
+
+Real-socket controls cover an unanswered AUTH and a manager that receives the
+exact item URI but withholds its reply. Hosted run `41845622687` verifies that
+removing only the shared deadline causes both controls to hang until the external
+supervisor returns 124; with it, both return in five seconds. The isolated original
+modules passed 50 hosted repetitions (`41844867137`), so lack of an installed
+manager alone does not identify the historical full-suite stall. Keep that
+historical trigger distinct from the controlled, reproduced indefinite waits.

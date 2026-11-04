@@ -121,9 +121,9 @@ mod linux {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::linux::{connect, deadline, fallback_folder, item_uri, show_items};
-    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::io::Write as _;
     use std::path::Path;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Child, Command};
 
     #[test]
     fn item_uri_is_an_encoded_file_url() {
@@ -170,11 +170,14 @@ mod tests {
                 uuid::Uuid::new_v4()
             )
             .unwrap();
+            // A regular file avoids a read_line/reader-join wait if a sibling
+            // process fixture temporarily inherits a pipe writer before exec.
+            let address = tempfile::NamedTempFile::new().unwrap();
             let child = match Command::new("dbus-daemon")
                 .arg("--config-file")
                 .arg(config.path())
                 .args(["--nofork", "--print-address"])
-                .stdout(Stdio::piped())
+                .stdout(address.reopen().unwrap())
                 .spawn()
             {
                 Ok(child) => child,
@@ -183,23 +186,22 @@ mod tests {
             };
             // Install the cleanup guard before any fallible startup checks.
             let mut bus = Self(child, String::new());
-            let stdout = bus.0.stdout.take().unwrap();
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            let reader = std::thread::spawn(move || {
-                let mut address = String::new();
-                let result = BufReader::new(stdout).read_line(&mut address);
-                let _ = sender.send(result.map(|_| address));
-            });
-            let address = receiver.recv_timeout(std::time::Duration::from_secs(5));
-            if address.is_err() {
-                // Closing the writer unblocks the reader before any panic.
-                bus.0.kill().unwrap();
-                bus.0.wait().unwrap();
+            let started = std::time::Instant::now();
+            loop {
+                bus.1 = std::fs::read_to_string(address.path()).unwrap();
+                if bus.1.ends_with('\n') {
+                    break;
+                }
+                assert!(
+                    bus.0.try_wait().unwrap().is_none(),
+                    "private dbus-daemon exited before printing its address"
+                );
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(5),
+                    "private dbus-daemon startup timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            reader.join().unwrap();
-            bus.1 = address
-                .expect("private dbus-daemon startup timed out")
-                .unwrap();
             bus.1 = bus.1.trim().to_owned();
             assert!(
                 !bus.1.is_empty(),
