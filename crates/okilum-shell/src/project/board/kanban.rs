@@ -5,6 +5,22 @@ use list::{Prepared, Row};
 const CARD_PITCH: f32 = 88.;
 const QUEUE_LIMIT: usize = 8;
 
+/// Scroll belongs to the project view, including when its elements are hidden.
+pub(super) struct State {
+    pub lanes: [gpui::UniformListScrollHandle; 5],
+    horizontal: ScrollHandle,
+    queue: ScrollHandle,
+}
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            lanes: std::array::from_fn(|_| gpui::UniformListScrollHandle::new()),
+            horizontal: ScrollHandle::new(),
+            queue: ScrollHandle::new(),
+        }
+    }
+}
+
 impl Board {
     pub(super) fn render_kanban(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
@@ -64,7 +80,8 @@ impl Board {
             .min_h_0()
             .items_stretch()
             .gap_3()
-            .overflow_x_scroll();
+            .overflow_x_scroll()
+            .track_scroll(&self.kanban.horizontal);
         for stage in [
             Column::Working,
             Column::Checks,
@@ -123,15 +140,23 @@ impl Board {
                     );
                 }
             } else if stage == Column::Queue {
+                let mut body = v_flex()
+                    .id("board-queue-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .gap_2()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.kanban.queue);
                 for (index, row) in prepared.groups[stage as usize]
                     .iter()
                     .take(QUEUE_LIMIT)
                     .enumerate()
                 {
-                    lane = lane.child(self.queue_row(*row, index, &prepared, cx));
+                    body = body.child(self.queue_row(*row, index, &prepared, cx));
                 }
                 if count > QUEUE_LIMIT {
-                    lane = lane.child(
+                    body = body.child(
                         Button::new("board-queue-more")
                             .debug_selector(|| "board-queue-more".into())
                             .ghost()
@@ -147,7 +172,7 @@ impl Board {
                     );
                 }
                 if let Some(problem) = binding.card_problems.first() {
-                    lane = lane.child(
+                    body = body.child(
                         Button::new("board-queue-problems")
                             .debug_selector(|| "board-card-problem-0".into())
                             .ghost()
@@ -161,7 +186,8 @@ impl Board {
                             })),
                     );
                 }
-                lane = lane.child(self.add_card_button(cx));
+                body = body.child(self.add_card_button(cx));
+                lane = lane.child(body);
             } else {
                 let rows = prepared.clone();
                 lane = lane.child(
@@ -181,6 +207,7 @@ impl Board {
                                 .collect::<Vec<_>>()
                         }),
                     )
+                    .track_scroll(&self.kanban.lanes[stage as usize])
                     .flex_1()
                     .min_h_0()
                     .w_full(),

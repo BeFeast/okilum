@@ -179,6 +179,9 @@ The sibling peek/filter/attention/ordering issues remain independent.
 Checks and Can try have 268 px lanes; Queue has 240 px. Lanes scroll horizontally
 inside the center and virtualise their card streams. Snapshot/filter publications
 rebuild the groups; ordinary scrolling and selection build only visible cards.
+Lane, horizontal and Queue scroll handles belong to the project Board entity,
+so switching views or returning from a note retains their offsets. Queue has a
+bounded scroll body when context or card details leave less vertical space.
 The Verified control remains a 34 px rail at the right edge and explicitly opens
 its lane, including when empty. Existing empty-stage controls remain available.
 

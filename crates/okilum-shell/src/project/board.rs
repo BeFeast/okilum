@@ -50,6 +50,7 @@ pub(crate) struct Board {
     next_stage_open: bool,
     columns: columns::State,
     list: list::State,
+    kanban: kanban::State,
 }
 #[derive(Clone)]
 pub(crate) enum Action {
@@ -169,6 +170,7 @@ impl Board {
             next_stage_open: false,
             columns: columns::State::default(),
             list,
+            kanban: kanban::State::default(),
         }
     }
     fn reload_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {

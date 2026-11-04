@@ -110,6 +110,48 @@ fn kanban_2534_three_rows_two_complete_title_lines_and_viewport_work(cx: &mut Te
         "the tenth card is fully visible"
     );
     let publications = board.read_with(visual, |b, _| b.list.publication_count());
+    board.update(visual, |b, cx| {
+        b.kanban.lanes[Column::Working as usize]
+            .scroll_to_item_strict(10, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let offset = board.read_with(visual, |b, _| {
+        b.kanban.lanes[Column::Working as usize]
+            .0
+            .borrow()
+            .base_handle
+            .offset()
+    });
+    assert!(
+        offset.y < px(-100.),
+        "positive control: the actual lane scrolled"
+    );
+    assert!(visual.debug_bounds("board-card-16").is_some());
+    click(visual, "board-view-list");
+    assert!(visual.debug_bounds("board-list-viewport").is_some());
+    click(visual, "board-view-board");
+    board.read_with(visual, |b, _| {
+        assert_eq!(
+            b.kanban.lanes[Column::Working as usize]
+                .0
+                .borrow()
+                .base_handle
+                .offset(),
+            offset
+        )
+    });
+    assert!(
+        visual.debug_bounds("board-card-16").is_some(),
+        "the returning viewport uses the retained handle"
+    );
+    board.update(visual, |b, cx| {
+        b.kanban.lanes[Column::Working as usize]
+            .scroll_to_item_strict(0, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
     click(visual, "board-expand-1");
     assert!(visual.debug_bounds("board-discuss-1").is_some());
     visual.simulate_keystrokes("escape");
