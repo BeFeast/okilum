@@ -453,7 +453,9 @@ impl Board {
                 cx,
             ),
             Row::Local(i) => self.compact_local_card(&self.local_cards.value.cards[i], window, cx),
-            Row::Problem(_) | Row::Group(_) | Row::WaitingGroup | Row::Waiting(_) => unreachable!("non-Queue issue lane"),
+            Row::Problem(_) | Row::Group(_) | Row::WaitingGroup | Row::Waiting(_) => {
+                unreachable!("non-Queue issue lane")
+            }
         }
     }
     fn queue_row(
