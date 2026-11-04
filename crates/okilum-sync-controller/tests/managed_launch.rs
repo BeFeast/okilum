@@ -336,6 +336,9 @@ impl Services {
         Ok(())
     }
     fn remember_pid(&self, home: &Path) -> Result<Uuid> {
+        wait("authenticated helper generation ready", || {
+            Ok(live_generation(home).is_ok())
+        })?;
         let generation = live_generation(home)?;
         self.0.lock().unwrap().runtime_pid = Some(generation.pid);
         Ok(generation.id)
@@ -464,6 +467,17 @@ fn issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers() 
     wait("managed REST ready", || Ok(identity.connect().is_ok()))?;
     let home = identity.config_file.parent().unwrap();
     let original_generation = services.remember_pid(home)?;
+    let generation_file = state.join("prepared/managed-launch/generation.json");
+    let original = fs::read(&generation_file)?;
+    let mut stale: Value = serde_json::from_slice(&original)?;
+    stale["rest_start_time"] = json!("stale REST process");
+    private_json(&generation_file, &stale)?;
+    assert!(
+        live_generation(home).is_err(),
+        "REST generation must match the actual child listener"
+    );
+    fs::write(&generation_file, original)?;
+
     let source = Peer::new(root.path(), "source", binary()?)?;
     let source_second = root.path().join("source-second");
     let selected = root.path().join("selected");
@@ -557,6 +571,23 @@ fn issue2582_autonomous_restart_fences_dead_holder_and_other_folder_transfers() 
     // Application reconcile uses the same managed launch command and never
     // clears the hold/fence. A second crash produces a fresh generation again.
     services.crash_runtime()?;
+    let unit = services.0.lock().unwrap().unit.clone().unwrap();
+    let owned_definition = fs::read_to_string(&unit)?;
+    fs::write(
+        &unit,
+        owned_definition.replace("RestartSec=5", "RestartSec=9"),
+    )?;
+    services.launch()?;
+    {
+        let mut state = services.0.lock().unwrap();
+        assert!(
+            !state.child.as_mut().unwrap().wait()?.success(),
+            "autonomous launch must refuse a replaced definition"
+        );
+        state.child = None;
+    }
+    assert!(identity.connect().is_err());
+    fs::write(&unit, owned_definition)?;
     runtime.reconcile()?;
     wait("Runtime reconcile REST", || Ok(identity.connect().is_ok()))?;
     assert_ne!(generation, services.remember_pid(home)?);
@@ -642,6 +673,51 @@ fn issue2582_linux_bootstrap_and_replaced_bindings_fail_closed() -> Result<()> {
     let lifecycle = Lifecycle::new(state.join("service"), units.clone(), services.clone())
         .with_launcher(launcher());
     lifecycle.disable()?;
+    // A fixture-only unwrapped runtime on the managed endpoint is external to
+    // the helper's generation ownership. Refuse before offline config effects,
+    // and never stop/adopt that process when reconciling the helper's service.
+    let mut unwrapped = OwnedChild(fixture_process::spawn(
+        Command::new(state.join("syncthing"))
+            .env_clear()
+            .env("HOME", home)
+            .env("STMONITORED", "1")
+            .args([
+                "serve",
+                "--no-browser",
+                "--no-restart",
+                "--no-upgrade",
+                "--home",
+            ])
+            .arg(home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )?);
+    wait("unwrapped fixture ready", || Ok(identity.connect().is_ok()))?;
+    let external_config = identity.connect()?.config()?;
+    let instance = okilum_sync_controller::lifecycle::ManagedInstance {
+        home: home.to_owned(),
+        executable: state.join("syncthing"),
+    };
+    lifecycle.enable(instance.clone())?;
+    {
+        let mut service = services.0.lock().unwrap();
+        assert!(
+            !service.child.as_mut().unwrap().wait()?.success(),
+            "occupied external endpoint must refuse autonomous launch"
+        );
+        service.child = None;
+    }
+    assert!(
+        live_generation(home).is_err(),
+        "an external runtime must not obtain managed hold ownership"
+    );
+    assert_eq!(identity.connect()?.config()?, external_config);
+    lifecycle.disable()?;
+    assert!(
+        unwrapped.0.try_wait()?.is_none(),
+        "helper Disable must not stop an unowned fixture process"
+    );
+    drop(unwrapped);
     let binding = state.join("prepared/managed-launch/binding.json");
     let original = fs::read(&binding)?;
     let mut changed: Value = serde_json::from_slice(&original)?;
@@ -655,11 +731,19 @@ fn issue2582_linux_bootstrap_and_replaced_bindings_fail_closed() -> Result<()> {
         .is_err());
     fs::write(&binding, &original)?;
     fs::remove_file(&binding)?;
-    assert!(lifecycle.reconcile().is_err() || !lifecycle.desired_enabled()?);
+    assert!(
+        lifecycle
+            .enable(okilum_sync_controller::lifecycle::ManagedInstance {
+                home: home.to_owned(),
+                executable: state.join("syncthing")
+            })
+            .is_err(),
+        "missing binding must refuse a fresh start"
+    );
     assert_eq!(
         services.0.lock().unwrap().stops,
-        1,
-        "no foreign or whole-runtime hold stop"
+        2,
+        "only the two explicit helper Disable operations may stop a service"
     );
     Ok(())
 }

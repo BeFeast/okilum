@@ -48,7 +48,10 @@ transport drain. After readiness, unrelated folders transfer on the same runtime
 
 Every process gets a fresh random generation bound to the instance, executable
 digest, PID and kernel start time. `live_generation` requires a live singleton
-owner and kernel process/executable identity; stale files/recycled PIDs refuse.
+owner, kernel process/executable identity and ownership of the REST listening
+socket inode. Authenticated REST startTime must match the saved ready generation;
+stale files/recycled PIDs or a different process on the endpoint refuse. An
+already occupied managed endpoint refuses startup before offline config effects.
 Linux PDEATHSIG kills the runtime if its launch helper dies; systemd owns the
 control group. Startup failures kill and wait the child. This identity evidence
 is not a selected-folder quiescence receipt.
