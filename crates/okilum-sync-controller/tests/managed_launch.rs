@@ -749,6 +749,26 @@ fn issue2582_linux_bootstrap_and_replaced_bindings_fail_closed() -> Result<()> {
         "helper Disable must not stop an unowned fixture process"
     );
     drop(unwrapped);
+    let preparation_receipt = state.join("prepared/prepared.json");
+    let saved_receipt: Value = serde_json::from_slice(&fs::read(&preparation_receipt)?)?;
+    let offline_config = fs::read(&identity.config_file)?;
+    fs::remove_file(&preparation_receipt)?;
+    assert!(
+        okilum_sync_controller::linux_bootstrap::connect_with(
+            true,
+            &state,
+            &units,
+            std::slice::from_ref(&identity.config_file),
+            || Ok(()),
+            binary,
+            services.clone(),
+            Some(launcher())
+        )
+        .is_err(),
+        "preparation retry must not bypass launch/configuration admission"
+    );
+    assert_eq!(fs::read(&identity.config_file)?, offline_config);
+    private_json(&preparation_receipt, &saved_receipt)?;
     let binding = state.join("prepared/managed-launch/binding.json");
     let original = fs::read(&binding)?;
     let mut changed: Value = serde_json::from_slice(&original)?;
