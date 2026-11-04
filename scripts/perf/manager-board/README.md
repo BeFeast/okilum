@@ -70,9 +70,11 @@ Physical input and positive controls:
   each burst must change it by at least 80 px, with changed splitter/header
   geometry in the captures (composer caret and hover are excluded). Restore the initial width before
   the following scenario. Retain before/after captures.
-- Click the first visible Working card (#2 in the current fixture) 13 times, at least one second apart, with the
-  pointer settled before the first activation. Each before/after card crop must
-  change, proving an actual disclosure response. Record input send times and
+- Open the first visible Working card (#2 in the current fixture) 13 times,
+  at least one second apart, with the pointer settled before activation. After
+  #2531, Escape returns the issue dock to Manager before each timed click;
+  clicking an already open issue keeps it open. Each before/after dock capture
+  must change, proving the real issue-tab response. Record click send times and
   first subsequent presentation. This measures send-to-submission latency,
   including compositor/input queueing, not physical display scanout.
 - Open the actual model control, send native Escape and type a slow focus-proof
