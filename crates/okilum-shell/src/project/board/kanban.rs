@@ -56,6 +56,7 @@ impl Board {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.filter_key(event, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss_peek(window, cx)))
             .on_key_down(cx.listener(|this, event, window, cx| this.list_key(event, window, cx)))
             .child(self.filter_bar(&prepared.projection, cx));
         if binding.repository.is_empty() {

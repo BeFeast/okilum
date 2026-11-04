@@ -5,6 +5,7 @@ use gpui::{TestAppContext, VisualTestContext};
 fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut VisualTestContext) {
     cx.update(|cx| {
         crate::test_init(cx);
+        bind_keys(cx);
         cx.set_global(reader_history::TestSessionDirectory(
             area.join("presentation-state"),
         ));
@@ -32,7 +33,7 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
                 if number <= 16 {
                     issue.open_pull_requests = vec![1000+number];
                     issue.live_pulls = vec![okilum_t3::board::live::Pull { number:1000+number,merged_at:None,
-                        checks:if number == 2 { "failure" } else { "success" }.into() }];
+                        checks:if number == 2 { "failure" } else { "success" }.into(), ..Default::default() }];
                 }
                 (number,issue)
             }).collect();
