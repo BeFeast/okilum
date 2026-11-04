@@ -1182,7 +1182,7 @@ impl Render for Board {
             stages.push(Column::Verified);
         }
         for column in stages {
-            let mut scopes: Vec<_> = binding
+            let scopes: Vec<_> = binding
                 .issues
                 .iter()
                 .filter(|scope| {
@@ -1190,16 +1190,6 @@ impl Render for Board {
                         && self.delivery_column(scope) == column
                 })
                 .collect();
-            scopes.sort_by(|a, b| {
-                let issue_a = self.snapshot.forgejo.value.get(&a.number);
-                let issue_b = self.snapshot.forgejo.value.get(&b.number);
-                match (issue_a, issue_b) {
-                    (Some(x), Some(y)) => okilum_t3::board::order::compare(x, y),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => b.number.cmp(&a.number),
-                }
-            });
             let local_cards: Vec<_> = self
                 .local_cards
                 .value
@@ -1253,15 +1243,6 @@ impl Render for Board {
                         )
                         .when(count == 0 && self.columns.known_empty(column), |header| {
                             header.child(self.collapse_empty_column(column, cx))
-                        })
-                        .when(column == Column::Queue, |header| {
-                            header.child(
-                                div()
-                                    .debug_selector(|| "board-queue-order-hint".into())
-                                    .text_size(px(12.))
-                                    .text_color(colors.text_muted)
-                                    .child("от Олега сначала"),
-                            )
                         }),
                 );
             if count == 0 && self.columns.known_empty(column) {

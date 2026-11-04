@@ -12,7 +12,6 @@ pub mod delivery;
 pub mod live;
 pub mod local;
 pub mod manage;
-pub mod order;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -464,17 +463,6 @@ pub struct Issue {
     pub open_pull_requests: Vec<u64>,
     #[serde(skip)]
     pub live_pulls: Vec<live::Pull>,
-    /// Forgejo `updated_at`, parsed to a unix timestamp; absent on a partial read.
-    #[serde(default, deserialize_with = "deserialize_updated_at")]
-    pub updated_at: Option<u64>,
-}
-
-fn deserialize_updated_at<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Option::<String>::deserialize(deserializer)?;
-    Ok(value.as_deref().and_then(live::timestamp))
 }
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct IssueLabel {
