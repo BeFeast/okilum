@@ -94,10 +94,13 @@ impl FolderController {
         // Serialize all Okilum enrollment inventories for this OS user, even
         // when independent attempts use different durable state directories.
         // This lock is coordination only; durable authority stays in the journal.
-        let _enrollment_lock = private::lock(&Path::new("/tmp").join(format!(
-            "okilum-sync-enrollment-{}",
-            rustix::process::geteuid().as_raw()
-        )))?;
+        let account = okilum_write_authority::account_directory()?;
+        let enrollment = account
+            .parent()
+            .context("account state parent missing")?
+            .join("sync-enrollment");
+        std::fs::create_dir_all(enrollment.parent().context("enrollment parent missing")?)?;
+        let _enrollment_lock = private::lock(&enrollment)?;
         let _lock = private::lock(&self.state)?;
         let inventory = discover(configs);
         let selected = inventory.select(&daemon.config_file)?;
@@ -107,6 +110,7 @@ impl FolderController {
         );
         let api = daemon.connect()?;
         let path = destination.canonicalize()?;
+        let _admission = crate::admission::configuration(daemon, &descriptor.folder_id, &path)?;
         let mut j = if self.file().try_exists()? {
             let j = self.load()?;
             ensure!(
@@ -238,6 +242,8 @@ impl FolderController {
     pub fn pause(&self, paused: bool) -> Result<LocalStatus> {
         let _lock = private::lock(&self.state)?;
         let mut j = self.load()?;
+        let _admission =
+            crate::admission::configuration(&j.daemon, &j.descriptor.folder_id, &j.path)?;
         ensure!(
             !j.remove_requested && j.phase != Phase::Preparing,
             "folder is not ready"
@@ -270,6 +276,8 @@ impl FolderController {
     ) -> Result<bool> {
         let _lock = private::lock(&self.state)?;
         let j = self.load()?;
+        let _admission =
+            crate::admission::configuration(&j.daemon, &j.descriptor.folder_id, &j.path)?;
         ensure!(
             j.owns_folder && !j.remove_requested && j.phase == Phase::Receiving,
             "first receive is not active"
@@ -282,6 +290,8 @@ impl FolderController {
     pub fn promote(&self, source: &impl crate::readiness::Source) -> Result<bool> {
         let _lock = private::lock(&self.state)?;
         let mut j = self.load()?;
+        let _admission =
+            crate::admission::configuration(&j.daemon, &j.descriptor.folder_id, &j.path)?;
         ensure!(
             j.owns_folder
                 && !j.remove_requested
@@ -383,6 +393,8 @@ impl FolderController {
     pub fn remove(&self) -> Result<LocalStatus> {
         let _lock = private::lock(&self.state)?;
         let mut j = self.load()?;
+        let _admission =
+            crate::admission::configuration(&j.daemon, &j.descriptor.folder_id, &j.path)?;
         // A completed removal relinquishes authority over a reused replica.
         // Repeating Remove must not restore its old pause state again after
         // the external owner has changed it.

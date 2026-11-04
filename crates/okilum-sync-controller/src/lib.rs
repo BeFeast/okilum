@@ -1,6 +1,10 @@
 //! Explicit desktop Sync operations. Importing this crate never discovers or starts a daemon.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod admission;
 #[cfg(target_os = "linux")]
 pub mod lifecycle;
+#[cfg(target_os = "linux")]
+pub mod managed_launch;
 pub mod merge_preview;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
