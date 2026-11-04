@@ -41,6 +41,8 @@ jobs:
       # Initial measurement is deliberately cold: no compatible downloads-only
       # baseline exists, and restoring the Linux target archive would mix flags.
       # No cache save is introduced against the shared repository size cap.
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Run every shared suite
         run: |
           set -euo pipefail
