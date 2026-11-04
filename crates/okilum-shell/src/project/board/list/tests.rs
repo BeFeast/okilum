@@ -332,7 +332,10 @@ fn list_2530_ci_live_age_and_executor_filter_use_existing_evidence(cx: &mut Test
 /// truncation bounds, rather than a label styled only for the test.
 #[gpui::test]
 fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(|cx| {
+        crate::test_init(cx);
+        brand::apply_theme(cx);
+    });
     let area = tempfile::tempdir().unwrap();
     let (board, visual) = open(cx, area.path(), fixture(1));
     let glyphs = "Jumpy query: g j p q y · у р д щ";
@@ -403,9 +406,27 @@ fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
             "positive control: title, state, pill and group all measured"
         );
         let title_bounds = visual.debug_bounds("board-list-title-1").unwrap();
+        let intrinsic_width = visual.update(|window, _| {
+            window
+                .text_system()
+                .shape_line(
+                    title.clone().into(),
+                    px(13.),
+                    &[gpui::TextRun {
+                        len: title.len(),
+                        font: gpui::font(brand::SANS_FONT),
+                        color: gpui::black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width()
+        });
         assert!(
-            title_bounds.size.width > px(0.) && title_bounds.size.width < px(600.),
-            "positive control: the long title has a constrained ellipsis box"
+            title_bounds.size.width > px(0.) && title_bounds.size.width < intrinsic_width,
+            "positive control: the long title overflows its constrained ellipsis box"
         );
     }
 }
