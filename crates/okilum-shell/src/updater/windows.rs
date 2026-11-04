@@ -71,7 +71,7 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
                 anyhow::bail!("The pending update changed. Choose Restart again.");
             }
             if !state.begin_restart(&id) {
-                super::restart_feedback::refused("Restart is already in progress. Wait for Okilum to quit, then try Restart now again if it remains open.");
+                super::restart_feedback::refused("The installer is already waiting for Okilum to close. Save or close any pending dialog, then quit Okilum to finish the update.");
                 return Ok(());
             }
         }

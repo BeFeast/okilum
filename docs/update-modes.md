@@ -89,7 +89,9 @@ inside their existing platform transactions.
 Hosted native fixtures use real signed archives and the production bridge. New
 cases click during initial Ready verification, fire focus/interval/manual rechecks
 at verified Ready, repeat clicks during restart verification, and refuse the final
-editor guard. The pre-fix bridge must reach real download, Ready verification and
+editor guard. A delayed real signed response arrives after the restart deadline;
+it must not request the editor guard until a second explicit click starts a new
+verification. The pre-fix bridge must reach real download, Ready verification and
 the click, then fail to reach the guard/relaunch: compilation/setup failure is not
 a passing negative control. A GPUI regression checks persistent refusal feedback
 after focus changes and the structured records in the actual Feedback log.

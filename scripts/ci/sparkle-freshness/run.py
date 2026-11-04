@@ -242,7 +242,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             'standard-main': 'EXPECTED observer-incomplete/defaults-missing: Foundation refuses the main bundle id as a suite; never reproduction or CF-readback substitution',
             'explicit-suite-background': 'Regression must install admitted version 4 after observed group0->6 on the unchanged signed feed',
         }
-        ordinary_scenarios = ('restart-verifying', 'restart-recheck', 'restart-refusal', 'mode-background', 'mode-ask', 'mode-off', 'termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'cancel-ready-immediate', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
+        ordinary_scenarios = ('restart-verifying', 'restart-recheck', 'restart-refusal', 'restart-timeout', 'mode-background', 'mode-ask', 'mode-off', 'termination-refused-retry', 'termination-delayed-retry', 'termination-retry-guard-refusal', 'discovery', 'cancel-verifying', 'cancel-check', 'cancel-download', 'cancel-ready', 'cancel-ready-immediate', 'newest', 'background-newest', 'background-phase-unchanged', 'background-phase-included', 'restart-newest', 'quit-newest', 'quit-during-download', 'unchanged', 'stable', 'bad-signature', 'guard-refusal', 'quit-guard-refusal', 'phase-unchanged', 'older-feed', 'feed-error',
                          'eligibility-phase-background', 'eligibility-phase-foreground',
                          'eligibility-skip-background', 'eligibility-skip-foreground',
                          'eligibility-major-background', 'eligibility-major-foreground',
@@ -270,8 +270,15 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             requests = []
             feed_reads = []
 
+            delayed_verification = threading.Event()
+
             class Handler(http.server.SimpleHTTPRequestHandler):
                 def do_GET(self):
+                    if (scenario == 'restart-timeout' and self.path == '/appcast.xml'
+                            and 'restart clicked after focus and interval rechecks' in trace.read_text()
+                            and not delayed_verification.is_set()):
+                        delayed_verification.set()
+                        time.sleep(18)  # real response arrives after the production deadline
                     if self.path == '/appcast.xml':
                         feed_reads.append(hashlib.sha256((case / 'appcast.xml').read_bytes()).hexdigest())
                     super().do_GET()
@@ -343,7 +350,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                     base_info['TSSkip'] = '4'
                 if 'major' in scenario:
                     base_info['TSSkipMajor'] = '2'
-            if scenario in ('restart-verifying', 'restart-recheck', 'restart-refusal'):
+            if scenario in ('restart-verifying', 'restart-recheck', 'restart-refusal', 'restart-timeout'):
                 base_info['TSMode'] = 0
                 base_info['TSRestartCase'] = scenario.removeprefix('restart-')
             if scenario.startswith('mode-'):
@@ -390,7 +397,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
             feed(case / 'appcast.xml', [(4, 'stable'), (2, 'stable')] if compare or rotates else [(2, 'stable')])
             initial_feed_hash = hashlib.sha256((case / 'appcast.xml').read_bytes()).hexdigest()
             newer = [(4, 'beta'), (3, 'stable'), (2, 'stable')]
-            feed(case / 'pending.xml', [(2, 'stable')] if scenario in ('restart-verifying', 'restart-recheck', 'restart-refusal', 'unchanged', 'phase-unchanged', 'guard-refusal', 'quit-guard-refusal', 'restart-newest', 'quit-newest') else newer)
+            feed(case / 'pending.xml', [(2, 'stable')] if scenario in ('restart-verifying', 'restart-recheck', 'restart-refusal', 'restart-timeout', 'unchanged', 'phase-unchanged', 'guard-refusal', 'quit-guard-refusal', 'restart-newest', 'quit-newest') else newer)
             if scenario == 'background-phase-unchanged':
                 feed(case / 'pending.xml', [(4, 'beta'), (2, 'stable')])
             if scenario in ('restart-newest', 'quit-newest'):
@@ -513,7 +520,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         assert plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleVersion'] == '1'
                         print(f'PASS mode without automatic download: {scenario}', flush=True)
                         continue
-                    if scenario in ('restart-verifying', 'restart-recheck', 'restart-refusal'):
+                    if scenario in ('restart-verifying', 'restart-recheck', 'restart-refusal', 'restart-timeout'):
                         if scenario == 'restart-refusal':
                             wait_for(lambda: 'report 2 ' in trace.read_text(), process, output)
                             assert not receipt.exists(), trace.read_text()
@@ -527,6 +534,11 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                             assert (case / 'protected-editor').read_text() == 'edited after verification'
                             assert trace.read_text().count('final editor guard boundary') == 1
                         callbacks = trace.read_text()
+                        if scenario == 'restart-timeout':
+                            assert delayed_verification.is_set(), callbacks
+                            assert 'taking too long' in callbacks, callbacks
+                            assert callbacks.index('taking too long') < callbacks.index('late verification rejected; explicit retry clicked')
+                            assert callbacks.index('late verification rejected; explicit retry clicked') < callbacks.index('final editor guard boundary')
                         assert 'report 13 ' in callbacks, callbacks
                         assert 'automatically' in callbacks, callbacks
                         assert 'restart clicked during real Ready verification' in callbacks if scenario == 'restart-verifying' else 'ready rechecks from focus and interval' in callbacks

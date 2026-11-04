@@ -102,8 +102,11 @@ static BOOL TSFirstTerminationResolved;
 static BOOL TSRetryClicked;
 static BOOL TSModeOfferSeen;
 static BOOL TSEarlyRestartClicked;
+static BOOL TSRestartTimedOut;
 static void Report(int kind, const char *text) {
     fixture_record_report(kind);
+    if (kind == 10 && [[NSBundle.mainBundle objectForInfoDictionaryKey:@"TSRestartCase"] isEqualToString:@"timeout"]
+        && [[NSString stringWithUTF8String:text ?: ""] containsString:@"taking too long"]) TSRestartTimedOut = YES;
     NSNumber *mode = [NSBundle.mainBundle objectForInfoDictionaryKey:@"TSMode"];
     if (kind == 1 && mode && mode.intValue != 0 && !TSModeOfferSeen) {
         TSModeOfferSeen = YES;
@@ -539,6 +542,12 @@ int main(void) {
         else if ([[bundle objectForInfoDictionaryKey:@"TSBackgroundInstall"] boolValue]) [TSUpdater checkForUpdatesInBackground];
         else [TSUpdater checkForUpdates];
         [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer *timer) {
+            if (TSRestartTimedOut && !TSProbe.completion) {
+                if (TSGuardRequested || TSDriver.verifiedRestart) exit(80);
+                TSRestartTimedOut = NO;
+                Trace(@"late verification rejected; explicit retry clicked");
+                if (!okilum_updater_restart()) exit(81);
+            }
             if (TSFirstTerminationResolved && !TSRetryClicked && TSDriver.retryTermination) {
                 if (!fixture_about_retry_enabled() || !okilum_updater_ready()) exit(52);
                 Trace(@"About retry enabled after original delegate decision");

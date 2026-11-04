@@ -1,0 +1,40 @@
+# Explicit worker refs only. The full native shell lanes remain unchanged.
+name: updater-native
+on:
+  push:
+    branches: ['updater-native/**']
+permissions:
+  contents: read
+concurrency:
+  group: updater-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  sparkle:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify exact source and native runner
+        env:
+          SOURCE: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          test "$(uname -m)" = arm64
+          rustc -Vv
+      - name: Run signed Sparkle negative control and full lifecycle matrix
+        run: |
+          archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          python3 scripts/updater/sparkle.py fetch "$archive"
+          python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+          export DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"
+          python3 scripts/ci/sparkle-freshness/negative_control.py "$archive"
+          python3 scripts/ci/sparkle-freshness/run.py "$archive"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-sparkle-restart-evidence
+          path: ${{ runner.temp }}/sparkle-freshness-evidence/
+          if-no-files-found: error
+          retention-days: 7
