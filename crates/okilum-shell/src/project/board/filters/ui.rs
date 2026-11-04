@@ -239,7 +239,7 @@ impl Board {
         h_flex()
             .debug_selector(|| "board-filter-bar".into())
             .min_w_0()
-            .flex_1()
+            .w_full()
             .flex_wrap()
             .items_center()
             .gap_2()
