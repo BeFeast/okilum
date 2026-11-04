@@ -353,6 +353,9 @@ mod tests {
         });
         let view = entity.unwrap();
         visual.run_until_parked();
+        // Cached chrome contributes debug selectors only on a fresh paint.
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
         assert!(visual.debug_bounds("manager-workspace").is_some());
         for selector in [
             "manager-thread-picker",
