@@ -749,16 +749,13 @@ mod tests {
                 .entries_for(os)
                 .contains(&("Copy path", Command::CopyRelative, false)));
             assert!(!open_modifier(os, Modifiers::default()));
-            assert_eq!(
-                open_modifier(
-                    os,
-                    Modifiers {
-                        platform: true,
-                        ..Default::default()
-                    }
-                ),
-                true
-            );
+            assert!(open_modifier(
+                os,
+                Modifiers {
+                    platform: true,
+                    ..Default::default()
+                }
+            ));
             assert_eq!(
                 open_modifier(
                     os,
