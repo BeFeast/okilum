@@ -242,12 +242,17 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     });
     visual.simulate_mouse_down(handle, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    assert!(
+        board.read_with(visual, |board, _| board.lane_preparations.get()) > 0,
+        "positive control: the real 240-card lanes prepared their membership"
+    );
     for delta in [20., 50., 80., 40., 0.] {
         header.read_with(visual, |header, _| header.render_calls.set(0));
         board.read_with(visual, |board, _| {
             board.card_calls.set(0);
             board.frame_work.borrow_mut().clear();
             board.frame_layout_work.borrow_mut().clear();
+            board.lane_preparations.set(0);
         });
         feed.read_with(visual, |feed, _| feed.row_calls.set(0));
         visual.simulate_mouse_move(
@@ -257,6 +262,8 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         );
         visual.run_until_parked();
         board.read_with(visual, |board, _| {
+            assert_eq!(board.lane_preparations.get(), 0,
+                "splitter geometry must reuse the prepared canonical height membership");
             assert!(
                 board.card_calls.get() > 0
                     && board.frame_work.borrow().iter().all(|count| *count <= 64),

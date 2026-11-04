@@ -51,3 +51,11 @@ chrome/Reader caches and native profiling remain guarded on Linux; the portable
 composer keeps its native guard, while macOS uses the same uncached chrome and
 WKWebView runtime selection as main. Harness traces inside portable modules are
 explicitly Linux-only so enabling the harness cannot reference a missing module.
+
+Lane height hints retain an ordered index keyed by the same immutable shared
+filter projection as both Board presentations. Source/filter changes prepare
+and prune membership once, retaining existing height/focus hints by identity.
+Scroll and splitter frames sum those mutable hints directly; they do not rebuild
+and probe a hash set/map for every canonical card. Both the filtered Kanban test
+and real 240-card splitter regression check zero membership preparations during
+resize, with nonempty initial/source/filter preparation controls.

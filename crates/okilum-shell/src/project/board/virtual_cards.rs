@@ -180,12 +180,24 @@ impl Element for Card {
 pub(super) struct Lane {
     id: ElementId,
     cards: Vec<Card>,
+    projection: Arc<filters::Projection>,
+}
+#[derive(Default)]
+struct Heights {
+    projection: Option<Arc<filters::Projection>>,
+    by_id: std::collections::HashMap<ElementId, HeightHint>,
+    ordered: Vec<HeightHint>,
 }
 impl Lane {
-    pub(super) fn new(column: Column, cards: Vec<Card>) -> Self {
+    pub(super) fn new(
+        column: Column,
+        cards: Vec<Card>,
+        projection: Arc<filters::Projection>,
+    ) -> Self {
         Self {
             id: ("board-virtual-lane", column as usize).into(),
             cards,
+            projection,
         }
     }
     fn refine(&self, window: &mut Window, cx: &mut App) {
@@ -234,28 +246,52 @@ impl Element for Lane {
         if let Some(card) = self.cards.first() {
             card.count_layout(cx);
         }
-        let states = window.use_keyed_state((self.id.clone(), "heights"), cx, |_, _| {
-            std::collections::HashMap::<ElementId, HeightHint>::new()
-        });
-        let ids: std::collections::HashSet<_> =
-            self.cards.iter().map(|card| card.id.clone()).collect();
-        let mut height = states.update(cx, |states, _| {
-            states.retain(|id, _| ids.contains(id));
-            let mut height = px(0.);
-            for card in &mut self.cards {
-                let state = states
-                    .entry(card.id.clone())
-                    .or_insert_with(|| {
-                        std::rc::Rc::new(std::cell::RefCell::new(Height {
-                            value: px(192.),
-                            focused: None,
-                        }))
+        let states =
+            window.use_keyed_state((self.id.clone(), "heights"), cx, |_, _| Heights::default());
+        let mut height = states.update(cx, |states, _cx| {
+            if !states
+                .projection
+                .as_ref()
+                .is_some_and(|previous| Arc::ptr_eq(previous, &self.projection))
+            {
+                #[cfg(test)]
+                if let Some(card) = self.cards.first() {
+                    if let Some(board) = card.board.upgrade() {
+                        let board = board.read(_cx);
+                        board
+                            .lane_preparations
+                            .set(board.lane_preparations.get() + 1);
+                    }
+                }
+                let ids: std::collections::HashSet<_> =
+                    self.cards.iter().map(|card| card.id.clone()).collect();
+                states.by_id.retain(|id, _| ids.contains(id));
+                states.ordered = self
+                    .cards
+                    .iter()
+                    .map(|card| {
+                        states
+                            .by_id
+                            .entry(card.id.clone())
+                            .or_insert_with(|| {
+                                std::rc::Rc::new(std::cell::RefCell::new(Height {
+                                    value: px(192.),
+                                    focused: None,
+                                }))
+                            })
+                            .clone()
                     })
-                    .clone();
-                height += state.borrow().value;
-                card.height = Some(state);
+                    .collect();
+                states.projection = Some(self.projection.clone());
             }
-            height
+            debug_assert_eq!(states.ordered.len(), self.cards.len());
+            self.cards
+                .iter_mut()
+                .zip(&states.ordered)
+                .fold(px(0.), |height, (card, state)| {
+                    card.height = Some(state.clone());
+                    height + state.borrow().value
+                })
         });
         height += px(12. * self.cards.len().saturating_sub(1) as f32);
         let mut style = Style::default();

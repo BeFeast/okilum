@@ -74,6 +74,8 @@ pub(crate) struct Board {
     #[cfg(test)]
     pub(in crate::project) frame_layout_work: std::cell::RefCell<Vec<usize>>,
     #[cfg(test)]
+    pub(in crate::project) lane_preparations: std::cell::Cell<usize>,
+    #[cfg(test)]
     pub(in crate::project) card_focus:
         std::cell::RefCell<std::collections::BTreeMap<u64, FocusHandle>>,
 }
@@ -217,6 +219,8 @@ impl Board {
             frame_work: std::cell::RefCell::new(Vec::new()),
             #[cfg(test)]
             frame_layout_work: std::cell::RefCell::new(Vec::new()),
+            #[cfg(test)]
+            lane_preparations: std::cell::Cell::new(0),
             #[cfg(test)]
             card_focus: std::cell::RefCell::new(std::collections::BTreeMap::new()),
         }
@@ -1364,7 +1368,7 @@ impl Render for Board {
                 ));
             }
             if !cards.is_empty() {
-                lane = lane.child(virtual_cards::Lane::new(column, cards));
+                lane = lane.child(virtual_cards::Lane::new(column, cards, projection.clone()));
             }
             if column == Column::Queue {
                 lane = lane.child(self.add_card_button(cx));
