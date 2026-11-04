@@ -476,7 +476,13 @@ mod tests {
                         }));
                 });
                 let bounds = visual
-                    .debug_bounds(&format!("sync-conflict-choice-{index}"))
+                    .debug_bounds(
+                        [
+                            "sync-conflict-choice-0",
+                            "sync-conflict-choice-1",
+                            "sync-conflict-choice-2",
+                        ][index],
+                    )
                     .expect("choice button mounted");
                 visual.simulate_click(bounds.center(), Modifiers::default());
                 visual.run_until_parked();
