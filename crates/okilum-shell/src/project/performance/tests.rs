@@ -185,7 +185,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         .debug_bounds("project-history")
         .expect("real mounted history");
     assert!(
-        visual.debug_bounds("board-card-1").is_some(),
+        visual.debug_bounds("board-card-2").is_some(),
         "real Board card positive control"
     );
     let start = feed.read_with(visual, |feed, cx| feed.performance_scroll_position(cx));

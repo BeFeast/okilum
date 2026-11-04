@@ -1500,17 +1500,18 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
         })).unwrap());
         chat.thread_id.clone()
     });
+    let renders = board.read_with(visual, |board, _| board.render_calls.get());
     board.update_in(visual, |board, window, cx| {
         board.active = false;
         board.list.preferences.mode = mode;
         board.list.preferences.collapsed = [false; 5];
         if mode == list::Mode::List {
             // List groups Working before Queue; narrow the real filter so the
-            // bound Queue agent is visible and the dependency control fires.
-            board.filter.search = "#1".into();
+            // bound Working agent is visible and the dependency control fires.
+            board.filter.search = "#2".into();
         }
         board.set_manager(manager.clone(), window, cx);
-        let scope = &mut board.binding.as_mut().unwrap().issues[0];
+        let scope = &mut board.binding.as_mut().unwrap().issues[1];
         scope.current_task = true;
         scope.agent_thread_id = Some(thread_id.clone());
         scope.execution = Some(okilum_t3::board::Execution { thread_id:thread_id.clone(), run_id:"run-live".into() });
@@ -1521,11 +1522,24 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
         cx.notify();
     });
     visual.run_until_parked();
+    board.update(visual, |board, _| {
+        assert!(board.render_calls.get() > renders,
+            "positive control: source publication reached the cached Board before refreshing selectors");
+        let projection = board.filtered_projection();
+        let scope = projection.binding.issues.iter().find(|scope| scope.number == 2).unwrap();
+        assert_eq!(scope.agent_thread_id.as_deref(), Some(thread_id.as_str()));
+        assert_eq!(board.delivery_column(scope), Column::Working,
+            "positive control: bind an already visible Working/PR card");
+    });
+    // A later cached paint can retain the native scene without replaying debug
+    // selectors. The publication counter above must already have advanced.
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
     assert!(
-        visual.debug_bounds("board-agent-link-1").is_some(),
+        visual.debug_bounds("board-agent-link-2").is_some(),
         "positive control: real agent renderer reads progress"
     );
-    let agent = visual.debug_bounds("board-agent-link-1").unwrap();
+    let agent = visual.debug_bounds("board-agent-link-2").unwrap();
     visual.simulate_click(agent.center(), Modifiers::default());
     assert_eq!(
         visual.opened_url(),
@@ -1574,7 +1588,7 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
             board
                 .manager_display
                 .progress(
-                    &board.binding.as_ref().unwrap().issues[0],
+                    &board.binding.as_ref().unwrap().issues[1],
                     &board.snapshot.t3.value[0]
                 )
                 .as_deref(),
