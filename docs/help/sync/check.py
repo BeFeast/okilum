@@ -2,6 +2,7 @@
 """Offline Help behavior: all user-facing resources resolve inside the bundle."""
 from hashlib import sha256
 from html.parser import HTMLParser
+import base64
 import json
 from pathlib import Path
 import re
@@ -70,6 +71,9 @@ def main():
     # CSS fonts are embedded. The page/player must never request hosted media.
     for ref in re.findall(r"url\(['\"]?([^)'\"]+)", html):
         assert ref.startswith("data:"), ref
+        if ref.startswith("data:font/ttf;base64,"):
+            font = base64.b64decode(ref.split(",", 1)[1], validate=True)
+            assert font.startswith(b"\x00\x01\x00\x00"), "Invalid embedded TrueType font"
     assert not re.search(r"\b(fetch|XMLHttpRequest|WebSocket)\s*\(", html)
     manifest = json.loads((ROOT / "provenance.json").read_text())
     for relative, digest in manifest["files"].items():
