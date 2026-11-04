@@ -37,6 +37,7 @@ pub(in crate::project::board) fn populate(board: &mut Board) {
             number: 7,
             merged_at: None,
             checks: "success".into(),
+            ..Default::default()
         });
     board
         .project_notes

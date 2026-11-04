@@ -13,6 +13,7 @@ pub mod live;
 pub mod local;
 pub mod manage;
 pub mod order;
+pub mod peek;
 pub mod waiting;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

@@ -5,6 +5,7 @@ use gpui::{TestAppContext, VisualTestContext};
 fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut VisualTestContext) {
     cx.update(|cx| {
         crate::test_init(cx);
+        bind_keys(cx);
         cx.set_global(reader_history::TestSessionDirectory(
             area.join("presentation-state"),
         ));
@@ -15,7 +16,7 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
             board.binding = Some(Binding::parse(&serde_json::json!({
                 "version":1,"title":"Synthetic Board","repository":"https://example.test/team/repo",
                 "issues":(1..=240).map(|number| serde_json::json!({
-                    "number":number,"expected":"Expected result stays in the disclosure","executor":"Synthetic agent",
+                    "number":number,"expected":"Expected result stays in the issue dock","executor":"Synthetic agent",
                     "stage":if number == 240 { Some("verified") } else { None },
                     "pull_requests":if number <= 16 { vec![1000+number] } else { vec![] },
                     "agent_thread_id":if number == 1 { Some("synthetic-agent") } else { None }
@@ -32,7 +33,7 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
                 if number <= 16 {
                     issue.open_pull_requests = vec![1000+number];
                     issue.live_pulls = vec![okilum_t3::board::live::Pull { number:1000+number,merged_at:None,
-                        checks:if number == 2 { "failure" } else { "success" }.into() }];
+                        checks:if number == 2 { "failure" } else { "success" }.into(), ..Default::default() }];
                 }
                 (number,issue)
             }).collect();
@@ -44,11 +45,19 @@ fn open<'a>(cx: &'a mut TestAppContext, area: &Path) -> (Entity<Board>, &'a mut 
             })).unwrap()];
             board
         });
-        Root::new(board, window, cx)
+        Root::new(cx.new(|cx| peek::Harness::new(board,cx)), window, cx)
     });
     visual.simulate_resize(size(px(1600.), px(1000.)));
     visual.run_until_parked();
-    let board = root.read_with(visual, |r, _| r.view().clone().downcast::<Board>().unwrap());
+    let board = root.read_with(visual, |r, cx| {
+        r.view()
+            .clone()
+            .downcast::<peek::Harness>()
+            .unwrap()
+            .read(cx)
+            .board
+            .clone()
+    });
     (board, visual)
 }
 fn click(visual: &mut VisualTestContext, selector: &'static str) {
@@ -165,6 +174,8 @@ fn kanban_2534_three_rows_two_complete_title_lines_and_viewport_work(cx: &mut Te
 
     click(visual, "board-expand-1");
     assert!(visual.debug_bounds("board-discuss-1").is_some());
+    assert!(visual.debug_bounds("board-peek-content").is_some());
+    assert!(visual.debug_bounds("board-kanban-details").is_none());
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(visual.debug_bounds("board-kanban-details").is_none());

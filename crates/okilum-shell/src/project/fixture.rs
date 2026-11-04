@@ -459,7 +459,9 @@ pub(super) fn open(cx: &mut App) -> bool {
     let state = reader_history::state_directory().expect("isolated fixture state");
     if matches!(
         mode.as_str(),
-        "board-list-dark"
+        "board-list-peek-dark"
+            | "board-kanban-peek-dark"
+            | "board-list-dark"
             | "board-list-light"
             | "board-kanban-dark"
             | "board-kanban-light"

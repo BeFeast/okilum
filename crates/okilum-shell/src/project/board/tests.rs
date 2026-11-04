@@ -520,7 +520,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             );
         }
     }
-    // Compact cards expose only the summary; links and notes need expansion.
+    // Compact cards expose only the summary; links and notes live in the dock.
     assert!(visual.debug_bounds("board-plan").is_none());
     assert!(visual.debug_bounds("board-discuss-1767").is_none());
     // Queue uses the dense title/number row; full state stays in its disclosure.
@@ -534,8 +534,8 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         "Stage note has no hidden replacement"
     );
     assert!(
-        visual.debug_bounds("board-note-1767-1").is_none(),
-        "Stage note alias is not a Note button"
+        visual.debug_bounds("board-peek-content").is_some(),
+        "Issue details live in the right dock"
     );
     let discuss = visual
         .debug_bounds("board-discuss-1767")
@@ -559,6 +559,9 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         #[cfg(not(target_os = "linux"))]
         assert_eq!(value.as_str(), "Keep my draft");
     });
+    let tab = visual.debug_bounds("board-peek-tab").unwrap();
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
     let note = visual
         .debug_bounds("board-note-1767-0")
         .expect("explicit related note action");
@@ -1054,6 +1057,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
                 now(),
             );
             b.selected = Some(number);
+            b.peek.open = true;
             assert_ne!(
                 b.delivery_column(&binding.issues[0]),
                 Column::Verified,
@@ -1062,7 +1066,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
             b
         });
         entity = Some(board.clone());
-        Root::new(board, window, cx)
+        Root::new(cx.new(|cx| peek::Harness::new(board, cx)), window, cx)
     });
     let board = entity.unwrap();
     visual.simulate_resize(size(px(1000.), px(1000.)));
@@ -1093,7 +1097,7 @@ fn delivery_summary_and_exact_evidence_do_not_turn_legacy_stage_into_acceptance(
         assert_eq!(
             visual.debug_bounds(id).is_some(),
             expected,
-            "expanded card: {id}"
+            "issue panel delivery control: {id}"
         );
     }
     for id in [
@@ -1367,7 +1371,7 @@ fn release_table_stays_compact_at_normal_and_wide_widths_in_both_themes(cx: &mut
 }
 
 #[gpui::test]
-fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_recovery(
+fn peek_2531_live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_recovery(
     cx: &mut TestAppContext,
 ) {
     cx.update(crate::test_init);
@@ -1391,6 +1395,10 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
             }))
             .unwrap();
             issue.live_pulls.push(okilum_t3::board::live::Pull {
+                title: String::new(),
+                state: String::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
                 number: 7,
                 merged_at: Some(1),
                 checks: String::new(),
@@ -1400,10 +1408,16 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
             board.snapshot.forgejo.error = Some("HTTP 503; showing last good Board".into());
             board
         });
-        Root::new(board, window, cx)
+        Root::new(cx.new(|cx| peek::Harness::new(board, cx)), window, cx)
     });
-    let board = root.read_with(visual, |root, _| {
-        root.view().clone().downcast::<Board>().unwrap()
+    let board = root.read_with(visual, |root, cx| {
+        root.view()
+            .clone()
+            .downcast::<peek::Harness>()
+            .unwrap()
+            .read(cx)
+            .board
+            .clone()
     });
     visual.simulate_resize(size(px(1200.), px(1000.)));
     visual.run_until_parked();
@@ -1420,14 +1434,18 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
     visual.run_until_parked();
     assert!(
         visual.debug_bounds("board-mapping-42").is_some(),
-        "generated-card mapping diagnostics remain reachable in its disclosure"
+        "generated-card mapping diagnostics remain reachable in the issue dock"
     );
+    assert!(visual.debug_bounds("board-peek-content").is_some());
+    assert!(visual.debug_bounds("board-kanban-details").is_none());
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
     assert!(
         visual.debug_bounds("board-live-status").is_some(),
         "source failure has a quiet inline status, not only a popover"
     );
+    assert!(visual.debug_bounds("board-peek-content").is_none());
+    assert!(visual.debug_bounds("board-mapping-42").is_none());
     let center = visual.debug_bounds("project-board").unwrap();
     let status = visual.debug_bounds("board-live-status").unwrap();
     let columns = visual.debug_bounds("board-columns").unwrap();
@@ -1459,7 +1477,7 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
 fn cached_live_agent_cards_ignore_composer_notifications_and_keep_source_publications(
     cx: &mut TestAppContext,
 ) {
-    cached_live_agent_publications(cx, list::Mode::Board);
+    cached_live_agent_publications(cx, list::Mode::Board, false);
 }
 
 #[cfg(target_os = "linux")]
@@ -1467,22 +1485,42 @@ fn cached_live_agent_cards_ignore_composer_notifications_and_keep_source_publica
 fn cached_live_list_rows_ignore_composer_notifications_and_keep_source_publications(
     cx: &mut TestAppContext,
 ) {
-    cached_live_agent_publications(cx, list::Mode::List);
+    cached_live_agent_publications(cx, list::Mode::List, false);
 }
 
 #[cfg(target_os = "linux")]
-fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
+#[gpui::test]
+fn peek_2531_cached_live_panel_ignores_composer_and_keeps_progress(cx: &mut TestAppContext) {
+    cached_live_agent_publications(cx, list::Mode::Board, true);
+}
+
+#[cfg(target_os = "linux")]
+fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode, peek: bool) {
     cx.update(crate::test_init);
     let temp = tempfile::tempdir().unwrap();
     struct Host {
         board: Entity<Board>,
         manager: Entity<ProjectView>,
+        peek: bool,
+        renders: usize,
     }
     impl Render for Host {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            self.board
-                .clone()
-                .cached(StyleRefinement::default().size_full())
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.renders += 1;
+            let mut view = h_flex().size_full().child(
+                div().flex_1().min_w_0().h_full().child(
+                    self.board
+                        .clone()
+                        .cached(StyleRefinement::default().size_full()),
+                ),
+            );
+            if self.peek {
+                let dock = self.board.update(cx, |board, cx| {
+                    board.render_peek_dock(div().into_any_element(), cx)
+                });
+                view = view.child(div().w(px(420.)).h_full().flex_none().child(dock));
+            }
+            view
         }
     }
     let (root, visual) = cx.add_window_view(|window, cx| {
@@ -1499,7 +1537,21 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
             manager.polling = true;
         });
         let board = cx.new(|cx| Board::performance_fixture(temp.path().join("board"), window, cx));
-        Root::new(cx.new(|_| Host { board, manager }), window, cx)
+        Root::new(
+            cx.new(|cx| {
+                if peek {
+                    cx.observe(&board, |_, _, cx| cx.notify()).detach();
+                }
+                Host {
+                    board,
+                    manager,
+                    peek,
+                    renders: 0,
+                }
+            }),
+            window,
+            cx,
+        )
     });
     visual.run_until_parked();
     let (board, manager) = root.read_with(visual, |root, cx| {
@@ -1567,6 +1619,25 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
         "rich agent controls retain their explicit source URL"
     );
     assert_eq!(board.read_with(visual, |board, _| board.selected), None);
+    if peek {
+        board.update_in(visual, |board, window, cx| {
+            board.selected = Some(2);
+            board.open_peek(window, cx);
+        });
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("board-peek-agent").is_some(),
+            "positive control: cached progress is rendered in the issue dock"
+        );
+    }
+    let dock_renders = root.read_with(visual, |root, cx| {
+        root.view()
+            .clone()
+            .downcast::<Host>()
+            .unwrap()
+            .read(cx)
+            .renders
+    });
     board.read_with(visual, |board, _| {
         board.render_calls.set(0);
         board.card_calls.set(0);
@@ -1582,6 +1653,17 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
         board.read_with(visual, |board, _| board.render_calls.get()),
         0,
         "agent cards must not depend on the whole Manager entity"
+    );
+    assert_eq!(
+        root.read_with(visual, |root, cx| root
+            .view()
+            .clone()
+            .downcast::<Host>()
+            .unwrap()
+            .read(cx)
+            .renders),
+        dock_renders,
+        "issue dock must not subscribe to composer notifications through the Manager entity"
     );
     manager.update(visual, |manager, cx| {
         manager
@@ -1609,6 +1691,19 @@ fn cached_live_agent_publications(cx: &mut TestAppContext, mode: list::Mode) {
             Some("Updated live progress")
         );
     });
+    if peek {
+        assert!(
+            root.read_with(visual, |root, cx| root
+                .view()
+                .clone()
+                .downcast::<Host>()
+                .unwrap()
+                .read(cx)
+                .renders)
+                > dock_renders,
+            "positive control: real Feed progress publication also refreshes the issue dock"
+        );
+    }
     assert_eq!(
         manager
             .read_with(visual, |manager, cx| manager.compose.read(cx).value())

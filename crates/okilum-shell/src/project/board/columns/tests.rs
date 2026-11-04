@@ -348,6 +348,10 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
         let issue = board.snapshot.forgejo.value.get_mut(&42).unwrap();
         issue.open_pull_requests.push(7);
         issue.live_pulls.push(okilum_t3::board::live::Pull {
+            title: String::new(),
+            state: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
             number: 7,
             merged_at: None,
             checks: "pending".into(),

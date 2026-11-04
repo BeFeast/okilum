@@ -326,6 +326,7 @@ fn issue2532_merge_cache_preserves_the_exact_recent_window_and_future_boundary()
         number: 1,
         merged_at: Some(100),
         checks: String::new(),
+        ..Default::default()
     };
     assert!(!pull.recent(99));
     assert_eq!(merge_expiry(99, 100), Some(100));
