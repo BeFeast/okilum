@@ -366,6 +366,7 @@ fn issue2532_list_chip_search_group_counts_and_shared_view_projection(cx: &mut T
                     "labels": labels.into_iter().map(|name| serde_json::json!({"name":name})).collect::<Vec<_>>() })).unwrap();
                 if number == 2 {
                     issue.live_pulls.push(okilum_t3::board::live::Pull {
+                        title: String::new(), state: String::new(), created_at: String::new(), updated_at: String::new(),
                         number: 102, merged_at: None, checks: "failure".into(),
                     });
                 }
