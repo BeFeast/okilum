@@ -14,6 +14,8 @@ pub(super) struct Session {
     panel: Option<native::Panel>,
 }
 impl Session {
+    // Only the native macOS Quick Look panel calls this.
+    #[cfg_attr(any(not(target_os = "macos"), test), allow(dead_code))]
     fn show(&mut self, path: &Path) -> anyhow::Result<()> {
         #[cfg(all(target_os = "macos", not(test)))]
         {

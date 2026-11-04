@@ -139,8 +139,10 @@ fn decode_windows(plan: &Plan) -> serde_json::Value {
         .all(|v| v.is_ascii_alphanumeric() || b"+/=".contains(&v)));
     let bytes = STANDARD.decode(encoded).unwrap();
     let utf16: Vec<_> = bytes
-        .chunks_exact(2)
-        .map(|v| u16::from_le_bytes([v[0], v[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|v| u16::from_le_bytes(*v))
         .collect();
     let script = String::from_utf16(&utf16).unwrap();
     assert!(!script.contains("Invoke-Expression"));

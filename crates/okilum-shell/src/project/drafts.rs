@@ -182,6 +182,7 @@ fn install_shutdown(cx: &mut App) {
     .detach();
 }
 impl Writer {
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     fn new(store: Store<Attachment>, initial: Saved) -> std::io::Result<Self> {
         Self::new_retained(store, initial, None)
     }
@@ -209,6 +210,7 @@ impl Writer {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     fn save(&self, draft: ChatDraft) {
         self.save_retained(draft.into());
     }
@@ -855,6 +857,7 @@ fn merge_initial_typed(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 fn merge_initial(initial: Option<ChatDraft>, saved: ChatDraft) -> Result<ChatDraft, String> {
     match initial.filter(|initial| *initial != ChatDraft::default()) {
         None => Ok(saved),
@@ -873,7 +876,7 @@ mod tests {
         let dispatcher = Arc::new(gpui::TestDispatcher::new(0));
         let foreground = gpui::ForegroundExecutor::new(dispatcher.clone());
         let (reply, barrier) = oneshot::channel::<Result<(), String>>();
-        foreground.spawn(async move { barrier.await }).detach();
+        foreground.spawn(barrier).detach();
         assert!(dispatcher.tick(false));
         dispatcher.drain_tasks();
         assert!(std::thread::spawn(move || reply.send(Ok(())))
@@ -1419,7 +1422,7 @@ impl HandoffIdentity {
             // whose per-view connection/draft epochs start at zero again.
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
             self.generation = NEXT
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                     |id| id.checked_add(1),

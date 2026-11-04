@@ -297,7 +297,6 @@ impl Render for Vaults {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
-    use gpui_component::menu::DropdownMenu as _;
 
     #[test]
     fn unknown_opening_dates_are_not_fabricated() {

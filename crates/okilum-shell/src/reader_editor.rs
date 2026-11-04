@@ -339,7 +339,7 @@ mod saved_agents_revision_tests {
 struct Editors(Vec<(WeakEntity<Reader>, AnyWindowHandle)>);
 impl Global for Editors {}
 
-#[cfg(any(test, feature = "brain"))]
+#[cfg(test)]
 pub(crate) fn save_all(cx: &mut App) -> bool {
     save_all_outcomes(cx).0
 }
@@ -1463,6 +1463,7 @@ impl Reader {
         }).detach();
     }
 
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub(super) fn refresh_source_from_disk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(test)]
         let _work = work::scope();
@@ -1612,7 +1613,7 @@ impl Reader {
     /// The editor's buffer was just written back at the note's own place
     /// (#1986): that file is its base now. False when the editor can no
     /// longer reach the file (its folder was recreated) and must reopen it.
-    pub(super) fn source_restored(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn source_restored(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(editing) = &mut self.editing else {
             return true;
         };
@@ -1939,6 +1940,7 @@ impl Reader {
         self.autosaved_observed(input_id, saves, text, result, stamp, None, cx);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn autosaved_observed(
         &mut self,
         input_id: EntityId,

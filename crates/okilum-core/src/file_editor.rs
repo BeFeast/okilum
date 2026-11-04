@@ -884,8 +884,7 @@ impl FileEditor {
                 base: self.draft.base.clone(),
                 generation: requested_generation,
             };
-            let retired =
-                std::mem::replace(&mut *self.writes.receipt.lock().unwrap(), Some(receipt));
+            let retired = self.writes.receipt.lock().unwrap().replace(receipt);
             drop(retired); // Never destroy a full old Rope while holding the UI receipt lock.
         }
         result

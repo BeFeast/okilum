@@ -5,12 +5,15 @@ use std::sync::Weak;
 
 type Images = (Arc<gpui::Image>, Arc<gpui::Image>);
 
+#[cfg(test)]
+type FetchFixture = Arc<dyn Fn(&ChatAttachment) -> anyhow::Result<Vec<u8>> + Send + Sync>;
+
 #[derive(Default)]
 pub(super) struct Previews {
     rows: HashMap<String, Entry>,
     inflight: Option<uuid::Uuid>,
     #[cfg(test)]
-    fetch: Option<Arc<dyn Fn(&ChatAttachment) -> anyhow::Result<Vec<u8>> + Send + Sync>>,
+    fetch: Option<FetchFixture>,
 }
 
 struct Entry {

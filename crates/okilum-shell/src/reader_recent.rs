@@ -343,6 +343,7 @@ impl Reader {
 
     /// An accepted rename publication may supply verified final old/new mappings.
     /// External renames without such evidence remain deletion/addition, never guesses.
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub(super) fn refresh_recent_gallery_renames(
         &mut self,
         renames: &[(String, String)],
@@ -690,8 +691,10 @@ mod tests {
     }
     #[test]
     fn gallery_never_commits_through_mru_control_release() {
-        let mut switcher = Switcher::default();
-        switcher.gallery_open = true;
+        let mut switcher = Switcher {
+            gallery_open: true,
+            ..Default::default()
+        };
         assert!(switcher.open());
         switcher.step(1);
         assert!(switcher.take().is_none());

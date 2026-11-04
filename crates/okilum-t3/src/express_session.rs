@@ -1553,6 +1553,7 @@ pub fn close_selected(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn close_selected_if(
     gateway: &dyn ManagerGateway,
     journal: &MessageJournal,

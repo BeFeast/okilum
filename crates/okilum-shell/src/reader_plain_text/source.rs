@@ -5,15 +5,15 @@ use std::{
     path::Path,
 };
 
-pub(super) const LIMIT: usize = 64 * 1024;
+pub(crate) const LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Preview {
+pub(crate) enum Preview {
     Content { text: String, partial: bool },
     Unsupported,
 }
 
-pub(super) fn load(path: &Path) -> io::Result<Preview> {
+pub(crate) fn load(path: &Path) -> io::Result<Preview> {
     read(File::open(path)?)
 }
 
@@ -41,7 +41,7 @@ fn read(reader: impl Read) -> io::Result<Preview> {
 }
 
 /// Reuse Reader selection without interpreting any authored Markdown or HTML.
-pub(super) fn fenced(text: &str) -> String {
+pub(crate) fn fenced(text: &str) -> String {
     let longest = text
         .as_bytes()
         .split(|byte| *byte != b'`')

@@ -301,6 +301,7 @@ impl TableGrid {
 
     /// A painted callback may outlive its source revision. Check both stamp
     /// and exact bytes before replacing the existing source click behavior.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::reader_editor) fn open_cell(
         &mut self,
         range: Range<usize>,
@@ -898,9 +899,8 @@ impl Render for TableGrid {
                         .border_1()
                         .border_color(palette.border)
                         .when(pending, |cell| {
-                            cell.border_color(palette.danger).debug_selector(move || {
-                                format!("uncommitted-table-cell-{r}-{c}").into()
-                            })
+                            cell.border_color(palette.danger)
+                                .debug_selector(move || format!("uncommitted-table-cell-{r}-{c}"))
                         })
                         .capture_action(cx.listener(|this, _: &Undo, window, cx| {
                             this.history(HistoryDirection::Undo, window, cx)

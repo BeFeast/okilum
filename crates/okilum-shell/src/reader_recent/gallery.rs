@@ -6,14 +6,19 @@ use std::collections::HashMap;
 const MAX_CARDS: usize = 40;
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Held preview publication: root, relative path and its release and resume signals.
+#[cfg(test)]
+type PreviewPublicationHold = (
+    PathBuf,
+    String,
+    futures::channel::oneshot::Sender<()>,
+    futures::channel::oneshot::Receiver<()>,
+);
+
 #[cfg(test)]
 thread_local! {
-    static PREVIEW_PUBLICATION_HOLD: std::cell::RefCell<Option<(
-        PathBuf,
-        String,
-        futures::channel::oneshot::Sender<()>,
-        futures::channel::oneshot::Receiver<()>,
-    )>> = const { std::cell::RefCell::new(None) };
+    static PREVIEW_PUBLICATION_HOLD: std::cell::RefCell<Option<PreviewPublicationHold>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -318,6 +323,7 @@ impl Gallery {
         }
         cx.notify();
     }
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub(crate) fn selected_path(&self) -> Option<&str> {
         self.selected.as_deref()
     }
@@ -489,6 +495,7 @@ impl Render for Gallery {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 fn load(root: &Path, relative: &str) -> anyhow::Result<Preview> {
     Ok(load_cached(root, relative, None)?.preview)
 }
@@ -513,7 +520,7 @@ fn load_cached(root: &Path, relative: &str, cached: Option<Cached>) -> anyhow::R
         "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
     ) {
         anyhow::ensure!(before.size <= MAX_BYTES, "Image exceeds preview size limit");
-        let mut decoder = image::ImageReader::open(&path)?.with_guessed_format()?;
+        let mut decoder = image::ImageReader::open(path)?.with_guessed_format()?;
         let mut limits = image::Limits::default();
         limits.max_image_width = Some(8192);
         limits.max_image_height = Some(8192);

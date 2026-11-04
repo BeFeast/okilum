@@ -90,6 +90,10 @@ jobs:
         run: |
           python3 docs/help/sync/check.py
           python3 scripts/rebrand/check_brand.py
+      - name: Lint every workspace target offline
+        env:
+          CARGO_NET_OFFLINE: 'true'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Verify pinned Sync fixture lifecycle, source sharing and remote inspection
         env:
           CARGO_NET_OFFLINE: 'true'

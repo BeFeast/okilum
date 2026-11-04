@@ -1,6 +1,5 @@
 // Pure tests: run under the Quick Look module or a harness exposing authority.
-#[path = "../reader_plain_text/source.rs"]
-mod codec;
+use crate::reader_plain_text::source as codec;
 
 #[test]
 fn large_quick_look_is_a_bounded_literal_prefix_and_does_not_change_source() {
@@ -21,8 +20,7 @@ fn large_quick_look_is_a_bounded_literal_prefix_and_does_not_change_source() {
     std::fs::remove_file(path).unwrap();
 }
 
-#[path = "media.rs"]
-mod media;
+use super::media;
 
 #[test]
 fn media_snapshot_bounds_reads_even_when_input_grows() {
@@ -52,7 +50,7 @@ fn media_admission_has_explicit_format_and_pixel_bounds() {
     assert!(media::dimensions_fit(4096, 4096));
     assert!(!media::dimensions_fit(4097, 1));
     assert!(!media::dimensions_fit(0, 100));
-    assert!(media::PDF_BYTES > media::IMAGE_BYTES);
+    const { assert!(media::PDF_BYTES > media::IMAGE_BYTES) };
 }
 
 #[test]
@@ -258,7 +256,6 @@ mod entities {
 mod mounted {
     use super::super::*;
     use ::core::prelude::v1::test;
-    use gpui::ElementInputHandler as _;
     use std::cell::RefCell;
 
     struct Fixture {
@@ -500,7 +497,7 @@ mod mounted {
         let retry = visual
             .debug_bounds("quick-look-retry")
             .expect("actual decode failure exposes painted Retry");
-        assert_eq!(&*paths.borrow(), &[path.clone()]);
+        assert_eq!(&*paths.borrow(), std::slice::from_ref(&path));
         png(&path);
         // A changed Tree cursor is not a new preview selection. Retry must use
         // its captured selection, rather than read this unrelated cursor.

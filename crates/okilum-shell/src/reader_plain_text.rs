@@ -1,6 +1,6 @@
 //! Plain attachment previews. File reads and text preparation stay off the UI thread.
 use super::*;
-mod source;
+pub(crate) mod source;
 
 pub(crate) fn eligible(rel: &str) -> bool {
     Path::new(rel)

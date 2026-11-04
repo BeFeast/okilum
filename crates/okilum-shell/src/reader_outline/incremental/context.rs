@@ -103,7 +103,7 @@ fn reference_revision(
             block_dependencies.push(std::mem::take(&mut dependencies));
             has_definition = false;
             has_content = false;
-            masked.push_str("\n");
+            masked.push('\n');
             continue;
         }
         if let Some((label, destination)) = text.strip_prefix('[').and_then(|s| s.split_once("]:"))
@@ -560,7 +560,7 @@ mod tests {
             });
             assert_eq!(
                 calls,
-                [unknown.clone()],
+                std::slice::from_ref(&unknown),
                 "unknown syntax is one full canonical parse"
             );
             assert!(context.references.is_none());

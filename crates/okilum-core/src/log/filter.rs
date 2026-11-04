@@ -867,7 +867,7 @@ mod tests {
     fn large() -> (Vec<u8>, LogIndex) {
         let mut data = Vec::new();
         for i in 0..120_000u64 {
-            if i % 11 == 0 {
+            if i.is_multiple_of(11) {
                 // Not indented: a raw row of its own, not a continuation.
                 data.extend_from_slice(b"frame line\n");
                 continue;
@@ -877,7 +877,7 @@ mod tests {
                     "{{\"ts\":{},\"level\":\"{}\",\"msg\":\"m{i}\",\"status\":{}}}\n",
                     1_759_276_800 + i,
                     ["debug", "info", "warn", "error"][(i % 4) as usize],
-                    if i % 10 == 0 { 500 } else { 200 },
+                    if i.is_multiple_of(10) { 500 } else { 200 },
                 )
                 .as_bytes(),
             );
@@ -903,7 +903,7 @@ mod tests {
         };
         // Positive control: the generator says which lines must match.
         let expected: Vec<u32> = (0..120_000u32)
-            .filter(|i| i % 11 != 0 && i % 20 == 10)
+            .filter(|i| !i.is_multiple_of(11) && i % 20 == 10)
             .collect();
         assert!(expected.len() > 5_000);
         for threads in [1, 2, 4, 7] {

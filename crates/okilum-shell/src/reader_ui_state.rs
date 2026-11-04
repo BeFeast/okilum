@@ -1625,6 +1625,7 @@ pub(crate) fn emoji_completion(cx: &App) -> bool {
     cx.try_global::<Store>()
         .is_none_or(|state| state.saved.emoji_completion)
 }
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 pub(crate) fn set_emoji_completion(value: bool, cx: &mut App) {
     if !installed(cx) || emoji_completion(cx) == value {
         return;

@@ -1,6 +1,10 @@
 //! First-sync preview composition. Parent supplies authenticated, complete
 //! snapshots and a serialized recovery-capable adapter. Recovery review IO runs
 //! on the background executor; neither constructor authorizes a canonical write.
+#![allow(
+    dead_code,
+    reason = "first-sync preview owner not wired into Reader yet"
+)]
 use gpui::{prelude::*, *};
 use gpui_component::{button::Button, h_flex, v_flex, Disableable};
 use okilum_sync_controller::merge_preview::{
@@ -119,7 +123,7 @@ impl SyncMergePreview {
     }
 }
 impl Render for SyncMergePreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(unix)]
         if self.recovery.is_some() {
             return self.render_recovery(cx);

@@ -4,11 +4,13 @@ use okilum_t3::chat_drafts::{Attachment, Draft};
 use okilum_t3::rotation::{Blocker, Checkpoint, Owner, PolicyStore, TzifResolver};
 
 #[derive(Clone)]
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 pub(super) struct Handoff {
     owner: Owner,
     captured: Draft<Attachment>,
     replacement: Draft<Attachment>,
 }
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 impl Handoff {
     pub(super) fn capture(
         owner: Owner,
@@ -51,6 +53,8 @@ impl Handoff {
 /// Parent applies the handoff, flushes the existing draft writer, and ONLY then
 /// calls PolicyStore::acknowledge(checkpoint.revision, owner). A crash or a stale
 /// composer leaves the pending claim visible for reconciliation after restart.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
 pub(super) fn prepare_recovery(
     store: &PolicyStore,
     expected_revision: u64,
@@ -172,6 +176,7 @@ impl PendingReview {
         }
         Ok(())
     }
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub fn resume(
         &mut self,
         store: &PolicyStore,
@@ -244,6 +249,7 @@ impl PendingReview {
     }
     /// Only call on the existing durable composer writer's successful barrier,
     /// with a fresh current snapshot. draft_flush alone is NOT an acknowledgement.
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub fn acknowledge_persisted(
         &self,
         store: &PolicyStore,
@@ -268,6 +274,7 @@ impl PendingReview {
         next.pending = None;
         Ok(next)
     }
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub fn defer(
         &self,
         store: &PolicyStore,
@@ -278,6 +285,7 @@ impl PendingReview {
         let next = self.resolve_loaded(&loaded, owner, Some(now))?;
         store.save(self.checkpoint.revision, next)
     }
+    #[cfg_attr(not(test), allow(dead_code, reason = "exercised only by tests"))]
     pub fn cancel(&self, store: &PolicyStore, owner: &Owner) -> Result<Checkpoint, String> {
         let loaded = store.load()?.ok_or("Rotation claim disappeared")?;
         let next = self.resolve_loaded(&loaded, owner, None)?;
