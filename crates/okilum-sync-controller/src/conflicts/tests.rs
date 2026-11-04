@@ -338,3 +338,21 @@ fn issue2044_crashes_recover_exact_bytes_without_overwriting_intervening_writers
         }
     }
 }
+
+#[test]
+fn issue2044_non_utf8_paths_refuse_before_journal_serialization() {
+    let (vault, _) = fixture();
+    let canonical = OsStr::from_bytes(b"bad-\xff.md");
+    let copy = OsStr::from_bytes(b"bad-\xff.sync-conflict-20261104-123456-ABC2345.md");
+    std::fs::write(vault.path().join(canonical), b"this").unwrap();
+    std::fs::write(vault.path().join(copy), b"that").unwrap();
+    assert!(preview(vault.path(), Path::new(copy))
+        .unwrap_err()
+        .to_string()
+        .contains("UTF-8 source paths"));
+    assert_eq!(
+        std::fs::read(vault.path().join(canonical)).unwrap(),
+        b"this"
+    );
+    assert_eq!(std::fs::read(vault.path().join(copy)).unwrap(), b"that");
+}
