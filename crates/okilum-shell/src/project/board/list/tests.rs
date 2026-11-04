@@ -388,9 +388,15 @@ fn list_2548_text_boxes_fit_descenders(cx: &mut TestAppContext) {
                 let mut descriptor = gpui::font(brand::SANS_FONT);
                 descriptor.weight = weight;
                 let font = cx.text_system().resolve_font(&descriptor);
-                cx.text_system().ascent(font, px(font_size))
-                    + cx.text_system().descent(font, px(font_size))
+                // Descent is signed in GPUI's test text system. Compare the
+                // full extents so this check cannot accept a one-em clip box.
+                cx.text_system().ascent(font, px(font_size)).abs()
+                    + cx.text_system().descent(font, px(font_size)).abs()
             });
+            assert!(
+                required > px(font_size),
+                "positive control: font metrics exceed one em"
+            );
             assert!(
                 bounds.size.height >= required,
                 "{selector}: {:?} line box must fit ascent + descent {required:?}",
