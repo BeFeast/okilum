@@ -18,8 +18,8 @@ jobs:
     # Dedicated warm runner for main certification only.
     # Workers validate their own exact HEAD through GitHub agent checks.
     runs-on: fast-linux
-    # Core changes rebuild the desktop AND workspace test targets (#2378).
-    timeout-minutes: 15
+    # Additive phases plus three 5m Python step ceilings (#2536), setup/cleanup.
+    timeout-minutes: 55
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -38,17 +38,36 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
+      # Install from the workflow revision before certification checks out an
+      # older product source that may not contain the dependency setup helper.
+      - name: Install Python venv support
+        run: |
+          if ! dpkg-query -W -f='${Status}' python3-venv 2>/dev/null | grep -q 'install ok installed'; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends python3-venv
+          fi
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Validate hourly certification source before compiling
         if: inputs.certification_source != ''
         env:
           CERTIFICATION_SOURCE: ${{ inputs.certification_source }}
           FORGEJO_URL: ${{ github.server_url }}
-        run: python3 scripts/releases/hourly_beta.py certify-source
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          # Exact-product checkout may predate the supervisors. Keep workflow
+          # tooling outside that checkout before the validator changes HEAD.
+          supervisor_root=$(mktemp -d "${RUNNER_TEMP:?}/fast-supervisor-XXXXXX")
+          cp scripts/ci/test-group.sh scripts/ci/test-group.py "$supervisor_root/"
+          OKILUM_TEST_GROUP="$supervisor_root/test-group.sh"
+          echo "OKILUM_TEST_GROUP=$OKILUM_TEST_GROUP" >> "$GITHUB_ENV"
+          bash "$OKILUM_TEST_GROUP" certification-source 90 python3 scripts/releases/hourly_beta.py certify-source
       - name: Prepare local Linux toolchain
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          packages=(build-essential cmake pkg-config curl git mold zstd python3 gnupg
+          packages=(build-essential cmake pkg-config curl git mold zstd python3 python3-venv gnupg
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
             libfontconfig-dev libfreetype-dev libxcb1-dev)
           if ! dpkg-query -W -f='${Status}\n' "${packages[@]}" 2>/dev/null | grep -vFx 'install ok installed' | grep -q . &&
@@ -65,29 +84,28 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Run the full CI tooling Python suite
         timeout-minutes: 5
-        run: python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+        run: bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ci-python 180 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - name: Run the full releases Python suite
         timeout-minutes: 5
-        run: python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
+        run: bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
       - name: Run the full updater Python suite
         timeout-minutes: 5
-        run: python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
+        run: bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
       - name: Build Linux desktop and run fast unit tests
         env:
           GITHUB_SHA: ${{ inputs.certification_source || github.sha }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/fast-local.sh
+          bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" fast-local-check 2100 bash scripts/ci/fast-local.sh
 
   shell-full:
     # Full runtime coverage never occupies a PR admission slot.
     needs: [check]
     runs-on: fast-linux
-    # Run 20932: test compilation 335s + >394s execution before check timed out.
-    # Give this job the runner's full 20m ceiling; record two loaded runs before
-    # adding its reporting context to main protection (docs/fast-runner.md).
-    timeout-minutes: 20
+    # 840s compile + 30s list + 990s tests + nested setup/cleanup margins.
+    # Plus the 2m exact-source validation step, including its cleanup grace.
+    timeout-minutes: 37
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -111,12 +129,21 @@ jobs:
         env:
           CERTIFICATION_SOURCE: ${{ inputs.certification_source }}
           FORGEJO_URL: ${{ github.server_url }}
-        run: python3 scripts/releases/hourly_beta.py certify-source
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          # Exact-product checkout may predate the supervisors. Keep workflow
+          # tooling outside that checkout before the validator changes HEAD.
+          supervisor_root=$(mktemp -d "${RUNNER_TEMP:?}/fast-supervisor-XXXXXX")
+          cp scripts/ci/test-group.sh scripts/ci/test-group.py "$supervisor_root/"
+          OKILUM_TEST_GROUP="$supervisor_root/test-group.sh"
+          echo "OKILUM_TEST_GROUP=$OKILUM_TEST_GROUP" >> "$GITHUB_ENV"
+          bash "$OKILUM_TEST_GROUP" certification-source 90 python3 scripts/releases/hourly_beta.py certify-source
       - name: Prepare local Linux toolchain
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          packages=(build-essential cmake pkg-config curl git mold zstd
+          packages=(build-essential cmake pkg-config curl git mold zstd python3
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
             libfontconfig-dev libfreetype-dev libxcb1-dev)
           if ! dpkg-query -W -f='${Status}\n' "${packages[@]}" 2>/dev/null | grep -vFx 'install ok installed' | grep -q . &&
@@ -137,7 +164,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash scripts/ci/fast-local.sh shell-full
+          bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full
 
   certification-status:
     # Beta gates on check alone: report and dispatch as soon as it finishes,
@@ -183,7 +210,7 @@ jobs:
     needs: [check]
     if: inputs.certification_source == ''
     runs-on: fast-linux
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
@@ -199,18 +226,19 @@ jobs:
           fixture_root=$(mktemp -d "${RUNNER_TEMP:?}/sync-fixtures-XXXXXX")
           echo "OKILUM_SYNC_FIXTURE_ROOT=$fixture_root" >> "$GITHUB_ENV"
           echo "TMPDIR=$fixture_root" >> "$GITHUB_ENV"
+      - name: Install Python venv support
+        run: |
+          if ! dpkg-query -W -f='${Status}' python3-venv 2>/dev/null | grep -q 'install ok installed'; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends python3-venv
+          fi
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
       - name: Verify ordinary source sharing with two pinned managed runtimes
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          export CARGO_TARGET_DIR="$HOME/.cache/okilum-sync-source-sharing/target"
-          mkdir -p "$CARGO_TARGET_DIR"
-          exec 9>"$HOME/.cache/okilum-sync-source-sharing/gate.lock"
-          flock -w 600 9
-          scripts/vendor-setup.sh 9>&-
-          scripts/vendor-setup.sh --verify 9>&-
-          bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2 9>&-
-          bash scripts/ci/sync-network-policy.sh 9>&-
+          bash scripts/ci/test-group.sh sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh
       - name: Reject and reap surviving job fixture daemons
         if: always()
         run: |
