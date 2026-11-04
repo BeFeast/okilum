@@ -44,6 +44,66 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
 }
 
 #[gpui::test]
+fn issue2049_external_service_links_never_open_sync(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        reader_features::install(directory.path(), cx);
+        cx.set_global(reader_history::TestSessionDirectory(
+            directory.path().to_owned(),
+        ));
+    });
+    for url in [
+        "okilum://sync/approve?request=private",
+        "okilum://settings/sync?service=https://not-contacted.invalid",
+        "okilum://enroll/private",
+    ] {
+        assert!(direct::validate_pairing_input(url, "Computer").is_err());
+        cx.update(|cx| reader_open::dispatch_urls(vec![url.into()], cx));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                !cx.has_global::<BackgroundSync>(),
+                "URL must not mount Sync"
+            );
+            assert!(!reader_features::enabled(
+                reader_features::Feature::Sync,
+                cx
+            ));
+        });
+    }
+    // Positive control: ordinary note navigation remains a recognized URL.
+    assert!(okilum_core::deep_link::parse("okilum://v/Notes/note.md").is_ok());
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn issue2049_previous_connection_message_is_visible_in_settings(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        reader_features::install(directory.path(), cx);
+        reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+        cx.set_global(TestWorker(std::sync::Arc::new(|_| {
+            Err(super::legacy::PreviousConnection.into())
+        })));
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| SyncSettings::new(window, cx));
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    visual.run_until_parked();
+    assert_visible(visual, "sync-error");
+    view.update(visual, |view, _| {
+        assert_eq!(view.error.as_deref(), Some(super::legacy::MESSAGE));
+        assert!(view.controller.is_none());
+    });
+}
+
+#[gpui::test]
 fn settings_2487_escape_commits_computer_name_before_closing(cx: &mut TestAppContext) {
     settings_2487_close_focused_field(cx, false, false);
 }
