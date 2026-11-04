@@ -27,7 +27,7 @@ def main():
         for marker in ('downloaded 2', 'prepared 2', 'restart clicked during real Ready verification', 'verified-ready 2'):
             assert marker in trace, trace
         assert 'final editor guard boundary' not in trace and 'report 13 ' not in trace, trace
-        for path in evidence.iterdir():
+        for path in list(evidence.iterdir()):
             path.rename(path.with_name('negative-control-' + path.name))
         print('PASS negative control: real Sparkle Ready-verification click was silently discarded before #2586', flush=True)
     finally:

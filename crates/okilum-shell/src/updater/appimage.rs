@@ -265,6 +265,7 @@ mod restart_tests {
     fn busy_restart_reports_a_retry_reason_without_arming_or_quitting(
         cx: &mut gpui::TestAppContext,
     ) {
+        let _guard = super::super::restart_feedback::TEST_LOCK.lock().unwrap();
         cx.update(crate::test_init);
         assert!(!BUSY.swap(true, Ordering::SeqCst));
         cx.update(restart);

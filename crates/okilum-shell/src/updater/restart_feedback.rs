@@ -10,6 +10,9 @@ static TRACE: Mutex<Option<crate::reader_diagnostics::Trace>> = Mutex::new(None)
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static MESSAGE: Mutex<Option<String>> = Mutex::new(None);
 
+#[cfg(test)]
+pub(super) static TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(all(test, target_os = "linux", not(feature = "linux-sprint")))]
 pub(super) fn pending_message() -> Option<String> {
     MESSAGE.lock().unwrap().clone()
@@ -119,6 +122,7 @@ mod tests {
     fn repeated_refusals_are_visible_after_focus_changes_and_recorded_in_feedback_log(
         cx: &mut gpui::TestAppContext,
     ) {
+        let _guard = TEST_LOCK.lock().unwrap();
         let directory = tempfile::tempdir().unwrap();
         let trace = crate::reader_diagnostics::Trace::new(Some(directory.path().into()), None);
         *TRACE.lock().unwrap() = Some(trace);
