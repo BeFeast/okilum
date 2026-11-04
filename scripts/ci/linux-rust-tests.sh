@@ -39,6 +39,7 @@ suite cargo test --locked -p okilum-t3 board::waiting::tests:: -- --nocapture
 # #2497: explicit non-empty performance/cache and picker verdicts.
 suite cargo test --locked -p okilum-shell --bin okilum project::performance::tests:: -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum cached_live_ -- --nocapture
+suite cargo test --locked -p okilum-shell --bin okilum cached_kanban_membership_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum filtered_list_reuses_projection_ -- --nocapture
 suite cargo test --locked -p okilum-shell --bin okilum project::models::interaction_tests:: -- --nocapture
 # Keep issue-peek interactions visible even if a later full-shell test aborts.
