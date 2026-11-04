@@ -76,7 +76,7 @@ impl Fixture<'_> {
         self.visual.run_until_parked();
         self.visual.update(|window, cx| window.draw(cx).clear(cx));
     }
-    fn click(&mut self, selector: &str) {
+    fn click(&mut self, selector: &'static str) {
         let bounds = self
             .visual
             .debug_bounds(selector)
