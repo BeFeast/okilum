@@ -5,6 +5,14 @@ use gpui_component::{
     WindowExt as _,
 };
 mod command;
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+#[derive(Default)]
+struct Launches(Vec<PathBuf>);
+#[cfg(test)]
+impl gpui::Global for Launches {}
 gpui::actions!(project_terminal, [OpenTerminal]);
 
 pub(crate) fn bind_keys(cx: &mut App) {
@@ -16,96 +24,138 @@ pub(crate) fn bind_keys(cx: &mut App) {
     ]);
 }
 fn setting_path(project: &Path) -> anyhow::Result<PathBuf> {
+    Ok(setting_file(project, &reader_history::state_directory()?))
+}
+fn setting_file(project: &Path, state: &Path) -> PathBuf {
     use sha2::{Digest, Sha256};
-    let state = reader_history::state_directory()?;
     let id = Sha256::digest(project.as_os_str().as_encoded_bytes());
-    Ok(state.join("project-terminal").join(format!("{id:x}.json")))
+    state.join("project-terminal").join(format!("{id:x}.json"))
 }
 fn saved(project: &Path) -> anyhow::Result<Option<String>> {
-    match std::fs::read(setting_path(project)?) {
+    read_saved(&setting_path(project)?)
+}
+fn read_saved(path: &Path) -> anyhow::Result<Option<String>> {
+    match std::fs::read(path) {
         Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }
 }
 fn available(program: &str) -> bool {
+    fn executable(path: &Path) -> bool {
+        let Ok(metadata) = path.metadata() else {
+            return false;
+        };
+        if !metadata.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    }
     if Path::new(program).is_absolute() {
-        return Path::new(program).is_file();
+        return executable(Path::new(program));
     }
     std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join(program).is_file()))
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|p| executable(&p.join(program))))
 }
-fn launch(project: &okilum_t3::projects::Project) -> anyhow::Result<()> {
+fn initial_for_project(
+    project: &okilum_t3::projects::Project,
+    state: &Path,
+) -> anyhow::Result<command::Initial> {
+    use anyhow::Context as _;
+    // Re-read settings: the selected project may predate a connection/checkout edit.
+    let project = okilum_t3::projects::Project::read(&project.folder)?;
     let document = okilum_t3::area_files::read(&project.folder, "project")?;
     let manifest = document.as_ref().map(|d| &d.value);
-    let custom = saved(&project.folder)?.or_else(|| {
-        manifest.and_then(|d| {
-            d["execution"]["terminal_command"]
-                .as_str()
-                .map(str::to_owned)
-        })
-    });
-    let state = reader_history::state_directory()?;
-    let origin = match project.environment.as_deref() {
-        Some(alias) => project::prefill_browser_origin(&project.folder, alias, Some(&state))?,
-        None => None,
-    };
-    anyhow::ensure!(
-        custom.is_some()
-            || project.environment.is_none()
-            || origin.is_some()
-            || manifest
-                .and_then(|d| d["execution"]["terminal_host"].as_str())
-                .is_some(),
-        "Connect this project's T3 server or set its terminal command first"
-    );
-    let origin = origin.map(|s| url::Url::parse(&s)).transpose()?;
-    let host = origin
-        .as_ref()
-        .and_then(|u| u.host_str())
-        .filter(|h| !matches!(*h, "localhost" | "127.0.0.1" | "::1"));
-    let host = manifest
-        .and_then(|d| d["execution"]["terminal_host"].as_str())
-        .or(host);
+    for field in ["terminal_command", "terminal_host"] {
+        if let Some(value) = manifest
+            .and_then(|d| d.get("execution"))
+            .and_then(|d| d.get(field))
+        {
+            anyhow::ensure!(value.is_string(), "execution.{field} must be a string");
+        }
+    }
+    let custom = read_saved(&setting_file(&project.folder, state))?
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            manifest.and_then(|d| {
+                d["execution"]["terminal_command"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+        });
+    let host = manifest.and_then(|d| d["execution"]["terminal_host"].as_str());
+    // An explicit override does not depend on a working T3 registry.
+    let has_t3 = project.environment.is_some()
+        || manifest.is_some_and(|d| d["t3"]["origin"].as_str().is_some());
+    let origin =
+        if !has_t3 || custom.as_ref().is_some_and(|v| !v.trim().is_empty()) || host.is_some() {
+            None
+        } else {
+            project::prefill_browser_origin(
+                &project.folder,
+                project.environment.as_deref().unwrap_or("project"),
+                Some(state),
+            )?
+        };
     let checkout = project
         .appearance
         .source_checkout
         .as_deref()
-        .unwrap_or_else(|| project.folder.to_str().unwrap_or("."));
-    let mut initial =
-        command::initial(host, checkout, custom.as_deref()).map_err(anyhow::Error::msg)?;
-    if cfg!(windows) && host.is_none() && custom.is_none() {
-        initial = format!(
-            "Set-Location -LiteralPath '{}'",
-            checkout.replace('\'', "''")
-        );
-    }
+        .or_else(|| project.folder.to_str())
+        .context("Project checkout is not UTF-8")?;
+    command::initial(
+        origin.as_deref(),
+        project.environment.is_some(),
+        host,
+        checkout,
+        custom.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)
+}
+fn launch(project: &okilum_t3::projects::Project) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let initial = initial_for_project(project, &reader_history::state_directory()?)?;
     let os = std::env::consts::OS;
-    let launcher = if cfg!(target_os = "macos") {
-        "osascript".into()
-    } else if cfg!(windows) {
-        if available("wt.exe") {
-            "wt.exe".into()
-        } else {
-            "cmd.exe".into()
-        }
-    } else if available("xdg-terminal-exec") {
-        "xdg-terminal-exec".into()
-    } else if let Ok(terminal) = std::env::var("TERMINAL") {
-        terminal
-    } else {
-        "x-terminal-emulator".into()
-    };
+    let terminal = std::env::var("TERMINAL").ok();
+    let launcher =
+        command::launcher(os, terminal.as_deref(), available).map_err(anyhow::Error::msg)?;
     let plan = command::plan(os, &initial, &launcher);
     let mut child = std::process::Command::new(&plan.program)
         .args(&plan.args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Cannot start system terminal {}", plan.program))?;
+    // Drain stderr without retaining unbounded terminal diagnostics.
+    use std::io::Read as _;
+    let mut diagnostic = Vec::new();
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let mut buffer = [0u8; 4096];
+    loop {
+        match stderr.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => diagnostic.extend_from_slice(&buffer[..n.min(8192 - diagnostic.len())]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let status = child.wait()?;
+    anyhow::ensure!(
+        status.success(),
+        "System terminal {} failed ({}): {}",
+        plan.program,
+        status,
+        String::from_utf8_lossy(&diagnostic).trim()
+    );
     Ok(())
 }
 pub(crate) fn open_project(area: PathBuf, window: &mut Window, cx: &mut App) {
@@ -115,9 +165,28 @@ pub(crate) fn open_project(area: PathBuf, window: &mut Window, cx: &mut App) {
     }
 }
 pub(crate) fn open(project: &okilum_t3::projects::Project, window: &mut Window, cx: &mut App) {
-    if let Err(e) = launch(project) {
-        window.push_notification(format!("Terminal could not open: {e}"), cx);
+    #[cfg(test)]
+    if cx.has_global::<Launches>() {
+        cx.global_mut::<Launches>().0.push(project.folder.clone());
+        return;
     }
+    // A terminal can remain alive for hours. Neither the UI thread nor GPUI's
+    // shared background worker pool waits for that process. Reap on a dedicated
+    // thread and deliver any launch/exit failure back to the originating window.
+    let project = project.clone();
+    let (send, receive) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let _ = send.send_blocking(launch(&project));
+    });
+    let window = window.window_handle();
+    cx.spawn(async move |cx| {
+        if let Ok(Err(error)) = receive.recv().await {
+            let _ = window.update(cx, |_, window, cx| {
+                window.push_notification(format!("Terminal could not open: {error:#}"), cx)
+            });
+        }
+    })
+    .detach();
 }
 impl Reader {
     pub(super) fn open_project_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -137,7 +206,7 @@ struct TerminalSettings {
 impl Render for TerminalSettings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex().p_4().gap_3().child("Project terminal command")
-            .child("Empty uses ssh to the T3 host, or the local checkout. This command runs only when you choose Open terminal.")
+            .child("Empty uses the T3 host or local checkout. Enter an executable and arguments, for example ssh maestro. Quotes group arguments; shell operators are not evaluated.")
             .child(Input::new(&self.input))
             .children(self.error.clone())
             .child(Button::new("save-terminal-command").label("Save").on_click(cx.listener(|this,_,window,cx| {
@@ -145,7 +214,7 @@ impl Render for TerminalSettings {
                 let result=(||->anyhow::Result<()> {
                     let path=setting_path(&this.project)?;
                     if value.trim().is_empty() {if path.exists(){std::fs::remove_file(path)?;}return Ok(());}
-                    command::initial(None,"",Some(&value)).map_err(anyhow::Error::msg)?;
+                    command::override_argv(&value).map_err(anyhow::Error::msg)?;
                     std::fs::create_dir_all(path.parent().unwrap())?;
                     use std::io::Write;
                     let mut file=tempfile::NamedTempFile::new_in(path.parent().unwrap())?;

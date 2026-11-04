@@ -1,22 +1,61 @@
 WEBVTT
 
-00:00:00.000 --> 00:00:03.300
-An already-connected Linux preview pair. Pauses are cut.
+1
+00:00:00.000 --> 00:00:06.900
+Desktop: Okilum Sync keeps your notes on two computers, directly between them. No account, no cloud service.
 
-00:00:03.300 --> 00:00:05.600
-Inspect the existing Sync connection.
+2
+00:00:07.050 --> 00:00:12.980
+Desktop: On the computer that has your notes, open the menu and choose Share with another computer.
 
-00:00:06.300 --> 00:00:12.900
-Edit the note and add your next idea.
+3
+00:00:13.130 --> 00:00:15.980
+Desktop: Give this computer a name.
 
-00:00:13.900 --> 00:00:14.500
-Switch to Source view.
+4
+00:00:16.130 --> 00:00:21.320
+Desktop: Next to your vault, choose Share with my computers. Your files stay where they are.
 
-00:00:14.500 --> 00:00:15.700
-Before arrival: the second computer has not updated yet.
+5
+00:00:21.470 --> 00:00:28.700
+Desktop: Then choose Add computer. Okilum shows a one-time pairing link. Copy it to your other computer.
 
-00:00:15.700 --> 00:00:16.200
-Wait shortened.
+6
+00:00:28.850 --> 00:00:36.730
+Laptop: On the new computer, install the Okilum beta. On the welcome screen, choose Get notes from another computer.
 
-00:00:16.200 --> 00:00:18.400
-The new line arrives on the second computer.
+7
+00:00:36.880 --> 00:00:40.770
+Laptop: Name this computer, paste the link, and choose Connect.
+
+8
+00:00:40.920 --> 00:00:46.110
+Desktop: Back on the first computer, check that the name is right, and confirm it.
+
+9
+00:00:46.260 --> 00:00:49.730
+Laptop: The new computer now lists the vaults you shared.
+
+10
+00:00:49.880 --> 00:00:55.440
+Laptop: Choose your vault and pick where to keep it. Okilum suggests a new, empty folder.
+
+11
+00:00:55.590 --> 00:00:58.500
+Laptop: Your notes arrive, and the vault opens.
+
+12
+00:00:58.650 --> 00:01:03.170
+Laptop: Write something on the laptop,
+
+13
+00:01:03.320 --> 00:01:06.170
+Desktop: and it shows up on the desktop.
+
+14
+00:01:06.320 --> 00:01:09.840
+Desktop: Change a note on the desktop,
+
+15
+00:01:09.990 --> 00:01:17.450
+Laptop: and the laptop gets it too. You pair your computers once. After that, every change syncs both ways.

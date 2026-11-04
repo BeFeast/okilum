@@ -438,8 +438,16 @@ pub(super) fn open(cx: &mut App) -> bool {
         reader_features::set_enabled(reader_features::Feature::Agents, true, cx);
     }
     let state = reader_history::state_directory().expect("isolated fixture state");
-    if mode == "board-list-dark" || mode == "board-list-light" {
-        board::Board::open_list_fixture(state, cx);
+    if matches!(
+        mode.as_str(),
+        "board-list-dark"
+            | "board-list-light"
+            | "board-kanban-dark"
+            | "board-kanban-light"
+            | "board-kanban-filtered-dark"
+            | "board-kanban-filtered-light"
+    ) {
+        board::Board::open_list_fixture(state, mode.starts_with("board-kanban"), cx);
         return true;
     }
     if picker_reference {

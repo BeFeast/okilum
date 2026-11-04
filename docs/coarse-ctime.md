@@ -33,6 +33,16 @@ an old cache without one must revalidate. Changed metadata or a changed fingerpr
 always prevents reuse. Fresh-process startup tests cover this transition as well
 as changed-source and topology-delta relaunches (#2427).
 
+The same rule applies while establishing a stamp (#2540). A cold source read,
+primary-note checkpoint, or source-bank load can start inside the two-second
+window and finish outside it. Compare the native metadata independently of
+fingerprint presence, require every observed fingerprint to match the bytes
+actually read, and retain any verified fingerprint in the accepted stamp.
+Elapsed time alone cannot leave an unchanged source without a stamp and force
+`invalidated_revision` reads on the next launch. A thread-scoped injectable clock
+tests the 1.999 s to 2 s transition without sleeps; coarse-filesystem checks still
+require hashes and reject same-size restored-mtime edits and racing reads.
+
 A source replaced during fingerprint verification returns a transient
 `WouldBlock` revision error. Generation collection defers that run just as it does
 when its explicit hint recheck changes; it never treats an unstable hint as an

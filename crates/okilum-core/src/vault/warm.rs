@@ -70,19 +70,39 @@ impl SourceRevision {
             .is_none_or(|hash| hash == crate::change_detection::digest(bytes))
     }
 
+    /// Accept a read only when metadata stayed stable and every observed
+    /// fingerprint agrees with its bytes. Crossing the native ctime window may
+    /// remove a fingerprint; retain that verified evidence for later reuse.
+    fn verified_after_read(mut self, before: &Self, bytes: &[u8]) -> Option<Self> {
+        if !self.same_metadata(before) {
+            return None;
+        }
+        if let (Some(old), Some(new)) = (before.content_hash, self.content_hash) {
+            if old != new {
+                return None;
+            }
+        }
+        self.content_hash = self.content_hash.or(before.content_hash);
+        self.matches_bytes(bytes).then_some(self)
+    }
+
     /// Compare a current observation with a saved revision. Once native ctime
     /// is outside the vulnerable tick, a saved fingerprint is extra evidence,
     /// not a change to the source. A current fingerprint still requires an
     /// identical saved fingerprint, including on coarse/unknown filesystems.
     fn matches_saved(&self, saved: &Self) -> bool {
+        self.same_metadata(saved)
+            && self
+                .content_hash
+                .is_none_or(|hash| saved.content_hash == Some(hash))
+    }
+
+    fn same_metadata(&self, saved: &Self) -> bool {
         self.size == saved.size
             && self.modified == saved.modified
             && self.device == saved.device
             && self.inode == saved.inode
             && self.changed == saved.changed
-            && self
-                .content_hash
-                .is_none_or(|hash| saved.content_hash == Some(hash))
     }
 
     fn metadata(path: &Path) -> std::io::Result<Self> {
@@ -295,17 +315,16 @@ pub fn remember_primary(base: &Path, root: &Path, path: &str) -> Result<()> {
         bytes.len() as u64 <= MAX_BYTES,
         "Primary exceeds cache size limit"
     );
-    ensure!(
-        SourceRevision::read(&file_path)? == before && before.matches_bytes(&bytes),
-        "Primary changed during cache read"
-    );
+    let stamp = SourceRevision::read(&file_path)?
+        .verified_after_read(&before, &bytes)
+        .context("Primary changed during cache read")?;
     let snapshot = PrimarySnapshot {
         schema: SCHEMA,
         root,
         primary: (
             path.to_owned(),
             Source {
-                stamp: Some(before),
+                stamp: Some(stamp),
                 bytes: STANDARD.encode(bytes),
             },
         ),
@@ -721,9 +740,10 @@ impl Snapshot {
             .take(MAX_BYTES + 1)
             .read_to_end(&mut bytes)?;
         // A file replaced during the read is decoded but never trusted as persisted.
-        let file = before.filter(|before| {
-            SourceRevision::read(&path).ok().as_ref() == Some(before)
-                && before.matches_bytes(&bytes)
+        let file = before.and_then(|before| {
+            SourceRevision::read(&path)
+                .ok()?
+                .verified_after_read(&before, &bytes)
         });
         ensure!(
             bytes.len() as u64 <= MAX_BYTES,
@@ -1108,10 +1128,9 @@ fn check_source(
                 });
             }
             let after = SourceRevision::read(&path).ok();
-            let stamp = (before == after)
-                .then_some(after)
-                .flatten()
-                .filter(|stamp| stamp.matches_bytes(&bytes));
+            let stamp = before
+                .zip(after)
+                .and_then(|(before, after)| after.verified_after_read(&before, &bytes));
             result.source = Some(Source {
                 stamp,
                 bytes: STANDARD.encode(bytes),
@@ -2562,6 +2581,156 @@ mod tests {
         current.content_hash = None;
         assert!(stats.needs_read(Some(&current), Some(&source), false));
         assert_eq!(stats.changed_revision, 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cold_read_crossing_native_ctime_window_keeps_stamp_and_relaunch_reuses_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("source.md");
+        std::fs::write(&path, "# Unchanged").unwrap();
+        let metadata = SourceRevision::metadata(&path).unwrap();
+        let changed = UNIX_EPOCH + std::time::Duration::from_nanos(metadata.changed as u64);
+        let young = changed + std::time::Duration::from_millis(1999);
+        let aged = changed + std::time::Duration::from_secs(2);
+        let now = std::rc::Rc::new(std::cell::Cell::new(young));
+        let clock = now.clone();
+        crate::change_detection::with_native_ctime_clock(
+            move || clock.get(),
+            || {
+                assert!(SourceRevision::read(&path).unwrap().content_hash.is_some());
+                let (vault, cold, stats) =
+                    reconcile_with_reader(&root, None, false, &mut |_, _| Ok(()), &mut |path| {
+                        let bytes = std::fs::read(path)?;
+                        now.set(aged);
+                        Ok(bytes)
+                    })
+                    .unwrap();
+                assert_eq!(stats.read, 1, "cold source read positive control");
+                assert_eq!(stats.reuse.fingerprinted, 1, "before was inside the window");
+                assert!(
+                    SourceRevision::read(&path).unwrap().content_hash.is_none(),
+                    "after crossed the window without any file edit"
+                );
+                assert_eq!(SourceRevision::metadata(&path).unwrap(), metadata);
+                assert!(
+                    cold.source_revision("source.md").is_some(),
+                    "elapsed time must not invalidate a verified cold read"
+                );
+                assert!(
+                    cold.source_revision("source.md")
+                        .unwrap()
+                        .content_hash
+                        .is_some(),
+                    "retain the fingerprint tied to the source bytes"
+                );
+                save_complete(&cold, &vault, &cache).unwrap();
+                let saved = Snapshot::load_checked(&cache, &root).unwrap();
+                let (_, _, stats) = reconcile_with_reader(
+                    &root,
+                    Some(&saved),
+                    false,
+                    &mut |_, _| Ok(()),
+                    &mut |_| panic!("unchanged persisted source must not be re-read"),
+                )
+                .unwrap();
+                assert_eq!((stats.read, stats.reused), (0, 1));
+                assert_eq!(stats.reuse.invalidated_revision, 0);
+                assert!(stats.graph_reused);
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn primary_and_source_bank_reads_crossing_native_ctime_window_keep_stamps() {
+        fn crossing_window<T>(path: &Path, run: impl FnOnce() -> T) -> T {
+            let metadata = SourceRevision::metadata(path).unwrap();
+            let changed = UNIX_EPOCH + std::time::Duration::from_nanos(metadata.changed as u64);
+            let mut first = true;
+            crate::change_detection::with_native_ctime_clock(
+                move || {
+                    let age = if first { 1999 } else { 2000 };
+                    first = false;
+                    changed + std::time::Duration::from_millis(age)
+                },
+                run,
+            )
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("vault");
+        let cache = temp.path().join("cache");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("source.md");
+        std::fs::write(&path, "# Unchanged").unwrap();
+        crossing_window(&path, || remember_primary(&cache, &root, "source.md")).unwrap();
+        let (_, primary) = latest_primary(&cache, &root.canonicalize().unwrap()).unwrap();
+        assert!(primary.stamp.unwrap().content_hash.is_some());
+
+        let (vault, cold, _) = reconcile(&root, None, false, &mut |_, _| Ok(())).unwrap();
+        save_complete(&cold, &vault, &cache).unwrap();
+        crossing_window(&cache.join("reader-snapshot.json"), || {
+            let loaded = Snapshot::load_checked(&cache, &root).unwrap();
+            assert!(
+                loaded.is_persisted_in(&cache),
+                "stable bank retains its persisted identity"
+            );
+            assert!(loaded
+                .persisted
+                .as_ref()
+                .unwrap()
+                .file
+                .content_hash
+                .is_some());
+        });
+    }
+
+    #[test]
+    fn verified_source_read_requires_every_observed_fingerprint_to_match_bytes() {
+        let before = SourceRevision {
+            size: 4,
+            modified: 1_700_000_000_000_000_123,
+            device: 1,
+            inode: 2,
+            changed: 1_700_000_000_000_000_123,
+            content_hash: Some(crate::change_detection::digest(b"old!")),
+        };
+        let mut after = before.clone();
+        after.content_hash = None;
+        assert!(after
+            .clone()
+            .verified_after_read(&before, b"old!")
+            .is_some());
+        assert!(
+            after
+                .clone()
+                .verified_after_read(&before, b"new!")
+                .is_none(),
+            "aging out must not discard the earlier fingerprint's byte check"
+        );
+        assert!(
+            before
+                .clone()
+                .verified_after_read(&after, b"new!")
+                .is_none(),
+            "a later fingerprint must also match the read bytes"
+        );
+        after.content_hash = Some(crate::change_detection::digest(b"new!"));
+        for bytes in [b"old!", b"new!"] {
+            assert!(
+                after.clone().verified_after_read(&before, bytes).is_none(),
+                "a same-stat edit during the read never supplies a stable stamp"
+            );
+        }
+        after = before.clone();
+        after.changed += 1;
+        assert!(
+            after.verified_after_read(&before, b"old!").is_none(),
+            "unchanged bytes do not hide a metadata race"
+        );
     }
 
     #[cfg(unix)]

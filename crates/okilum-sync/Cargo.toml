@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+okilum-write-authority = { path = "../okilum-write-authority" }
 okilum-network-access = { path = "../okilum-network-access" }
 anyhow = "1"
 serde_json = "1"

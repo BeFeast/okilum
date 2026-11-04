@@ -129,6 +129,7 @@ fn names(pattern: &str, wanted: &str) -> bool {
 /// refused if it changed since, so an edit made by someone else in the meantime is never
 /// overwritten; existing bytes, line endings and a missing final newline are kept.
 pub fn add_block(root: &Path) -> Result<Added> {
+    let _admission = okilum_write_authority::operation(root)?;
     match std::fs::symlink_metadata(root.join(MARKER)) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

@@ -1,22 +1,24 @@
-# Closing a Forgejo PR retires only its temporary public native-check refs.
+# Explicit maintenance of legacy temporary public native-check refs.
 name: github-macos-cleanup
 
 on:
-  pull_request_target:
-    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Closed PR whose legacy native-check refs should be retired'
+        required: true
 
 permissions:
   contents: read
 
 jobs:
   cleanup:
-    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: light
     timeout-minutes: 5
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          # Never execute the closed PR's code in this privileged event.
+          # Maintenance always uses main tooling.
           ref: main
           persist-credentials: false
       - name: Delete this PR's GitHub native-check refs
@@ -25,5 +27,5 @@ jobs:
           OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: python3 scripts/ci/github-macos.py cleanup

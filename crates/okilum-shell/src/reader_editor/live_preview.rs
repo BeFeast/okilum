@@ -63,6 +63,7 @@ pub(super) struct LivePreview {
     /// The block F2 or Enter opened, and where the caret was (#1642).
     pub(super) opened_block: Option<super::block_entry::OpenedBlock>,
     colors: Cell<Option<ProjectionColors>>,
+    agent_imports: Cell<bool>,
     code_font: std::cell::RefCell<SharedString>,
     syntax_theme: std::cell::RefCell<Option<Arc<gpui_component::highlighter::HighlightTheme>>>,
     #[cfg(target_os = "linux")]
@@ -137,6 +138,7 @@ impl LivePreview {
             block_focus: None,
             opened_block: None,
             colors: Cell::new(None),
+            agent_imports: Cell::new(false),
             code_font: Default::default(),
             syntax_theme: Default::default(),
             #[cfg(target_os = "linux")]
@@ -278,7 +280,9 @@ impl Reader {
         let colors = projection_colors(cx);
         let code_font = reader_fonts::code(cx);
         let syntax_theme = cx.theme().highlight_theme.clone();
-        if editing.live_preview.colors.get() == Some(colors)
+        let agent_imports = self.agent_document_enabled(cx);
+        if editing.live_preview.agent_imports.get() == agent_imports
+            && editing.live_preview.colors.get() == Some(colors)
             && *editing.live_preview.code_font.borrow() == code_font
             && editing
                 .live_preview
@@ -295,9 +299,15 @@ impl Reader {
         // Publish presentation before notifying the input: the resulting render
         // observes it and cannot reinstall the same provider recursively.
         editing.live_preview.colors.set(Some(colors));
+        editing.live_preview.agent_imports.set(agent_imports);
         *editing.live_preview.code_font.borrow_mut() = code_font.clone();
         *editing.live_preview.syntax_theme.borrow_mut() = Some(syntax_theme.clone());
-        let provider = provider.with_code_syntax(colors, code_font.to_string(), syntax_theme);
+        let provider = provider.with_document_syntax(
+            colors,
+            code_font.to_string(),
+            syntax_theme,
+            agent_imports,
+        );
         editing.input.update(cx, |input, cx| {
             input.set_projection_provider(Some(provider), cx)
         });
@@ -416,12 +426,17 @@ impl Reader {
             }
             input.set_searchable(!enabled, cx);
         });
+        let agent_imports = self.agent_document_enabled(cx);
+        if let Some(editing) = &self.editing {
+            editing.live_preview.agent_imports.set(agent_imports);
+        }
         let provider = if enabled {
             held.map(|p| {
-                p.with_code_syntax(
+                p.with_document_syntax(
                     colors,
                     reader_fonts::code(cx).to_string(),
                     cx.theme().highlight_theme.clone(),
+                    agent_imports,
                 )
             })
         } else {
@@ -602,6 +617,7 @@ impl Reader {
                 let live = this.live_input(cx.entity_id(), cx);
                 let colors = projection_colors(cx);
                 let parked = this.move_applying;
+                let agent_imports = this.agent_document_enabled(cx);
                 let Some(editing) = &mut this.editing else {
                     return;
                 };
@@ -628,14 +644,16 @@ impl Reader {
                                 state.accepted = Some(provider.clone());
                                 state.needs_compute = false;
                                 state.colors.set(Some(colors));
+                                state.agent_imports.set(agent_imports);
                                 *state.syntax_theme.borrow_mut() =
                                     Some(cx.theme().highlight_theme.clone());
                                 input.update(cx, |input, cx| {
                                     input.set_projection_provider(
-                                        Some(provider.with_code_syntax(
+                                        Some(provider.with_document_syntax(
                                             colors,
                                             reader_fonts::code(cx).to_string(),
                                             cx.theme().highlight_theme.clone(),
+                                            agent_imports,
                                         )),
                                         cx,
                                     )

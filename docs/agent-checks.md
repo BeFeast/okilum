@@ -21,7 +21,10 @@ must contain only public code and synthetic fixtures, never private/corporate da
 Only `agent-checks.yml` listens to this namespace. It creates no GitHub PR, tags,
 release, signing or publication work. Forgejo remains primary; its existing main
 and release-tag mirror is unchanged. Push the implementation branch to Forgejo
-and open its PR there as usual. Agent checks supplement existing merge admission.
+and open its PR there as usual. Before merge, require gh-check green on this
+exact HEAD, then merge the PR yourself. Any later commit needs a new check.
+Forgejo CI does not run on PRs; main has no required status checks. Forgejo
+continues main, nightly and Stable certification independently.
 
 The standard public `ubuntu-24.04` runner has 4 vCPUs. The job records its CPU,
 memory and exact source SHA, verifies the pinned Rust toolchain and the complete
@@ -29,7 +32,9 @@ gpui-kit/comrak patch trees, fetches public dependencies with the workspace lock
 then builds the Linux desktop/sync supervisor and runs the full `okilum-core`
 suite and `scripts/ci/linux-rust-tests.sh` with Cargo offline. These are the same
 Rust suites called by full Linux acceptance (`scripts/ci/check-linux.sh`); the
-nightly acceptance Python/packaging checks retain their existing scope. Both test shells raise their soft nofile limit via `test-nofile.sh`.
+nightly acceptance Python/packaging checks retain their existing scope. AppImage process fixtures run serially so a
+concurrent fork cannot temporarily retain another fixture's installation lock
+before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
 
 Rust downloads, verified generated vendor trees and `target/` are cached with the toolchain, dependency/manifests,

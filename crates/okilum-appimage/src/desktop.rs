@@ -60,6 +60,17 @@ fn exec_path(image: &Path) -> Result<String> {
     Ok(escaped)
 }
 
+/// Evidence that the exact legacy image belongs to our previous installation.
+/// A distribution or user-authored launcher never authorizes deleting its target.
+pub(crate) fn points_to(home: &Path, image: &Path) -> Result<bool> {
+    let (desktop, _) = paths(home)?;
+    let Ok(entry) = fs::read_to_string(desktop) else {
+        return Ok(false);
+    };
+    let exec = format!("Exec=/usr/bin/env -- {} %u", exec_path(image)?);
+    Ok(entry.lines().any(|line| line == MARKER.trim()) && entry.lines().any(|line| line == exec))
+}
+
 /// Silent, idempotent refresh on every AppImage launch, including a moved image.
 /// Call off the UI thread; report errors without blocking ordinary startup.
 /// Passing an image does not grant update authority or change channel selection.

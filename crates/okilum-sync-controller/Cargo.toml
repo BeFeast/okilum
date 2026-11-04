@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+okilum-write-authority = { path = "../okilum-write-authority" }
 anyhow = "1"
 base64 = "0.22"
 sha2 = "0.10"

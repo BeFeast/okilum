@@ -60,7 +60,7 @@ struct Entry {
 /// No filesystem, processes, Python, providers or network are involved. Unknown
 /// contracts fail visibly, never as a clean bill of health.
 pub fn diagnose(path: &str, source: &str, schema: Option<&str>) -> Report {
-    if !crate::quick_open::is_agent_file(path) {
+    if !crate::agent_imports::is_agent_document(path) {
         return Report {
             status: Status::NotApplicable,
             diagnostics: Vec::new(),

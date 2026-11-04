@@ -151,10 +151,13 @@ mod input_navigation_tests;
 #[cfg(test)]
 mod input_newline_tests;
 mod reader_agent_imports;
+#[cfg(test)]
+mod reader_agent_imports_tests;
 mod reader_agent_language;
 mod reader_agent_search;
 mod reader_agents_context;
 mod reader_agents_offer;
+mod reader_document_decorations;
 mod reader_features;
 mod reader_file_access_notice;
 mod reader_sync_help;
@@ -1245,8 +1248,10 @@ fn reader_plugins(
     sel_format: SelectionFormat,
     states: prepared_links::States,
     identities: &[okilum_core::document_links::prepared::LinkIdentity],
+    decorate_document: bool,
 ) -> TextView {
-    reader_plugins_at(
+    let documents_entity = entity.clone();
+    let view = reader_plugins_at(
         MarkdownScope::default(),
         root,
         view,
@@ -1254,7 +1259,12 @@ fn reader_plugins(
         sel_format,
         states,
         identities,
-    )
+    );
+    if decorate_document {
+        reader_document_decorations::install(view, documents_entity, None)
+    } else {
+        view
+    }
 }
 
 #[derive(Default)]
@@ -2604,6 +2614,7 @@ impl Reader {
             self.sel_format,
             self.link_presentations.clone(),
             &self.link_identities,
+            self.agent_document_enabled(cx),
         );
         {
             let _phase = reader_diagnostics::phase(cx, "note_open_set_text");
@@ -5578,6 +5589,7 @@ impl Reader {
                                     self.sel_format,
                                     self.link_presentations.clone(),
                                     &self.link_identities,
+                                    self.agent_document_enabled(cx),
                                 )
                                 .table_actions(
                                     move |data, _, _| {
@@ -5623,6 +5635,7 @@ impl Reader {
             self.sel_format,
             self.link_presentations.clone(),
             &self.link_identities,
+            false,
         );
         let markdown = markdown.to_owned();
         let sel_format = self.sel_format;
@@ -5730,6 +5743,7 @@ impl Reader {
                                 self.sel_format,
                                 self.link_presentations.clone(),
                                 &self.link_identities,
+                                false,
                             )),
                         ),
                 )
@@ -7200,6 +7214,9 @@ struct AgentDocument {
     inventory_source: Arc<Vault>,
     token: Arc<()>,
     imports: reader_agent_imports::LiveImportView,
+    expanded_lines: std::collections::BTreeSet<(PathBuf, usize)>,
+    expand_all: bool,
+    imported_documents: std::collections::BTreeMap<PathBuf, SharedString>,
     notice: Option<String>,
     language_error: Option<String>,
     _preparation: Option<Task<()>>,
@@ -7211,7 +7228,7 @@ impl Reader {
     fn sync_agent_document(&mut self, cx: &mut Context<Self>) {
         let enabled = reader_features::enabled(reader_features::Feature::Agents, cx)
             && !self.single_file
-            && okilum_core::quick_open::is_agent_file(&self.current_rel);
+            && okilum_core::agent_imports::is_agent_document(&self.current_rel);
         let source = enabled
             .then(|| {
                 self.source_text(cx)
@@ -7290,6 +7307,14 @@ impl Reader {
         );
         imports.set_expanded(expanded);
         let token = Arc::new(());
+        let (expanded_lines, expand_all) = self
+            .agent_document
+            .as_ref()
+            .filter(|current| {
+                current.root == root && current.path == path && current.source == source
+            })
+            .map(|current| (current.expanded_lines.clone(), current.expand_all))
+            .unwrap_or_default();
         self.agent_document = Some(AgentDocument {
             root: root.clone(),
             path: path.clone(),
@@ -7298,6 +7323,9 @@ impl Reader {
             inventory_source: self.vault.clone(),
             token: token.clone(),
             imports,
+            expanded_lines,
+            expand_all,
+            imported_documents: Default::default(),
             notice: None,
             language_error: self
                 .agent_language
@@ -7317,6 +7345,7 @@ impl Reader {
         let source = current.source.clone();
         let token = current.token.clone();
         let preparation = current.imports.preparation();
+        let vault = self.vault.clone();
         current.notice = None;
         current._preparation = Some(cx.spawn(async move |this, cx| {
             let read_root = root.clone();
@@ -7351,7 +7380,24 @@ impl Reader {
                         .as_ref()
                         .map(|store| preparation.run(store))
                         .map_err(|failure| format!("{failure:?}"));
-                    (prepared, policy, source_revision, schema_revision)
+                    let documents = prepared
+                        .as_ref()
+                        .ok()
+                        .map(|prepared| {
+                            reader_document_decorations::prepare_imported_documents(
+                                &vault,
+                                &read_root,
+                                prepared.tree(),
+                            )
+                        })
+                        .unwrap_or_default();
+                    (
+                        prepared,
+                        policy,
+                        source_revision,
+                        schema_revision,
+                        documents,
+                    )
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -7363,11 +7409,13 @@ impl Reader {
                     return;
                 }
                 match result.0 {
-                    Ok(prepared) => {
-                        if let Err(error) = current.imports.apply_prepared(prepared) {
-                            current.notice = Some(format!("Imports unavailable: {error:?}"));
+                    Ok(prepared) => match current.imports.apply_prepared(prepared) {
+                        Ok(true) => current.imported_documents = result.4,
+                        Ok(false) => return,
+                        Err(error) => {
+                            current.notice = Some(format!("Imports unavailable: {error:?}"))
                         }
-                    }
+                    },
                     Err(error) => current.notice = Some(format!("Imports unavailable: {error}")),
                 }
                 if let Some(controller) = &mut this.agent_language {
@@ -7386,14 +7434,18 @@ impl Reader {
     }
 
     fn render_agent_document(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.project_open || self.project_navigation.board_visible {
+        if self.project_navigation.board_visible
+            || self.project_navigation.section != reader_project_navigation::Section::Reader
+            || (self.project_open && self.project_navigation.active.is_none())
+        {
             return None;
         }
         let current = self.agent_document.as_ref()?;
         let token = current.token.clone();
-        let expanded = current.imports.expanded();
+        let expanded = current.expand_all;
         let mut panel = v_flex()
             .id("agent-document-context")
+            .debug_selector(|| "agent-document-context".into())
             .w_full()
             .max_h(px(160.))
             .overflow_y_scroll()
@@ -7420,6 +7472,8 @@ impl Reader {
                             if !Arc::ptr_eq(&current.token, &token) {
                                 return;
                             }
+                            current.expand_all = !expanded;
+                            current.expanded_lines.clear();
                             current.imports.set_expanded(!expanded);
                             this.prepare_agent_document(cx);
                             cx.notify();
@@ -7443,105 +7497,10 @@ impl Reader {
                     .label(label)
                     .disabled(link.destination.is_err())
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.sync_agent_document(cx);
-                        let Some(current) = this.agent_document.as_ref() else {
-                            return;
-                        };
-                        if !Arc::ptr_eq(&current.token, &token)
-                            || current.imports.state() != &reader_agent_imports::ViewState::Ready
-                            || current.imports.links().get(index) != Some(&captured_link)
-                        {
-                            return;
-                        }
-                        // Navigation re-resolves the captured target on a rooted reader;
-                        // never let an external symlink replacement redirect the click.
-                        let root = current.root.clone();
-                        let token = token.clone();
-                        let link = captured_link.clone();
-                        let clicked = link.clone();
-                        cx.spawn_in(window, async move |this, cx| {
-                            let read_root = root.clone();
-                            let target = cx
-                                .background_executor()
-                                .spawn(async move {
-                                    let store =
-                                        okilum_core::agent_imports::RootedSource::new(&read_root)?;
-                                    let resolved = okilum_core::agent_imports::resolve(
-                                        &store,
-                                        store.root(),
-                                        &link.source,
-                                        &link.import.target,
-                                    );
-                                    if resolved != link.destination {
-                                        return Err(okilum_core::agent_imports::Failure::Changed);
-                                    }
-                                    resolved
-                                })
-                                .await;
-                            let _ = this.update_in(cx, |this, window, cx| {
-                                this.sync_agent_document(cx);
-                                let Some(current) = &mut this.agent_document else {
-                                    return;
-                                };
-                                if !Arc::ptr_eq(&current.token, &token)
-                                    || current.imports.state()
-                                        != &reader_agent_imports::ViewState::Ready
-                                    || current.imports.links().get(index) != Some(&clicked)
-                                {
-                                    return;
-                                }
-                                match target {
-                                    Ok(target) => match target.strip_prefix(&root) {
-                                        Ok(relative) => {
-                                            let relative = okilum_core::vault::note_path(relative);
-                                            this.open_note_landing(
-                                                &relative, None, None, None, window, cx,
-                                            );
-                                        }
-                                        Err(_) => {
-                                            current.notice =
-                                                Some("Import is outside this vault".into())
-                                        }
-                                    },
-                                    Err(error) => {
-                                        current.notice = Some(format!(
-                                            "Import changed or unavailable: {error:?}"
-                                        ))
-                                    }
-                                }
-                                cx.notify();
-                            });
-                        })
-                        .detach();
+                        this.open_agent_import(token.clone(), captured_link.clone(), window, cx);
                     })),
             );
         }
-        fn expanded_source(
-            nodes: &[okilum_core::agent_imports::Expansion],
-            panel: &mut Vec<AnyElement>,
-        ) {
-            for node in nodes {
-                match &node.result {
-                    Ok(imported) => {
-                        panel.push(
-                            v_flex()
-                                .child(imported.path.display().to_string())
-                                .child(imported.text.clone())
-                                .into_any_element(),
-                        );
-                        expanded_source(&imported.children, panel);
-                    }
-                    Err(error) => panel.push(
-                        div()
-                            .child(format!("@{} — {error:?}", node.import.target))
-                            .into_any_element(),
-                    ),
-                }
-            }
-        }
-        let mut expanded_rows = Vec::new();
-        expanded_source(current.imports.tree(), &mut expanded_rows);
-        panel = panel.children(expanded_rows);
         if let Some(error) = &current.language_error {
             panel = panel.child(error.clone());
         }
@@ -7678,9 +7637,7 @@ impl Render for Reader {
                         view.opacity(0.)
                     })
                     .when(
-                        self.agent_document.is_some()
-                            && !self.project_open
-                            && !self.project_navigation.board_visible,
+                        self.agent_document.is_some() && !self.project_navigation.board_visible,
                         |view| view.flex_1().min_h_0(),
                     )
                     .child(self.render_project_center(window, cx)),

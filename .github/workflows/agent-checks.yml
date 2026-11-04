@@ -44,7 +44,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo bash scripts/ci/hosted-ubuntu-apt.sh \
-            build-essential cmake pkg-config curl git mold zstd gnupg gpgv tini \
+            build-essential cmake pkg-config curl git mold zstd gnupg gpgv tini ffmpeg \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libfontconfig-dev libfreetype-dev libxcb1-dev
       - name: Verify pinned Rust toolchain
@@ -86,6 +86,10 @@ jobs:
           cargo fetch --manifest-path vendor/gpui-component/Cargo.toml
       - name: Verify agent helper controls
         run: python3 -m unittest discover -s scripts/ci -p test_agent_checks.py
+      - name: Verify bundled Sync Help and brand
+        run: |
+          python3 docs/help/sync/check.py
+          python3 scripts/rebrand/check_brand.py
       - name: Verify pinned Sync fixture lifecycle, source sharing and remote inspection
         env:
           CARGO_NET_OFFLINE: 'true'
@@ -95,6 +99,8 @@ jobs:
       - name: Reject and reap surviving agent fixture daemons
         if: always()
         run: python3 scripts/ci/sync-fixture-processes.py --root "$RUNNER_TEMP" --cleanup
+      - name: Verify local writer authority and fencing
+        run: cargo test --offline --locked -p okilum-write-authority local_writer_admission -- --nocapture
       - name: Build Linux desktop offline
         id: build
         env:

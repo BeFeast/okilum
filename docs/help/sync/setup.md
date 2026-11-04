@@ -52,6 +52,6 @@ If an incoming change reaches a note with unsaved edits, Okilum keeps your text 
 
 ## About the local video
 
-The optional bundled video shows an already-connected pair. It does not record first-time pairing, folder selection or initial transfer. It is a silent 18.4-second v6 edit with English descriptions and a full transcript. A labelled cut removes 6.3 seconds of waiting; this is not real-time latency evidence or Oleg acceptance. The written steps above cover the later Linux setup flow.
+The optional bundled tutorial shows first connection between two fresh Linux installations, folder selection, the initial transfer and edits in both directions. It is 1 minute 18 seconds long, with English narration, captions and a full transcript. Recorded live on beta 7538 (source 3a57fdfc) with fresh test users and firewalls on, it cuts waiting and speeds some steps up to 3×. One folder-dialog line is masked to hide the recording file name. The ElevenLabs Alice voice reads the caption text. This edited tutorial is not real-time latency evidence or Oleg acceptance.
 
-Opening Help changes no vault, pairing or service settings. Opening the local video guide writes only bundled Help files into Okilum's application state and opens their local page in your default browser. It needs no hosted page or media URL.
+Opening Help does not connect computers or change Sync settings. Opening the local video guide writes only bundled Help files into Okilum's application state and opens their local page in your default browser. It needs no hosted page or media URL.

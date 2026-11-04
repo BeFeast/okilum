@@ -1605,6 +1605,39 @@ mod windows_cleanup_tests {
         (record, prepared)
     }
     #[test]
+    fn windows_local_writer_review_creation_undo_and_startup_cleanup_respect_hold() {
+        let (_temp, root, drafts) = fixture();
+        let (prepared_record, prepared_path) = prepared(&root, &drafts, "Prepared.md");
+        let (previous_record, previous_path) = staged(&root, &drafts, "Previous.md", true, true);
+        let created = root.join("Created.md");
+        fs::write(&created, b"created").unwrap();
+        let (_, _, info) = crate::windows_files::read_file(&created).unwrap();
+        let (volume, high, low) = crate::windows_files::identity(&info);
+        let expected = (u64::from(volume), u64::from(high) << 32 | u64::from(low));
+        let authority = okilum_write_authority::Authority::for_root(&root).unwrap();
+        let mut hold = authority.begin_drain("windows-cleanup").unwrap();
+        let token = hold.token().clone();
+        assert!(hold.try_hold(&token).unwrap());
+        assert!(crate::windows_files::undo_created(&created, expected, Some(b"created")).is_err());
+        assert!(cleanup_windows(&drafts, &root).unwrap().len() >= 2);
+        for path in [
+            &created,
+            &prepared_path,
+            &previous_path,
+            &prepared_record,
+            &previous_record,
+        ] {
+            assert!(path.exists(), "held cleanup retained {}", path.display());
+        }
+        let token = hold.token().clone();
+        hold.release(&token).unwrap();
+        crate::windows_files::undo_created(&created, expected, Some(b"created")).unwrap();
+        assert!(cleanup_windows(&drafts, &root).unwrap().is_empty());
+        assert!(!created.exists() && !prepared_path.exists() && !previous_path.exists());
+        assert!(prepared_record.exists() && previous_record.exists());
+    }
+
+    #[test]
     fn windows_history_prepared_win32_and_verbatim_parent_aliases_share_cleanup_identity() {
         let (_temp, root, drafts) = fixture();
         let ordinary = PathBuf::from(

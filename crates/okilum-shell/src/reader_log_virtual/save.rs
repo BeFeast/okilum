@@ -47,6 +47,15 @@ impl Session {
             format!("{}\n", serde_json::to_string_pretty(definition)?)
         };
         Definition::parse(&proposed)?;
+        // A hold refusal is certain non-publication. Leave the criteria in the
+        // UI and allow retry, without manufacturing a blocking recovery draft.
+        let _admission = if !unchanged {
+            Some(okilum_write_authority::operation_for_path(
+                self.editor.path(),
+            )?)
+        } else {
+            None
+        };
         if !unchanged || self.editor.dirty() {
             // Journal before validation/publication: conflict, missing source or
             // invalid query/glob must not discard the attempted criteria.
