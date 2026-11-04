@@ -137,6 +137,8 @@ impl Reader {
                 .spawn(async move {
                     let drafts = state.join("editor-drafts");
                     let mut listing = source_history::list(&drafts, &root)?;
+                    #[cfg(target_os = "linux")]
+                    crate::reader_sync_conflicts::append_history(&state, &root, &mut listing)?;
                     let moves = source_history::move_versions(&state, &root)?;
                     listing.versions.extend(moves.versions);
                     listing.warnings.extend(moves.warnings);

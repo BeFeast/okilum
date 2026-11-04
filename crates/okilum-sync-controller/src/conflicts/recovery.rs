@@ -1,0 +1,132 @@
+//! Immutable preimages are also the recovery protocol for an interrupted apply.
+//! Recovery recreates missing names only, never replaces a present version and
+//! never resumes a decision against files that were not reviewed.
+use super::*;
+
+pub struct HistoryEntry {
+    pub canonical: PathBuf,
+    pub created: u64,
+    pub versions: [RetainedVersion; 2],
+    pub pending: bool,
+    pub record: PathBuf,
+}
+#[derive(Default)]
+pub struct History {
+    pub entries: Vec<HistoryEntry>,
+    pub warnings: Vec<String>,
+}
+fn completed(record: &Path) -> PathBuf {
+    record.with_extension("complete")
+}
+pub(super) fn complete(record: &Path) -> Result<()> {
+    let marker = completed(record);
+    let mut file = File::options().write(true).create_new(true).open(marker)?;
+    file.write_all(b"complete\n")?;
+    file.sync_all()?;
+    File::open(record.parent().context("Missing recovery directory")?)?.sync_all()?;
+    Ok(())
+}
+
+/// All records remain adoptable by previous-version retention (#2045). An
+/// incomplete record must never be expired; this API does no cleanup.
+pub fn history(directory: &Path, root: &Path) -> Result<History> {
+    let mut history = History::default();
+    if !directory.try_exists()? {
+        return Ok(history);
+    }
+    let root = root.canonicalize()?;
+    let fd = open(directory, flags(), Mode::empty())?;
+    for (index, entry) in Dir::read_from(&fd)?.enumerate() {
+        ensure!(
+            index < 100_000,
+            "Conflict history exceeds enumeration limit"
+        );
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy();
+        if !name.starts_with("sync-conflict-")
+            || !name.ends_with(".json")
+            || entry.file_type() != FileType::RegularFile
+        {
+            continue;
+        }
+        let record = directory.join(OsStr::from_bytes(entry.file_name().to_bytes()));
+        let load = || -> Result<Option<HistoryEntry>> {
+            let versions = retained_versions(&record)?;
+            if versions[0].root != root {
+                return Ok(None);
+            }
+            let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&record)?)?;
+            let canonical = versions[0].path.clone();
+            let created = value["created"].as_u64().unwrap_or(0);
+            let pending = match std::fs::read(completed(&record)) {
+                Ok(bytes) => {
+                    ensure!(bytes == b"complete\n", "Invalid completion marker");
+                    false
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(error) => return Err(error.into()),
+            };
+            Ok(Some(HistoryEntry {
+                canonical,
+                created,
+                versions,
+                pending,
+                record: record.clone(),
+            }))
+        };
+        match load() {
+            Ok(Some(entry)) => history.entries.push(entry),
+            Ok(None) => {}
+            Err(error) => history.warnings.push(format!(
+                "Cannot read {}: {error}. Recovery is retained.",
+                record.display()
+            )),
+        }
+    }
+    history
+        .entries
+        .sort_by_key(|entry| std::cmp::Reverse(entry.created));
+    Ok(history)
+}
+
+/// Explicit recovery action. The journal was fsynced before capture; publishing
+/// each missing preimage with NOREPLACE makes retries and crashes idempotent.
+/// Present files, including a successfully published decision, are left intact.
+/// Keep-both proposals are never removed. Old records without directory identity
+/// remain recoverable through History but cannot authorize path recreation.
+pub fn recover_interrupted(directory: &Path, root: &Path) -> Result<Vec<String>> {
+    let history = history(directory, root)?;
+    let mut messages = history.warnings;
+    for entry in history.entries.into_iter().filter(|entry| entry.pending) {
+        let result = (|| -> Result<()> {
+            let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&entry.record)?)?;
+            let expected: (u64, u64) = serde_json::from_value(value["directory_identity"].clone())?;
+            let fd = parent(root, &entry.canonical)?;
+            ensure!(
+                identity(&fd)? == expected,
+                "Source directory was replaced; use Recover notes"
+            );
+            for (index, version) in entry.versions.iter().enumerate() {
+                ensure!(
+                    version.path.parent() == entry.canonical.parent(),
+                    "Unexpected recovery path"
+                );
+                let name = version.path.file_name().context("Missing recovery name")?;
+                match rustix::fs::statat(&fd, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+                    Ok(_) => continue,
+                    Err(rustix::io::Errno::NOENT) => {}
+                    Err(error) => return Err(error.into()),
+                }
+                let key = if index == 0 { "this_mode" } else { "that_mode" };
+                let mode = value[key].as_u64().unwrap_or(0o600) as u32 & 0o777;
+                publish(&fd, &version.path, &version.bytes, mode)?;
+            }
+            Ok(())
+        })();
+        messages.push(match result {
+            Ok(()) => format!("Recovered interrupted resolution for {}. Review the versions again; both originals remain in Note history.", entry.canonical.display()),
+            Err(error) => format!("Recovery for {} needs attention: {error}. Both originals remain in Recover notes.", entry.canonical.display()),
+        });
+    }
+    Ok(messages)
+}

@@ -1,0 +1,494 @@
+use super::*;
+use crate::{brand, reader_open, reader_settings_sync, Reader};
+use gpui::{prelude::*, *};
+use gpui_component::{button::Button, h_flex, v_flex, Disableable, Sizable, WindowExt};
+
+pub(crate) fn open(
+    root: PathBuf,
+    state: PathBuf,
+    owner: Option<WeakEntity<Reader>>,
+    preferred: Option<PathBuf>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let view = cx.new(|cx| InventoryView::new(root, state, owner, cx));
+    view.update(cx, |view, _| view.preferred = preferred);
+    window.open_dialog(cx, move |dialog, _, _| {
+        dialog
+            .title("Sync conflicts")
+            .width(px(1100.))
+            .child(view.clone())
+    });
+}
+
+pub(crate) struct InventoryView {
+    root: PathBuf,
+    state: PathBuf,
+    owner: Option<WeakEntity<Reader>>,
+    copies: Vec<PathBuf>,
+    preferred: Option<PathBuf>,
+    complete: bool,
+    busy: bool,
+    page: usize,
+    generation: u64,
+    panel: Option<ConflictPanel>,
+    message: String,
+}
+impl InventoryView {
+    pub(crate) fn new(
+        root: PathBuf,
+        state: PathBuf,
+        owner: Option<WeakEntity<Reader>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self {
+            root,
+            state,
+            owner,
+            copies: vec![],
+            preferred: None,
+            complete: false,
+            busy: false,
+            page: 0,
+            generation: 0,
+            panel: None,
+            message: String::new(),
+        };
+        this.refresh(cx);
+        this
+    }
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.generation += 1;
+        self.panel = None;
+        let generation = self.generation;
+        let root = self.root.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { conflicts::inspect(&root) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if generation != this.generation {
+                    return;
+                }
+                this.busy = false;
+                match result {
+                    Ok(inventory) => {
+                        this.copies = inventory.copies;
+                        this.complete = inventory.complete;
+                        this.message.clear();
+                        this.page = 0;
+                    }
+                    Err(error) => {
+                        this.complete = false;
+                        this.message = format!("Cannot inspect conflicts: {error}");
+                    }
+                }
+                if let Some(copy) = this.preferred.take() {
+                    this.preview(copy, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn preview(&mut self, copy: PathBuf, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.generation += 1;
+        let generation = self.generation;
+        let root = self.root.clone();
+        let controller = reader_settings_sync::active_controller(cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut panel = ConflictPanel::open(&root, &copy)?;
+                    if let Some(controller) = controller {
+                        for pane in [&mut panel.comparison.this, &mut panel.comparison.that] {
+                            let bytes = if pane.path == panel.preview.this().path() {
+                                panel.preview.this().bytes()
+                            } else {
+                                panel.preview.that().bytes()
+                            };
+                            if let Ok(text) = std::str::from_utf8(bytes) {
+                                if let Ok(Some(name)) = controller.file_change_origin(
+                                    &root,
+                                    &pane.path.to_string_lossy(),
+                                    text,
+                                ) {
+                                    pane.provenance =
+                                        format!("Device: {name} · {}", pane.provenance);
+                                }
+                            }
+                        }
+                    }
+                    Ok::<_, anyhow::Error>(panel)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.busy = false;
+                match result {
+                    Ok(panel) => {
+                        this.panel = Some(panel);
+                        this.message.clear();
+                    }
+                    Err(error) => {
+                        this.message = format!(
+                            "Cannot preview this conflict: {error}. Both files are retained."
+                        )
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn dirty(&self, cx: &App) -> bool {
+        let mut readers = reader_open::readers(cx);
+        if let Some(owner) = self.owner.as_ref().and_then(WeakEntity::upgrade) {
+            if !readers.contains(&owner) {
+                readers.push(owner);
+            }
+        }
+        readers.iter().any(|reader| {
+            let reader = reader.read(cx);
+            reader.vault_root == self.root && reader.source_is_dirty(cx)
+        })
+    }
+    fn apply(&mut self, choice: Choice, cx: &mut Context<Self>) {
+        let dirty = self.dirty(cx);
+        let recovery = self.state.join("sync-conflicts");
+        let Some(panel) = self.panel.as_mut() else {
+            return;
+        };
+        let Some(job) = panel.begin_apply(choice, &recovery, dirty) else {
+            cx.notify();
+            return;
+        };
+        self.busy = true;
+        let generation = self.generation;
+        let root = self.root.clone();
+        let drafts = self.state.join("editor-drafts");
+        cx.spawn(async move |this, cx| {
+            let completion = cx
+                .background_executor()
+                .spawn(async move {
+                    let prepare = || -> anyhow::Result<()> {
+                        // A draft in another process is equally authoritative. Refuse
+                        // rather than letting a clean window hide its unsaved version.
+                        for version in [job.preview.this(), job.preview.that()] {
+                            anyhow::ensure!(
+                                !okilum_core::file_editor::FileEditor::has_unsaved_draft(
+                                    &root.join(version.path()),
+                                    &drafts
+                                )?,
+                                "Unsaved draft exists; use Recover notes first"
+                            );
+                        }
+                        conflicts::prepare_recovery(&recovery)?;
+                        Ok(())
+                    };
+                    match prepare() {
+                        Ok(()) => job.run(),
+                        Err(error) => Completion {
+                            id: job.id,
+                            result: Err(error),
+                        },
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if generation != this.generation {
+                    return;
+                }
+                this.busy = false;
+                if let Some(panel) = this.panel.as_mut() {
+                    panel.finish(completion);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+    fn recover(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if self.dirty(cx) {
+            self.message =
+                "Save or close unsaved drafts before recovering interrupted resolutions.".into();
+            cx.notify();
+            return;
+        }
+        self.busy = true;
+        let root = self.root.clone();
+        let state = self.state.join("sync-conflicts");
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { conflicts::recover_interrupted(&state, &root) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.busy = false;
+                this.message = match result {
+                    Ok(messages) if messages.is_empty() => "No interrupted resolutions.".into(),
+                    Ok(messages) => messages.join("\n"),
+                    Err(error) => format!("Cannot recover: {error}"),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+}
+fn pane(pane: &Pane, id: &'static str, cx: &App) -> AnyElement {
+    let p = brand::palette(cx);
+    v_flex()
+        .flex_1()
+        .min_w_0()
+        .gap_2()
+        .child(pane.path.display().to_string())
+        .child(div().text_sm().child(pane.provenance.clone()))
+        .child(div().text_sm().child(pane.byte_encoding))
+        .child(
+            v_flex()
+                .id(id)
+                .h(px(320.))
+                .overflow_scroll()
+                .text_sm()
+                .font_family(crate::reader_fonts::code(cx))
+                .children(pane.lines.iter().map(|line| {
+                    div()
+                        .w_full()
+                        .whitespace_normal()
+                        .when(line.changed, |row| row.bg(p.selected.opacity(0.24)))
+                        .child(line.text.clone())
+                })),
+        )
+        .into_any_element()
+}
+impl Render for InventoryView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut view = v_flex()
+            .id("sync-conflict-inventory")
+            .debug_selector(|| "sync-conflict-inventory".into())
+            .w_full()
+            .min_h_0()
+            .gap_2()
+            .child(self.root.display().to_string())
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("sync-conflict-refresh")
+                            .label("Refresh conflicts")
+                            .small()
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                    )
+                    .child(
+                        Button::new("sync-conflict-recover")
+                            .label("Recover interrupted resolutions")
+                            .small()
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.recover(cx))),
+                    ),
+            )
+            .child(self.message.clone());
+        if self.busy {
+            view = view.child("Loading…");
+        }
+        if !self.complete {
+            view = view.child("Inventory is incomplete. Refresh to retry; absence here does not mean there are no conflicts.");
+        }
+        if self.complete && self.copies.is_empty() && self.panel.is_none() {
+            view = view.child("No conflict copies found.");
+        }
+        if let Some(panel) = &self.panel {
+            view = view
+                .child(
+                    h_flex()
+                        .id("sync-conflict-comparison")
+                        .debug_selector(|| "sync-conflict-comparison".into())
+                        .gap_4()
+                        .child(pane(&panel.comparison.this, "sync-conflict-this", cx))
+                        .child(pane(&panel.comparison.that, "sync-conflict-that", cx)),
+                )
+                .child(panel.message.clone())
+                .child(h_flex().gap_2().children(ACTIONS.iter().enumerate().map(
+                    |(index, (choice, label))| {
+                        let choice = *choice;
+                        Button::new(("sync-conflict-choice", index))
+                            .debug_selector(move || format!("sync-conflict-choice-{index}").into())
+                            .label(*label)
+                            .disabled(self.busy || !matches!(panel.state, State::Ready))
+                            .on_click(cx.listener(move |this, _, _, cx| this.apply(choice, cx)))
+                    },
+                )));
+            if let Some(receipt) = &panel.recovery {
+                view = view.child(format!(
+                    "Both originals are in Note history and Recover notes. Recovery record: {}",
+                    receipt.recovery_record.display()
+                ));
+                if let Some(kept) = &receipt.kept_both {
+                    view = view.child(format!("Other version kept as {}", kept.display()));
+                }
+            }
+        } else {
+            let pages = self.copies.len().div_ceil(50);
+            view = view.child(
+                v_flex()
+                    .id("sync-conflict-copies")
+                    .max_h(px(300.))
+                    .overflow_y_scroll()
+                    .children(
+                        self.copies
+                            .iter()
+                            .enumerate()
+                            .skip(self.page * 50)
+                            .take(50)
+                            .map(|(index, copy)| {
+                                let copy = copy.clone();
+                                Button::new(("sync-conflict-copy", index))
+                                    .label(copy.display().to_string())
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.preview(copy.clone(), cx)
+                                    }))
+                            }),
+                    ),
+            );
+            if pages > 1 {
+                view = view.child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("sync-conflict-prev")
+                                .label("Previous")
+                                .disabled(self.page == 0)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.page -= 1;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(format!("{} / {pages}", self.page + 1))
+                        .child(
+                            Button::new("sync-conflict-next")
+                                .label("Next")
+                                .disabled(self.page + 1 >= pages)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.page += 1;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            }
+        }
+        view
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use gpui_component::Root;
+
+    #[gpui::test]
+    fn issue2044_mounted_inventory_comparison_and_buttons_resolve_both_kinds(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        for marker in ["sync", "okilum"] {
+            for index in 0..3 {
+                let directory = tempfile::tempdir().unwrap();
+                let root = directory.path().join("vault");
+                let state = directory.path().join("state");
+                std::fs::create_dir(&root).unwrap();
+                std::fs::create_dir(&state).unwrap();
+                let copy =
+                    PathBuf::from(format!("note.{marker}-conflict-20261104-123456-ABC2345.md"));
+                std::fs::write(root.join("note.md"), b"same\r\nthis\r\n").unwrap();
+                std::fs::write(root.join(&copy), b"same\r\nthat\r\n").unwrap();
+                let (root_view, visual) = cx.add_window_view(|window, cx| {
+                    let view =
+                        cx.new(|cx| InventoryView::new(root.clone(), state.clone(), None, cx));
+                    Root::new(view, window, cx)
+                });
+                visual.simulate_resize(size(px(1300.), px(900.)));
+                visual.run_until_parked();
+                let view = root_view.read_with(visual, |root: &Root, _| {
+                    root.view().clone().downcast::<InventoryView>().unwrap()
+                });
+                view.read_with(visual, |v, _| {
+                    assert!(v.complete);
+                    assert_eq!(v.copies, [copy.clone()]);
+                });
+                view.update(visual, |v, cx| v.preview(copy.clone(), cx));
+                visual.run_until_parked();
+                assert!(
+                    visual.debug_bounds("sync-conflict-comparison").is_some(),
+                    "two panes are mounted"
+                );
+                view.read_with(visual, |v, _| {
+                    let p = v.panel.as_ref().unwrap();
+                    assert!(p.comparison.this.lines[1].changed);
+                    assert!(p.comparison.that.lines[1].changed);
+                    assert!(!p.comparison.this.lines[0].changed);
+                    assert!(p
+                        .comparison
+                        .that
+                        .provenance
+                        .contains(if marker == "okilum" {
+                            "random"
+                        } else {
+                            "device prefix"
+                        }));
+                });
+                let bounds = visual
+                    .debug_bounds(&format!("sync-conflict-choice-{index}"))
+                    .expect("choice button mounted");
+                visual.simulate_click(bounds.center(), Modifiers::default());
+                visual.run_until_parked();
+                view.read_with(visual, |v, _| {
+                    assert!(
+                        matches!(v.panel.as_ref().unwrap().state, State::Resolved),
+                        "{}",
+                        v.panel.as_ref().unwrap().message
+                    )
+                });
+                assert_eq!(
+                    std::fs::read(root.join("note.md")).unwrap(),
+                    if index == 1 {
+                        b"same\r\nthat\r\n"
+                    } else {
+                        b"same\r\nthis\r\n"
+                    }
+                );
+                assert!(!root.join(&copy).exists());
+                let mut listing = okilum_core::source_history::Listing::default();
+                append_history(&state, &root, &mut listing).unwrap();
+                assert_eq!(listing.versions.len(), 2);
+                assert!(listing
+                    .versions
+                    .iter()
+                    .all(|v| v.note == root.join("note.md")));
+                visual.update(|window, _| window.remove_window());
+            }
+        }
+    }
+}
