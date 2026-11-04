@@ -99,34 +99,10 @@ impl ProjectView {
         let access = reader_features::access(reader_features::Feature::Agents, cx);
         cx.spawn_in(window, async move |this, cx| {
             let result = async {
-                let gateway = match existing {
-                    Some(gateway) => gateway,
-                    None => {
-                        #[cfg(target_os = "macos")]
-                        let token: Option<StoredToken> = None;
-                        #[cfg(not(target_os = "macos"))]
-                        let token = {
-                            let task = this.update_in(cx, |_, _, cx| {
-                                cx.read_credentials(&env.credential_url())
-                            })?;
-                            task.await?
-                                .map(|(_, bytes)| StoredToken::from_secret(&bytes))
-                                .transpose()?
-                        };
-                        let target = env.clone();
-                        cx.background_executor()
-                            .spawn(async move {
-                                reader_project_navigation::manager_gateway(
-                                    target.clone(),
-                                    Arc::new(
-                                        McpGateway::new(target, token)?.with_access(access.clone()),
-                                    ),
-                                    access,
-                                )
-                            })
-                            .await?
-                    }
-                };
+                let task = this.update_in(cx, |_, _, cx| {
+                    reader_project_navigation::restore_gateway(env.clone(), existing, access, cx)
+                })?;
+                let gateway = task.await?;
                 let target = env.clone();
                 cx.background_executor()
                     .spawn(async move {

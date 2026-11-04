@@ -7,7 +7,7 @@ use gpui_component::input::{Textarea, TextareaState};
 use okilum_t3::{
     chat::{Conversation, MessageJournal, MessageRecord},
     manifest::AreaBinding,
-    Environment, GatewayStatus, ManagerGateway, McpGateway, ServerIdentity, StoredToken,
+    Environment, GatewayStatus, ManagerGateway, ServerIdentity,
 };
 use std::time::Duration;
 
@@ -258,52 +258,14 @@ impl ProjectView {
             let Some(env) = env else {
                 return;
             };
-            let reused = this
-                .update_in(cx, |_, _, cx| reader_t3_settings::gateway(&env, cx))
-                .ok()
-                .flatten();
-            if let Some(gateway) = reused {
-                let result = cx
-                    .background_executor()
-                    .spawn(async move {
-                        reader_project_navigation::manager_gateway(env.clone(), gateway, access)
-                            .map(|gateway| (env, gateway))
-                    })
-                    .await;
-                let _ = this.update_in(cx, |this, window, cx| {
-                    this.finish_connection(result, window, cx)
-                });
-                return;
-            }
-            #[cfg(target_os = "macos")]
-            let token: anyhow::Result<Option<StoredToken>> = Ok(None);
-            #[cfg(not(target_os = "macos"))]
-            let token = {
-                let url = env.credential_url();
-                let task = match this.update_in(cx, |_, _, cx| cx.read_credentials(&url)) {
-                    Ok(task) => task,
-                    Err(_) => return,
-                };
-                match task.await {
-                    Ok(Some((_, bytes))) => StoredToken::from_secret(&bytes).map(Some),
-                    Ok(None) => Ok(None),
-                    Err(error) => Err(error),
-                }
+            let task = match this.update_in(cx, |_, _, cx| {
+                let mcp = reader_t3_settings::gateway(&env, cx);
+                reader_project_navigation::restore_gateway(env.clone(), mcp, access, cx)
+            }) {
+                Ok(task) => task,
+                Err(_) => return,
             };
-            let result = match token {
-                Ok(token) => {
-                    cx.background_executor()
-                        .spawn(async move {
-                            let gateway = Arc::new(
-                                McpGateway::new(env.clone(), token)?.with_access(access.clone()),
-                            );
-                            reader_project_navigation::manager_gateway(env.clone(), gateway, access)
-                                .map(|gateway| (env, gateway))
-                        })
-                        .await
-                }
-                Err(error) => Err(error),
-            };
+            let result = task.await.map(|gateway| (env, gateway));
             let _ = this.update_in(cx, |this, window, cx| {
                 this.finish_connection(result, window, cx)
             });
@@ -1240,36 +1202,26 @@ impl ProjectView {
         self.busy = true;
         let state = self.state.clone().filter(|_| self.project_override);
         cx.spawn_in(window, async move |this, cx| {
-            #[cfg(target_os = "macos")]
-            let token: anyhow::Result<Option<StoredToken>> = Ok(None);
-            #[cfg(not(target_os = "macos"))]
-            let token = {
-                let Some(task) = this
-                    .update_in(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
-                    .ok()
-                else {
-                    return;
-                };
-                task.await.and_then(|saved| {
-                    saved
-                        .map(|(_, bytes)| StoredToken::from_secret(&bytes))
-                        .transpose()
-                })
+            let task = match this.update_in(cx, |_, _, cx| {
+                let mcp = reader_t3_settings::gateway(&env, cx);
+                reader_project_navigation::restore_gateway(env.clone(), mcp, access, cx)
+            }) {
+                Ok(task) => task,
+                Err(_) => return,
             };
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let gateway = reader_project_navigation::manager_gateway(
-                        env.clone(),
-                        Arc::new(McpGateway::new(env.clone(), token?)?.with_access(access.clone())),
-                        access,
-                    )?;
-                    if let Some(state) = state {
-                        connections::save(&state, &env)?;
-                    }
-                    Ok((env, gateway))
-                })
-                .await;
+            let result = match task.await {
+                Ok(gateway) => {
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Some(state) = state {
+                                connections::save(&state, &env)?;
+                            }
+                            Ok((env, gateway))
+                        })
+                        .await
+                }
+                Err(error) => Err(error),
+            };
             let _ = this.update_in(cx, |this, window, cx| {
                 this.finish_connection(result, window, cx)
             });
