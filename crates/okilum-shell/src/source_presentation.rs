@@ -67,7 +67,7 @@ impl ProjectionProvider for ColoredProvider {
         source: &SourceSnapshot,
         active: &ActiveSource,
     ) -> Option<Arc<dyn SourceProjection>> {
-        self.provider.compose_with_syntax(
+        self.provider.compose_document_syntax(
             source,
             active,
             Some(self.colors),
@@ -394,9 +394,19 @@ impl CachedProvider {
         colors: Option<ProjectionColors>,
         code_font: &str,
     ) -> Option<Arc<dyn SourceProjection>> {
-        self.compose_with_syntax(source, active, colors, code_font, None, false)
+        self.compose_with_syntax(source, active, colors, code_font, None)
     }
     fn compose_with_syntax(
+        &self,
+        source: &SourceSnapshot,
+        active: &ActiveSource,
+        colors: Option<ProjectionColors>,
+        code_font: &str,
+        syntax_theme: Option<&gpui_component::highlighter::HighlightTheme>,
+    ) -> Option<Arc<dyn SourceProjection>> {
+        self.compose_document_syntax(source, active, colors, code_font, syntax_theme, false)
+    }
+    fn compose_document_syntax(
         &self,
         source: &SourceSnapshot,
         active: &ActiveSource,
@@ -1383,7 +1393,7 @@ mod tests {
         let provider = CachedProvider::classify(original.clone());
         let compose = |snapshot: &SourceSnapshot, active: &ActiveSource, enabled| {
             provider
-                .compose_with_syntax(snapshot, active, None, CODE_FONT, None, enabled)
+                .compose_document_syntax(snapshot, active, None, CODE_FONT, None, enabled)
                 .unwrap()
         };
         let has_import = |projection: &Arc<dyn SourceProjection>| {
