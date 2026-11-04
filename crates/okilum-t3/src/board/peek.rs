@@ -16,13 +16,13 @@ pub struct Author {
     pub login: String,
 }
 
-pub fn comments(binding: &Binding, number: u64) -> Result<Vec<Comment>, String> {
+pub fn comments(repository: &str, number: u64) -> Result<Vec<Comment>, String> {
     let read = || -> Result<Vec<Comment>> {
         ensure!(
             crate::NetworkAccess::current().allowed(),
             "Agents is disabled"
         );
-        let repo = repository_url(&binding.repository)?;
+        let repo = repository_url(repository)?;
         let endpoint = format!(
             "{}/api/v1/repos{}/issues/{number}/comments?limit={COMMENT_LIMIT}&page=1",
             repo.origin().ascii_serialization(),

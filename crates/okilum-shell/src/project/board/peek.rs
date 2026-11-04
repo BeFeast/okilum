@@ -4,7 +4,7 @@ use super::*;
 use gpui_component::tab::{Tab, TabBar};
 use okilum_t3::board::peek::Comment;
 
-type CommentsReader = Arc<dyn Fn(&Binding, u64) -> Result<Vec<Comment>, String> + Send + Sync>;
+type CommentsReader = Arc<dyn Fn(&str, u64) -> Result<Vec<Comment>, String> + Send + Sync>;
 #[derive(Default)]
 pub(super) struct State {
     pub open: bool,
@@ -75,12 +75,17 @@ impl Board {
             return;
         }
         let Some(number) = self.selected else { return };
-        let Some(binding) = self.binding.clone().filter(|b| !b.repository.is_empty()) else {
+        let Some(repository) = self
+            .binding
+            .as_ref()
+            .map(|binding| binding.repository.clone())
+            .filter(|repository| !repository.is_empty())
+        else {
             return;
         };
         let ticket = Ticket {
             area: self.area.clone(),
-            repository: binding.repository.clone(),
+            repository: repository.clone(),
             issue: number,
             generation: self.peek.generation,
         };
@@ -96,7 +101,7 @@ impl Board {
                 let result = cx
                     .background_executor()
                     .spawn(okilum_t3::scope_network(access, async move {
-                        reader(&binding, number)
+                        reader(&repository, number)
                     }))
                     .await;
                 let _ = this.update_in(cx, |this, window, cx| {
