@@ -82,23 +82,32 @@ impl Board {
                     }))
                     .await;
                 let _ = this.update_in(cx, |this, window, cx| {
-                    this.peek.loading = false;
-                    if this.peek_matches(&ticket) {
-                        this.peek.loaded = true;
-                        match result {
-                            Ok(comments) => this.peek.comments = comments,
-                            Err(error) => this.peek.error = Some(error),
-                        }
-                        cx.notify();
-                    } else {
-                        // At most one request runs. Rapid selection changes coalesce
-                        // to the latest issue after the old request finishes.
-                        this.load_peek_comments(window, cx);
-                    }
+                    this.complete_peek_comments(&ticket, result, window, cx);
                 });
             }
         })
         .detach();
+    }
+    fn complete_peek_comments(
+        &mut self,
+        ticket: &Ticket,
+        result: Result<Vec<Comment>, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.peek.loading = false;
+        if self.peek_matches(ticket) {
+            self.peek.loaded = true;
+            match result {
+                Ok(comments) => self.peek.comments = comments,
+                Err(error) => self.peek.error = Some(error),
+            }
+            cx.notify();
+        } else {
+            // At most one request runs. Rapid selection changes coalesce
+            // to the latest issue after the old request finishes.
+            self.load_peek_comments(window, cx);
+        }
     }
     fn peek_matches(&self, ticket: &Ticket) -> bool {
         self.peek.open

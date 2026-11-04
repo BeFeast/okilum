@@ -728,7 +728,7 @@ impl Board {
                     .child(origin),
             );
         }
-        let card = v_flex()
+        let mut card = v_flex()
             .id(("board-card", number as usize))
             .debug_selector(move || format!("board-card-{number}"))
             .w_full()

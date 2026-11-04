@@ -80,6 +80,9 @@ fn peek_2531_generation_owner_repository_and_issue_reject_late_results(cx: &mut 
         b.peek.open = true;
         let ticket = Ticket { area:b.area.clone(),repository:b.binding.as_ref().unwrap().repository.clone(),issue:1,generation:b.peek.generation };
         assert!(b.peek_matches(&ticket),"positive control: exact open owner accepts result");
+        let comment: Comment = serde_json::from_value(serde_json::json!({"created_at":"2026-11-04T09:30:00Z","user":{"login":"fixture-owner"},"body":"Exact issue response"})).unwrap();
+        b.complete_peek_comments(&ticket, Ok(vec![comment.clone()]), window, cx);
+        assert_eq!(b.peek.comments.len(), 1, "positive control: production completion publishes an exact result");
         b.selected = Some(2);
         assert!(!b.peek_matches(&ticket));
         b.selected = Some(1);
