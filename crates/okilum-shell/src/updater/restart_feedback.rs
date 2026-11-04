@@ -138,7 +138,10 @@ mod tests {
             visual.deactivate_window();
             attempt();
             refused("Save or close the note first, then choose Restart now again.");
-            visual.update(|_, cx| present(cx));
+            // The production scheduler owns App, without borrowing a Window.
+            // Holding this window while the presenter updates every window
+            // would correctly reject its reentrant handle.update call.
+            cx.update(present);
             visual.run_until_parked();
             visual.update(|window, cx| {
                 window.activate_window();
