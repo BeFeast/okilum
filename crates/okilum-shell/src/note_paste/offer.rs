@@ -126,7 +126,7 @@ pub enum PasteOffer {
     Text(String),
     Image(PastedImage),
     /// Copied files (Finder, or a clipboard manager's cached image/file):
-    /// existing local paths, in clipboard order.
+    /// local paths in clipboard order; chat validates them on its worker.
     Files(Vec<PathBuf>),
     /// No usable representation; the type names (never contents) for the log.
     Nothing {
