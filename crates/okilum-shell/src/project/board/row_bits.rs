@@ -18,7 +18,8 @@ pub(super) fn type_tag(issue: Option<&okilum_t3::board::Issue>, cx: &App) -> Any
 }
 pub(super) fn label_pill(label: impl Into<SharedString>, tone: Hsla, cx: &App) -> AnyElement {
     h_flex()
-        .flex_none()
+        .min_w_0()
+        .max_w(px(100.))
         .gap(px(5.))
         .px(px(7.))
         .py(px(1.))
@@ -28,8 +29,8 @@ pub(super) fn label_pill(label: impl Into<SharedString>, tone: Hsla, cx: &App) -
         .text_size(px(12.))
         .line_height(px(16.))
         .text_color(brand::palette(cx).text_muted)
-        .child(div().size(px(6.)).rounded_full().bg(tone))
-        .child(label.into())
+        .child(div().flex_none().size(px(6.)).rounded_full().bg(tone))
+        .child(div().min_w_0().truncate().child(label.into()))
         .into_any_element()
 }
 pub(super) fn ci_label(state: Option<&str>) -> &'static str {

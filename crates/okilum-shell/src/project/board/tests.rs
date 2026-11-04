@@ -489,16 +489,15 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
         visual.simulate_resize(size(px(width), px(1000.)));
         visual.run_until_parked();
         let center = visual.debug_bounds("project-board").unwrap();
-        for key in ["board-lane-Queue", "board-expand-empty-Ready"] {
+        for key in ["board-columns", "board-expand-empty-Ready"] {
             let lane = visual.debug_bounds(key).unwrap();
-            assert!(lane.left() >= center.left() && lane.right() <= center.right());
+            assert_eq!(lane.size.width, px(268.));
         }
     }
     // Compact cards expose only the summary; links and notes need expansion.
     assert!(visual.debug_bounds("board-plan").is_none());
     assert!(visual.debug_bounds("board-discuss-1767").is_none());
-    assert!(visual.debug_bounds("board-agent-1767").is_some());
-    assert!(visual.debug_bounds("board-state-1767").is_some());
+    // Queue uses the dense title/number row; full state stays in its disclosure.
     let expand = visual
         .debug_bounds("board-expand-1767")
         .expect("visible real issue card");
@@ -831,7 +830,9 @@ fn card_type_origin_and_native_icons_come_from_supported_sources() {
 }
 
 #[gpui::test]
-fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestAppContext) {
+fn look_fixed_columns_scroll_inside_center_with_manager_space_and_both_themes(
+    cx: &mut TestAppContext,
+) {
     cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
     let mut binding = Binding::parse(include_str!(
@@ -886,10 +887,6 @@ fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestA
                 visual.debug_bounds("board-attention").is_none(),
                 "empty list has no lane"
             );
-            assert!(
-                visual.debug_bounds("board-agent-link-1731").is_some(),
-                "real bound-agent renderer"
-            );
             let center = visual.debug_bounds("project-board").unwrap();
             let columns = visual.debug_bounds("board-columns").unwrap();
             let view = visual.debug_bounds("board-view-board").unwrap();
@@ -913,9 +910,9 @@ fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestA
             ] {
                 let lane = visual.debug_bounds(key).expect("actual native lane");
                 assert!(lane.size.width > px(0.));
-                assert!(
-                    lane.left() >= center.left() && lane.right() <= center.right(),
-                    "{key} clipped at {width}"
+                assert_eq!(
+                    lane.size.width,
+                    px(if key.ends_with("Queue") { 240. } else { 268. })
                 );
             }
             assert!(columns.left() >= center.left() && columns.right() <= center.right());
@@ -926,7 +923,7 @@ fn look_columns_fit_the_center_with_manager_space_and_both_themes(cx: &mut TestA
             let lane = visual
                 .debug_bounds("board-lane-Verified")
                 .expect("explicit verified result expands");
-            assert!(lane.left() >= center.left() && lane.right() <= center.right());
+            assert_eq!(lane.size.width, px(268.));
             let toggle = visual.debug_bounds("board-verified-toggle").unwrap();
             visual.simulate_click(toggle.center(), Modifiers::default());
             visual.run_until_parked();
@@ -1355,6 +1352,7 @@ fn live_board_retains_expiring_merge_and_visible_diagnostic_until_successful_rec
                 merged_at: Some(1),
                 checks: String::new(),
             });
+            board.list.invalidate();
             board.snapshot.forgejo.accept(Ok([(42, issue)].into()), 100);
             board.snapshot.forgejo.error = Some("HTTP 503; showing last good Board".into());
             board

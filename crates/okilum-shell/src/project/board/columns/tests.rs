@@ -93,12 +93,15 @@ fn loading_is_not_empty_and_refresh_does_not_unfold_completed_empty_columns(
 }
 
 #[gpui::test]
-fn explicit_empty_expansion_survives_cards_and_freed_space_goes_to_nonempty_lane(
+fn explicit_empty_expansion_survives_cards_and_preserves_readable_lane_width(
     cx: &mut TestAppContext,
 ) {
     let area = tempfile::tempdir().unwrap();
     let (board, visual) = open(cx, area.path());
-    let initial = visual.debug_bounds("board-lane-Ready").unwrap();
+    assert_eq!(
+        visual.debug_bounds("board-lane-Ready").unwrap().size.width,
+        px(268.)
+    );
     loaded(&board, visual);
     board.update(visual, |board, cx| {
         // A card arriving during a refresh is always shown immediately.
@@ -119,9 +122,10 @@ fn explicit_empty_expansion_survives_cards_and_freed_space_goes_to_nonempty_lane
     let full = visual
         .debug_bounds("board-lane-Ready")
         .expect("new nonempty lane auto-opens");
-    assert!(
-        full.size.width > initial.size.width * 2.,
-        "useful lane receives the empty lanes' width"
+    assert_eq!(
+        full.size.width,
+        px(268.),
+        "empty lanes never stretch readable cards"
     );
     assert!(visual
         .debug_bounds("board-local-card-10000000-0000-4000-8000-000000000001")
@@ -166,7 +170,7 @@ fn empty_column_can_be_expanded_from_the_keyboard(cx: &mut TestAppContext) {
     board.update_in(visual, |board, window, cx| board.focus.focus(window, cx));
     visual.run_until_parked();
     // The new List/Board control precedes the first empty-column control.
-    visual.simulate_keystrokes("tab tab tab");
+    visual.simulate_keystrokes("tab tab tab tab tab tab");
     let keystroke = gpui::Keystroke::parse("enter").unwrap();
     visual.simulate_event(gpui::KeyDownEvent {
         keystroke: keystroke.clone(),
@@ -189,6 +193,7 @@ fn unresolved_card_problems_are_not_treated_as_an_empty_board(cx: &mut TestAppCo
     loaded(&board, visual);
     board.update(visual, |board, cx| {
         board.columns.invalidate();
+        board.list.invalidate();
         board
             .local_cards
             .value
@@ -238,6 +243,7 @@ fn annotation_free_repository_failure_is_unknown_until_live_discovery_succeeds(
     );
     assert!(visual.debug_bounds("board-expand-empty-Queue").is_none());
     board.update(visual, |board, cx| {
+        board.list.invalidate();
         board.snapshot.forgejo.accept(Ok(Default::default()), now());
         cx.notify();
     });
@@ -260,6 +266,7 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
     // already in flight. No earlier render established an emptiness decision.
     board.update(visual, |board, cx| {
         board.binding.as_mut().unwrap().repository = "https://forgejo.example/team/project".into();
+        board.list.invalidate();
         board.snapshot.forgejo.accept(
             Ok([(
                 42,
@@ -275,6 +282,7 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
         board.local_cards.last_success = Some(now());
         board.delivery_loading = true;
         board.columns.invalidate();
+        board.list.invalidate();
         cx.notify();
     });
     visual.run_until_parked();
@@ -297,6 +305,7 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
         for width in [800., 1600.] {
             board.update(visual, |board, cx| {
                 board.columns.invalidate();
+                board.list.invalidate();
                 cx.notify();
             });
             visual.simulate_resize(size(px(width), px(900.)));
@@ -316,15 +325,12 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
                 );
                 assert!(visual.debug_bounds(control).is_some());
             }
-            let columns = visual.debug_bounds("board-columns").unwrap();
             let queue = visual.debug_bounds("board-lane-Queue").unwrap();
-            assert!(
-                queue.size.width > columns.size.width * 0.8,
-                "useful lane receives released width"
-            );
+            assert_eq!(queue.size.width, px(240.));
         }
     }
     board.update(visual, |board, cx| {
+        board.list.invalidate();
         let issue = board.snapshot.forgejo.value.get_mut(&42).unwrap();
         issue.open_pull_requests.push(7);
         issue.live_pulls.push(okilum_t3::board::live::Pull {
@@ -341,6 +347,7 @@ fn empty_live_columns_collapse_during_delivery_refresh_and_reopen_for_incoming_c
     );
     assert!(visual.debug_bounds("board-expand-42").is_some());
     board.update(visual, |board, cx| {
+        board.list.invalidate();
         board.snapshot.forgejo.accept(Err("HTTP 503".into()), now());
         cx.notify();
     });

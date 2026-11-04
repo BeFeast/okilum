@@ -127,6 +127,76 @@ impl Board {
         }
         card.into_any_element()
     }
+    pub(super) fn compact_local_card(
+        &self,
+        card: &okilum_t3::board::local::Card,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let p = brand::palette(cx);
+        let id = card.id.clone();
+        let selected = self.selected_local.as_ref() == Some(&id);
+        Button::new(SharedString::from(format!("local-summary-{id}")))
+            .ghost()
+            .h_auto()
+            .p_0()
+            .w_full()
+            .min_w_0()
+            .debug_selector({
+                let id = id.clone();
+                move || format!("board-local-expand-{id}")
+            })
+            .child(
+                v_flex()
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("board-local-card-{id}")
+                    })
+                    .w_full()
+                    .min_w_0()
+                    .p(px(10.))
+                    .gap(px(6.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(if selected { p.accent } else { p.border_subtle })
+                    .bg(p.surface_raised)
+                    .hover(|s| s.bg(p.surface))
+                    .text_color(p.text)
+                    .font_weight(FontWeight::NORMAL)
+                    .child(
+                        div()
+                            .h(px(24.))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .child("Local"),
+                    )
+                    .child(
+                        div()
+                            .min_h(px(36.))
+                            .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .line_clamp(2)
+                            .child(card.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .h(px(18.))
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(p.text_muted)
+                            .child(card.state.label()),
+                    ),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.selected = None;
+                this.selected_local = (!selected).then(|| id.clone());
+                this.focus.focus(window, cx);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
     /// Exactly three rows; selection opens actions outside the virtualised lane.
     pub(super) fn compact_card(
         &self,
@@ -260,7 +330,19 @@ impl Board {
                     } else {
                         p.text_muted
                     })
-                    .child(state),
+                    .child(
+                        div()
+                            .debug_selector(move || {
+                                if failed {
+                                    format!("board-card-ci-failed-{number}")
+                                } else if stale {
+                                    format!("board-card-stale-{number}")
+                                } else {
+                                    format!("board-card-state-{number}")
+                                }
+                            })
+                            .child(state),
+                    ),
             );
         if let Some(pr) = pr {
             let url = binding.pull_url(*pr);
@@ -281,8 +363,11 @@ impl Board {
                     }),
             );
         }
-        div()
-            .id(("board-expand", number as usize))
+        Button::new(("board-expand", number as usize))
+            .ghost()
+            .h_auto()
+            .p_0()
+            .accessibility_label(format!("Expand issue {number}"))
             .debug_selector(move || format!("board-expand-{number}"))
             .w_full()
             .min_w_0()
@@ -317,7 +402,7 @@ impl Board {
                             .debug_selector(move || format!("board-card-title-{number}"))
                             .w_full()
                             .min_w_0()
-                            .h(px(36.))
+                            .min_h(px(36.))
                             .text_size(px(13.))
                             .line_height(px(18.))
                             .whitespace_normal()

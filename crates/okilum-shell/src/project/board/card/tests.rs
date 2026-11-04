@@ -84,6 +84,17 @@ fn kanban_2534_three_rows_two_complete_title_lines_and_viewport_work(cx: &mut Te
         visual.debug_bounds("board-card-1").is_some(),
         "positive rendered-card control"
     );
+    for selector in [
+        "board-agent-live-dot",
+        "board-card-stale-1",
+        "CI failed",
+        "CI passed",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "missing evidence renderer: {selector}"
+        );
+    }
     let publications = board.read_with(visual, |b, _| b.list.publication_count());
     click(visual, "board-expand-1");
     assert!(visual.debug_bounds("board-discuss-1").is_some());
@@ -146,4 +157,24 @@ fn kanban_2534_verified_rail_expands_and_remains_in_narrow_viewport(cx: &mut Tes
     assert!(rail.right() <= center.right());
     click(visual, "board-verified-toggle");
     assert!(visual.debug_bounds("board-lane-Verified").is_none());
+}
+
+#[gpui::test]
+fn kanban_2534_live_dot_requires_unsettled_active_run(cx: &mut TestAppContext) {
+    let area = tempfile::tempdir().unwrap();
+    let (board, visual) = open(cx, area.path());
+    assert!(visual.debug_bounds("board-agent-live-dot").is_some());
+    board.update(visual, |board, cx| {
+        board.snapshot.t3.value[0].active_run_id = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("board-agent-link-1").is_some(),
+        "bound avatar remains"
+    );
+    assert!(
+        visual.debug_bounds("board-agent-live-dot").is_none(),
+        "assignment alone never implies a live run"
+    );
 }

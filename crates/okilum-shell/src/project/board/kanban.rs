@@ -328,7 +328,7 @@ impl Board {
             Row::Issue(i) => {
                 self.compact_card(&prepared.binding.issues[i], stage, &prepared.binding, cx)
             }
-            Row::Local(i) => self.local_card(&self.local_cards.value.cards[i], cx),
+            Row::Local(i) => self.compact_local_card(&self.local_cards.value.cards[i], cx),
             Row::Problem(_) | Row::Group(_) => unreachable!("non-Queue issue lane"),
         }
     }

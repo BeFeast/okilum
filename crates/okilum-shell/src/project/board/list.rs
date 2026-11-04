@@ -31,13 +31,50 @@ pub(super) enum Row {
     Local(usize),
     Problem(usize),
 }
+// Constant-size cache validation; never scan source issues on a repaint.
+#[derive(PartialEq, Eq)]
+struct SourceState {
+    loading: [bool; 3],
+    success: [Option<u64>; 4],
+    errors: [bool; 4],
+    lengths: [usize; 4],
+}
+impl Board {
+    fn presentation_source_state(&self) -> SourceState {
+        SourceState {
+            loading: [
+                self.binding_loading,
+                self.local_loading,
+                self.snapshot.busy(),
+            ],
+            success: [
+                self.snapshot.forgejo.last_success,
+                self.snapshot.t3.last_success,
+                self.local_cards.last_success,
+                self.delivery.config.last_success,
+            ],
+            errors: [
+                self.snapshot.forgejo.error.is_some(),
+                self.snapshot.t3.error.is_some(),
+                self.local_cards.error.is_some(),
+                self.delivery.config.error.is_some(),
+            ],
+            lengths: [
+                self.snapshot.forgejo.value.len(),
+                self.local_cards.value.problems.len(),
+                self.binding.as_ref().map_or(0, |b| b.card_problems.len()),
+                self.binding.as_ref().map_or(0, |b| b.issues.len()),
+            ],
+        }
+    }
+}
 pub(super) struct Prepared {
     pub binding: Binding,
     pub rows: Vec<Row>,
     pub counts: [usize; 5],
     pub groups: [Arc<[Row]>; 5],
     local_count: usize,
-    ready: bool,
+    source_state: SourceState,
     filter: Option<String>,
     collapsed: [bool; 5],
     roles: Arc<[String]>,
@@ -141,7 +178,7 @@ impl Board {
             if prepared.filter == self.filter
                 && prepared.collapsed == self.list.preferences.collapsed
                 && prepared.local_count == self.local_cards.value.cards.len()
-                && prepared.ready == self.column_sources_ready(&prepared.binding)
+                && prepared.source_state == self.presentation_source_state()
             {
                 return prepared.clone();
             }
@@ -223,7 +260,7 @@ impl Board {
         let prepared = Arc::new(Prepared {
             groups: kanban_groups,
             local_count: self.local_cards.value.cards.len(),
-            ready: sources_ready,
+            source_state: self.presentation_source_state(),
             source_problem,
             sources_ready,
             mappings,
