@@ -603,15 +603,9 @@ mod tests {
         visual.run_until_parked();
         reader.update_in(visual, |reader, window, cx| {
             reader.toggle_source(window, cx);
-            reader
-                .editing
-                .as_ref()
-                .unwrap()
-                .input
-                .clone()
-                .update(cx, |input, cx| {
-                    input.replace_text_in_range(Some(0..0), "unsaved edit", window, cx);
-                });
+            reader.source_input().unwrap().update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..0), "unsaved edit", window, cx);
+            });
             assert!(reader.source_is_dirty(cx), "positive dirty control");
         });
         inventory.update(visual, |view, cx| {
