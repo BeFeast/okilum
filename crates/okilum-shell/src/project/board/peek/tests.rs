@@ -12,10 +12,13 @@ fn click(cx: &mut VisualTestContext, key: &'static str) {
 fn peek_2531_click_space_escape_arrows_and_tabs_preserve_board_geometry(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     let area = tempfile::tempdir().unwrap();
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (root, visual) = cx.add_window_view(|window, cx| {
         let board = cx.new(|cx| {
             let mut b = Board::with_reader(area.path().into(), |_| Ok(vec![]), window, cx);
             b.binding = Some(Binding::parse(&serde_json::json!({"version":1,"title":"Fixture","repository":"https://example.test/team/repo","issues":[{"number":1,"expected":"Typography gypд","executor":"Fixture"},{"number":2,"expected":"Preserve identity","executor":"Fixture"}]}).to_string()).unwrap());
+            let reads = reads.clone();
+            b.peek.reader = Some(Arc::new(move |_,_| { reads.fetch_add(1,std::sync::atomic::Ordering::SeqCst); Ok(vec![]) }));
             b.list.preferences.collapsed[Column::Queue as usize] = false;
             b
         });
@@ -37,6 +40,12 @@ fn peek_2531_click_space_escape_arrows_and_tabs_preserve_board_geometry(cx: &mut
     click(visual, "board-list-row-1");
     assert!(visual.debug_bounds("board-peek-content").is_some());
     assert!(visual.debug_bounds("board-list-details").is_none());
+    click(visual, "board-list-row-1");
+    assert_eq!(
+        reads.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "clicking the already open issue does not read it again"
+    );
     assert_eq!(
         visual.debug_bounds("board-list-row-1").unwrap().size.height,
         height

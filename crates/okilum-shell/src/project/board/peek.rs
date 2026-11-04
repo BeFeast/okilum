@@ -10,11 +10,17 @@ pub(super) struct State {
     pub open: bool,
     pub manager_tab: bool,
     generation: u64,
+    target: Option<Target>,
     loading: bool,
     pub(super) loaded: bool,
     comments: Vec<Comment>,
     error: Option<String>,
     pub(super) reader: Option<CommentsReader>,
+}
+#[derive(Clone, PartialEq, Eq)]
+enum Target {
+    Issue(u64),
+    Local(String),
 }
 #[derive(Clone)]
 struct Ticket {
@@ -32,6 +38,7 @@ impl State {
 impl Board {
     pub(super) fn close_peek(&mut self, cx: &mut Context<Self>) {
         self.peek.open = false;
+        self.peek.target = None;
         self.peek.manager_tab = false;
         self.peek.generation = self.peek.generation.wrapping_add(1);
         self.peek.comments.clear();
@@ -39,9 +46,20 @@ impl Board {
         cx.notify();
     }
     pub(super) fn open_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected.is_none() && self.selected_local.is_none() {
+        let Some(target) = self
+            .selected
+            .map(Target::Issue)
+            .or_else(|| self.selected_local.clone().map(Target::Local))
+        else {
+            return;
+        };
+        if self.peek.open && self.peek.target.as_ref() == Some(&target) {
+            self.peek.manager_tab = false;
+            cx.emit(Action::Peek);
+            cx.notify();
             return;
         }
+        self.peek.target = Some(target);
         self.peek.open = true;
         self.peek.manager_tab = false;
         self.peek.generation = self.peek.generation.wrapping_add(1);
