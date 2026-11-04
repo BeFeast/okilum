@@ -616,6 +616,9 @@ pub struct RetainedVersion {
     pub bytes: Vec<u8>,
 }
 pub fn retained_versions(record: &Path) -> Result<[RetainedVersion; 2]> {
+    retained_from_value(record_value(record)?)
+}
+fn record_value(record: &Path) -> Result<serde_json::Value> {
     let fd = open(
         record,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
@@ -635,8 +638,11 @@ pub fn retained_versions(record: &Path) -> Result<[RetainedVersion; 2]> {
         bytes.len() as u64 <= MAX_RECORD,
         "Conflict recovery record is too large"
     );
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     ensure!(value["schema"] == 1, "Unsupported conflict recovery record");
+    Ok(value)
+}
+fn retained_from_value(mut value: serde_json::Value) -> Result<[RetainedVersion; 2]> {
     let root: PathBuf = serde_json::from_value(value["root"].take())?;
     ensure!(root.is_absolute(), "Invalid recovery root");
     let mut read = |prefix: &str| -> Result<RetainedVersion> {

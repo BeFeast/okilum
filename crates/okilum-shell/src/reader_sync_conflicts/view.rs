@@ -1,6 +1,7 @@
 use super::*;
 use crate::{brand, reader_open, reader_settings_sync, Reader};
 use gpui::{prelude::*, *};
+use gpui_base::ElementExt as _;
 use gpui_component::{button::Button, h_flex, v_flex, Disableable, Sizable, WindowExt};
 
 pub(crate) fn open(
@@ -119,13 +120,24 @@ impl InventoryView {
                                 panel.preview.that().bytes()
                             };
                             if let Ok(text) = std::str::from_utf8(bytes) {
-                                if let Ok(Some(name)) = controller.file_change_origin(
+                                if let Ok(Some(name)) = controller.file_version_origin(
                                     &root,
                                     &pane.path.to_string_lossy(),
                                     text,
                                 ) {
-                                    pane.provenance =
-                                        format!("Device: {name} · {}", pane.provenance);
+                                    pane.provenance = format!(
+                                        "Device: {name} · {}",
+                                        pane.provenance
+                                            .replace("Origin device unknown.", "")
+                                            .replace(
+                                                "Device unknown; suffix is random.",
+                                                "Suffix is random."
+                                            )
+                                            .replace(
+                                                "timezone/device name unverified",
+                                                "timezone unverified"
+                                            )
+                                    );
                                 }
                             }
                         }
@@ -341,8 +353,12 @@ impl Render for InventoryView {
                 )));
             if let Some(receipt) = &panel.recovery {
                 view = view.child(format!(
-                    "Both originals are in Note history and Recover notes. Recovery record: {}",
-                    receipt.recovery_record.display()
+                    "Both originals are in Note history and Recover notes.{}",
+                    if matches!(panel.state, State::NeedsAttention) {
+                        format!(" Recovery record: {}", receipt.recovery_record.display())
+                    } else {
+                        String::new()
+                    }
                 ));
                 if let Some(kept) = &receipt.kept_both {
                     view = view.child(format!("Other version kept as {}", kept.display()));
