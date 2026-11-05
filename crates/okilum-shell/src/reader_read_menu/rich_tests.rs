@@ -275,9 +275,9 @@ fn source_and_live_markdown_shortcuts_copy_the_exact_selected_source(cx: &mut Te
         let input = f.reader.read_with(f.visual, |reader, _| {
             reader.editing.as_ref().unwrap().input().clone()
         });
-        input.update(f.visual, |input, cx| input.set_selection(0..NOTE.len(), cx));
+        input.update(f.visual, |input, cx| input.set_selected_range(0..NOTE.len(), cx));
         f.visual
-            .update(|window, cx| input.read(cx).focus_handle().focus(window, cx));
+            .update(|window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
         f.seed_clipboard();
         f.visual.simulate_keystrokes("secondary-shift-c");
         f.visual.run_until_parked();
