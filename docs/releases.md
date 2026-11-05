@@ -22,17 +22,23 @@ Never substitute a newer main result or a PR result for that source. If absent,
 dispatch `fast.yml` on main with `certification_source` set to the candidate SHA
 and wait for that source's full-suite result. Beta still uses check alone.
 
-Since #2589 the `shell-full` job waits on a `bridge` runner while GitHub's
-dedicated `ubuntu-24.04` runner executes that source's own
-`scripts/ci/shell-full.sh` (`.github/workflows/forgejo-shell-full.yml`). The
-status context the Stable gate reads, `fast / shell-full (workflow_dispatch)`,
-and its reporting job are unchanged. A source that predates the hosted workflow
-fails at once with `predates hosted shell-full`; certify a newer main commit.
-Details and budgets: `docs/fast-runner.md`.
+Since #2589 both certification jobs wait on a `bridge` runner while GitHub's
+dedicated `ubuntu-24.04` runners execute that source's own commands: `check`
+runs the CI tooling, releases and updater Python suites and
+`scripts/ci/fast.sh` (`.github/workflows/forgejo-check.yml`, two parallel jobs
+of one run), `shell-full` runs `scripts/ci/shell-full.sh`
+(`.github/workflows/forgejo-shell-full.yml`). The status contexts Beta and
+Stable read, `fast / check (workflow_dispatch)` and
+`fast / shell-full (workflow_dispatch)`, and their reporting jobs are unchanged.
+GitHub being unavailable is a failure, never a fallback pass. A source that
+predates a hosted workflow fails at once with `predates hosted check` (or
+`predates hosted shell-full`); certify a newer main commit. Nightly and
+ordinary manual runs use the same hosted jobs. Details and budgets:
+`docs/fast-runner.md`.
 
 All three beta workflows tick at :17 UTC. The Linux coordinator requests at most
 one automatic fast certification per UTC hour. Both fast suites compile and test
-the requested product checkout (`check` on baldr, `shell-full` on GitHub),
+the requested product checkout on GitHub,
 independently of the workflow snapshot or subsequent main merges. Beta is gated by `fast / check` alone: its status is
 reported the moment `check` finishes, and a green `check` immediately dispatches
 all three source-pinned release workflows; the next tick recovers missed

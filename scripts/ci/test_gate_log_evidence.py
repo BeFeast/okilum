@@ -97,6 +97,25 @@ class TransportTests(unittest.TestCase):
             api=API([],good());api.job[field]=value
             self.assertEqual(wait(api),'failure');self.assertEqual(api.log_reads,0)
 
+    def test_log_evidence_never_substitutes_for_another_required_job(self):
+        # #2589: also_required steps are proven by the jobs API only.
+        also = (('python', 'Run the full CI tooling Python suite'),)
+        def wait_also(api):
+            return bridge.wait_for_run(api, 'branch', SHA, job_name='shared', build_step=STEP,
+                                       clock=lambda:0, sleep=lambda _:None, log=lambda *a,**k:None,
+                                       also_required=also)[0]
+        api = API([], good()); self.assertEqual(wait_also(api), 'failure'); self.assertEqual(api.log_reads, 0)
+        python = dict(id=98, run_id=71, head_sha=SHA, name='python', status='completed', conclusion='success',
+                      steps=[dict(name=also[0][1], conclusion='success')])
+        class Both(API):
+            def request(self, path):
+                if '/jobs?' in path:
+                    self.evidence_reads += 1; return {'jobs':[self.job, python]}
+                return {'workflow_runs':[self.run]}
+        api = Both([], good()); self.assertEqual(wait_also(api), 'success'); self.assertEqual(api.log_reads, 1)
+        python['steps'] = []
+        api = Both([], good()); self.assertEqual(wait_also(api), 'failure'); self.assertEqual(api.log_reads, 0)
+
     def test_log_missing_service_response_cannot_be_success(self):
         api=API([],good())
         with patch.object(api,'job_log',side_effect=bridge.Unavailable('log unavailable')):

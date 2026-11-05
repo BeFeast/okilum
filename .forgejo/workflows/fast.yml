@@ -15,39 +15,30 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.certification_source == '' }}
 jobs:
   check:
-    # Dedicated warm runner for main certification only.
-    # Workers validate their own exact HEAD through GitHub agent checks.
-    runs-on: fast-linux
-    # Additive phases plus three 5m Python step ceilings (#2536), setup/cleanup.
-    timeout-minutes: 55
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
-      RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
-      SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-      SCCACHE_ENDPOINT: ${{ vars.SCCACHE_ENDPOINT }}
-      SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-      SCCACHE_S3_USE_SSL: "false"
-      SCCACHE_S3_KEY_PREFIX: rust
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
+    # Beta's shipping check: the three Python suites and scripts/ci/fast.sh run
+    # on GitHub's dedicated 4 vCPU runners (.github/workflows/forgejo-check.yml).
+    # Co-tenant load on baldr pushed the build phase past its 540 s deadline
+    # (#2589, run 31053). This waiter compiles nothing; the hosted run executes
+    # the exact source's commands with their unchanged group and phase limits.
+    runs-on: bridge
+    # 2 min source validation + 56 min hosted bridge + 90 s margin, within the
+    # primary bridge runner's 60 min ceiling (docs/fast-runner.md).
+    timeout-minutes: 60
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      # Install from the workflow revision before certification checks out an
-      # older product source that may not contain the dependency setup helper.
-      - name: Install Python venv support
+      # Certification checks out an older product source; the bridge comes from
+      # this workflow revision so every source gets the same transport.
+      - name: Stage the hosted bridge from the workflow revision
         run: |
-          if ! dpkg-query -W -f='${Status}' python3-venv 2>/dev/null | grep -q 'install ok installed'; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq --no-install-recommends python3-venv
-          fi
-      - name: Prepare isolated Python test dependencies
-        run: bash scripts/ci/setup-python-tests.sh
+          set -euo pipefail
+          bridge_root=$(mktemp -d "${RUNNER_TEMP:?}/check-bridge-XXXXXX")
+          cp scripts/ci/github-pr.py scripts/ci/github-macos.py scripts/ci/github_auth.py \
+            scripts/ci/gate_log_evidence.py scripts/ci/fast_evidence.py "$bridge_root/"
+          echo "OKILUM_HOSTED_BRIDGE=$bridge_root" >> "$GITHUB_ENV"
       - name: Validate hourly certification source before compiling
         if: inputs.certification_source != ''
         env:
@@ -63,41 +54,30 @@ jobs:
           OKILUM_TEST_GROUP="$supervisor_root/test-group.sh"
           echo "OKILUM_TEST_GROUP=$OKILUM_TEST_GROUP" >> "$GITHUB_ENV"
           bash "$OKILUM_TEST_GROUP" certification-source 90 python3 scripts/releases/hourly_beta.py certify-source
-      - name: Prepare local Linux toolchain
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/.cargo/bin:$PATH"
-          packages=(build-essential cmake pkg-config curl git mold zstd python3 python3-venv gnupg
-            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev
-            libfontconfig-dev libfreetype-dev libxcb1-dev)
-          if ! dpkg-query -W -f='${Status}\n' "${packages[@]}" 2>/dev/null | grep -vFx 'install ok installed' | grep -q . &&
-             dpkg-query -W "${packages[@]}" >/dev/null 2>&1; then
-            echo 'Local build dependencies already installed'
-          else
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq --no-install-recommends "${packages[@]}"
-          fi
-          test -x "$HOME/.cargo/bin/cargo"
-          # Resolve/install the pinned toolchain before the bounded sccache probe.
-          cargo --version
-          rustc --version
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Run the full CI tooling Python suite
-        timeout-minutes: 5
-        run: bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ci-python 180 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
-      - name: Run the full releases Python suite
-        timeout-minutes: 5
-        run: bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
-      - name: Run the full updater Python suite
-        timeout-minutes: 5
-        run: bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
-      - name: Build Linux desktop and run fast unit tests
+      - name: Run the fast check on GitHub
         env:
-          GITHUB_SHA: ${{ inputs.certification_source || github.sha }}
+          MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
+          OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
+          OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
+          OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
+          CI_LANE: check
+          PR_NUMBER: ${{ github.run_number }}
+          PR_HEAD_SHA: ${{ inputs.certification_source || github.sha }}
+        # 60 s history + 53 min shared queue/run budget + 2 min poll/cancel/cleanup.
+        timeout-minutes: 56
         run: |
           set -euo pipefail
-          export PATH="$HOME/.cargo/bin:$PATH"
-          bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" fast-local-check 2100 bash scripts/ci/fast-local.sh
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+          if ! git cat-file -e "HEAD:.github/workflows/forgejo-check.yml" 2>/dev/null; then
+            echo "::error::Source $PR_HEAD_SHA predates hosted check (#2589); certify a newer main commit" >&2
+            exit 1
+          fi
+          # A shallow commit can be pushed only if GitHub already mirrors it.
+          # Connect it to full history so a not-yet-mirrored main still pushes.
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            timeout 60 git fetch -q --no-tags --unshallow origin "$PR_HEAD_SHA"
+          fi
+          python3 "$OKILUM_HOSTED_BRIDGE/github-pr.py"
 
   shell-full:
     # Full runtime coverage never occupies a PR admission slot. The suite runs on

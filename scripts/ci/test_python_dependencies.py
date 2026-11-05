@@ -94,7 +94,9 @@ class PythonDependencies(unittest.TestCase):
                                 # dependency tooling must come from the workflow.
                                 self.assertLess(setup, i)
                         jobs_checked.append((directory, path.name, name))
-        self.assertIn(('.forgejo/workflows', 'fast.yml', 'check'), jobs_checked)
+        # #2589: certification check's Python suites run in its hosted run.
+        self.assertIn(('.github/workflows', 'forgejo-check.yml', 'python'), jobs_checked)
+        self.assertNotIn(('.forgejo/workflows', 'fast.yml', 'check'), jobs_checked)
         self.assertIn(('.forgejo/workflows', 'ci.yml', 'linux-local'), jobs_checked)
         self.assertIn(('.github/workflows', 'agent-checks.yml', 'linux'), jobs_checked)
         self.assertIn(('.forgejo/workflows', 'fast.yml', 'sync-source-sharing'), jobs_checked)
