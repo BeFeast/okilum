@@ -10,6 +10,8 @@ suite() {
     "$@" || failed=1
 }
 suite bash scripts/ci/local-writer-admission.sh
+# #2615: keep the complete Sync modal/approval suite visible before unrelated native tests.
+suite cargo test --locked -p okilum-shell --bin okilum reader_settings_sync:: -- --nocapture --test-threads=1
 # #2589: a real app pairing listener, fresh identity and repeated Add computer.
 suite cargo test --locked -p okilum-sync-controller --test first_computer -- --nocapture
 suite cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture

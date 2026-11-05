@@ -253,6 +253,9 @@ impl Syncthing {
     pub fn connections(&self) -> Result<Value> {
         self.request(Method::GET, "/rest/system/connections", None)
     }
+    pub fn device_stats(&self) -> Result<Value> {
+        self.request(Method::GET, "/rest/stats/device", None)
+    }
     /// Caller must establish ownership before deleting either scoped record.
     pub fn remove_folder(&self, id: &str) -> Result<()> {
         self.request(
