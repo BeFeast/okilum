@@ -404,6 +404,8 @@ fn open_mounted_header(state: PathBuf, gateway: Arc<Fake>, cx: &mut App) {
                     let board = cx.new(|cx| {
                         super::board::Board::performance_fixture(vault.clone(), window, cx)
                     });
+                    cx.observe(&board, |reader, _, cx| reader.project_board_changed(cx))
+                        .detach();
                     reader
                         .project_navigation
                         .boards
@@ -459,7 +461,9 @@ pub(super) fn open(cx: &mut App) -> bool {
     let state = reader_history::state_directory().expect("isolated fixture state");
     if matches!(
         mode.as_str(),
-        "board-list-dark"
+        "board-list-peek-dark"
+            | "board-kanban-peek-dark"
+            | "board-list-dark"
             | "board-list-light"
             | "board-kanban-dark"
             | "board-kanban-light"
