@@ -3,6 +3,7 @@ use presentation::Step;
 
 impl Render for SyncSettings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.inputs(window, cx);
         use gpui_component::WindowExt;
         if !window.has_active_dialog(cx) {
             self.presentation.dialog_open = false;
@@ -94,7 +95,7 @@ impl Render for SyncSettings {
                         div()
                             .text_sm()
                             .text_color(p.text_muted)
-                            .child(format!("This computer: {}", self.name.read(cx).value())),
+                            .child(format!("This computer: {}", input_text(&self.name, cx))),
                     ),
             );
             if let Some(snapshot) = &self.snapshot {
@@ -551,7 +552,7 @@ impl SyncSettings {
                 step = Step::Link;
             }
         }
-        let local = self.name.read(cx).value().to_string();
+        let local = input_text(&self.name, cx);
         let remote = self
             .selected_peer
             .and_then(|id| {
@@ -563,7 +564,7 @@ impl SyncSettings {
                     .map(|p| p.name.clone())
             })
             .or_else(|| {
-                direct::pairing_computer(self.invitation.read(cx).value().trim())
+                direct::pairing_computer(&input_text(&self.invitation, cx))
                     .ok()
                     .map(|ip| format!("computer at {ip}"))
             })
@@ -603,9 +604,14 @@ impl SyncSettings {
         }
         match step {
             Step::Start | Step::Paste => {
-                body = body
-                    .child("This computer’s name")
-                    .child(Input::new(&self.name).disabled(self.busy));
+                body = body.child("This computer’s name").child(
+                    Input::new(
+                        self.name
+                            .as_ref()
+                            .expect("Settings initializes Sync inputs"),
+                    )
+                    .disabled(self.busy),
+                );
                 if step == Step::Start {
                     body = body
                         .child(
@@ -630,7 +636,14 @@ impl SyncSettings {
                 } else {
                     body = body
                         .child("Pairing link")
-                        .child(Input::new(&self.invitation).disabled(self.busy))
+                        .child(
+                            Input::new(
+                                self.invitation
+                                    .as_ref()
+                                    .expect("Settings initializes Sync inputs"),
+                            )
+                            .disabled(self.busy),
+                        )
                         .child(
                             Button::new("sync-connect")
                                 .debug_selector(|| "sync-connect".into())

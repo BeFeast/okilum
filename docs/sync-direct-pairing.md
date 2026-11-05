@@ -58,6 +58,11 @@ A lifetime lock prevents two controllers from owning the same journal.
   application's listening socket. It performs no network request, filesystem
   operation or Syncthing lifecycle action. Last-controller drop also terminates
   its listener. Disabling Sync must revoke application NetworkAccess and call it.
+- `has_paired_computers_or_vaults(state)` reads the saved journal without taking
+  its lock or creating it. When it is true and Sync is on, the desktop app opens
+  the controller in the background at launch (and when Sync is turned back on)
+  and refreshes it like `okilum sync serve`, so paired computers are answered
+  without opening Settings → Sync (#2589). Settings reuses that controller.
 
 `configuration_paths()` returns `Result<Vec<PathBuf>>`. Linux includes its existing
 process/config inventory; macOS includes standard user configuration paths only.
@@ -124,8 +129,7 @@ network/discovery/relay/lifecycle settings are retained. Syncthing REST has no C
 external administrative writers still require coordination.
 
 Current explicit missing boundaries: fresh macOS native absence inventory and
-signed-package/offline staging composition; native acceptance;
-automatic application listener restoration after process restart; symmetric
+signed-package/offline staging composition; native acceptance; symmetric
 catalog serving from a formerly receiving computer; general catalog authorization
 changes and peer removal (ordinary-source sharing below grants its own additions). A running source controller serves additional authorized
 vault selections without a new URL, and paired identities/capabilities are durable,

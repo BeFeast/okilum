@@ -64,7 +64,7 @@ impl Render for Wizard {
                                 .text_color(brand::palette(cx).text_muted)
                                 .child(format!(
                                     "On {} · {}",
-                                    view.name.read(cx).value(),
+                                    input_text(&view.name, cx),
                                     std::env::consts::OS
                                 )),
                         )

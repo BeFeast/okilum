@@ -49,6 +49,9 @@ pub(crate) struct Loading {
     pub limited_external_refresh: bool,
     pub network_waiting: bool,
     pub progress_revision: u64,
+    /// The bound vault folder of a failed preparation was replaced (#2589).
+    /// Only an explicit Retry re-attaches a folder re-created at that path.
+    pub replaced_root: Option<PathBuf>,
 }
 impl Drop for Loading {
     fn drop(&mut self) {
@@ -93,7 +96,7 @@ enum Event {
         sources: std::collections::HashMap<String, String>,
         titles: std::collections::HashMap<String, String>,
     },
-    Failed(String),
+    Failed(String, Option<PathBuf>),
 }
 
 #[cfg(test)]
@@ -2472,6 +2475,7 @@ impl Reader {
             limited_external_refresh,
             network_waiting,
             progress_revision: 0,
+            replaced_root: None,
         });
         self.watch_network_progress(cx);
         if self.loading.as_ref().unwrap().warm {
@@ -2667,6 +2671,7 @@ impl Reader {
                     if cancel.check().is_ok() {
                         let _ = send.send_blocking(Event::Failed(
                             okilum_core::vault::display_error(&format!("{error:#}")),
+                            okilum_write_authority::replaced_root(&error),
                         ));
                     }
                 }
@@ -2863,9 +2868,10 @@ impl Reader {
                                 this.loading.as_mut().unwrap().phase = "Ready".into();
                                 if let Some(trace) = &this.loading.as_ref().unwrap().opts.diagnostics { trace.event("vault_ready", serde_json::json!({ "notes": this.vault.notes.len(), "unreadable": this.vault.unreadable.len(), "cloud_pending": this.vault.cloud_placeholders.len() })); }
                             }
-                            Event::Failed(error) => {
+                            Event::Failed(error, replaced_root) => {
                                 this.loading.as_mut().unwrap().active = false;
                                 let load = this.loading.as_mut().unwrap();
+                                load.replaced_root = replaced_root;
                                 load.phase = if load.network {
                                     load.network_waiting = true;
                                     "Cannot refresh vault — showing last loaded content".into()
@@ -2884,6 +2890,56 @@ impl Reader {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Retry a failed preparation. After "Vault root replaced" this click is the
+    /// explicit user action that re-attaches a folder re-created in place (#2589);
+    /// write-authority refuses links, live writers and running holds.
+    pub(crate) fn retry_loading(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(load) = self.loading.as_mut() else {
+            return;
+        };
+        if let Some(root) = load.replaced_root.take() {
+            let generation = load.generation;
+            let rebind = cx.background_executor().spawn(async move {
+                let result = okilum_write_authority::Authority::rebind_replaced_root(&root);
+                (root, result.map(drop))
+            });
+            cx.spawn_in(window, async move |this, cx| {
+                let (root, result) = rebind.await;
+                let _ = this.update_in_own_window(cx, |this, window, cx| {
+                    // A newer preparation owns the status line now.
+                    if !this
+                        .loading
+                        .as_ref()
+                        .is_some_and(|load| load.generation == generation && !load.active)
+                    {
+                        return;
+                    }
+                    match result {
+                        Ok(()) => this.retry_loading(window, cx),
+                        Err(error) => {
+                            let load = this.loading.as_mut().unwrap();
+                            load.phase = okilum_core::vault::display_error(&format!(
+                                "Re-attach vault {}: {error:#}",
+                                okilum_core::vault::display_path(&root)
+                            ));
+                            // The refusal names what to finish; the user may re-attach again.
+                            load.replaced_root = Some(root);
+                            cx.notify();
+                        }
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
+        let opts = load.opts.clone();
+        if load.published {
+            self.refresh_inventory(okilum_core::Changes::default(), window, cx);
+        } else {
+            self.start_loading(opts, window, cx);
+        }
     }
 
     pub(crate) fn render_loading(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3064,26 +3120,20 @@ impl Reader {
                         |view| {
                             view.child(
                                 Button::new("retry-reader-loading")
-                                    .label("Retry")
+                                    .label(if load.replaced_root.is_some() {
+                                        "Re-attach folder"
+                                    } else {
+                                        "Retry"
+                                    })
                                     .small()
+                                    .when(load.replaced_root.is_some(), |button| {
+                                        button.tooltip(
+                                            "The vault folder was re-created at the same path, \
+                                             for example by Sync. Re-attach it to save notes again.",
+                                        )
+                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        if let Some(opts) =
-                                            this.loading.as_ref().map(|l| l.opts.clone())
-                                        {
-                                            if this
-                                                .loading
-                                                .as_ref()
-                                                .is_some_and(|load| load.published)
-                                            {
-                                                this.refresh_inventory(
-                                                    okilum_core::Changes::default(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            } else {
-                                                this.start_loading(opts, window, cx);
-                                            }
-                                        }
+                                        this.retry_loading(window, cx)
                                     })),
                             )
                         },
@@ -4636,6 +4686,72 @@ mod tests {
             v.persist_panel_width(reader_layout::Panel::Notes);
         });
         assert_eq!(reader_layout::Widths::load(&settings).notes, 480.);
+    }
+
+    #[gpui::test]
+    fn local_writer_admission_recreated_vault_reattaches_on_explicit_retry(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+        });
+        let temp = TestDirectory::new();
+        let root = temp.path().join("vault");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("start.md"), "# Before").unwrap();
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let reader = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        note: Some("start.md".into()),
+                        index_dir: Some(temp.path().join("cache")),
+                        session_directory: Some(temp.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            entity = Some(reader.clone());
+            Root::new(reader, window, cx)
+        });
+        let reader = entity.unwrap();
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            assert_eq!(v.loading.as_ref().unwrap().phase, "Ready");
+        });
+        // Sync re-receives the vault: a new folder at the same path (#2589).
+        std::fs::rename(&root, temp.path().join("vault.previous")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("start.md"), "# After").unwrap();
+        reader.update_in(visual, |v, window, cx| {
+            v.refresh_inventory_unshared(Default::default(), true, window, cx);
+        });
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            let load = v.loading.as_ref().unwrap();
+            assert!(!load.active);
+            assert!(load.phase.contains("Vault root replaced"), "{}", load.phase);
+            assert_eq!(
+                load.replaced_root.as_deref(),
+                Some(root.canonicalize().unwrap().as_path())
+            );
+        });
+        assert!(
+            okilum_write_authority::operation(&root).is_err(),
+            "writes stay refused until the user re-attaches the folder"
+        );
+        reader.update_in(visual, |v, window, cx| v.retry_loading(window, cx));
+        visual.run_until_parked();
+        reader.read_with(visual, |v, _| {
+            let load = v.loading.as_ref().unwrap();
+            assert_eq!(load.phase, "Ready");
+            assert!(load.replaced_root.is_none());
+        });
+        okilum_write_authority::operation(&root).unwrap();
     }
 
     #[gpui::test]

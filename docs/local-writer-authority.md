@@ -26,6 +26,17 @@ clear it, and deleting authority is not a supported recovery/reset procedure.
 Complete destruction/replacement of all private account state by its owner is
 outside the cooperative fencing guarantee.
 
+A vault folder re-created at the same canonical path (for example re-received by
+Sync) stays refused until the user re-attaches it: Reader's failed preparation
+offers **Re-attach folder** in place of Retry (#2589). That click calls
+`Authority::rebind_replaced_root`, which only rewrites the recorded root identity,
+under the registry and admission locks, and only for a plain folder at its own
+canonical path owned by this account (no symlink, junction or symlinked parent),
+with no running hold owner, no live writer lease and no other binding owning that
+physical folder. The epoch, revision and any unfinished hold are kept: a durable
+hold still closes admission and goes through normal recovery, and authorities or
+leases minted for the old folder stay refused. Fresh lookups never re-attach.
+
 Vault discovery registers the actual root before nested editors. A standalone
 file uses its containing folder. Nested publishers reuse an existing enclosing
 root. Discovery promotes idle smaller scopes into the actual vault root under
