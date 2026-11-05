@@ -3,8 +3,12 @@
 use super::*;
 use std::{collections::BTreeSet, time::Instant};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pull {
+    pub title: String,
+    pub state: String,
+    pub created_at: String,
+    pub updated_at: String,
     pub number: u64,
     pub merged_at: Option<u64>,
     pub checks: String,
@@ -368,6 +372,14 @@ fn read_with(
                     issue.open_pull_requests.push(pull.number);
                 }
                 issue.live_pulls.push(Pull {
+                    title: pull.title.clone(),
+                    state: if pull.merged {
+                        "merged".into()
+                    } else {
+                        pull.state.clone()
+                    },
+                    created_at: value["created_at"].as_str().unwrap_or_default().into(),
+                    updated_at: value["updated_at"].as_str().unwrap_or_default().into(),
                     number: pull.number,
                     merged_at,
                     checks: checks.clone(),

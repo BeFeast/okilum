@@ -48,6 +48,9 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
         });
         reader.project_navigation.active =
             Some(okilum_t3::projects::Project::read(&vault).unwrap());
+        // Match ensure_project_board_using: dock state/source publications also
+        // update Reader, while composer-only changes leave Board silent.
+        cx.observe(&board, |_, _, cx| cx.notify()).detach();
         reader
             .project_navigation
             .boards
@@ -353,15 +356,21 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     visual.run_until_parked();
     assert!(
         board.read_with(visual, |board, _| board.render_calls.get()) > 0,
-        "positive control: Space activates the real disclosure button"
+        "positive control: Space activates the real issue button"
     );
     assert_eq!(
         board.read_with(visual, |board, _| board.performance_selected()),
-        None
+        Some(2)
     );
+    assert!(visual.debug_bounds("board-peek-content").is_some());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
     visual.update(|window, _| window.refresh());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("board-discuss-2").is_none());
+    assert!(visual.debug_bounds("board-peek-content").is_none());
+    assert!(visual.debug_bounds("project-history").is_some());
+    visual.update(|window, cx| window.focus(&focus, cx));
+    visual.run_until_parked();
     let key = gpui::Keystroke::parse("enter").unwrap();
     visual.simulate_event(gpui::KeyDownEvent {
         keystroke: key.clone(),
@@ -376,7 +385,7 @@ fn reference_scroll_and_splitter_have_bounded_board_and_timeline_work(cx: &mut T
     );
     assert!(
         visual.debug_bounds("board-discuss-2").is_some(),
-        "Enter retains keyboard disclosure and its actions"
+        "Enter opens the issue panel and its actions"
     );
     let viewport = visual.debug_bounds("project-board").unwrap();
     board.read_with(visual, |board, _| board.frame_work.borrow_mut().clear());

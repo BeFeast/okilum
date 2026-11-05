@@ -51,6 +51,9 @@ fn repository_membership_closure_and_live_pr_links_need_no_manifest_edit() {
             );
             assert_eq!(projected.issues[0].pull_requests, vec![7]);
             assert!(checks(&issues[&42]));
+            assert_eq!(issues[&42].live_pulls[0].title, "Work");
+            assert_eq!(issues[&42].live_pulls[0].state, "open");
+            assert_eq!(issues[&42].live_pulls[0].updated_at, "1970-01-02T00:00:00Z");
             assert_eq!(
                 column(&projected.issues[0], Some(&issues[&42]), &[]),
                 Column::Checks
@@ -162,6 +165,10 @@ fn discovered_merge_enters_can_try_only_with_existing_exact_build_delivery_proof
     binding.issues.clear();
     let mut merged: Issue = serde_json::from_value(issue(42, "closed")).unwrap();
     merged.live_pulls.push(Pull {
+        title: String::new(),
+        state: String::new(),
+        created_at: String::new(),
+        updated_at: String::new(),
         number: 7,
         merged_at: Some(86400),
         checks: String::new(),
