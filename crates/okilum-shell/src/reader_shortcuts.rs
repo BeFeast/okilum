@@ -78,6 +78,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleTask>("Toggle task", Notes),
         entry::<reader_editor::OpenRenderedBlock>("Edit table, image or callout", Notes),
         entry::<reader_editor::OpenBlockExternally>("Open code block in external editor", Notes),
+        entry::<gpui_component::input::Paste>("Paste", Notes),
         entry::<note_paste::PasteAsPlainText>("Paste as plain text", Notes),
         entry::<note_paste::PasteAsTitledLink>("Paste as titled link", Notes),
         entry::<format::ToggleBold>("Bold", Format),
@@ -573,6 +574,9 @@ mod tests {
 
     #[gpui::test]
     fn rows_are_grouped_and_use_platform_labels(cx: &mut TestAppContext) {
+        // Paste's Shift+Insert alias belongs to the toolkit input keymap.
+        // Install it as a real Reader window does before checking all aliases.
+        cx.update(gpui_component::init);
         let keymap = reader_keymap(cx);
         let rows = rows(&keymap, Os::CURRENT);
         let groups: Vec<Group> = rows.iter().map(|row| row.group).collect();
@@ -604,6 +608,7 @@ mod tests {
             Os::CURRENT,
         );
         assert_eq!(paste.first(), Some(&Os::CURRENT.shortcut("secondary-v")));
+        assert_eq!(row("Paste").keys, paste);
         #[cfg(not(target_os = "macos"))]
         assert!(paste.contains(&Os::CURRENT.shortcut("shift-insert")));
         assert_eq!(
