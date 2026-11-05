@@ -210,18 +210,21 @@ The shared deadline matters because hosted queueing is bursty: for 77 recent
 first jobs of `agent-checks`/hosted lanes, push-to-start was 3 s median, 71 s p90
 and 980 s maximum (agent-checks 41999797379, 5 November).
 
-Pre-merge exercise, 5 November 2026: the exact bridge step (shallow checkout,
-6 s history fetch, staged `github-pr.py`) on branch head 4c34dc0f produced hosted
-[run 42049574081](https://github.com/BeFeast/okilum/actions/runs/42049574081),
-which started 3 s after the push. Cold apt 28 s, toolchain 10 s, compile
-490.37 s of 840 s, list 0.06 s, execution 390.09 s of 990 s
-(`2493 passed; 0 failed; 13 ignored` of 2506), whole `shell-full.sh` 888.75 s
-of 1920 s, job 15 min 35 s of 45 min, bridge 981 s of its 3180 s budget. Disk
-use rose from 59 to 67 GB of 145 GB. The broader `agent-checks` invocation of
-the same binary finished in 213.73 s and 236.82 s (runs 42026610742,
-42019928094); this one sample is not a hosted p95. `test_fast_budgets.py` pins
-compile >= 1.5x, execution >= 2.5x the measured hosted phases and keeps twice
-the slowest observed queue inside the bridge budget after the measured run.
+Pre-merge exercises, 5 November 2026, each through the exact bridge step
+(shallow checkout, 5-6 s history fetch, staged `github-pr.py`), cold, no cache:
+
+| Hosted run (branch head) | Start | Compile / 840 s | Execution / 990 s | `shell-full.sh` / 1920 s | Job / 45 min | Bridge / 3180 s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| [42049574081](https://github.com/BeFeast/okilum/actions/runs/42049574081) (4c34dc0f) | 3 s | 490.37 s | 390.09 s | 888.75 s | 15 min 35 s | 981 s |
+| [42052787792](https://github.com/BeFeast/okilum/actions/runs/42052787792) (44496ab9) | 2 s | 530.26 s | 422.20 s | 960.72 s | 16 min 44 s | 1050 s |
+
+Both ran 2506 tests: `2493 passed; 0 failed; 13 ignored`. Apt took 26-28 s,
+the toolchain 9-10 s; disk use rose from 59 to 67 GB of 145 GB. The broader
+`agent-checks` invocation of the same binary finished in 213.73 s and 236.82 s
+(runs 42026610742, 42019928094). Two samples are not a hosted p95.
+`test_fast_budgets.py` pins compile >= 1.5x and execution >= 2x the slower
+measured phase, and keeps twice the slowest observed queue inside the bridge
+budget after the slower measured bridge wait.
 
 A slow or failing hosted run is diagnosed from its GitHub log (linked in the
 Forgejo job). For a local reproduction run `scripts/ci/shell-full.sh` in a baldr
