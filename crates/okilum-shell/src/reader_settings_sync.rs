@@ -949,7 +949,7 @@ fn perform_with_locations(
 fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
-        macos::bootstrap::{connect_current_app, ConnectOutcome, SigningPolicy},
+        macos::bootstrap::{connect_current_app, ConnectBudget, ConnectOutcome, SigningPolicy},
         supervisor::ipc::code_requirement::CodeRequirement,
     };
     let team = option_env!("OKILUM_SIGNING_TEAM_ID").context("Sync signing policy unavailable")?;
@@ -959,7 +959,9 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
         helper: CodeRequirement::team_and_identifier(team, &format!("{identifier}.sync"))?,
         runtime: CodeRequirement::team_and_identifier(team, &format!("{identifier}.syncthing"))?,
     };
-    match connect_current_app(true, policy, Duration::from_secs(45))
+    // A first Connect prepares Sync and waits for its first helper launch, which
+    // on macOS outlasted a single shared budget (#2589).
+    match connect_current_app(true, policy, ConnectBudget::CONNECT)
         .context("macOS Sync connection setup failed")?
     {
         ConnectOutcome::Ready {
@@ -1030,7 +1032,7 @@ fn prepare_mac_runtime(
 ) -> anyhow::Result<()> {
     // Creating an invitation uses the app's pairing listener and identity only.
     // Opening Settings and Add computer must not depend on SMAppService approval,
-    // global process inventory, signing checks or the 45-second runtime startup.
+    // global process inventory, signing checks or the bounded runtime startup.
     if matches!(
         operation,
         Operation::Redeem(..) | Operation::Attach(..) | Operation::AttachNew(..)

@@ -9,6 +9,8 @@ use anyhow::{ensure, Result};
 pub mod bootstrap;
 #[cfg(unix)]
 pub mod bundle;
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+pub mod connect;
 #[cfg(unix)]
 pub mod connection;
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]

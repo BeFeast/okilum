@@ -563,6 +563,9 @@ fn connect(
             None
         }
     };
+    // A first Connect also prepares and starts this computer's Sync; on a Mac its
+    // first launch can take a few minutes (#2589).
+    eprintln!("okilum sync: connecting (a first Connect also starts Sync here)");
     let output = session.perform(Operation::Redeem(url, name))?;
     let controller = output.controller;
     let mut snapshot = output.snapshot;
