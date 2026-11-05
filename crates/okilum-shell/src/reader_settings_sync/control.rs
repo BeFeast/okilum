@@ -320,9 +320,6 @@ impl Client {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
-    use anyhow::Context as _;
-    use std::io::Write as _;
-    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 
     fn state(root: &Path) -> anyhow::Result<PathBuf> {
         use std::os::unix::fs::DirBuilderExt as _;
