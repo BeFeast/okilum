@@ -239,11 +239,15 @@ PROGRESS_EVERY = 300
 
 def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                  queue_timeout=QUEUE_TIMEOUT, run_timeout=RUN_TIMEOUT, workflow=WORKFLOW,
-                 job_name="macos", build_step=BUILD_STEP, log=print):
+                 job_name="macos", build_step=BUILD_STEP, log=print, deadline=None):
+    """`deadline` (same clock) caps both the queue and the run for a fixed caller budget."""
+    def capped(moment):
+        return moment if deadline is None else min(moment, deadline)
+
     query = urllib.parse.urlencode({"branch": branch, "head_sha": sha,
                                     "event": "push", "per_page": 100})
     started = clock()
-    queued_until = started + queue_timeout
+    queued_until = capped(started + queue_timeout)
     running_until = None
     never_started = False
     next_progress = started + PROGRESS_EVERY
@@ -310,7 +314,7 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
             if run["status"] == "in_progress":
                 never_started = False
                 if running_until is None:
-                    running_until = clock() + run_timeout
+                    running_until = capped(clock() + run_timeout)
         if running_until is None and clock() >= next_progress:
             next_progress = clock() + PROGRESS_EVERY
             where = f": {matches[0]['html_url']}" if matches else ""
@@ -333,11 +337,11 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                     # Cancellation may race with runner startup or be refused.
                     # Keep observing this exact run within one execution budget;
                     # never turn a live run into an unavailable/fallback result.
-                    running_until = clock() + run_timeout
+                    running_until = capped(clock() + run_timeout)
                     never_started = matches[0]["status"] == "queued"
                     sleep(poll_delay())
                     continue
-            raise Unavailable(f"GitHub did not start the gate within {queue_timeout} seconds")
+            raise Unavailable(f"GitHub did not start the gate within {int(queued_until - started)} seconds")
         sleep(poll_delay())
 
 
@@ -346,7 +350,7 @@ BRIDGE_PREFIXES = (
     "forgejo-pr", "forgejo-linux-pr", "forgejo-shared-pr", "forgejo-linux-binary-pr",
     "forgejo-brain-pr", "forgejo-inbox-pr", "forgejo-arch-pr", "forgejo-windows-release-pr",
     "forgejo-native-core-pr", "forgejo-native-sync-pr", "forgejo-native-shell-pr",
-    "forgejo-perf-linux-pr", "forgejo-fast-pr",
+    "forgejo-perf-linux-pr", "forgejo-fast-pr", "forgejo-shell-full-pr",
 )
 
 
