@@ -431,6 +431,7 @@ fn tool_disclosure_keeps_latest_detail_without_repainting_hidden_output(cx: &mut
 
 #[gpui::test]
 fn questions_and_failures_stay_visible_and_reasoning_can_expand(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_global(super::super::desktop::TestHandler(true)));
     let (view, visual, _temp) = fixture(cx, 0);
     let mut reasoning = message(1);
     reasoning.kind = "reasoning".into();

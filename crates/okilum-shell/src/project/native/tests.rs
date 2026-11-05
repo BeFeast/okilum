@@ -149,6 +149,7 @@ fn open_in_t3_loads_native_identity_and_only_dispatches_the_exact_desktop_thread
     cx: &mut TestAppContext,
 ) {
     cx.update(crate::test_init);
+    cx.update(|cx| cx.set_global(super::super::desktop::TestHandler(true)));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
@@ -219,6 +220,14 @@ fn open_in_t3_loads_native_identity_and_only_dispatches_the_exact_desktop_thread
             "actual-remote-env"
         )
     });
+    // A missing OS handler must dispatch this same thread through the configured
+    // server, including after the identity was loaded asynchronously above.
+    visual.update(|_, cx| cx.set_global(super::super::desktop::TestHandler(false)));
+    let button = visual.debug_bounds("project-open-t3").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let expected = format!("{origin}/actual-remote-env/mcp:fixture-manager");
+    assert_eq!(visual.opened_url().as_deref(), Some(expected.as_str()));
     server.join().unwrap();
 }
 

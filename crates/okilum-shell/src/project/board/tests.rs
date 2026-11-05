@@ -151,14 +151,14 @@ fn discuss_1784_actual_composer_ack_preserves_draft_and_never_sends(cx: &mut Tes
     let gateway = Arc::new(super::super::fixture::Fake::default());
     let (root, visual) = cx.add_window_view(|window, cx| {
         let manager = cx.new(|cx| {
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             let mut view = super::super::discuss_handoff::native_tests::view_with_draft(
                 state.path(),
                 "Keep my draft 📝",
                 window,
                 cx,
             );
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(native_manager))]
             let mut view =
                 super::super::fixture::view(state.path().to_owned(), gateway.clone(), window, cx);
             view.gateway = Some(gateway.clone());
@@ -176,7 +176,7 @@ fn discuss_1784_actual_composer_ack_preserves_draft_and_never_sends(cx: &mut Tes
     let area = manager.read_with(visual, |view, _| view.area.clone().unwrap());
     visual.run_until_parked();
     manager.update_in(visual, |view, window, cx| {
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             view.draft_handoff_surface_visible(true, cx);
             view.append_board_context(&area, "Board context #1767".into(), window, cx)
@@ -186,7 +186,7 @@ fn discuss_1784_actual_composer_ack_preserves_draft_and_never_sends(cx: &mut Tes
                 "Keep my draft 📝\n\n---\nBoard context #1767"
             );
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         {
             assert!(view
                 .append_board_context(&area, "Board context #1767".into(), window, cx)
@@ -203,8 +203,12 @@ fn discuss_1784_actual_composer_ack_preserves_draft_and_never_sends(cx: &mut Tes
             .is_err());
     });
     assert!(gateway.sends.lock().unwrap().is_empty());
-    #[cfg(target_os = "linux")]
-    visual.simulate_keystrokes("ctrl-z");
+    #[cfg(native_manager)]
+    visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    });
     visual.run_until_parked();
     manager.read_with(visual, |view, cx| {
         assert_eq!(view.compose.read(cx).value().as_str(), "Keep my draft 📝")
@@ -551,12 +555,12 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             .compose
             .read(cx)
             .value();
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             assert!(value.starts_with("Keep my draft"));
             assert!(value.contains("issues/1767"));
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         assert_eq!(value.as_str(), "Keep my draft");
     });
     let tab = visual.debug_bounds("board-peek-tab").unwrap();
@@ -683,7 +687,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             .compose
             .read(cx)
             .value();
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             assert!(draft.starts_with(&draft_before));
             assert!(draft.contains("Choose a safe alternative"));
@@ -691,11 +695,15 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
             assert!(draft.contains("issues/1767"));
             assert!(draft.contains("Note revision:"));
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         assert_eq!(draft.as_str(), draft_before);
     });
-    #[cfg(target_os = "linux")]
-    visual.simulate_keystrokes("ctrl-z");
+    #[cfg(native_manager)]
+    visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    });
     visual.run_until_parked();
     reader.read_with(visual, |reader, cx| {
         assert_eq!(

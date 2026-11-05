@@ -55,19 +55,33 @@ fn macos_protocol_registered() -> bool {
     unsafe { okilum_t3_protocol_registered() }
 }
 
+// TestPlatform does not install T3. Tests supply the OS lookup result explicitly.
+#[cfg(test)]
+pub(in crate::project) struct TestHandler(pub bool);
+#[cfg(test)]
+impl Global for TestHandler {}
+
+fn missing_handler(cx: &App) -> anyhow::Result<bool> {
+    #[cfg(test)]
+    if let Some(handler) = cx.try_global::<TestHandler>() {
+        return Ok(!handler.0);
+    }
+    let _ = cx;
+    #[cfg(windows)]
+    return windows_protocol_registered().map(|registered| !registered);
+    #[cfg(target_os = "macos")]
+    return Ok(!macos_protocol_registered());
+    #[cfg(not(any(windows, target_os = "macos")))]
+    Ok(false)
+}
+
 fn open_thread(
     identity: &ServerIdentity,
     thread: &str,
     env: Option<&Environment>,
     cx: &mut App,
 ) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    let missing = !windows_protocol_registered()?;
-    #[cfg(target_os = "macos")]
-    let missing = !macos_protocol_registered();
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let missing = false;
-    let url = target_url(identity, thread, env, missing)?;
+    let url = target_url(identity, thread, env, missing_handler(cx)?)?;
     open_desktop_url(&url, cx);
     Ok(())
 }

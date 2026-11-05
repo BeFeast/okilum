@@ -3085,7 +3085,7 @@ impl Reader {
     ) {
         self.resizing_panel = None;
         self.ui_state.interacted = true;
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if panel == reader_layout::Panel::Backlinks {
             if let Some(project) = &self.project {
                 project.update(cx, |project, cx| {
