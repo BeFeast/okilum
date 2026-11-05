@@ -780,7 +780,8 @@ fn seven_reasoning_choices_and_fast_mode_fit_without_clipping_at_default_size(
     cx: &mut TestAppContext,
 ) {
     let (view, visual, _state, gateway) = fixture(cx, size(px(1000.), px(760.)), 0, None);
-    redraw_picker(&view, visual, |view, _, _| {
+    redraw_picker(&view, visual, |view, _, cx| {
+        brand::apply_theme(cx);
         view.models.as_mut().unwrap().catalog.providers[0].models[0].capabilities = Some(
             serde_json::from_value(json!({"optionDescriptors":[
                 {"type":"select","id":"reasoning","label":"Reasoning","options":[
@@ -805,6 +806,10 @@ fn seven_reasoning_choices_and_fast_mode_fit_without_clipping_at_default_size(
         visual.simulate_resize(viewport);
         visual.run_until_parked();
         let panel = bounds(visual, "project-model-panel");
+        let title = bounds(visual, "project-model-title");
+        let search = bounds(visual, "project-model-search");
+        assert_eq!(search.size.height, px(32.));
+        assert!((title.center().y - search.center().y).abs() <= px(1.));
         let column = bounds(visual, "project-model-option-column");
         inside(column, panel, "complete settings viewport");
         assert!(visual

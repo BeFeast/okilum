@@ -15,8 +15,12 @@ impl RenderOnce for ModelSearch {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focused = self.0.read(cx).focus_handle(cx).is_focused(window);
         let palette = brand::palette(cx);
-        Input::new(&self.0)
+        // Input::h configures multiline state only; use the frame's style so
+        // this single-line field keeps its height across chrome font sizes.
+        gpui::Styled::h(Input::new(&self.0), px(32.))
             .w_full()
+            .text_size(px(ui::BODY))
+            .line_height(px(ui::LINE))
             .bordered(false)
             .focus_bordered(false)
             .rounded_lg()
