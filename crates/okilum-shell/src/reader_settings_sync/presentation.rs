@@ -25,6 +25,74 @@ pub(super) struct Presentation {
     pub picking_vault: bool,
     pub destinations: std::collections::BTreeMap<String, Operation>,
     pub transfers: std::collections::VecDeque<Operation>,
+    pub dialog_open: bool,
+}
+
+pub(super) struct Wizard {
+    pub sync: Entity<SyncSettings>,
+    pub _changes: Subscription,
+}
+impl Render for Wizard {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sync = self.sync.clone();
+        if sync.read(cx).presentation.wizard.is_none()
+            && sync.read(cx).presentation.managing.is_none()
+        {
+            use gpui_component::WindowExt;
+            window.close_dialog(cx);
+            return div().into_any_element();
+        }
+        let max_height = (window.viewport_size().height - px(100.)).max(px(160.));
+        sync.update(cx, |view, cx| {
+            let body = if view.presentation.managing.is_some() {
+                view.render_manage(cx)
+            } else {
+                view.render_wizard(cx)
+            };
+            v_flex()
+                .id("sync-modal")
+                .debug_selector(|| "sync-modal".into())
+                .w_full()
+                .gap_3()
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(brand::palette(cx).text_muted)
+                                .child(format!(
+                                    "On {} · {}",
+                                    view.name.read(cx).value(),
+                                    std::env::consts::OS
+                                )),
+                        )
+                        .child(
+                            Button::new("sync-close-wizard")
+                                .debug_selector(|| "sync-close-wizard".into())
+                                .ghost()
+                                .label("Close")
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    use gpui_component::WindowExt;
+                                    view.presentation.wizard = None;
+                                    view.presentation.managing = None;
+                                    view.presentation.dialog_open = false;
+                                    window.close_dialog(cx);
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .id("sync-wizard-scroll")
+                        .w_full()
+                        .max_h(max_height)
+                        .overflow_y_scroll()
+                        .child(body),
+                )
+        })
+        .into_any_element()
+    }
 }
 
 pub(super) fn summary(snapshot: Option<&Snapshot>, error: Option<&str>) -> String {
@@ -99,6 +167,13 @@ pub(super) fn notify_approval(name: &str) {
     let _ = name;
 }
 
+/// Shared approval banner, visible even when Settings is on another section.
+pub(crate) fn approval_banner(cx: &mut App) -> AnyElement {
+    let view = cx.try_global::<BackgroundSync>().map(|s| s.0.clone());
+    view.map(|view| view.update(cx, |view, cx| view.render_approval(cx)))
+        .unwrap_or_else(|| div().into_any_element())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,11 +210,4 @@ mod tests {
         assert!(!presentation.details);
         assert!(presentation.wizard.is_none());
     }
-}
-
-/// Shared approval banner, visible even when Settings is on another section.
-pub(crate) fn approval_banner(cx: &mut App) -> AnyElement {
-    let view = cx.try_global::<BackgroundSync>().map(|s| s.0.clone());
-    view.map(|view| view.update(cx, |view, cx| view.render_approval(cx)))
-        .unwrap_or_else(|| div().into_any_element())
 }

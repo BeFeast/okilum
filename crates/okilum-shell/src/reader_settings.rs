@@ -2084,7 +2084,9 @@ impl Render for Settings {
             // Confirmations (Uninstall Okilum…) open as dialogs on this window;
             // without the dialog layer they exist but are never drawn (#1085).
             .children(Root::render_sheet_layer(window, cx))
-            .children(Root::render_dialog_layer(window, cx))
+            .when(self.section.key() != "sync", |view| {
+                view.children(Root::render_dialog_layer(window, cx))
+            })
             .children(Root::render_notification_layer(window, cx))
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 impl SyncSettings {
     pub(super) fn render_advanced(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
-        let mut content = v_flex().gap_4();
+        let mut content = v_flex().gap_4().child(crate::reader_sync_help::entry());
         #[cfg(target_os = "linux")]
         if !self.runtimes.is_empty() {
             content = content.child(div().text_base().child("Sync connection"));

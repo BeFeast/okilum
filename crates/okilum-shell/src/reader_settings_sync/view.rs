@@ -2,7 +2,46 @@ use super::*;
 use presentation::Step;
 
 impl Render for SyncSettings {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_component::WindowExt;
+        if !window.has_active_dialog(cx) {
+            self.presentation.dialog_open = false;
+        }
+        let needs_dialog =
+            self.presentation.wizard.is_some() || self.presentation.managing.is_some();
+        if needs_dialog && !self.presentation.dialog_open && !window.has_active_dialog(cx) {
+            self.presentation.dialog_open = true;
+            let sync = cx.entity();
+            let wizard = cx.new(|cx| {
+                let changes = cx.observe(&sync, |_, _, cx| cx.notify());
+                presentation::Wizard {
+                    sync: sync.clone(),
+                    _changes: changes,
+                }
+            });
+            let closed = sync.downgrade();
+            window.open_dialog(cx, move |dialog, _, _| {
+                dialog
+                    .width(px(560.))
+                    .close_button(false)
+                    .overlay_closable(false)
+                    .child(wizard.clone())
+                    .on_close({
+                        let closed = closed.clone();
+                        move |_, _, cx| {
+                            let _ = closed.update(cx, |view, cx| {
+                                view.presentation.dialog_open = false;
+                                view.presentation.wizard = None;
+                                view.presentation.managing = None;
+                                cx.notify();
+                            });
+                        }
+                    })
+            });
+        } else if !needs_dialog && self.presentation.dialog_open {
+            self.presentation.dialog_open = false;
+            window.close_dialog(cx);
+        }
         let p = brand::palette(cx);
         let mut content = v_flex().gap_6().w_full().child(
             h_flex()
@@ -116,6 +155,7 @@ impl Render for SyncSettings {
                                     .disabled(self.busy)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.selected_peer = Some(id);
+                                        this.presentation.destinations.clear();
                                         this.presentation.wizard = Some(Step::Vaults);
                                         if let Some(s) = this.snapshot.as_mut() {
                                             s.catalog.clear();
@@ -242,69 +282,7 @@ impl Render for SyncSettings {
                     .track_scroll(&self.scroll)
                     .child(content),
             );
-        if self.presentation.wizard.is_some() || self.presentation.managing.is_some() {
-            let body = if self.presentation.managing.is_some() {
-                self.render_manage(cx)
-            } else {
-                self.render_wizard(cx)
-            };
-            panel = panel.child(
-                div()
-                    .id("sync-modal")
-                    .debug_selector(|| "sync-modal".into())
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(p.canvas.opacity(0.92))
-                    .occlude()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                        if event.keystroke.key == "escape" {
-                            this.presentation.wizard = None;
-                            this.presentation.managing = None;
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }))
-                    .child(
-                        v_flex()
-                            .id("sync-wizard-scroll")
-                            .max_h_full()
-                            .w_full()
-                            .max_w(px(560.))
-                            .overflow_y_scroll()
-                            .p_4()
-                            .gap_3()
-                            .bg(p.surface)
-                            .border_1()
-                            .border_color(p.border)
-                            .rounded_lg()
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .child(div().text_sm().text_color(p.text_muted).child(format!(
-                                        "On {} · {}",
-                                        self.name.read(cx).value(),
-                                        std::env::consts::OS
-                                    )))
-                                    .child(
-                                        Button::new("sync-close-wizard")
-                                            .ghost()
-                                            .label("Close")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.presentation.wizard = None;
-                                                this.presentation.managing = None;
-                                                cx.notify();
-                                            })),
-                                    ),
-                            )
-                            .child(body),
-                    ),
-            );
-        }
+        panel = panel.children(gpui_component::Root::render_dialog_layer(window, cx));
         panel
     }
 }
@@ -509,7 +487,7 @@ impl SyncSettings {
             )
             .into_any_element()
     }
-    fn render_wizard(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_wizard(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
         let mut step = self.presentation.wizard.unwrap_or(Step::Start);
         if let Some(snapshot) = &self.snapshot {
@@ -830,7 +808,7 @@ impl SyncSettings {
         }
         body.into_any_element()
     }
-    fn render_manage(&self, _cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_manage(&self, _cx: &mut Context<Self>) -> AnyElement {
         let mut body = v_flex().gap_4();
         if let Some(vault) = self.snapshot.as_ref().and_then(|s| {
             s.attached
