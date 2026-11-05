@@ -595,6 +595,18 @@ mod tests {
             [Os::CURRENT.shortcut(reader_read_menu::COPY_MARKDOWN_KEY)]
         );
         assert_eq!(
+            row("Copy as Rich Text").keys,
+            [Os::CURRENT.shortcut("secondary-alt-c")]
+        );
+        let paste = keys_for(
+            &keymap,
+            gpui_component::input::Paste::name_for_type(),
+            Os::CURRENT,
+        );
+        assert_eq!(paste.first(), Some(&Os::CURRENT.shortcut("secondary-v")));
+        #[cfg(not(target_os = "macos"))]
+        assert!(paste.contains(&Os::CURRENT.shortcut("shift-insert")));
+        assert_eq!(
             row("Keyboard shortcuts").keys,
             [Os::CURRENT.shortcut("secondary-/")]
         );
