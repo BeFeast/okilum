@@ -10,6 +10,8 @@ Folder choices are staged until Start first sync; several selected vaults are
 then attached in sequence through the existing guarded controller operations.
 Sharing a folder already used by Syncthing opens an explicit connection-review
 modal. Its consent action remains visible while Advanced is collapsed.
+Sharing lists exclude the local Syncthing identity. First sync is shown as
+complete only after every attached vault has an available, up-to-date observation.
 
 Incoming approval requests appear in the Reader and Settings, including other
 Settings sections, and trigger one desktop notification per request. Linux uses

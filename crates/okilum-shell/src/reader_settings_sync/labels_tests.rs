@@ -333,6 +333,8 @@ fn sync_new_destination_receive_and_existing_empty_control() -> Result<()> {
             assert_eq!(source.identity.connect()?.config()?, source_before);
         } else {
             let attached = result?;
+            let observed = &attached.overview.vaults[&path];
+            assert_eq!(observed.shared_with, vec!["Source"]);
             assert_eq!(attached.selected_destination.as_ref(), Some(&path));
             assert_eq!(
                 attached.runtimes[0].folders, 1,

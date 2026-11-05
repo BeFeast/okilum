@@ -30,6 +30,24 @@ pub(super) struct Presentation {
     pub dialog_open: bool,
 }
 
+impl Presentation {
+    pub fn first_sync_complete(&self, snapshot: Option<&Snapshot>, busy: bool) -> bool {
+        !busy
+            && self.transfers.is_empty()
+            && snapshot.is_some_and(|snapshot| {
+                !snapshot.preparing
+                    && !snapshot.attached.is_empty()
+                    && snapshot.attached.iter().all(|vault| {
+                        self.overview.vaults.get(&vault.path).is_some_and(|state| {
+                            state.available
+                                && state.state == "Up to date"
+                                && state.needed_bytes == 0
+                        })
+                    })
+            })
+    }
+}
+
 pub(super) struct Wizard {
     pub sync: Entity<SyncSettings>,
     pub _changes: Subscription,
@@ -215,6 +233,79 @@ mod tests {
         assert!(!presentation.advanced);
         assert!(!presentation.details);
         assert!(presentation.wizard.is_none());
+    }
+
+    #[test]
+    fn first_sync_requires_observed_completion_for_every_vault() {
+        let mut snapshot = Snapshot {
+            offer_url: None,
+            pending: None,
+            peers: vec![],
+            catalog: vec![],
+            attached: vec![direct::ExistingVault {
+                daemon: okilum_sync_controller::daemon::DaemonIdentity {
+                    config_file: "fixture.xml".into(),
+                    device_id: "local-device".into(),
+                    certificate_hash: "fixture".into(),
+                },
+                version: "v2.1.7".into(),
+                folder_id: "notes".into(),
+                path: "Notes".into(),
+                label: "Notes".into(),
+                paused: false,
+                folder_type: "sendreceive".into(),
+                peers: vec![],
+                root_identity: None,
+            }],
+            #[cfg(target_os = "linux")]
+            shared: vec![],
+            status: "Ready".into(),
+            preparing: false,
+        };
+        let mut presentation = Presentation::default();
+        assert!(!presentation.first_sync_complete(None, false));
+        assert!(!presentation.first_sync_complete(Some(&snapshot), false));
+        let path = snapshot.attached[0].path.clone();
+        presentation.overview.vaults.insert(
+            path.clone(),
+            direct::VaultOverview {
+                available: true,
+                state: "Syncing".into(),
+                needed_bytes: 100,
+                ..Default::default()
+            },
+        );
+        assert!(!presentation.first_sync_complete(Some(&snapshot), false));
+        presentation.overview.vaults.get_mut(&path).unwrap().state = "Up to date".into();
+        assert!(!presentation.first_sync_complete(Some(&snapshot), false));
+        presentation
+            .overview
+            .vaults
+            .get_mut(&path)
+            .unwrap()
+            .needed_bytes = 0;
+        assert!(presentation.first_sync_complete(Some(&snapshot), false));
+        assert!(!presentation.first_sync_complete(Some(&snapshot), true));
+        snapshot.preparing = true;
+        assert!(!presentation.first_sync_complete(Some(&snapshot), false));
+        snapshot.preparing = false;
+        presentation
+            .overview
+            .vaults
+            .get_mut(&path)
+            .unwrap()
+            .available = false;
+        assert!(!presentation.first_sync_complete(Some(&snapshot), false));
+        presentation
+            .overview
+            .vaults
+            .get_mut(&path)
+            .unwrap()
+            .available = true;
+        let mut second = snapshot.attached[0].clone();
+        second.path = "Other notes".into();
+        snapshot.attached.push(second);
+        assert!(!presentation.first_sync_complete(Some(&snapshot), false));
     }
 
     #[test]
