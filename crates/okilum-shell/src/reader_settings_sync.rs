@@ -45,7 +45,7 @@ fn serve_paired_from(
     });
     cx.spawn(async move |cx| {
         let saved = saved.await;
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             if !access.allowed() || !reader_features::enabled(reader_features::Feature::Sync, cx) {
                 return;
             }
