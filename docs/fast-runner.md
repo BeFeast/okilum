@@ -238,7 +238,100 @@ A slow or failing hosted run is diagnosed from its GitHub log (linked in the
 Forgejo job). For a local reproduction run `scripts/ci/shell-full.sh` in a baldr
 `okilum-slot` build slot.
 
-<!-- HOSTED-CHECK -->
+## Hosted certification check (#2589)
+
+Certifications 31035 and 31053 (sources 3752a757, d859fd59) then failed `check`
+on baldr with `TEST_GROUP_TIMEOUT group=build limit=540s`, status 124 and no
+failed test; `shell-full` was skipped, so neither Beta nor Stable could advance.
+In 31053 sccache was unavailable and the slot target rebuilt from its first
+crate: three compiler workers on the loaded host compiled 440 crates in 540 s
+and had not reached any `okilum-*` crate. The certifications that passed on 5 November already sat
+near every deadline: build 109-290 s, workspace check 69-314 s and
+`ci-python` 79-168 s of its 180 s limit (30614-30925).
+
+`fast.yml`'s `check` job stays the job whose result `certification-status`
+reports as `fast / check (workflow_dispatch)` (Beta's gate, which also
+dispatches the source-pinned beta builds), but it runs nothing on baldr:
+
+1. It runs on `bridge`, stages the transport from the workflow revision,
+   validates and checks out the requested source (`hourly_beta.py certify-source`),
+   exactly as `shell-full` does.
+2. A source without `.github/workflows/forgejo-check.yml` fails at once
+   (`predates hosted check`); certify a newer main commit.
+3. It pushes the exact source to a unique
+   `forgejo-check-pr/<run>-<sha>-<run id>-<attempt>-<uuid>` ref and waits for
+   that run. Success requires the exact SHA, ref and workflow, a successful run,
+   and every gate step: job `check` with an executed
+   `Build Linux desktop and run fast unit tests`, and job `python` with the
+   CI tooling, releases and updater suite steps (`ALSO_REQUIRED` in
+   `github-pr.py`, proven by the jobs API only; job-log evidence never stands
+   in for them). GitHub being unavailable is a failure, never a fallback pass.
+   The ref is deleted.
+4. The hosted run has two parallel `ubuntu-24.04` jobs, both with the former
+   job's apt set and the pinned toolchain:
+   - `python`: `setup-python-tests.sh`, then the former commands
+     `ci-python 180`, `releases-python 90` and `updater-python 90` in 5 min
+     steps, supervised by the product's own `test-group.sh`;
+   - `check`: `bash scripts/ci/test-group.sh fast.sh 2040 bash scripts/ci/fast.sh`,
+     the former locked-gate limit, with the product's unchanged phases (channel
+     tests 300 s, build 540 s, workspace test check 540 s, paste inventory and
+     tests 120 s each). Compiler settings match the former job
+     (`CARGO_INCREMENTAL=0`, line-tables-only debug info, mold) with four
+     compiler workers. There is no cache: every certification compiles cold.
+
+   One sequential job does not fit: 10 min apt + three 5 min steps + the 35 min
+   gate step + 90 s is 62 min, above the 60 min waiter on `bridge`.
+5. `certification-status` and `shell-full` (which still `needs: [check]`) are
+   unchanged; `hourly_beta.py` and `daily-release` need no change.
+
+Nightly and ordinary manual runs use the same hosted check. `check` is one job
+for every event, so its status context keeps one meaning; nightly would hit the
+same baldr load (it already runs `shell-full` on GitHub), and keeping a second
+baldr-only variant would have kept the slot pool, sccache wiring and its tests
+alive for a run nobody gates on. `fast-local.sh`, `fast-source.sh` and their
+tests are removed. `sync-source-sharing` stays on `fast-linux`.
+
+Budget chain, enforced by `test_fast_budgets.py`:
+
+| Scope | Limit | Basis |
+| --- | ---: | --- |
+| Hosted `python` job | 27 min | 10 min apt step + three 5 min suite steps + 90 s setup/cleanup = 1590 s <= 1620 s. |
+| Hosted `check` job | 47 min | 10 min apt step + 35 min gate step (2040 s group + 30 s grace) + 90 s setup/cleanup = 2790 s <= 2820 s. |
+| Bridge run timeout | 49 min | Longer hosted job + 120 s, so GitHub's own deadline fires and is observed first. |
+| Shared bridge budget | 53 min | Push, queue and run share one deadline (`BRIDGE_BUDGETS`), as for shell-full. |
+| Bridge step | 56 min | 60 s history fetch + 3180 s budget + 120 s poll/cancel/cleanup = 3360 s. |
+| Waiter job | 60 min | 120 s validation + 3360 s + 90 s = 3570 s <= the primary bridge runner's `runner.timeout: 1h`. |
+
+Pre-merge exercises, 5 November 2026, each through the exact bridge step from
+maestro (shallow checkout, 5-6 s history fetch, staged `github-pr.py`), cold,
+no cache. Runs 2 and 3 ran in parallel; run 1's `python` job failed on that
+draft's own then-unupdated budget tests, its `check` job is a valid sample:
+
+| Hosted run (branch head) | Start | Channel / 300 s | Build / 540 s | Workspace check / 540 s | `fast.sh` / 2040 s | `ci-python` / 180 s | `check` job | Bridge / 3180 s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| [42070990602](https://github.com/BeFeast/okilum/actions/runs/42070990602) (a039ecd1) | 3 s | 25.40 s | 467.95 s | 280.47 s | 793.58 s | (failed) | 14 min 3 s | 871 s |
+| [42073735620](https://github.com/BeFeast/okilum/actions/runs/42073735620) (d797e484) | 3 s | 25.40 s | 446.51 s | 272.56 s | 763.98 s | 59.94 s | 13 min 22 s | 853 s |
+| [42073756719](https://github.com/BeFeast/okilum/actions/runs/42073756719) (d797e484) | 2 s | 24.84 s | 444.09 s | 270.59 s | 758.59 s | 63.81 s | 13 min 12 s | 845 s |
+
+Green runs ran 340 CI tooling, 244 releases and 7 updater tests, 15 channel and
+15 paste tests; `releases-python` took at most 1.95 s, `updater-python` 0.18 s,
+the `python` job 1 min 39-43 s. Apt took 18-32 s, the toolchain 8-9 s; disk
+use rose from 59 to 69 GB of 145 GB. Three samples are not a hosted p95.
+
+The cold build is the thin phase: 467.95 s against its unchanged 540 s deadline
+leaves 72 s (1.15x), below the 1.5x used elsewhere; every other phase keeps at
+least 1.9x. `test_fast_budgets.py` pins 1.1x for build and 1.5x for the rest,
+plus twice the slowest observed queue inside the bridge budget after the
+slowest bridge wait. No cache is used because a run on a unique
+`forgejo-check-pr/...` ref can restore only its own or the default branch's
+caches, nothing writes such a cache on GitHub's `main` today, and a cache could
+not be exercised before merge. If the hosted build grows toward 540 s, the
+options are a dependency cache written from GitHub's default branch or an
+explicit resize of the build phase; neither is part of this change.
+
+A slow or failing hosted run is diagnosed from its GitHub log (linked in the
+Forgejo job). For a local reproduction run `scripts/ci/fast.sh` in a baldr
+`okilum-slot` build slot.
 
 ## Test-group hard deadlines (#2503)
 
@@ -271,7 +364,7 @@ its own original deadline plus at most 30 s cleanup:
 | CI tooling Python discovery | 180 s | Recent green baldr runs: 45.595–81.114 s; current main run 21861 was still progressing when its old 120 s step expired; baldr certifications on 5 November took up to 167.813 s (30925). All three Python step ceilings are 5 min (#2536), including the 30 s cleanup grace, now in the hosted check's `python` job (#2589). |
 | Releases / updater Python discovery | 90 s each | Recent green runs: at most 4.802 / 0.107 s; #2536's 5 min step ceilings retained. |
 | Hosted fast.sh group / gate step | 2040 s / 35 min | 300 + 540 + 540 + 120 + 120 + optional 360 = 1980 s plus 60 s, the former locked-gate limit, now on GitHub (#2589). The step adds the 30 s cleanup grace; the 47 min hosted job adds the 10 min apt step and 90 s setup/cleanup. Optional Live Preview is included conservatively. The baldr-only 2100 s `fast-local-check` entrypoint (slot wait, stable slot source) is removed. |
-| Check build / workspace test compilation | 540 s each | Loaded build 300 s in 20289; workspace check 324.35 s in the main probe above. Margins 240 / 215 s. Both phases may consume their full limits. |
+| Check build / workspace test compilation | 540 s each | Loaded build 300 s in 20289; workspace check 324.35 s in the main probe above. Margins 240 / 215 s. Both phases may consume their full limits. On GitHub, cold (#2589): at most 467.95 / 280.47 s, margins 72 / 260 s. |
 | Channel tests (including compilation) | 300 s | Cold appimage dependency variant took 126.62 s in the main probe; recent warm phases 0–4 s. |
 | Paste inventory / paste tests | 120 s each | Recent green Cargo compilation/listing at most 1.11 s; parsing execution at most 0.07 s. These small commands retain their existing caps. |
 | Hosted shell-full.sh group / suite step | 1920 s / 33 min | 840 + 30 + 990 = 1860 s plus 60 s, the former locked-gate limit, now on GitHub (#2589). The step adds the 30 s cleanup grace; the 45 min hosted job adds the 10 min apt step and 90 s setup/cleanup. |

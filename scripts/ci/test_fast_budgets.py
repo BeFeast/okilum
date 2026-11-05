@@ -27,12 +27,13 @@ HOSTED = {
 # #2589 hosted shell-full exercises, GitHub runs 42049574081 and 42052787792
 # (cold, 4 vCPU): the slower phase seconds and bridge wait.
 HOSTED_COMPILE, HOSTED_EXECUTION, HOSTED_BRIDGE = 530.258, 422.195, 1050
-# #2589 hosted check exercises (cold, 4 vCPU, docs/fast-runner.md): the slower
-# group seconds of each gate phase and the slower bridge wait.
+# #2589 hosted check exercises, GitHub runs 42070990602, 42073735620 and
+# 42073756719 (cold, 4 vCPU, docs/fast-runner.md): the slowest group seconds of
+# each gate phase and the slowest bridge wait.
 CHECK_MEASURED = {
-    'ci-python': 54.719, 'releases-python': 5.543, 'updater-python': 0.446,
+    'ci-python': 63.806, 'releases-python': 1.954, 'updater-python': 0.178,
     'appimage-channel-tests': 25.401, 'build': 467.954, 'workspace-test-check': 280.471,
-    'list-tests': 10.783, 'paste-tests': 0.309,
+    'list-tests': 10.783, 'paste-tests': 0.350,
 }
 CHECK_BRIDGE = 872
 # Minimum limit/measurement ratio; 1.5 unless listed. The cold hosted desktop
