@@ -92,6 +92,23 @@ pub(super) fn managed(_configs: &[PathBuf]) -> Result<Option<DaemonIdentity>> {
     Ok(None)
 }
 
+/// Whether `daemon` is this computer's own Okilum-managed Syncthing. Device
+/// trust such as an introducer role never changes in an existing user Syncthing.
+#[cfg(target_os = "linux")]
+pub(super) fn owned_runtime(configs: &[PathBuf], daemon: &DaemonIdentity) -> Result<bool> {
+    Ok(managed(configs)?.is_some_and(|managed| managed == *daemon))
+}
+#[cfg(target_os = "macos")]
+pub(super) fn owned_runtime(_configs: &[PathBuf], daemon: &DaemonIdentity) -> Result<bool> {
+    let state = crate::sidecar::macos::account_state_directory()?;
+    Ok(
+        match crate::sidecar::discovery::managed_configuration_path(&state)? {
+            Some(config) => config.canonicalize()? == daemon.config_file,
+            None => false,
+        },
+    )
+}
+
 pub(super) fn remember(peer: &mut Paired, transport: &Transport) -> Result<()> {
     ensure!(
         transport.addresses.len() <= MAX_ADDRESSES,
