@@ -8172,6 +8172,16 @@ impl Render for Reader {
                     )
                 })
             })
+            .children({
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    Some(reader_settings_sync::presentation::approval_banner(cx))
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                {
+                    None::<AnyElement>
+                }
+            })
             .child(
                 h_flex()
                     .id("reader-body")

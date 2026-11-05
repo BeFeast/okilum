@@ -54,11 +54,6 @@ impl ProjectView {
             .collect()
     }
 
-    pub(super) fn has_model_options(&self) -> bool {
-        self.models
-            .as_ref()
-            .is_some_and(|snapshot| !Self::picker_controls(snapshot).is_empty())
-    }
     fn prompt_choice_supported(snapshot: &Snapshot) -> bool {
         snapshot.catalog.providers.iter().any(|provider| {
             provider.provider_instance_id == snapshot.configuration.model_selection.instance_id
@@ -172,7 +167,6 @@ impl ProjectView {
         let Some(snapshot) = &self.models else {
             return div().into_any_element();
         };
-        let selection = &snapshot.configuration.model_selection;
         let controls = Self::picker_controls(snapshot);
         let enabled = !self.busy && !self.model_busy && self.can_write_models();
         let palette = brand::palette(cx);
@@ -182,68 +176,8 @@ impl ProjectView {
             .text_size(px(ui::CHROME))
             .line_height(px(ui::LINE))
             .gap(px(ui::INSET))
-            .debug_selector(|| "project-model-options".into())
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .debug_selector(|| "project-model-settings-title".into())
-                    .text_size(px(ui::LABEL))
-                    .line_height(px(ui::LINE))
-                    .text_color(palette.text_muted)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Model settings"),
-            );
-        let model_name = snapshot
-            .model_info(selection)
-            .map(|model| model.display_name())
-            .unwrap_or(&selection.model);
-        let provider = snapshot
-            .catalog
-            .providers
-            .iter()
-            .find(|provider| provider.provider_instance_id == selection.instance_id);
-        let mut identity = h_flex().w_full().min_w_0().items_center().gap_2();
-        if let Some(provider) = provider {
-            identity = identity.child(visuals::provider_visual(&provider.driver_kind, px(18.)));
-        }
-        panel = panel.child(
-            v_flex()
-                .w_full()
-                .min_w_0()
-                .flex_shrink_0()
-                .gap_1()
-                .pb_1()
-                .child(
-                    identity.child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .whitespace_normal()
-                            .debug_selector(|| "project-model-inspector-title".into())
-                            .text_size(px(ui::BODY))
-                            .line_height(px(ui::LINE))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(model_name.to_owned()),
-                    ),
-                )
-                .child(
-                    h_flex().min_w_0().items_center().gap_2().child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(ui::LABEL))
-                            .line_height(px(20.))
-                            .text_color(palette.text_muted)
-                            .child(
-                                provider
-                                    .and_then(|provider| provider.display_name.as_deref())
-                                    .unwrap_or(&selection.instance_id)
-                                    .to_owned(),
-                            ),
-                    ),
-                ),
-        );
+            .flex_shrink_0()
+            .debug_selector(|| "project-model-options".into());
         if controls.is_empty() {
             panel = panel.child(
                 div()
@@ -302,8 +236,7 @@ impl ProjectView {
                     .ghost()
                     .small()
                     .w_full()
-                    .h_auto()
-                    .min_h(px(32.))
+                    .h(px(28.))
                     .flex_shrink_0()
                     .py_1()
                     .text_size(px(ui::BODY))

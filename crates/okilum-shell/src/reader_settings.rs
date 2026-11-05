@@ -2070,10 +2070,23 @@ impl Render for Settings {
                 ),
             )
             .child(content)
+            .children({
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    (self.section != Section::Sync)
+                        .then(|| reader_settings_sync::presentation::approval_banner(cx))
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                {
+                    None::<AnyElement>
+                }
+            })
             // Confirmations (Uninstall Okilum…) open as dialogs on this window;
             // without the dialog layer they exist but are never drawn (#1085).
             .children(Root::render_sheet_layer(window, cx))
-            .children(Root::render_dialog_layer(window, cx))
+            .when(self.section.key() != "sync", |view| {
+                view.children(Root::render_dialog_layer(window, cx))
+            })
             .children(Root::render_notification_layer(window, cx))
     }
 }

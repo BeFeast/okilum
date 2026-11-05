@@ -50,13 +50,6 @@ fn redact(text: &str) -> String {
         .collect()
 }
 
-pub(super) fn short_cause(error: &anyhow::Error) -> String {
-    redact(&error.root_cause().to_string())
-        .chars()
-        .take(200)
-        .collect()
-}
-
 pub(super) fn failure_details(action: &str, error: &anyhow::Error) -> serde_json::Value {
     serde_json::json!({
         "action": action,
@@ -83,7 +76,7 @@ mod tests {
         assert!(text.contains("os error 13"));
         assert!(!text.contains("private-token"));
         assert!(!text.contains("private-value"));
-        assert!(super::super::user_error(&error).contains("Permission denied"));
+        assert!(!super::super::user_error(&error).contains("Permission denied"));
         assert!(!super::super::user_error(&error).contains("private-token"));
         assert_eq!(
             Operation::Begin("private-name".into()).action_name(),

@@ -35,6 +35,16 @@ pub(super) struct Transfer {
     label: Option<String>,
 }
 
+impl Transfer {
+    /// Display-only binding from the authenticated source share response.
+    /// It does not grant transport configuration or sharing authority.
+    pub(super) fn overview_binding(&self) -> Option<(Uuid, String)> {
+        self.connection
+            .as_ref()
+            .map(|connection| (self.peer, connection.device_id.clone()))
+    }
+}
+
 pub(super) fn share(
     source: &ExistingVault,
     device: &str,

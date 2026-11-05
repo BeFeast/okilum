@@ -932,6 +932,7 @@ mod tests {
             _ => anyhow::bail!("not part of this pairing"),
         };
         Ok(Output {
+            overview: Default::default(),
             connection_error: None,
             controller,
             snapshot,
