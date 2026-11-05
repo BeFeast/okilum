@@ -266,7 +266,10 @@ if ! command -v cargo >/dev/null; then
     echo "Install Rust, then rerun: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
     exit 1
 fi
-repo=https://git.oklabs.uk/BeFeast/okilum.git
+# Oleg's Mac checkouts use the Forgejo SSH remote (LAN and tailnet).
+repo=ssh://git@10.10.0.27:2222/BeFeast/okilum.git
+# Any SSH or HTTPS spelling of the same Forgejo repository is accepted.
+origin_pattern='^((ssh://)?git@(git\.oklabs\.uk|10\.10\.0\.27)(:2222)?[:/]|https://git\.oklabs\.uk/)BeFeast/okilum(\.git)?$'
 git check-ref-format --branch "$branch" >/dev/null
 root="${OKILUM_SPRINT_HOME:-$HOME/Developer/personal/okilum-sprint}"
 root=${root%/}
@@ -305,7 +308,8 @@ set_stage fetch
 if [[ ! -e $root/src ]]; then git clone "$repo" "$root/src"; fi
 cd "$root/src"
 [[ $(git rev-parse --show-toplevel) == "$root/src" ]] || { echo 'Not the dedicated sprint checkout.' >&2; exit 1; }
-[[ $(git remote get-url origin) == "$repo" ]] || { echo 'Unexpected sprint origin.' >&2; exit 1; }
+origin=$(git remote get-url origin)
+[[ $origin =~ $origin_pattern ]] || { echo "Unexpected sprint origin: $origin" >&2; exit 1; }
 if [[ -n $(git status --porcelain --untracked-files=normal) ]]; then
     echo "Sprint checkout has local changes; preserve them before rebuilding: $root/src" >&2; exit 1
 fi
