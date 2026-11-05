@@ -384,3 +384,24 @@ The window-bounded model selector separates readable provider/account identities
 Source, Linux headless regressions, published beta and actual native rendering are separate evidence. The stopped native harness is not resumed by this composition change; visual acceptance remains open until actual product rendering is available.
 
 Screenshot feedback #2236 fixes the selector to one window-relative size and origin; provider, Favorites, query, loading and descriptor changes only update its finite scrolling content. Settings are always named explicitly. Account suffixes sit beside original artwork. The empty composer starts at one line and grows with text; Send is an icon-only control with explicit enabled/disabled colors, tooltip/accessible mode meaning, and a subordinate disclosure. Generated and headless evidence still do not imply native visual acceptance.
+
+
+### Model selector polish (2026-11-05)
+
+The selector keeps its viewport-stable surface while placing its title, search,
+refresh and close actions in one compact row. Search retains a single-pixel
+focus border. The 208px named provider rail uses the same full-width content row
+and 18px icon slot for Favorites, accounts and Selected model; normal account
+names such as “Claude → Astra” fit beside their account suffix. Longer account
+names wrap within their row instead of being ellipsized. Small windows
+retain the compact rail and stacked settings.
+
+Settings use the exact selected instance/model's `optionDescriptors` and their
+advertised values, with no provider-wide reasoning ladder. Empty select controls
+are hidden. Draft-only values appear only when their semantics are implemented:
+Claude's explicitly advertised `ultrathink` edits the visible draft; an advertised
+ordinary `ultracode` remains an ordinary option. Unknown prompt instructions are
+hidden rather than treated as Ultrathink. Model changes rebuild the settings,
+including removing Reasoning when the new model has no such descriptor. Muted
+section labels, a compact Default tag and a checkmark distinguish defaults from
+the selected value. Existing keyboard mapping, favorites and confirmation remain.
