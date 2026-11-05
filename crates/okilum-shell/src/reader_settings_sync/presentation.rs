@@ -112,14 +112,14 @@ pub(super) fn summary(snapshot: Option<&Snapshot>, error: Option<&str>) -> Strin
     if snapshot.offer_url.is_some() {
         return "Your pairing link is ready to copy".into();
     }
-    if snapshot.preparing {
-        return "Your first sync is in progress".into();
-    }
     if snapshot.status.starts_with("Not connected") {
         return "A computer is offline. Open Okilum there to reconnect.".into();
     }
     if snapshot.status.contains("held") {
         return "A vault needs review before Sync can continue".into();
+    }
+    if snapshot.preparing {
+        return "Your first sync is in progress".into();
     }
     if snapshot.peers.is_empty() {
         return "Connect your first computer to start Sync".into();
@@ -214,5 +214,25 @@ mod tests {
         assert!(!presentation.advanced);
         assert!(!presentation.details);
         assert!(presentation.wizard.is_none());
+    }
+
+    #[test]
+    fn attention_takes_priority_over_an_unfinished_first_transfer() {
+        let mut snapshot = Snapshot {
+            offer_url: None,
+            pending: None,
+            peers: vec![],
+            catalog: vec![],
+            attached: vec![],
+            #[cfg(target_os = "linux")]
+            shared: vec![],
+            status: "Not connected to QA laptop".into(),
+            preparing: true,
+        };
+        assert!(summary(Some(&snapshot), None).contains("offline"));
+        snapshot.status = "Initial receive held: ownership witness unavailable".into();
+        assert!(summary(Some(&snapshot), None).contains("needs review"));
+        snapshot.status = "Receiving vault; checking safe bidirectional readiness".into();
+        assert!(summary(Some(&snapshot), None).contains("in progress"));
     }
 }

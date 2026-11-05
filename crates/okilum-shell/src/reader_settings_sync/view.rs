@@ -299,6 +299,7 @@ impl SyncSettings {
         if self.error.is_none()
             && self.snapshot.as_ref().is_some_and(|s| {
                 !s.attached.is_empty()
+                    && matches!(s.status.as_str(), "Ready" | "Bidirectional Sync active")
                     && !s.preparing
                     && s.pending.is_none()
                     && s.offer_url.is_none()
