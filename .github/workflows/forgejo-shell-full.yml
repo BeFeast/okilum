@@ -1,0 +1,55 @@
+# Forgejo fast.yml `shell-full` (#2589): the complete Linux shell binary suite
+# for main certification, on a dedicated hosted runner instead of loaded baldr.
+# Exact pushed source only; no cache, signing, publication or Forgejo secrets.
+name: forgejo-shell-full
+on:
+  push:
+    branches: ['forgejo-shell-full-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-shell-full-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  shell-full:
+    # Public repositories receive the standard 4-vCPU hosted Linux runner.
+    runs-on: ubuntu-24.04
+    # 10 min apt + 33 min suite + 90 s setup/cleanup (docs/fast-runner.md).
+    timeout-minutes: 45
+    env:
+      # Same compiler settings as the former fast-linux shell-full job.
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source=%s\ncpus=%s\n' "$GITHUB_SHA" "$(nproc)"
+          free -h
+          df -h / "$RUNNER_TEMP"
+      - name: Install system libraries
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd python3 python3-venv gnupg gpgv ffmpeg \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+      - name: Verify pinned Rust toolchain
+        run: |
+          rustc -Vv
+          cargo --version
+      # The exact product entrypoint with its own compile/list/execution phase
+      # deadlines (840/30/990 s), unfiltered, --test-threads=4. The outer group
+      # matches the former fast-local shell-full.sh limit.
+      - name: Run the complete Linux shell binary suite
+        timeout-minutes: 33
+        run: bash scripts/ci/test-group.sh shell-full.sh 1920 bash scripts/ci/shell-full.sh
+      - name: Record disk use
+        if: always()
+        run: df -h / "$RUNNER_TEMP"

@@ -16,6 +16,7 @@ INFRA_STEPS = {
     "Verify pinned Rust toolchain", "Restore Rust downloads and target cache",
     "Fetch locked public dependencies", "Save Rust downloads and target cache",
     "Prepare isolated Python test dependencies",
+    "Restore Windows core cache", "Preserve vendor patch line endings",
 }
 
 
@@ -37,9 +38,11 @@ def verdict(info, sha, benchmark=False, publication_controls=False):
     if info.get("headSha") != sha or info.get("status") != "completed":
         return 75
     jobs = info.get("jobs", [])
-    if len(jobs) != 1 or jobs[0].get("name") != "linux":
+    if len(jobs) != 2 or {job.get("name") for job in jobs} != {"linux", "windows-recovery"}:
         return 75
-    steps = jobs[0].get("steps", [])
+    linux = next(job for job in jobs if job.get("name") == "linux")
+    windows = next(job for job in jobs if job.get("name") == "windows-recovery")
+    steps = linux.get("steps", [])
     required = {"Prepare and verify pinned vendor and comrak", "Lint every workspace target offline",
                 "Build Linux desktop offline", "Run complete okilum-core suite offline", "Run Linux Rust suites offline",
                 "Run CI, releases and updater Python suites"}
@@ -50,10 +53,13 @@ def verdict(info, sha, benchmark=False, publication_controls=False):
                      "Warm Linux Rust suites offline"}
     if info.get("conclusion") == "success":
         passed = {s["name"] for s in steps if s.get("conclusion") == "success"}
-        return 0 if required <= passed and jobs[0].get("conclusion") == "success" else 75
+        native = {s["name"] for s in windows.get("steps", []) if s.get("conclusion") == "success"}
+        return 0 if (required <= passed and linux.get("conclusion") == "success"
+                     and windows.get("conclusion") == "success"
+                     and {"Prepare and verify Windows vendor", "Run native Windows recovery controls"} <= native) else 75
     if info.get("conclusion") != "failure":
         return 75
-    failed = [s for s in steps if s.get("conclusion") == "failure"]
+    failed = [s for job in jobs for s in job.get("steps", []) if s.get("conclusion") == "failure"]
     if not failed or any(s["name"] in INFRA_STEPS or "actions/checkout@" in s["name"] for s in failed):
         return 75
     return 1

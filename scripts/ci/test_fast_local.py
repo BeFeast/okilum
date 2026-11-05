@@ -80,32 +80,16 @@ exit "${COMPILER_STATUS:-0}"
             result=subprocess.run(['bash','scripts/ci/fast-local.sh'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
             self.assertEqual(result.returncode,0,result.stderr)
 
-    def test_shell_gate_uses_shared_target_and_preserves_failure(self):
+    def test_shell_full_no_longer_takes_a_local_slot(self):
+        # #2589: certification shell-full runs on GitHub; no baldr slot or gate.
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);env=self.fixture(root);(root/'gate').touch()
-            env.update(OKILUM_FAST_SLOTS='1',GITHUB_RUN_NUMBER='0')
-            shell=root/'scripts/ci/shell-full.sh'
-            shell.write_text('''#!/usr/bin/env bash
-set -eu
-test ! -e /proc/$$/fd/9
-printf '%s|%s|%s\\n' "$OKILUM_FAST_SLOT" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" >> "$POOL_LOG"
-echo SHELL_GATE_EXECUTED
-exit 41
-''')
-            subprocess.run(['git','-C',str(root),'add','scripts'],check=True)
-            subprocess.run(['git','-C',str(root),'-c','user.name=Fixture',
-                            '-c','user.email=fixture@example.invalid','commit','-qm','shell probe'],check=True)
-            env['GITHUB_SHA']=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
             full=subprocess.run(['bash','scripts/ci/fast-local.sh','shell-full'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
-            self.assertEqual(full.returncode,41,full.stderr)
-            self.assertIn('TEST_GROUP_START group=shell-full.sh limit=1920s', full.stdout)
-            self.assertIn('SHELL_GATE_EXECUTED',full.stdout)
-            fast=subprocess.run(['bash','scripts/ci/fast-local.sh'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
-            self.assertEqual(fast.returncode,0,fast.stderr)
-            self.assertNotIn('SHELL_GATE_EXECUTED',fast.stdout)
-            rows=(root/'log').read_text().splitlines()
-            self.assertEqual(len(rows),2)
-            self.assertEqual(rows[0],rows[1])
+            self.assertEqual(full.returncode,64,full.stderr)
+            self.assertIn('shell-full runs on GitHub',full.stderr)
+            self.assertNotIn('FAST_LOCAL_SLOT',full.stdout)
+            self.assertFalse((root/'pool').exists())
+            self.assertFalse((root/'log').exists())
 
     def test_stable_source_avoids_legacy_metadata_and_reuses_its_own_target(self):
         with tempfile.TemporaryDirectory() as temp:

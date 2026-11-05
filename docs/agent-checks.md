@@ -47,6 +47,14 @@ concurrent fork cannot temporarily retain another fixture's installation lock
 before exec; all lifecycle assertions and test cases remain enabled. Both test shells raise their soft nofile limit via `test-nofile.sh`.
 The Linux Rust suites retain their existing conditional vendor workspace tests.
 
+Every worker run also requires `windows-recovery` on a GitHub-hosted Windows
+runner (#2551). It runs the existing native `okilum-core` `windows_` suite,
+including file publication, editor recovery and protected history. Discovery
+must contain the unacknowledged-save regression before execution, so a missing
+Windows configuration cannot pass with zero tests. The helper requires both
+jobs and their required steps; native test failures remain check failures.
+Forgejo PR CI and native release/signing policy are unchanged.
+
 Every job that discovers these Python suites, including local/hosted full gates
 and the fast and Sync fixture lanes, runs `scripts/ci/setup-python-tests.sh`
 first. It creates a fresh venv, installs `scripts/ci/requirements.txt` and adds

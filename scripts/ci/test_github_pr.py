@@ -23,15 +23,20 @@ class HostedPRTests(unittest.TestCase):
                 env = dict(CI_LANE=lane, MIRROR_TOKEN='test', PR_HEAD_SHA=SHA, PR_NUMBER='12',
                            GITHUB_RUN_ID='345', GITHUB_OUTPUT=str(Path(tmp) / 'output'))
                 with patch.dict(os.environ, env), patch.object(bridge.transport, 'push_head') as push, \
-                        patch.object(bridge.transport, 'GitHub'), \
+                        patch.object(bridge.transport, 'GitHub'), patch.object(bridge.time, 'monotonic', return_value=1000.0), \
                         patch.object(bridge.transport, 'wait_for_run', return_value=('success', 'ok')) as wait:
                     self.assertEqual(bridge.main(), 0)
                 branch = push.call_args.args[0]
                 self.assertTrue(branch.startswith(f'forgejo-{lane}-pr/'))
                 self.assertEqual(push.call_args.args[1], SHA)
                 self.assertEqual(wait.call_args.args[1:], (branch, SHA))
-                self.assertEqual(wait.call_args.kwargs, dict(workflow=f'.github/workflows/forgejo-{lane}.yml',
-                    job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout))
+                expected = dict(workflow=f'.github/workflows/forgejo-{lane}.yml',
+                    job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout)
+                if lane in bridge.BRIDGE_BUDGETS:
+                    # Queue and run share the waiter's budget from its own start.
+                    budget = bridge.BRIDGE_BUDGETS[lane]
+                    expected.update(queue_timeout=budget, deadline=1000.0 + budget)
+                self.assertEqual(wait.call_args.kwargs, expected)
 
     def test_unknown_lane_never_pushes(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {

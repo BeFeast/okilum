@@ -334,6 +334,11 @@ one frame before its synchronous safe write so the queued state can render;
 blur, app deactivation, navigation and quit still complete saving synchronously.
 Draft journaling is separate from saving the canonical note. “Protecting recovery
 copy…” may be too brief to see; it is not the test for whether the file was saved.
+On Windows, reopening a journal whose save was not acknowledged keeps its draft
+pending even if the file already contains the proposed bytes (#2551). Explicit
+Save verifies the current bytes before acknowledging the journal; protected save
+history remains available. An acknowledged clean journal never replaces newer
+external content.
 A clean source buffer updated by the watcher shows “Updated from disk”. A dirty
 buffer is retained and marked Conflict. No automatic Undo of an external write is
 offered: restoring an old file would itself require a revision-aware conflict check.
