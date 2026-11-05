@@ -76,7 +76,11 @@ impl Controller {
                 ..Default::default()
             };
             // Preserve plain Syncthing peers in the sharing list as well.
-            for device in &vault.peers {
+            for device in vault
+                .peers
+                .iter()
+                .filter(|device| *device != &vault.daemon.device_id)
+            {
                 observed.shared_with.push(
                     peers
                         .iter()

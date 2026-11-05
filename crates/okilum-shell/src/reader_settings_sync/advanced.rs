@@ -98,24 +98,6 @@ impl SyncSettings {
             .child(Button::new("sync-inspect-existing")
                                         .debug_selector(|| "sync-inspect-existing".into()).label("Choose existing synced vault").ghost().disabled(self.busy)
                 .on_click(cx.listener(|this, _, _, cx| this.choose_folder(None, cx)))));
-        if let Some(vault) = &self.inspected {
-            let approved = vault.clone();
-            content = content.child(v_flex().gap_2()
-                .child(format!("Use {} with Okilum?", vault.label))
-                .child(div().text_sm().text_color(p.text_muted).child(format!("{}\nSyncthing {} · {}", vault.path.display(), vault.version, vault.daemon.device_id)))
-                .child(div().text_sm().text_color(p.text_muted)
-                    .child("This shares the existing vault with your approved computers. Your existing Syncthing keeps its folders, peers and settings. Next, choose Add computer here, then paste its URL on the computer receiving these notes."))
-                .child(h_flex().gap_2()
-                    .child(Button::new("sync-consent-existing")
-                                        .debug_selector(|| "sync-consent-existing".into()).label("Use this connection").disabled(self.busy)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.inspected = None;
-                            this.run(Operation::Consent(approved.clone()), cx);
-                        })))
-                    .child(Button::new("sync-dismiss-existing")
-                                        .debug_selector(|| "sync-dismiss-existing".into()).label("Cancel").ghost().disabled(self.busy)
-                        .on_click(cx.listener(|this, _, _, cx| { this.inspected = None; cx.notify(); })))));
-        }
         #[cfg(target_os = "linux")]
         {
             let mut roots: Vec<_> = self
@@ -159,6 +141,33 @@ impl SyncSettings {
             }
         }
         content.into_any_element()
+    }
+    pub(super) fn render_existing_connection(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(vault) = &self.inspected else {
+            return div().into_any_element();
+        };
+        let approved = vault.clone();
+        let p = brand::palette(cx);
+        v_flex().w_full().min_w_0().gap_3()
+            .child(vault.label.clone())
+            .child(div().w_full().whitespace_normal().text_sm().text_color(p.text_muted).child(vault.path.display().to_string()))
+            .child(div().text_sm().child("This folder already uses Syncthing. Allow Okilum to share it with your approved computers using that connection."))
+            .child(h_flex().gap_2()
+                .child(Button::new("sync-consent-existing")
+                    .debug_selector(|| "sync-consent-existing".into()).primary().label("Use this connection").disabled(self.busy)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.inspected = None;
+                        this.presentation.wizard = None;
+                        this.run(Operation::Consent(approved.clone()), cx);
+                    })))
+                .child(Button::new("sync-dismiss-existing")
+                    .debug_selector(|| "sync-dismiss-existing".into()).ghost().label("Cancel").disabled(self.busy)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.inspected = None;
+                        this.presentation.wizard = None;
+                        cx.notify();
+                    }))))
+            .into_any_element()
     }
     #[cfg(target_os = "linux")]
     pub(super) fn render_local_vaults(&self, cx: &mut Context<Self>) -> AnyElement {

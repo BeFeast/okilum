@@ -635,6 +635,9 @@ impl SyncSettings {
                     .map(|ip| format!("computer at {ip}"))
             })
             .unwrap_or_else(|| "your other computer".into());
+        let complete = self
+            .presentation
+            .first_sync_complete(self.snapshot.as_ref(), self.busy);
         let (title,help)=match step {
             Step::Start=>("Start on the computer with your notes".into(),format!("On {local}, create a link if your notes are here. Keep Okilum open on both computers.")),
             Step::Paste=>("Paste the link from your other computer".into(),format!("On {local}, paste the link created on the computer with your notes. You will approve {local} on that computer.")),
@@ -642,8 +645,10 @@ impl SyncSettings {
             Step::Waiting=>(format!("Waiting for {remote} to approve"),format!("{local} has requested a connection. On {remote}, approve “{local} wants to connect”. This window keeps waiting; you do not need to retry.")),
             Step::Vaults=>(format!("Choose vaults for {local}"),format!("On {local}, choose a vault from the approved computer and a local folder. New or empty folders start Sync; existing files require a lossless merge preview.")),
             Step::Computer=>(remote.clone(),format!("Vaults shared between {local} and {remote}.")),
+            Step::Progress if complete => ("Your first sync is complete".into(), format!("On {local}, your vaults are up to date. Saved changes now sync in both directions.")),
             Step::Progress=>("Your first sync is in progress".into(),format!("Receiving on {local}. Keep both computers online until the first transfer finishes. You can close this window and follow progress on the Sync page.")),
             Step::Expired=>("Your pairing link expired".into(),"On the computer with your notes, create a new link, then paste it on the other computer. Your vaults have not changed.".into()),
+            Step::Existing => ("Use your existing Sync connection".into(), format!("On {local}, review the folder before allowing Okilum to use its existing Syncthing connection.")),
         };
         let mut body = v_flex()
             .gap_3()
@@ -669,6 +674,9 @@ impl SyncSettings {
             body = body.child(self.render_status(cx));
         }
         match step {
+            Step::Existing => {
+                body = body.child(self.render_existing_connection(cx));
+            }
             Step::Start | Step::Paste => {
                 body = body.child("This computer’s name").child(
                     Input::new(
@@ -794,11 +802,7 @@ impl SyncSettings {
             }
             Step::Progress => {
                 if let Some(snapshot) = &self.snapshot {
-                    if !self.busy
-                        && self.presentation.transfers.is_empty()
-                        && !snapshot.preparing
-                        && !snapshot.attached.is_empty()
-                    {
+                    if complete {
                         body = body.child(
                             "First sync complete. Saved changes now sync in both directions.",
                         );

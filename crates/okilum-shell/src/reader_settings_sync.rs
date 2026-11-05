@@ -565,6 +565,7 @@ impl SyncSettings {
         cx.refresh_windows();
         if let Some(inspected) = output.inspected {
             self.inspected = Some(inspected);
+            self.presentation.wizard = Some(presentation::Step::Existing);
         }
     }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
