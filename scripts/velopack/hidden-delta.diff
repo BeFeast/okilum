@@ -1,0 +1,20 @@
+--- a/src/manager.rs
++++ b/src/manager.rs
+@@ -519,7 +519,16 @@
+             let _ = progress.send(70);
+         }
+ 
+-        let output = std::process::Command::new(self.inner.locator.get_update_path()).args(args).output()?;
++        let mut patcher = std::process::Command::new(self.inner.locator.get_update_path());
++        patcher.args(args);
++        #[cfg(windows)]
++        {
++            use std::os::windows::process::CommandExt;
++            // Delta preparation runs in the background of a GUI application.
++            // Unlike the final install helper, Command::output does not hide a console.
++            patcher.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
++        }
++        let output = patcher.output()?;
+         if output.status.success() {
+             info!("Successfully applied delta updates.");
+         } else {
