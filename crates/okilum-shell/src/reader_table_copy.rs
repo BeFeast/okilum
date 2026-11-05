@@ -407,7 +407,7 @@ mod tests {
         assert!(f.visual.debug_bounds("read-menu-Copy").is_some());
         assert!(f
             .visual
-            .debug_bounds("read-menu-Copy with formatting")
+            .debug_bounds("read-menu-Copy as Rich Text")
             .is_some());
         // An accepted replacement cannot substitute another revision for the
         // selection that was already captured by this object popup.

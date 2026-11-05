@@ -18,6 +18,9 @@ Environment:
                       OKILUM_DEV_HOME/repo)
   OKILUM_DEV_REPO     remote for that clone (default https://git.oklabs.uk/BeFeast/okilum.git)
   OKILUM_DEV_HOME     worktree, Cargo target and logs (default ~/.cache/okilum-dev)
+  OKILUM_DEV_TARGET_CAP_GIB  the Cargo target is emptied once it passes this many
+                      GiB (default 30); inside a build-slot run the slot's target
+                      is used and bounded by build-slot instead
   OKILUM_DEV_BUILD    build number (default: newest published Linux build + 1)
   OKILUM_DEV_PROFILE  Cargo profile (default release)
 
@@ -337,6 +340,22 @@ trap dev_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 die() { echo "$*" >&2; exit 1; }
+# Cargo never deletes old dependency-graph variants, so a warm target only grows.
+# Inside a build-slot run the slot owns the target and bounds it; elsewhere the
+# one warm target is emptied once it passes OKILUM_DEV_TARGET_CAP_GIB.
+pick_target() {
+    local cap=${OKILUM_DEV_TARGET_CAP_GIB:-30} used
+    [[ $cap =~ ^[0-9]+$ ]] || die 'OKILUM_DEV_TARGET_CAP_GIB must be a whole number of GiB.'
+    target=${BUILD_SLOT:+${CARGO_TARGET_DIR:-}}
+    [[ -z $target ]] || return 0
+    target=$root/target
+    [[ -d $target ]] || return 0
+    used=$(du -sx --block-size=1G -- "$target" | cut -f1)
+    if ((used > cap)); then
+        printf 'Target %s holds %s GiB, above the %s GiB cap; starting it fresh.\n' "$target" "$used" "$cap"
+        rm -rf -- "$target"
+    fi
+}
 
 if [[ -f $HOME/.cargo/env ]]; then
     # shellcheck disable=SC1091
@@ -421,9 +440,10 @@ else
     printf 'Build %s: one above the newest published Linux build %s, so no beta replaces it and the next one does.\n' "$build" "$newest"
 fi
 
-printf '\nBuilding %s %s (profile %s, target %s)\n' "$ref" "$short_sha" "${OKILUM_DEV_PROFILE:-release}" "$root/target"
+pick_target
+printf '\nBuilding %s %s (profile %s, target %s)\n' "$ref" "$short_sha" "${OKILUM_DEV_PROFILE:-release}" "$target"
 build_started=$SECONDS
-if ! CARGO_TARGET_DIR="$root/target" OKILUM_LOCAL_DEV=1 OKILUM_BUILD_VERSION="$build" \
+if ! CARGO_TARGET_DIR="$target" OKILUM_LOCAL_DEV=1 OKILUM_BUILD_VERSION="$build" \
     OKILUM_CARGO_PROFILE="${OKILUM_DEV_PROFILE:-release}" bash scripts/appimage/build.sh; then
     echo "Build failed (full log: $log). First compiler error, or else the last lines:" >&2
     { awk '/^error/ {print; n=8} n>0 {if ($0 !~ /^error/) print; n--}' "$log" | head -25 | grep . ||

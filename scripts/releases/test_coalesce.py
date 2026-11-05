@@ -33,12 +33,12 @@ class LinuxWorkflow(unittest.TestCase):
     def test_linux_workflow_uses_light_selector_and_preserves_publication(self):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / '.forgejo/workflows/linux-release.yml').read_text()
-        self.assertIn("cron: '17 * * * *'", workflow)
-        self.assertNotIn('  push:', workflow)
+        self.assertNotIn('schedule:', workflow)
+        self.assertIn('  push:\n    branches: [main]\n', workflow)
         self.assertIn('  workflow_dispatch:', workflow)
         self.assertIn('runs-on: bridge', workflow)
-        # The release checkout builds the commit select chose (main tip on a tick).
-        self.assertIn("(inputs.source != '' || inputs.hourly_source != '' || github.event_name == 'schedule') && needs.select.outputs.source", workflow)
+        # The release checkout builds the commit select chose; a push builds its own commit.
+        self.assertIn("(inputs.source != '' || inputs.hourly_source != '') && needs.select.outputs.source", workflow)
         self.assertIn('python3 scripts/releases/coalesce.py linux', workflow)
         # Arch must honor freeze/coalescing, skip AppImage-only dispatches, and retain
         # PR-lane routing. Match the release job's entire condition so a guard
@@ -53,7 +53,7 @@ class LinuxWorkflow(unittest.TestCase):
              "github.event.pull_request.head.repo.full_name != github.repository || "
              "vars.OKILUM_PR_LANE == 'local')"],
         )
-        self.assertIn('cancel-in-progress: false', workflow)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'push' }}", workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch linux', workflow)
 
 
@@ -108,13 +108,13 @@ class ResignTests(unittest.TestCase):
 
 
 class MacPublicationTests(unittest.TestCase):
-    def test_workflow_keeps_tick_off_mac_and_preserves_publication(self):
+    def test_workflow_keeps_selection_off_mac_and_preserves_publication(self):
         workflow = (Path(__file__).resolve().parents[2] / '.forgejo/workflows/macos-release.yml').read_text()
         self.assert_macos_publication_workflow(workflow)
 
     def assert_macos_publication_workflow(self, workflow):
-        self.assertIn("cron: '17 * * * *'", workflow)
-        self.assertNotIn('  push:', workflow)
+        self.assertNotIn('schedule:', workflow)
+        self.assertIn('  push:\n    branches: [main]\n', workflow)
         select, release = workflow.split('\n  release:\n', 1)
         release, hosted = release.split('\n  hosted-artifact:\n', 1)
         hosted = hosted.split('\n  shipping-status:\n', 1)[0]
@@ -130,7 +130,7 @@ class MacPublicationTests(unittest.TestCase):
         self.assertIn('    needs: select\n', hosted)
         self.assertEqual([line.strip() for line in hosted.splitlines() if line.startswith('    if:')],
                          ["if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && "
-                          "(github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')"])
+                          "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"])
         self.assertIn('    runs-on: bridge\n', hosted)
         self.assertNotIn('continue-on-error:', hosted)
         producer = hosted.split('      - name: Produce a source-pinned hosted shipping artifact\n', 1)[1].split(
@@ -149,8 +149,8 @@ class MacPublicationTests(unittest.TestCase):
                       "          FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"
                       "          FORGEJO_URL: ${{ github.server_url }}\n"
                       "        run: python3 scripts/releases/publication.py dispatch macos\n", hosted)
-        self.assertIn("inputs.hourly_source || (github.event_name == 'schedule' && 'hourly') || github.run_id", workflow)
-        self.assertIn('cancel-in-progress: false', workflow)
+        self.assertIn("github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id", workflow)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'push' }}", workflow)
         self.assertIn('FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}', workflow)
         self.assertIn('python3 scripts/releases/publication.py dispatch macos', workflow)
         self.assertLess(workflow.index('id: select'), workflow.index('id: route'))
@@ -160,7 +160,8 @@ class MacPublicationTests(unittest.TestCase):
         prefix, hosted = workflow.split('\n  hosted-artifact:\n', 1)
         for label, broken in [
             ('local reenabled', workflow.replace('    if: false # Corporate', '    if: true # Corporate')),
-            ('push restored', workflow.replace('  schedule:', '  push:\n  schedule:', 1)),
+            ('push removed', workflow.replace('  push:\n    branches: [main]\n', '', 1)),
+            ('cron restored', workflow.replace('  workflow_dispatch:', "  schedule:\n    - cron: '17 * * * *'\n  workflow_dispatch:", 1)),
             ('selector on Mac', workflow.replace('    runs-on: publish', '    runs-on: macos', 1)),
             ('hosted disabled', prefix + '\n  hosted-artifact:\n' + hosted.replace(
                 "    if: needs.select.outputs.build == 'true'", '    if: false && true', 1)),

@@ -270,7 +270,7 @@ fn reader_settings_sync_validates_before_starting_any_controller(cx: &mut TestAp
 #[test]
 fn reader_settings_sync_nonempty_and_expired_errors_have_actionable_recovery() {
     let nonempty = user_error(&anyhow::anyhow!("unknown nonempty destination"));
-    assert!(nonempty.contains("Lossless merge preview"));
+    assert!(nonempty.contains("Your files have not changed"));
     assert!(nonempty.contains("empty folder"));
     let expired = user_error(&anyhow::anyhow!("invitation expired"));
     assert!(expired.contains("Create a new one"));
@@ -1321,12 +1321,15 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
     visual.simulate_click(pick.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(
-        visual.did_prompt_for_new_path(),
+        visual.did_prompt_for_paths(),
         "positive control: real folder dialog opened"
     );
     visual.executor().advance_clock(Duration::from_secs(30));
     visual.run_until_parked();
-    visual.simulate_new_path_selection(|_| Some(directory.path().join("Work notes")));
+    visual.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple);
+        Some(vec![directory.path().join("Work notes")])
+    });
     visual.run_until_parked();
     assert_eq!(
         *calls.lock().unwrap(),
@@ -1347,9 +1350,12 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
     let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
     visual.simulate_click(pick.center(), Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.did_prompt_for_new_path());
+    assert!(visual.did_prompt_for_paths());
     visual.update(|_, cx| reader_features::set_enabled(reader_features::Feature::Sync, false, cx));
-    visual.simulate_new_path_selection(|_| Some(directory.path().join("Late choice")));
+    visual.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple);
+        Some(vec![directory.path().join("Late choice")])
+    });
     visual.run_until_parked();
     assert_eq!(
         calls.lock().unwrap().len(),
@@ -1496,12 +1502,15 @@ fn sync_new_destination_picker_answer_during_refresh_is_not_dropped(cx: &mut Tes
         root.view().clone().downcast::<SyncSettings>().unwrap()
     });
     view.update(visual, |view, cx| {
-        view.choose_new_folder(peer, "notes".into(), "Notes", cx);
+        view.choose_vault_folder(peer, "notes".into(), "Notes", cx);
         // The periodic Read can be in flight when the native dialog answers.
         view.busy = true;
     });
-    assert!(visual.did_prompt_for_new_path(), "production picker opened");
-    visual.simulate_new_path_selection(|_| Some(root_dir.path().join("Notes")));
+    assert!(visual.did_prompt_for_paths(), "production picker opened");
+    visual.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple);
+        Some(vec![root_dir.path().join("Notes")])
+    });
     visual.run_until_parked();
     assert!(
         calls.lock().unwrap().is_empty(),
@@ -1519,11 +1528,14 @@ fn sync_new_destination_picker_answer_during_refresh_is_not_dropped(cx: &mut Tes
     );
     visual.update(|_, cx| cx.set_global(BackgroundSync(view.clone())));
     view.update(visual, |view, cx| {
-        view.choose_new_folder(peer, "notes".into(), "Notes", cx);
+        view.choose_vault_folder(peer, "notes".into(), "Notes", cx);
         view.busy = true;
     });
-    assert!(visual.did_prompt_for_new_path());
-    visual.simulate_new_path_selection(|_| Some(root_dir.path().join("Revoked notes")));
+    assert!(visual.did_prompt_for_paths());
+    visual.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple);
+        Some(vec![root_dir.path().join("Revoked notes")])
+    });
     visual.run_until_parked();
     view.read_with(visual, |view, _| {
         assert!(view.pending_destination.is_some())
@@ -1591,8 +1603,11 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
     visual.run_until_parked();
     let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
     visual.simulate_click(pick.center(), Modifiers::default());
-    assert!(visual.did_prompt_for_new_path());
-    visual.simulate_new_path_selection(|_| Some(directory.path().join("absent/Notes")));
+    assert!(visual.did_prompt_for_paths());
+    visual.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple);
+        Some(vec![directory.path().join("absent/Notes")])
+    });
     visual.run_until_parked();
     let start = visual.debug_bounds("sync-start-first-transfer").unwrap();
     visual.simulate_click(start.center(), Modifiers::default());
@@ -1870,7 +1885,11 @@ fn sync_2419_real_pairing_timer_skips_full_runtime_inspection(cx: &mut TestAppCo
 
 #[gpui::test]
 fn issue2615_overview_starts_quiet_and_add_opens_a_wizard(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(|cx| {
+        crate::test_init(cx);
+        // Measure the resting modal position, not its first slide-in frame.
+        cx.set_reduce_motion(true);
+    });
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
@@ -1888,7 +1907,11 @@ fn issue2615_overview_starts_quiet_and_add_opens_a_wizard(cx: &mut TestAppContex
     let add = visual.debug_bounds("sync-add-computer").unwrap();
     visual.simulate_click(add.center(), Modifiers::default());
     visual.run_until_parked();
-    assert!(visual.debug_bounds("sync-modal").is_some());
+    let modal = visual.debug_bounds("sync-modal").unwrap();
+    assert!(
+        modal.top() >= px(100.),
+        "uses the standard viewport modal offset: {modal:?}"
+    );
     assert!(visual.debug_bounds("sync-create-link").is_some());
     root.read_with(visual, |root, cx| {
         let view = root.view().clone().downcast::<SyncSettings>().unwrap();

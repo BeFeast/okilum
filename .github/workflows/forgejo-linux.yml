@@ -1,20 +1,23 @@
 # Permanent Forgejo PR/main lane. Disposable signing only; no live publication.
 name: forgejo-linux
 on:
+  # Forgejo creates the write-once forgejo-linux-pr/hourly-<source> ref for each
+  # main push beta (the name predates push betas); its push starts the producer.
   push:
     branches: ['forgejo-linux-pr/**']
   schedule:
-    - cron: '17 * * * *'
     - cron: '5 22 * * 2,6'
   workflow_dispatch:
     inputs:
       source:
-        description: 'Optional exact green main requested by the Forgejo hourly/manual producer'
+        description: 'Optional exact main source requested by the Forgejo beta producer'
         default: ''
 permissions:
   contents: read
 concurrency:
-  group: forgejo-linux-${{ github.ref }}
+  # All beta producers share one group: a newer source cancels an unfinished
+  # older one, as its Forgejo run was already cancelled by the newer push.
+  group: forgejo-linux-${{ startsWith(github.ref, 'refs/heads/forgejo-linux-pr/hourly-') && 'beta' || github.ref }}
   cancel-in-progress: true
 jobs:
   select:

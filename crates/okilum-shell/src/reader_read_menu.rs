@@ -19,6 +19,16 @@ impl Reader {
     }
 
     pub(super) fn copy_read_markdown(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(text) = self
+            .editing
+            .as_ref()
+            .and_then(|editing| editing.selected_markdown(window, cx))
+        {
+            if !text.is_empty() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            return;
+        }
         if !self.read_copy_available() {
             return;
         }
@@ -144,10 +154,18 @@ fn build(
                 h_flex()
                     .debug_selector(move || format!("read-menu-{}", command.label()))
                     .child(div().flex_1().child(command.label()))
-                    .when(
-                        matches!(command, Command::Markdown | Command::Document),
-                        |row| row.child(reader_shortcuts::all_shortcuts(&CopyAsMarkdown, cx)),
-                    )
+                    .child(match command {
+                        Command::Plain => {
+                            reader_shortcuts::all_shortcuts(&gpui_component::input::Copy, cx)
+                        }
+                        Command::Markdown | Command::Document => {
+                            reader_shortcuts::all_shortcuts(&CopyAsMarkdown, cx)
+                        }
+                        Command::Rich => reader_shortcuts::all_shortcuts(&CopyWithFormatting, cx),
+                        Command::SelectAll => {
+                            reader_shortcuts::all_shortcuts(&gpui_component::input::SelectAll, cx)
+                        }
+                    })
             })
             .disabled(
                 (command == Command::Document && snapshot.document.is_none())

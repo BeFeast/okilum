@@ -869,7 +869,7 @@ impl Reader {
             if !query.is_empty() {
                 for (label, item) in [
                     ("copy as markdown", PaletteItem::CopyAsMarkdown),
-                    ("copy with formatting", PaletteItem::CopyWithFormatting),
+                    ("copy as rich text", PaletteItem::CopyWithFormatting),
                 ] {
                     if label.contains(&query)
                         && (!matches!(item, PaletteItem::CopyWithFormatting) || !self.use_html)
@@ -1670,7 +1670,7 @@ impl Reader {
                             .child(div().flex_1().child(if markdown {
                                 "Copy as Markdown"
                             } else {
-                                "Copy with formatting"
+                                "Copy as Rich Text"
                             }))
                             .when(markdown, |row| {
                                 row.child(reader_shortcuts::all_shortcuts(
@@ -3169,7 +3169,7 @@ canaryhidden [[Target]]",
                     PaletteItem::Note(entry) => entry.path.clone(),
                     PaletteItem::Project(row) => row.project.name.clone(),
                     PaletteItem::CopyAsMarkdown => "Copy as Markdown".into(),
-                    PaletteItem::CopyWithFormatting => "Copy with formatting".into(),
+                    PaletteItem::CopyWithFormatting => "Copy as Rich Text".into(),
                     PaletteItem::SwitchWindowMode => v.window_mode_label().into(),
                     PaletteItem::OpenTerminal => "Open terminal".into(),
                     PaletteItem::TerminalSettings => "Terminal settings".into(),

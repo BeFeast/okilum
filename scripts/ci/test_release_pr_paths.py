@@ -1,4 +1,4 @@
-"""Hourly beta delivery has no PR/main push trigger; acceptance keeps its own schedule."""
+"""Beta delivery runs on main push only (no PR trigger, no cron); acceptance keeps its own schedule."""
 from pathlib import Path
 import re
 import unittest
@@ -18,11 +18,13 @@ class ReleasePathsTests(unittest.TestCase):
         for workflow in WORKFLOWS:
             with self.subTest(workflow=workflow):
                 self.assertEqual(re.findall(r'^  ([\w_]+):', triggers(workflow), re.M),
-                                 ['schedule', 'workflow_dispatch'])
+                                 ['push', 'workflow_dispatch'])
+                self.assertIn('  push:\n    branches: [main]\n', triggers(workflow))
 
     def test_heavy_forgejo_workflows_never_run_on_main_push(self):
+        # Beta packaging is the only main-push work (Oleg 05.11): suites stay off push.
         for path in (ROOT / '.forgejo/workflows').glob('*.yml'):
-            if path.name in ('github-mirror.yml', 'release-publish.yml'):
+            if path.name in ('github-mirror.yml', 'release-publish.yml', *WORKFLOWS):
                 continue
             with self.subTest(workflow=path.name):
                 self.assertNotIn('push', yaml.load(path.read_text(), Loader=yaml.BaseLoader)['on'])
@@ -30,15 +32,15 @@ class ReleasePathsTests(unittest.TestCase):
             self.assertEqual(re.findall(r'^  ([\w_]+):', triggers(name), re.M),
                              ['schedule', 'workflow_dispatch'])
 
-    def test_hourly_delivery_has_no_path_filters(self):
-        # Includes UI/docs, packaging, release logic and shared dependencies.
-        # PR #2079 deliberately replaced all path-filtered PR builds.
+    def test_push_delivery_has_no_path_filters_or_cron(self):
+        # Every main push ships, including UI/docs, packaging, release logic and
+        # shared dependencies. PR #2079 deliberately replaced all path-filtered builds.
         for workflow in WORKFLOWS:
             with self.subTest(workflow=workflow):
                 events = triggers(workflow)
-                self.assertIn("  schedule:\n    - cron: '17 * * * *'\n", events)
-                self.assertNotIn('  push:', events)
-                self.assertNotRegex(events, r'(?m)^\s+(?:paths|paths-ignore|branches-ignore):')
+                self.assertNotIn('schedule', events)
+                self.assertNotIn('cron', events)
+                self.assertNotRegex(events, r'(?m)^\s+(?:paths|paths-ignore|branches-ignore|tags):')
 
     def test_explicit_source_dispatch_keeps_branch_validation_available(self):
         for workflow in WORKFLOWS:
@@ -53,7 +55,7 @@ class ReleasePathsTests(unittest.TestCase):
 
     def test_full_acceptance_schedule_is_separate_from_main_beta(self):
         for workflow in WORKFLOWS:
-            self.assertIn("cron: '17 * * * *'", triggers(workflow))
+            self.assertNotIn('cron', triggers(workflow))
         acceptance = (ROOT / '.forgejo/workflows/ci.yml').read_text()
         self.assertIn("  schedule:\n    - cron: '5 22 * * 2,6'", acceptance)
         self.assertIn('  workflow_dispatch:', acceptance)

@@ -68,7 +68,10 @@ cd ~/path/to/okilum && git fetch origin main && bash <(git show origin/main:scri
    BeFeast/okilum.
 2. A branch, or a commit on any origin branch, is checked out in the worktree.
    The warm Cargo target is `~/.cache/okilum-dev/target`; `OKILUM_DEV_HOME` moves
-   worktree, target and logs. Local changes in the worktree stop the script,
+   worktree, target and logs. Cargo never prunes it, so once it passes
+   `OKILUM_DEV_TARGET_CAP_GIB` (default 30) GiB the next build starts it fresh.
+   Inside a `build-slot` run the slot's target is used instead and the slot
+   bounds it. Local changes in the worktree stop the script,
    and so does a ref whose `scripts/appimage/build.sh` predates `OKILUM_LOCAL_DEV`
    (merge main into it).
 3. **Build number:** one above the newest build in

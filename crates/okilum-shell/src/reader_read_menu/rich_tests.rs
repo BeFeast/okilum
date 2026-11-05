@@ -74,7 +74,7 @@ impl Fixture<'_> {
         self.focus_text();
         self.visual.simulate_keystrokes("secondary-k");
         self.visual.simulate_input(if formatted {
-            "copy with formatting"
+            "copy as rich text"
         } else {
             "copy as markdown"
         });
@@ -262,6 +262,77 @@ fn markdown_shortcut_and_palette_match_menu_and_plain_copy_stays_plain(cx: &mut 
 }
 
 #[gpui::test]
+fn source_and_live_markdown_shortcuts_copy_the_exact_selected_source(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    for live in [false, true] {
+        f.reader.update_in(f.visual, |reader, window, cx| {
+            if reader.editing.is_none() {
+                reader.toggle_source(window, cx);
+            }
+            reader.set_live_preview(live, window, cx);
+        });
+        f.visual.run_until_parked();
+        let input = f.reader.read_with(f.visual, |reader, _| {
+            reader.editing.as_ref().unwrap().input().clone()
+        });
+        input.update(f.visual, |input, cx| {
+            input.set_selected_range(0..NOTE.len(), cx)
+        });
+        f.visual
+            .update(|window, cx| input.read(cx).focus_handle(cx).focus(window, cx));
+        f.seed_clipboard();
+        f.visual.simulate_keystrokes("secondary-shift-c");
+        f.visual.run_until_parked();
+        assert_eq!(f.clipboard().as_bytes(), NOTE.as_bytes(), "live={live}");
+        assert!(
+            f.seen.borrow().is_empty(),
+            "Markdown copy never writes rich text"
+        );
+        f.seed_clipboard();
+        let at = input.read_with(f.visual, |input, _| input.input_bounds().origin)
+            + point(px(20.), px(12.));
+        f.right_click(at);
+        // Native-menu fallback starts unselected: Cut, Copy, Copy as Markdown.
+        f.visual.simulate_keystrokes("down down down enter");
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.clipboard().as_bytes(),
+            NOTE.as_bytes(),
+            "context menu, live={live}"
+        );
+        assert_eq!(
+            std::fs::read(f.root.join("note.md")).unwrap(),
+            NOTE.as_bytes()
+        );
+        f.seed_clipboard();
+        f.reader.update_in(f.visual, |reader, window, cx| {
+            reader.focus_handle.focus(window, cx);
+            reader.copy_read_markdown(window, cx);
+        });
+        assert_eq!(
+            f.clipboard(),
+            "sentinel",
+            "an inactive editor cannot supply a stale selection"
+        );
+    }
+}
+
+#[gpui::test]
+fn read_rich_text_shortcut_reaches_the_real_multiformat_boundary(cx: &mut TestAppContext) {
+    let mut f = open(cx);
+    let plain = f.select_all();
+    f.focus_text();
+    f.seed_clipboard();
+    f.visual.simulate_keystrokes("secondary-alt-c");
+    f.visual.run_until_parked();
+    assert_eq!(f.clipboard(), plain);
+    let seen = f.seen.borrow();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].plain, plain);
+    assert!(seen[0].html.contains("<strong>café 雪</strong>"));
+}
+
+#[gpui::test]
 fn markdown_shortcut_and_palette_without_selection_match_document_menu(cx: &mut TestAppContext) {
     let mut f = open(cx);
     let at = f.background();
@@ -321,7 +392,7 @@ fn rich_read_menu_publishes_html_and_plain_without_changing_other_copy_formats(
         plain,
         "menu snapshot leaves the selection intact"
     );
-    f.pick("read-menu-Copy with formatting");
+    f.pick("read-menu-Copy as Rich Text");
     assert_eq!(f.clipboard(), plain);
     let seen = f.seen.borrow();
     assert_eq!(
@@ -370,7 +441,7 @@ fn rich_link_group_uses_captured_selection_after_the_displayed_revision_changes(
     );
     let rich = f
         .visual
-        .debug_bounds("read-menu-Copy with formatting")
+        .debug_bounds("read-menu-Copy as Rich Text")
         .expect("rich selection action joins link group");
     // A later accepted render cannot replace the clipboard payload already
     // captured for this menu. The source file itself remains read-only.

@@ -107,7 +107,7 @@ mod tests {
         let note = path.join("keep.md");
         std::fs::write(&note, b"original bytes\n")?;
         let error = prepare(&path).unwrap_err();
-        assert!(super::super::user_error(&error).contains("Lossless merge preview"));
+        assert!(super::super::user_error(&error).contains("Your files have not changed"));
         assert_eq!(std::fs::read(&note)?, b"original bytes\n");
         assert_eq!(path.read_dir()?.count(), 1);
         assert!(prepare(&note).is_err());

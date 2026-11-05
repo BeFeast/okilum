@@ -223,9 +223,9 @@ def publish(client, platform, run_id):
             if source != preview_inputs(run)['hourly_source']:
                 raise ValueError('Hourly artifact source differs from the requested source')
             import hourly_beta
+            # Beta has no certification gate (Oleg 05.11); the pin must still
+            # be first-parent main and must not move the feed backwards.
             hourly_beta.main_source(source)
-            if not hourly_beta.beta_ready(source, platform):
-                raise ValueError('Hourly publication source is no longer certified green')
             previous = release_notes.predecessor(R2(), platform)
             if previous and previous['source'] != source:
                 relation = subprocess.run(['git', 'merge-base', '--is-ancestor', previous['source'], source],

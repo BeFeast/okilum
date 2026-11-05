@@ -1,11 +1,13 @@
+# Beta on every main push for the exact pushed commit (Oleg 05.11); no cron and
+# no certification gate. Stable still requires shell-full on its exact source.
 name: linux-release
 on:
-  schedule:
-    - cron: '17 * * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       hourly_source:
-        description: 'Internal source-pinned hourly retry; certified first-parent main source'
+        description: 'Internal source-pinned retry of a manual run; newest first-parent main source'
         required: false
         default: ''
       appimage_only:
@@ -18,10 +20,11 @@ on:
         default: ''
 
 concurrency:
-  # Scheduled coordinators never compile. Each pinned source has its own queue;
-  # slow Arch work cannot block the next tick or cancel a useful AppImage build.
-  group: linux-beta-${{ inputs.hourly_source || (github.event_name == 'schedule' && 'hourly') || github.run_id }}
-  cancel-in-progress: false
+  # A newer main push cancels this platform's unfinished beta of an older commit.
+  # Manual, pinned, archive and AppImage-only dispatches keep their own groups
+  # and always finish; publication runs in release-publish and is never cancelled.
+  group: linux-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   select:
@@ -47,7 +50,7 @@ jobs:
             200) python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["state"] == "frozen" and d["build"] > 0' "$RUNNER_TEMP/pacman-freeze.json"; echo 'arch=false' >> "$GITHUB_OUTPUT" ;;
             *) echo "Cannot inspect pacman freeze marker: HTTP $status" >&2; exit 1 ;;
           esac
-      - name: Select hourly or manual build
+      - name: Select pushed or manual build
         id: select
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -94,9 +97,9 @@ jobs:
             vulkan-icd-loader librsvg desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          # An explicit older main commit (#1040) or a scheduled tick (main tip, chosen by
-          # select) sets the checkout; manual and pull-request runs keep the default ref.
-          ref: ${{ (inputs.source != '' || inputs.hourly_source != '' || github.event_name == 'schedule') && needs.select.outputs.source || '' }}
+          # An explicit older main commit (#1040) or a pinned retry sets the checkout;
+          # a push builds its own commit, which is the default ref.
+          ref: ${{ (inputs.source != '' || inputs.hourly_source != '') && needs.select.outputs.source || '' }}
           persist-credentials: false
       - name: Prepare build user
         run: useradd -m builder
@@ -149,16 +152,17 @@ jobs:
     outputs:
       accepted: ${{ steps.reuse.outputs.accepted }}
     needs: select
-    # Arch coalescing must not suppress later accepted AppImage bytes on the next tick.
+    # Frozen or failed Arch never holds the AppImage beta of the same push.
     if: needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: bridge
-    timeout-minutes: 95
+    # Mirror wait (10m) + bounded producer wait (90m) + setup.
+    timeout-minutes: 105
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Request urgent source-pinned GitHub AppImage without waiting for cron
-        if: github.event_name == 'workflow_dispatch' && inputs.source == '' && inputs.appimage_only != 'true'
+      - name: Request the exact-source GitHub AppImage producer
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && inputs.source == '' && inputs.appimage_only != 'true'
         env:
           MIRROR_TOKEN: ${{ secrets.OKILUM_GITHUB_MIRROR }}
           OKILUM_GITHUB_APP_ID: ${{ secrets.OKILUM_GITHUB_APP_ID }}
@@ -236,7 +240,9 @@ jobs:
 
   shipping-status:
     needs: [select, appimage-reuse, appimage-publication]
-    if: always() && needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # Push runs get native `linux-release / <job> (push)` statuses on their own
+    # commit; only a dispatch needs them reported on the beta source.
+    if: always() && needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: bridge
     timeout-minutes: 2
     steps:

@@ -11,24 +11,24 @@ checks. Before merge, each worker runs `H=github scripts/agent/gh-check.sh` on
 its committed exact HEAD, waits for green, then merges the PR themselves.
 A later commit requires a fresh check. See `docs/agent-checks.md`.
 
-Forgejo check, full shell and source-sharing suites run on main pushes, nightly
-schedules and manual dispatches. Main runs share one ref group: an active run
-completes, and only the newest pending run is kept. Release/publication
-concurrency is unchanged. Legacy native-check ref cleanup is manual maintenance.
+Forgejo check, full shell, source-sharing and acceptance suites (`fast`, `ci`,
+`brain-ci`, `inbox-ci`, compatibility) run on nightly schedules and manual
+dispatches, never on main pushes; only beta packaging and the GitHub mirror run on
+push. Legacy native-check ref cleanup is manual maintenance.
 
 Before Stable promotion, require a successful `fast / shell-full` on the exact
 source being promoted, including its `(workflow_dispatch)` certification status.
 Never substitute a newer main result or a PR result for that source. If absent,
 dispatch `fast.yml` on main with `certification_source` set to the candidate SHA
-and wait for that source's full-suite result. Beta still uses check alone.
+and wait for that source's full-suite result. Certification is on demand only:
+nothing certifies main automatically any more, and Beta never reads it.
 
 Since #2589 both certification jobs wait on a `bridge` runner while GitHub's
 dedicated `ubuntu-24.04` runners execute that source's own commands: `check`
 runs the CI tooling, releases and updater Python suites and
 `scripts/ci/fast.sh` (`.github/workflows/forgejo-check.yml`, two parallel jobs
 of one run), `shell-full` runs `scripts/ci/shell-full.sh`
-(`.github/workflows/forgejo-shell-full.yml`). The status contexts Beta and
-Stable read, `fast / check (workflow_dispatch)` and
+(`.github/workflows/forgejo-shell-full.yml`). The status contexts Stable reads, `fast / check (workflow_dispatch)` and
 `fast / shell-full (workflow_dispatch)`, and their reporting jobs are unchanged.
 GitHub being unavailable is a failure, never a fallback pass. A source that
 predates a hosted workflow fails at once with `predates hosted check` (or
@@ -36,34 +36,56 @@ predates a hosted workflow fails at once with `predates hosted check` (or
 ordinary manual runs use the same hosted jobs. Details and budgets:
 `docs/fast-runner.md`.
 
-All three beta workflows tick at :17 UTC. The Linux coordinator requests at most
-one automatic fast certification per UTC hour. Both fast suites compile and test
-the requested product checkout on GitHub,
-independently of the workflow snapshot or subsequent main merges. Beta is gated by `fast / check` alone: its status is
-reported the moment `check` finishes, and a green `check` immediately dispatches
-all three source-pinned release workflows; the next tick recovers missed
-dispatches. `fast / shell-full` is reported separately on the same source for
-Stable; a red, pending or timed-out full suite never holds Beta (03.11: CI never
-gates development).
+### Beta on every main push (Oleg 05.11)
 
-Each platform selects the newest certified green **first-parent main** commit
-ahead of its own actual beta feed. PR statuses and archive descriptors do not
-count. A source already published, or behind the feed, cannot start another beta.
-Scheduled runs only coordinate; builds use a per-source queue and finish while
-main moves. Existing protected publication locks serialize feed writes and
-recheck source/build ordering and duplicate sources after artifact transfer.
+Every push to `main` starts `linux-release`, `macos-release` and
+`windows-release` for **that exact commit**. There is no cron and no
+certification gate: merges are gated by the worker's exact-HEAD gh-check, and
+each platform's compile, package and signing run is the beta gate. The only
+skip is a pushed commit that already is that platform's beta (the actual feed
+head, not an archive catalog).
+
+A newer push cancels the unfinished beta of an older commit, per platform:
+push runs share the concurrency group `<platform>-beta-main` with
+`cancel-in-progress`. Forgejo cancels every run of that group that still has a
+waiting, blocked or running job. The hosted GitHub producers follow: Linux
+AppImage producers share the GitHub group `forgejo-linux-beta`, and Mac beta
+signing runs share `macos-shipping-beta`, both cancelling the older run
+(the Mac keychain cleanup is `always()` and still runs). Manual, pinned,
+archive, AppImage-only and Windows re-sign dispatches keep their own Forgejo
+groups: a push never cancels their Forgejo run, and they never cancel a push
+run. A manual main beta's hosted Linux/Mac producer is still superseded by a
+newer push's producer, which is the intended outcome. Trade-off: merges that
+arrive faster than a platform's build time keep restarting that platform's beta
+until main is quiet for one build.
 
 Linux retains exact run/job/artifact SHA provenance by creating a write-once
-GitHub branch `forgejo-linux-pr/hourly-<source>`. Its push starts the producer;
-existing completed or active producers are reused. A mismatched existing ref is
-an error, never force-updated. Mac and Windows use the selected product source
-with separately validated delivery tooling. Shipping status context names stay
-unchanged and are explicitly reported on the beta source, preserving the 09:00
-Stable selector. Signing, channels and Stable promotion are unchanged.
+GitHub branch `forgejo-linux-pr/hourly-<source>` (the name predates push betas).
+Its push starts the producer; existing completed or active producers are reused.
+A mismatched existing ref is an error, never force-updated. The branch is
+created only after the GitHub mirror has the pushed commit (bounded wait, 10
+minutes); the Mac bridge waits the same bound for the mirror. Mac and Windows
+build the pushed product source with their existing delivery tooling.
+
+Push runs carry Forgejo's native statuses on their own commit, named
+`<platform>-release / <job> (push)`; the 09:00 Stable selector matches them.
+Manual dispatches report the same contexts with `(workflow_dispatch)` through
+`shipping-status`. Signing, channels and Stable promotion are unchanged;
+Windows push betas stay unsigned.
 
 Manual branch builds publish nothing. Explicit older-source archive and Windows
-re-sign requests retain their existing routes. An urgent main workflow dispatch
-uses the same certification and feed admission as hourly work.
+re-sign requests retain their existing routes. A manual main dispatch (recovery
+after a failed push build, or an urgent rebuild) builds the newest unpublished
+first-parent main; a dispatch whose snapshot is older than main re-dispatches
+itself pinned to main's tip.
+
+To observe it after a merge: within a minute of the push, Forgejo Actions shows
+three new `push` runs on that commit (`linux-release`, `macos-release`,
+`windows-release`) plus `github-mirror`. Linux creates
+`forgejo-linux-pr/hourly-<sha>` on GitHub and a `forgejo-linux` run there; Mac
+starts a `forgejo-macos-shipping` run. Each successful build dispatches
+`release-publish`, which then refreshes `releases` (the GitHub rolling Beta).
+A second merge before those finish shows the first commit's runs as cancelled.
 
 Release compilation uses pinned sccache with the existing private S3 cache when
 credentials are available, otherwise the ordinary compiler. Arch/Windows cache
@@ -87,7 +109,8 @@ publication. Missing artifacts or mismatched source commits fail closed.
 ## Rolling Beta
 
 Every successful protected platform publication dispatches **releases** with empty
-inputs. A 15-minute reconciliation schedule remains as recovery. The workflow uses
+inputs. There is no polling schedule; if that refresh fails, the next publication
+or a manual `releases` dispatch with empty inputs reconciles it. The workflow uses
 a light runner and no compilation or macOS slot. It reads the current public
 Sparkle, Velopack and Arch beta heads and verifies their exact catalog build/source
 and asset hashes. Missing catalogs wait; mismatches fail closed. Each platform has
@@ -191,9 +214,9 @@ visibility remains unmet by the existing protocol.
 
 ### Promoting an older main commit (#1040)
 
-Main often moves on before a source has all three builds: Linux builds every 30
-minutes and Windows every hour, so a commit that was main's head between two ticks
-never gets one. To promote such a commit, run **releases** on **main** with `source`
+Main often moves on before a source has all three builds: a newer push cancels
+an unfinished beta, so a commit that was main's head only briefly may lack one or
+more platform builds. To promote such a commit, run **releases** on **main** with `source`
 set to its full SHA and `build` empty:
 
 1. The commit must be on main's history and must already have a macOS build. That
@@ -214,18 +237,16 @@ not built again.
 
 ## Superseded main builds (#562)
 
-All platform builds finish useful work even while main advances. Linux builds on
-push; Mac/Windows select main only on their scheduled tick or manual dispatch. Windows
-PR checks can still cancel an earlier run of the same PR. Scheduled/manual builds
-are not cancelled by a push or the next tick.
+A newer main push cancels the unfinished push build of an older commit (see
+"Beta on every main push" above). Manual, pinned and archive builds are not
+cancelled by a push.
 
 Build workflows only upload private Actions artifacts and dispatch `release-publish`.
-The publisher requires a successful trusted main run. Linux and scheduled/manual
-Mac/Windows snapshots can publish after main advances, but every feed's published
-build number is checked under the shared publisher lock. A completion older than
-its feed is a no-op. The platform publishers retain their independent rollback
-guards. Failed/cancelled builds never publish; legacy Mac/Windows push builds
-still require current main.
+The publisher requires a successful trusted main run. Push and manual snapshots
+can publish after main advances, but every feed's published build number is
+checked under the shared publisher lock. A completion older than its feed is a
+no-op. The platform publishers retain their independent rollback guards.
+Failed/cancelled builds never publish.
 Versions retain the source build's original
 `5000 + run number`; the publication workflow's number is never used.
 

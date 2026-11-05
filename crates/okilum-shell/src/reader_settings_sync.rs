@@ -616,21 +616,21 @@ impl SyncSettings {
             self.run(Operation::Begin(name), cx);
         }
     }
-    fn choose_new_folder(
+    fn choose_vault_folder(
         &mut self,
         peer: uuid::Uuid,
         vault: String,
         label: &str,
         cx: &mut Context<Self>,
     ) {
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-            self.presentation.picking_vault = false;
-            self.error =
-                Some("Your home folder is unavailable. Choose an existing empty folder.".into());
-            cx.notify();
-            return;
-        };
-        let picker = cx.prompt_for_new_path(&home, Some(&destination_name(label)));
+        // A directory picker can select an existing folder or create one through
+        // its native New Folder action. A save-file dialog cannot select folders.
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(format!("Use folder for {label}").into()),
+        });
         let epoch = self.lifetime.ticket();
         cx.spawn(async move |this, cx| {
             let result = picker.await;
@@ -641,13 +641,19 @@ impl SyncSettings {
                     return;
                 }
                 match result {
-                    Ok(Ok(Some(path))) => {
-                        this.accept_destination(Operation::AttachNew(peer, vault, path), cx);
+                    Ok(Ok(Some(paths))) if !paths.is_empty() => {
+                        let path = paths.into_iter().next().unwrap();
+                        let operation = if path.exists() {
+                            Operation::Attach(peer, vault, path)
+                        } else {
+                            Operation::AttachNew(peer, vault, path)
+                        };
+                        this.accept_destination(operation, cx);
                     }
-                    Ok(Ok(None)) => { this.presentation.picking_vault=false; }
+                    Ok(Ok(_)) => { this.presentation.picking_vault=false; }
                     _ => {
                         this.presentation.picking_vault=false;
-                        let message = "The folder dialog could not return a local folder. Choose the folder again, or use an existing empty folder.".to_string();
+                        let message = "The folder dialog could not return a local folder. Choose the folder again.".to_string();
                         this.destination_error = Some((vault, message.clone()));
                         this.error = Some(message);
                         cx.notify();
@@ -1143,7 +1149,7 @@ fn user_error(error: &anyhow::Error) -> String {
     } else if text.contains("signing") || text.contains("bundle") || text.contains("runtime") {
         "A verified Sync runtime is not available in this build. Install a signed beta that includes Sync and try again.".into()
     } else if text.contains("nonempty") || text.contains("non-empty") {
-        "This folder already contains files. Lossless merge preview is required; choose an empty folder to continue.".into()
+        "This folder already contains files. Your files have not changed. Choose an empty folder to start Sync.".into()
     } else if text.contains("expired") {
         "This pairing URL expired. Create a new one on the other computer.".into()
     } else if text.contains("daemon")

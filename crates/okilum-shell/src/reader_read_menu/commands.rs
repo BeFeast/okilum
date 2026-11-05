@@ -13,7 +13,7 @@ impl Command {
         match self {
             Self::Plain => "Copy",
             Self::Markdown => "Copy as Markdown",
-            Self::Rich => "Copy with formatting",
+            Self::Rich => "Copy as Rich Text",
             Self::SelectAll => "Select all",
             Self::Document => "Copy entire document as Markdown",
         }

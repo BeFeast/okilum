@@ -45,38 +45,29 @@ fresh production bytes or promote a release.
 
 ## Independent beta producers
 
-The three Forgejo beta producers run hourly at minute 17 UTC, plus explicit
-`workflow_dispatch` for urgent fixes (#2500). They read the current main tip and
-require `fast / check (push)` and `fast / shell-full (push)` success on that exact
-merge commit. `fast.yml` runs the same required jobs after merge; PR-head success
-does not stand in for merge health. A missing, pending or failed status skips the
-hour with an explanation and no fallback to an older commit. The next hour retries.
-
-macOS beta skips this gate (Oleg 04.11, #2589): it always builds the newest
-first-parent main commit, and a pinned run that main has moved past exits without
-building. Its hosted compile, sign and notarize run is the gate. Linux and Windows
-keep the certification gate.
+Superseded 05.11: every main push builds each platform's beta from that exact
+commit, with no cron and no certification gate; a newer push cancels an
+unfinished older build. See [Beta on every main push](releases.md#beta-on-every-main-push-oleg-0511).
+The 31.10 hourly cadence (minute 17 UTC) and its certification gate are retired.
 
 The current platform beta feed, rather than an archive-only source catalog,
 suppresses an unchanged beta. Linux reads the active AppImage feed, not frozen
-pacman. If a queued tick captured an older main, it dispatches a new main run with
-an expected source. That run revalidates the source before building. Artifacts,
-`notes.json` and `linux-release / …`, `macos-release / …`, `windows-release / …`
-shipping statuses therefore remain on the beta's actual source commit. Daily
-Stable selection can still step back through the per-platform `previous_build` /
-`previous_source` chain. Each notes range includes all visible merges since the
-previous published beta; intermediate merges do not invent intermediate builds.
+pacman. Artifacts, `notes.json` and `linux-release / …`, `macos-release / …`,
+`windows-release / …` shipping statuses remain on the beta's actual source
+commit. Daily Stable selection can still step back through the per-platform
+`previous_build` / `previous_source` chain. Each notes range includes all
+visible merges since the previous published beta; intermediate merges do not
+invent intermediate builds.
 
-Hourly producer groups cancel superseded work. Explicit archive, AppImage reuse
+Push producer groups cancel superseded work. Explicit archive, AppImage reuse
 and Windows re-sign runs use independent groups, while protected publication and
 Stable keep their existing non-cancellable serialization and monotonic guards.
-A cancelled producer cannot authorize publication. A missed attempt retries at the
-next tick; feed identity and existing immutable GitHub artifacts prevent duplicates.
-GitHub `forgejo-linux` and `forgejo-macos` retain immediate trusted PR refs but drop
-main push triggers and use the same hourly green-main admission. macOS shipping
-remains dispatch-only, called by the hourly Forgejo producer; it keeps its signing
-lock and keychain cleanup. Native nightly AppImage acceptance remains a separate
-schedule, consuming the original digest-verified bytes rather than rebuilding.
+A cancelled producer cannot authorize publication. GitHub `forgejo-linux` and
+`forgejo-macos` keep immediate trusted PR refs and have no main trigger; Linux
+beta producers start from Forgejo's write-once source ref. macOS shipping remains
+dispatch-only, called by the Forgejo producer; it keeps its keychain cleanup.
+Native nightly AppImage acceptance remains a separate schedule, consuming the
+original digest-verified bytes rather than rebuilding.
 
 Automatic Windows builds remain unsigned; explicit daily re-sign is unchanged.
 Stable still requires signed Windows metadata and verified signatures. macOS beta

@@ -32,6 +32,9 @@ and to `app_footprint::roots()` (or the OS-specific removal) before updating it.
 - **Inside vaults:** `.okilum-save-*` / `.okilum-create-*` transient files may
   remain after a crash. They are part of the vault and are never deleted
   automatically.
+- **Sync destinations:** folders selected or created in the native directory
+  dialog are user vaults, outside the app's owned data. The picker does not
+  compute a separate home-based destination root; uninstall keeps these vaults.
 
 ## Windows (Velopack, per user)
 
