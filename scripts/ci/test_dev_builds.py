@@ -308,6 +308,51 @@ esac
             self.assertFalse((root / 'build.lock').exists())
 
 
+class LinuxTarget(unittest.TestCase):
+    def pick(self, root, env):
+        script = ('die() { echo "$*" >&2; exit 1; }\n' + bash_function(LINUX, 'pick_target') +
+                  'root=$1; pick_target; printf "%s\\n" "$target"')
+        clean = {k: v for k, v in os.environ.items()
+                 if k not in ('BUILD_SLOT', 'CARGO_TARGET_DIR', 'OKILUM_DEV_TARGET_CAP_GIB')}
+        return subprocess.run(['bash', '-c', script, 'test', str(root)], capture_output=True,
+                              text=True, env=dict(clean, **env), timeout=30)
+
+    def test_target_above_the_cap_starts_fresh_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / 'target/release/marker'
+            marker.parent.mkdir(parents=True)
+            marker.write_text('warm')
+            kept = self.pick(root, {'OKILUM_DEV_TARGET_CAP_GIB': '1'})
+            self.assertEqual(kept.returncode, 0, kept.stderr)
+            self.assertEqual(kept.stdout.splitlines(), [str(root / 'target')])
+            self.assertTrue(marker.exists())
+            reset = self.pick(root, {'OKILUM_DEV_TARGET_CAP_GIB': '0'})
+            self.assertEqual(reset.returncode, 0, reset.stderr)
+            self.assertIn('above the 0 GiB cap; starting it fresh', reset.stdout)
+            self.assertEqual(reset.stdout.splitlines()[-1], str(root / 'target'))
+            self.assertFalse((root / 'target').exists())
+            bad = self.pick(root, {'OKILUM_DEV_TARGET_CAP_GIB': 'x'})
+            self.assertEqual(bad.returncode, 1)
+            self.assertIn('whole number of GiB', bad.stderr)
+
+    def test_a_build_slot_run_keeps_the_slot_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / 'target/release/marker'
+            marker.parent.mkdir(parents=True)
+            marker.write_text('warm')
+            slot = root / 'slot/target'
+            result = self.pick(root, {'BUILD_SLOT': '0', 'CARGO_TARGET_DIR': str(slot),
+                                      'OKILUM_DEV_TARGET_CAP_GIB': '0'})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), [str(slot)])
+            self.assertTrue(marker.exists())
+            # Without a slot an inherited CARGO_TARGET_DIR does not move the target.
+            result = self.pick(root, {'CARGO_TARGET_DIR': str(slot), 'OKILUM_DEV_TARGET_CAP_GIB': '1'})
+            self.assertEqual(result.stdout.splitlines(), [str(root / 'target')])
+
+
 class LinuxInstall(unittest.TestCase):
     def install(self, home, new, env=None):
         script = bash_function(LINUX, 'install_image')
