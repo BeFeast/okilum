@@ -428,6 +428,7 @@ fn reasoning_rows_follow_each_model_descriptor_and_disappear_without_reasoning(
         (2, vec!["low", "high"]),
         (3, vec![]),
         (4, vec![]),
+        (5, vec![]),
     ] {
         if ordinal > 1 {
             primary_key(visual, &ordinal.to_string());
@@ -455,19 +456,19 @@ fn reasoning_rows_follow_each_model_descriptor_and_disappear_without_reasoning(
         if ordinal < 3 {
             let last = format!("project-model-option-0-{}", expected.len() - 1);
             assert!(
-                visual.debug_bounds(&last).is_some(),
+                visual.debug_bounds(last).is_some(),
                 "positive control: last supported choice is rendered"
             );
             let extra = format!("project-model-option-0-{}", expected.len());
             assert!(
-                visual.debug_bounds(&extra).is_none(),
+                visual.debug_bounds(extra).is_none(),
                 "no provider-wide extra reasoning levels"
             );
             let default = format!(
                 "project-model-default-0-{}",
                 expected.iter().position(|value| *value == "high").unwrap()
             );
-            assert!(visual.debug_bounds(&default).is_some());
+            assert!(visual.debug_bounds(default).is_some());
         } else if ordinal == 3 {
             assert_eq!(controls.len(), 1);
             assert_eq!(
@@ -485,7 +486,7 @@ fn reasoning_rows_follow_each_model_descriptor_and_disappear_without_reasoning(
             assert!(visual.debug_bounds("project-model-no-options").is_some());
         }
     }
-    assert_eq!(gateway.model_writes.lock().unwrap().len(), 3);
+    assert_eq!(gateway.model_writes.lock().unwrap().len(), 4);
     assert!(gateway.sends.lock().unwrap().is_empty());
 }
 
