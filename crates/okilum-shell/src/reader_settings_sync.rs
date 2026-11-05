@@ -466,6 +466,7 @@ impl SyncSettings {
         .detach();
     }
     fn start_pairing(&mut self, redeem: bool, cx: &mut Context<Self>) {
+        self.receiving = redeem;
         let name = self.name.read(cx).value().trim().to_string();
         if direct::validate_name(&name).is_err() {
             self.error = Some(

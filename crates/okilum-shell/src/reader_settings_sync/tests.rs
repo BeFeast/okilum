@@ -201,7 +201,6 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
         "ctrl-a"
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("ctrl-a");
     visual.simulate_input("Desktop 2487");
     visual.update(|window, cx| {
         let input = field.read(cx);
@@ -1835,4 +1834,44 @@ fn issue2615_computer_vaults_open_observations_before_any_catalog_request(cx: &m
         calls.lock().unwrap().is_empty(),
         "computer details must not query an inviter's own endpoint"
     );
+}
+
+#[gpui::test]
+fn issue2615_expired_source_link_is_recreated_in_one_action_after_receiving(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::test_init);
+    let mut offered = snapshot(None);
+    offered.offer_url = Some("synthetic-offer".into());
+    let calls = guided_worker(cx, vec![offered]);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.receiving = true;
+            view.name
+                .update(cx, |input, cx| input.set_value("QA desktop", window, cx));
+            view.invitation.update(cx, |input, cx| {
+                input.set_value("old receiver link", window, cx)
+            });
+            view.start_pairing(false, cx);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    view.update(visual, |view, cx| {
+        assert!(!view.receiving);
+        view.presentation.wizard = Some(super::presentation::Step::Expired);
+        view.snapshot.as_mut().unwrap().offer_url = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let new_link = visual.debug_bounds("sync-new-link").unwrap();
+    visual.simulate_click(new_link.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec!["offer", "offer"]);
+    assert!(visual.debug_bounds("sync-copy-url").is_some());
 }

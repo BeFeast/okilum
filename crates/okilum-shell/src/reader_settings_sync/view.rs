@@ -569,13 +569,16 @@ impl SyncSettings {
                     .child(title),
             )
             .child(div().text_sm().text_color(p.text_muted).child(help));
-        if self
+        if let Some(pending) = self
             .snapshot
             .as_ref()
             .and_then(|s| s.pending.as_ref())
-            .is_some_and(|p| p.incoming)
+            .filter(|p| p.incoming)
         {
-            return body.child(self.render_approval(cx)).into_any_element();
+            return v_flex().gap_3()
+                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(format!("Allow {} to connect?",pending.name)))
+                .child(div().text_sm().text_color(p.text_muted).child(format!("On {local}, confirm this is the computer you just used. {} is waiting for your approval.",pending.name)))
+                .child(self.render_approval(cx)).into_any_element();
         }
         if self.error.is_some() && step != Step::Expired {
             body = body.child(self.render_status(cx));
@@ -748,8 +751,7 @@ impl SyncSettings {
                             // A receiving computer cannot create an invitation
                             // on the source. Return to the explicit source step
                             // rather than silently reverse the pairing roles.
-                            if this.receiving || !this.invitation.read(cx).value().trim().is_empty()
-                            {
+                            if this.receiving {
                                 this.presentation.wizard = Some(Step::Start);
                                 cx.notify();
                             } else {
