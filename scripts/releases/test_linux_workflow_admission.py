@@ -11,11 +11,12 @@ ROOT = Path(__file__).resolve().parents[2]
 class LinuxAdmission(unittest.TestCase):
     def test_arch_cannot_block_next_main_appimage_path(self):
         workflow = yaml.safe_load((ROOT / '.forgejo/workflows/linux-release.yml').read_text())
-        # Hourly coordinators cancel superseded ticks. Explicit archive/reuse
-        # runs have independent groups, so Arch cannot occupy their admission.
-        self.assertIn('github.run_id', workflow['concurrency']['group'])
-        self.assertIn("inputs.hourly_source", workflow['concurrency']['group'])
-        self.assertIs(workflow['concurrency']['cancel-in-progress'], False)
+        # A newer main push cancels an unfinished older push beta. Explicit
+        # archive/reuse runs have independent groups, so Arch cannot occupy
+        # their admission and they are never cancelled by a push.
+        self.assertEqual(workflow['concurrency']['group'],
+                         "linux-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}")
+        self.assertEqual(workflow['concurrency']['cancel-in-progress'], "${{ github.event_name == 'push' }}")
         jobs = workflow['jobs']
         self.assertNotIn('needs', jobs['select'])
         self.assertEqual(jobs['appimage-reuse']['needs'], 'select')

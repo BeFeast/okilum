@@ -1,13 +1,14 @@
-# Hourly newest-main beta (no certification gate, #2589); hosted shipping only, corporate M4 CI stays disabled.
+# Beta on every main push for the exact pushed commit (Oleg 05.11; no cron, no
+# certification gate); hosted shipping only, corporate M4 CI stays disabled.
 name: macos-release
 
 on:
-  schedule:
-    - cron: '17 * * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       hourly_source:
-        description: 'Internal source-pinned hourly retry; newest first-parent main source'
+        description: 'Internal source-pinned retry of a manual run; newest first-parent main source'
         required: false
         default: ''
       full_acceptance:
@@ -27,10 +28,12 @@ on:
         required: false
         default: ''
 
-# Queue each certified source independently; scheduled coordinators stay short.
+# A newer main push cancels this platform's unfinished beta of an older commit
+# (the hosted signing run on GitHub is superseded by its own concurrency group).
+# Manual, pinned and preview dispatches keep their own groups and always finish.
 concurrency:
-  group: macos-beta-${{ inputs.hourly_source || (github.event_name == 'schedule' && 'hourly') || github.run_id }}
-  cancel-in-progress: false
+  group: macos-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   select:
@@ -224,9 +227,10 @@ jobs:
 
   hosted-artifact:
     needs: select
-    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    if: needs.select.outputs.build == 'true' && needs.select.outputs.lane == 'hosted' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: bridge
-    timeout-minutes: 105
+    # Mirror wait (10m) + bounded hosted shipping wait (100m) + setup.
+    timeout-minutes: 115
     steps:
       - name: Check out the exact source from the runner server
         shell: bash
@@ -261,7 +265,7 @@ jobs:
           OKILUM_GITHUB_APP_INSTALLATION_ID: ${{ secrets.OKILUM_GITHUB_APP_INSTALLATION_ID }}
           OKILUM_GITHUB_APP_KEY: ${{ secrets.OKILUM_GITHUB_APP_KEY }}
           PRODUCT_SOURCE: ${{ needs.select.outputs.source }}
-          HOURLY_SOURCE: ${{ inputs.hourly_source || (github.event_name == 'schedule' && needs.select.outputs.source) || '' }}
+          HOURLY_SOURCE: ${{ inputs.hourly_source }}
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
           OKILUM_SIGNING_IDENTITY: ${{ vars.OKILUM_SIGNING_IDENTITY }}
           OKILUM_NOTARY_PROFILE: ${{ vars.OKILUM_NOTARY_PROFILE }}
@@ -282,7 +286,8 @@ jobs:
 
   shipping-status:
     needs: [select, release, hosted-artifact]
-    if: always() && needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # Push runs get native `macos-release / <job> (push)` statuses on their own commit.
+    if: always() && needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: bridge
     timeout-minutes: 2
     steps:

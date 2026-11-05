@@ -22,8 +22,8 @@ Open that GitHub Actions run and verify its SHA equals the PR head. A skipped
 `macos` job is not evidence; use a completed successful native job. Superseded
 PR runs are cancelled, so use the replacement for the current head. The bridge
 is implemented in `scripts/ci/github-macos.py`, and the hosted workflow is
-`.github/workflows/forgejo-macos.yml`. Main's supplementary native checks follow
-the hourly beta cadence. The full acceptance workflow exempts root/docs
+`.github/workflows/forgejo-macos.yml`. It has no main trigger: the main beta is
+signed by `forgejo-macos-shipping` on every push. The full acceptance workflow exempts root/docs
 Markdown-only PRs from macOS.
 
 `scripts/ci/check-macos.sh` verifies the vendor patches, compiles the production

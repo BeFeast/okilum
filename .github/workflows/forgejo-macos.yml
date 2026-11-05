@@ -5,14 +5,13 @@ name: forgejo-macos
 on:
   push:
     branches: ['forgejo-pr/**']
-  schedule:
-    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Main native checks follow hourly beta cadence; trusted PR refs remain immediate.
+# Trusted PR refs remain immediate. Main beta signs through forgejo-macos-shipping;
+# the former hourly main tick could not reach Forgejo admission and never built.
 concurrency:
   group: forgejo-macos-${{ github.ref }}
   cancel-in-progress: true

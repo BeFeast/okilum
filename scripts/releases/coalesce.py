@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select periodic release work without occupying a compiler runner while idle."""
+"""Select push, manual and archive release work before a compiler runner is occupied."""
 import argparse
 from datetime import datetime, timezone
 import json
@@ -140,6 +140,9 @@ def select_macos_preview(event, source, env, now):
 def select_macos(event, source, env, now):
     if env.get('MACOS_PREVIEW_PR'):
         return select_macos_preview(event, source, env, now)
+    if event == 'push':
+        build, source, reason = hourly_beta.push_select(source, 'macos', env, hourly_beta.published_beta)
+        return build, source, False, reason
     if event == 'schedule' or (event == 'workflow_dispatch'
             and env.get('GITHUB_REF') == 'refs/heads/main'
             and not env.get('OKILUM_SOURCE')):
@@ -226,6 +229,11 @@ if __name__ == '__main__':
         build = descriptor(requested, args.platform) is None
         source = requested
         print(f'Explicit source {requested}: ' + ('build' if build else 'already published'))
+    elif event == 'push':
+        # Beta on every main push: build exactly this commit (Oleg 05.11).
+        build, source, reason = hourly_beta.push_select(source, args.platform,
+                                                        os.environ, hourly_beta.published_beta)
+        print(reason)
     elif event == 'schedule' or (event == 'workflow_dispatch'
             and os.environ.get('GITHUB_REF') == 'refs/heads/main'):
         build, source, reason = hourly_beta.select(event, source, args.platform,

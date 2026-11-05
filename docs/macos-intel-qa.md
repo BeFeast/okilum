@@ -4,7 +4,7 @@ The `macos-intel-qa` workflow cross-compiles on the existing Apple Silicon runne
 for `x86_64-apple-darwin`. It runs manually or at 01:30 UTC, with no push trigger.
 It uses a separate target cache and concurrency group. The single macOS runner
 still serializes jobs; a running QA build occupies its slot until completion.
-The hourly arm64 release workflow and publisher are unchanged.
+The arm64 beta release workflow (on every main push) and publisher are unchanged.
 
 The artifact contains a Developer ID signed `Okilum Intel QA.app`, its ZIP and
 build time/executable size metrics. It is not notarized. Its separate bundle ID
