@@ -13,8 +13,9 @@ verify the complete generated tree. Only the diff, manifest and setup are
 committed; Cargo.lock pins the generated path dependency. No gpui core changes.
 
 The mandatory GitHub Windows agent job exercises `UpdateManager::download_updates`
-with a real console-subsystem helper. Its `GetConsoleCP` result must prove the
-actual SDK child has no console, independently of desktop window availability.
+with a real console-subsystem helper. The test executable starts with
+`CREATE_NEW_CONSOLE` and proves its parent window exists, independently of the
+runner's pseudoconsole. The actual SDK child's `GetConsoleWindow` must be null.
 The synthetic source rejects full downloads,
 so fallback cannot mask a patch failure. The helper validates patch arguments
 and reconstructs exact fixture bytes through paths with spaces and Unicode.
