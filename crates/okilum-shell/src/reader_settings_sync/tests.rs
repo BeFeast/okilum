@@ -171,7 +171,11 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
         .detach();
     });
     visual.update(|window, cx| {
-        field.update(cx, |input, cx| input.focus(window, cx));
+        field.update(cx, |input, cx| {
+            // The name field starts with this host's name; type a fresh value.
+            input.set_value("", window, cx);
+            input.focus(window, cx);
+        });
     });
     visual.run_until_parked();
     visual.simulate_input("Desktop 2487");
