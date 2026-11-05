@@ -197,10 +197,21 @@ fn close_dont_save_refuses_a_failed_recovery_write(cx: &mut TestAppContext) {
     std::fs::remove_file(root.join("Start.md")).unwrap();
     assert!(!visual.simulate_close());
     visual.run_until_parked();
-    let drafts = state.join("editor-drafts");
-    let backup = state.join("drafts-backup");
-    std::fs::rename(&drafts, &backup).unwrap();
-    std::fs::write(&drafts, "not a directory").unwrap();
+    // Keep the editor's live lock in place: Windows does not permit renaming
+    // its directory. A directory at the JSON destination fails real journal
+    // publication on both platforms, independently of user permissions.
+    let journal = std::fs::read_dir(state.join("editor-drafts"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
+    let previous = std::fs::read(&journal).unwrap();
+    std::fs::remove_file(&journal).unwrap();
+    std::fs::create_dir(&journal).unwrap();
     reader.update_in(&mut visual, |r, window, cx| {
         r.editing
             .as_ref()
@@ -217,8 +228,8 @@ fn close_dont_save_refuses_a_failed_recovery_write(cx: &mut TestAppContext) {
         );
     });
     assert!(!root.join("Start.md").exists());
-    std::fs::remove_file(&drafts).unwrap();
-    std::fs::rename(&backup, &drafts).unwrap();
+    std::fs::remove_dir(&journal).unwrap();
+    std::fs::write(&journal, previous).unwrap();
     assert!(!visual.simulate_close());
     visual.run_until_parked();
     click(&mut visual, "deleted-note-dont-save");

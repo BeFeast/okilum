@@ -29,13 +29,13 @@ def main():
         text = original[paths[0]].decode()
         needle = 'reader.prepare_window_close(window, cx)'
         assert text.count(needle) == 1, 'native close hook not found exactly once'
-        paths[0].write_text(text.replace(needle, 'reader.save_source_for_close(cx)'))
+        paths[0].write_bytes(text.replace(needle, 'reader.save_source_for_close(cx)').encode())
         for path, callback in zip(paths[1:], ('request_quit', 'request')):
             text = original[path].decode()
             needle = (f'    if !crate::reader_editor::confirm_deleted_for_quit({callback}, cx) {{\n'
                       '        return;\n    }\n')
             assert text.count(needle) == 1, f'Quit hook not found exactly once: {path.name}'
-            path.write_text(text.replace(needle, ''))
+            path.write_bytes(text.replace(needle, '').encode())
         for suffix in ('read_close_offers_choices_and_only_explicit_discard_closes',
                        'source_keyboard_quit_offers_choices'):
             name = PREFIX + suffix
