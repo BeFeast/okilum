@@ -178,6 +178,14 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
         });
     });
     visual.run_until_parked();
+    // Computer name starts with this host's name. Replace the existing value
+    // through the real editing shortcut before testing commit-on-dismissal.
+    visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-a"
+    } else {
+        "ctrl-a"
+    });
+    visual.run_until_parked();
     visual.simulate_input("Desktop 2487");
     visual.update(|window, cx| {
         let input = field.read(cx);

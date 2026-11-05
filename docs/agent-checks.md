@@ -29,7 +29,10 @@ remain source-pinned. Main pushes only mirror source or publish releases.
 Ordinary fast manual retries on one ref supersede older manual runs; each
 certification dispatch has its own concurrency group and is never cancelled.
 
-The standard public `ubuntu-24.04` runner has 4 vCPUs. The job records its CPU,
+The standard public `ubuntu-24.04` runner has 4 vCPUs. This worker lane omits
+dev/test debug symbols to keep the complete desktop and test targets within the
+hosted runner's disk budget; assertions, lint and every suite remain enabled.
+Release and native acceptance profiles are independent. The job records its CPU,
 memory and exact source SHA, verifies the pinned Rust toolchain and the complete
 gpui-kit/comrak patch trees, fetches public dependencies with the workspace lock,
 then runs the scheduled shared gate's exact lint command,
