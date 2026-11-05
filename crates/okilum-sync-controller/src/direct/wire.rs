@@ -190,11 +190,43 @@ fn socket_timeout(error: std::io::Error) -> std::io::Error {
     }
 }
 
+pub(super) fn approval_wait_interrupted(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::WouldBlock
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::ConnectionReset
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde::ser::SerializeSeq;
     use std::cell::Cell;
+
+    #[test]
+    fn approval_wait_retries_only_transient_socket_failures() {
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::ConnectionReset,
+        ] {
+            let error =
+                anyhow::Error::new(std::io::Error::from(kind)).context("read pairing frame length");
+            assert!(approval_wait_interrupted(&error));
+        }
+        assert!(!approval_wait_interrupted(&anyhow::anyhow!(
+            "pairing authentication failed"
+        )));
+        assert!(!approval_wait_interrupted(&anyhow::anyhow!(
+            "pairing frame exceeds bound"
+        )));
+    }
 
     #[test]
     fn blocking_socket_timeout_is_recognized_as_an_offline_peer() -> Result<()> {

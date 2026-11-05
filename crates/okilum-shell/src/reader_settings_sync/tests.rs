@@ -21,6 +21,11 @@ use std::{path::Path, time::Duration};
 
 fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings {
     SyncSettings {
+        presentation: super::presentation::Presentation {
+            advanced: true,
+            wizard: Some(super::presentation::Step::Start),
+            ..Default::default()
+        },
         #[cfg(target_os = "linux")]
         runtimes: vec![],
         #[cfg(target_os = "linux")]
@@ -149,6 +154,15 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
     assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
     let view = visual.update(|_, cx| cx.global::<BackgroundSync>().0.clone());
 
+    view.update(&mut visual, |view, cx| {
+        view.presentation.wizard = Some(if invitation {
+            super::presentation::Step::Paste
+        } else {
+            super::presentation::Step::Start
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
     let field = view.read_with(&visual, |view, _| {
         if invitation {
             view.invitation.clone()
@@ -193,6 +207,8 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
         visual.simulate_click(close.center(), Modifiers::default());
     } else {
         visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
     }
     visual.run_until_parked();
     assert!(!cx.read(|cx| cx.windows().contains(&handle)));
@@ -226,18 +242,12 @@ fn reader_settings_sync_validates_before_starting_any_controller(cx: &mut TestAp
         root.view().clone().downcast::<SyncSettings>().unwrap()
     });
     visual.run_until_parked();
-    for selector in ["sync-add-computer", "sync-connect"] {
-        let bounds = visual
-            .debug_bounds(selector)
-            .expect("production pairing action");
-        visual.simulate_click(bounds.center(), Modifiers::default());
+    for redeem in [false, true] {
+        view.update(visual, |view, cx| view.start_pairing(redeem, cx));
         visual.run_until_parked();
         view.read_with(visual, |view, _| {
             assert!(view.error.as_ref().unwrap().contains("name"));
-            assert!(
-                view.controller.is_none(),
-                "validation must precede runtime or network IO"
-            );
+            assert!(view.controller.is_none());
             assert!(!view.busy);
         });
     }
@@ -320,7 +330,7 @@ fn issue2589_action_failure_is_logged_with_chain_and_visible_cause(cx: &mut Test
         root.view().clone().downcast::<SyncSettings>().unwrap()
     });
     view.read_with(visual, |view, _| {
-        assert!(view.error.as_deref().unwrap().contains("Permission denied"))
+        assert!(!view.error.as_deref().unwrap().contains("Permission denied"))
     });
     assert_visible(visual, "sync-error");
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -435,13 +445,14 @@ fn reader_settings_sync_catalog_requires_a_selected_paired_computer(cx: &mut Tes
     visual.run_until_parked();
     // A catalog cannot appear against an unselected or previous computer.
     assert!(
-        visual.debug_bounds("sync-inspect-existing").is_some(),
+        visual.debug_bounds("sync-panel").is_some(),
         "positive control: settings rendered"
     );
     assert!(visual.debug_bounds("sync-authorized-catalog").is_none());
     assert!(view.read_with(visual, |view, _| view.selected_peer.is_none()));
     view.update(visual, |view, cx| {
         view.selected_peer = Some(peer);
+        view.presentation.wizard = Some(super::presentation::Step::Vaults);
         cx.notify();
     });
     visual.run_until_parked();
@@ -718,6 +729,7 @@ fn guided_worker(
                 states.front().unwrap().clone()
             };
             Ok(Output {
+                overview: Default::default(),
                 connection_error: None,
                 controller: controller.clone(),
                 snapshot,
@@ -899,6 +911,9 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
     visual.run_until_parked();
     let add = visual.debug_bounds("sync-add-computer").unwrap();
     visual.simulate_click(add.center(), Modifiers::default());
+    visual.run_until_parked();
+    let create = visual.debug_bounds("sync-create-link").unwrap();
+    visual.simulate_click(create.center(), Modifiers::default());
     visual.run_until_parked();
     assert_visible(&mut visual, "sync-copy-url");
     assert_visible(&mut visual, "sync-pairing-url");
@@ -1208,6 +1223,7 @@ fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
             let local =
                 policy == okilum_sync_controller::network_policy::Policy::LocalNetworkAndVpn;
             Ok(Output {
+                overview: Default::default(),
                 connection_error: None,
                 controller: controller.clone(),
                 snapshot: snapshot(None),
@@ -1221,6 +1237,7 @@ fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
+            view.presentation.wizard = None;
             view.runtimes = vec![network_choice(true, false)];
             view
         });
@@ -1260,6 +1277,7 @@ fn sync_network_external_connection_has_no_mutating_switch(cx: &mut TestAppConte
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
+            view.presentation.wizard = None;
             view.runtimes = vec![network_choice(false, false)];
             view
         });
@@ -1362,6 +1380,7 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
             }
             calls.lock().unwrap().push("read");
             Ok(Output {
+                overview: Default::default(),
                 connection_error: None,
                 controller: controller.clone(),
                 snapshot: ready.clone(),
@@ -1660,4 +1679,64 @@ fn sync_2419_real_pairing_timer_skips_full_runtime_inspection(cx: &mut TestAppCo
     });
     assert_visible(visual, "sync-copy-url");
     controller.shutdown();
+}
+
+#[gpui::test]
+fn issue2615_overview_starts_quiet_and_add_opens_a_wizard(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.presentation = Default::default();
+            view.snapshot = Some(snapshot(None));
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sync-empty").is_some());
+    assert!(visual.debug_bounds("sync-modal").is_none());
+    assert!(visual.debug_bounds("sync-inspect-existing").is_none());
+    let add = visual.debug_bounds("sync-add-computer").unwrap();
+    visual.simulate_click(add.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sync-modal").is_some());
+    assert!(visual.debug_bounds("sync-create-link").is_some());
+    root.read_with(visual, |root, cx| {
+        let view = root.view().clone().downcast::<SyncSettings>().unwrap();
+        assert!(
+            view.read(cx).controller.is_none(),
+            "opening a wizard must not create an invitation"
+        );
+    });
+    let close = visual.debug_bounds("sync-close-wizard").unwrap();
+    visual.simulate_click(close.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sync-modal").is_none());
+    let advanced = visual.debug_bounds("sync-advanced").unwrap();
+    visual.simulate_click(advanced.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sync-inspect-existing").is_some());
+}
+
+#[gpui::test]
+fn issue2615_error_details_are_hidden_until_requested(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.presentation = Default::default();
+            view.error = Some("The other computer could not be reached.".into());
+            view.presentation.error_details = Some("read pairing frame length: os error 11".into());
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sync-error").is_some());
+    assert!(visual.debug_bounds("sync-technical-details").is_none());
+    let details = visual.debug_bounds("sync-error-details").unwrap();
+    visual.simulate_click(details.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sync-technical-details").is_some());
 }

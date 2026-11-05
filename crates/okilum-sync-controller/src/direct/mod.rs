@@ -34,6 +34,9 @@ const LIFETIME: u64 = 3600;
 const PAIRING_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PEERS: usize = 64;
 
+mod overview;
+pub use overview::{ComputerOverview, Overview, VaultOverview};
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pending {
     pub request_id: Uuid,
@@ -793,7 +796,16 @@ impl Controller {
             stream.set_read_timeout(Some(PAIRING_REPLY_TIMEOUT))?;
         }
         wire::write(&mut stream, &frame)?;
-        let response = wire::read(&mut stream)?;
+        let response = match wire::read(&mut stream) {
+            Ok(response) => response,
+            // The durable request is already recorded locally. A slow human or
+            // an older inviter can outlive one socket; poll with the SAME signed
+            // request, never replace its identity or require another invitation.
+            Err(error) if redeem && wire::approval_wait_interrupted(&error) => {
+                return Ok(Reply::Pending);
+            }
+            Err(error) => return Err(error),
+        };
         let (response, _): (Response, _) = wire::open(response, credential, Some(public))?;
         ensure!(response.nonce == message.nonce, "stale pairing response");
         self.check()?;
@@ -1634,6 +1646,60 @@ mod tests {
             .redeem(&replacement, "New computer")?
             .pending
             .is_some());
+        source.shutdown();
+        target.shutdown();
+        Ok(())
+    }
+    #[test]
+    fn approval_wait_survives_closed_reply_and_human_delay() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let source = controller(root.path(), "source")?;
+        let target = controller(root.path(), "target")?;
+        let url = offer(&source)?;
+        let mut decoded = decode_url(&url)?;
+        // A forwarding inviter drops the first response after accepting the
+        // request, modelling an older peer's short socket deadline.
+        let proxy = TcpListener::bind("127.0.0.1:0")?;
+        let destination = decoded.endpoint;
+        decoded.endpoint = proxy.local_addr()?;
+        let url = encode_url(&decoded)?;
+        let proxy_thread = thread::spawn(move || -> Result<()> {
+            let (mut first, _) = proxy.accept()?;
+            let envelope: wire::Envelope = wire::read(&mut first)?;
+            let mut remote = wire::connect(destination)?;
+            wire::write(&mut remote, &envelope)?;
+            let _: wire::Envelope = wire::read(&mut remote)?;
+            // The response is deliberately lost, but the claimed identity stays.
+            drop(first);
+            let (mut retry, _) = proxy.accept()?;
+            let envelope: wire::Envelope = wire::read(&mut retry)?;
+            let mut remote = wire::connect(destination)?;
+            wire::write(&mut remote, &envelope)?;
+            let response: wire::Envelope = wire::read(&mut remote)?;
+            wire::write(&mut retry, &response)?;
+            Ok(())
+        });
+        let waiting = target.redeem(&url, "Joining computer")?;
+        let request = waiting
+            .pending
+            .context("lost reply must remain pending")?
+            .request_id;
+        assert_eq!(source.snapshot()?.pending.unwrap().request_id, request);
+        // Human approval takes longer than the original three-second timeout.
+        thread::sleep(Duration::from_millis(3100));
+        let waiting = target.refresh_pairing()?;
+        assert_eq!(waiting.pending.unwrap().request_id, request);
+        proxy_thread.join().unwrap()?;
+        // Continue against the original endpoint after the controlled proxy.
+        {
+            let mut db = target.shared.db.lock().unwrap();
+            db.outbound.as_mut().unwrap().0.endpoint = destination;
+            target.save(&db)?;
+        }
+        source.approve(request)?;
+        let approved = target.refresh_pairing()?;
+        assert!(approved.pending.is_none());
+        assert_eq!(approved.peers.len(), 1);
         source.shutdown();
         target.shutdown();
         Ok(())
