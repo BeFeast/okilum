@@ -1,0 +1,13 @@
+{
+  "package": "velopack",
+  "version": "1.2.161",
+  "archive_url": "https://static.crates.io/crates/velopack/velopack-1.2.161.crate",
+  "archive_sha256": "4295172ffaad78f9adbab35f7ffefa97e4ceefee9d2c38bda37fdce4d6c66e5a",
+  "patch": "hidden-delta.diff",
+  "patch_sha256": "b43f52b39928715e53a8bf7dc8afb13dfbd9a1fedadb0d07ff49a254994b03d7",
+  "tree_sha256": "9dbbe586d66712c914fc7017d1f0f82fba63f81b9227ac0eb198e388ec646ba8",
+  "generated_path": "vendor/velopack-1.2.161",
+  "changed_files": [
+    "src/manager.rs"
+  ]
+}

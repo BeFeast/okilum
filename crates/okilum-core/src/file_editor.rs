@@ -366,7 +366,9 @@ impl FileEditor {
             return Ok(false);
         }
         match fs::read_to_string(path) {
-            Ok(current) => Ok(draft.text != current),
+            // Windows publication can reach the file before its acknowledgement
+            // reaches recovery. Equal bytes do not authorize forgetting that draft.
+            Ok(current) => Ok(cfg!(windows) || draft.text != current),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
             Err(error) => Err(error.into()),
         }
@@ -469,7 +471,11 @@ impl FileEditor {
             if draft.path != path {
                 bail!("Recovery draft belongs to another file");
             }
-            if (!draft.pending_input && draft.text == draft.base) || draft.text == base {
+            // Windows keeps an unacknowledged save pending even when publication
+            // already reached disk. Only Save/reload can acknowledge its journal.
+            if (!draft.pending_input && draft.text == draft.base)
+                || (cfg!(unix) && draft.text == base)
+            {
                 let draft = Draft {
                     path,
                     text: base.clone(),
@@ -2083,16 +2089,48 @@ mod windows_editor_tests {
         drop(directory);
         drop(editor);
         assert!(record.exists() && preimage.exists());
+        let journal_before = fs::read(state.join(format!(
+            "{:x}.json",
+            Sha256::digest(note.as_os_str().as_encoded_bytes())
+        )))
+        .unwrap();
         let mut recovered = FileEditor::open(&note, &state).unwrap();
         assert!(recovered.dirty());
+        assert!(recovered.has_pending_revision());
         assert_eq!(recovered.text(), "proposed שלום\r\n");
+        assert!(FileEditor::has_unsaved_draft(&note, &state).unwrap());
+        assert_eq!(fs::read(&recovered.journal).unwrap(), journal_before);
+        assert_eq!(fs::read_to_string(&note).unwrap(), "proposed שלום\r\n");
         assert_eq!(recovered.save().unwrap(), Save::Saved);
         assert!(!recovered.dirty());
+        assert!(!FileEditor::has_unsaved_draft(&note, &state).unwrap());
+        drop(recovered);
+        let reopened = FileEditor::open(&note, &state).unwrap();
+        assert!(!reopened.dirty());
+        assert!(!reopened.has_pending_revision());
+        assert_eq!(reopened.text(), "proposed שלום\r\n");
         let listing = crate::source_history::list(&state, &root).unwrap();
         assert!(listing
             .versions
             .iter()
             .any(|v| v.text == "base\r\n" && v.protected));
+    }
+    #[test]
+    fn windows_editor_acknowledged_journal_keeps_a_new_disk_revision() {
+        let fixture = tempfile::tempdir().unwrap();
+        let note = fixture.path().join("Note.md");
+        let state = fixture.path().join("drafts");
+        fs::write(&note, "base\r\n").unwrap();
+        let mut editor = FileEditor::open(&note, &state).unwrap();
+        editor.set_text("saved שלום\r\n".into()).unwrap();
+        assert_eq!(editor.save().unwrap(), Save::Saved);
+        drop(editor);
+        assert!(!FileEditor::has_unsaved_draft(&note, &state).unwrap());
+        fs::write(&note, "external after acknowledged save\r\n").unwrap();
+        let reopened = FileEditor::open(&note, &state).unwrap();
+        assert_eq!(reopened.text(), "external after acknowledged save\r\n");
+        assert!(!reopened.dirty());
+        assert!(!reopened.has_pending_revision());
     }
     #[test]
     fn windows_editor_racing_save_keeps_disk_draft_and_prepared_recovery() {

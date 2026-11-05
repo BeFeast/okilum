@@ -87,3 +87,20 @@ surfaces retain their 720px maximum and leading alignment. Header controls,
 Markdown selection, code actions, attachment transfers and scroller ownership
 are unchanged. This removes nested flex intrinsic-size negotiation for the
 rich rows actually exercised during native splitter measurement.
+
+The #2531 issue dock uses the same retained Linux ManagerDisplay for exact-run
+progress and thread links. It resolves the selected issue and mapping diagnostic
+through indices built with the shared projection, including when row filters hide
+the selection. Opening, resizing and repainting the dock do not scan every issue
+or subscribe its parent to the Manager composer. The mounted reference keeps its
+wheel/splitter bounds and checks keyboard opening/Escape against the issue tab.
+
+On Linux, Board notifications invalidate Reader's existing layout signal, so the
+center and issue dock update without notifying observers of the whole Reader.
+The fixed header remains cached through splitter geometry changes; actual Reader
+source publications still invalidate it. The mounted regression installs the
+same Board observer path as production and retains its zero-header-rebuild gate.
+
+Issue creation time remains in the flattened waiting Report source metadata
+introduced by #2533. The issue history reads that same timestamp; a second
+serde field would consume it before the waiting projection could see it.

@@ -130,16 +130,18 @@ class TestGroup(unittest.TestCase):
 
     def test_workflow_bounds_setup_with_additive_job_budgets(self):
         workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
-        for command in [
-            'fast-local-check 2100 bash scripts/ci/fast-local.sh',
-            'fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full',
-            'sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh',
-        ]:
-            wrapper = ('bash scripts/ci/test-group.sh ' if command.startswith('sync-local') else
-                       'bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ')
-            self.assertIn(wrapper + command, workflow)
-        self.assertIn('timeout-minutes: 55', workflow.split('  check:', 1)[1].split('  shell-full:', 1)[0])
-        self.assertIn('timeout-minutes: 37', workflow.split('  shell-full:', 1)[1].split('  sync-source-sharing:', 1)[0])
+        self.assertIn('bash scripts/ci/test-group.sh sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh', workflow)
+        self.assertIn('timeout-minutes: 60', workflow.split('  check:', 1)[1].split('  shell-full:', 1)[0])
+        self.assertIn('timeout-minutes: 60', workflow.split('  shell-full:', 1)[1].split('  certification-status:', 1)[0])
+        # #2589: both certification gates keep their outer groups on GitHub.
+        hosted = (ROOT / '.github/workflows/forgejo-shell-full.yml').read_text()
+        self.assertIn('bash scripts/ci/test-group.sh shell-full.sh 1920 bash scripts/ci/shell-full.sh', hosted)
+        check = (ROOT / '.github/workflows/forgejo-check.yml').read_text()
+        for command in ['fast.sh 2040 bash scripts/ci/fast.sh',
+                        "ci-python 180 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v",
+                        "releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v",
+                        "updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v"]:
+            self.assertIn('bash scripts/ci/test-group.sh ' + command, check)
         self.assertIn('timeout-minutes: 30', workflow.split('  sync-source-sharing:', 1)[1])
 
 

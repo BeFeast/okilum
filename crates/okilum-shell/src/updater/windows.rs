@@ -29,8 +29,12 @@ pub(super) fn take_announcement() -> Option<String> {
     state().lock().unwrap().take_announcement()
 }
 pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
+    super::restart_feedback::attempt();
     // Serialize restart against background checks until Velopack is armed.
     if BUSY.swap(true, Ordering::AcqRel) {
+        super::restart_feedback::refused(
+            "The updater is busy. Wait for it to finish, then choose Restart now again.",
+        );
         cx.defer(|cx| {
             if let Some(window) = cx.active_window() {
                 let _ = window.update(cx, |_, window, cx| {
@@ -67,6 +71,7 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
                 anyhow::bail!("The pending update changed. Choose Restart again.");
             }
             if !state.begin_restart(&id) {
+                super::restart_feedback::refused("The installer is already waiting for Okilum to close. Save or close any pending dialog, then quit Okilum to finish the update.");
                 return Ok(());
             }
         }
@@ -90,6 +95,10 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
                     std::mem::take(&mut restart_args),
                 )?,
                 RestartStep::Quit => {
+                    super::restart_feedback::record(
+                        "accepted",
+                        "Velopack armed after editor protection and state persistence",
+                    );
                     cx.quit();
                 }
             }
@@ -97,9 +106,10 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
         })
     })();
     if let Err(error) = result {
+        super::restart_feedback::refused(format!("Could not restart to update: {error}"));
         state().lock().unwrap().restart_failed();
         super::status::set(if ready() {
-            super::status::CheckStatus::Ready
+            super::status::CheckStatus::RestartRetry(error.to_string())
         } else {
             super::status::CheckStatus::Failed(error.to_string())
         });

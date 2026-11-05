@@ -24,7 +24,23 @@ LANES = {
     'native-shell': ('native', 'Run native tests', 4500),
     # #1639: only the editor latency gate blocks; legacy scroll is informational.
     'perf-linux': ('perf-linux', 'Check editor latency and the baseline ratchet', 3600),
+    # #2589: Forgejo fast.yml main certification. Exceeds the hosted job's own
+    # 45 min ceiling, so GitHub's deadline fires and is observed first.
+    'shell-full': ('shell-full', 'Run the complete Linux shell binary suite', 47 * 60),
+    # #2589: Forgejo fast.yml `check` (Beta's gate). Exceeds the longer hosted
+    # job's 47 min ceiling, so GitHub's deadline fires and is observed first.
+    'check': ('check', 'Build Linux desktop and run fast unit tests', 49 * 60),
 }
+# Further gate steps of the same hosted run, each proven by the jobs API.
+ALSO_REQUIRED = {
+    'check': (('python', 'Run the full CI tooling Python suite'),
+              ('python', 'Run the full releases Python suite'),
+              ('python', 'Run the full updater Python suite')),
+}
+# Waiters inside a fixed Forgejo step ceiling. The primary `bridge` runner stops
+# every job at 60 min, so queue and run share one budget; the run still gets at
+# most its lane timeout. See docs/fast-runner.md (#2589).
+BRIDGE_BUDGETS = {'shell-full': 53 * 60, 'check': 53 * 60}
 
 
 def main():
@@ -52,8 +68,13 @@ def main():
         if lane == 'fast':
             result, message = fast_evidence.wait(api, branch, sha, timeout=max(1, 540 - (time.monotonic() - started)))
         else:
+            limits = dict(queue_timeout=1800, run_timeout=timeout)
+            if lane in BRIDGE_BUDGETS:
+                limits.update(queue_timeout=BRIDGE_BUDGETS[lane], deadline=started + BRIDGE_BUDGETS[lane])
+            if lane in ALSO_REQUIRED:
+                limits.update(also_required=ALSO_REQUIRED[lane])
             result, message = transport.wait_for_run(api, branch, sha, workflow=f'.github/workflows/forgejo-{lane}.yml',
-                job_name=job, build_step=step, queue_timeout=1800, run_timeout=timeout)
+                job_name=job, build_step=step, **limits)
         print(message)
     except transport.Unavailable as error:
         print(f'Hosted CI unavailable; no fallback success: {error}')

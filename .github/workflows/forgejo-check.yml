@@ -1,0 +1,98 @@
+# Forgejo fast.yml `check` (#2589): main certification's shipping check on
+# GitHub's dedicated hosted runners instead of loaded baldr. Exact pushed source
+# only; no cache, signing, publication or Forgejo secrets.
+#
+# The Forgejo job ran the three Python suites and then scripts/ci/fast.sh in one
+# job. Here they run as two parallel jobs of one run with the same commands and
+# group limits: sequential worst-case ceilings plus GitHub's apt step would not
+# fit the 60 min bridge waiter (docs/fast-runner.md). The bridge requires both
+# jobs and every named gate step to have executed and passed.
+name: forgejo-check
+on:
+  push:
+    branches: ['forgejo-check-pr/**']
+permissions:
+  contents: read
+concurrency:
+  group: forgejo-check-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  python:
+    # Public repositories receive the standard 4-vCPU hosted Linux runner.
+    runs-on: ubuntu-24.04
+    # 10 min apt + three 5 min suite steps + 90 s setup/cleanup.
+    timeout-minutes: 27
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source=%s\ncpus=%s\n' "$GITHUB_SHA" "$(nproc)"
+      # The Forgejo job ran its suites after installing this set and the toolchain.
+      - name: Install system libraries
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd python3 python3-venv gnupg \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+      - name: Verify pinned Rust toolchain
+        run: |
+          rustc -Vv
+          cargo --version
+      - name: Prepare isolated Python test dependencies
+        run: bash scripts/ci/setup-python-tests.sh
+      - name: Run the full CI tooling Python suite
+        timeout-minutes: 5
+        run: bash scripts/ci/test-group.sh ci-python 180 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+      - name: Run the full releases Python suite
+        timeout-minutes: 5
+        run: bash scripts/ci/test-group.sh releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
+      - name: Run the full updater Python suite
+        timeout-minutes: 5
+        run: bash scripts/ci/test-group.sh updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
+
+  check:
+    runs-on: ubuntu-24.04
+    # 10 min apt + 35 min gate step (2040 s group + 30 s grace) + 90 s setup/cleanup.
+    timeout-minutes: 47
+    env:
+      # Same compiler settings as the former fast-linux check job; four
+      # compiler workers for the dedicated 4 vCPU runner.
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source and runner
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'source=%s\ncpus=%s\n' "$GITHUB_SHA" "$(nproc)"
+          free -h
+          df -h / "$RUNNER_TEMP"
+      - name: Install system libraries
+        timeout-minutes: 10
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh \
+            build-essential cmake pkg-config curl git mold zstd python3 python3-venv gnupg \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig-dev libfreetype-dev libxcb1-dev
+      - name: Verify pinned Rust toolchain
+        run: |
+          rustc -Vv
+          cargo --version
+      # The exact product gate with its own phase deadlines (channel tests 300 s,
+      # build 540 s, workspace test check 540 s, paste list/tests 120 s each).
+      # The outer group matches the former locked fast.sh limit in fast-local.sh.
+      - name: Build Linux desktop and run fast unit tests
+        timeout-minutes: 35
+        run: bash scripts/ci/test-group.sh fast.sh 2040 bash scripts/ci/fast.sh
+      - name: Record disk use
+        if: always()
+        run: df -h / "$RUNNER_TEMP"

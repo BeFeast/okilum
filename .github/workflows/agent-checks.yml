@@ -18,6 +18,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-recovery:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore Windows core cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agent-windows-recovery-v1
+      - name: Prepare and verify Windows vendor
+        shell: bash
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Run native Windows recovery controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-recovery-check.py
+          exit $LASTEXITCODE
+      - name: Run native Windows delta console controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-delta-console-check.py
+          exit $LASTEXITCODE
   linux:
     # Public repositories receive the standard 4-vCPU hosted Linux runner.
     runs-on: ubuntu-24.04
@@ -43,6 +77,13 @@ jobs:
           printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           lscpu
           free -h
+          df -h /
+      - name: Reclaim unused hosted SDKs for Rust artifacts
+        run: |
+          # The Rust lint/build/test profiles exceeded the stock image's free
+          # disk before a verdict (#2592). These SDKs are unused by this lane.
+          sudo rm -rf -- /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Install system libraries
         timeout-minutes: 10
         run: |
@@ -90,12 +131,14 @@ jobs:
       - name: Prepare isolated Python test dependencies
         run: bash scripts/ci/setup-python-tests.sh
       - name: Verify agent helper controls
-        run: python3 -m unittest discover -s scripts/ci -p test_agent_checks.py
+        run: |
+          python3 -m unittest discover -s scripts/ci -p test_agent_checks.py
+          python3 -m unittest discover -s scripts/ci -p test_test_group.py
       - name: Run CI, releases and updater Python suites
         run: |
-          python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
-          python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
-          python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
+          bash scripts/ci/test-group.sh agent-ci-python 300 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
+          bash scripts/ci/test-group.sh agent-releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
+          bash scripts/ci/test-group.sh agent-updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
       - name: Verify bundled Sync Help and brand
         run: |
           python3 docs/help/sync/check.py
@@ -109,12 +152,12 @@ jobs:
           CARGO_NET_OFFLINE: 'true'
         run: |
           source scripts/ci/test-nofile.sh
-          tini -s -- bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
+          tini -s -- bash scripts/ci/test-group.sh agent-sync-sharing 600 bash scripts/ci/sync-source-sharing.sh --runs 2 --parallel 2
       - name: Reject and reap surviving agent fixture daemons
         if: always()
         run: python3 scripts/ci/sync-fixture-processes.py --root "$RUNNER_TEMP" --cleanup
       - name: Verify local writer authority and fencing
-        run: cargo test --offline --locked -p okilum-write-authority local_writer_admission -- --nocapture
+        run: bash scripts/ci/test-group.sh agent-write-authority 120 cargo test --offline --locked -p okilum-write-authority local_writer_admission -- --nocapture
       - name: Build Linux desktop offline
         id: build
         env:
@@ -122,6 +165,8 @@ jobs:
         run: |
           cargo fmt --check
           cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
+      - name: Stress private reveal bus (20 runs)
+        run: bash scripts/ci/test-group.sh agent-reveal-stress 1800 python3 scripts/ci/reveal-stress.py --runs 20
       # #2589: two isolated profiles with pinned Syncthing; the hub keeps serving.
       - name: Pair through a running okilum sync serve
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -134,12 +179,12 @@ jobs:
           CARGO_NET_OFFLINE: 'true'
         run: |
           source scripts/ci/test-nofile.sh
-          cargo test --offline --locked -p okilum-core
+          bash scripts/ci/test-group.sh agent-core 480 cargo test --offline --locked -p okilum-core
       - name: Run Linux Rust suites offline
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           CARGO_NET_OFFLINE: 'true'
-        run: tini -s -- bash scripts/ci/linux-rust-tests.sh
+        run: tini -s -- bash scripts/ci/test-group.sh agent-linux-rust 3000 bash scripts/ci/linux-rust-tests.sh
       # Explicit benchmark refs repeat on this SAME VM: cross-host timings are
       # not a controlled comparison. Ordinary worker checks pay for one pass.
       - name: Warm build Linux desktop offline
@@ -154,12 +199,12 @@ jobs:
           CARGO_NET_OFFLINE: 'true'
         run: |
           source scripts/ci/test-nofile.sh
-          cargo test --offline --locked -p okilum-core
+          bash scripts/ci/test-group.sh agent-core 480 cargo test --offline --locked -p okilum-core
       - name: Warm Linux Rust suites offline
         if: ${{ !cancelled() && steps.warm-build.outcome == 'success' }}
         env:
           CARGO_NET_OFFLINE: 'true'
-        run: tini -s -- bash scripts/ci/linux-rust-tests.sh
+        run: tini -s -- bash scripts/ci/test-group.sh agent-linux-rust 3000 bash scripts/ci/linux-rust-tests.sh
       - name: Compare editor publication with pinned main on this host
         if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.publication_baseline != '' }}
         env:

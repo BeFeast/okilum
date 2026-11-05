@@ -25,18 +25,24 @@ class ProcessV2(unittest.TestCase):
         self.assertEqual(workflow('.forgejo/workflows/sprint.yml')['on'], {})
         self.assertIn('test-nofile.sh', (ROOT / 'scripts/ci/check-linux.sh').read_text())
 
-    def test_fast_lane_is_local_linux_with_core_rebuild_budget(self):
+    def test_fast_check_runs_on_github_with_core_rebuild_budget(self):
         local = workflow('.forgejo/workflows/fast.yml')
         job = local['jobs']['check']
-        self.assertEqual(job['runs-on'], 'fast-linux')
-        self.assertEqual(job['timeout-minutes'], '55')
+        # #2589: baldr co-tenant load timed out the build phase; the certification
+        # check waits on a bridge while GitHub's dedicated runner executes it.
+        self.assertEqual(job['runs-on'], 'bridge')
+        self.assertEqual(job['timeout-minutes'], '60')
         text = (ROOT / '.forgejo/workflows/fast.yml').read_text()
-        self.assertNotIn('github-pr.py', text)
-        self.assertIn('fast-local.sh', text)
-        pool = (ROOT / 'scripts/ci/fast-local.sh').read_text()
-        self.assertIn('CARGO_TARGET_DIR', pool)
-        self.assertIn('flock -n', pool)
+        check = text.split('  check:\n', 1)[1].split('\n  shell-full:', 1)[0]
+        self.assertIn('CI_LANE: check', check)
+        self.assertIn('CI_LANE: shell-full', text)
+        # Never the retired three-platform fast lane or the baldr slot pool.
+        self.assertNotIn('CI_LANE: fast\n', text)
+        self.assertNotIn('fast-local.sh', text)
+        self.assertFalse((ROOT / 'scripts/ci/fast-local.sh').exists())
         self.assertFalse((ROOT / '.github/workflows/forgejo-fast.yml').exists())
+        hosted = (ROOT / '.github/workflows/forgejo-check.yml').read_text()
+        self.assertIn('bash scripts/ci/test-group.sh fast.sh 2040 bash scripts/ci/fast.sh', hosted)
         script = (ROOT / 'scripts/ci/fast.sh').read_text()
         self.assertIn('cargo build --locked -p okilum-shell -p okilum-sync-supervisor', script)
         self.assertIn('cargo check --locked --workspace --tests', script)

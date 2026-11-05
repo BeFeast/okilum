@@ -82,6 +82,9 @@ pub(super) struct Agent<'a> {
     pub stuck: bool,
 }
 impl Agent<'_> {
+    pub fn working(&self) -> bool {
+        self.state == State::Working
+    }
     /// Compact row state; the full label keeps the source age in the tooltip.
     pub fn state_label(&self) -> &'static str {
         if self.thread.status == "failed" {
