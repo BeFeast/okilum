@@ -41,7 +41,9 @@ class DocumentTypesTests(unittest.TestCase):
         self.assert_drop_types(info, 'Alternate')
         self.assert_folder_service(info, 'Okilum')
 
-    def test_sprint_accepts_explicit_drops_without_default_or_url_associations(self):
+    def test_sprint_builds_the_regular_bundle_from_the_shipping_template(self):
+        # Since e56ff32d5 (#2589) Sprint replaces the one working Okilum app:
+        # same bundle id, drop ranks, folder Service and URL scheme as shipping.
         source = (ROOT / 'scripts/dev/okilum-sprint.sh').read_text()
         program = source.split('python3 - "$bundle_stage" "$sha" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]
         with tempfile.TemporaryDirectory() as directory:
@@ -50,10 +52,10 @@ class DocumentTypesTests(unittest.TestCase):
             subprocess.run(['python3', '-', str(stage), 'test-source'], input=program,
                            text=True, cwd=ROOT, check=True)
             info = plistlib.loads((stage / 'Contents/Info.plist').read_bytes())
-        self.assert_drop_types(info, 'None')
-        self.assert_folder_service(info, 'Okilum Sprint')
-        self.assertNotIn('CFBundleURLTypes', info)
-        self.assertEqual(info['CFBundleIdentifier'], 'com.befeast.okilum.sprint')
+        self.assert_drop_types(info, 'Alternate')
+        self.assert_folder_service(info, 'Okilum')
+        self.assertIn('CFBundleURLTypes', info)
+        self.assertEqual(info['CFBundleIdentifier'], 'com.befeast.okilum')
 
 
 if __name__ == '__main__':
