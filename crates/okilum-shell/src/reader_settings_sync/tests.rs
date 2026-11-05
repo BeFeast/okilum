@@ -1309,6 +1309,7 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
     let (_, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
+            view.presentation.wizard = Some(super::presentation::Step::Vaults);
             view.run(Operation::Read, cx);
             view
         });
@@ -1578,6 +1579,7 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
+            view.presentation.wizard = Some(super::presentation::Step::Vaults);
             view.run(Operation::Read, cx);
             view
         });
