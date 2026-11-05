@@ -386,3 +386,144 @@ fn escape_dismisses_the_picker_when_model_access_or_sending_becomes_unavailable(
         assert!(gateway.model_writes.lock().unwrap().is_empty());
     }
 }
+
+#[gpui::test]
+fn reasoning_rows_follow_each_model_descriptor_and_disappear_without_reasoning(
+    cx: &mut TestAppContext,
+) {
+    let effort = |values: &[&str]| {
+        json!([
+            {"type":"select","id":"effort","label":"Reasoning", "options":values.iter().map(|value|
+                json!({"id":value,"label":value,"isDefault":*value=="high"})).collect::<Vec<_>>()},
+            {"type":"boolean","id":"fastMode","label":"Fast","currentValue":false}
+        ])
+    };
+    let mut data = catalog(
+        "codex",
+        effort(&["low", "medium", "high", "xhigh", "ultra"]),
+    );
+    data["providers"][0]["models"] = json!([
+        model(
+            "same-model",
+            "Reasoning Pro",
+            effort(&["low", "medium", "high", "xhigh", "ultra"])
+        ),
+        model("limited", "Limited effort", effort(&["low", "high"])),
+        model(
+            "plain",
+            "No reasoning",
+            json!([{"type":"boolean","id":"fastMode","label":"Fast","currentValue":false}])
+        ),
+        model(
+            "empty",
+            "Empty settings",
+            json!([{"type":"select","id":"effort","label":"Reasoning","options":[]}])
+        )
+    ]);
+    let (view, visual, _state, gateway) =
+        fixture(cx, data, selection("work-account", "same-model", json!([])));
+    click(visual, "project-manager-model");
+    for (ordinal, expected) in [
+        (1, vec!["low", "medium", "high", "xhigh", "ultra"]),
+        (2, vec!["low", "high"]),
+        (3, vec![]),
+        (4, vec![]),
+    ] {
+        if ordinal > 1 {
+            primary_key(visual, &ordinal.to_string());
+            assert!(visual.debug_bounds("project-model-panel").is_none());
+            primary_key(visual, "shift-m");
+        }
+        let controls = view.read_with(visual, |view, _| {
+            ProjectView::picker_controls(view.models.as_ref().unwrap())
+        });
+        let values: Vec<_> = controls
+            .iter()
+            .find(|control| control.id == "effort")
+            .map(|control| {
+                control
+                    .choices
+                    .iter()
+                    .map(|choice| choice.value.as_str().unwrap())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            values, expected,
+            "same-provider models must use their own option values"
+        );
+        if ordinal < 3 {
+            let last = format!("project-model-option-0-{}", expected.len() - 1);
+            assert!(
+                visual.debug_bounds(&last).is_some(),
+                "positive control: last supported choice is rendered"
+            );
+            let extra = format!("project-model-option-0-{}", expected.len());
+            assert!(
+                visual.debug_bounds(&extra).is_none(),
+                "no provider-wide extra reasoning levels"
+            );
+            let default = format!(
+                "project-model-default-0-{}",
+                expected.iter().position(|value| *value == "high").unwrap()
+            );
+            assert!(visual.debug_bounds(&default).is_some());
+        } else if ordinal == 3 {
+            assert_eq!(controls.len(), 1);
+            assert_eq!(
+                controls[0].label, "Fast",
+                "unrelated settings survive without a Reasoning section"
+            );
+            assert!(visual.debug_bounds("project-model-option-0-1").is_some());
+            assert!(visual
+                .debug_bounds("project-model-option-heading-1")
+                .is_none());
+        } else {
+            assert!(visual
+                .debug_bounds("project-model-option-heading-0")
+                .is_none());
+            assert!(visual.debug_bounds("project-model-no-options").is_some());
+        }
+    }
+    assert_eq!(gateway.model_writes.lock().unwrap().len(), 3);
+    assert!(gateway.sends.lock().unwrap().is_empty());
+}
+
+#[gpui::test]
+fn invalid_prompt_choices_are_hidden_instead_of_becoming_ultrathink(cx: &mut TestAppContext) {
+    let descriptors = json!([{"type":"select","id":"effort","label":"Reasoning",
+        "promptInjectedValues":["ultrathink", "future-prompt-mode"], "options":[
+            {"id":"high","label":"High","isDefault":true},
+            {"id":"ultracode","label":"Ultracode"},
+            {"id":"ultrathink","label":"Ultrathink"},
+            {"id":"future-prompt-mode","label":"Future prompt mode"}]}]);
+    let (view, visual, _state, gateway) = fixture(
+        cx,
+        catalog("claudeAgent", descriptors),
+        selection("work-account", "same-model", json!([])),
+    );
+    click(visual, "project-manager-model");
+    assert!(
+        visual.debug_bounds("project-model-option-0-2").is_some(),
+        "advertised Claude Ultrathink is available"
+    );
+    assert!(
+        visual.debug_bounds("project-model-option-0-3").is_none(),
+        "unknown prompt semantics cannot edit the draft"
+    );
+    view.update(visual, |view, cx| {
+        view.models.as_mut().unwrap().catalog.providers[0].driver_kind = "codex".into();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-model-option-0-1").is_some(),
+        "ordinary advertised values remain selectable"
+    );
+    assert!(
+        visual.debug_bounds("project-model-option-0-2").is_none(),
+        "Claude prompt injection is unavailable on another driver"
+    );
+    assert!(gateway.model_writes.lock().unwrap().is_empty());
+    assert!(gateway.sends.lock().unwrap().is_empty());
+}

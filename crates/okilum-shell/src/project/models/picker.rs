@@ -8,6 +8,26 @@ pub(super) fn surface_size(available: Size<Pixels>) -> Size<Pixels> {
     )
 }
 
+#[derive(IntoElement)]
+struct ModelSearch(Entity<InputState>);
+impl RenderOnce for ModelSearch {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focused = self.0.read(cx).focus_handle(cx).is_focused(window);
+        Input::new(&self.0)
+            .small()
+            .w_full()
+            .focus_bordered(false)
+            // Keep a visible, single-pixel focus border without the heavy halo.
+            .border_color(if focused {
+                cx.theme().ring
+            } else {
+                brand::palette(cx).border_subtle
+            })
+            .prefix(Icon::new(IconName::Search).small())
+            .aria_label("Search models")
+    }
+}
+
 /// A normal same-frame component boundary keeps settings construction out of
 /// the large picker builder's stack frame; it schedules no frames or requests.
 #[derive(IntoElement)]
@@ -44,12 +64,12 @@ impl ProjectView {
         // only when the window cannot fit a useful model list beside them.
         let options_beside = width >= px(800.);
         let named_providers = width >= px(640.);
-        let rail_width = if named_providers { px(144.) } else { px(68.) };
+        let rail_width = if named_providers { px(208.) } else { px(68.) };
         let height = geometry.height;
         // Geometry is a function of the viewport only. Catalog length, current
         // descriptors, provider selection, favorites and search cannot resize
         // or reposition the surface underneath the pointer.
-        let body_budget = (height - px(128.)).max(px(0.));
+        let body_budget = (height - px(80.)).max(px(0.));
         let (list_height, option_height) = if options_beside {
             (body_budget, body_budget)
         } else {
@@ -58,6 +78,32 @@ impl ProjectView {
         };
         let choices = Arc::new(self.visible_model_choices(cx));
         let palette = brand::palette(cx);
+        let mut top_row = h_flex()
+            .debug_selector(|| "project-model-header".into())
+            .w_full()
+            .min_w_0()
+            .h(px(40.))
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(ui::GAP))
+            .child(
+                div()
+                    .debug_selector(|| "project-model-title".into())
+                    .flex_shrink_0()
+                    .text_size(px(ui::BODY))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Select a model"),
+            );
+        if let Some(search) = &self.model_ui.search {
+            top_row = top_row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .debug_selector(|| "project-model-search".into())
+                    .child(ModelSearch(search.clone())),
+            );
+        }
         let mut panel = v_flex()
             .debug_selector(|| "project-model-panel".into())
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -73,34 +119,18 @@ impl ProjectView {
             .overflow_hidden()
             .gap(px(ui::GAP))
             .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .h(px(48.))
-                    .flex_shrink_0()
-                    .items_start()
-                    .gap(px(ui::GAP))
-                    .border_b_1()
-                    .border_color(palette.border_subtle)
+                top_row
                     .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .debug_selector(|| "project-model-title".into())
-                                    .text_size(px(ui::TITLE))
-                                    .line_height(px(24.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Select a model"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(ui::LABEL))
-                                    .line_height(px(18.))
-                                    .text_color(palette.text_muted)
-                                    .child("Model and settings for this Manager"),
-                            ),
+                        Button::new("project-model-refresh")
+                            .debug_selector(|| "project-model-refresh".into())
+                            .ghost()
+                            .small()
+                            .icon(IconName::RotateCw)
+                            .tooltip("Refresh models")
+                            .disabled(self.model_busy || self.busy || !self.can_read_models())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.model_request(None, window, cx)
+                            })),
                     )
                     .child(
                         Button::new("project-model-close")
@@ -115,41 +145,6 @@ impl ProjectView {
                             ),
                     ),
             );
-        let mut search_row = h_flex()
-            .w_full()
-            .min_w_0()
-            .h(px(32.))
-            .flex_shrink_0()
-            .items_center()
-            .gap_2();
-        if let Some(search) = &self.model_ui.search {
-            search_row = search_row.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .debug_selector(|| "project-model-search".into())
-                    .child(
-                        Input::new(search)
-                            .small()
-                            .w_full()
-                            .aria_label("Search models"),
-                    ),
-            );
-        }
-        panel = panel.child(
-            search_row.child(
-                Button::new("project-model-refresh")
-                    .debug_selector(|| "project-model-refresh".into())
-                    .ghost()
-                    .small()
-                    .icon(IconName::RotateCw)
-                    .tooltip("Refresh models")
-                    .disabled(self.model_busy || self.busy || !self.can_read_models())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.model_request(None, window, cx)),
-                    ),
-            ),
-        );
         #[cfg(native_manager)]
         let catalog_loading = self.native.active()
             && self
@@ -220,7 +215,6 @@ impl ProjectView {
                 .h(list_height)
                 .flex_shrink_0()
                 .rounded(px(ui::RADIUS))
-                .bg(palette.surface_raised)
                 .p_1()
                 .gap_1()
                 .child(
@@ -228,11 +222,15 @@ impl ProjectView {
                         .debug_selector(|| "project-model-favorites".into())
                         .ghost()
                         .w_full()
-                        .h(px(32.))
+                        .h(px(36.))
                         .flex_shrink_0()
-                        .justify_start()
-                        .icon(IconName::StarFill)
-                        .when(named_providers, |button| button.label("Favorites"))
+                        .px_2()
+                        .child(visuals::rail_label(
+                            "favorites",
+                            IconName::StarFill,
+                            "Favorites",
+                            named_providers,
+                        ))
                         .tooltip("Favorites")
                         .accessibility_label("Favorite models")
                         .selected(self.model_ui.favorites)
@@ -273,43 +271,48 @@ impl ProjectView {
                         .w_full()
                         .h(px(36.))
                         .flex_shrink_0()
-                        .justify_start()
-                        .gap_2()
-                        .p_1()
-                        .child(self.render_picker_provider_mark(
-                            provider,
-                            &snapshot.catalog.providers,
-                            cx,
-                        ))
-                        .when(named_providers, |button| {
-                            button.child(
-                                div()
-                                    .debug_selector(move || {
-                                        format!("project-model-account-label-{index}")
-                                    })
-                                    .min_w_0()
-                                    .flex_1()
-                                    .truncate()
-                                    .text_size(px(ui::LABEL))
-                                    .line_height(px(ui::LINE))
-                                    .child(title.clone()),
-                            )
-                        })
-                        .when_some(
-                            visuals::instance_badge(provider, &snapshot.catalog.providers),
-                            |button, badge| {
-                                button.child(
-                                    div()
-                                        .debug_selector(move || {
-                                            format!("project-model-account-suffix-{index}")
-                                        })
-                                        .flex_shrink_0()
-                                        .text_size(px(ui::LABEL))
-                                        .line_height(px(18.))
-                                        .text_color(palette.text_muted)
-                                        .child(badge),
-                                )
-                            },
+                        .px_2()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .min_w_0()
+                                .items_center()
+                                .gap_2()
+                                .child(self.render_picker_provider_mark(
+                                    provider,
+                                    &snapshot.catalog.providers,
+                                    cx,
+                                ))
+                                .when(named_providers, |button| {
+                                    button.child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("project-model-account-label-{index}")
+                                            })
+                                            .min_w_0()
+                                            .flex_1()
+                                            .truncate()
+                                            .text_size(px(ui::LABEL))
+                                            .line_height(px(ui::LINE))
+                                            .child(title.clone()),
+                                    )
+                                })
+                                .when_some(
+                                    visuals::instance_badge(provider, &snapshot.catalog.providers),
+                                    |button, badge| {
+                                        button.child(
+                                            div()
+                                                .debug_selector(move || {
+                                                    format!("project-model-account-suffix-{index}")
+                                                })
+                                                .flex_shrink_0()
+                                                .text_size(px(ui::LABEL))
+                                                .line_height(px(18.))
+                                                .text_color(palette.text_muted)
+                                                .child(badge),
+                                        )
+                                    },
+                                ),
                         )
                         .tooltip(format!("{title} · {}", provider.provider_instance_id))
                         .accessibility_label(format!("Models from {title}"))
@@ -343,9 +346,15 @@ impl ProjectView {
                         .debug_selector(|| "project-model-missing-provider".into())
                         .ghost()
                         .w_full()
-                        .h(px(32.))
+                        .h(px(36.))
                         .flex_shrink_0()
-                        .icon(IconName::TriangleAlert)
+                        .px_2()
+                        .child(visuals::rail_label(
+                            "unavailable",
+                            IconName::TriangleAlert,
+                            "Unavailable",
+                            named_providers,
+                        ))
                         .tooltip("Current provider is unavailable")
                         .selected(!self.model_ui.favorites && instance == current.instance_id)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -362,11 +371,15 @@ impl ProjectView {
                     .debug_selector(|| "project-model-show-current".into())
                     .ghost()
                     .w_full()
-                    .h(px(32.))
+                    .h(px(36.))
                     .flex_shrink_0()
-                    .justify_start()
-                    .icon(IconName::Check)
-                    .when(named_providers, |button| button.label("Selected model"))
+                    .px_2()
+                    .child(visuals::rail_label(
+                        "current",
+                        IconName::Check,
+                        "Selected model",
+                        named_providers,
+                    ))
                     .tooltip("Show current model")
                     .accessibility_label("Show current model")
                     .on_click(cx.listener(move |this, _, window, cx| {
