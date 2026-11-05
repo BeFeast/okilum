@@ -1,5 +1,6 @@
 #!/bin/bash
 # Local-only Mac sprint build. Run in Terminal, never through the release lane.
+# From the one checkout: bash <(git show origin/main:scripts/dev/okilum-sprint.sh) <branch>
 set -Eeuo pipefail
 if [[ $# != 1 ]]; then echo "Usage: $0 <branch>" >&2; exit 2; fi
 if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
@@ -266,12 +267,15 @@ if ! command -v cargo >/dev/null; then
     echo "Install Rust, then rerun: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
     exit 1
 fi
-# Oleg's Mac checkouts use the Forgejo SSH remote (LAN and tailnet).
-repo=ssh://git@10.10.0.27:2222/BeFeast/okilum.git
-# Any SSH or HTTPS spelling of the same Forgejo repository is accepted.
+# One repository (Oleg, 2026-11-05): the build runs in a git worktree of his
+# own checkout, never in a separate clone. Its origin is the Forgejo SSH remote;
+# any SSH or HTTPS spelling of the same repository is accepted.
+checkout="${OKILUM_CHECKOUT:-$HOME/Developer/personal/okilum}"
+checkout=${checkout%/}
 origin_pattern='^((ssh://)?git@(git\.oklabs\.uk|10\.10\.0\.27)(:2222)?[:/]|https://git\.oklabs\.uk/)BeFeast/okilum(\.git)?$'
 git check-ref-format --branch "$branch" >/dev/null
-root="${OKILUM_SPRINT_HOME:-$HOME/Developer/personal/okilum-sprint}"
+# $root/src is the worktree; $root/target keeps the warm cargo cache.
+root="${OKILUM_SPRINT_HOME:-$HOME/Developer/worktrees/okilum/sprint}"
 root=${root%/}
 if [[ $root != /* || $root == / || $root == "$HOME" ]]; then
     echo 'OKILUM_SPRINT_HOME must be an absolute, dedicated directory.' >&2; exit 1
@@ -280,15 +284,18 @@ fi
 for path in "$root" "$root/src" "$root/target" "$app" "$HOME/Applications"; do
     if [[ -L $path ]]; then echo "Refusing symlink: $path" >&2; exit 1; fi
 done
-legacy="$HOME/okilum-sprint"
-if [[ ! -e $root && -e $legacy && $root != "$legacy" ]]; then
-    if [[ -L $legacy || -L $legacy/src || -L $legacy/target || ! -d $legacy || -e $legacy/build.lock ]]; then
-        echo "Cannot migrate $legacy: expected an idle, real Sprint directory." >&2; exit 1
+# Earlier versions kept a separate clone; move its warm cache here and delete it.
+for legacy in "$HOME/Developer/personal/okilum-sprint" "$HOME/okilum-sprint"; do
+    [[ $legacy != "$root" && -d $legacy && ! -L $legacy ]] || continue
+    if [[ -e $legacy/build.lock ]] || { [[ -d $legacy/src ]] && [[ -n $(git -C "$legacy/src" status --porcelain 2>/dev/null) ]]; }; then
+        echo "Old Sprint clone left in place (busy or has local changes): $legacy" >&2; continue
     fi
-    mkdir -p "$(dirname "$root")"
-    mv "$legacy" "$root"
-    printf 'Moved Sprint checkout and warm cache: %s → %s\n' "$legacy" "$root"
-fi
+    mkdir -p "$root"
+    if [[ ! -e $root/target && -d $legacy/target && ! -L $legacy/target ]]; then mv "$legacy/target" "$root/target"; fi
+    if [[ ! -e $root/Sparkle.tar.xz && -f $legacy/Sparkle.tar.xz ]]; then mv "$legacy/Sparkle.tar.xz" "$root/"; fi
+    rm -rf "$legacy"
+    printf 'Removed old Sprint clone %s; warm cache moved to %s\n' "$legacy" "$root"
+done
 mkdir -p "$root" "$HOME/Applications"
 if ! mkdir "$root/build.lock" 2>/dev/null; then
     echo "Sprint build is already running (lock: $root/build.lock)." >&2; exit 1
@@ -305,16 +312,23 @@ fi
 run_log="$root/stages.log"
 exec > >(tee -a "$run_log") 2>&1
 set_stage fetch
-if [[ ! -e $root/src ]]; then git clone "$repo" "$root/src"; fi
-cd "$root/src"
-[[ $(git rev-parse --show-toplevel) == "$root/src" ]] || { echo 'Not the dedicated sprint checkout.' >&2; exit 1; }
-origin=$(git remote get-url origin)
-[[ $origin =~ $origin_pattern ]] || { echo "Unexpected sprint origin: $origin" >&2; exit 1; }
-if [[ -n $(git status --porcelain --untracked-files=normal) ]]; then
-    echo "Sprint checkout has local changes; preserve them before rebuilding: $root/src" >&2; exit 1
+[[ -e $checkout/.git ]] || { echo "Okilum checkout not found: $checkout (set OKILUM_CHECKOUT)" >&2; exit 1; }
+origin=$(git -C "$checkout" remote get-url origin)
+[[ $origin =~ $origin_pattern ]] || { echo "Unexpected origin in $checkout: $origin" >&2; exit 1; }
+git -C "$checkout" fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+if [[ ! -e $root/src ]]; then
+    git -C "$checkout" worktree prune
+    git -C "$checkout" worktree add --detach "$root/src" "refs/remotes/origin/$branch"
 fi
-git fetch origin "refs/heads/$branch"
-git checkout -B sprint FETCH_HEAD
+cd "$root/src"
+[[ $(git rev-parse --show-toplevel) == "$root/src" ]] || { echo 'Not the Sprint worktree.' >&2; exit 1; }
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+[[ $common == "$(git -C "$checkout" rev-parse --path-format=absolute --git-common-dir)" ]] || {
+    echo "$root/src is not a worktree of $checkout; remove it and rerun." >&2; exit 1; }
+if [[ -n $(git status --porcelain --untracked-files=normal) ]]; then
+    echo "Sprint worktree has local changes; preserve them before rebuilding: $root/src" >&2; exit 1
+fi
+git checkout --detach "refs/remotes/origin/$branch"
 sha=$(git rev-parse HEAD)
 short_sha=$(git rev-parse --short HEAD)
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
