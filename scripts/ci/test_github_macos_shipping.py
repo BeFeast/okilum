@@ -70,5 +70,64 @@ class HostedProducer(unittest.TestCase):
                 m.identity(env | delta)
 
 
+class TransientGitHub(unittest.TestCase):
+    """#2589: one GitHub 502 while polling failed every hourly Mac beta."""
+    SOURCE, TOOLING, BUILD = 'a' * 40, 'b' * 40, '5600'
+    LABEL = 'Mac shipping Forgejo 700 attempt 1'
+
+    def run_bridge(self, failures):
+        calls, sleeps = self.calls, self.sleeps = [], []
+        outage = m.bridge.Unavailable(
+            'GitHub GET actions/workflows/forgejo-macos-shipping.yml/runs: HTTP 502 (request failed)')
+        remaining = {'runs': failures}
+
+        def request(path, method='GET', data=None):
+            calls.append((path.split('?')[0], method))
+            if path == 'git/ref/heads/main':
+                return {'object': {'sha': self.TOOLING}}
+            if method == 'POST':
+                return None
+            if path.startswith('actions/workflows/forgejo-macos-shipping.yml/runs'):
+                if remaining['runs']:
+                    remaining['runs'] -= 1
+                    raise outage
+                return {'workflow_runs': [dict(
+                    id=9, path=m.WORKFLOW, head_sha=self.TOOLING, head_branch='main',
+                    event='workflow_dispatch', display_title=self.LABEL, status='completed',
+                    conclusion='success', run_attempt=1, html_url='https://github.com/run/9')]}
+            if path.startswith('actions/runs/9/jobs'):
+                return {'jobs': [dict(name='shipping', conclusion='success',
+                                      steps=[dict(name=m.STEP, conclusion='success')])]}
+            if path.startswith('actions/runs/9/artifacts'):
+                return {'artifacts': [dict(id=1, expired=False, digest='sha256:' + '0' * 64,
+                                           name=f'macos-shipping-{self.SOURCE}-{self.BUILD}')]}
+            raise AssertionError(path)
+        api = Mock()
+        api.request.side_effect = request
+        env = {'GITHUB_RUN_ID': '700', 'GITHUB_RUN_NUMBER': '600', 'GITHUB_RUN_ATTEMPT': '1',
+               'OKILUM_SIGNING_IDENTITY': 'fixture', 'OKILUM_NOTARY_PROFILE': 'fixture'}
+        with patch.dict(m.os.environ, env, clear=True), \
+                patch.object(m, 'identity', return_value=(self.SOURCE, self.TOOLING, self.BUILD)), \
+                patch.object(m.bridge, 'GitHub', return_value=api), \
+                patch.object(m.bridge, 'poll_delay', return_value=30), \
+                patch.object(m.time, 'sleep', side_effect=sleeps.append):
+            m.main()
+        return calls, sleeps
+
+    def test_transient_poll_failure_is_retried_and_the_build_is_still_collected(self):
+        calls, sleeps = self.run_bridge(failures=2)
+        dispatches = [c for c in calls if c[1] == 'POST']
+        self.assertEqual(dispatches, [('actions/workflows/forgejo-macos-shipping.yml/dispatches', 'POST')])
+        self.assertEqual(sleeps, [30, 30])
+        self.assertIn(('actions/runs/9/artifacts', 'GET'), calls)
+
+    def test_lasting_outage_still_fails_after_bounded_retries_without_redispatch(self):
+        with self.assertRaises(m.bridge.Unavailable):
+            self.run_bridge(failures=3)
+        self.assertEqual([c for c in self.calls if c[1] == 'POST'],
+                         [('actions/workflows/forgejo-macos-shipping.yml/dispatches', 'POST')])
+        self.assertEqual(self.sleeps, [30, 30])
+
+
 if __name__ == '__main__':
     unittest.main()

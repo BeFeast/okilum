@@ -156,6 +156,45 @@ fn persist(p: &Path, v: &impl Serialize, create: bool) -> Result<()> {
     File::open(parent)?.sync_all()?;
     Ok(())
 }
+/// The folder at a bound vault path is no longer the folder that was registered,
+/// for example because Sync re-received it. Admission stays refused until the
+/// user explicitly re-attaches it with [`Authority::rebind_replaced_root`].
+#[derive(Debug)]
+pub struct RootReplaced {
+    root: PathBuf,
+}
+impl std::fmt::Display for RootReplaced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Vault root replaced; local writer admission refused")
+    }
+}
+impl std::error::Error for RootReplaced {}
+/// The bound vault root of a [`RootReplaced`] failure anywhere in `error`'s chain.
+pub fn replaced_root(error: &anyhow::Error) -> Option<PathBuf> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<RootReplaced>())
+        .map(|replaced| replaced.root.clone())
+}
+/// Only a plain folder at its own canonical path, owned by this account, can be
+/// re-attached: never a symlink, a junction, or a path through a symlinked parent.
+fn plain_folder(path: &Path) -> Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    ensure!(
+        meta.is_dir() && path.canonicalize()? == path,
+        "Vault folder is a link or resolves elsewhere; re-attach refused"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            meta.uid() == rustix::process::getuid().as_raw(),
+            "Vault folder belongs to another account; re-attach refused"
+        );
+    }
+    identity(path)?;
+    Ok(())
+}
 fn key(root: &Path) -> String {
     // Native path encoding preserves non-UTF8 filenames; canonicalize folds aliases.
     format!("{:x}", Sha256::digest(root.as_os_str().as_encoded_bytes()))
@@ -378,12 +417,96 @@ impl Authority {
     fn validate(&self) -> Result<()> {
         #[cfg(test)]
         VALIDATIONS.with(|count| count.set(count.get() + 1));
-        ensure!(
-            self.binding.root.canonicalize()? == self.binding.root
-                && identity(&self.binding.root)? == self.binding.root_identity,
-            "Vault root replaced; local writer admission refused"
-        );
+        if self.binding.root.canonicalize()? != self.binding.root
+            || identity(&self.binding.root)? != self.binding.root_identity
+        {
+            return Err(RootReplaced {
+                root: self.binding.root.clone(),
+            }
+            .into());
+        }
         self.validate_binding()
+    }
+    /// Explicit user recovery after [`RootReplaced`] (Retry): re-admit the folder
+    /// now at the bound path when it was re-created in place. Fresh lookups never
+    /// do this on their own. Only the recorded root identity changes: the epoch
+    /// and any unfinished hold are kept, so a hold still closes admission and
+    /// authorities or leases minted for the old folder stay refused.
+    pub fn rebind_replaced_root(root: &Path) -> Result<Self> {
+        Self::rebind_in(&account_directory()?, root)
+    }
+    fn rebind_in(account: &Path, root: &Path) -> Result<Self> {
+        // Check before open_in: a symlinked path must not even register its target.
+        plain_folder(root)?;
+        let bound = match Self::open_in(account, root) {
+            Ok(authority) => return Ok(authority),
+            Err(error) => replaced_root(&error).ok_or(error)?,
+        };
+        let account = account.canonicalize()?;
+        let registry = file(&account.join("registry.lock"), false)?;
+        registry
+            .lock()
+            .context("Cannot serialize vault authority registration")?;
+        let binding_path = account.join(format!("{}.json", key(&bound)));
+        let binding: Binding = read(&binding_path)?;
+        ensure!(
+            binding.root == bound,
+            "Writer authority root binding mismatch"
+        );
+        let old = Self {
+            directory: account.join(key(&bound)),
+            account,
+            binding_path,
+            binding,
+        };
+        let admission = file(&old.directory.join("admission.lock"), false)?;
+        admission
+            .lock()
+            .context("Cannot serialize local writer admission")?;
+        old.validate_binding()?;
+        plain_folder(&bound)?;
+        let owner = file(&old.directory.join("owner.lock"), false)?;
+        owner
+            .try_lock()
+            .context("A local writer hold is still running; re-attach refused")?;
+        let writers = file(&old.directory.join("writers.lock"), false)?;
+        writers
+            .try_lock()
+            .context("A writer still uses the replaced vault folder; retry after it finishes")?;
+        // Never mint a second authority for one physical folder, as open_in.
+        let ancestors = bound
+            .ancestors()
+            .map(identity)
+            .collect::<Result<Vec<_>>>()?;
+        for entry in fs::read_dir(&old.account)? {
+            let p = entry?.path();
+            if p == old.binding_path || p.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let b: Binding = read(&p)?;
+            if ancestors.contains(&b.root_identity) {
+                ensure!(
+                    identity(&b.root).ok().as_ref() != Some(&b.root_identity),
+                    "Another vault authority owns this folder; re-attach refused"
+                );
+                let other = Self {
+                    account: old.account.clone(),
+                    directory: old.account.join(key(&b.root)),
+                    binding_path: p,
+                    binding: b,
+                };
+                ensure!(other.state()?.phase == Phase::Open,
+                    "Physical vault identity has an unfinished hold at another root; explicit recovery required");
+            }
+        }
+        let binding = Binding {
+            root_identity: identity(&bound)?,
+            ..old.binding.clone()
+        };
+        persist(&old.binding_path, &binding, false)?;
+        let rebound = Self { binding, ..old };
+        rebound.validate()?;
+        Ok(rebound)
     }
     fn validate_binding(&self) -> Result<()> {
         ensure!(
@@ -992,5 +1115,127 @@ mod account_location_tests {
         let allowed = Authority::open_in(&t.path().join("private/account"), &root).unwrap();
         allowed.admit().unwrap();
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod root_rebind_tests {
+    use super::*;
+    /// A vault at `base/vault`, bound once, with its account outside the vault.
+    fn bound() -> (tempfile::TempDir, PathBuf, Authority) {
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path().canonicalize().unwrap().join("base");
+        fs::create_dir_all(base.join("vault")).unwrap();
+        let account = t.path().join("account");
+        let a = Authority::open_in(&account, &base.join("vault")).unwrap();
+        (t, account, a)
+    }
+    /// Sync re-receives the vault: a new folder at the same path.
+    fn recreate(root: &Path, aside: &str) -> PathBuf {
+        let aside = root.with_file_name(aside);
+        fs::rename(root, &aside).unwrap();
+        fs::create_dir(root).unwrap();
+        fs::write(root.join("note.md"), b"re-received").unwrap();
+        aside
+    }
+    #[test]
+    fn local_writer_admission_recreated_root_reattaches_only_by_explicit_rebind() {
+        let (_t, account, a) = bound();
+        let root = a.root().to_path_buf();
+        recreate(&root, "vault.previous");
+        let error = Authority::open_in(&account, &root)
+            .unwrap_err()
+            .context("Prepare vault");
+        assert_eq!(replaced_root(&error), Some(root.clone()));
+        assert!(
+            Authority::open_in(&account, &root).is_err(),
+            "a fresh lookup never accepts the swapped folder by itself"
+        );
+        let rebound = Authority::rebind_in(&account, &root).unwrap();
+        assert_eq!(rebound.binding.epoch, a.binding.epoch);
+        {
+            let _operation = Authority::open_in(&account, &root)
+                .unwrap()
+                .operation()
+                .unwrap();
+            fs::write(root.join("saved.md"), b"saved").unwrap();
+        }
+        assert!(
+            a.admit().is_err(),
+            "authorities minted for the old folder stay fenced"
+        );
+        assert_eq!(
+            Authority::rebind_in(&account, &root).unwrap().binding,
+            rebound.binding,
+            "re-attaching a healthy vault changes nothing"
+        );
+        // The old folder may also be gone entirely.
+        let aside = recreate(&root, "vault.again");
+        fs::remove_dir_all(aside).unwrap();
+        assert!(Authority::open_in(&account, &root).is_err());
+        Authority::rebind_in(&account, &root)
+            .unwrap()
+            .operation()
+            .unwrap();
+    }
+    #[test]
+    fn local_writer_admission_rebind_waits_for_writers_and_never_bypasses_a_hold() {
+        let (_t, account, a) = bound();
+        let root = a.root().to_path_buf();
+        let lease = a.admit().unwrap();
+        recreate(&root, "vault.previous");
+        assert!(
+            Authority::rebind_in(&account, &root).is_err(),
+            "a live writer still uses the old folder"
+        );
+        drop(lease);
+        Authority::rebind_in(&account, &root).unwrap();
+
+        let (_t, account, a) = bound();
+        let root = a.root().to_path_buf();
+        let hold = a.begin_drain("sync-merge").unwrap();
+        recreate(&root, "vault.previous");
+        assert!(
+            Authority::rebind_in(&account, &root).is_err(),
+            "a running hold owner is never disturbed"
+        );
+        // The holder exits without releasing: its durable hold remains.
+        drop(hold);
+        let rebound = Authority::rebind_in(&account, &root).unwrap();
+        assert!(
+            rebound.admit().is_err(),
+            "re-attaching never reopens admission closed by a hold"
+        );
+        let observed = rebound.snapshot().unwrap();
+        assert_eq!(observed.phase, Phase::RecoveryPending);
+        let recovered = rebound.recover(&observed).unwrap();
+        let token = recovered.token().clone();
+        recovered.release(&token).unwrap();
+        rebound.admit().unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn local_writer_admission_rebind_refuses_symlink_swaps() {
+        let (_t, account, a) = bound();
+        let root = a.root().to_path_buf();
+        let base = root.parent().unwrap().to_path_buf();
+        let binding = fs::read(&a.binding_path).unwrap();
+        let registered = || fs::read_dir(&a.account).unwrap().count();
+        let before = registered();
+        // The vault path itself becomes a symlink to another folder.
+        let elsewhere = base.with_file_name("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::rename(&root, base.join("vault.previous")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &root).unwrap();
+        assert!(Authority::rebind_in(&account, &root).is_err());
+        // A plain folder reached through a symlinked parent.
+        fs::rename(&base, base.with_file_name("base.previous")).unwrap();
+        fs::create_dir_all(elsewhere.join("vault")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &base).unwrap();
+        assert!(root.is_dir());
+        assert!(Authority::rebind_in(&account, &root).is_err());
+        assert_eq!(registered(), before, "a symlinked path registers nothing");
+        assert_eq!(fs::read(&a.binding_path).unwrap(), binding);
+        assert!(a.admit().is_err());
     }
 }

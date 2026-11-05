@@ -82,6 +82,8 @@ class SprintTests(unittest.TestCase):
             home = Path(directory)
             root = home / 'sprint'
             (root / 'src').mkdir(parents=True)
+            checkout = home / 'okilum'
+            (checkout / '.git').mkdir(parents=True)
             commands = home / 'bin'
             commands.mkdir()
             temporary = home / 'tmp'
@@ -93,6 +95,7 @@ class SprintTests(unittest.TestCase):
                 'uname': '#!/bin/bash\nif [[ $1 == -s ]]; then echo Darwin; else echo arm64; fi\n',
                 'cargo': '#!/bin/bash\nexit 0\n',
                 'git': f'''#!/bin/bash
+if [[ $1 == -C ]]; then shift 2; fi
 case "$1 $2" in
  'check-ref-format --branch')
    if [[ $SPRINT_TEST_MISSING_LOG == 1 ]]; then
@@ -126,7 +129,7 @@ exec cat
                 path.chmod(0o700)
             script = home / 'sprint.sh'
             script.write_text(SCRIPT.read_text().replace(MODULE['ENDPOINT'], url))
-            env = dict(os.environ, HOME=str(home), TMPDIR=str(temporary), SPRINT_TEST_MISSING_LOG=str(int(missing_stage_log)), SPRINT_TEST_TEE_READY=str(ready), OKILUM_SPRINT_HOME=str(root), PATH=str(commands) + os.pathsep + os.environ['PATH'])
+            env = dict(os.environ, HOME=str(home), TMPDIR=str(temporary), SPRINT_TEST_MISSING_LOG=str(int(missing_stage_log)), SPRINT_TEST_TEE_READY=str(ready), OKILUM_SPRINT_HOME=str(root), OKILUM_CHECKOUT=str(checkout), PATH=str(commands) + os.pathsep + os.environ['PATH'])
             result = subprocess.run(['bash', str(script), 'fix/test'], env=env, capture_output=True, text=True, timeout=40)
             self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
             self.assertEqual(len(requests), 1)

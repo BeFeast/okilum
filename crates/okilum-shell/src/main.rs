@@ -133,10 +133,10 @@ mod reader_replay;
 mod reader_right_panel;
 mod reader_session;
 mod reader_settings;
-#[cfg(target_os = "linux")]
-mod reader_settings_sync;
-#[cfg(target_os = "macos")]
-#[path = "reader_settings_sync_macos.rs"]
+// One module for Linux and macOS: an `include!` wrapper made every name in
+// it macro-expanded on macOS only, so `use super::*` plus an explicit
+// `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod reader_settings_sync;
 mod reader_settings_vaults;
 mod reader_shortcuts;
@@ -8172,6 +8172,16 @@ impl Render for Reader {
                     )
                 })
             })
+            .children({
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    Some(reader_settings_sync::presentation::approval_banner(cx))
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                {
+                    None::<AnyElement>
+                }
+            })
             .child(
                 h_flex()
                     .id("reader-body")
@@ -8410,6 +8420,7 @@ okilum — a reader for a plain-Markdown vault
 
 USAGE:
     okilum [FILE.md | FOLDER] [--vault <PATH>] [OPTIONS]
+    okilum sync <COMMAND>   Pair computers without a window (Linux, macOS; see okilum sync --help)
 
 OPTIONS:
     --managed-workspace       Open the saved Brain/workspace chooser explicitly.
@@ -8458,6 +8469,12 @@ fn main() {
     // SAFETY: mallopt only adjusts allocator parameters; no other thread runs yet.
     unsafe {
         libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
+    // `okilum sync …` is headless: it exits before the updater, single-instance
+    // handoff, AppImage re-exec or any GPUI initialization (#2589).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(code) = reader_settings_sync::cli::entry() {
+        std::process::exit(code);
     }
     #[cfg(windows)]
     let startup_reservation = reader_instance::reserve_windows_launch();
@@ -8586,6 +8603,9 @@ fn main() {
         (None, None)
     };
     let _instance_lock = instance_lock;
+    // Only the instance that owns the profile answers paired computers (#2589).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let serves_sync = _instance_lock.is_some();
     // A forwarded launch never races the active Reader's apply operation. The
     // primary repairs interrupted decisions before any path validation, cache
     // load, indexing, or managed Sync initialization can observe missing notes.
@@ -8663,6 +8683,11 @@ fn main() {
             brain::source_trace::install(cx);
         }
         updater::install(cx);
+        // Paired computers reach this app without Settings → Sync (#2589).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if serves_sync {
+            reader_settings_sync::serve_paired(cx);
+        }
         #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
         appimage_acceptance::install(cx);
         version_info::install(cx);

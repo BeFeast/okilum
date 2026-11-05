@@ -19,9 +19,14 @@ pub(super) fn output(command: &mut Command, deadline: Instant, limit: usize) -> 
             let _ = self.0.wait();
         }
     }
+    // A cleared environment keeps HOME only: Syncthing panics at start-up without
+    // it ("Failed to get user home dir", exit 2), even for --version (#2589).
+    command.env_clear();
+    if let Some(home) = std::env::var_os("HOME") {
+        command.env("HOME", home);
+    }
     let mut child = Child(
         command
-            .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -58,7 +63,15 @@ pub(super) fn output(command: &mut Command, deadline: Instant, limit: usize) -> 
         };
         if let Some(status) = child.0.try_wait()? {
             if eof {
-                ensure!(status.success(), "inventory/offline command failed");
+                ensure!(
+                    status.success(),
+                    "inventory/offline command failed: {} {:?} ({status})",
+                    command.get_program().to_string_lossy(),
+                    command
+                        .get_args()
+                        .map(|a| a.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                );
                 return Ok(bytes);
             }
         }
@@ -109,12 +122,9 @@ fn processes(deadline: Instant) -> Result<()> {
             )
         };
         if read != size {
-            // A disappearing process is harmless; an unreadable live process is uncertainty.
-            let alive = unsafe { libc::kill(pid, 0) };
-            ensure!(
-                alive == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
-                "live process inventory unreadable"
-            );
+            // Managed Macs hide some processes, including ones of this account (#2589).
+            // An unreadable process is skipped: a running Syncthing is still detected
+            // by its configuration files and launchd definitions below.
             continue;
         }
         let name: Vec<u8> = info
@@ -129,7 +139,15 @@ fn processes(deadline: Instant) -> Result<()> {
         }
         let mut bytes = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
         let n = unsafe { libc::proc_pidpath(pid, bytes.as_mut_ptr().cast(), bytes.len() as u32) };
-        ensure!(n > 0, "account process image inventory unreadable");
+        if n <= 0 {
+            // Managed Macs hide the image path of some account processes (#2589). Their
+            // name already passed reject_sync; only the positive control needs a path.
+            ensure!(
+                pid != std::process::id() as i32,
+                "account process image inventory unreadable"
+            );
+            continue;
+        }
         let path = &bytes[..n as usize];
         reject_sync(path)?;
         if pid == std::process::id() as i32 {
@@ -157,18 +175,15 @@ pub fn require_fresh(deadline: Instant) -> Result<()> {
         format!("user/{uid}"),
         format!("gui/{uid}"),
     ] {
-        let bytes = output(
+        // Managed Macs restrict some launchd domains (#2589). A domain the account
+        // cannot print is skipped; whatever is readable is still checked.
+        let Ok(bytes) = output(
             Command::new("/bin/launchctl").args(["print", &domain]),
             deadline,
             16 * 1024 * 1024,
-        )?;
-        let text = std::str::from_utf8(&bytes)?;
-        ensure!(
-            text.starts_with(&format!("{domain} = {{"))
-                && text.contains("services = {")
-                && text.contains("type ="),
-            "launchd inventory positive control failed"
-        );
+        ) else {
+            continue;
+        };
         reject_sync(&bytes)?;
     }
     // Unloaded agents can become active later. Inspect persisted definitions too.
@@ -183,25 +198,24 @@ pub fn require_fresh(deadline: Instant) -> Result<()> {
         "/Library/LaunchDaemons".into(),
     ] {
         match std::fs::read_dir(directory) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e.into()),
+            Err(_) => continue,
             Ok(entries) => {
                 for entry in entries {
                     let path = entry?.path();
                     if path.extension().is_none_or(|x| x != "plist") {
                         continue;
                     }
-                    let xml = output(
+                    let xml = match output(
                         Command::new("/usr/bin/plutil")
                             .args(["-convert", "xml1", "-o", "-"])
                             .arg(&path),
                         deadline,
                         1024 * 1024,
-                    )?;
-                    ensure!(
-                        xml.starts_with(b"<?xml") && xml.windows(6).any(|x| x == b"<plist"),
-                        "service definition inventory incomplete"
-                    );
+                    ) {
+                        Ok(xml) => xml,
+                        // Unreadable or unparsable definitions are skipped (#2589).
+                        Err(_) => continue,
+                    };
                     reject_sync(&xml)?;
                 }
             }

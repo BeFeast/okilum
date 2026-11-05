@@ -2,6 +2,7 @@
 //! Only Ready contains an authenticated live REST identity; approval is not readiness.
 use super::{
     bundle::{self, BundleGuard, NativeSignature},
+    connect::{complete_explicit_connect, verify_rest, ConnectRegistration},
     inventory,
     payload::Payload,
     preparation,
@@ -26,28 +27,17 @@ use std::{
     io::Read,
     net::TcpListener,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
-    time::{Duration, Instant},
+    time::Instant,
 };
+
+pub use super::connect::{ConnectBudget, ConnectOutcome};
 
 pub struct SigningPolicy {
     pub app: CodeRequirement,
     pub helper: CodeRequirement,
     pub runtime: CodeRequirement,
-}
-#[derive(Debug)]
-pub enum ConnectOutcome {
-    /// Both supervisor generation and REST device identity have been authenticated.
-    Ready {
-        config_path: PathBuf,
-        device_id: String,
-    },
-    /// Durable prepared identity only. Caller must NOT set live configurations yet.
-    RequiresApproval {
-        config_path: PathBuf,
-        device_id: String,
-    },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,19 +51,16 @@ struct Receipt {
 pub fn connect_current_app(
     confirmed_connect: bool,
     policy: SigningPolicy,
-    budget: Duration,
+    budget: ConnectBudget,
 ) -> Result<ConnectOutcome> {
     ensure!(confirmed_connect, "explicit Connect consent required");
     ensure!(
         okilum_sync::NetworkAccess::current().allowed(),
         "Sync is disabled"
     );
-    ensure!(
-        !budget.is_zero() && budget <= Duration::from_secs(60),
-        "Connect requires a bounded budget of at most 60 seconds"
-    );
+    // Preparation only; registration and the helper's start have their own bound.
     let deadline = Instant::now()
-        .checked_add(budget)
+        .checked_add(budget.preparation())
         .context("deadline overflow")?;
     let own = std::env::current_exe()?.canonicalize()?;
     let executable = own
@@ -91,6 +78,19 @@ pub fn connect_current_app(
         "Connect requires its signed installed app"
     );
     let state = super::account_state_directory()?;
+    // A failed first preparation can leave the state folder without a generated
+    // configuration. Keep it aside for diagnosis and prepare from scratch (#2589).
+    if fs::symlink_metadata(&state).is_ok()
+        && fs::symlink_metadata(state.join("config/config.xml")).is_err()
+    {
+        let aside = state.with_file_name(format!(
+            "Sync.incomplete-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs()
+        ));
+        fs::rename(&state, &aside)?;
+    }
     let fresh = match fs::symlink_metadata(&state) {
         Ok(_) => false,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
@@ -199,7 +199,9 @@ pub fn connect_current_app(
         okilum_sync::NetworkAccess::current().allowed(),
         "Sync is disabled"
     );
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    // The registration guard's per-call budget is the startup bound, not what
+    // preparation left over: a nearly spent remainder could consume the one
+    // dispatch before the native register call (#2589).
     let mut registration = NativeRegistrationGuard::open(
         app,
         executable,
@@ -207,21 +209,11 @@ pub fn connect_current_app(
         payload,
         policy.app,
         policy.helper,
-        remaining,
+        budget.startup(),
     )?;
-    complete_explicit_connect(&mut registration, identity, deadline, verify_rest)
+    complete_explicit_connect(&mut registration, identity, budget, verify_rest)
 }
 
-/// The same observation mapping is used by production and offline OS adapters.
-/// Service approval is permission, not proof of a running authenticated runtime.
-trait ConnectRegistration {
-    fn register_prepared(&mut self) -> Result<ManagedStatus>;
-    fn native_status(&mut self) -> Result<Status>;
-    fn managed_status(&mut self) -> ManagedStatus;
-    fn wait(&mut self) {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
 impl ConnectRegistration for NativeRegistrationGuard {
     fn register_prepared(&mut self) -> Result<ManagedStatus> {
         NativeRegistrationGuard::register_prepared(self)
@@ -229,50 +221,8 @@ impl ConnectRegistration for NativeRegistrationGuard {
     fn native_status(&mut self) -> Result<Status> {
         super::native::registration_status()
     }
-    fn managed_status(&mut self) -> ManagedStatus {
-        NativeRegistrationGuard::status(self)
-    }
-}
-
-fn complete_explicit_connect(
-    registration: &mut impl ConnectRegistration,
-    identity: DaemonIdentity,
-    deadline: Instant,
-    verify_identity: impl FnOnce(&DaemonIdentity, Instant) -> Result<()>,
-) -> Result<ConnectOutcome> {
-    // RegistrationGuard consumes Ready exactly once. An explicit retry only
-    // observes an existing dispatched/claimed generation, never re-arms it.
-    let mut status = registration.register_prepared()?;
-    loop {
-        ensure!(
-            Instant::now() < deadline,
-            "recovery pending: Sync did not become authenticated before the deadline"
-        );
-        let native = registration.native_status()?;
-        if native == Status::RequiresApproval {
-            return Ok(ConnectOutcome::RequiresApproval {
-                config_path: identity.config_file,
-                device_id: identity.device_id,
-            });
-        }
-        // Missing/removed registration cannot become Ready from a stale peer.
-        ensure!(
-            native == Status::Enabled,
-            "recovery pending: Sync registration unavailable"
-        );
-        if status == ManagedStatus::Running {
-            verify_identity(&identity, deadline)?;
-            ensure!(
-                Instant::now() < deadline,
-                "REST readback exceeded Connect deadline"
-            );
-            return Ok(ConnectOutcome::Ready {
-                config_path: identity.config_file,
-                device_id: identity.device_id,
-            });
-        }
-        registration.wait();
-        status = registration.managed_status();
+    fn managed_status(&mut self, deadline: Instant) -> ManagedStatus {
+        NativeRegistrationGuard::status_until(self, deadline)
     }
 }
 
@@ -422,67 +372,6 @@ fn set(parent: &mut xmltree::Element, name: &str, value: &str) {
             .push(xmltree::XMLNode::Element(xmltree::Element::new(name)));
     }
     parent.get_mut_child(name).unwrap().children = vec![xmltree::XMLNode::Text(value.into())];
-}
-
-/// GET-only, deadline-bound readback. The private saved credential never leaves a
-/// literal loopback endpoint, and redirects/proxies are disabled.
-fn verify_rest(identity: &DaemonIdentity, deadline: Instant) -> Result<()> {
-    identity.verify_local()?;
-    let xml = xmltree::Element::parse(private::read(&identity.config_file)?.as_slice())?;
-    let gui = xml.get_child("gui").context("GUI configuration missing")?;
-    let address: std::net::SocketAddr = gui
-        .get_child("address")
-        .and_then(xmltree::Element::get_text)
-        .context("REST address missing")?
-        .parse()?;
-    ensure!(
-        address.ip().is_loopback() && address.port() != 0,
-        "REST requires literal loopback"
-    );
-    let key = gui
-        .get_child("apikey")
-        .and_then(xmltree::Element::get_text)
-        .context("REST credential missing")?;
-    let mut header = reqwest::header::HeaderValue::from_str(&key)?;
-    header.set_sensitive(true);
-    let client = reqwest::blocking::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    for (path, field, expected) in [
-        ("status", "myID", identity.device_id.as_str()),
-        ("version", "version", CLIENT_VERSION),
-    ] {
-        ensure!(
-            okilum_sync::NetworkAccess::current().allowed(),
-            "Sync is disabled"
-        );
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        ensure!(!remaining.is_zero(), "REST readback deadline elapsed");
-        let response = client
-            .get(format!("http://{address}/rest/system/{path}"))
-            .header("X-API-Key", header.clone())
-            .timeout(remaining)
-            .send()
-            .map_err(|_| anyhow::anyhow!("managed REST unavailable"))?;
-        ensure!(
-            response.status().is_success(),
-            "managed REST authentication/readback failed"
-        );
-        let mut bytes = Vec::new();
-        response.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() <= 1024 * 1024 && Instant::now() < deadline,
-            "REST readback exceeded bounds"
-        );
-        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        ensure!(
-            value[field].as_str() == Some(expected),
-            "managed REST identity/version changed"
-        );
-    }
-    identity.verify_local()?;
-    Ok(())
 }
 
 #[cfg(test)]

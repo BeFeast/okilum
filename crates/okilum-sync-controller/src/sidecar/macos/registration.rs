@@ -62,7 +62,8 @@ impl<D: StateDir, P: RegistrationProof, A: RegistrationPort> RegistrationGuard<D
     pub fn status(&self) -> ManagedStatus {
         self.status_until(Instant::now() + self.budget)
     }
-    fn status_until(&self, deadline: Instant) -> ManagedStatus {
+    /// `status` within the caller's whole-operation deadline, never a renewed budget.
+    pub fn status_until(&self, deadline: Instant) -> ManagedStatus {
         let attempt = || -> Result<ManagedStatus> {
             ensure!(Instant::now() < deadline, "registration deadline elapsed");
             let saved = {
@@ -112,7 +113,10 @@ impl<D: StateDir, P: RegistrationProof, A: RegistrationPort> RegistrationGuard<D
         let deadline = Instant::now() + self.budget;
         self.proof.verify(&self.binding, deadline)?;
         ensure!(Instant::now() < deadline, "registration deadline elapsed");
-        if self.service.status(deadline)? != Status::NotRegistered {
+        // macOS reports a never-registered bundled agent as NotFound (BTM: "record
+        // not found") until the first register call creates its record (#2589).
+        // Both mean "nothing registered yet"; only those permit the one dispatch.
+        if !unregistered(self.service.status(deadline)?) {
             return Ok(self.status_until(deadline));
         }
         ensure!(Instant::now() < deadline, "registration deadline elapsed");
@@ -129,7 +133,7 @@ impl<D: StateDir, P: RegistrationProof, A: RegistrationPort> RegistrationGuard<D
             self.proof.verify(&self.binding, deadline)?;
             ensure!(Instant::now() < deadline, "registration deadline elapsed");
             ensure!(
-                self.service.status(deadline)? == Status::NotRegistered,
+                unregistered(self.service.status(deadline)?),
                 "recovery pending: registration changed after dispatch"
             );
             self.service.register(deadline)
@@ -245,6 +249,9 @@ mod native {
         pub fn status(&self) -> ManagedStatus {
             self.0.status()
         }
+        pub fn status_until(&self, deadline: Instant) -> ManagedStatus {
+            self.0.status_until(deadline)
+        }
     }
 }
 #[cfg(target_os = "macos")]
@@ -252,3 +259,9 @@ pub use native::NativeRegistrationGuard;
 
 #[cfg(all(test, unix))]
 mod tests;
+
+/// Nothing is registered for the bundled agent yet. macOS answers NotFound for an
+/// agent whose Background Task Management record does not exist (#2589).
+fn unregistered(status: Status) -> bool {
+    matches!(status, Status::NotRegistered | Status::NotFound)
+}

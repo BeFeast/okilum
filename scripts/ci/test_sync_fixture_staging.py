@@ -126,6 +126,9 @@ class FixtureStagingTests(unittest.TestCase):
 
     def test_concurrent_cold_staging_and_exec(self):
         publish = helper.publish
+        # Real fixture callers are separate helper processes. Forking exec
+        # probes from staging threads can transiently inherit another thread's
+        # open temp writer and manufacture ETXTBSY even after atomic publish.
         context = multiprocessing.get_context('fork')
         barrier = context.Barrier(8, timeout=10)
         def synchronized(destination, data, mode):

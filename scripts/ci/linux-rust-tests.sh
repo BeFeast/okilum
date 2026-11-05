@@ -15,6 +15,9 @@ suite local-writer 900 bash scripts/ci/local-writer-admission.sh
 # #2589: a real app pairing listener, fresh identity and repeated Add computer.
 suite first-computer 180 cargo test --locked -p okilum-sync-controller --test first_computer -- --nocapture
 suite direct-lan 120 cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture
+suite reader-settings-sync 300 cargo test --locked -p okilum-shell --bin okilum reader_settings_sync:: -- --nocapture --test-threads=1
+suite direct-tests 180 cargo test --locked -p okilum-sync-controller --lib direct::tests:: -- --nocapture
+suite sync-cli 180 cargo test --locked -p okilum-shell --bin okilum issue2589_ -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
 suite web-sync 60 node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
 suite issue2049 120 cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture
@@ -69,6 +72,7 @@ suite enrollment-storage 120 cargo test --locked -p okilum-sync-controller --tes
 suite sidecar-store-tests-launch-authority 120 cargo test --locked -p okilum-sync-controller --lib sidecar::store::tests::launch_authority:: --no-fail-fast
 suite sidecar-macos-recovery 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::recovery:: --no-fail-fast
 suite sidecar-macos-registration 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::registration:: --no-fail-fast
+suite sidecar-macos-connect 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connect:: --no-fail-fast
 suite sidecar-macos-bundle 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::bundle:: --no-fail-fast
 suite sidecar-macos-connection 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connection:: --no-fail-fast
 suite sidecar-macos-payload 120 cargo test --locked -p okilum-sync-controller --lib sidecar::macos::payload:: --no-fail-fast

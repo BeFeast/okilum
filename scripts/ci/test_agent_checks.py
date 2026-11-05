@@ -29,7 +29,11 @@ def receipt():
                 "Prepare and verify pinned vendor and comrak", "Lint every workspace target offline", "Build Linux desktop offline",
                 "Run complete okilum-core suite offline", "Run Linux Rust suites offline",
                 "Verify agent helper controls", "Stress private reveal bus (20 runs)",
-                "Run CI, releases and updater Python suites")]}]}
+                "Run CI, releases and updater Python suites")]},
+        {"name": "windows-recovery", "conclusion": "success", "steps": [
+            {"name": n, "conclusion": "success"} for n in (
+                "Prepare and verify Windows vendor", "Run native Windows recovery controls",
+                "Run native Windows delta console controls")]}]}
 
 
 class VerdictTests(unittest.TestCase):
@@ -89,6 +93,18 @@ class VerdictTests(unittest.TestCase):
             data = receipt()
             data["jobs"] = copy.deepcopy(jobs)
             self.assertEqual(helper.verdict(data, SHA), 75)
+
+    def test_windows_recovery_is_required_and_native_failures_are_not_infra(self):
+        data = receipt()
+        data["jobs"].pop()
+        self.assertEqual(helper.verdict(data, SHA), 75)
+        for conclusion in ("skipped", "failure"):
+            data = receipt()
+            data["jobs"][1]["steps"][-1]["conclusion"] = conclusion
+            self.assertEqual(helper.verdict(data, SHA), 75)
+        data["conclusion"] = "failure"
+        data["jobs"][1]["conclusion"] = "failure"
+        self.assertEqual(helper.verdict(data, SHA), 1)
 
     def test_worker_lane_has_no_secrets_or_publication(self):
         workflow = (ROOT / ".github/workflows/agent-checks.yml").read_text()

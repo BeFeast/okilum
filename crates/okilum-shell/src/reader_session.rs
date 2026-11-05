@@ -179,6 +179,7 @@ impl Reader {
                 limited_external_refresh: false,
                 network_waiting: false,
                 progress_revision: 0,
+                replaced_root: None,
             });
         }
         if let Some(load) = self.loading.as_mut().filter(|load| !load.active) {

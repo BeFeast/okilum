@@ -6,6 +6,10 @@ use okilum_sync::{validate_destination, Destination};
 use serde_json::{json, Value};
 use std::time::Instant;
 
+/// The Syncthing name a source gives every receiving computer. Introduction
+/// copies it to other members, so it never identifies a computer (#2589).
+pub(super) const PAIRED_DEVICE_NAME: &str = "Okilum paired computer";
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Connection {
@@ -33,6 +37,16 @@ pub(super) struct Transfer {
     /// Authorized display name; also a durable label-only PATCH intent.
     #[serde(default)]
     label: Option<String>,
+}
+
+impl Transfer {
+    /// Display-only binding from the authenticated source share response.
+    /// It does not grant transport configuration or sharing authority.
+    pub(super) fn overview_binding(&self) -> Option<(Uuid, String)> {
+        self.connection
+            .as_ref()
+            .map(|connection| (self.peer, connection.device_id.clone()))
+    }
 }
 
 pub(super) fn share(
@@ -77,7 +91,7 @@ pub(super) fn share(
         };
     if !devices.iter().any(|d| d["deviceID"] == device) {
         api.add_device(
-            &json!({"deviceID":device,"name":"Okilum paired computer","addresses":addresses,
+            &json!({"deviceID":device,"name":PAIRED_DEVICE_NAME,"addresses":addresses,
             "introducer":false,"autoAcceptFolders":false}),
         )?;
     }
@@ -366,6 +380,10 @@ impl Transfer {
     pub(super) fn legacy_hold(&self) -> bool {
         self.owner.is_none() || self.destination_identity.is_none() || self.phase == Phase::Legacy
     }
+    /// The paired computer this vault is received from.
+    pub(super) fn peer(&self) -> Uuid {
+        self.peer
+    }
 }
 fn owned_label(transfer: &Transfer) -> Result<String> {
     Ok(format!(
@@ -411,7 +429,10 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
         .connection
         .as_ref()
         .context("owned connection missing")?;
-    let mut actual_peers = folder["devices"]
+    // Members that Syncthing added for the introducing share peer are not part
+    // of the owned configuration; any other change is still refused below.
+    let owned = owned_view(transfer, folder)?;
+    let mut actual_peers = owned["devices"]
         .as_array()
         .context("folder peers missing")?
         .iter()
@@ -447,8 +468,8 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
         "owned replica mode changed outside its promotion intent"
     );
     if let Some(expected) = &transfer.witness {
-        let mut expected = expected.clone();
-        let mut actual = folder.clone();
+        let mut expected = owned_view(transfer, expected)?;
+        let mut actual = owned;
         // Label changes require a durable authorized intent above; all other
         // fields still match the full preparation/promotion witness.
         expected["label"] = actual["label"].clone();
@@ -467,6 +488,67 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
         );
     }
     Ok(())
+}
+/// The folder without members that Syncthing introduced on behalf of the share
+/// peer (#2589). The receiver and the share peer themselves are always kept.
+fn owned_view(transfer: &Transfer, folder: &Value) -> Result<Value> {
+    let peer = &transfer
+        .connection
+        .as_ref()
+        .context("owned connection missing")?
+        .device_id;
+    let members = folder["devices"]
+        .as_array()
+        .context("folder peers missing")?;
+    let mut owned = folder.clone();
+    owned["devices"] = Value::Array(
+        members
+            .iter()
+            .filter(|member| {
+                member["deviceID"] == transfer.daemon.device_id.as_str()
+                    || member["deviceID"] == peer.as_str()
+                    || !introduced_by(members, member, peer)
+            })
+            .cloned()
+            .collect(),
+    );
+    Ok(owned)
+}
+/// Whether Syncthing added `member` because the share peer is this receiver's
+/// introducer: `introducedBy` names the peer, or a member the peer introduced
+/// (Syncthing makes an introducer's introducers introducers too). A member with
+/// no or another introducer was added by something else and stays refused.
+fn introduced_by(members: &[Value], member: &Value, peer: &str) -> bool {
+    let mut introducer = member["introducedBy"].as_str();
+    // A chain longer than the member list can only be a cycle.
+    for _ in 0..members.len() {
+        match introducer {
+            Some(id) if id == peer => return true,
+            Some(id) if !id.is_empty() => {
+                introducer = members
+                    .iter()
+                    .find(|m| m["deviceID"] == id)
+                    .and_then(|m| m["introducedBy"].as_str());
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+/// The paired computer that shared this vault, as the Syncthing device that may
+/// introduce this receiver to every computer it shares the vault with (#2589).
+/// Only a bidirectional owned vault of a still-paired computer qualifies, and
+/// never a computer that receives a vault from here: two computers must not
+/// introduce each other.
+fn introducer_for<'a>(db: &Database, transfer: &'a Transfer) -> Option<&'a str> {
+    let device = &transfer.connection.as_ref()?.device_id;
+    let peer = db.peers.get(&transfer.peer)?;
+    (transfer.active
+        && transfer.phase == Phase::Bidirectional
+        && !transfer.legacy_hold()
+        && peer.syncthing_device.as_ref().is_none_or(|id| id == device)
+        && !db.share_grants.iter().any(|g| g.peer == transfer.peer))
+    .then_some(device.as_str())
 }
 
 /// Source authorization is independent from the receiver's claimed readiness.
@@ -689,7 +771,13 @@ fn interval_complete(a: &Receipt, b: &Receipt, local: &Value) -> Result<bool> {
             .iter()
             .all(|k| local[*k].as_str() == Some(""))
         && local["globalTotalItems"].as_u64() == status.global_total_items
-        && local["localTotalItems"].as_u64() == status.global_total_items
+        // A fresh receiver never holds records of files deleted before it joined,
+        // so totals that include deletions never match (#2589: 9556 local vs 9706
+        // global for brain with 150 old deletions). Compare existing entries only.
+        && ["Files", "Directories", "Symlinks"].iter().all(|kind| {
+            let local_count = local[format!("local{kind}")].as_u64();
+            local_count.is_some() && local_count == local[format!("global{kind}")].as_u64()
+        })
         && local["globalBytes"].as_u64() == status.global_bytes
         && local["localBytes"].as_u64() == status.global_bytes)
 }
@@ -707,9 +795,37 @@ pub(super) fn offline(error: &anyhow::Error) -> bool {
                         | std::io::ErrorKind::ConnectionAborted
                         | std::io::ErrorKind::TimedOut
                         | std::io::ErrorKind::NotConnected
-                )
+                ) || host_down(e)
             })
     })
+}
+/// No computer answers at that address: it is switched off, asleep or on
+/// another network. A background refresh treats it as offline, never as a
+/// failure, and it is not a firewall problem (#2589). macOS reports a sleeping
+/// LAN host as EHOSTDOWN, which std leaves uncategorized.
+pub(super) fn host_down(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::HostUnreachable
+            | std::io::ErrorKind::NetworkUnreachable
+            | std::io::ErrorKind::NetworkDown
+    ) || error.raw_os_error() == Some(libc::EHOSTDOWN)
+}
+/// The paired channel's connect error, with a hint that matches the cause.
+pub(super) fn not_connected(endpoint: SocketAddr, error: anyhow::Error) -> anyhow::Error {
+    let asleep = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(host_down)
+    });
+    let hint = if asleep {
+        "It may be asleep, switched off or on another network. Wake it, or keep both computers on the same network.".to_owned()
+    } else {
+        format!("Its firewall may block incoming connections. Open TCP port {} on that computer, or keep both computers on the same network.", endpoint.port())
+    };
+    error.context(format!(
+        "Not connected to the other computer at {endpoint}. {hint}"
+    ))
 }
 impl Controller {
     /// Called by refresh. No service grant and no externally supplied readiness
@@ -722,7 +838,10 @@ impl Controller {
             if transfer.legacy_hold() || !transfer.active || transfer.phase == Phase::Preparing {
                 continue;
             }
-            match self.reconcile_one(&mut transfer) {
+            match self
+                .reconcile_one(&mut transfer)
+                .and_then(|()| self.introduce_share_peer(&transfer))
+            {
                 Ok(()) => {}
                 Err(error) if offline(&error) => {}
                 Err(error) => return Err(error),
@@ -803,10 +922,12 @@ impl Controller {
             self.save_transfer(transfer)?;
         }
         let label = transfer.label.as_ref().context("receiver name missing")?;
+        // Syncthing may add introduced members at any time; compare the rest.
         if before["label"] != *label {
             self.check()?;
             ensure!(
-                api.folder(&transfer.vault)? == before,
+                owned_view(transfer, &api.folder(&transfer.vault)?)?
+                    == owned_view(transfer, &before)?,
                 "receiver changed before relabel"
             );
             api.patch_folder(&transfer.vault, &json!({"label":label}))?;
@@ -816,7 +937,7 @@ impl Controller {
         let mut expected = before;
         expected["label"] = json!(label);
         ensure!(
-            after == expected,
+            owned_view(transfer, &after)? == owned_view(transfer, &expected)?,
             "receiver label readback changed configuration"
         );
         if transfer.witness.as_ref() != Some(&after) {
@@ -911,6 +1032,27 @@ impl Controller {
         transfer.phase = Phase::Bidirectional;
         self.save_transfer(transfer)
     }
+    /// Once the received vault is bidirectional, its share peer introduces this
+    /// receiver to every computer that shares the vault with it, so the vault
+    /// keeps syncing while that one computer is asleep (#2589). Existing
+    /// pairings get this on their next refresh. Only this computer's own
+    /// Okilum-managed runtime changes; an existing user Syncthing keeps its
+    /// owner's device roles. A device that already introduces is only read.
+    /// Syncthing applies introductions from the peer's next cluster config.
+    fn introduce_share_peer(&self, transfer: &Transfer) -> Result<()> {
+        let Some(device) = introducer_for(&self.shared.db.lock().unwrap(), transfer) else {
+            return Ok(());
+        };
+        if !super::addresses::owned_runtime(&self.configuration_paths()?, &transfer.daemon)? {
+            return Ok(());
+        }
+        let api = transfer.daemon.connect()?;
+        if api.device(device)?["introducer"] != true {
+            self.check()?;
+            api.set_device_introducer(device)?;
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn receiver_label<'a>(db: &'a Database, attached: &ExistingVault) -> Option<&'a str> {
@@ -976,7 +1118,8 @@ mod tests {
         let folder = json!({"id":"fixture","label":owned_label(&transfer)?,"path":root.path(),"type":"receiveonly","paused":false,
             "devices":[{"deviceID":"receiver"},{"deviceID":"sender"}],"versioning":{"type":"staggered","params":{"maxAge":"2592000"}}});
         let status = json!({"state":"idle","sequence":5,"globalTotalItems":2,"localTotalItems":2,"globalDirectories":1,
-            "globalSymlinks":0,"globalBytes":12,"localBytes":12,"needTotalItems":0,"receiveOnlyTotalItems":0,
+            "globalSymlinks":0,"globalBytes":12,"localBytes":12,"globalFiles":1,"localFiles":1,
+            "localDirectories":1,"localSymlinks":0,"globalDeleted":0,"localDeleted":0,"needTotalItems":0,"receiveOnlyTotalItems":0,
             "errors":0,"pullErrors":0,"error":"","invalid":"","watchError":""});
         let observation = Observation {
             id: Uuid::new_v4(),
@@ -998,6 +1141,28 @@ mod tests {
         let mut local = status;
         local["remoteSequence"] = json!({"sender":5});
         Ok((root, transfer, folder, observation, local))
+    }
+    #[test]
+    fn fresh_receiver_without_old_deletion_records_is_ready() -> Result<()> {
+        // #2589: brain on idunn carries 150 deletion records a fresh muninn never had.
+        let (_root, transfer, _folder, mut observation, mut local) = fixture()?;
+        observation.status["globalTotalItems"] = json!(4);
+        observation.status["globalDeleted"] = json!(2);
+        observation.status["localTotalItems"] = json!(4); // the sender keeps its tombstones
+        let first = Receipt::new(observation.clone(), &transfer)?;
+        let mut next = observation;
+        next.id = Uuid::new_v4();
+        let second = Receipt::new(next, &transfer)?;
+        local["globalTotalItems"] = json!(4);
+        local["globalDeleted"] = json!(2);
+        local["localTotalItems"] = json!(2);
+        assert!(interval_complete(&first, &second, &local)?);
+        local["localFiles"] = json!(0);
+        assert!(
+            !interval_complete(&first, &second, &local)?,
+            "a missing file is not ready"
+        );
+        Ok(())
     }
     #[test]
     fn direct_21_interval_counts_directory_without_legacy_synthetic_bytes() -> Result<()> {
@@ -1111,6 +1276,293 @@ mod tests {
         );
         Ok(())
     }
+    fn paired(id: Uuid, device: Option<&str>) -> Result<Paired> {
+        let public = wire::public(&wire::random()?)?;
+        Ok(Paired {
+            peer: Peer {
+                id,
+                name: "Source computer".into(),
+                device_id: wire::fingerprint(&public),
+            },
+            public,
+            key: [0; 32],
+            endpoint: "127.0.0.1:9".parse()?,
+            allowed: vec!["fixture".into()],
+            syncthing_device: device.map(Into::into),
+            addresses: vec![],
+        })
+    }
+    fn grant(transfer: &Transfer) -> ShareGrant {
+        let source = ExistingVault {
+            daemon: transfer.daemon.clone(),
+            version: "v2.1.6".into(),
+            folder_id: "other-vault".into(),
+            path: transfer.path.clone(),
+            label: "Shared from here".into(),
+            paused: false,
+            folder_type: "sendreceive".into(),
+            peers: vec![],
+            root_identity: None,
+        };
+        ShareGrant::new(transfer.peer, &source, "sender")
+    }
+    #[test]
+    fn members_introduced_by_the_share_peer_keep_the_vault_owned() -> Result<()> {
+        let (_root, mut transfer, folder, _, _) = fixture()?;
+        transfer.witness = Some(folder.clone());
+        // Syncthing appends the computers the share peer vouches for, and the
+        // members that an introduced introducer vouches for in turn.
+        let mut meshed = folder.clone();
+        meshed["devices"].as_array_mut().unwrap().extend([
+            json!({"deviceID":"hub","introducedBy":"sender","encryptionPassword":""}),
+            json!({"deviceID":"nas","introducedBy":"hub","encryptionPassword":""}),
+        ]);
+        validate_owned(&transfer, &folder)?; // positive control
+        validate_owned(&transfer, &meshed)?;
+        transfer.phase = Phase::Bidirectional;
+        meshed["type"] = json!("sendreceive");
+        validate_owned(&transfer, &meshed)?;
+        // A witness read back after introduction still matches once the peer
+        // stops sharing with those computers and Syncthing removes them.
+        transfer.witness = Some(meshed);
+        let mut removed = folder;
+        removed["type"] = json!("sendreceive");
+        validate_owned(&transfer, &removed)?;
+        Ok(())
+    }
+    #[test]
+    fn members_without_the_share_peer_as_introducer_are_refused() -> Result<()> {
+        let (_root, mut transfer, folder, _, _) = fixture()?;
+        transfer.witness = Some(folder.clone());
+        validate_owned(&transfer, &folder)?; // positive control
+        for extra in [
+            vec![json!({"deviceID":"stranger"})],
+            vec![json!({"deviceID":"stranger","introducedBy":""})],
+            vec![json!({"deviceID":"stranger","introducedBy":"elsewhere"})],
+            vec![json!({"deviceID":"stranger","introducedBy":"receiver"})],
+            // A cycle never reaches the share peer.
+            vec![
+                json!({"deviceID":"one","introducedBy":"two"}),
+                json!({"deviceID":"two","introducedBy":"one"}),
+            ],
+        ] {
+            let mut changed = folder.clone();
+            changed["devices"]
+                .as_array_mut()
+                .unwrap()
+                .extend(extra.clone());
+            let error = validate_owned(&transfer, &changed).unwrap_err();
+            assert!(
+                error.to_string().contains("membership"),
+                "{extra:?}: {error}"
+            );
+        }
+        // An introduced member never stands in for the share peer itself.
+        let mut replaced = folder;
+        replaced["devices"] =
+            json!([{"deviceID":"receiver"},{"deviceID":"hub","introducedBy":"sender"}]);
+        assert!(validate_owned(&transfer, &replaced).is_err());
+        Ok(())
+    }
+    #[test]
+    fn only_the_share_peer_of_a_bidirectional_vault_may_introduce() -> Result<()> {
+        let (_root, mut transfer, _, _, _) = fixture()?;
+        let state = tempfile::tempdir()?;
+        let controller = Controller::open(state.path().join("direct"), vec![])?;
+        let mut db = controller.shared.db.lock().unwrap();
+        transfer.phase = Phase::Bidirectional;
+        assert_eq!(introducer_for(&db, &transfer), None, "unpaired computer");
+        db.peers.insert(transfer.peer, paired(transfer.peer, None)?);
+        assert_eq!(introducer_for(&db, &transfer), Some("sender"));
+        for phase in [Phase::Receiving, Phase::Promoting] {
+            transfer.phase = phase;
+            assert_eq!(introducer_for(&db, &transfer), None, "{phase:?}");
+        }
+        transfer.phase = Phase::Bidirectional;
+        db.peers.get_mut(&transfer.peer).unwrap().syncthing_device = Some("other".into());
+        assert_eq!(introducer_for(&db, &transfer), None, "transport differs");
+        db.peers.get_mut(&transfer.peer).unwrap().syncthing_device = Some("sender".into());
+        assert_eq!(introducer_for(&db, &transfer), Some("sender"));
+        db.share_grants.push(grant(&transfer));
+        assert_eq!(
+            introducer_for(&db, &transfer),
+            None,
+            "the peer receives from here: no mutual introducers"
+        );
+        db.share_grants.clear();
+        transfer.owner = None;
+        assert_eq!(introducer_for(&db, &transfer), None, "legacy receive");
+        drop(db);
+        controller.shutdown();
+        Ok(())
+    }
+    /// Loopback Syncthing REST double for the exact routes one reconcile uses.
+    #[cfg(target_os = "linux")]
+    fn fake_rest(state: Arc<Mutex<Value>>) -> Result<SocketAddr> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let _ = respond(&mut stream, &state);
+            }
+        });
+        Ok(address)
+    }
+    #[cfg(target_os = "linux")]
+    fn respond(stream: &mut std::net::TcpStream, state: &Mutex<Value>) -> Result<()> {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let mut length = 0;
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header)?;
+            if header.trim().is_empty() {
+                break;
+            }
+            if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse()?;
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body)?;
+        let mut parts = line.split_whitespace();
+        let method = parts.next().unwrap_or_default();
+        let path = parts.next().unwrap_or_default();
+        let device = path.strip_prefix("/rest/config/devices/");
+        let mut state = state.lock().unwrap();
+        let reply = match (method, path) {
+            ("GET", "/rest/system/status") => {
+                Some(json!({"myID":"receiver","startTime":"fixture"}))
+            }
+            ("GET", "/rest/system/version") => Some(json!({"version":"v2.1.6"})),
+            ("GET", "/rest/config/folders/fixture") => Some(state["folder"].clone()),
+            ("GET", _) => device.and_then(|id| state["devices"].get(id).cloned()),
+            ("PATCH", _) if device.is_some_and(|id| state["devices"].get(id).is_some()) => {
+                let id = device.unwrap_or_default();
+                let changes: Value = serde_json::from_slice(&body)?;
+                for (key, value) in changes.as_object().context("patch object")? {
+                    state["devices"][id][key] = value.clone();
+                }
+                state["patches"].as_array_mut().unwrap().push(json!(id));
+                Some(Value::Null)
+            }
+            _ => None,
+        };
+        let (status, body) = match reply {
+            Some(Value::Null) => ("200 OK", String::new()),
+            Some(value) => ("200 OK", value.to_string()),
+            None => ("404 Not Found", String::new()),
+        };
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn existing_pairing_marks_only_its_share_peer_as_introducer_once() -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let (_root, mut transfer, mut folder, _, _) = fixture()?;
+        let runtime = tempfile::tempdir()?;
+        let base = runtime.path().canonicalize()?;
+        let prepared = base.join("prepared");
+        let home = prepared.join("syncthing");
+        private::directory(&prepared)?;
+        private::directory(&home)?;
+        let rest = Arc::new(Mutex::new(json!({
+            "folder": null,
+            "devices": {
+                "sender": {"deviceID":"sender","addresses":["dynamic"],"introducer":false},
+                "hub": {"deviceID":"hub","addresses":["dynamic"],"introducer":false,"introducedBy":"sender"}
+            },
+            "patches": []
+        })));
+        let address = fake_rest(rest.clone())?;
+        let config = home.join("config.xml");
+        private::write(&config, format!(r#"<configuration><gui tls="false"><address>{address}</address><apikey>fixture-key</apikey></gui></configuration>"#).as_bytes())?;
+        private::write(&home.join("cert.pem"), b"fixture certificate")?;
+        let identity = DaemonIdentity {
+            config_file: config.canonicalize()?,
+            device_id: "receiver".into(),
+            certificate_hash: format!("{:x}", Sha256::digest(b"fixture certificate")),
+        };
+        // An existing pairing, already bidirectional before this change.
+        transfer.daemon = identity.clone();
+        transfer.phase = Phase::Bidirectional;
+        folder["type"] = json!("sendreceive");
+        transfer.witness = Some(folder.clone());
+        transfer.label = folder["label"].as_str().map(Into::into);
+        rest.lock().unwrap()["folder"] = folder.clone();
+        let controller = Controller::open(base.join("direct"), vec![config.clone()])?;
+        {
+            let mut db = controller.shared.db.lock().unwrap();
+            db.peers
+                .insert(transfer.peer, paired(transfer.peer, Some("sender"))?);
+            db.transfers.push(transfer.clone());
+        }
+        let patches = || rest.lock().unwrap()["patches"].clone();
+        controller.reconcile_transfers()?;
+        assert_eq!(
+            patches(),
+            json!([]),
+            "an external Syncthing keeps its roles"
+        );
+        let receipt = json!({
+            "request": {"executable": base.join("syncthing"), "rest_address": address,
+                "listen_address": "127.0.0.1:22000"},
+            "binary_version": crate::daemon::CLIENT_VERSION,
+            "binary_hash": crate::linux_bootstrap::BINARY_SHA,
+            "identity": identity,
+        });
+        private::write(
+            &prepared.join("prepared.json"),
+            &serde_json::to_vec(&receipt)?,
+        )?;
+        controller
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .share_grants
+            .push(grant(&transfer));
+        controller.reconcile_transfers()?;
+        assert_eq!(patches(), json!([]), "no mutual introducers");
+        controller.shared.db.lock().unwrap().share_grants.clear();
+        controller.reconcile_transfers()?;
+        assert_eq!(patches(), json!(["sender"]));
+        assert_eq!(
+            rest.lock().unwrap()["devices"]["sender"]["introducer"],
+            true
+        );
+        assert_eq!(rest.lock().unwrap()["devices"]["hub"]["introducer"], false);
+        controller.reconcile_transfers()?;
+        assert_eq!(patches(), json!(["sender"]), "the flag is set only once");
+        // Syncthing meshes the vault with the peer's computers: still owned.
+        rest.lock().unwrap()["folder"]["devices"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"deviceID":"hub","introducedBy":"sender","encryptionPassword":""}));
+        controller.reconcile_transfers()?;
+        assert_eq!(
+            controller.shared.db.lock().unwrap().transfers[0].phase,
+            Phase::Bidirectional
+        );
+        // Negative control: a member that the peer did not introduce.
+        rest.lock().unwrap()["folder"]["devices"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"deviceID":"stranger","introducedBy":"","encryptionPassword":""}));
+        let error = controller.reconcile_transfers().unwrap_err();
+        assert!(format!("{error:#}").contains("membership"), "{error:#}");
+        assert_eq!(patches(), json!(["sender"]));
+        controller.shutdown();
+        Ok(())
+    }
     #[test]
     fn replaced_destination_directory_fails_even_when_its_canonical_path_matches() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -1121,5 +1573,47 @@ mod tests {
         std::fs::create_dir(&destination)?;
         assert_ne!(identity, DirectoryIdentity::read(&destination)?);
         Ok(())
+    }
+    #[test]
+    fn issue2589_a_sleeping_paired_computer_is_offline_without_a_firewall_hint() {
+        use std::io::{Error, ErrorKind};
+        let endpoint: SocketAddr = "10.10.0.83:42321".parse().unwrap();
+        let connect = |error: Error| {
+            not_connected(
+                endpoint,
+                anyhow::Error::new(error).context("paired computer unavailable"),
+            )
+        };
+        for error in [
+            Error::from(ErrorKind::HostUnreachable),
+            Error::from(ErrorKind::NetworkUnreachable),
+            Error::from(ErrorKind::NetworkDown),
+            // macOS: a sleeping LAN host, which std does not categorize.
+            Error::from_raw_os_error(libc::EHOSTDOWN),
+        ] {
+            let kind = error.kind();
+            let error = connect(error);
+            // Background refresh defers a sleeping computer like a refused one.
+            assert!(offline(&error), "{kind:?}");
+            let text = error.to_string();
+            assert!(
+                text.starts_with("Not connected to the other computer at 10.10.0.83:42321.")
+                    && text.contains("asleep")
+                    && !text.contains("firewall"),
+                "{kind:?}: {text}"
+            );
+        }
+        // A refused or silently dropped connection keeps the firewall hint.
+        for kind in [ErrorKind::ConnectionRefused, ErrorKind::TimedOut] {
+            let error = connect(Error::from(kind));
+            assert!(offline(&error));
+            assert!(
+                error.to_string().contains("Open TCP port 42321"),
+                "{kind:?}"
+            );
+        }
+        assert!(!offline(&anyhow::Error::new(Error::from(
+            ErrorKind::PermissionDenied
+        ))));
     }
 }

@@ -18,6 +18,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-recovery:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore Windows core cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agent-windows-recovery-v1
+      - name: Prepare and verify Windows vendor
+        shell: bash
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Run native Windows recovery controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-recovery-check.py
+          exit $LASTEXITCODE
+      - name: Run native Windows delta console controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-delta-console-check.py
+          exit $LASTEXITCODE
   linux:
     # Public repositories receive the standard 4-vCPU hosted Linux runner.
     runs-on: ubuntu-24.04
@@ -25,8 +59,11 @@ jobs:
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      # Full desktop and test targets exhausted the hosted runner's disk with
+      # debug symbols. Keep assertions and every suite; omit symbols in this
+      # synthetic worker lane, independently of release/acceptance profiles.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
       RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
       OKILUM_SOURCE_COMMIT: ${{ github.sha }}
     steps:
@@ -130,6 +167,13 @@ jobs:
           cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
       - name: Stress private reveal bus (20 runs)
         run: bash scripts/ci/test-group.sh agent-reveal-stress 1800 python3 scripts/ci/reveal-stress.py --runs 20
+      # #2589: two isolated profiles with pinned Syncthing; the hub keeps serving.
+      - name: Pair through a running okilum sync serve
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          syncthing=$(python3 scripts/ci/sync-fixture-stage.py)
+          tini -s -- python3 -I scripts/ci/sync-cli-control.py --okilum target/debug/okilum --syncthing "$syncthing"
       - name: Run complete okilum-core suite offline
         env:
           CARGO_NET_OFFLINE: 'true'
