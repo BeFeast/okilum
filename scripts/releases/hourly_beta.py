@@ -2,6 +2,7 @@
 
 Admission follows certified main history, independently of a moving branch tip.
 Never infer merge health from PR checks: certify the exact product checkout.
+NEWEST_MAIN_BETA platforms skip certification and always take main's tip.
 """
 from datetime import datetime, timezone
 import json
@@ -19,6 +20,11 @@ REQUIRED = ('fast / check (workflow_dispatch)', 'fast / shell-full (workflow_dis
 # it is still certified and reported on the same source, but it informs Stable
 # and never holds Beta (03.11 rule: CI never gates development).
 BETA_REQUIRED = REQUIRED[:1]
+# Oleg 04.11: these betas build the newest first-parent main with no
+# certification gate; a newer merge supersedes an older unfinished one. The
+# hosted compile/sign/notarize run is the gate. Fast certification still runs
+# and informs Stable. (#2589: an old certified source shipped hours after main.)
+NEWEST_MAIN_BETA = frozenset({'macos'})
 CERTIFICATION_JOBS = dict(zip(('check', 'shell-full'), REQUIRED))
 SHIPPING_JOBS = {
     # Stable Linux uses AppImage; frozen/independent Arch cannot delay its gate.
@@ -76,6 +82,11 @@ def green(source):
     return True, 'Required post-merge fast checks succeeded'
 
 
+def beta_ready(source, platform):
+    """Whether this platform's beta may ship the source (newest-main lanes always may)."""
+    return platform in NEWEST_MAIN_BETA or green(source)[0]
+
+
 def main_history(tip):
     """Walk first parents only: green PR branch heads are never beta candidates."""
     seen = set()
@@ -108,7 +119,7 @@ def candidate(tip, platform, descriptor, expected=''):
     for source in main_history(tip):
         if source == floor:
             return admitted()
-        if selected is None and green(source)[0]:
+        if selected is None and beta_ready(source, platform):
             selected = source
             if floor is None:
                 return admitted()
@@ -241,22 +252,30 @@ def select(event, source, platform, env, descriptor):
     tip = api('/branches/main')['commit']['id']
     if not re.fullmatch('[0-9a-f]{40}', tip):
         raise ValueError('Invalid newest main identity')
-    ready, reason = green(tip)
-    if not ready and platform == 'linux' and event == 'schedule':
-        reason += '; ' + certify(tip)
-    selected = candidate(tip, platform, descriptor, env.get('HOURLY_SOURCE', ''))
+    pinned = env.get('HOURLY_SOURCE', '')
+    if platform in NEWEST_MAIN_BETA:
+        label = 'newest main'
+        reason = (f'Newest main {tip} superseded {pinned}' if pinned and pinned != tip
+                  else f'Newest main {tip} is already the beta')
+    else:
+        label = 'certified unpublished main'
+        ready, reason = green(tip)
+        if not ready and platform == 'linux' and event == 'schedule':
+            reason += '; ' + certify(tip)
+        reason += '; no unpublished certified main source'
+    selected = candidate(tip, platform, descriptor, pinned)
     if selected is None:
-        return False, source, reason + '; no unpublished certified main source; retry next hour'
+        return False, source, reason + '; retry next hour'
     # Compare order from the current tip. Walking backwards from an older
     # product to find a newer workflow would needlessly scan the entire repo.
     newer_than_workflow = (selected != source and next(
         commit for commit in main_history(tip) if commit in (source, selected)) == selected)
-    if (event == 'schedule' or (selected != source and not env.get('HOURLY_SOURCE'))
+    if (event == 'schedule' or (selected != source and not pinned)
             or newer_than_workflow):
         api('/actions/workflows/' + WORKFLOWS[platform] + '/dispatches', 'POST',
             {'ref': 'main', 'inputs': {'hourly_source': selected}})
-        return False, source, 'Dispatched certified source with current delivery tooling'
-    return True, selected, 'Build certified unpublished main ' + selected
+        return False, source, f'Dispatched {label} {selected} with current delivery tooling'
+    return True, selected, f'Build {label} {selected}'
 
 
 def github_main(platform, env, descriptor):

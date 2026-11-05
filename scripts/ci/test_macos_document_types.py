@@ -41,9 +41,9 @@ class DocumentTypesTests(unittest.TestCase):
         self.assert_drop_types(info, 'Alternate')
         self.assert_folder_service(info, 'Okilum')
 
-    def test_sprint_builds_the_regular_bundle_from_the_shipping_template(self):
-        # Since e56ff32d5 (#2589) Sprint replaces the one working Okilum app:
-        # same bundle id, drop ranks, folder Service and URL scheme as shipping.
+    def test_sprint_builds_the_one_shipping_app(self):
+        # Oleg 2026-11-04 (#2589): the fast local Mac build replaces the one working
+        # Okilum (same bundle id, document types and URL handlers), not a side app.
         source = (ROOT / 'scripts/dev/okilum-sprint.sh').read_text()
         program = source.split('python3 - "$bundle_stage" "$sha" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]
         with tempfile.TemporaryDirectory() as directory:
