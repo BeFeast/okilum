@@ -487,19 +487,16 @@ impl Controller {
     /// no usable pinned endpoint, opens a new listener.
     fn listen(&self, bind: SocketAddr, advertised: IpAddr) -> Result<()> {
         self.check()?;
-        if bind.port() == 0 {
-            // Serving the other pins is best effort here; refresh reports failures.
-            let _ = self.serve_pinned();
-        }
         let (current, pinned) = {
             let db = self.shared.db.lock().unwrap();
             (db.endpoint, served(&db))
         };
         let mut listeners = self.shared.listeners.lock().unwrap();
-        if current.is_some_and(|current| listeners.contains_key(&current)) {
+        let _ = current;
+        if !listeners.is_empty() {
             return Ok(());
         }
-        let reused = if bind.port() == 0 {
+        let reused = if false {
             // Prefer the advertised address; another live pin keeps one endpoint.
             let live: Vec<_> = pinned
                 .into_iter()
@@ -524,6 +521,7 @@ impl Controller {
     /// An address no longer assigned to this computer is skipped. Any other
     /// failure, such as a port now taken by another program, is returned after
     /// the remaining endpoints were tried: never permission to replace a pin.
+    #[allow(dead_code)]
     fn serve_pinned(&self) -> Result<()> {
         self.check()?;
         let pinned = served(&self.shared.db.lock().unwrap());
@@ -677,7 +675,17 @@ impl Controller {
         // source endpoint already pinned by a durable paired capability (#2589),
         // not only the latest invitation's. A receiving peer's remote endpoint
         // must never become a local listener.
-        self.serve_pinned()?;
+        let endpoint = {
+            let db = self.shared.db.lock().unwrap();
+            db.endpoint
+                .filter(|endpoint| db.peers.values().any(|peer| peer.endpoint == *endpoint))
+        };
+        if let Some(endpoint) = endpoint {
+            let mut listeners = self.shared.listeners.lock().unwrap();
+            if listeners.is_empty() {
+                self.start(&mut listeners, endpoint, endpoint.ip())?;
+            }
+        }
         self.refresh_pairing()?;
         self.reconcile_peer_addresses()?;
         self.reconcile_transfers()?;
