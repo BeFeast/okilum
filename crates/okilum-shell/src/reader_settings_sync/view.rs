@@ -45,21 +45,27 @@ impl Render for SyncSettings {
             window.close_dialog(cx);
         }
         let p = brand::palette(cx);
-        let mut content = v_flex().gap_6().w_full().child(
+        let header = v_flex().gap_6().w_full().flex_shrink_0().child(
             h_flex()
                 .justify_between()
                 .gap_4()
                 .child(
                     v_flex()
+                        .flex_1()
+                        .min_w_0()
                         .gap_1()
                         .child(
                             div()
+                                .w_full()
+                                .whitespace_normal()
                                 .text_xl()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child("Sync"),
                         )
                         .child(
                             div()
+                                .w_full()
+                                .whitespace_normal()
                                 .text_sm()
                                 .text_color(p.text_muted)
                                 .child("Keep your vaults together across computers."),
@@ -68,6 +74,7 @@ impl Render for SyncSettings {
                 .child(
                     Button::new("sync-add-computer")
                         .debug_selector(|| "sync-add-computer".into())
+                        .flex_shrink_0()
                         .primary()
                         .label("Add computer")
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -76,7 +83,8 @@ impl Render for SyncSettings {
                         })),
                 ),
         );
-        content = content.child(self.render_status(cx));
+        let header = header.child(self.render_status(cx));
+        let mut content = v_flex().gap_6().w_full().min_w_0();
         let empty = self.snapshot.as_ref().is_none_or(|s| s.peers.is_empty());
         if empty {
             content = content.child(v_flex().id("sync-empty").debug_selector(|| "sync-empty".into())
@@ -133,26 +141,59 @@ impl Render for SyncSettings {
                             .child(
                                 gpui_component::Icon::new(IconName::Network)
                                     .size_6()
+                                    .flex_shrink_0()
                                     .text_color(p.text_muted),
                             )
-                            .child(v_flex().flex_1().gap_1().child(peer.name.clone()).child(
-                                div().text_sm().text_color(p.text_muted).child(format!(
-                                        "OS not reported · {}",
-                                        observed
-                                            .vaults
-                                            .map(|n| format!("{n} vaults"))
-                                            .unwrap_or_else(|| "Vault count not checked".into())
-                                    )),
-                            ))
                             .child(
                                 v_flex()
+                                    .flex_1()
+                                    .min_w_0()
                                     .gap_1()
-                                    .child(div().text_sm().child(connection))
-                                    .child(div().text_xs().text_color(p.text_muted).child(seen)),
+                                    .child(
+                                        div().w_full().whitespace_normal().child(peer.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .whitespace_normal()
+                                            .text_sm()
+                                            .text_color(p.text_muted)
+                                            .child(format!(
+                                                "OS not reported · {}",
+                                                observed
+                                                    .vaults
+                                                    .map(|n| format!("{n} vaults"))
+                                                    .unwrap_or_else(
+                                                        || "Vault count not checked".into()
+                                                    )
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .w_32()
+                                    .flex_shrink_0()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .whitespace_normal()
+                                            .text_sm()
+                                            .child(connection),
+                                    )
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .whitespace_normal()
+                                            .text_xs()
+                                            .text_color(p.text_muted)
+                                            .child(seen),
+                                    ),
                             )
                             .child(
                                 Button::new(("sync-catalog", index))
                                     .debug_selector(move || format!("sync-catalog-{index}"))
+                                    .flex_shrink_0()
                                     .ghost()
                                     .label("Vaults →")
                                     .disabled(self.busy)
@@ -199,6 +240,7 @@ impl Render for SyncSettings {
                         .child(
                             gpui_component::Icon::new(IconName::Folder)
                                 .size_6()
+                                .flex_shrink_0()
                                 .text_color(p.text_muted),
                         )
                         .child(
@@ -206,37 +248,56 @@ impl Render for SyncSettings {
                                 .flex_1()
                                 .min_w_0()
                                 .gap_1()
-                                .child(vault.label.clone())
+                                .child(div().w_full().truncate().child(vault.label.clone()))
                                 .child(
                                     div()
+                                        .w_full()
+                                        .truncate()
                                         .text_sm()
                                         .text_color(p.text_muted)
                                         .child(vault.path.display().to_string()),
                                 )
-                                .child(div().text_sm().text_color(p.text_muted).child(shared)),
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .whitespace_normal()
+                                        .text_sm()
+                                        .text_color(p.text_muted)
+                                        .child(shared),
+                                ),
                         )
                         .child(
                             v_flex()
+                                .w_32()
+                                .flex_shrink_0()
                                 .gap_1()
-                                .child(div().text_sm().child(if observed.state.is_empty() {
-                                    "Checking sync status".into()
-                                } else {
-                                    observed.state
-                                }))
-                                .child(div().text_xs().text_color(p.text_muted).child(
-                                    if observed.available {
-                                        format!(
-                                            "{} files · {} MB",
-                                            observed.files,
-                                            observed.bytes / 1_000_000
-                                        )
+                                .child(div().w_full().whitespace_normal().text_sm().child(
+                                    if observed.state.is_empty() {
+                                        "Checking sync status".into()
                                     } else {
-                                        "Status not checked".into()
+                                        observed.state
                                     },
-                                )),
+                                ))
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .whitespace_normal()
+                                        .text_xs()
+                                        .text_color(p.text_muted)
+                                        .child(if observed.available {
+                                            format!(
+                                                "{} files · {} MB",
+                                                observed.files,
+                                                observed.bytes / 1_000_000
+                                            )
+                                        } else {
+                                            "Status not checked".into()
+                                        }),
+                                ),
                         )
                         .child(
                             Button::new(("sync-manage", index))
+                                .flex_shrink_0()
                                 .ghost()
                                 .label("Manage →")
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -273,10 +334,13 @@ impl Render for SyncSettings {
             .debug_selector(|| "sync-panel".into())
             .relative()
             .size_full()
+            .min_w_0()
             .min_h_0()
+            .gap_6()
             .when(self.presentation.wizard.is_none(), |panel| {
                 panel.child(self.render_approval(cx))
             })
+            .child(header)
             .child(
                 v_flex()
                     .id("sync-steps")
@@ -367,6 +431,7 @@ impl SyncSettings {
             });
             line = line.child(
                 Button::new("sync-retry")
+                    .flex_shrink_0()
                     .label(if self.presentation.wizard == Some(Step::Expired) {
                         "Create new link"
                     } else if existing {
@@ -407,6 +472,7 @@ impl SyncSettings {
             line = line.child(
                 Button::new("sync-refresh")
                     .debug_selector(|| "sync-refresh".into())
+                    .flex_shrink_0()
                     .ghost()
                     .label("Check again")
                     .disabled(self.busy)
