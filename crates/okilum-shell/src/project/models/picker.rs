@@ -269,9 +269,11 @@ impl ProjectView {
                         .debug_selector(move || format!("project-model-provider-{index}"))
                         .ghost()
                         .w_full()
-                        .h(px(36.))
+                        .h_auto()
+                        .min_h(px(36.))
                         .flex_shrink_0()
                         .px_2()
+                        .py_1()
                         .child(
                             h_flex()
                                 .w_full()
@@ -291,7 +293,7 @@ impl ProjectView {
                                             })
                                             .min_w_0()
                                             .flex_1()
-                                            .truncate()
+                                            .whitespace_normal()
                                             .text_size(px(ui::LABEL))
                                             .line_height(px(ui::LINE))
                                             .child(title.clone()),

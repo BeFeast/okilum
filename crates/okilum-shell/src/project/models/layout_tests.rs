@@ -753,3 +753,25 @@ fn compact_header_and_aligned_rail_fit_real_provider_names_without_ellipsis(
         );
     }
 }
+
+#[gpui::test]
+fn full_pilot_account_name_wraps_inside_the_rail_instead_of_truncating(cx: &mut TestAppContext) {
+    let (view, visual, _state, _gateway) = fixture(cx, size(px(1000.), px(760.)), 0, None);
+    redraw_picker(&view, visual, |view, _, _| {
+        view.models.as_mut().unwrap().catalog.providers[1].display_name =
+            Some("Claude → Astra subagents · 7-day pilot".into());
+    });
+    interleaved_open(visual);
+    let label = bounds(visual, "project-model-account-label-1");
+    let row = bounds(visual, "project-model-provider-1");
+    assert!(
+        label.size.height >= px(40.),
+        "the complete account name needs multiple text lines: {label:?}"
+    );
+    inside(label, row, "wrapped account name");
+    inside(
+        row,
+        bounds(visual, "project-model-providers"),
+        "account row",
+    );
+}
