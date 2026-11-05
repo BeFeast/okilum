@@ -127,3 +127,80 @@ H=github scripts/agent/gh-check.sh --dispatch --publication-baseline <full-main-
 This also runs the normal complete checks. The helper requires the comparison
 step to succeed; missing/skipped comparison work is not a passing verdict.
 The baseline compile must pass before its failing regression counts as evidence.
+
+Each Linux Rust group now runs through the same `test-group.py` subreaper as
+nightly/manual fast checks (#2510, #2592). A deadline prints
+`TEST_GROUP_TIMEOUT group=<name> limit=<seconds>s`, fails the group, and terminates,
+kills and reaps its descendants (including private D-Bus daemons) within another
+30 s. Independent groups still run after a failure. The hosted Linux step has a
+3000 s outer deadline as well; it cannot spend the entire 100-minute job on one
+unresponsive test tree. Benchmark passes use the identical wrappers.
+
+Initial sizing uses the timestamps from hosted run `41825902192` (4 vCPU), with
+compilation included: core 206 s -> 480 s; local-writer 347 s -> 900 s;
+AppImage 26 s -> 120 s; HTTP 32 s -> 180 s; web 3 s -> 60 s;
+filtered groups up to 35 s -> 120 s. The full workspace group did **not** finish
+in that run, so its last output is not a passing runtime sample. Its 1320 s
+policy also reserves compilation/core overhead around the separate shell
+execution policy from #2510 (990 s, including margin above its measured baldr
+805 s execution). These are conservative deadline policies, not fleet percentiles
+or cross-host speed comparisons. Sprint/no-default/portable/vendor groups retain
+600/600/300/900 s budgets for their separate compilation/configuration paths.
+New runtime evidence must justify adjusting a limit; a hung test does not.
+
+The hosted controls include the real shared Linux entrypoint with a deliberately
+hung, detached, TERM-resistant fixture. It must fail its named 2 s group, reap
+every descendant within 32 s, and continue to the final independent suite.
+`test_test_group.py` also exercises the unchanged #2510 supervisor directly.
+`reveal-stress.py` runs the exact compiled shell test at least 20 times, requires
+both its missing-manager assertion and fake-manager receipt, and checks that the
+private daemon's cleanup ran. Each repetition has its own 20 s process deadline.
+
+Reveal's five-second D-Bus deadlines cover the entire connection/authentication
+and ShowItems operations. zbus's `method_timeout` alone starts after a call is
+sent and does not cover the authentication handshake. The private test bus has
+the same connection deadline, a five-second whole-test bound, and bounded startup
+address collection. Its startup address goes to a temporary regular file: pipe
+EOF or a reader-thread join cannot retain the test when another process fixture
+inherits a writer before exec. The child guard is installed before startup
+checks and always kills/waits the daemon, including assertion/timeout unwinding.
+The missing-manager assertion requires ServiceUnknown, so a timeout cannot
+masquerade as the expected no-manager error.
+
+Real-socket controls cover an unanswered AUTH and a manager that receives the
+exact item URI but withholds its reply. Hosted run `41845622687` verifies that
+removing only the shared deadline causes both controls to hang until the external
+supervisor returns 124; with it, both return in five seconds. The isolated original
+modules passed 50 hosted repetitions (`41844867137`), so lack of an installed
+manager alone does not identify the historical full-suite stall. Keep that
+historical trigger distinct from the controlled, reproduced indefinite waits.
+
+Hosted run `41845308559` exhausted the stock image's disk during shell-test
+compilation, before any stress verdict (helper 75). The lane now records free
+space and removes only the image's unused Android/.NET/CodeQL SDKs before cache
+restoration. Rust, system libraries, fixtures and test inventories are retained.
+
+The full-shell baseline trace (`41844245238`) also completed every reveal stage:
+missing-manager error at 14:40:37.142Z, fake-manager receipt at 14:40:37.147Z and
+normal test completion at 14:40:37.150Z. The diagnostic run was then cancelled
+intentionally to collect its trace. The historical trigger was not reproduced;
+only the indefinite authentication/reply waits were reproduced by controlled
+stalls. This distinction is retained in the evidence rather than attributing the
+old failure to a file manager that was absent from the isolated bus.
+
+Main's #2595 isolated Python setup and complete CI/releases/updater discoveries
+remain required. Their groups reuse the same supervisor at 300/90/90 s; the
+observed local complete CI discovery was 136 s, and the releases/updater samples
+were about 3 s/0.04 s. These limits retain setup/scheduling margin rather than
+asserting a cross-host percentile. Main's #2589 first-computer and direct-LAN
+commands are retained as separately supervised 180/120 s groups, including
+compilation headroom. Final hosted group receipts provide their runner timings.
+
+Integrated gate validation also keeps the #2595 dependency guard aware of the
+#2510 Sync wrapper. Sync staging's concurrent exec probes use independent
+publisher processes, matching the production CLI path: a ThreadPool fork can
+inherit a sibling's temporary writable FD until exec and cause ETXTBSY after the
+parent has closed and renamed it. A dedicated positive control demonstrates that
+kernel behavior. Eight cold publishers and four live-daemon publishers still
+must all publish/exec successfully; checksum, inode, cleanup and old-tar negative
+controls remain. Twenty repeated eight-process cold controls passed locally.

@@ -484,13 +484,12 @@ impl SyncSettings {
                     .is_some_and(|s| s.peers.len() < output.snapshot.peers.len())
             {
                 self.presentation.wizard = None;
-            } else if !output.snapshot.catalog.is_empty() {
-                if !matches!(
-                    self.presentation.wizard,
-                    Some(presentation::Step::Progress | presentation::Step::Computer)
-                ) {
-                    self.presentation.wizard = Some(presentation::Step::Vaults);
-                }
+            } else if !output.snapshot.catalog.is_empty()
+                && self.presentation.wizard == Some(presentation::Step::Waiting)
+            {
+                // A catalog retained from an earlier pairing must not replace
+                // the step where someone is adding another computer.
+                self.presentation.wizard = Some(presentation::Step::Vaults);
             } else if self.presentation.wizard == Some(presentation::Step::Link)
                 && output.snapshot.pending.is_none()
                 && self
