@@ -184,6 +184,12 @@ class HelperFlowTests(unittest.TestCase):
             scripts.mkdir(parents=True)
             for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py'):
                 shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
+            # This control measures command inventory and first-failure retention,
+            # not process supervision. Record every wrapper invocation and run
+            # each fake command directly; the next control runs the real watchdog.
+            (scripts / 'test-group.sh').write_text(
+                'printf "%s %s\\n" "$1" "$2" >> "$GROUP_LOG"\n'
+                'shift 2\nexec "$@"\n')
             (scripts / 'vendor-tests.sh').write_text('echo vendor-tests >> "$CALL_LOG"\n')
             (scripts / 'local-writer-admission.sh').write_text(
                 'echo local-writer-admission >> "$CALL_LOG"\n')
@@ -202,9 +208,10 @@ class HelperFlowTests(unittest.TestCase):
             counts = []
             for fail in ('0', '1'):
                 log = root / ('calls-' + fail)
+                groups = root / ('groups-' + fail)
                 result = subprocess.run(['bash', str(scripts / 'linux-rust-tests.sh')], cwd=root,
                                         env={**os.environ, 'PATH': str(fake) + os.pathsep + os.environ['PATH'],
-                                             'CALL_LOG': str(log), 'FAIL_FIRST': fail,
+                                             'CALL_LOG': str(log), 'GROUP_LOG': str(groups), 'FAIL_FIRST': fail,
                                              'FAIL_MARKER': str(root / 'failed')},
                                         capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, int(fail), result.stdout + result.stderr)
@@ -214,14 +221,19 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertTrue(any('retired-sync.test.js' in call for call in calls))
                 self.assertIn('vendor-tests', calls)
                 self.assertIn('sidecar::macos::preparation::', calls[-1])
+                wrapped = groups.read_text().splitlines()
+                self.assertEqual(len(wrapped), len(calls))
+                self.assertIn('issue2049 120', wrapped)
+                self.assertEqual(wrapped[-1], 'sidecar-macos-preparation 120')
                 counts.append(len(calls))
             self.assertEqual(counts[0], counts[1])
 
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux process supervision')
     def test_linux_suite_hang_fails_named_group_and_keeps_later_suites(self):
-        # Run the real shared entrypoint; only its fixture deadline and runners
-        # change. A missing wrapper must leave this control hanging/failing.
+        # Run the real shared entrypoint and supervisor. Only fixture deadlines,
+        # TERM grace and runners change; production retains its 30-second grace.
+        # A missing wrapper must leave this control hanging/failing.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             scripts = root / 'scripts/ci'
@@ -229,8 +241,10 @@ class HelperFlowTests(unittest.TestCase):
             for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py'):
                 shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
             entrypoint = scripts / 'linux-rust-tests.sh'
-            entrypoint.write_text(entrypoint.read_text().replace('suite issue2049 120 ',
-                                                                'suite issue2049 2 '))
+            entrypoint.write_text(entrypoint.read_text()
+                .replace('suite issue2049 120 ', 'suite issue2049 2 ')
+                .replace('bash scripts/ci/test-group.sh "$group"',
+                         'bash scripts/ci/test-group.sh --kill-after 0.3 "$group"'))
             for name in ('vendor-tests.sh', 'local-writer-admission.sh'):
                 (scripts / name).write_text('exit 0\n')
             fixture = ROOT / 'scripts/ci/fixtures/hung-test-group.py'
@@ -250,9 +264,9 @@ class HelperFlowTests(unittest.TestCase):
                          'HANG_FIXTURE': str(fixture), 'HANG_WORK': str(root),
                          'CALL_LOG': str(root / 'calls')}, capture_output=True, text=True, timeout=90)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                self.assertIn('TEST_GROUP_TIMEOUT group=issue2049 limit=2s', result.stdout)
+                self.assertIn('TEST_GROUP_TIMEOUT group=issue2049 limit=2s kill_after=0.3s', result.stdout)
                 elapsed = float(re.search(r'TEST_GROUP_END group=issue2049 elapsed=([0-9.]+)s status=124', result.stdout)[1])
-                self.assertLessEqual(elapsed, 32)
+                self.assertLessEqual(elapsed, 3)
                 self.assertTrue((root / 'ready').exists(), 'hanging tree did not start')
                 for pid in root.glob('*.pid'):
                     self.assertFalse(Path('/proc', pid.read_text()).exists(), pid.name)
