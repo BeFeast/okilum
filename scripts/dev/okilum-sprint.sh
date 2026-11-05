@@ -22,6 +22,9 @@ short_sha=unknown
 root="$bootstrap"
 # One app (Oleg, 2026-11-04 #2589): the fast local build replaces the working Okilum.
 app="/Applications/Okilum.app"
+bundle_stage=
+STAGE_DIR=staging.noindex
+lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 log="$bootstrap/build.log"
 run_log="$bootstrap/stages.log"
 cat > "$reporter" <<'SPRINT_REPORTER'
@@ -36,14 +39,54 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ElementTree
 
 ENDPOINT = 'https://pomoi.co/api/feedback/okilum'
 MAX_LOG = 250 * 1024
+SPARKLE = '{http://www.andymatuschak.org/xml-namespaces/sparkle}'
+# Staged and previous bundles live here: Spotlight skips *.noindex, so
+# LaunchServices does not register them next to /Applications/Okilum.app.
+STAGE_DIR = 'staging.noindex'
+
+
+def next_build(appcast):
+    """One above every build in the appcast: Sparkle offers no older beta over
+    this build and offers the next newer one. Returns (build, newest, newest beta)."""
+    builds, betas = [], []
+    for item in ElementTree.fromstring(appcast).iter('item'):
+        version = item.findtext(SPARKLE + 'version')
+        enclosure = item.find('enclosure')
+        if version is None and enclosure is not None:
+            version = enclosure.get(SPARKLE + 'version')
+        if version and version.strip().isdigit():
+            builds.append(int(version.strip()))
+            if (item.findtext(SPARKLE + 'channel') or '').strip() == 'beta':
+                betas.append(int(version.strip()))
+    if not builds:
+        raise ValueError('no published Mac build in the update feed')
+    return max(builds) + 1, max(builds), max(betas) if betas else 0
+
+
+def registered_copies(dump, bundle_id, keep):
+    """Bundles `lsregister -dump` lists for bundle_id other than keep (or inside it)."""
+    keep = os.path.normpath(keep)
+    copies = []
+    for block in re.split(r'(?m)^-{20,}\s*$', dump):
+        identifier = re.search(r'(?m)^\s*identifier:\s*(\S+)\s*$', block)
+        path = re.search(r'(?m)^\s*path:\s*(.+?)(?:\s+\(0x[0-9a-fA-F]+\))?\s*$', block)
+        if not identifier or not path or identifier.group(1) != bundle_id:
+            continue
+        candidate = os.path.normpath(path.group(1))
+        if (candidate.endswith('.app') and candidate != keep and not candidate.startswith(keep + '/')
+                and candidate not in copies):
+            copies.append(candidate)
+    return copies
 
 
 def redact(text):
@@ -125,7 +168,7 @@ def collect(context, stage, app_log=None):
     add('Sprint context', json.dumps(context, sort_keys=True))
     add('Stage log (last 200 lines)', '\n'.join(tail(context.get('stage_log', context['build_log']))))
     add('Build log (last 200 lines)', '\n'.join(tail(context['build_log'])))
-    add('codesign staged bundle', run(['codesign', '--verify', '--deep', '--strict', '-v', str(Path(context['root']) / 'Okilum Sprint.app')]))
+    add('codesign staged bundle', run(['codesign', '--verify', '--deep', '--strict', '-v', str(Path(context['root']) / STAGE_DIR / 'Okilum.app')]))
     add('codesign installed bundle', run(['codesign', '--verify', '--deep', '--strict', '-v', str(app)]))
     try:
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
@@ -185,9 +228,18 @@ def main():
     parser.add_argument('--collect', action='store_true')
     parser.add_argument('--app-log')
     parser.add_argument('--repair-cache')
+    parser.add_argument('--next-build', action='store_true', help='appcast on stdin')
+    parser.add_argument('--registered-copies', nargs=2, metavar=('BUNDLE_ID', 'KEEP'), help='dump on stdin')
     args = parser.parse_args()
     if args.repair_cache:
         repair_cache(args.repair_cache)
+        return
+    if args.next_build:
+        print(*next_build(sys.stdin.buffer.read()))
+        return
+    if args.registered_copies:
+        for copy in registered_copies(sys.stdin.read(), *args.registered_copies):
+            print(copy)
         return
     context = json.loads(Path(args.context).read_text())
     latest = Path(context['root']) / 'sprint-context.json'
@@ -237,9 +289,62 @@ restore_sprint_app() {
     if (( restore_on_failure )); then
         rm -rf "$app"
         if [[ -e $backup ]]; then mv "$backup" "$app"; fi
+        if [[ -x ${lsregister:-} ]]; then "$lsregister" -f "$app" >/dev/null 2>&1 || true; fi
         restore_on_failure=0
         echo 'Rejected Sprint installation removed; previous app restored when available.'
     fi
+}
+# Bundle copies must not stay registered next to /Applications/Okilum.app: with
+# several com.befeast.okilum bundles SMAppService and Sync helper registration
+# pick the wrong one (04.11). Best effort, never a build failure.
+unregister() {
+    local path
+    [[ -x $lsregister ]] || return 0
+    for path in "$@"; do "$lsregister" -u "$path" >/dev/null 2>&1 || true; done
+}
+keep_one_registration() {
+    local copies copy
+    if [[ ! -x $lsregister ]]; then echo 'lsregister not found: LaunchServices left as is.'; return 0; fi
+    "$lsregister" -f "$app" >/dev/null 2>&1 || true
+    copies=$("$lsregister" -dump 2>/dev/null | python3 "$reporter" --registered-copies "$SPRINT_BUNDLE_ID" "$app") || copies=
+    while IFS= read -r copy; do
+        [[ -n $copy ]] || continue
+        "$lsregister" -u "$copy" >/dev/null 2>&1 || true
+        printf 'LaunchServices: unregistered %s\n' "$copy"
+    done <<< "$copies"
+}
+# A lock left by a build that died (crash, closed Terminal, reboot) is taken
+# over; a live build keeps it. Owner = pid + start time, so a reused pid is stale.
+process_start() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'; }
+acquire_lock() {
+    local lock=$1 owner pid since age
+    if mkdir "$lock" 2>/dev/null; then
+        printf '%s %s\n' "$$" "$(process_start $$)" > "$lock/owner"
+        return 0
+    fi
+    owner=$(cat "$lock/owner" 2>/dev/null || true)
+    pid=${owner%% *}
+    since=${owner#* }
+    if [[ -n $owner ]]; then
+        if [[ $pid =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && [[ $(process_start "$pid") == "$since" ]]; then
+            echo "A build is already running (pid $pid, lock $lock)." >&2
+            return 1
+        fi
+    else
+        # No owner record: a lock from an older script version, or one created
+        # this instant. Only an old one can be stale.
+        age=$(($(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || stat -f %m "$lock" 2>/dev/null || date +%s)))
+        if ((age < 7200)); then
+            echo "A build may be running (lock $lock without an owner, ${age}s old). Remove it if none is." >&2
+            return 1
+        fi
+    fi
+    # Rename first: of two builds that both saw a stale lock, only one wins.
+    mv "$lock" "$lock.stale.$$" 2>/dev/null || { echo "Lock $lock changed hands; retry." >&2; return 1; }
+    rm -rf "$lock.stale.$$"
+    echo "Removed a stale build lock (${owner:-no owner})."
+    mkdir "$lock" 2>/dev/null || { echo "Another build took $lock." >&2; return 1; }
+    printf '%s %s\n' "$$" "$(process_start $$)" > "$lock/owner"
 }
 sprint_exit() {
     result=$?
@@ -249,8 +354,9 @@ sprint_exit() {
         python3 "$reporter" --context "$context" --stage "$stage" || true
         # Collect the rejected bundle FIRST; only then restore the working app.
         restore_sprint_app || true
+        if [[ -n $bundle_stage ]]; then unregister "$bundle_stage" || true; fi
     fi
-    if (( lock_owned )); then rmdir "$root/build.lock" || true; fi
+    if (( lock_owned )); then rm -f "$root/build.lock/owner"; rmdir "$root/build.lock" || true; fi
     rm -rf "$bootstrap"
     exit "$result"
 }
@@ -281,25 +387,29 @@ if [[ $root != /* || $root == / || $root == "$HOME" ]]; then
     echo 'OKILUM_SPRINT_HOME must be an absolute, dedicated directory.' >&2; exit 1
 fi
 # Refuse symlinked workspaces/destinations rather than affecting another checkout.
-for path in "$root" "$root/src" "$root/target" "$app" "$HOME/Applications"; do
+for path in "$root" "$root/src" "$root/target" "$root/$STAGE_DIR" "$app"; do
     if [[ -L $path ]]; then echo "Refusing symlink: $path" >&2; exit 1; fi
 done
 # Earlier versions kept a separate clone; move its warm cache here and delete it.
 for legacy in "$HOME/Developer/personal/okilum-sprint" "$HOME/okilum-sprint"; do
     [[ $legacy != "$root" && -d $legacy && ! -L $legacy ]] || continue
-    if [[ -e $legacy/build.lock ]] || { [[ -d $legacy/src ]] && [[ -n $(git -C "$legacy/src" status --porcelain 2>/dev/null) ]]; }; then
-        echo "Old Sprint clone left in place (busy or has local changes): $legacy" >&2; continue
+    if [[ -d $legacy/src ]] && [[ -n $(git -C "$legacy/src" status --porcelain 2>/dev/null) ]]; then
+        echo "Old Sprint clone left in place (local changes): $legacy" >&2; continue
+    fi
+    # A lock whose build died (the 04.11 one) must not keep the old clone forever.
+    if [[ -e $legacy/build.lock ]] && ! acquire_lock "$legacy/build.lock"; then
+        echo "Old Sprint clone left in place (a build is running there): $legacy" >&2; continue
     fi
     mkdir -p "$root"
     if [[ ! -e $root/target && -d $legacy/target && ! -L $legacy/target ]]; then mv "$legacy/target" "$root/target"; fi
     if [[ ! -e $root/Sparkle.tar.xz && -f $legacy/Sparkle.tar.xz ]]; then mv "$legacy/Sparkle.tar.xz" "$root/"; fi
+    # Its staged and previous apps carry com.befeast.okilum: unregister before deleting.
+    unregister "$legacy/Okilum Sprint.app" "$legacy/previous-Okilum-Sprint.app"
     rm -rf "$legacy"
     printf 'Removed old Sprint clone %s; warm cache moved to %s\n' "$legacy" "$root"
 done
-mkdir -p "$root" "$HOME/Applications"
-if ! mkdir "$root/build.lock" 2>/dev/null; then
-    echo "Sprint build is already running (lock: $root/build.lock)." >&2; exit 1
-fi
+mkdir -p "$root"
+acquire_lock "$root/build.lock" || exit 1
 lock_owned=1
 log="$root/build.log"
 # Process-substitution tee may not have created the bootstrap log yet.
@@ -312,7 +422,8 @@ fi
 run_log="$root/stages.log"
 exec > >(tee -a "$run_log") 2>&1
 set_stage fetch
-[[ -e $checkout/.git ]] || { echo "Okilum checkout not found: $checkout (set OKILUM_CHECKOUT)" >&2; exit 1; }
+[[ -e $checkout/.git ]] || {
+    echo "Okilum checkout not found: $checkout. Clone it once over SSH (git clone ssh://git@10.10.0.27:2222/BeFeast/okilum.git $checkout) or set OKILUM_CHECKOUT." >&2; exit 1; }
 origin=$(git -C "$checkout" remote get-url origin)
 [[ $origin =~ $origin_pattern ]] || { echo "Unexpected origin in $checkout: $origin" >&2; exit 1; }
 git -C "$checkout" fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
@@ -335,9 +446,21 @@ export CC=/usr/bin/clang CXX=/usr/bin/clang++
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
 export SDKROOT
 export CARGO_TARGET_DIR="$root/target" CARGO_INCREMENTAL=1
-# Newer than the current beta so the updater keeps it; the next CI beta supersedes it.
-export OKILUM_SOURCE_COMMIT="$sha" OKILUM_BUILD_VERSION=27850
-export OKILUM_RELEASE_VERSION="0.1.27850"
+# One above every published Mac build: Sparkle neither puts an older beta over
+# this build nor holds back the next newer beta (a fixed number did both, 04.11).
+if [[ -n ${OKILUM_SPRINT_BUILD:-} ]]; then
+    [[ $OKILUM_SPRINT_BUILD =~ ^[1-9][0-9]*$ ]] || { echo 'OKILUM_SPRINT_BUILD must be a number.' >&2; exit 1; }
+    build=$OKILUM_SPRINT_BUILD
+    printf 'Build %s (OKILUM_SPRINT_BUILD)\n' "$build"
+else
+    appcast=$(curl -fsSL -A curl --max-time 30 https://updates.befeast.com/okilum/appcast.xml) || {
+        echo 'Cannot read the Mac update feed; set OKILUM_SPRINT_BUILD to a number above the newest beta and rerun.' >&2; exit 1; }
+    versions=$(printf '%s' "$appcast" | python3 "$reporter" --next-build)
+    read -r build newest newest_beta <<< "$versions"
+    printf 'Build %s: one above the newest published Mac build %s (newest beta %s).\n' "$build" "$newest" "$newest_beta"
+fi
+export OKILUM_SOURCE_COMMIT="$sha" OKILUM_BUILD_VERSION="$build"
+export OKILUM_RELEASE_VERSION="0.1.$build"
 # Sync needs the Developer ID-signed helper and the bundled Syncthing runtime;
 # the app compiles this team and bundle into its helper policy (#2589).
 SPRINT_BUNDLE_ID=com.befeast.okilum
@@ -363,7 +486,11 @@ fi
 # Same warm incremental sprint profile as the app: no release rebuilds.
 cargo build --locked --profile sprint --target aarch64-apple-darwin -p okilum-sync-supervisor
 set_stage assemble-sign
-bundle_stage="$root/Okilum Sprint.app"
+# Copies from before 05.11 sat outside a .noindex directory and stayed registered.
+for legacy_copy in "$root/Okilum Sprint.app" "$root/previous-Okilum-Sprint.app"; do
+    if [[ -e $legacy_copy ]]; then unregister "$legacy_copy"; rm -rf "$legacy_copy"; fi
+done
+bundle_stage="$root/$STAGE_DIR/Okilum.app"
 rm -rf "$bundle_stage"
 mkdir -p "$bundle_stage/Contents/MacOS" "$bundle_stage/Contents/Resources" "$bundle_stage/Contents/Frameworks"
 cp "$CARGO_TARGET_DIR/aarch64-apple-darwin/sprint/okilum" "$bundle_stage/Contents/MacOS/okilum"
@@ -386,13 +513,13 @@ PY
 ditto vendor/sparkle/Sparkle.framework "$bundle_stage/Contents/Frameworks/Sparkle.framework"
 python3 scripts/third-party-notices.py --stage "$bundle_stage/Contents/Resources/Licenses"
 # Reuse the canonical bundle/Info.plist template from build-macos-ci.sh.
-python3 - "$bundle_stage" "$sha" <<'PY'
+python3 - "$bundle_stage" "$sha" "$build" <<'PY'
 import pathlib, plistlib, sys
-stage, sha = pathlib.Path(sys.argv[1]), sys.argv[2]
+stage, sha, build = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 source = pathlib.Path('scripts/build-macos-ci.sh').read_text()
 template = source.split('cat >"$APP/Contents/Info.plist" <<PLIST\n', 1)[1].split('\nPLIST\n', 1)[0]
-for key, value in {'BUNDLE_ID':'com.befeast.okilum', 'DISPLAY_VERSION':'0.1.27850',
-                   'OKILUM_BUILD_VERSION':'27850', 'SOURCE_SHA':sha, 'SOURCE_TREE':'',
+for key, value in {'BUNDLE_ID':'com.befeast.okilum', 'DISPLAY_VERSION':'0.1.' + build,
+                   'OKILUM_BUILD_VERSION':build, 'SOURCE_SHA':sha, 'SOURCE_TREE':'',
                    'SPARKLE_PUBLIC_ED_KEY':'TH/Jc6vRfSSFtR3R2rLqBGBnFylMUWdKJ6dr18Ys8CY='}.items():
     template = template.replace('$' + key, value)
 info = plistlib.loads(template.encode())
@@ -422,6 +549,7 @@ done
 supervisor_sign "$bundle_stage" "$SPRINT_IDENTITY" "$SPRINT_BUNDLE_ID"
 codesign --force --options runtime --sign "$SPRINT_IDENTITY" "$bundle_stage"
 codesign --verify --deep --strict "$bundle_stage"
+unregister "$bundle_stage"
 # Target only the Sprint bundle ID. Quit must finish before replacing its bundle.
 if [[ -d $app ]]; then
     osascript -e 'if application id "com.befeast.okilum" is running then tell application id "com.befeast.okilum" to quit'
@@ -433,17 +561,20 @@ if [[ -d $app ]]; then
     [[ $running == false ]] || { echo 'Quit Okilum, then rerun; app was not replaced.' >&2; exit 1; }
 fi
 # Only these dedicated Sprint paths can be replaced; keep the previous app on failure.
-backup="$root/previous-Okilum-Sprint.app"
+backup="$root/$STAGE_DIR/previous-Okilum.app"
 rm -rf "$backup"
-if [[ -e $app ]]; then mv "$app" "$backup"; fi
+# A moved bundle keeps its LaunchServices record: unregister the backup at once.
+if [[ -e $app ]]; then mv "$app" "$backup"; unregister "$backup"; fi
 restore_on_failure=1
 ditto "$bundle_stage" "$app"
 printf 'Launching installed Sprint app: %s (source %s)\n' "$app" "$sha"
 plutil -lint "$app/Contents/Info.plist"
 codesign --verify --deep --strict -v "$app"
+unregister "$bundle_stage" "$backup"
+keep_one_registration
 set_stage launch
 open "$app"
 restore_on_failure=0
 write_context
 cp "$context" "$root/sprint-context.json"
-printf 'Sprint ready: %s %s · %ss · %s\n' "$branch" "$short_sha" "$((SECONDS - started))" "$app"
+printf 'Sprint ready: %s %s · Okilum 0.1.%s (build %s) · %ss · %s\n' "$branch" "$short_sha" "$build" "$build" "$((SECONDS - started))" "$app"

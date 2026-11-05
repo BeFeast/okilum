@@ -45,17 +45,20 @@ class DocumentTypesTests(unittest.TestCase):
         # Oleg 2026-11-04 (#2589): the fast local Mac build replaces the one working
         # Okilum (same bundle id, document types and URL handlers), not a side app.
         source = (ROOT / 'scripts/dev/okilum-sprint.sh').read_text()
-        program = source.split('python3 - "$bundle_stage" "$sha" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]
+        program = source.split('python3 - "$bundle_stage" "$sha" "$build" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]
         with tempfile.TemporaryDirectory() as directory:
             stage = Path(directory)
             (stage / 'Contents').mkdir()
-            subprocess.run(['python3', '-', str(stage), 'test-source'], input=program,
+            subprocess.run(['python3', '-', str(stage), 'test-source', '28469'], input=program,
                            text=True, cwd=ROOT, check=True)
             info = plistlib.loads((stage / 'Contents/Info.plist').read_bytes())
         self.assert_drop_types(info, 'Alternate')
         self.assert_folder_service(info, 'Okilum')
         self.assertIn('CFBundleURLTypes', info)
         self.assertEqual(info['CFBundleIdentifier'], 'com.befeast.okilum')
+        # The build number comes from the update feed at build time (#2589), not a constant.
+        self.assertEqual(info['CFBundleVersion'], '28469')
+        self.assertEqual(info['CFBundleShortVersionString'], '0.1.28469')
 
 
 if __name__ == '__main__':
