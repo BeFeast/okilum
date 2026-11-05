@@ -1,5 +1,6 @@
 use super::*;
 use crate::project::design as ui;
+use gpui_component::scroll::ScrollableElement as _;
 
 pub(super) fn surface_size(available: Size<Pixels>) -> Size<Pixels> {
     size(
@@ -13,17 +14,33 @@ struct ModelSearch(Entity<InputState>);
 impl RenderOnce for ModelSearch {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let focused = self.0.read(cx).focus_handle(cx).is_focused(window);
+        let palette = brand::palette(cx);
         Input::new(&self.0)
-            .small()
             .w_full()
+            .bordered(false)
             .focus_bordered(false)
-            // Keep a visible, single-pixel focus border without the heavy halo.
+            .rounded_lg()
+            .bg(palette.surface_raised)
+            .border_1()
             .border_color(if focused {
-                cx.theme().ring
+                palette.focus.opacity(0.25)
             } else {
-                brand::palette(cx).border_subtle
+                palette.surface_raised
             })
-            .prefix(Icon::new(IconName::Search).small())
+            .when(focused, |input| {
+                input.shadow(vec![gpui::BoxShadow {
+                    color: palette.focus.opacity(0.12),
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: px(2.),
+                    inset: false,
+                }])
+            })
+            .prefix(
+                Icon::new(IconName::Search)
+                    .small()
+                    .text_color(palette.text_muted),
+            )
             .aria_label("Search models")
     }
 }
@@ -69,7 +86,18 @@ impl ProjectView {
         // Geometry is a function of the viewport only. Catalog length, current
         // descriptors, provider selection, favorites and search cannot resize
         // or reposition the surface underneath the pointer.
-        let body_budget = (height - px(80.)).max(px(0.));
+        #[cfg(native_manager)]
+        let catalog_loading = self.native.active()
+            && self
+                .native
+                .catalog
+                .as_ref()
+                .is_none_or(|catalog| catalog.read(cx).loading);
+        #[cfg(not(native_manager))]
+        let catalog_loading = false;
+        let loading = self.model_busy || catalog_loading;
+        let show_status = self.model_error.is_some() || loading || self.models.is_none();
+        let body_budget = (height - px(if show_status { 80. } else { 48. })).max(px(0.));
         let (list_height, option_height) = if options_beside {
             (body_budget, body_budget)
         } else {
@@ -98,7 +126,8 @@ impl ProjectView {
         if let Some(search) = &self.model_ui.search {
             top_row = top_row.child(
                 div()
-                    .flex_1()
+                    .w(px(320.))
+                    .flex_shrink_1()
                     .min_w_0()
                     .debug_selector(|| "project-model-search".into())
                     .child(ModelSearch(search.clone())),
@@ -120,6 +149,7 @@ impl ProjectView {
             .gap(px(ui::GAP))
             .child(
                 top_row
+                    .child(div().flex_1())
                     .child(
                         Button::new("project-model-refresh")
                             .debug_selector(|| "project-model-refresh".into())
@@ -145,16 +175,6 @@ impl ProjectView {
                             ),
                     ),
             );
-        #[cfg(native_manager)]
-        let catalog_loading = self.native.active()
-            && self
-                .native
-                .catalog
-                .as_ref()
-                .is_none_or(|catalog| catalog.read(cx).loading);
-        #[cfg(not(native_manager))]
-        let catalog_loading = false;
-        let loading = self.model_busy || catalog_loading;
         let status = if self.model_error.is_some() {
             "Models are unavailable. Refresh to try again.".to_owned()
         } else if loading {
@@ -165,37 +185,31 @@ impl ProjectView {
             }
             .to_owned()
         } else if self.models.is_some() {
-            format!(
-                "{} models{}",
-                choices.len(),
-                if self.has_model_options() {
-                    " · Settings available"
-                } else {
-                    ""
-                }
-            )
+            String::new()
         } else {
             "Connect to see available models".to_owned()
         };
-        panel = panel.child(
-            div()
-                .debug_selector(|| "project-model-status".into())
-                .w_full()
-                .h(px(24.))
-                .flex_shrink_0()
-                .truncate()
-                .text_size(px(ui::LABEL))
-                .line_height(px(20.))
-                .text_color(if self.model_error.is_some() {
-                    cx.theme().danger
-                } else {
-                    palette.text_muted
-                })
-                .when(self.model_error.is_some(), |status| {
-                    status.debug_selector(|| "project-model-error".into())
-                })
-                .child(status),
-        );
+        if show_status {
+            panel = panel.child(
+                div()
+                    .debug_selector(|| "project-model-status".into())
+                    .w_full()
+                    .h(px(24.))
+                    .flex_shrink_0()
+                    .truncate()
+                    .text_size(px(ui::LABEL))
+                    .line_height(px(20.))
+                    .text_color(if self.model_error.is_some() {
+                        cx.theme().danger
+                    } else {
+                        palette.text_muted
+                    })
+                    .when(self.model_error.is_some(), |status| {
+                        status.debug_selector(|| "project-model-error".into())
+                    })
+                    .child(status),
+            );
+        }
         if let Some(snapshot) = &self.models {
             let current = &snapshot.configuration.model_selection;
             let instance = self
@@ -222,7 +236,7 @@ impl ProjectView {
                         .debug_selector(|| "project-model-favorites".into())
                         .ghost()
                         .w_full()
-                        .h(px(36.))
+                        .h(px(44.))
                         .flex_shrink_0()
                         .px_2()
                         .child(visuals::rail_label(
@@ -270,7 +284,7 @@ impl ProjectView {
                         .ghost()
                         .w_full()
                         .h_auto()
-                        .min_h(px(36.))
+                        .min_h(px(44.))
                         .flex_shrink_0()
                         .px_2()
                         .py_1()
@@ -348,7 +362,7 @@ impl ProjectView {
                         .debug_selector(|| "project-model-missing-provider".into())
                         .ghost()
                         .w_full()
-                        .h(px(36.))
+                        .h(px(44.))
                         .flex_shrink_0()
                         .px_2()
                         .child(visuals::rail_label(
@@ -373,7 +387,7 @@ impl ProjectView {
                     .debug_selector(|| "project-model-show-current".into())
                     .ghost()
                     .w_full()
-                    .h(px(36.))
+                    .h(px(44.))
                     .flex_shrink_0()
                     .px_2()
                     .child(visuals::rail_label(
@@ -461,10 +475,12 @@ impl ProjectView {
                         .bg(palette.surface_raised)
                         .p(px(ui::INSET))
                         .overflow_y_scroll()
+                        .track_scroll(&self.model_ui.option_scroll)
                         .child(ModelSettings(cx.weak_entity()))
                         .when(self.connection_details, |pane| {
                             pane.child(self.render_picker_diagnostics(cx))
-                        }),
+                        })
+                        .vertical_scrollbar(&self.model_ui.option_scroll),
                 );
             }
             panel = panel.child(body);
@@ -482,10 +498,12 @@ impl ProjectView {
                         .bg(palette.surface_raised)
                         .p(px(ui::INSET))
                         .overflow_y_scroll()
+                        .track_scroll(&self.model_ui.option_scroll)
                         .child(ModelSettings(cx.weak_entity()))
                         .when(self.connection_details, |pane| {
                             pane.child(self.render_picker_diagnostics(cx))
-                        }),
+                        })
+                        .vertical_scrollbar(&self.model_ui.option_scroll),
                 );
             }
         } else if self.connection_details {
@@ -689,8 +707,8 @@ impl ProjectView {
                         .px_1()
                         .rounded_sm()
                         .text_size(px(12.))
+                        .line_height(px(16.))
                         .text_color(palette.text_muted)
-                        .bg(palette.surface_raised)
                         .child(hint),
                 )
             })

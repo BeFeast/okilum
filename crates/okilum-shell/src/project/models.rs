@@ -27,6 +27,7 @@ pub(super) struct PickerUi {
     favorites: bool,
     highlight: usize,
     list_scroll: gpui::UniformListScrollHandle,
+    option_scroll: gpui::ScrollHandle,
     panel_width: std::rc::Rc<std::cell::Cell<Pixels>>,
     panel_height: std::cell::Cell<Pixels>,
     preferences: Option<preferences::Prefs>,
