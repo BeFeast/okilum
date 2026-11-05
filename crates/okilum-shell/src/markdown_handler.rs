@@ -1,10 +1,15 @@
 //! Per-user Open With registration, owned by the Velopack install lifecycle.
 //! Never set .md's default value or modify Explorer UserChoice.
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 const PROG_ID: &str = "BeFeast.Okilum.Markdown";
 
 fn registry(args: &[&str]) {
-    match Command::new("reg.exe").args(args).status() {
+    match Command::new("reg.exe")
+        .args(args)
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW: also runs after every update.
+        .status()
+    {
         Ok(status) if status.success() => {}
         result => eprintln!("Markdown handler registration: {result:?}"),
     }

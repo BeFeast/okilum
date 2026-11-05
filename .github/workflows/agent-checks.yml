@@ -47,6 +47,11 @@ jobs:
         run: |
           python scripts/ci/windows-recovery-check.py
           exit $LASTEXITCODE
+      - name: Run native Windows delta console controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-delta-console-check.py
+          exit $LASTEXITCODE
   linux:
     # Public repositories receive the standard 4-vCPU hosted Linux runner.
     runs-on: ubuntu-24.04

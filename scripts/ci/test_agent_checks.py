@@ -28,7 +28,8 @@ def receipt():
                 "Run CI, releases and updater Python suites")]},
         {"name": "windows-recovery", "conclusion": "success", "steps": [
             {"name": n, "conclusion": "success"} for n in (
-                "Prepare and verify Windows vendor", "Run native Windows recovery controls")]}]}
+                "Prepare and verify Windows vendor", "Run native Windows recovery controls",
+                "Run native Windows delta console controls")]}]}
 
 
 class VerdictTests(unittest.TestCase):

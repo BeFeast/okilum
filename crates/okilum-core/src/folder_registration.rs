@@ -41,7 +41,12 @@ fn uninstall_commands() -> Vec<Vec<String>> {
 
 #[cfg(windows)]
 fn registry(args: &[String]) {
-    match std::process::Command::new("reg.exe").args(args).status() {
+    use std::os::windows::process::CommandExt;
+    match std::process::Command::new("reg.exe")
+        .args(args)
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW: also runs after every update.
+        .status()
+    {
         Ok(status) if status.success() => {}
         result => eprintln!("Folder verb registration: {result:?}"),
     }
