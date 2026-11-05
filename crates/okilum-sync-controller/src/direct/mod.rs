@@ -526,7 +526,10 @@ impl Controller {
     /// the remaining endpoints were tried: never permission to replace a pin.
     fn serve_pinned(&self) -> Result<()> {
         self.check()?;
-        let pinned = served(&self.shared.db.lock().unwrap());
+        let (pinned, current) = {
+            let db = self.shared.db.lock().unwrap();
+            (served(&db), db.endpoint)
+        };
         let mut listeners = self.shared.listeners.lock().unwrap();
         let mut failure = None;
         for endpoint in pinned {
@@ -537,8 +540,16 @@ impl Controller {
             match self.start(&mut listeners, endpoint, endpoint.ip()) {
                 Ok(_) => {}
                 Err(error) if not_local(&error) => {}
-                Err(error) => {
+                // Only the current endpoint is fatal. An older pin whose port is
+                // taken must not fail the whole refresh: the caller would drop
+                // this controller and every healthy listener with it (#2589).
+                Err(error) if Some(endpoint) == current => {
                     failure.get_or_insert(error);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "okilum-sync: older paired endpoint {endpoint} not served: {error:#}"
+                    );
                 }
             }
         }
@@ -1905,15 +1916,26 @@ mod tests {
             Some(second),
             "refresh keeps every pin and the invitation endpoint"
         );
-        // An occupied pin is reported, and the other pin is still served.
+        // An occupied older pin is skipped without failing the refresh (the app
+        // would otherwise drop its controller and every healthy listener), it is
+        // never moved to another port, and the current pin is still served.
         let source = reopen(root.path(), "source", source)?;
         let occupied = TcpListener::bind(first)?;
-        assert!(source.refresh().is_err(), "no alternate-port fallback");
-        assert_eq!(listening(&source), [second]);
+        source.refresh()?;
+        assert_eq!(listening(&source), [second], "no alternate-port fallback");
         assert!(mac.catalog(mac_peer)?.is_empty());
         drop(occupied);
         source.refresh()?;
         assert!(muninn.catalog(muninn_peer)?.is_empty());
+        // The current endpoint stays fatal: Settings reports it.
+        let source = reopen(root.path(), "source", source)?;
+        let occupied = TcpListener::bind(second)?;
+        assert!(
+            source.refresh().is_err(),
+            "the invitation endpoint must be served"
+        );
+        drop(occupied);
+        source.refresh()?;
         // A receiving computer never listens on its inviter's endpoint, even
         // on a shared address after it invites a computer of its own. Its own
         // port is chosen while the inviter still holds both pins.
