@@ -17,6 +17,8 @@ import hourly_beta as hourly
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE, OLD = 'a' * 40, 'b' * 40
+# Lanes still gated by fast certification; NEWEST_MAIN_BETA lanes ship main's tip.
+CERTIFIED = [platform for platform in hourly.WORKFLOWS if platform not in hourly.NEWEST_MAIN_BETA]
 
 
 class Admission(unittest.TestCase):
@@ -74,8 +76,10 @@ class Admission(unittest.TestCase):
         newer = 'c' * 40
         self.tip = newer
         self.parents[newer] = SOURCE
-        for platform in hourly.WORKFLOWS:
+        for platform in CERTIFIED:
             self.assertEqual(self.select(platform, HOURLY_SOURCE=SOURCE)[:2], (True, SOURCE))
+        # Mac beta ships the newest main: an older pin is superseded, not built.
+        self.assertEqual(self.select('macos', HOURLY_SOURCE=SOURCE)[:2], (False, newer))
         self.assertFalse(any(path == '/git/commits/' + OLD for path, _, _ in self.calls))
         # Also recover from a missed completion dispatch at the next ordinary tick.
         for platform in hourly.WORKFLOWS:
@@ -99,6 +103,41 @@ class Admission(unittest.TestCase):
         self.assertFalse(self.select(HOURLY_SOURCE=SOURCE)[0])
         self.assertFalse(self.writes())
 
+    def test_mac_beta_ships_newest_main_not_the_older_certified_source(self):
+        # #2589 (04.11): main moved past the last certified source and its fast
+        # check went red. Mac beta then shipped the hours-old certified a9034db9
+        # and Sparkle replaced a newer local build with it.
+        newer = 'c' * 40
+        self.tip = newer
+        self.parents[newer] = SOURCE
+        self.statuses[newer] = [dict(context=hourly.REQUIRED[0], status='failure')]
+        self.descriptor.return_value = dict(source=OLD, platform='macos')
+        self.assertEqual(self.select('macos', event='schedule')[:2], (False, newer))
+        self.assertEqual(self.writes()[-1], ('/actions/workflows/macos-release.yml/dispatches',
+                                             dict(ref='main', inputs={'hourly_source': newer})))
+        self.assertEqual(self.select('macos', HOURLY_SOURCE=newer)[:2], (True, newer))
+        # An older pin (including a certification dispatch) is superseded.
+        build, _, reason = self.select('macos', HOURLY_SOURCE=SOURCE)
+        self.assertFalse(build)
+        self.assertIn('superseded', reason)
+        # Certified lanes keep their gate on the same history.
+        self.descriptor.side_effect = lambda tip, platform: dict(source=OLD, platform=platform)
+        for platform in CERTIFIED:
+            self.assertEqual(self.select(platform, HOURLY_SOURCE=SOURCE)[:2], (True, SOURCE))
+        self.descriptor.side_effect = None
+        # The Mac lane never reads statuses or requests certification.
+        self.assertFalse(self.writes('/actions/workflows/fast.yml/dispatches'))
+        self.calls.clear()
+        self.select('macos', HOURLY_SOURCE=newer)
+        self.assertFalse([path for path, _, _ in self.calls if path.startswith('/commits/')])
+        # Once the tip is the beta nothing repeats, and the feed never goes backwards.
+        self.descriptor.return_value = dict(source=newer, platform='macos')
+        self.assertFalse(self.select('macos')[0])
+        self.assertFalse(self.select('macos', event='schedule')[0])
+        self.descriptor.return_value = dict(source='f' * 40, platform='macos')
+        with self.assertRaises(ValueError):
+            self.select('macos')
+
     def test_source_and_build_cannot_go_backwards_when_a_newer_beta_exists(self):
         self.statuses[OLD] = copy.deepcopy(self.statuses[SOURCE])
         self.statuses[SOURCE][0]['status'] = 'failure'
@@ -111,15 +150,16 @@ class Admission(unittest.TestCase):
 
     def test_red_missing_pending_duplicate_or_pr_checks_never_authorize_beta(self):
         original = copy.deepcopy(self.statuses[SOURCE])
-        for state in ['failure', 'pending', 'error', 'cancelled', 'skipped']:
-            self.statuses[SOURCE] = copy.deepcopy(original)
-            self.statuses[SOURCE][0]['status'] = state
-            self.assertFalse(self.select()[0])
-        for statuses in [[], original[1:], original * 2,
-                         [dict(context=c.replace('workflow_dispatch', 'pull_request'), status='success')
-                          for c in hourly.REQUIRED]]:
-            self.statuses[SOURCE] = statuses
-            self.assertFalse(self.select()[0])
+        for platform in CERTIFIED:
+            for state in ['failure', 'pending', 'error', 'cancelled', 'skipped']:
+                self.statuses[SOURCE] = copy.deepcopy(original)
+                self.statuses[SOURCE][0]['status'] = state
+                self.assertFalse(self.select(platform)[0])
+            for statuses in [[], original[1:], original * 2,
+                             [dict(context=c.replace('workflow_dispatch', 'pull_request'), status='success')
+                              for c in hourly.REQUIRED]]:
+                self.statuses[SOURCE] = statuses
+                self.assertFalse(self.select(platform)[0])
         self.assertFalse(self.writes())
 
     def test_red_or_missing_shell_full_never_holds_beta_once_check_is_green(self):
@@ -141,16 +181,22 @@ class Admission(unittest.TestCase):
         self.assertEqual(len(self.writes('/actions/workflows/fast.yml/dispatches')), 1)
         self.runs[0]['status'] = 'failure'
         self.assertFalse(self.select('linux', event='schedule')[0])
-        for platform in hourly.WORKFLOWS:
+        for platform in CERTIFIED:
             self.assertFalse(self.select(platform, event='workflow_dispatch')[0])
+        # Mac beta builds red main without asking for certification.
+        self.assertEqual(self.select('macos', event='workflow_dispatch')[:2], (True, OLD))
         self.assertEqual(len(self.writes('/actions/workflows/fast.yml/dispatches')), 1)
 
     def test_pinned_and_red_candidates_never_trigger_certification_from_github_or_manual(self):
         self.statuses.clear()
-        for platform in ['linux', 'macos']:
-            env = dict(self.env, GITHUB_SHA=SOURCE)
-            self.assertFalse(hourly.github_main(platform, env, self.descriptor)[0])
-            self.assertFalse(self.select(platform, event='workflow_dispatch', HOURLY_SOURCE=SOURCE)[0])
+        env = dict(self.env, GITHUB_SHA=SOURCE)
+        self.assertFalse(hourly.github_main('linux', env, self.descriptor)[0])
+        self.assertFalse(self.select('linux', event='workflow_dispatch', HOURLY_SOURCE=SOURCE)[0])
+        # Red main is still the Mac beta, and the Mac lane never requests certification.
+        with patch.object(hourly, 'github_produced', return_value=False):
+            self.assertTrue(hourly.github_main('macos', env, self.descriptor)[0])
+        self.assertEqual(self.select('macos', event='workflow_dispatch', HOURLY_SOURCE=SOURCE)[:2],
+                         (True, SOURCE))
         self.assertFalse(self.writes())
 
     def test_github_uses_certified_ancestor_while_ordinary_pr_proxy_keeps_contract(self):
@@ -189,18 +235,22 @@ class Admission(unittest.TestCase):
         newer = 'c' * 40
         self.tip = newer
         self.parents[newer] = SOURCE
-        for platform in hourly.WORKFLOWS:
-            with tempfile.TemporaryDirectory() as directory:
+        # Certified lanes build the pinned certified ancestor; the Mac lane
+        # builds only main's tip and lets an older pin fall through.
+        cases = [(platform, SOURCE, SOURCE, 'true') for platform in CERTIFIED] + [
+            ('macos', newer, newer, 'true'), ('macos', SOURCE, newer, 'false')]
+        for platform, pinned, source, build in cases:
+            with self.subTest(platform=platform, pinned=pinned), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / 'outputs'
                 env = dict(self.env, GITHUB_SHA=newer, GITHUB_EVENT_NAME='workflow_dispatch',
                     GITHUB_OUTPUT=str(output), OKILUM_SOURCE='', OKILUM_RESIGN_BUILD='',
-                    MACOS_PREVIEW_PR='', HOURLY_SOURCE=SOURCE)
+                    MACOS_PREVIEW_PR='', HOURLY_SOURCE=pinned)
                 with patch.dict(os.environ, env), patch.object(sys, 'argv', ['coalesce.py', platform]), \
                         patch.object(hourly, 'published_beta', self.descriptor):
                     runpy.run_path(str(ROOT / 'scripts/releases/coalesce.py'), run_name='__main__')
                 values = dict(line.split('=', 1) for line in output.read_text().splitlines())
-                self.assertEqual(values['source'], SOURCE)
-                self.assertEqual(values['build'], 'true')
+                self.assertEqual(values['source'], source)
+                self.assertEqual(values['build'], build)
 
     def test_bad_status_inventory_history_or_network_fails_closed(self):
         for data in [dict(sha=OLD, total_count=0, statuses=[]),
@@ -286,13 +336,15 @@ class PublicationGuards(unittest.TestCase):
                         patch.object(publication.subprocess, 'run', side_effect=lambda command, **kw: SimpleNamespace(
                             returncode=relation if command == ['git', 'merge-base', '--is-ancestor', prior, SOURCE] else 0)) as launch:
                     store.return_value.call.return_value = None
-                    if not state:
+                    # The newest-main Mac lane never waits for certification.
+                    newest = platform in hourly.NEWEST_MAIN_BETA
+                    if not state and not newest:
                         with self.assertRaisesRegex(ValueError, 'certified green'):
                             publication.publish(client, platform, 12)
                     else:
                         publication.publish(client, platform, 12)
                     commands = [c for c in launch.call_args_list if c.args[0][0] == publication.sys.executable]
-                    self.assertEqual(bool(commands), publishes)
+                    self.assertEqual(bool(commands), publishes or (newest and prior == OLD))
                     if publishes:
                         self.assertEqual(commands[0].kwargs['env']['GITHUB_SHA'], SOURCE)
                         self.assertNotIn('--archive-only', commands[0].args[0])

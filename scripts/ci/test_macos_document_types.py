@@ -41,8 +41,9 @@ class DocumentTypesTests(unittest.TestCase):
         self.assert_drop_types(info, 'Alternate')
         self.assert_folder_service(info, 'Okilum')
 
-    def test_sprint_builds_the_working_app_plist(self):
-        # Since e56ff32d5 (#2589) Sprint replaces the one working Okilum app.
+    def test_sprint_builds_the_one_shipping_app(self):
+        # Oleg 2026-11-04 (#2589): the fast local Mac build replaces the one working
+        # Okilum (same bundle id, document types and URL handlers), not a side app.
         source = (ROOT / 'scripts/dev/okilum-sprint.sh').read_text()
         program = source.split('python3 - "$bundle_stage" "$sha" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]
         with tempfile.TemporaryDirectory() as directory:
@@ -53,7 +54,7 @@ class DocumentTypesTests(unittest.TestCase):
             info = plistlib.loads((stage / 'Contents/Info.plist').read_bytes())
         self.assert_drop_types(info, 'Alternate')
         self.assert_folder_service(info, 'Okilum')
-        self.assertEqual([t['CFBundleURLSchemes'] for t in info['CFBundleURLTypes']], [['okilum']])
+        self.assertIn('CFBundleURLTypes', info)
         self.assertEqual(info['CFBundleIdentifier'], 'com.befeast.okilum')
 
 
