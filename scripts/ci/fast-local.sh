@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Independent warm Cargo targets; runner capacity queues work before admission.
 set -euo pipefail
-# Share the existing source/target locks while keeping independent job budgets.
+# The complete shell suite runs on GitHub's dedicated runner (#2589).
 case ${1:-fast} in
     fast) gate_script=fast.sh; gate_limit=2040 ;;
-    shell-full) gate_script=shell-full.sh; gate_limit=1920 ;;
-    *) echo 'Expected fast or shell-full gate' >&2; exit 64 ;;
+    *) echo 'Expected the fast gate; shell-full runs on GitHub (#2589)' >&2; exit 64 ;;
 esac
 slot_root=${OKILUM_FAST_SLOT_ROOT:-"$HOME/.cache/okilum-fast/slots"}
 slots=${OKILUM_FAST_SLOTS:-2}
