@@ -288,6 +288,18 @@ fn source_and_live_markdown_shortcuts_copy_the_exact_selected_source(cx: &mut Te
             f.seen.borrow().is_empty(),
             "Markdown copy never writes rich text"
         );
+        f.seed_clipboard();
+        let at = input.read_with(f.visual, |input, _| input.input_bounds().origin)
+            + point(px(20.), px(12.));
+        f.right_click(at);
+        // Native-menu fallback starts unselected: Cut, Copy, Copy as Markdown.
+        f.visual.simulate_keystrokes("down down down enter");
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.clipboard().as_bytes(),
+            NOTE.as_bytes(),
+            "context menu, live={live}"
+        );
         assert_eq!(
             std::fs::read(f.root.join("note.md")).unwrap(),
             NOTE.as_bytes()
