@@ -475,5 +475,9 @@ fn never_registered_agent_reported_not_found_registers_once() {
     let world = World::new(true);
     world.status.set(Status::NotFound);
     let _ = world.guard().register_prepared();
-    assert_eq!(world.calls.get(), 1, "NotFound must permit the one registration");
+    assert_eq!(
+        world.calls.get(),
+        1,
+        "NotFound must permit the one registration"
+    );
 }
