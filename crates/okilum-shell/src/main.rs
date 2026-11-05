@@ -133,10 +133,10 @@ mod reader_replay;
 mod reader_right_panel;
 mod reader_session;
 mod reader_settings;
-#[cfg(target_os = "linux")]
-mod reader_settings_sync;
-#[cfg(target_os = "macos")]
-#[path = "reader_settings_sync_macos.rs"]
+// One module for Linux and macOS: an `include!` wrapper made every name in
+// it macro-expanded on macOS only, so `use super::*` plus an explicit
+// `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod reader_settings_sync;
 mod reader_settings_vaults;
 mod reader_shortcuts;
