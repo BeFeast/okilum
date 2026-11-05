@@ -455,19 +455,26 @@ fn reasoning_rows_follow_each_model_descriptor_and_disappear_without_reasoning(
             "same-provider models must use their own option values"
         );
         if ordinal < 3 {
-            let last = format!("project-model-option-0-{}", expected.len() - 1);
+            let (last, extra, default) = if ordinal == 1 {
+                (
+                    "project-model-option-0-4",
+                    "project-model-option-0-5",
+                    "project-model-default-0-2",
+                )
+            } else {
+                (
+                    "project-model-option-0-1",
+                    "project-model-option-0-2",
+                    "project-model-default-0-1",
+                )
+            };
             assert!(
                 visual.debug_bounds(last).is_some(),
                 "positive control: last supported choice is rendered"
             );
-            let extra = format!("project-model-option-0-{}", expected.len());
             assert!(
                 visual.debug_bounds(extra).is_none(),
                 "no provider-wide extra reasoning levels"
-            );
-            let default = format!(
-                "project-model-default-0-{}",
-                expected.iter().position(|value| *value == "high").unwrap()
             );
             assert!(visual.debug_bounds(default).is_some());
         } else if ordinal == 3 {
