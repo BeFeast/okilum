@@ -1882,8 +1882,9 @@ mod tests {
         let mac = controller(root.path(), "mac")?;
         let (muninn_peer, first) = pair_at(&source, &muninn, "muninn", "127.0.0.1:0".parse()?)?;
         // The live divergence: a later process invited the Mac on another port.
-        let source = reopen(root.path(), "source", source)?;
+        // Choose it while `first` is still taken, so the two cannot coincide.
         let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+        let source = reopen(root.path(), "source", source)?;
         let (mac_peer, second) = pair_at(&source, &mac, "Mac", port)?;
         assert_ne!(first, second, "positive control: the pins diverge");
         assert_eq!(source.shared.db.lock().unwrap().endpoint, Some(second));
@@ -1914,9 +1915,10 @@ mod tests {
         source.refresh()?;
         assert!(muninn.catalog(muninn_peer)?.is_empty());
         // A receiving computer never listens on its inviter's endpoint, even
-        // on a shared address after it invites a computer of its own.
-        let source = reopen(root.path(), "source", source)?;
+        // on a shared address after it invites a computer of its own. Its own
+        // port is chosen while the inviter still holds both pins.
         let own = decode_url(&offer(&mac)?)?.endpoint;
+        let source = reopen(root.path(), "source", source)?;
         muninn.refresh()?;
         mac.refresh()?;
         assert!(listening(&muninn).is_empty());
