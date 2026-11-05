@@ -1,12 +1,34 @@
 #!/usr/bin/env bash
 # Unsigned exact-source QA artifact. No feed, signing or installation side effects.
+#
+# OKILUM_LOCAL_DEV=1 is for scripts/dev/okilum-dev-linux.sh only: a dev AppImage
+# for the machine that builds it. It takes OKILUM_BUILD_VERSION from the caller,
+# skips the Ubuntu 22.04 base check, linuxdeploy stripping (its bundled strip
+# rejects newer distribution libraries) and the CI provenance record, and may use
+# OKILUM_CARGO_PROFILE. The result is never a release or beta artifact.
 set -euo pipefail
-: "${GITHUB_SHA:?}"
-test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-test "$(. /etc/os-release; echo "$VERSION_ID")" = 22.04
+local_dev=${OKILUM_LOCAL_DEV:-0}
+if [[ $local_dev == 1 ]]; then
+    : "${OKILUM_BUILD_VERSION:?OKILUM_LOCAL_DEV=1 needs OKILUM_BUILD_VERSION}"
+    [[ $OKILUM_BUILD_VERSION =~ ^[1-9][0-9]*$ ]] || { echo 'OKILUM_BUILD_VERSION must be a number' >&2; exit 2; }
+    # SOURCE_SHA must describe the bytes: committed, unmodified tracked files only.
+    git diff --quiet HEAD -- || { echo 'Local dev build needs a clean checkout' >&2; exit 1; }
+    source_sha=$(git rev-parse HEAD)
+    cargo_profile=${OKILUM_CARGO_PROFILE:-release}
+    # Production identity: never the PR acceptance harness, whatever the shell has.
+    unset GITHUB_REF_NAME
+    export NO_STRIP=1
+    rm -rf dist/appimage/AppDir dist/appimage/Okilum-x86_64.AppImage
+else
+    : "${GITHUB_SHA:?}"
+    test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+    test "$(. /etc/os-release; echo "$VERSION_ID")" = 22.04
+    source_sha=$GITHUB_SHA
+    cargo_profile=release
+    export OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
+fi
 export CC=/usr/bin/cc
-export OKILUM_SOURCE_COMMIT="$GITHUB_SHA"
-export OKILUM_BUILD_VERSION="$((5000 + GITHUB_RUN_NUMBER))"
+export OKILUM_SOURCE_COMMIT="$source_sha"
 export OKILUM_RELEASE_VERSION="0.1.$OKILUM_BUILD_VERSION"
 scripts/vendor-setup.sh
 scripts/vendor-setup.sh --verify
@@ -18,16 +40,23 @@ build_features=()
 if [[ "${GITHUB_REF_NAME:-}" == forgejo-linux-pr/* && "${GITHUB_REF_NAME}" != forgejo-linux-pr/hourly-* ]]; then
     build_features=(--features appimage-acceptance-harness)
 fi
-cargo build --release --locked -p okilum-shell "${build_features[@]}"
+cargo build --profile "$cargo_profile" --locked -p okilum-shell "${build_features[@]}"
+# Cargo names the dev profile's directory "debug"; others use the profile name.
+profile_dir=$cargo_profile
+[[ $cargo_profile != dev ]] || profile_dir=debug
+binary="$(realpath -m "${CARGO_TARGET_DIR:-target}")/$profile_dir/okilum"
 mkdir -p dist/appimage/evidence
-python3 scripts/appimage/check-elf.py target/release/okilum \
+python3 scripts/appimage/check-elf.py "$binary" \
     2>&1 | tee dist/appimage/evidence/elf-before-deploy.log
-target/release/okilum --help
+"$binary" --help
 mkdir -p dist/appimage/tools
 cd dist/appimage
 # URLs may move, but a changed tool/runtime fails closed against these byte pins.
+# A pinned copy from an earlier local build is reused; CI always starts empty.
 fetch() {
-    curl --fail --location --retry 2 "$2" --output "tools/$1"
+    if ! echo "$3  tools/$1" | sha256sum -c --status - 2>/dev/null; then
+        curl --fail --location --retry 2 "$2" --output "tools/$1"
+    fi
     echo "$3  tools/$1" | sha256sum -c -
     chmod +x "tools/$1"
 }
@@ -49,7 +78,7 @@ fi
 echo 'APPIMAGE_STATIC_RUNTIME_PASS (dynamic shell positive control passed)'
 # Extraction mode avoids any FUSE requirement on the build runner.
 export APPIMAGE_EXTRACT_AND_RUN=1
-./tools/linuxdeploy --appdir AppDir --executable ../../target/release/okilum \
+./tools/linuxdeploy --appdir AppDir --executable "$binary" \
     --executable /usr/bin/gpgv \
     --desktop-file ../../scripts/arch/okilum.desktop \
     --icon-file ../../crates/okilum-shell/assets/brand/app-icon-light.svg \
@@ -58,7 +87,7 @@ python3 ../../scripts/appimage/check-elf.py AppDir/usr/bin/okilum \
     2>&1 | tee evidence/elf-after-deploy.log
 install -Dm644 ../../LICENSE AppDir/usr/share/licenses/okilum/LICENSE
 install -Dm644 ../../THIRD_PARTY_NOTICES.md AppDir/usr/share/licenses/okilum/THIRD_PARTY_NOTICES.md
-printf '%s\n' "$GITHUB_SHA" > AppDir/SOURCE_SHA
+printf '%s\n' "$source_sha" > AppDir/SOURCE_SHA
 # Stage after linuxdeploy stripping so the checksum-pinned Go ELF stays exact.
 # An explicit local archive supports offline fixture/build inputs with the same pins.
 syncthing_bundle_args=(--appdir AppDir)
@@ -70,4 +99,5 @@ python3 ../../scripts/syncthing/linux_bundle.py "${syncthing_bundle_args[@]}"
 find AppDir/usr/lib -type f -printf '%f\n' | sort > bundled-libraries.txt
 ARCH=x86_64 ./tools/appimagetool --runtime-file tools/runtime AppDir Okilum-x86_64.AppImage
 sha256sum Okilum-x86_64.AppImage > SHA256SUMS
-python3 ../../scripts/appimage/provenance.py
+# The provenance record describes a CI run; a local dev build has none.
+[[ $local_dev == 1 ]] || python3 ../../scripts/appimage/provenance.py
