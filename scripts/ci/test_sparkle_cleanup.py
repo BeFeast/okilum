@@ -1,5 +1,6 @@
 """Transient late writes must not mask real native or cleanup failures."""
 import errno
+import os
 import ast
 import re
 from copy import deepcopy
@@ -27,7 +28,7 @@ class SparkleScenarioMatrixTests(unittest.TestCase):
         start = next(i for i, n in enumerate(cls.suite.body) if isinstance(n, ast.Assign)
                      and any(isinstance(t, ast.Name) and t.id == 'rotation_scenarios' for t in n.targets))
         stop = next(i for i in range(start, len(cls.suite.body)) if isinstance(cls.suite.body[i], ast.For))
-        cls.matrix = {}
+        cls.matrix = {'os': os}
         cls.execute(cls.suite.body[start:stop], cls.matrix)
         cls.loop = cls.suite.body[stop]
         setup_start = next(i for i, n in enumerate(cls.loop.body) if isinstance(n, ast.Assign)

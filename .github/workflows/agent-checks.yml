@@ -18,6 +18,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-recovery:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - name: Preserve vendor patch line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore Windows core cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agent-windows-recovery-v1
+      - name: Prepare and verify Windows vendor
+        shell: bash
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Run native Windows recovery controls
+        shell: pwsh
+        run: |
+          python scripts/ci/windows-recovery-check.py
+          exit $LASTEXITCODE
   linux:
     # Public repositories receive the standard 4-vCPU hosted Linux runner.
     runs-on: ubuntu-24.04
