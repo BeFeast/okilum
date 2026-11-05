@@ -210,15 +210,17 @@ second daemon or an implicit takeover. Ordinary Refresh never bootstraps.
 
 Action completions publish the new runtime and controller snapshot immediately.
 An invitation, pending confirmation, initial receive or paired computer keeps the
-revocable background refresh alive. The current status, URL/Copy, confirmation,
-waiting state and error are above the independently scrollable remaining steps.
-The owned Settings window keeps its opaque surface and full content height; Sync
-uses one internal scroll viewport rather than nested unbounded content.
+revocable background refresh alive. The current page follows layout A (#2615): status, Computers, Vaults, and
+collapsed Advanced. Pairing steps live in a native modal with contained focus;
+incoming approval is also visible in Reader and other Settings sections.
+Technical errors stay behind Details, with the complete redacted chain logged
+as sync_action_failed. See [Sync settings](sync-settings.md).
 
 After approval, the receiving computer chooses a vault and a local folder. The
 new-folder dialog proposes a safe single component of the vault name under HOME;
 the existing-folder picker remains available. Creating that explicitly chosen
-folder reuses the new-vault empty-directory guard. The controller still refuses
+folder is staged until Start first sync, which reuses the new-vault
+empty-directory guard for each chosen vault. The controller still refuses
 unknown nonempty destinations and retains its receiveonly/readiness/promotion
 rules. A vault selected in this session opens automatically after the controller
 reports initial receive complete; refreshes never open unrelated attached vaults.

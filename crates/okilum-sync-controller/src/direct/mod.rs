@@ -796,12 +796,15 @@ impl Controller {
             stream.set_read_timeout(Some(PAIRING_REPLY_TIMEOUT))?;
         }
         wire::write(&mut stream, &frame)?;
+        let waiting_since = std::time::Instant::now();
         let response = match wire::read(&mut stream) {
             Ok(response) => response,
             // The durable request is already recorded locally. A slow human or
             // an older inviter can outlive one socket; poll with the SAME signed
             // request, never replace its identity or require another invitation.
-            Err(error) if redeem && wire::approval_wait_interrupted(&error) => {
+            Err(error)
+                if redeem && wire::approval_wait_interrupted(&error, waiting_since.elapsed()) =>
+            {
                 return Ok(Reply::Pending);
             }
             Err(error) => return Err(error),
@@ -1674,6 +1677,7 @@ mod tests {
             wire::write(&mut remote, &envelope)?;
             let _: wire::Envelope = wire::read(&mut remote)?;
             // The response is deliberately lost, but the claimed identity stays.
+            thread::sleep(Duration::from_millis(3100));
             drop(first);
             let (mut retry, _) = proxy.accept()?;
             let envelope: wire::Envelope = wire::read(&mut retry)?;

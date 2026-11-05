@@ -17,7 +17,9 @@ action; the complete redacted cause chain remains in sync_action_failed and
 behind Details. Invitation capabilities and keys remain redacted.
 
 The existing authenticated Pending polling protocol and topology are unchanged.
-A lost or timed-out Redeem reply leaves the durable request pending. Subsequent
+A timed-out Redeem reply, including an old peer closing at its three-second
+deadline, leaves the durable request pending. An immediate close remains a
+refusal, preserving the wrong-target and already-claimed identity checks. Subsequent
 polls reuse its exact request identity until approval, rejection, cancellation
 or the invitation deadline; malformed or unauthenticated replies remain errors.
 Ordinary catalog and transfer requests retain their existing socket bounds.
