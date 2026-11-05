@@ -1,0 +1,21 @@
+name: mac-manager-lock
+on:
+  push:
+    branches: ['qa/mac-manager-lock/**']
+permissions:
+  contents: read
+jobs:
+  lock:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: bash scripts/vendor-setup.sh
+      - name: Normalize lock with the pinned Cargo without building
+        run: cargo update --workspace
+      - run: git diff -- Cargo.lock
+      - uses: actions/upload-artifact@v4
+        with:
+          name: normalized-lock
+          path: Cargo.lock
