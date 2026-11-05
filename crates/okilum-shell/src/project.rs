@@ -73,14 +73,6 @@ pub(super) fn prefill_app_browser_origin(state: Option<&Path>) -> anyhow::Result
     connections::last_origin(state)
 }
 
-pub(super) fn project_browser_origin(
-    area: &Path,
-    alias: &str,
-    state: Option<&Path>,
-) -> anyhow::Result<Option<String>> {
-    connections::project_origin(area, alias, state)
-}
-
 pub(super) fn prefill_browser_origin(
     area: &Path,
     alias: &str,
