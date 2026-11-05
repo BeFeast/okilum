@@ -78,6 +78,7 @@ fn catalog() -> Vec<Entry> {
         entry::<ToggleTask>("Toggle task", Notes),
         entry::<reader_editor::OpenRenderedBlock>("Edit table, image or callout", Notes),
         entry::<reader_editor::OpenBlockExternally>("Open code block in external editor", Notes),
+        entry::<gpui_component::input::Paste>("Paste", Notes),
         entry::<note_paste::PasteAsPlainText>("Paste as plain text", Notes),
         entry::<note_paste::PasteAsTitledLink>("Paste as titled link", Notes),
         entry::<format::ToggleBold>("Bold", Format),
@@ -112,6 +113,7 @@ fn catalog() -> Vec<Entry> {
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
         entry::<reader_read_menu::CopyAsMarkdown>("Copy as Markdown", Notes),
+        entry::<reader_read_menu::CopyWithFormatting>("Copy as Rich Text", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),
         entry::<reader_log::ToggleMark>("Mark log row", Notes),
         entry::<reader_log::NextMark>("Next marked log row", Navigation),
@@ -515,7 +517,10 @@ mod tests {
             .filter(|binding| binding.keystrokes() == expected.keystrokes())
             .map(|binding| binding.action().name())
             .collect();
-        assert_eq!(actions, [reader_read_menu::CopyAsMarkdown::name_for_type()]);
+        assert_eq!(
+            actions,
+            [reader_read_menu::CopyAsMarkdown::name_for_type(); 2]
+        );
     }
 
     #[gpui::test]
@@ -569,6 +574,9 @@ mod tests {
 
     #[gpui::test]
     fn rows_are_grouped_and_use_platform_labels(cx: &mut TestAppContext) {
+        // Paste's Shift+Insert alias belongs to the toolkit input keymap.
+        // Install it as a real Reader window does before checking all aliases.
+        cx.update(gpui_component::init);
         let keymap = reader_keymap(cx);
         let rows = rows(&keymap, Os::CURRENT);
         let groups: Vec<Group> = rows.iter().map(|row| row.group).collect();
@@ -590,6 +598,19 @@ mod tests {
             row("Copy as Markdown").keys,
             [Os::CURRENT.shortcut(reader_read_menu::COPY_MARKDOWN_KEY)]
         );
+        assert_eq!(
+            row("Copy as Rich Text").keys,
+            [Os::CURRENT.shortcut("secondary-alt-c")]
+        );
+        let paste = keys_for(
+            &keymap,
+            gpui_component::input::Paste::name_for_type(),
+            Os::CURRENT,
+        );
+        assert_eq!(paste.first(), Some(&Os::CURRENT.shortcut("secondary-v")));
+        assert_eq!(row("Paste").keys, paste);
+        #[cfg(not(target_os = "macos"))]
+        assert!(paste.contains(&Os::CURRENT.shortcut("shift-insert")));
         assert_eq!(
             row("Keyboard shortcuts").keys,
             [Os::CURRENT.shortcut("secondary-/")]

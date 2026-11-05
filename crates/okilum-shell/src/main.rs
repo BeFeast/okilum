@@ -498,6 +498,24 @@ fn bind_keys(cx: &mut App) {
         reader_read_menu::CopyAsMarkdown,
         Some("ReaderRead && !Input && !ReaderTree"),
     )]);
+    cx.bind_keys([
+        KeyBinding::new(
+            reader_read_menu::COPY_MARKDOWN_KEY,
+            reader_read_menu::CopyAsMarkdown,
+            Some("ReaderSource > Input"),
+        ),
+        KeyBinding::new(
+            "secondary-alt-c",
+            reader_read_menu::CopyWithFormatting,
+            Some("ReaderRead && !Input && !ReaderTree"),
+        ),
+        // Prefer the standard chord in note menus; Shift+Insert remains bound.
+        KeyBinding::new(
+            "secondary-v",
+            gpui_component::input::Paste,
+            Some("ReaderSource > Input"),
+        ),
+    ]);
     project_terminal::bind_keys(cx);
     reader_text_zoom::bind_keys(cx);
     reader_editor::format::bind_keys(cx);

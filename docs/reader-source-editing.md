@@ -58,6 +58,14 @@ rendering timeout. Opening Find supersedes an older Reader-to-editor handoff,
 including one that finishes after Find closes; an asynchronous placement retains
 later keyboard focus. A new navigation or editing retires an obsolete landing notice.
 
+Copy as Markdown uses Ctrl+Shift+C (Cmd+Shift+C on macOS) in Read, Source and
+Live Preview (#2625). In the editors it copies the selected authored Markdown,
+including markup and original line endings, and appears beside Copy in the
+context menu. Plain Copy keeps its existing behavior. Read offers Copy as Rich
+Text on Ctrl+Alt+C / Cmd+Option+C, which writes rich HTML plus plain text for
+other applications. Its menu shows each command's live key bindings. Editor
+Paste shows Ctrl+V / Cmd+V as the primary shortcut; Shift+Insert remains available.
+
 Heading completion (#1638) uses the same inline popup and keyboard/Undo path as
 note completion: type `[[#` for headings in this unsaved note, or
 `[[Note#` for headings in a uniquely resolved note. Up/Down chooses a row;
