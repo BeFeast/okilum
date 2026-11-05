@@ -29,6 +29,12 @@ static void NavigationFailure(void *context, const char *json) {
     [events addObject:[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL]];
 }
 
+@interface NavigationWebViewFixture : NSObject
+@property(nonatomic, strong) NSURL *URL;
+@end
+@implementation NavigationWebViewFixture
+@end
+
 static void CheckNavigationProxy(void) {
     NavigationFixture *original = [NavigationFixture new];
     OkilumManagerNavigation *proxy = [OkilumManagerNavigation new];
@@ -36,18 +42,22 @@ static void CheckNavigationProxy(void) {
     proxy.original = original;
     proxy.failed = NavigationFailure;
     proxy.context = (__bridge void *)events;
+    NavigationWebViewFixture *fixture = [NavigationWebViewFixture new];
+    fixture.URL = [NSURL URLWithString:@"https://t3.example/env/thread"];
+    WKWebView *view = (WKWebView *)fixture;
+    WKNavigationAction *action = (WKNavigationAction *)[NSObject new];
     REQUIRE([proxy respondsToSelector:@selector(webView:decidePolicyForNavigationAction:decisionHandler:)],
         @"proxy advertises Wry policy callbacks");
     __block BOOL allowed = NO;
-    [proxy webView:nil decidePolicyForNavigationAction:nil decisionHandler:^(WKNavigationActionPolicy policy) {
+    [proxy webView:view decidePolicyForNavigationAction:action decisionHandler:^(WKNavigationActionPolicy policy) {
         allowed = policy == WKNavigationActionPolicyAllow;
     }];
-    [proxy webView:nil didFinishNavigation:nil];
+    [proxy webView:view didFinishNavigation:nil];
     NSError *error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotConnectToHost
         userInfo:@{NSURLErrorFailingURLStringErrorKey: @"https://t3.example/env/thread?token=fixture"}];
-    [proxy webView:nil didFailProvisionalNavigation:nil withError:error];
-    [proxy webView:nil didFailNavigation:nil withError:error];
-    [proxy webViewWebContentProcessDidTerminate:nil];
+    [proxy webView:view didFailProvisionalNavigation:nil withError:error];
+    [proxy webView:view didFailNavigation:nil withError:error];
+    [proxy webViewWebContentProcessDidTerminate:view];
     REQUIRE(allowed && original.policies == 1 && original.finishes == 1 && original.failures == 1,
         @"proxy preserves original policy, completion and failure callbacks");
     REQUIRE(events.count == 3 && [events[0][@"domain"] isEqual:NSURLErrorDomain]
@@ -55,7 +65,7 @@ static void CheckNavigationProxy(void) {
         && [events[2][@"domain"] isEqual:@"WebContentProcess"], @"both failures and termination reach Rust");
     proxy.failed = NULL;
     proxy.context = NULL;
-    [proxy webView:nil didFailNavigation:nil withError:error];
+    [proxy webView:view didFailNavigation:nil withError:error];
     REQUIRE(events.count == 3, @"detached proxy cannot call the released Rust context");
 }
 
