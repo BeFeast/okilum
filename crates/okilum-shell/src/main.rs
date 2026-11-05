@@ -8593,6 +8593,9 @@ fn main() {
         (None, None)
     };
     let _instance_lock = instance_lock;
+    // Only the instance that owns the profile answers paired computers (#2589).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let serves_sync = _instance_lock.is_some();
     // A forwarded launch never races the active Reader's apply operation. The
     // primary repairs interrupted decisions before any path validation, cache
     // load, indexing, or managed Sync initialization can observe missing notes.
@@ -8670,6 +8673,11 @@ fn main() {
             brain::source_trace::install(cx);
         }
         updater::install(cx);
+        // Paired computers reach this app without Settings → Sync (#2589).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if serves_sync {
+            reader_settings_sync::serve_paired(cx);
+        }
         #[cfg(all(target_os = "linux", feature = "appimage-acceptance-harness"))]
         appimage_acceptance::install(cx);
         version_info::install(cx);

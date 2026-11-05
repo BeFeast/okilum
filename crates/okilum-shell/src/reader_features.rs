@@ -171,7 +171,9 @@ pub(crate) fn set_enabled(feature: Feature, enabled: bool, cx: &mut App) {
     state.permits[feature.index()] = NetworkAccess::new(enabled);
     state.saved = saved;
     cx.set_global(state);
-    if !enabled {
+    if enabled {
+        resume(feature, cx);
+    } else {
         suspend(feature, cx);
     }
     cx.refresh_windows();
@@ -225,6 +227,15 @@ pub(crate) fn enable_saved(directory: &Path, feature: Feature) -> anyhow::Result
         }
     }
     save(&path, feature, true)
+}
+/// Turning Sync back on serves paired computers again without Settings (#2589).
+fn resume(feature: Feature, cx: &mut App) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if feature == Feature::Sync {
+        reader_settings_sync::serve_paired(cx);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = (feature, cx);
 }
 fn suspend(feature: Feature, cx: &mut App) {
     if feature == Feature::Agents {
