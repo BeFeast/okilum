@@ -11,6 +11,7 @@ pub(super) enum Step {
     Computer,
     Progress,
     Expired,
+    Existing,
 }
 
 #[derive(Default)]

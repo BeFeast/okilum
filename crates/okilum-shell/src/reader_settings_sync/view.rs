@@ -644,6 +644,7 @@ impl SyncSettings {
             Step::Computer=>(remote.clone(),format!("Vaults shared between {local} and {remote}.")),
             Step::Progress=>("Your first sync is in progress".into(),format!("Receiving on {local}. Keep both computers online until the first transfer finishes. You can close this window and follow progress on the Sync page.")),
             Step::Expired=>("Your pairing link expired".into(),"On the computer with your notes, create a new link, then paste it on the other computer. Your vaults have not changed.".into()),
+            Step::Existing => ("Use your existing Sync connection".into(), format!("On {local}, review the folder before allowing Okilum to use its existing Syncthing connection.")),
         };
         let mut body = v_flex()
             .gap_3()
@@ -669,6 +670,9 @@ impl SyncSettings {
             body = body.child(self.render_status(cx));
         }
         match step {
+            Step::Existing => {
+                body = body.child(self.render_existing_connection(cx));
+            }
             Step::Start | Step::Paste => {
                 body = body.child("This computer’s name").child(
                     Input::new(

@@ -1927,6 +1927,87 @@ fn issue2615_error_details_are_hidden_until_requested(cx: &mut TestAppContext) {
     assert!(visual.debug_bounds("sync-technical-details").is_some());
 }
 
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
+    let vault = ExistingVault {
+        daemon: okilum_sync_controller::daemon::DaemonIdentity {
+            config_file: directory.path().join("config.xml"),
+            device_id: "fixture-device".into(),
+            certificate_hash: "fixture-certificate".into(),
+        },
+        version: "v2.1.7".into(),
+        folder_id: "fixture-vault".into(),
+        path: directory.path().join("Notes"),
+        label: "Existing notes".into(),
+        paused: false,
+        folder_type: "sendreceive".into(),
+        peers: vec![],
+        root_identity: None,
+    };
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let recorded = calls.clone();
+    let inspected = vault.clone();
+    cx.update(|cx| {
+        cx.set_global(TestWorker(std::sync::Arc::new(move |operation| {
+            let _keep_directory = &directory;
+            let mut snapshot = snapshot(None);
+            let preview = match operation {
+                Operation::Share(_) => {
+                    recorded.lock().unwrap().push("share");
+                    Some(inspected.clone())
+                }
+                Operation::Consent(vault) => {
+                    recorded.lock().unwrap().push("consent");
+                    snapshot.attached.push(vault);
+                    None
+                }
+                _ => panic!("unexpected existing-connection operation"),
+            };
+            Ok(Output {
+                overview: Default::default(),
+                connection_error: None,
+                controller: controller.clone(),
+                snapshot,
+                inspected: preview,
+                selected_destination: None,
+                runtimes: vec![],
+                vaults: vec![],
+            })
+        })));
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.presentation = Default::default();
+            view.snapshot = Some(snapshot(None));
+            view.vaults = vec![vault.path.clone()];
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1000.), px(900.)));
+    visual.run_until_parked();
+    let share = visual.debug_bounds("sync-share-vault-0").unwrap();
+    visual.simulate_click(share.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_visible(visual, "sync-consent-existing");
+    assert!(visual.debug_bounds("sync-inspect-existing").is_none());
+    let use_connection = visual.debug_bounds("sync-consent-existing").unwrap();
+    visual.simulate_click(use_connection.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec!["share", "consent"]);
+    assert!(visual.debug_bounds("sync-modal").is_none());
+    root.read_with(visual, |root, cx| {
+        let view = root.view().clone().downcast::<SyncSettings>().unwrap();
+        assert_eq!(view.read(cx).snapshot.as_ref().unwrap().attached.len(), 1);
+        assert!(!view.read(cx).presentation.advanced);
+    });
+}
+
 #[gpui::test]
 fn issue2615_reject_does_not_show_an_expired_invitation(cx: &mut TestAppContext) {
     cx.update(crate::test_init);

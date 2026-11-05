@@ -8,6 +8,8 @@ authorized vault selection, and first-transfer observations. Closing the modal
 does not cancel pairing or a transfer; Cancel request is explicit.
 Folder choices are staged until Start first sync; several selected vaults are
 then attached in sequence through the existing guarded controller operations.
+Sharing a folder already used by Syncthing opens an explicit connection-review
+modal. Its consent action remains visible while Advanced is collapsed.
 
 Incoming approval requests appear in the Reader and Settings, including other
 Settings sections, and trigger one desktop notification per request. Linux uses
