@@ -81,11 +81,7 @@ impl Render for Wizard {
                             div()
                                 .text_sm()
                                 .text_color(brand::palette(cx).text_muted)
-                                .child(format!(
-                                    "On {} · {}",
-                                    input_text(&view.name, cx),
-                                    std::env::consts::OS
-                                )),
+                                .child(format!("This computer: {}", input_text(&view.name, cx))),
                         )
                         .child(
                             Button::new("sync-close-wizard")
@@ -146,6 +142,15 @@ pub(super) fn summary(snapshot: Option<&Snapshot>, error: Option<&str>) -> Strin
     "Your computers are paired. Vault status is shown below.".into()
 }
 
+/// The pairing protocol carries no OS. Only show metadata actually observed.
+pub(super) fn computer_details(vaults: Option<usize>) -> Option<String> {
+    vaults.map(vault_count)
+}
+
+pub(super) fn vault_count(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "vault" } else { "vaults" })
+}
+
 pub(super) fn last_seen(value: &str) -> String {
     let Ok(seen) = chrono::DateTime::parse_from_rfc3339(value) else {
         return "Last seen unavailable".into();
@@ -202,6 +207,21 @@ pub(crate) fn approval_banner(cx: &mut App) -> AnyElement {
 mod tests {
     use super::*;
     use ::core::prelude::v1::test;
+
+    #[test]
+    fn vault_counts_use_singular_only_for_one() {
+        assert_eq!(vault_count(0), "0 vaults");
+        assert_eq!(vault_count(1), "1 vault");
+        assert_eq!(vault_count(2), "2 vaults");
+        assert_eq!(vault_count(11), "11 vaults");
+    }
+
+    #[test]
+    fn computer_details_hide_unknown_os_and_unobserved_counts() {
+        assert_eq!(computer_details(None), None);
+        assert_eq!(computer_details(Some(1)).as_deref(), Some("1 vault"));
+        assert_eq!(computer_details(Some(3)).as_deref(), Some("3 vaults"));
+    }
 
     #[test]
     fn raw_controller_ready_is_never_the_page_status() {

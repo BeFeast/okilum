@@ -24,7 +24,6 @@ impl Render for SyncSettings {
             window.open_dialog(cx, move |dialog, _, _| {
                 dialog
                     .width(px(560.))
-                    .margin_top(px(24.))
                     .close_button(false)
                     .overlay_closable(false)
                     .child(wizard.clone())
@@ -152,22 +151,16 @@ impl Render for SyncSettings {
                                     .child(
                                         div().w_full().whitespace_normal().child(peer.name.clone()),
                                     )
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .whitespace_normal()
-                                            .text_sm()
-                                            .text_color(p.text_muted)
-                                            .child(format!(
-                                                "OS not reported · {}",
-                                                observed
-                                                    .vaults
-                                                    .map(|n| format!("{n} vaults"))
-                                                    .unwrap_or_else(
-                                                        || "Vault count not checked".into()
-                                                    )
-                                            )),
-                                    ),
+                                    .children(presentation::computer_details(observed.vaults).map(
+                                        |details| {
+                                            div()
+                                                .w_full()
+                                                .whitespace_normal()
+                                                .text_sm()
+                                                .text_color(p.text_muted)
+                                                .child(details)
+                                        },
+                                    )),
                             )
                             .child(
                                 v_flex()
@@ -639,16 +632,16 @@ impl SyncSettings {
             .presentation
             .first_sync_complete(self.snapshot.as_ref(), self.busy);
         let (title,help)=match step {
-            Step::Start=>("Start on the computer with your notes".into(),format!("On {local}, create a link if your notes are here. Keep Okilum open on both computers.")),
-            Step::Paste=>("Paste the link from your other computer".into(),format!("On {local}, paste the link created on the computer with your notes. You will approve {local} on that computer.")),
-            Step::Link=>("Copy this link to your other computer".into(),format!("On {local}, copy the link. On the other computer open Settings → Sync → Add computer → I have a link. Return to {local} to approve its request.")),
+            Step::Start=>("Start on the computer with your notes".into(),"Create a link if your notes are here. Keep Okilum open on both computers.".into()),
+            Step::Paste=>("Paste the link from your other computer".into(),format!("Paste the link created on the computer with your notes. You will approve {local} on that computer.")),
+            Step::Link=>("Copy this link to your other computer".into(),format!("Copy the link. On the other computer open Settings → Sync → Add computer → I have a link. Return to {local} to approve its request.")),
             Step::Waiting=>(format!("Waiting for {remote} to approve"),format!("{local} has requested a connection. On {remote}, approve “{local} wants to connect”. This window keeps waiting; you do not need to retry.")),
-            Step::Vaults=>(format!("Choose vaults for {local}"),format!("On {local}, choose a vault from the approved computer and a local folder. New or empty folders start Sync; existing files require a lossless merge preview.")),
+            Step::Vaults=>("Choose vaults".into(),"Choose a vault from the approved computer and a new or empty local folder. If the folder already has files, Okilum leaves them untouched and asks you to choose an empty folder.".into()),
             Step::Computer=>(remote.clone(),format!("Vaults shared between {local} and {remote}.")),
-            Step::Progress if complete => ("Your first sync is complete".into(), format!("On {local}, your vaults are up to date. Saved changes now sync in both directions.")),
+            Step::Progress if complete => ("Your first sync is complete".into(), "Your vaults are up to date. Saved changes now sync in both directions.".into()),
             Step::Progress=>("Your first sync is in progress".into(),format!("Receiving on {local}. Keep both computers online until the first transfer finishes. You can close this window and follow progress on the Sync page.")),
             Step::Expired=>("Your pairing link expired".into(),"On the computer with your notes, create a new link, then paste it on the other computer. Your vaults have not changed.".into()),
-            Step::Existing => ("Use your existing Sync connection".into(), format!("On {local}, review the folder before allowing Okilum to use its existing Syncthing connection.")),
+            Step::Existing => ("Use your existing Sync connection".into(), "Review the folder before allowing Okilum to use its existing Syncthing connection.".into()),
         };
         let mut body = v_flex()
             .gap_3()
@@ -665,10 +658,20 @@ impl SyncSettings {
             .and_then(|s| s.pending.as_ref())
             .filter(|p| p.incoming)
         {
-            return v_flex().gap_3()
-                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(format!("Allow {} to connect?",pending.name)))
-                .child(div().text_sm().text_color(p.text_muted).child(format!("On {local}, confirm this is the computer you just used. {} is waiting for your approval.",pending.name)))
-                .child(self.render_approval(cx)).into_any_element();
+            return v_flex()
+                .gap_3()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Allow {} to connect?", pending.name)),
+                )
+                .child(div().text_sm().text_color(p.text_muted).child(format!(
+                    "Confirm this is the computer you just used. {} is waiting for your approval.",
+                    pending.name
+                )))
+                .child(self.render_approval(cx))
+                .into_any_element();
         }
         if self.error.is_some() && step != Step::Expired {
             body = body.child(self.render_status(cx));
@@ -883,36 +886,21 @@ impl SyncSettings {
                 );
             }
             for (index, vault) in snapshot.catalog.iter().enumerate() {
-                let id = vault.id.clone();
-                let new_id = id.clone();
+                let new_id = vault.id.clone();
                 let label = vault.label.clone();
                 body = body.child(
                     v_flex().gap_2().child(vault.label.clone()).child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new(("sync-new-vault-folder", index))
-                                    .debug_selector(move || {
-                                        format!("sync-new-vault-folder-{index}")
-                                    })
-                                    .primary()
-                                    .label("Choose local folder")
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.presentation.picking_vault = true;
-                                        this.choose_new_folder(peer, new_id.clone(), &label, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new(("sync-attach-vault", index))
-                                    .ghost()
-                                    .label("Use existing folder")
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.presentation.picking_vault = true;
-                                        this.choose_folder(Some((peer, id.clone())), cx)
-                                    })),
-                            ),
+                        h_flex().gap_2().child(
+                            Button::new(("sync-new-vault-folder", index))
+                                .debug_selector(move || format!("sync-new-vault-folder-{index}"))
+                                .primary()
+                                .label("Choose folder")
+                                .disabled(self.busy)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.presentation.picking_vault = true;
+                                    this.choose_vault_folder(peer, new_id.clone(), &label, cx)
+                                })),
+                        ),
                     ),
                 );
                 if let Some((_, message)) = self

@@ -31,6 +31,14 @@ to that display's visible work area. They cannot be minimized independently.
   screen position, so exact centering cannot be guaranteed there. GPUI lifecycle
   cleanup, Esc and singleton behavior apply on every platform.
 
+Settings uses the `okilum-settings` app id and an opaque native background on
+every page (#2615). On Hyprland with the Lua API, the app installs an idempotent
+runtime opacity rule for that app id only. Omarchy's default 0.985 active / 0.96
+inactive compositor opacity otherwise reveals the owner document even through
+opaque GPUI surfaces and modal dialogs. No user config file is edited; Reader
+windows retain their compositor settings. Other compositors use the ordinary
+opaque surface; older Hyprland versions without Lua log the unsupported request.
+
 No GPUI core or vendor changes are required. Regression tests cover real GPUI
 Settings/Feedback windows and native Windows ownership, styles and lifecycle.
 Native desktop presentation remains subject to the project's normal human/batch QA.
