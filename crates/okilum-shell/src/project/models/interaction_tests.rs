@@ -418,7 +418,8 @@ fn reasoning_rows_follow_each_model_descriptor_and_disappear_without_reasoning(
             "empty",
             "Empty settings",
             json!([{"type":"select","id":"effort","label":"Reasoning","options":[]}])
-        )
+        ),
+        model("basic", "No additional settings", json!([]))
     ]);
     let (view, visual, _state, gateway) =
         fixture(cx, data, selection("work-account", "same-model", json!([])));
