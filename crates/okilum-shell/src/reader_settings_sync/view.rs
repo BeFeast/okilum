@@ -1,7 +1,8 @@
 use super::*;
 
 impl Render for SyncSettings {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (name, invitation) = self.inputs(window, cx);
         let p = brand::palette(cx);
         let mut result = v_flex()
             .id("sync-current-step")
@@ -284,7 +285,7 @@ impl Render for SyncSettings {
             .child(div().text_base().child("Connect your computers"))
             .child(div().text_sm().text_color(p.text_muted).child("On the computer with your notes, share a vault below, then choose Add computer. On the computer receiving notes, paste that URL and choose Connect. Confirm the request on the computer with your notes."))
             .child(crate::reader_sync_help::entry())
-            .child(v_flex().gap_2().child("This computer").child(Input::new(&self.name).disabled(self.busy)))
+            .child(v_flex().gap_2().child("This computer").child(Input::new(&name).disabled(self.busy)))
             .when(!self.receiving, |content| content.child(h_flex().gap_2()
                 .child(Button::new("sync-add-computer")
                                         .debug_selector(|| "sync-add-computer".into()).label("Add computer").disabled(self.busy)
@@ -293,7 +294,7 @@ impl Render for SyncSettings {
                                         .debug_selector(|| "sync-refresh".into()).label("Refresh").ghost().disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.run(Operation::Read, cx))))))
             .child(v_flex().gap_2().child("Connect to an existing computer")
-                .child(Input::new(&self.invitation).disabled(self.busy))
+                .child(Input::new(&invitation).disabled(self.busy))
                 .child(Button::new("sync-connect")
                                         .debug_selector(|| "sync-connect".into()).label("Connect").disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.start_pairing(true, cx)))))

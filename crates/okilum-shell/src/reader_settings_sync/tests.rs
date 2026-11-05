@@ -1,9 +1,9 @@
 #[cfg(target_os = "linux")]
 use super::linux_runtime;
 use super::{
-    destination, destination_name, mac_direct_state, perform, suspend, sync_refresh_interval,
-    user_error, BackgroundSync, ControllerGuard, Epoch, Operation, Output, SyncSettings,
-    TestWorker,
+    destination, destination_name, mac_direct_state, perform, perform_with_locations, serve_paired,
+    shared, suspend, sync_refresh_interval, user_error, BackgroundSync, ControllerGuard, Epoch,
+    Operation, Output, SyncSettings, TestSyncState, TestWorker,
 };
 use crate::{
     reader_features, reader_history, reader_open, reader_settings, reader_startup, Opts, Reader,
@@ -28,10 +28,11 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
         controller: None,
         snapshot: None,
         inspected: None,
-        name: cx.new(|cx| InputState::new(window, cx).placeholder("This computer’s name")),
-        invitation: cx.new(|cx| InputState::new(window, cx).placeholder("Paste pairing URL")),
+        name: Some(cx.new(|cx| InputState::new(window, cx).placeholder("This computer’s name"))),
+        invitation: Some(cx.new(|cx| InputState::new(window, cx).placeholder("Paste pairing URL"))),
         selected_peer: None,
         busy: false,
+        serving: false,
         epoch: Epoch::default(),
         lifetime: Epoch::default(),
         error: None,
@@ -151,9 +152,9 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
 
     let field = view.read_with(&visual, |view, _| {
         if invitation {
-            view.invitation.clone()
+            view.invitation.clone().unwrap()
         } else {
-            view.name.clone()
+            view.name.clone().unwrap()
         }
     });
     let committed = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -207,9 +208,9 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
     visual.update(|_, cx| {
         let reopened = cx.global::<BackgroundSync>().0.read(cx);
         let field = if invitation {
-            &reopened.invitation
+            reopened.invitation.as_ref().unwrap()
         } else {
-            &reopened.name
+            reopened.name.as_ref().unwrap()
         };
         assert_eq!(field.read(cx).value().as_ref(), "Desktop 2487");
     });
@@ -517,6 +518,152 @@ fn reader_settings_sync_suspend_revokes_a_real_listener_and_retained_controller(
     // No Syncthing configuration, process or canonical vault exists in this fixture.
 }
 
+/// Wait until a shut-down controller's connection workers let go of its journal
+/// and pairing address, as when the previous app run has exited.
+fn released(state: &Path, endpoint: std::net::SocketAddr) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while Controller::open(state.to_owned(), vec![]).is_err()
+        || std::net::TcpListener::bind(endpoint).is_err()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "previous owner kept the journal"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[gpui::test]
+fn issue2589_running_app_serves_paired_computers_without_opening_settings(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    let profile = |name: &str| {
+        let sync = directory.path().join(name).join("sync");
+        std::fs::create_dir_all(&sync).unwrap();
+        sync.join("direct")
+    };
+    let (paired, unpaired, never) = (profile("paired"), profile("unpaired"), profile("never"));
+    drop(Controller::open(unpaired.clone(), vec![]).unwrap());
+    // The other computer, paired with this one by a real invitation.
+    let other = Controller::open(profile("other"), vec![]).unwrap();
+    let (peer, endpoint) = {
+        let this = Controller::open(paired.clone(), vec![]).unwrap();
+        let url = this
+            .begin_pairing_at(
+                "Desktop",
+                "127.0.0.1:0".parse().unwrap(),
+                "127.0.0.1".parse().unwrap(),
+            )
+            .unwrap()
+            .offer_url
+            .unwrap();
+        other.redeem(&url, "Laptop").unwrap();
+        this.approve(this.snapshot().unwrap().pending.unwrap().request_id)
+            .unwrap();
+        let peers = other.refresh_pairing().unwrap().peers;
+        assert_eq!(peers.len(), 1, "positive control: computers are paired");
+        assert!(other.catalog(peers[0].id).is_ok(), "positive control");
+        this.shutdown();
+        let endpoint: std::net::SocketAddr =
+            url::Url::parse(&url).unwrap().path()[1..].parse().unwrap();
+        (peers[0].id, endpoint)
+    };
+    // The app starts later: nothing answers until it serves again.
+    released(&paired, endpoint);
+    assert!(other.catalog(peer).is_err(), "no listener before the app");
+
+    let opened = std::sync::Arc::new(std::sync::Mutex::new(0));
+    let recorded = opened.clone();
+    let journal = paired.clone();
+    cx.update(|cx| {
+        reader_features::install(directory.path(), cx);
+        cx.set_global(TestSyncState(paired.clone()));
+        // Production `perform_scoped`, with this fixture's journal and no Syncthing.
+        cx.set_global(TestWorker(std::sync::Arc::new(move |operation| {
+            assert!(
+                matches!(operation, Operation::Read),
+                "serving never starts pairing"
+            );
+            *recorded.lock().unwrap() += 1;
+            let journal = journal.clone();
+            perform_with_locations(None, operation, &Epoch::default().ticket(), || {
+                Ok((journal, vec![]))
+            })
+        })));
+        serve_paired(cx);
+    });
+    cx.run_until_parked();
+    cx.update(|cx| assert!(!cx.has_global::<BackgroundSync>(), "Sync is off"));
+
+    for state in [&never, &unpaired] {
+        cx.update(|cx| {
+            cx.set_global(TestSyncState(state.clone()));
+            if reader_features::enabled(reader_features::Feature::Sync, cx) {
+                serve_paired(cx);
+            } else {
+                // Turning Sync on starts serving the same way.
+                reader_features::set_enabled(reader_features::Feature::Sync, true, cx);
+            }
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                reader_features::enabled(reader_features::Feature::Sync, cx),
+                "positive control: Sync is on"
+            );
+            assert!(
+                !cx.has_global::<BackgroundSync>(),
+                "{state:?} pairs no computer"
+            );
+        });
+    }
+    assert!(!never.exists(), "the check never creates Sync state");
+    assert_eq!(*opened.lock().unwrap(), 0, "no controller was opened");
+
+    // App start with a paired computer: no window, no Settings.
+    cx.update(|cx| {
+        cx.set_global(TestSyncState(paired.clone()));
+        serve_paired(cx);
+    });
+    cx.run_until_parked();
+    let view = cx.update(|cx| cx.global::<BackgroundSync>().0.clone());
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert!(view.controller.is_some() && view.error.is_none());
+        assert_eq!(view.snapshot.as_ref().unwrap().peers.len(), 1);
+        assert!(view.name.is_none(), "no window was needed");
+    });
+    assert!(
+        other.catalog(peer).unwrap().is_empty(),
+        "the other computer gets this computer's catalog"
+    );
+    assert_eq!(*opened.lock().unwrap(), 1);
+
+    // Settings → Sync reuses that controller: no second open or listener.
+    let window = cx.add_empty_window();
+    let settings = window.update(|window, cx| shared(window, cx));
+    window.run_until_parked();
+    assert!(settings == view, "Settings shows the serving controller");
+    window.update(|_, cx| {
+        let view = view.read(cx);
+        assert!(view.name.is_some() && view.invitation.is_some());
+        assert!(view.controller.is_some() && !view.busy);
+    });
+    assert_eq!(*opened.lock().unwrap(), 1, "one controller per app");
+    assert!(other.catalog(peer).is_ok());
+
+    // The Sync switch stops serving and turning it on serves again.
+    window.update(|_, cx| reader_features::set_enabled(reader_features::Feature::Sync, false, cx));
+    released(&paired, endpoint);
+    assert!(other.catalog(peer).is_err(), "Sync off answers nobody");
+    window.update(|_, cx| reader_features::set_enabled(reader_features::Feature::Sync, true, cx));
+    window.run_until_parked();
+    assert_eq!(*opened.lock().unwrap(), 2);
+    assert!(other.catalog(peer).is_ok(), "serving resumed with Sync");
+    window.update(|_, cx| suspend(cx));
+    other.shutdown();
+}
+
 #[test]
 fn direct_metadata_parent_is_private_without_creating_managed_sync_state() -> anyhow::Result<()> {
     use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
@@ -582,8 +729,12 @@ fn invalid_pasted_pairing_url_never_starts_controller(cx: &mut TestAppContext) {
     });
     view.update_in(visual, |view, window, cx| {
         view.name
+            .as_ref()
+            .unwrap()
             .update(cx, |input, cx| input.set_value("New computer", window, cx));
         view.invitation
+            .as_ref()
+            .unwrap()
             .update(cx, |input, cx| input.set_value("not a URL", window, cx));
         view.start_pairing(true, cx);
         assert!(view.error.is_some());
@@ -893,6 +1044,8 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
     view.update_in(&mut visual, |view, window, cx| {
         view.receiving = false;
         view.name
+            .as_ref()
+            .unwrap()
             .update(cx, |input, cx| input.set_value("Desktop", window, cx));
         cx.notify();
     });

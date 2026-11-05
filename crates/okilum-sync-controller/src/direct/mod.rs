@@ -258,6 +258,19 @@ enum Reply {
     },
 }
 
+/// Whether this computer's saved journal pairs it with another computer or
+/// attaches a vault (#2589). Read-only and lock-free: it never creates the
+/// journal and works while its owner runs. The app uses it to decide whether to
+/// serve paired computers before anyone opens Settings → Sync.
+pub fn has_paired_computers_or_vaults(state: &Path) -> Result<bool> {
+    let file = state.join("direct.json");
+    if !file.try_exists()? {
+        return Ok(false);
+    }
+    let db: Database = serde_json::from_slice(&private::read(&file)?)?;
+    Ok(!db.peers.is_empty() || !db.attached.is_empty())
+}
+
 impl Controller {
     pub fn open(state: PathBuf, configs: Vec<PathBuf>) -> Result<Self> {
         let _lock = private::lock(&state)?;
@@ -1634,6 +1647,33 @@ mod tests {
             .redeem(&replacement, "New computer")?
             .pending
             .is_some());
+        source.shutdown();
+        target.shutdown();
+        Ok(())
+    }
+    #[test]
+    fn issue2589_saved_pairing_is_read_without_opening_or_creating_the_journal() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let (source_state, target_state) = (root.path().join("source"), root.path().join("target"));
+        assert!(!has_paired_computers_or_vaults(&source_state)?);
+        assert!(!source_state.exists(), "the check never creates Sync state");
+        let source = controller(root.path(), "source")?;
+        let target = controller(root.path(), "target")?;
+        assert!(
+            !has_paired_computers_or_vaults(&source_state)?,
+            "no pair yet"
+        );
+        let url = offer(&source)?;
+        target.redeem(&url, "New computer")?;
+        assert!(
+            !has_paired_computers_or_vaults(&target_state)?,
+            "an unanswered request pairs nothing"
+        );
+        source.approve(source.snapshot()?.pending.unwrap().request_id)?;
+        assert_eq!(target.refresh_pairing()?.peers.len(), 1, "positive control");
+        // Both owners still hold their journal locks.
+        assert!(has_paired_computers_or_vaults(&source_state)?);
+        assert!(has_paired_computers_or_vaults(&target_state)?);
         source.shutdown();
         target.shutdown();
         Ok(())
