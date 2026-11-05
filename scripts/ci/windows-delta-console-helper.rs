@@ -1,7 +1,7 @@
 //! Console-subsystem stand-in for Update.exe; invoked by the actual SDK delta path.
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn GetConsoleCP() -> u32;
+    fn GetConsoleWindow() -> *mut std::ffi::c_void;
 }
 
 fn main() {
@@ -14,6 +14,6 @@ fn main() {
     let output = std::path::PathBuf::from(&args[4]);
     assert_eq!(std::fs::read(&args[2]).unwrap(), b"fixture base");
     std::fs::copy(&args[6], &output).unwrap();
-    let console = unsafe { GetConsoleCP() };
+    let console = unsafe { GetConsoleWindow() } as usize;
     std::fs::write(output.with_extension("console"), console.to_string()).unwrap();
 }

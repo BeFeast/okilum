@@ -7,6 +7,11 @@ use velopack::{
     UpdateManager, VelopackAsset, VelopackAssetFeed,
 };
 
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetConsoleWindow() -> *mut std::ffi::c_void;
+}
+
 struct DeltaSource;
 const PROPOSED: &[u8] = b"fixture reconstructed full package";
 impl UpdateSource for DeltaSource {
@@ -48,9 +53,12 @@ fn asset(kind: &str, bytes: &[u8]) -> VelopackAsset {
 
 #[test]
 fn windows_delta_preparation_has_no_console_and_keeps_the_delta_path() {
-    // Query console attachment inside the actual SDK child, independently of
-    // desktop HWND availability. The required same-job unflagged control must
-    // fail this assertion, so a runner without a working control cannot pass.
+    // The driver starts this test executable with CREATE_NEW_CONSOLE, outside
+    // the runner's pseudoconsole. Without the SDK flag the child must inherit it.
+    assert!(
+        !unsafe { GetConsoleWindow() }.is_null(),
+        "fixture parent must have a console window"
+    );
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("update with spaces שלום");
     let packages = root.join("packages");
