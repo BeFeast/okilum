@@ -531,7 +531,7 @@ class WorkflowContract(unittest.TestCase):
         # Main, nightly and manual certification share bounded test entrypoints.
         for name, command in [
             ('check', 'fast-local-check 2100 bash scripts/ci/fast-local.sh'),
-            ('shell-full', 'fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full'),
+            ('shell-full', 'fast-local-shell-full 3090 bash scripts/ci/fast-local.sh shell-full'),
         ]:
             step = data['jobs'][name]['steps'][-1]
             self.assertNotIn('if', step)

@@ -260,7 +260,7 @@ sys.exit(int(os.environ['TEST_STATUS']))
                     self.assertIn('TEST_GROUP_START group=shell-binary-list limit=30s', result.stdout)
                     expected.append('binary --list')
                     if not list_status and not empty:
-                        self.assertIn('TEST_GROUP_START group=shell-binary-tests limit=990s', result.stdout)
+                        self.assertIn('TEST_GROUP_START group=shell-binary-tests limit=2100s', result.stdout)
                         expected.append('binary --test-threads=4')
                 self.assertEqual((root / 'commands').read_text().splitlines(), expected)
                 self.assertEqual(list(root.glob('shell-artifacts-*')), [])
@@ -276,7 +276,7 @@ sys.exit(int(os.environ['TEST_STATUS']))
                 env.update(COMPILE_TICKS='30', HANG=str(int(hang)))
                 script = root / 'scripts/ci/shell-full.sh'
                 script.write_text(script.read_text().replace('compile 840', 'compile 10')
-                                  .replace('list 30', 'list 1').replace('tests 990', 'tests 2'))
+                                  .replace('list 30', 'list 1').replace('tests 2100', 'tests 2'))
                 started = time.monotonic()
                 result = subprocess.run(['bash', str(script)], cwd=root, env=env,
                                         capture_output=True, text=True, timeout=45)

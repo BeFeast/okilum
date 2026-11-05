@@ -98,7 +98,7 @@ exit 41
             env['GITHUB_SHA']=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
             full=subprocess.run(['bash','scripts/ci/fast-local.sh','shell-full'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
             self.assertEqual(full.returncode,41,full.stderr)
-            self.assertIn('TEST_GROUP_START group=shell-full.sh limit=1920s', full.stdout)
+            self.assertIn('TEST_GROUP_START group=shell-full.sh limit=3030s', full.stdout)
             self.assertIn('SHELL_GATE_EXECUTED',full.stdout)
             fast=subprocess.run(['bash','scripts/ci/fast-local.sh'],cwd=root,env=env,capture_output=True,text=True,timeout=3)
             self.assertEqual(fast.returncode,0,fast.stderr)

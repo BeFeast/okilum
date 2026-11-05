@@ -13,6 +13,10 @@ GROUP = re.compile(r'^\s*bash ' + WRAPPER + r' (\S+) (\d+) (.+)$', re.M)
 PHASE = re.compile(r'^\s*phase (\S+) (\d+) (.+)$', re.M)
 MARGIN = 60  # Includes the supervisor's 30 s TERM/KILL/reap grace.
 JOB_MARGIN = 90  # Checkout/toolchain/fixture setup plus final cleanup.
+RUNNER_CEILING = 60 * 60  # baldr fast runner `runner.timeout: 60m` (docs/fast-runner.md).
+# #2589: loaded baldr certifications 30614/30687/30746 hit the old 990 s shell
+# execution deadline with every finished test passing; projected 1216-1704 s.
+LOADED_SHELL_EXECUTION = 1704
 
 
 def validate(workflow, scripts):
@@ -68,6 +72,7 @@ def validate(workflow, scripts):
         if bounded:
             ceiling = int(job['timeout-minutes']) * 60
             assert ceiling >= total + JOB_MARGIN, f'{name} job: {ceiling}s < {total + JOB_MARGIN}s'
+            assert ceiling <= RUNNER_CEILING, f'{name} job: {ceiling}s > runner ceiling {RUNNER_CEILING}s'
     assert visited == {'fast.sh', 'shell-full.sh', 'live-preview-tests.sh', 'sync-source-sharing-fast.sh',
                        'sync-source-sharing.sh', 'sync-network-policy.sh'}, visited
 
@@ -79,6 +84,16 @@ class FastBudgets(unittest.TestCase):
 
     def test_every_nested_group_and_job_has_additive_headroom(self):
         validate(self.workflow, self.scripts)
+
+    def test_shell_execution_keeps_headroom_over_measured_loaded_runtime(self):
+        limits = {group: int(limit) for group, limit, _ in PHASE.findall(self.scripts['shell-full.sh'])}
+        self.assertGreaterEqual(limits['shell-binary-tests'], 1.2 * LOADED_SHELL_EXECUTION)
+
+    def test_job_ceilings_fit_the_runner_ceiling(self):
+        workflow = copy.deepcopy(self.workflow)
+        workflow['jobs']['shell-full']['timeout-minutes'] = 61
+        with self.assertRaisesRegex(AssertionError, 'runner ceiling'):
+            validate(workflow, self.scripts)
 
     def test_hourly_beta_five_minute_python_steps_preserve_headroom(self):
         workflow = copy.deepcopy(self.workflow)

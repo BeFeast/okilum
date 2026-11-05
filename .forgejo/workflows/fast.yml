@@ -103,9 +103,10 @@ jobs:
     # Full runtime coverage never occupies a PR admission slot.
     needs: [check]
     runs-on: fast-linux
-    # 840s compile + 30s list + 990s tests + nested setup/cleanup margins.
+    # 840s compile + 30s list + 2100s tests + nested setup/cleanup margins.
     # Plus the 2m exact-source validation step, including its cleanup grace.
-    timeout-minutes: 37
+    # Stays under the fast runner's 60m ceiling (docs/fast-runner.md, #2589).
+    timeout-minutes: 56
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -164,7 +165,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full
+          bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" fast-local-shell-full 3090 bash scripts/ci/fast-local.sh shell-full
 
   certification-status:
     # Beta gates on check alone: report and dispatch as soon as it finishes,

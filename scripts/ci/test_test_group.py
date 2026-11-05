@@ -132,14 +132,14 @@ class TestGroup(unittest.TestCase):
         workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         for command in [
             'fast-local-check 2100 bash scripts/ci/fast-local.sh',
-            'fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full',
+            'fast-local-shell-full 3090 bash scripts/ci/fast-local.sh shell-full',
             'sync-local 1500 bash scripts/ci/sync-source-sharing-fast.sh',
         ]:
             wrapper = ('bash scripts/ci/test-group.sh ' if command.startswith('sync-local') else
                        'bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ')
             self.assertIn(wrapper + command, workflow)
         self.assertIn('timeout-minutes: 55', workflow.split('  check:', 1)[1].split('  shell-full:', 1)[0])
-        self.assertIn('timeout-minutes: 37', workflow.split('  shell-full:', 1)[1].split('  sync-source-sharing:', 1)[0])
+        self.assertIn('timeout-minutes: 56', workflow.split('  shell-full:', 1)[1].split('  sync-source-sharing:', 1)[0])
         self.assertIn('timeout-minutes: 30', workflow.split('  sync-source-sharing:', 1)[1])
 
 

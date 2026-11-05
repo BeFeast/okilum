@@ -176,7 +176,7 @@ parent has already exited emits `TEST_GROUP_KILL` with the group and limit.
 Compilation and execution have separate shell budgets. Every enclosing deadline
 covers the sum of its children plus 60 s setup/cleanup overhead; job ceilings
 cover all bounded steps plus 90 s checkout/toolchain/final-cleanup margin.
-Job ceilings are now check 55 min, shell-full 37 min, sync-source-sharing 30 min.
+Job ceilings are now check 55 min, shell-full 56 min, sync-source-sharing 30 min.
 These are ceilings for slow progressing work; a hung phase is still killed by
 its own original deadline plus at most 30 s cleanup:
 
@@ -188,9 +188,9 @@ its own original deadline plus at most 30 s cleanup:
 | Check build / workspace test compilation | 540 s each | Loaded build 300 s in 20289; workspace check 324.35 s in the main probe above. Margins 240 / 215 s. Both phases may consume their full limits. |
 | Channel tests (including compilation) | 300 s | Cold appimage dependency variant took 126.62 s in the main probe; recent warm phases 0–4 s. |
 | Paste inventory / paste tests | 120 s each | Recent green Cargo compilation/listing at most 1.11 s; parsing execution at most 0.07 s. These small commands retain their existing caps. |
-| Entire fast-local shell / locked shell-full.sh | 1980 / 1920 s | 840 + 30 + 990 = 1860 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. The 37 min job retains the original 35 min envelope and adds 2 min for certification. |
+| Entire fast-local shell / locked shell-full.sh | 3090 / 3030 s | 840 + 30 + 2100 = 2970 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. The 56 min job adds 2 min for certification and stays under the runner's 60 min ceiling. |
 | Shell compilation only | 840 s | Historical 335 s compile (20932), recent successful compile/list 180–307 s, and normal compilation censored at 360 s by the broken watchdog (21840). Run 21877 completed compilation in 503.870 s, leaving 336 s headroom; no execution timer runs during compilation. |
-| Shell inventory only / unfiltered execution | 30 / 990 s | Inventory after Cargo's finished marker: 0.119–0.368 s; successful execution phases 445–805 s. Runtime margin is 185 s above the loaded maximum. Neither command invokes Cargo. |
+| Shell inventory only / unfiltered execution | 30 / 2100 s | Inventory after Cargo's finished marker: 0.119–0.368 s. Execution: see the #2589 measurements below; 2100 s keeps 23% above the 1704 s loaded projection. Neither command invokes Cargo. |
 | Entire sync-local entrypoint | 1500 s | 600 s lock + 120 s setup + 60 s verification + 480 s sharing + 180 s policy = 1440 s, plus 60 s overhead. The 30 min job reserves 300 s beyond the group; 1500 + 30 + 90 = 1620 <= 1800 s. |
 | Sync target lock / vendor setup / verification | 600 / 120 / 60 s | Preserve the existing lock wait for concurrent jobs; the outer scope bounds the combined wait/setup/tests. |
 | Sync source sharing (two concurrent trials) | 480 s | See same-runner measurements below; nearly 2x the longest complete observed sync step. |
@@ -205,6 +205,22 @@ The slowest measured green test execution remains 805 s (run 21766), so 990 s
 retains 185 s (23%) headroom. Compilation retains 336 s above the loaded 504 s
 measurement. These observations do not establish a fleet p95.
 
+#2589 superseded that execution deadline. Main certifications 30614, 30687 and
+30746 (sources 5607374a, b7f5a18e, 5fed3511) all failed `shell-full` with
+`TEST_GROUP_TIMEOUT group=shell-binary-tests limit=990s` after 1930, 1674 and
+1684 tests; every finished test passed and none was hung. Run 29785 reached
+2481 of 2482 tests (its two `settings_2487_*_computer_name_*` failures were stale
+tests, fixed by ce459a6a0), and the last green certification without this
+deadline, 29719, needed 1007.91 s. The same 2492-test binary passes on the hosted 4 vCPU
+gate in 236.82 s (GitHub run 42019928094), so the gap is baldr capacity: a
+6-core/12-thread i7-10850H shared by the fast, sprint, bridge and org runners and
+the build-slot pool (load average 13–15 during this investigation). Scaling each
+red run's progress by the green progress curves of runs 29600, 29657, 29701 and
+29719 projects 1111–1704 s for complete execution; the 29719 curve gives
+1216/1704/1675 s. 2100 s keeps 23% headroom above 1704 s, matching the original
+sizing method. `test_fast_budgets.py` pins that projection and the 60 min runner
+ceiling.
+
 `test_fast_budgets.py` parses the actual workflow and scripts, follows both
 fast-local modes and the sync wrapper, includes the sync lock wait and optional
 Live Preview, and enforces each aggregate >= sum(children) + 60 s. Step ceilings
@@ -215,8 +231,8 @@ ceilings. The invariant test fails against the pre-fix limits.
 
 The check job retains #2536's three 5 min Python step ceilings and adds a
 2 min certification step: 900 + 120 + 2100 + 30 + 90 = 3240 s <= 3300 s.
-Shell retains its original 35 min envelope and adds the same 2 min step:
-120 + 1980 + 30 + 90 = 2220 s = 37 min. The invariant conservatively includes certification even on ordinary main/nightly
+Shell adds the same 2 min step to its resized #2589 envelope:
+120 + 3090 + 30 + 90 = 3330 s <= 56 min. The invariant conservatively includes certification even on ordinary main/nightly
 runs, where that step is skipped.
 
 Both exact-product validation steps use the same process-tree supervisor with a
@@ -234,7 +250,8 @@ staged supervisor. Phase supervision inside the product scripts applies when
 those scripts contain it.
 
 The owner reports baldr now allows a 60 min runner ceiling. All three job
-ceilings (55/37/30 min) fit it; this change does not modify any host settings.
+ceilings (55/56/30 min) fit it; `test_fast_budgets.py` rejects any job above it.
+This change does not modify any host settings.
 
 The newer owner-authorized #2581 supersedes #2580's fifteen-minute PR gate:
 Forgejo fast.yml has no PR trigger and main has no required status checks.

@@ -41,5 +41,6 @@ phase shell-binary-list 30 bash -c 'cd "$1" && shift && exec "$@"' \
     bash "$manifest_directory" "$executable" --list | tee "$RUNNER_TEMP/shell-tests.txt"
 grep -q ': test$' "$RUNNER_TEMP/shell-tests.txt"
 # Match hosted validation, with no test-name filter or new ignored tests.
-phase shell-binary-tests 990 bash -c 'cd "$1" && shift && exec "$@"' \
+# Loaded baldr execution now needs up to ~1700 s (#2589, docs/fast-runner.md).
+phase shell-binary-tests 2100 bash -c 'cd "$1" && shift && exec "$@"' \
     bash "$manifest_directory" "$executable" --test-threads=4
