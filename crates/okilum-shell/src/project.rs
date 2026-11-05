@@ -7,7 +7,7 @@ use gpui_component::input::{Textarea, TextareaState};
 use okilum_t3::{
     chat::{Conversation, MessageJournal, MessageRecord},
     manifest::AreaBinding,
-    Environment, GatewayStatus, ManagerGateway, McpGateway, ServerIdentity, StoredToken,
+    Environment, GatewayStatus, ManagerGateway, ServerIdentity, StoredToken,
 };
 use std::time::Duration;
 
@@ -190,6 +190,11 @@ pub(crate) struct ProjectView {
 pub(super) struct ManagerStarted;
 impl EventEmitter<ManagerStarted> for ProjectView {}
 
+#[cfg(native_manager)]
+pub(super) struct NativeConnected;
+#[cfg(native_manager)]
+impl EventEmitter<NativeConnected> for ProjectView {}
+
 impl ProjectView {
     pub(crate) fn new(
         binding: Option<AreaBinding>,
@@ -272,42 +277,14 @@ impl ProjectView {
             let Some(env) = env else {
                 return;
             };
-            let reused = this
-                .update_in(cx, |_, _, cx| reader_t3_settings::gateway(&env, cx))
-                .ok()
-                .flatten();
-            if let Some(gateway) = reused {
-                let result = cx
-                    .background_executor()
-                    .spawn(async move {
-                        reader_project_navigation::manager_gateway(env.clone(), gateway, access)
-                            .map(|gateway| (env, gateway))
-                    })
-                    .await;
-                let _ = this.update_in(cx, |this, window, cx| {
-                    this.finish_connection(result, window, cx)
-                });
-                return;
-            }
-            let task = match this.update_in(cx, |this, _, cx| this.restore_stored_token(&env, cx)) {
+            let task = match this.update_in(cx, |_, _, cx| {
+                let mcp = reader_t3_settings::gateway(&env, cx);
+                reader_project_navigation::restore_gateway(env.clone(), mcp, access, cx)
+            }) {
                 Ok(task) => task,
                 Err(_) => return,
             };
-            let token = task.await;
-            let result = match token {
-                Ok(token) => {
-                    cx.background_executor()
-                        .spawn(async move {
-                            let gateway = Arc::new(
-                                McpGateway::new(env.clone(), token)?.with_access(access.clone()),
-                            );
-                            reader_project_navigation::manager_gateway(env.clone(), gateway, access)
-                                .map(|gateway| (env, gateway))
-                        })
-                        .await
-                }
-                Err(error) => Err(error),
-            };
+            let result = task.await.map(|gateway| (env, gateway));
             let _ = this.update_in(cx, |this, window, cx| {
                 this.finish_connection(result, window, cx)
             });
@@ -1272,27 +1249,26 @@ impl ProjectView {
         self.busy = true;
         let state = self.state.clone().filter(|_| self.project_override);
         cx.spawn_in(window, async move |this, cx| {
-            let Some(task) = this
-                .update_in(cx, |this, _, cx| this.restore_stored_token(&env, cx))
-                .ok()
-            else {
-                return;
+            let task = match this.update_in(cx, |_, _, cx| {
+                let mcp = reader_t3_settings::gateway(&env, cx);
+                reader_project_navigation::restore_gateway(env.clone(), mcp, access, cx)
+            }) {
+                Ok(task) => task,
+                Err(_) => return,
             };
-            let token = task.await;
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let gateway = reader_project_navigation::manager_gateway(
-                        env.clone(),
-                        Arc::new(McpGateway::new(env.clone(), token?)?.with_access(access.clone())),
-                        access,
-                    )?;
-                    if let Some(state) = state {
-                        connections::save(&state, &env)?;
-                    }
-                    Ok((env, gateway))
-                })
-                .await;
+            let result = match task.await {
+                Ok(gateway) => {
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Some(state) = state {
+                                connections::save(&state, &env)?;
+                            }
+                            Ok((env, gateway))
+                        })
+                        .await
+                }
+                Err(error) => Err(error),
+            };
             let _ = this.update_in(cx, |this, window, cx| {
                 this.finish_connection(result, window, cx)
             });
@@ -2317,6 +2293,20 @@ impl Reader {
                             });
                             #[cfg(native_manager)]
                             this.connect_manager_links(&project, window, cx);
+                            #[cfg(native_manager)]
+                            cx.subscribe_in(
+                                &project,
+                                window,
+                                |this, _, _: &NativeConnected, window, cx| {
+                                    // Discard pre-pairing snapshots before refreshing
+                                    // project status and icon gateways with the saved bearer.
+                                    this.project_navigation.gateway_generation =
+                                        this.project_navigation.gateway_generation.wrapping_add(1);
+                                    this.project_navigation.t3_gateways.clear();
+                                    this.refresh_project_statuses(window, cx);
+                                },
+                            )
+                            .detach();
                             cx.subscribe_in(
                                 &project,
                                 window,

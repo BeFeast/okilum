@@ -491,3 +491,46 @@ fn macos_project_lifecycle_keeps_native_restore_explicit(cx: &mut TestAppContext
         Root::new(view, window, cx)
     });
 }
+
+#[gpui::test]
+fn native_pairing_immediately_replaces_the_boards_unpaired_gateway_2520(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    cx.update(reader_features::enable_test_modules);
+    let temp = super::super::fixture::canonical_tempdir();
+    let env = Environment::new("fixture", "https://t3.example.test").unwrap();
+    let token = NativeToken::from_secret(&env, &serde_json::to_vec(&json!({
+        "origin":env.origin(), "access_token":"synthetic-newly-paired-token", "expires_at":u64::MAX,
+        "scope":"orchestration:read"
+    })).unwrap()).unwrap();
+    let client = Arc::new(NativeClient::new(env, token, Duration::from_secs(2)).unwrap());
+    let (view, visual) = cx.add_window_view(|window, cx| {
+        let mut view = super::super::fixture::view(
+            temp.path().to_owned(),
+            Arc::new(super::super::fixture::Fake {
+                connection_status: Some(GatewayStatus::NotConnected),
+                ..Default::default()
+            }),
+            window,
+            cx,
+        );
+        view.active = false;
+        assert_eq!(
+            view.gateway.as_ref().unwrap().status(),
+            GatewayStatus::NotConnected
+        );
+        view.install_native(client, u64::MAX, window, cx);
+        view
+    });
+    view.read_with(visual, |view, _| {
+        assert!(
+            view.native.active(),
+            "positive control: pairing installed a native client"
+        );
+        assert_eq!(
+            view.gateway.as_ref().unwrap().status(),
+            GatewayStatus::Connected {
+                expires_at: u64::MAX
+            }
+        );
+    });
+}

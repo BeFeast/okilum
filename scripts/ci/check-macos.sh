@@ -92,6 +92,12 @@ done
 # connections, resources and launch/setup, with the same non-empty control.
 run_tests okilum-shell --bins 'project::' "${manager_skip[@]}"
 
+# #2520: the shell gateway must execute on macOS without a WKWebView;
+# include existing navigation, read-only summaries, session and Board regressions.
+run_tests okilum-shell --bins reader_project_navigation::
+run_tests okilum-t3 --lib session::
+run_tests okilum-t3 --lib board::
+
 # #2442: release-profile dependency fixtures and Sync macro imports must also run.
 run_tests okilum-shell --bins reader_log::remote::
 run_tests okilum-shell --bins reader_settings_sync::

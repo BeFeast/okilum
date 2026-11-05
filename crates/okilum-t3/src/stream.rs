@@ -27,6 +27,7 @@ pub mod shell;
 mod tests;
 
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -125,6 +126,25 @@ pub struct NativeClient {
 }
 
 impl NativeClient {
+    /// Share the successfully installed native credential with Board/Projects
+    /// immediately after pairing, without exposing its secret or opening a socket.
+    pub fn project_gateway(
+        &self,
+        mcp: Option<Arc<dyn crate::ManagerGateway>>,
+    ) -> anyhow::Result<Arc<dyn crate::ManagerGateway>> {
+        let session =
+            crate::SessionGateway::native(self.environment.clone(), Some(self.token.clone()))?
+                .with_access(self.access.clone());
+        let mcp = match mcp {
+            Some(gateway) => gateway,
+            None => Arc::new(
+                crate::McpGateway::new(self.environment.clone(), None)?
+                    .with_access(self.access.clone()),
+            ),
+        };
+        Ok(Arc::new(crate::PairedGateway::new(session, mcp)))
+    }
+
     /// Immutable server origin bound to this native credential/client.
     pub fn origin(&self) -> String {
         self.environment.origin()
