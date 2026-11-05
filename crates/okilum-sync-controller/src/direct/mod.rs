@@ -1185,6 +1185,10 @@ pub fn validate_name(name: &str) -> Result<()> {
     );
     Ok(())
 }
+/// Display the actual source computer address without exposing the capability.
+pub fn pairing_computer(url: &str) -> Result<String> {
+    Ok(decode_url(url)?.endpoint.ip().to_string())
+}
 /// Validate pasted input before platform runtime bootstrap. Redemption rechecks
 /// expiry because approval or bootstrap may take time. This performs no IO.
 pub fn validate_pairing_input(url: &str, name: &str) -> Result<()> {

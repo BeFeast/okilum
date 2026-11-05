@@ -21,6 +21,7 @@ use std::{path::Path, time::Duration};
 
 fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings {
     SyncSettings {
+        // Legacy flow fixtures explicitly open their controls; production defaults are tested below.
         presentation: super::presentation::Presentation {
             advanced: true,
             wizard: Some(super::presentation::Step::Start),
@@ -660,6 +661,7 @@ fn reader_settings_sync_lists_an_ordinary_vault_and_shared_state(cx: &mut TestAp
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
+            view.presentation.wizard = None;
             view.vaults = vec![path.clone()];
             view.snapshot = Some(snapshot(None));
             view
@@ -669,6 +671,7 @@ fn reader_settings_sync_lists_an_ordinary_vault_and_shared_state(cx: &mut TestAp
     let view = root.read_with(visual, |root, _| {
         root.view().clone().downcast::<SyncSettings>().unwrap()
     });
+    visual.simulate_resize(size(px(1000.), px(1400.)));
     visual.run_until_parked();
     assert!(
         visual.debug_bounds("sync-share-vault-0").is_some(),
@@ -904,6 +907,7 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
     let view = visual.update(|_, cx| cx.global::<BackgroundSync>().0.clone());
     view.update_in(&mut visual, |view, window, cx| {
         view.receiving = false;
+        view.presentation.wizard = None;
         view.name
             .update(cx, |input, cx| input.set_value("Desktop", window, cx));
         cx.notify();
@@ -1160,9 +1164,20 @@ fn guided_first_run_folder_picker_survives_refresh_and_revokes_on_disable(cx: &m
     visual.run_until_parked();
     assert_eq!(
         *calls.lock().unwrap(),
+        vec!["read", "read"],
+        "choosing a folder does not start sharing"
+    );
+    let start = visual.debug_bounds("sync-start-first-transfer").unwrap();
+    visual.simulate_click(start.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        *calls.lock().unwrap(),
         vec!["read", "read", "other"],
         "background refresh must not discard the accepted local folder"
     );
+    let more = visual.debug_bounds("sync-choose-more-vaults").unwrap();
+    visual.simulate_click(more.center(), Modifiers::default());
+    visual.run_until_parked();
     let pick = visual.debug_bounds("sync-new-vault-folder-0").unwrap();
     visual.simulate_click(pick.center(), Modifiers::default());
     visual.run_until_parked();
@@ -1247,6 +1262,7 @@ fn sync_network_switch_dispatches_selected_identity_and_publishes_readback(
         root.view().clone().downcast::<SyncSettings>().unwrap()
     });
     for local in [true, false] {
+        visual.simulate_resize(size(px(1000.), px(1800.)));
         visual.run_until_parked();
         let switch = visual
             .debug_bounds("sync-network-local-only")
@@ -1283,6 +1299,7 @@ fn sync_network_external_connection_has_no_mutating_switch(cx: &mut TestAppConte
         });
         Root::new(view, window, cx)
     });
+    visual.simulate_resize(size(px(1000.), px(1800.)));
     visual.run_until_parked();
     assert!(visual.debug_bounds("sync-network-local-only").is_none());
     let view = root.read_with(visual, |root, _| {
@@ -1409,6 +1426,9 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
     visual.simulate_click(pick.center(), Modifiers::default());
     assert!(visual.did_prompt_for_new_path());
     visual.simulate_new_path_selection(|_| Some(directory.path().join("absent/Notes")));
+    visual.run_until_parked();
+    let start = visual.debug_bounds("sync-start-first-transfer").unwrap();
+    visual.simulate_click(start.center(), Modifiers::default());
     visual.run_until_parked();
     assert_eq!(*calls.lock().unwrap(), vec!["read", "attach"]);
     assert!(visual.debug_bounds("sync-destination-error-0").is_some());
@@ -1693,6 +1713,7 @@ fn issue2615_overview_starts_quiet_and_add_opens_a_wizard(cx: &mut TestAppContex
         });
         Root::new(view, window, cx)
     });
+    visual.simulate_resize(size(px(1000.), px(1000.)));
     visual.run_until_parked();
     assert!(visual.debug_bounds("sync-empty").is_some());
     assert!(visual.debug_bounds("sync-modal").is_none());

@@ -22,6 +22,9 @@ pub(super) struct Presentation {
     pub notified: Option<uuid::Uuid>,
     pub overview: direct::Overview,
     pub managing: Option<PathBuf>,
+    pub picking_vault: bool,
+    pub destinations: std::collections::BTreeMap<String, Operation>,
+    pub transfers: std::collections::VecDeque<Operation>,
 }
 
 pub(super) fn summary(snapshot: Option<&Snapshot>, error: Option<&str>) -> String {

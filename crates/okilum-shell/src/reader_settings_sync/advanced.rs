@@ -173,9 +173,6 @@ impl SyncSettings {
                     vaults.push(reader.vault_root.clone());
                 }
             }
-            content = content.child(div().text_base().child("Vaults on this computer"))
-                .child(div().text_sm().text_color(p.text_muted)
-                    .child("Share a vault so your approved computers can choose it. Files stay here. Later edits and deletions sync both ways."));
             if vaults.is_empty() {
                 content = content.child(
                     div()
@@ -188,6 +185,9 @@ impl SyncSettings {
                     .snapshot
                     .as_ref()
                     .and_then(|s| s.attached.iter().find(|v| v.path == path));
+                if attached.is_some() {
+                    continue;
+                }
                 let shared = self
                     .snapshot
                     .as_ref()
@@ -202,7 +202,25 @@ impl SyncSettings {
                 content = content.child(
                     v_flex()
                         .gap_2()
-                        .child(div().text_sm().child(path.display().to_string()))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(destination_name(
+                                    path.file_name().and_then(|n| n.to_str()).unwrap_or("Vault"),
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(p.text_muted)
+                                .child(path.display().to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(p.text_muted)
+                                .child("Only on this computer"),
+                        )
                         .child(
                             Button::new(("sync-share-vault", index))
                                 .debug_selector(move || format!("sync-share-vault-{index}"))

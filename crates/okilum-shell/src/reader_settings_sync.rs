@@ -48,6 +48,7 @@ pub(super) fn suspend(cx: &mut App) {
             view.awaiting_open = None;
             view.pending_destination = None;
             view.destination_error = None;
+            view.presentation = Default::default();
             cx.notify();
         });
     }
@@ -274,11 +275,13 @@ impl SyncSettings {
                         return;
                     }
                     this.busy = false;
+                    let succeeded = result.is_ok();
                     match result {
                         Ok(output) => {
                             this.publish(output, cx);
                         }
                         Err(error) => {
+                            this.presentation.transfers.clear();
                             this.presentation.error_details = failure_details(action, &error)
                                 ["error"]
                                 .as_str()
@@ -316,6 +319,9 @@ impl SyncSettings {
                     }
                     cx.notify();
                     if let Some(operation) = this.pending_destination.take() {
+                        this.run(operation, cx);
+                    } else if succeeded && !this.presentation.transfers.is_empty() {
+                        let operation = this.presentation.transfers.pop_front().unwrap();
                         this.run(operation, cx);
                     } else {
                         this.schedule_refresh(cx);
@@ -485,6 +491,7 @@ impl SyncSettings {
         cx: &mut Context<Self>,
     ) {
         let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            self.presentation.picking_vault = false;
             self.error =
                 Some("Your home folder is unavailable. Choose an existing empty folder.".into());
             cx.notify();
@@ -504,8 +511,9 @@ impl SyncSettings {
                     Ok(Ok(Some(path))) => {
                         this.accept_destination(Operation::AttachNew(peer, vault, path), cx);
                     }
-                    Ok(Ok(None)) => {} // Explicit dialog cancellation.
+                    Ok(Ok(None)) => { this.presentation.picking_vault=false; }
                     _ => {
+                        this.presentation.picking_vault=false;
                         let message = "The folder dialog could not return a local folder. Choose the folder again, or use an existing empty folder.".to_string();
                         this.destination_error = Some((vault, message.clone()));
                         this.error = Some(message);
@@ -517,6 +525,17 @@ impl SyncSettings {
         .detach();
     }
     fn accept_destination(&mut self, operation: Operation, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.presentation.picking_vault) {
+            if let Operation::Attach(_, ref vault, _) | Operation::AttachNew(_, ref vault, _) =
+                operation
+            {
+                self.presentation
+                    .destinations
+                    .insert(vault.clone(), operation);
+                cx.notify();
+                return;
+            }
+        }
         // A periodic refresh may still own the worker when the native picker
         // answers. Keep explicit user intent until that worker publishes.
         if self.busy {
@@ -541,22 +560,28 @@ impl SyncSettings {
         });
         let epoch = self.lifetime.ticket();
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = picker.await {
-                if let Some(path) = paths.into_iter().next() {
-                    let _ = this.update(cx, |this, cx| {
-                        if !epoch.is_current() {
-                            return;
-                        }
-                        this.accept_destination(
-                            match remote {
-                                Some((peer, vault)) => Operation::Attach(peer, vault, path),
-                                None => Operation::Inspect(path),
-                            },
-                            cx,
-                        );
-                    });
+            let path = picker
+                .await
+                .ok()
+                .and_then(|result| result.ok())
+                .flatten()
+                .and_then(|paths| paths.into_iter().next());
+            let _ = this.update(cx, |this, cx| {
+                if !epoch.is_current() {
+                    return;
                 }
-            }
+                if let Some(path) = path {
+                    this.accept_destination(
+                        match remote {
+                            Some((peer, vault)) => Operation::Attach(peer, vault, path),
+                            None => Operation::Inspect(path),
+                        },
+                        cx,
+                    );
+                } else {
+                    this.presentation.picking_vault = false;
+                }
+            });
         })
         .detach();
     }

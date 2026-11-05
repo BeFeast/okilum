@@ -6,6 +6,8 @@ Advanced controls. Add computer opens a guided modal with an explicit local
 computer name, source invitation, receiving-computer input, approval wait,
 authorized vault selection, and first-transfer observations. Closing the modal
 does not cancel pairing or a transfer; Cancel request is explicit.
+Folder choices are staged until Start first sync; several selected vaults are
+then attached in sequence through the existing guarded controller operations.
 
 Incoming approval requests appear in the Reader and Settings, including other
 Settings sections, and trigger one desktop notification per request. Linux uses
