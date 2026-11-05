@@ -52,6 +52,11 @@ merge commit. `fast.yml` runs the same required jobs after merge; PR-head succes
 does not stand in for merge health. A missing, pending or failed status skips the
 hour with an explanation and no fallback to an older commit. The next hour retries.
 
+macOS beta skips this gate (Oleg 04.11, #2589): it always builds the newest
+first-parent main commit, and a pinned run that main has moved past exits without
+building. Its hosted compile, sign and notarize run is the gate. Linux and Windows
+keep the certification gate.
+
 The current platform beta feed, rather than an archive-only source catalog,
 suppresses an unchanged beta. Linux reads the active AppImage feed, not frozen
 pacman. If a queued tick captured an older main, it dispatches a new main run with
