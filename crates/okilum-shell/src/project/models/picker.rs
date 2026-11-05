@@ -470,6 +470,7 @@ impl ProjectView {
                 body = body.child(
                     div()
                         .id("project-model-option-column")
+                        .relative()
                         .debug_selector(|| "project-model-option-column".into())
                         .w(px(260.))
                         .flex_shrink_0()
@@ -492,6 +493,7 @@ impl ProjectView {
                 panel = panel.child(
                     div()
                         .id("project-model-option-column")
+                        .relative()
                         .debug_selector(|| "project-model-option-column".into())
                         .w_full()
                         .min_w_0()
