@@ -467,50 +467,11 @@ impl ProjectView {
                 .child(rail)
                 .child(list);
             if options_beside {
-                body = body.child(
-                    div()
-                        .id("project-model-option-column")
-                        .relative()
-                        .debug_selector(|| "project-model-option-column".into())
-                        .w(px(260.))
-                        .flex_shrink_0()
-                        .h(option_height)
-                        .min_h_0()
-                        .rounded(px(ui::RADIUS))
-                        .bg(palette.surface_raised)
-                        .p(px(ui::INSET))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.model_ui.option_scroll)
-                        .child(ModelSettings(cx.weak_entity()))
-                        .when(self.connection_details, |pane| {
-                            pane.child(self.render_picker_diagnostics(cx))
-                        })
-                        .vertical_scrollbar(&self.model_ui.option_scroll),
-                );
+                body = body.child(self.render_picker_options_column(option_height, true, cx));
             }
             panel = panel.child(body);
             if !options_beside {
-                panel = panel.child(
-                    div()
-                        .id("project-model-option-column")
-                        .relative()
-                        .debug_selector(|| "project-model-option-column".into())
-                        .w_full()
-                        .min_w_0()
-                        .h(option_height)
-                        .min_h_0()
-                        .flex_shrink_0()
-                        .rounded(px(ui::RADIUS))
-                        .bg(palette.surface_raised)
-                        .p(px(ui::INSET))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.model_ui.option_scroll)
-                        .child(ModelSettings(cx.weak_entity()))
-                        .when(self.connection_details, |pane| {
-                            pane.child(self.render_picker_diagnostics(cx))
-                        })
-                        .vertical_scrollbar(&self.model_ui.option_scroll),
-                );
+                panel = panel.child(self.render_picker_options_column(option_height, false, cx));
             }
         } else if self.connection_details {
             panel = panel.child(
@@ -526,6 +487,44 @@ impl ProjectView {
             );
         }
         panel.into_any_element()
+    }
+
+    fn render_picker_options_column(
+        &self,
+        height: Pixels,
+        beside: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // The scrollbar belongs to the fixed viewport, outside the scrolling
+        // content. Otherwise its hit area moves with that content and can
+        // intercept header actions after a wheel scroll.
+        div()
+            .id("project-model-option-column")
+            .debug_selector(|| "project-model-option-column".into())
+            .relative()
+            .w_full()
+            .when(beside, |column| column.w(px(260.)))
+            .h(height)
+            .min_w_0()
+            .min_h_0()
+            .flex_shrink_0()
+            .rounded(px(ui::RADIUS))
+            .bg(brand::palette(cx).surface_raised)
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("project-model-option-scroll")
+                    .size_full()
+                    .p(px(ui::INSET))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.model_ui.option_scroll)
+                    .child(ModelSettings(cx.weak_entity()))
+                    .when(self.connection_details, |pane| {
+                        pane.child(self.render_picker_diagnostics(cx))
+                    }),
+            )
+            .vertical_scrollbar(&self.model_ui.option_scroll)
+            .into_any_element()
     }
 
     fn render_picker_diagnostics(&self, cx: &App) -> AnyElement {

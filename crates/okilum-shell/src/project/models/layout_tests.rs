@@ -249,6 +249,13 @@ fn short_window_picker_opens_after_release_and_all_columns_remain_reachable(
         gateway.model_writes.lock().unwrap().is_empty(),
         "opening, scrolling and changing the provider rail never select a model"
     );
+    let close = bounds(visual, "project-model-close");
+    visual.simulate_click(close.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-model-panel").is_none(),
+        "the stacked settings scrollbar cannot intercept Close after scrolling"
+    );
     assert!(gateway.sends.lock().unwrap().is_empty());
 }
 
