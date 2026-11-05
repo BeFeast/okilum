@@ -154,7 +154,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
-          if ! git cat-file -e "HEAD:.github/workflows/forgejo-shell-full.yml"; then
+          if ! git cat-file -e "HEAD:.github/workflows/forgejo-shell-full.yml" 2>/dev/null; then
             echo "::error::Source $PR_HEAD_SHA predates hosted shell-full (#2589); certify a newer main commit" >&2
             exit 1
           fi
