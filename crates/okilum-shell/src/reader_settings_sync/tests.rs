@@ -1906,6 +1906,82 @@ fn issue2615_overview_starts_quiet_and_add_opens_a_wizard(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn issue2615_old_catalog_refresh_preserves_add_computer_steps(cx: &mut TestAppContext) {
+    use super::presentation::Step;
+    cx.update(crate::test_init);
+    let directory = tempfile::tempdir().unwrap();
+    let controller = Controller::open(directory.path().join("direct"), vec![]).unwrap();
+    let mut saved = snapshot(None);
+    saved.peers.push(direct::Peer {
+        id: uuid::Uuid::new_v4(),
+        name: "Previously paired computer".into(),
+        device_id: "fixture-device".into(),
+    });
+    saved.catalog.push(direct::Vault {
+        id: "existing-vault".into(),
+        label: "Previously received notes".into(),
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.presentation = Default::default();
+            view.snapshot = Some(saved.clone());
+            view.invitation.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_value("new link being typed", window, cx)
+            });
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    for step in [
+        Step::Start,
+        Step::Paste,
+        Step::Expired,
+        Step::Existing,
+        Step::Progress,
+        Step::Computer,
+        Step::Vaults,
+        Step::Waiting,
+    ] {
+        view.update(visual, |view, cx| {
+            view.presentation.wizard = Some(step);
+            view.publish(
+                Output {
+                    overview: Default::default(),
+                    connection_error: None,
+                    controller: controller.clone(),
+                    snapshot: saved.clone(),
+                    inspected: None,
+                    selected_destination: None,
+                    #[cfg(target_os = "linux")]
+                    runtimes: vec![],
+                    #[cfg(target_os = "linux")]
+                    vaults: vec![],
+                },
+                cx,
+            );
+            assert_eq!(
+                view.presentation.wizard,
+                Some(if step == Step::Waiting {
+                    Step::Vaults
+                } else {
+                    step
+                }),
+                "unchanged catalog must preserve {step:?}"
+            );
+            assert_eq!(
+                super::input_text(&view.invitation, cx),
+                "new link being typed"
+            );
+        });
+    }
+    controller.shutdown();
+}
+
+#[gpui::test]
 fn issue2615_error_details_are_hidden_until_requested(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     let (_, visual) = cx.add_window_view(|window, cx| {
