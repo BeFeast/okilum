@@ -77,7 +77,7 @@ async fn pairing_persists_before_connecting_and_restores_without_other_sessions(
     let mcp_key = environment.credential_url();
     let native_key = NativeToken::credential_key(&environment);
     let pairing_key = NativeToken::pairing_key(&environment);
-    let mcp_bytes = StoredToken {
+    let mcp_bytes = okilum_t3::StoredToken {
         access_token: "synthetic-mcp-token".into(),
         expires_at: u64::MAX,
         scope: "mcp".into(),
