@@ -5,6 +5,60 @@
 
 #define REQUIRE(condition, message) do { if (!(condition)) { NSLog(@"FAIL: %@", message); exit(1); } } while (0)
 
+@interface NavigationFixture : NSObject <WKNavigationDelegate>
+@property(nonatomic) NSUInteger policies;
+@property(nonatomic) NSUInteger finishes;
+@property(nonatomic) NSUInteger failures;
+@end
+@implementation NavigationFixture
+- (void)webView:(WKWebView *)view decidePolicyForNavigationAction:(WKNavigationAction *)action
+    decisionHandler:(void (^)(WKNavigationActionPolicy))handler {
+    (void)view; (void)action; self.policies++; handler(WKNavigationActionPolicyAllow);
+}
+- (void)webView:(WKWebView *)view didFinishNavigation:(WKNavigation *)navigation {
+    (void)view; (void)navigation; self.finishes++;
+}
+- (void)webView:(WKWebView *)view didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    (void)view; (void)navigation; (void)error; self.failures++;
+}
+@end
+
+static void NavigationFailure(void *context, const char *json) {
+    NSMutableArray *events = (__bridge NSMutableArray *)context;
+    NSData *data = [[NSString stringWithUTF8String:json] dataUsingEncoding:NSUTF8StringEncoding];
+    [events addObject:[NSJSONSerialization JSONObjectWithData:data options:0 error:NULL]];
+}
+
+static void CheckNavigationProxy(void) {
+    NavigationFixture *original = [NavigationFixture new];
+    OkilumManagerNavigation *proxy = [OkilumManagerNavigation new];
+    NSMutableArray *events = [NSMutableArray new];
+    proxy.original = original;
+    proxy.failed = NavigationFailure;
+    proxy.context = (__bridge void *)events;
+    REQUIRE([proxy respondsToSelector:@selector(webView:decidePolicyForNavigationAction:decisionHandler:)],
+        @"proxy advertises Wry policy callbacks");
+    __block BOOL allowed = NO;
+    [proxy webView:nil decidePolicyForNavigationAction:nil decisionHandler:^(WKNavigationActionPolicy policy) {
+        allowed = policy == WKNavigationActionPolicyAllow;
+    }];
+    [proxy webView:nil didFinishNavigation:nil];
+    NSError *error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorCannotConnectToHost
+        userInfo:@{NSURLErrorFailingURLStringErrorKey: @"https://t3.example/env/thread?token=fixture"}];
+    [proxy webView:nil didFailProvisionalNavigation:nil withError:error];
+    [proxy webView:nil didFailNavigation:nil withError:error];
+    [proxy webViewWebContentProcessDidTerminate:nil];
+    REQUIRE(allowed && original.policies == 1 && original.finishes == 1 && original.failures == 1,
+        @"proxy preserves original policy, completion and failure callbacks");
+    REQUIRE(events.count == 3 && [events[0][@"domain"] isEqual:NSURLErrorDomain]
+        && [events[0][@"code"] integerValue] == NSURLErrorCannotConnectToHost
+        && [events[2][@"domain"] isEqual:@"WebContentProcess"], @"both failures and termination reach Rust");
+    proxy.failed = NULL;
+    proxy.context = NULL;
+    [proxy webView:nil didFailNavigation:nil withError:error];
+    REQUIRE(events.count == 3, @"detached proxy cannot call the released Rust context");
+}
+
 @interface KeyFixtureResponder : NSObject
 @property(nonatomic) NSUInteger downs;
 @property(nonatomic) NSUInteger ups;
@@ -84,6 +138,7 @@
 @end
 
 int main(void) {
+    CheckNavigationProxy();
     @autoreleasepool {
         NSApplication *savedApp = NSApp;
         KeyFixtureApp *app = [KeyFixtureApp new];

@@ -62,7 +62,7 @@ int main(void) {
         waitFor(view, @"!!document.getElementById('token')");
         REQUIRE([window makeFirstResponder:view], @"WKWebView must accept first responder");
         javascript(view, @"document.getElementById('token').focus(); true");
-        void *handle = okilum_manager_focus_attach((__bridge void *)view, (__bridge void *)host, NULL, NULL);
+        void *handle = okilum_manager_focus_attach((__bridge void *)view, (__bridge void *)host, NULL, NULL, NULL);
         OkilumManagerFocus *router = (__bridge OkilumManagerFocus *)handle;
         // Activation is asynchronous for a command-line AppKit process. Pump
         // the native loop before treating absence of focus as product evidence.

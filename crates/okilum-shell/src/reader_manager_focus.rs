@@ -6,6 +6,7 @@ extern "C" {
         webview: *mut c_void,
         parent: *mut c_void,
         focus_changed: extern "C" fn(*mut c_void, i32),
+        navigation_failed: extern "C" fn(*mut c_void, *const std::ffi::c_char),
         context: *mut c_void,
     ) -> *mut c_void;
     fn okilum_manager_focus_is_focused(handle: *mut c_void) -> bool;
@@ -41,6 +42,7 @@ impl FocusRouting {
                 objc2::rc::Retained::as_ptr(&webview).cast_mut().cast(),
                 parent.ns_view.as_ptr(),
                 focus_changed,
+                navigation_failed,
                 (&mut *events as *mut async_channel::Sender<String>).cast(),
             )
         };
@@ -63,6 +65,13 @@ impl FocusRouting {
         // SAFETY: same UI-thread-owned handle.
         unsafe { okilum_manager_focus_refresh(self.handle.as_ptr()) }
     }
+}
+extern "C" fn navigation_failed(context: *mut c_void, detail: *const std::ffi::c_char) {
+    // SAFETY: the main-thread bridge supplies a live JSON string for this call;
+    // Drop detaches it before freeing the boxed sender.
+    let events = unsafe { &*context.cast::<async_channel::Sender<String>>() };
+    let detail = unsafe { std::ffi::CStr::from_ptr(detail) }.to_string_lossy();
+    let _ = events.try_send(format!("navigation-failed:{detail}"));
 }
 extern "C" fn focus_changed(context: *mut c_void, kind: i32) {
     // SAFETY: the boxed sender outlives the native monitor; Drop detaches first.

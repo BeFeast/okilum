@@ -57,7 +57,52 @@ bool okilum_manager_focus_cycle_regression(void) {
 }
 @class OkilumCommandQueue;
 
+// Wry has no navigation-error callback. Proxy only this Manager's delegate,
+// forwarding its existing policy, downloads and page-load behavior unchanged.
+@interface OkilumManagerNavigation : NSObject <WKNavigationDelegate>
+@property(nonatomic, strong) id<WKNavigationDelegate> original;
+@property(nonatomic) void (*failed)(void *, const char *);
+@property(nonatomic) void *context;
+@end
+
+@implementation OkilumManagerNavigation
+- (BOOL)respondsToSelector:(SEL)selector {
+    return [super respondsToSelector:selector] || [self.original respondsToSelector:selector];
+}
+- (id)forwardingTargetForSelector:(SEL)selector {
+    return [self.original respondsToSelector:selector] ? self.original : [super forwardingTargetForSelector:selector];
+}
+- (void)report:(WKWebView *)view error:(NSError *)error {
+    if (!self.failed) return;
+    NSString *url = error.userInfo[NSURLErrorFailingURLStringErrorKey] ?: view.URL.absoluteString ?: @"";
+    NSData *json = [NSJSONSerialization dataWithJSONObject:@{
+        @"url": url, @"domain": error.domain, @"code": @(error.code)
+    } options:0 error:NULL];
+    NSString *text = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+    if (text) self.failed(self.context, text.UTF8String);
+}
+- (void)webView:(WKWebView *)view didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    [self report:view error:error];
+    if ([self.original respondsToSelector:_cmd]) {
+        [self.original webView:view didFailProvisionalNavigation:navigation withError:error];
+    }
+}
+- (void)webView:(WKWebView *)view didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    [self report:view error:error];
+    if ([self.original respondsToSelector:_cmd]) {
+        [self.original webView:view didFailNavigation:navigation withError:error];
+    }
+}
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)view {
+    [self report:view error:[NSError errorWithDomain:@"WebContentProcess" code:1 userInfo:nil]];
+    if ([self.original respondsToSelector:_cmd]) {
+        [self.original webViewWebContentProcessDidTerminate:view];
+    }
+}
+@end
+
 @interface OkilumManagerFocus : NSObject
+@property(nonatomic, strong) OkilumManagerNavigation *navigation;
 @property(nonatomic, weak) WKWebView *webview;
 @property(nonatomic, weak) NSView *parent;
 @property(nonatomic) OkilumFocusChanged focusChanged;
@@ -248,6 +293,12 @@ bool okilum_manager_focus_cycle_regression(void) {
     return nil;
 }
 - (void)detach {
+    self.navigation.failed = NULL;
+    self.navigation.context = NULL;
+    if (self.webview.navigationDelegate == self.navigation) {
+        self.webview.navigationDelegate = self.navigation.original;
+    }
+    self.navigation = nil;
     KeyRemoveRouter(self);
     KeyCancelCommands(self);
     self.pageContext = nil;
@@ -265,13 +316,20 @@ bool okilum_manager_focus_cycle_regression(void) {
 
 #import "keys.inc"
 
-void *okilum_manager_focus_attach(void *webview, void *parent, void (*focusChanged)(void *, int), void *context) {
+void *okilum_manager_focus_attach(void *webview, void *parent, void (*focusChanged)(void *, int),
+    void (*navigationFailed)(void *, const char *), void *context) {
     NSCAssert(NSThread.isMainThread, @"Manager focus must attach on the main thread");
     OkilumManagerFocus *router = [OkilumManagerFocus new];
     router.webview = (__bridge WKWebView *)webview;
     router.parent = (__bridge NSView *)parent;
     router.focusChanged = focusChanged;
     router.context = context;
+    OkilumManagerNavigation *navigation = [OkilumManagerNavigation new];
+    navigation.original = router.webview.navigationDelegate;
+    navigation.failed = navigationFailed;
+    navigation.context = context;
+    router.navigation = navigation;
+    router.webview.navigationDelegate = navigation;
     KeyInstallRouter(router);
     __weak OkilumManagerFocus *weakRouter = router;
     router.monitor = [NSEvent addLocalMonitorForEventsMatchingMask:

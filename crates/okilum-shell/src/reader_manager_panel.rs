@@ -2,6 +2,10 @@
 use super::*;
 use okilum_t3::projects::{Manager, Project};
 
+#[cfg(any(target_os = "macos", test))]
+#[path = "reader_manager_watchdog.rs"]
+mod watchdog;
+
 /// Wait before the next automatic connection attempt. The Mac's network or
 /// VPN may come up after Okilum starts; never wait for a click to recover.
 fn retry_delay(failures: u32) -> std::time::Duration {
@@ -68,6 +72,11 @@ pub(super) struct ManagerPanel {
     generation: u64,
     links: Option<ManagerLinks>,
     unsupported_webkit: bool,
+    webview_unavailable: bool,
+    #[cfg(any(target_os = "macos", test))]
+    watchdog: watchdog::Watchdog,
+    #[cfg(target_os = "macos")]
+    occlusion_hidden: bool,
     #[cfg(any(target_os = "macos", test))]
     checking_webkit: bool,
     _activation: Option<Subscription>,
@@ -186,6 +195,11 @@ impl ManagerPanel {
             generation: 0,
             links: None,
             unsupported_webkit: false,
+            webview_unavailable: false,
+            #[cfg(any(target_os = "macos", test))]
+            watchdog: watchdog::Watchdog::default(),
+            #[cfg(target_os = "macos")]
+            occlusion_hidden: false,
             #[cfg(any(target_os = "macos", test))]
             checking_webkit: false,
             _activation: Some(activation),
@@ -249,6 +263,10 @@ impl ManagerPanel {
         self.closed = true;
         self.generation = self.generation.wrapping_add(1);
         self.focused = false;
+        #[cfg(any(target_os = "macos", test))]
+        {
+            self.watchdog = watchdog::Watchdog::default();
+        }
         #[cfg(target_os = "macos")]
         self.focus_routing.take();
         #[cfg(target_os = "macos")]
@@ -280,6 +298,9 @@ impl ManagerPanel {
     pub(super) fn connection_status(&self) -> (Option<String>, Option<String>) {
         if self.unsupported_webkit {
             return (Some("Embedded T3 is unavailable on this Mac".into()), None);
+        }
+        if self.webview_unavailable {
+            return (Some("T3 unavailable — reconnecting…".into()), None);
         }
         let connected = self.connected();
         let line = status_line(
@@ -315,6 +336,7 @@ impl ManagerPanel {
         self.retrying = false;
         self.links = None;
         self.unsupported_webkit = false;
+        self.webview_unavailable = false;
         #[cfg(any(target_os = "macos", test))]
         {
             self.checking_webkit = false;
@@ -361,6 +383,14 @@ impl ManagerPanel {
             return false;
         }
         self.checking_webkit = false;
+        if let Some(trace) = reader_diagnostics::trace(cx) {
+            trace.event(
+                "manager_webkit_capability",
+                serde_json::json!({
+                    "generation": generation, "supported": result.is_ok(),
+                }),
+            );
+        }
         if let Err(detail) = result {
             self.log_failure(
                 &format!("Embedded WebKit lacks T3 regex support: {detail}"),
@@ -371,6 +401,7 @@ impl ManagerPanel {
             self.retrying = false;
             self.error = None;
             self.focused = false;
+            self.watchdog = watchdog::Watchdog::default();
             #[cfg(target_os = "macos")]
             {
                 self.focus_routing.take();
@@ -381,6 +412,64 @@ impl ManagerPanel {
         }
         cx.notify();
         true
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn watch_browser(
+        &mut self,
+        stage: watchdog::Stage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let generation = self.generation;
+        let now = std::time::Instant::now();
+        let delay = match stage {
+            watchdog::Stage::Capability => {
+                self.watchdog.capability(generation, now);
+                watchdog::CAPABILITY_TIMEOUT
+            }
+            watchdog::Stage::Page => {
+                if !self.watchdog.page(generation, now) {
+                    return;
+                }
+                watchdog::PAGE_TIMEOUT
+            }
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.generation != generation || this.closed {
+                    return;
+                }
+                if let Some(stage) = this.watchdog.expire(generation, std::time::Instant::now()) {
+                    let reason = match stage {
+                        watchdog::Stage::Capability => "capability report timed out",
+                        watchdog::Stage::Page => "page load timed out",
+                    };
+                    this.browser_failed(reason, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Release the native child before painting fallback, invalidate queued
+    /// callbacks, and reuse the connection backoff without resetting failures.
+    #[cfg(any(target_os = "macos", test))]
+    fn browser_failed(&mut self, reason: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(trace) = reader_diagnostics::trace(cx) {
+            trace.event("manager_webview_failure", serde_json::json!({
+                "generation": self.generation, "reason": reason,
+                "url": self.links.as_ref().map(|l| watchdog::diagnostic_url(l.browser.as_str())),
+            }));
+        }
+        self.hide(cx);
+        self.closed = false;
+        self.loading = false;
+        self.checking_webkit = false;
+        self.webview_unavailable = true;
+        self.failed(format!("Embedded T3: {reason}"), window, cx);
+        cx.notify();
     }
 
     /// A failed attempt: keep one quiet line and try again with backoff.
@@ -465,7 +554,9 @@ impl ManagerPanel {
                                 this.webview = Some(view);
                                 this.error = None;
                                 this.retrying = false;
-                                this.failures = 0;
+                                this.webview_unavailable = false;
+                                this.occlusion_hidden = false;
+                                this.watch_browser(watchdog::Stage::Capability, window, cx);
                             }
                             Err(e) => {
                                 let error = format!("Manager could not be opened: {e:#}");
@@ -512,7 +603,7 @@ impl ManagerPanel {
                 if this
                     .update_in(cx, |this, window, cx| {
                         // An old browser's queued callbacks must not affect its successor.
-                        if this.generation != generation {
+                        if this.generation != generation || this.closed {
                             return;
                         }
                         if let Some(result) =
@@ -520,32 +611,73 @@ impl ManagerPanel {
                         {
                             let supported = result.is_ok();
                             if this.finish_webkit_check(generation, result, cx) && supported {
+                                this.watch_browser(watchdog::Stage::Page, window, cx);
                                 if let (Some(view), Some(links)) = (&this.webview, &this.links) {
-                                    if let Err(error) = view
+                                    if view
                                         .read(cx)
                                         .handle()
                                         .raw()
                                         .load_url(links.browser.as_str())
+                                        .is_err()
                                     {
-                                        this.focus_routing.take();
-                                        if let Some(view) = this.webview.take() {
-                                            view.update(cx, |view, _| view.hide());
+                                        if let Some(trace) = reader_diagnostics::trace(cx) {
+                                            // Wry errors can embed the original URL. Keep
+                                            // those out of the diagnostic log as well.
+                                            trace.event("manager_navigation_failure", serde_json::json!({
+                                                "generation": generation,
+                                                "url": watchdog::diagnostic_url(links.browser.as_str()),
+                                                "reason": "load_url rejected",
+                                            }));
                                         }
-                                        this.failed(
-                                            format!("Manager navigation failed: {error:#}"),
-                                            window,
-                                            cx,
-                                        );
+                                        this.browser_failed("navigation could not start", window, cx);
                                     }
                                 }
                             }
                             return;
                         }
-                        if event.starts_with("page-load:") {
-                            if event == "page-load:finished" {
+                        if let Some(event) = event.strip_prefix("page-load:") {
+                            let Some((phase, url)) = event.split_once(':') else { return; };
+                            if let Some(trace) = reader_diagnostics::trace(cx) {
+                                trace.event("manager_page_load", serde_json::json!({
+                                    "generation": generation, "phase": phase,
+                                    "url": watchdog::diagnostic_url(url),
+                                }));
+                            }
+                            if phase == "started" && !this.checking_webkit && url != "about:blank" {
+                                this.watch_browser(watchdog::Stage::Page, window, cx);
+                            }
+                            if phase == "finished" {
+                                if this.watchdog.finished(generation, url) {
+                                    this.failures = 0;
+                                    cx.notify();
+                                }
                                 if let Some(routing) = &this.focus_routing {
                                     routing.document_loaded();
                                 }
+                            }
+                            return;
+                        }
+                        if let Some(detail) = event.strip_prefix("navigation-failed:") {
+                            if let Ok(mut detail) = serde_json::from_str::<serde_json::Value>(detail) {
+                                let url = watchdog::diagnostic_url(detail["url"].as_str().unwrap_or_default());
+                                detail["url"] = url.into();
+                                detail["generation"] = generation.into();
+                                if let Some(trace) = reader_diagnostics::trace(cx) {
+                                    trace.event("manager_navigation_failure", detail.clone());
+                                }
+                                // Cancellation is normal when navigation is superseded.
+                                if detail["domain"] != "NSURLErrorDomain" || detail["code"] != -999 {
+                                    this.browser_failed("page could not be loaded", window, cx);
+                                }
+                            }
+                            return;
+                        }
+                        if let Some(url) = event.strip_prefix("navigation-blocked:") {
+                            if let Some(trace) = reader_diagnostics::trace(cx) {
+                                trace.event("manager_navigation_failure", serde_json::json!({
+                                    "generation": generation, "reason": "navigation blocked",
+                                    "url": watchdog::diagnostic_url(url),
+                                }));
                             }
                             return;
                         }
@@ -602,6 +734,7 @@ impl ManagerPanel {
         let t3 = url.clone();
         let store = crate::reader_manager_store::application_identifier();
         let page_events = send.clone();
+        let navigation_events = send.clone();
         let browser = wry::WebViewBuilder::new()
             .with_incognito(false)
             .with_data_store_identifier(store)
@@ -657,15 +790,15 @@ impl ManagerPanel {
                 }
                 wry::NewWindowResponse::Deny
             })
-            .with_on_page_load_handler(move |event, _url| {
+            .with_on_page_load_handler(move |event, url| {
                 let event = match event {
                     wry::PageLoadEvent::Started => "page-load:started",
                     wry::PageLoadEvent::Finished => "page-load:finished",
                 };
-                let _ = page_events.try_send(event.into());
+                let _ = page_events.try_send(format!("{event}:{url}"));
             })
-            .with_navigation_handler(|url| {
-                url == "about:blank" || url::Url::parse(&url).is_ok_and(|url| {
+            .with_navigation_handler(move |url| {
+                let allowed = url == "about:blank" || url::Url::parse(&url).is_ok_and(|url| {
                     url.username().is_empty()
                         && url.password().is_none()
                         && okilum_t3::Environment::new(
@@ -673,7 +806,11 @@ impl ManagerPanel {
                             &url.origin().ascii_serialization(),
                         )
                         .is_ok()
-                })
+                });
+                if !allowed {
+                    let _ = navigation_events.try_send(format!("navigation-blocked:{url}"));
+                }
+                allowed
             })
             .build_as_child(&handle)?;
         crate::reader_manager_store::verify(&browser, &store)?;
@@ -706,14 +843,18 @@ impl Render for ManagerPanel {
                 .child(t3_settings_button())
                 .into_any_element();
         }
-        if self.unsupported_webkit {
+        if self.unsupported_webkit || self.webview_unavailable {
             return v_flex()
                 .id("manager-unsupported-webkit")
                 .p_3()
                 .gap_2()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child(UNSUPPORTED_WEBKIT)
+                .child(if self.unsupported_webkit {
+                    UNSUPPORTED_WEBKIT
+                } else {
+                    "T3 unavailable. Trying to reconnect. You can open the Manager in T3 or your browser."
+                })
                 .when_some(self.links.as_ref(), |panel, links| {
                     let desktop = links.desktop.clone();
                     let browser = links.browser.to_string();
@@ -731,6 +872,16 @@ impl Render for ManagerPanel {
                                 .on_click(move |_, _, cx| cx.open_url(&browser)),
                         )
                 })
+                .child(
+                    Button::new("manager-fallback-retry")
+                        .small()
+                        .label("Retry")
+                        .disabled(self.loading)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.unsupported_webkit = false;
+                            this.connect(window, cx);
+                        })),
+                )
                 .into_any_element();
         }
         // No Okilum header or project line above T3: T3's own thread header
@@ -757,9 +908,14 @@ impl Render for ManagerPanel {
                             // child. A sibling absolute canvas can have a different
                             // static position: never use it to move/hide WebKit.
                             let full = view_state.read(cx).bounds();
-                            let overlays = gpui_base::GlobalState::native_overlays(window, cx);
+                            // A transient layout frame says nothing about overlay
+                            // coverage. Hiding here can leave a white native pane.
+                            if full.size.width <= px(0.) || full.size.height <= px(0.) {
+                                return;
+                            }
+                            let overlays = gpui_base::GlobalState::native_overlays(window, cx).to_vec();
                             let clear =
-                                crate::reader_manager_occlusion::uncovered_bounds(full, overlays);
+                                crate::reader_manager_occlusion::uncovered_bounds(full, &overlays);
                             // All ordinary AND deferred overlays have completed
                             // prepaint before this paint callback. Never use the
                             // previous frame's popup geometry.
@@ -785,13 +941,44 @@ impl Render for ManagerPanel {
                                     )
                                     .into(),
                                 });
-                                let _ = native.raw().set_visible(result.is_ok());
+                                if result.is_err() {
+                                    let _ = panel.update(cx, |panel, cx| {
+                                        if !panel.occlusion_hidden {
+                                            if let Some(trace) = reader_diagnostics::trace(cx) {
+                                                trace.event("manager_webview_occlusion", serde_json::json!({
+                                                    "hidden": true, "reason": "set_bounds failed",
+                                                    "generation": panel.generation,
+                                                }));
+                                            }
+                                        }
+                                        panel.occlusion_hidden = true;
+                                        panel.browser_failed("view could not be displayed", window, cx);
+                                    });
+                                    return;
+                                }
+                                let _ = native.raw().set_visible(true);
                             } else {
                                 // A full-window modal backdrop leaves no free
                                 // rectangle. Do not let its native child cover it.
                                 let _ = native.raw().set_visible(false);
                             }
-                            let _ = panel.update(cx, |panel, _| {
+                            let _ = panel.update(cx, |panel, cx| {
+                                let hidden = clear.is_none();
+                                if panel.occlusion_hidden != hidden {
+                                    if let Some(trace) = reader_diagnostics::trace(cx) {
+                                        trace.event("manager_webview_occlusion", serde_json::json!({
+                                            "hidden": hidden, "reason": if hidden { "fully covered by overlays" } else { "overlay cleared" },
+                                            "generation": panel.generation,
+                                            "bounds": { "x": f32::from(full.origin.x), "y": f32::from(full.origin.y),
+                                                "width": f32::from(full.size.width), "height": f32::from(full.size.height) },
+                                            "overlays": overlays.iter().map(|b| serde_json::json!({
+                                                "x": f32::from(b.origin.x), "y": f32::from(b.origin.y),
+                                                "width": f32::from(b.size.width), "height": f32::from(b.size.height),
+                                            })).collect::<Vec<_>>(),
+                                        }));
+                                    }
+                                    panel.occlusion_hidden = hidden;
+                                }
                                 if let Some(routing) = &panel.focus_routing {
                                     routing.refresh();
                                 }
@@ -947,6 +1134,29 @@ mod status_tests {
                 !panel.finish_webkit_check(panel.generation, Ok(()), cx),
                 "a closed panel ignores callbacks"
             );
+            // A timeout is transient, unlike a definitive unsupported engine.
+            panel.closed = false;
+            panel.unsupported_webkit = false;
+            panel.watch_browser(watchdog::Stage::Capability, window, cx);
+            let expired_generation = panel.generation;
+            panel.browser_failed("capability report timed out", window, cx);
+            assert!(panel.webview_unavailable);
+            assert!(!panel.closed && !panel.loading && !panel.checking_webkit);
+            assert!(panel.retrying);
+            assert_eq!(panel.failures, 1);
+            assert!(panel.links.is_some(), "fallback retains both open actions");
+            assert_eq!(
+                panel.connection_status(),
+                (Some("T3 unavailable — reconnecting…".into()), None)
+            );
+            assert!(!panel.finish_webkit_check(expired_generation, Ok(()), cx));
+            panel.watch_browser(watchdog::Stage::Page, window, cx);
+            panel.browser_failed("page load timed out", window, cx);
+            assert_eq!(
+                panel.failures, 2,
+                "creating a view is not a successful load"
+            );
+            panel.hide(cx);
         });
     }
 
