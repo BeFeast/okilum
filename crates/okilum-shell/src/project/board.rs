@@ -1014,9 +1014,9 @@ impl Reader {
     pub(in crate::project) fn project_board_changed(&mut self, cx: &mut Context<Self>) {
         // The center and issue dock consume Board publications. The fixed
         // Reader header has no new source data when Board geometry changes.
-        #[cfg(native_manager)]
+        #[cfg(target_os = "linux")]
         self.layout_signal.update(cx, |_, cx| cx.notify());
-        #[cfg(not(native_manager))]
+        #[cfg(not(target_os = "linux"))]
         cx.notify();
     }
     pub(crate) fn connect_project_board(
