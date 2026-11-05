@@ -596,6 +596,106 @@ fn managed_receiver_catalog_name_and_7504_label_reconcile() -> Result<()> {
     Ok(())
 }
 
+/// #2589: a receiver that knew only its inviter keeps syncing with the
+/// inviter's other computers while the inviter is offline.
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_receiver_meshes_through_its_share_peer_introducer() -> Result<()> {
+    let mut pair = Pair::loopback()?;
+    let binary = PathBuf::from(
+        std::env::var_os("OKILUM_SYNC_DIRECT_CLIENT")
+            .context("set pinned Syncthing 2.1.6 binary")?,
+    )
+    .canonicalize()?;
+    let (third, _) = Peer::managed(pair._root.path(), "managed-third", binary)?;
+    fs::write(pair.source.vault.join("seed.md"), b"seed from the source")?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    // Fixture-only setup: the source already shares this vault with a third
+    // computer, which treats the source as its introducer.
+    pair.source
+        .api
+        .add_device(&json!({"deviceID":third.id,"name":"Third fixture",
+        "addresses":[format!("tcp://{}",third.listen)]}))?;
+    let mut members = pair.source.api.folder(&id)?["devices"]
+        .as_array()
+        .context("source members")?
+        .clone();
+    members.push(json!({"deviceID":third.id}));
+    pair.source
+        .api
+        .patch_folder(&id, &json!({"devices":members}))?;
+    third
+        .api
+        .add_device(&json!({"deviceID":pair.source.id,"name":"Source fixture",
+        "addresses":[format!("tcp://{}",pair.source.listen)],"introducer":true}))?;
+    third
+        .api
+        .add_paused_folder(&json!({"id":id,"label":"Third replica","path":third.vault,
+        "type":"sendreceive","paused":true,
+        "devices":[{"deviceID":third.id},{"deviceID":pair.source.id}]}))?;
+    third.api.patch_folder(&id, &json!({"paused":false}))?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("receive and automatic promotion", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing)
+    })?;
+    assert_eq!(
+        pair.target.api.device(&pair.source.id)?["introducer"],
+        true,
+        "bidirectional receiver did not mark its share peer as introducer"
+    );
+    // Like an existing pairing after an update: the next cluster config from
+    // the share peer (here, after a receiver restart) carries the introduction.
+    pair.target.stop()?;
+    pair.target.start()?;
+    wait("share peer introduces its third computer", || {
+        pair.second.refresh()?;
+        let folder = pair.target.api.folder(&id)?;
+        Ok(folder["devices"].as_array().is_some_and(|members| {
+            members
+                .iter()
+                .any(|m| m["deviceID"] == third.id && m["introducedBy"] == pair.source.id)
+        }))
+    })?;
+    assert_eq!(
+        pair.target.api.device(&third.id)?["introducedBy"],
+        pair.source.id
+    );
+    assert!(
+        !pair.second.refresh()?.preparing,
+        "an introduced member reopened the first receive"
+    );
+    assert_eq!(pair.target.api.folder(&id)?["type"], "sendreceive");
+    // The share peer goes to sleep: application and daemon both offline.
+    pair.first.shutdown();
+    pair.source.stop()?;
+    let content = b"written while the share peer is offline";
+    fs::write(third.vault.join("from-third.md"), content)?;
+    wait("third computer reaches the receiver directly", || {
+        third.api.scan(&id)?;
+        pair.target.api.scan(&id)?;
+        pair.second.refresh()?;
+        Ok(same_hash(&pair.target.vault, "from-third.md", content))
+    })?;
+    // Negative control: a member that the share peer did not introduce.
+    let stranger = "AIR6LPZ-7K4PTTV-UXQSMUU-CPQ5YWH-OEDFIIQ-JUG777G-2YQXXR5-YD6AWQR";
+    pair.target
+        .api
+        .add_device(&json!({"deviceID":stranger,"addresses":["dynamic"]}))?;
+    let mut members = pair.target.api.folder(&id)?["devices"]
+        .as_array()
+        .context("receiver members")?
+        .clone();
+    members.push(json!({"deviceID":stranger}));
+    pair.target
+        .api
+        .patch_folder(&id, &json!({"devices":members}))?;
+    let error = pair.second.refresh().unwrap_err();
+    assert!(format!("{error:#}").contains("membership"), "{error:#}");
+    Ok(())
+}
+
 #[path = "remote_inventory.rs"]
 mod remote_inventory;
 

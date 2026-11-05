@@ -677,3 +677,101 @@ fn provider_search_options_and_loading_keep_one_surface_and_long_catalog_tail_re
         assert!(view.compose.read(cx).focus_handle(cx).is_focused(window));
     });
 }
+
+#[gpui::test]
+fn compact_header_and_aligned_rail_fit_real_provider_names_without_ellipsis(
+    cx: &mut TestAppContext,
+) {
+    let (view, visual, _state, _gateway) = fixture(cx, size(px(1000.), px(760.)), 0, None);
+    redraw_picker(&view, visual, |view, _, _| {
+        let providers = &mut view.models.as_mut().unwrap().catalog.providers;
+        providers[0].display_name = Some("Claude".into());
+        providers[1].display_name = Some("Claude → Astra".into());
+    });
+    interleaved_open(visual);
+    let header = bounds(visual, "project-model-header");
+    let title = bounds(visual, "project-model-title");
+    let search = bounds(visual, "project-model-search");
+    inside(title, header, "compact title");
+    inside(search, header, "inline search");
+    assert!(title.right() <= search.left());
+    assert!((title.center().y - search.center().y).abs() <= px(1.));
+    assert!(header.size.height <= px(40.));
+    assert!(
+        search.size.width >= px(300.),
+        "search retains a useful text width"
+    );
+    let account = bounds(visual, "project-model-account-label-0");
+    for selector in [
+        "project-model-rail-label-favorites",
+        "project-model-rail-label-current",
+    ] {
+        assert_eq!(
+            bounds(visual, selector).left(),
+            account.left(),
+            "{selector} shares the provider text column"
+        );
+    }
+    let logo = bounds(visual, "project-model-provider-logo-account-0");
+    for selector in [
+        "project-model-rail-icon-favorites",
+        "project-model-rail-icon-current",
+    ] {
+        assert_eq!(
+            bounds(visual, selector).left(),
+            logo.left(),
+            "{selector} shares the provider icon column"
+        );
+    }
+    for (selector, text) in [
+        ("project-model-rail-label-favorites", "Favorites"),
+        ("project-model-rail-label-current", "Selected model"),
+        ("project-model-account-label-1", "Claude → Astra"),
+    ] {
+        let intrinsic = visual.update(|window, _| {
+            window
+                .text_system()
+                .shape_line(
+                    text.into(),
+                    px(super::super::design::LABEL),
+                    &[gpui::TextRun {
+                        len: text.len(),
+                        font: gpui::font(brand::SANS_FONT),
+                        color: gpui::black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width()
+        });
+        let label = bounds(visual, selector);
+        assert!(
+            label.size.width >= intrinsic,
+            "{text} must fit without truncation: {label:?}, needs {intrinsic:?}"
+        );
+    }
+}
+
+#[gpui::test]
+fn full_pilot_account_name_wraps_inside_the_rail_instead_of_truncating(cx: &mut TestAppContext) {
+    let (view, visual, _state, _gateway) = fixture(cx, size(px(1000.), px(760.)), 0, None);
+    redraw_picker(&view, visual, |view, _, _| {
+        view.models.as_mut().unwrap().catalog.providers[1].display_name =
+            Some("Claude → Astra subagents · 7-day pilot".into());
+    });
+    interleaved_open(visual);
+    let label = bounds(visual, "project-model-account-label-1");
+    let row = bounds(visual, "project-model-provider-1");
+    assert!(
+        label.size.height >= px(40.),
+        "the complete account name needs multiple text lines: {label:?}"
+    );
+    inside(label, row, "wrapped account name");
+    inside(
+        row,
+        bounds(visual, "project-model-providers"),
+        "account row",
+    );
+}
