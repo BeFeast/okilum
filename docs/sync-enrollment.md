@@ -94,6 +94,16 @@ be reported. If a peer stays disconnected, check the named computer, its network
 and the firewall/TCP-port guidance in Settings. Local idle is not proof of a
 working peer connection.
 
+A paired computer that is asleep or switched off is not an error when its
+vaults keep syncing through another connected computer in the same Syncthing
+folder (for example one its share peer introduced). Settings then reads, for
+example, "hub is connected. idunn is offline and will catch up when it
+reconnects." The firewall/TCP-port hint appears only after 30 seconds and only
+when no connected computer carries one of that computer's bidirectional vaults.
+`okilum sync status` reports the same observation per paired computer as
+`connection` (`connected`, `relayed` with the carrying devices, or
+`unreachable`). These statuses come from the managed Linux connection.
+
 With external Syncthing, Settings shows the current network options and directs
 you to change them in Syncthing. Okilum does not apply its managed defaults or
 provide a mutating network switch for that connection.

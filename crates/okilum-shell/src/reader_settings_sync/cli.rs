@@ -648,13 +648,23 @@ fn status(output: &Output) -> serde_json::Value {
         .ok()
         .filter(|name| !name.is_empty())
         .unwrap_or_else(default_computer_name);
+    // How this computer's Syncthing reaches each paired computer, e.g. offline
+    // but its vaults syncing through another computer (#2589).
+    let links = output.controller.peer_links().unwrap_or_default();
+    let peers = snapshot.peers.iter().map(|peer| {
+        let mut value = peer_json(peer);
+        if let Some(link) = links.get(&peer.id) {
+            value["connection"] = serde_json::json!(link);
+        }
+        value
+    });
     #[allow(unused_mut)]
     let mut value = serde_json::json!({
         "computer": name,
         "status": snapshot.status,
         "invitation_open": snapshot.offer_url.is_some(),
         "pending": snapshot.pending.as_ref().map(pending_json),
-        "peers": snapshot.peers.iter().map(peer_json).collect::<Vec<_>>(),
+        "peers": peers.collect::<Vec<_>>(),
         "catalog": snapshot.catalog,
         "attached": snapshot.attached.iter().map(|v| serde_json::json!({
             "path": v.path,
