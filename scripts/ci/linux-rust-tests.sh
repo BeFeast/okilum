@@ -15,6 +15,8 @@ suite cargo test --locked -p okilum-shell --bin okilum reader_settings_sync:: --
 # #2589: a real app pairing listener, fresh identity and repeated Add computer.
 suite cargo test --locked -p okilum-sync-controller --test first_computer -- --nocapture
 suite cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture
+# #2589: loopback pairing journal, listeners for every pinned endpoint, no daemon.
+suite cargo test --locked -p okilum-sync-controller --lib direct::tests:: -- --nocapture
 # #2589: invite --approve-first through a running `okilum sync serve`.
 suite cargo test --locked -p okilum-shell --bin okilum issue2589_ -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.

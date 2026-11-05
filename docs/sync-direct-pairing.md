@@ -35,6 +35,16 @@ A lifetime lock prevents two controllers from owning the same journal.
   pairing. This association itself never changes peers, folder settings or files.
 - `begin_pairing(name)` opens the application LAN listener and creates the URL.
   `begin_pairing_at` supplies an explicit bind/advertised IP for isolated fixtures.
+  A computer whose paired computers already pin an endpoint on it invites at
+  that same endpoint instead of a new random port, so every computer reaches
+  it at one address (#2589).
+- `refresh()` listens again on every distinct endpoint a paired computer pins on
+  this computer, not only the latest invitation's, so computers paired through
+  earlier invitations on other ports keep reaching it without pairing again.
+  A pin is this computer's when it shares the address this computer last
+  listened on and is not a computer this one joined (its catalog or a received
+  vault). An address no longer assigned here is skipped; any other bind failure
+  (a port taken by another program) is an error and never replaces a pin.
 - `redeem(url, name)`, `refresh()`, `approve(request_id)`, `reject(request_id)` and
   `cancel()` implement the confirmation ceremony. Only incoming pending requests
   can be approved locally. The first authenticated requester claims an invitation;
