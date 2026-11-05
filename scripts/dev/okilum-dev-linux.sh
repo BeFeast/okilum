@@ -265,7 +265,8 @@ def main():
     record_parser.add_argument('build', type=int)
     args = parser.parse_args()
     if args.command == 'checkout':
-        print('\t'.join(checkout(os.environ, *args.directories)))
+        # Two lines: the path may be empty, which a tab-split read would swallow.
+        print(*checkout(os.environ, *args.directories), sep='\n')
     elif args.command == 'okilum-remote':
         sys.exit(0 if okilum_remote(args.url) else 1)
     elif args.command == 'next-build':
@@ -363,8 +364,8 @@ exec > >(tee -a "$log") 2>&1
 find "$root/logs" -maxdepth 1 -type f -name '*.log' -printf '%T@ %p\n' | sort -rn | tail -n +41 | cut -d' ' -f2- | xargs -r rm -f --
 printf 'Okilum dev build of %s · log %s\n' "$ref" "$log"
 
-checkout_line=$(python3 "$helper" checkout "$script_dir" "$start_dir")
-IFS=$'\t' read -r checkout checkout_source <<<"$checkout_line"
+checkout_lines=$(python3 "$helper" checkout "$script_dir" "$start_dir")
+{ IFS= read -r checkout; IFS= read -r checkout_source; } <<<"$checkout_lines"
 if [[ -z $checkout ]]; then
     printf 'No Okilum checkout (%s): using a clone in %s\n' "$checkout_source" "$root/repo"
     checkout=$root/repo

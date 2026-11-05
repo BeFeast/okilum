@@ -154,6 +154,19 @@ class Origins(unittest.TestCase):
             subprocess.run(['git', '-C', str(repository), 'remote', 'set-url', 'origin', 'https://example.invalid/other.git'], check=True)
             self.assertEqual(checkout({}, scripts)[0], '')
 
+    def test_linux_script_reads_an_empty_checkout_as_empty(self):
+        # A tab-separated read once swallowed the empty path and took the reason as the checkout.
+        text = LINUX.read_text()
+        parse = text[text.index('checkout_lines=$('):].split('\n', 2)
+        with tempfile.TemporaryDirectory() as directory:
+            helper = Path(directory) / 'helper.py'
+            helper.write_text(text.split("<<'DEV_HELPER'\n", 1)[1].split('\nDEV_HELPER\n', 1)[0])
+            script = (f'helper={helper}; script_dir={directory}; start_dir={directory}\n' + parse[0] + '\n' + parse[1]
+                      + '\nprintf "[%s][%s]" "$checkout" "$checkout_source"')
+            env = {k: v for k, v in os.environ.items() if k != 'OKILUM_CHECKOUT'}
+            output = subprocess.run(['bash', '-c', script], capture_output=True, text=True, check=True, env=env).stdout
+        self.assertTrue(output.startswith('[][no Okilum checkout around '), output)
+
     def test_linux_checkout_of_a_worktree_is_its_main_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory).resolve() / 'okilum'
