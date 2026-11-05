@@ -259,6 +259,15 @@ canonical file; editor recovery drafts remain available. Failed recovery writes
 still prevent navigation. Navigation also checks for deletion before a debounced
 watcher notification arrives.
 
+Closing the native window or choosing **Quit Okilum** (Ctrl/Cmd+Q) uses the same
+choices (#2651), rather than leaving a toast that names unavailable conflict
+actions. Cancel or Escape keeps the window open; Enter does not discard. Save
+As only resumes the close after the complete copy is saved; picker cancellation,
+a destination collision, changed contents or failed recovery persistence keeps
+the window open. Explicit Quit checks every Reader window, presenting one
+deleted-note decision at a time before its ordinary editor/managed-app guards.
+This covers application-owned Quit, not forced OS/process termination.
+
 Read-only recovery discovery also recognizes a dirty journal after its source
 file disappears (#2427). It resolves the existing parent for the saved identity,
 leaves the journal bytes intact and never recreates the source. A returned file

@@ -2,6 +2,37 @@
 use super::*;
 
 impl Reader {
+    /// Native window close must offer the same choices as leaving this note.
+    /// The callback is synchronous; a chosen save/discard resumes it later.
+    pub(crate) fn prepare_window_close(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.leaving_deleted_note(None, cx) {
+            self.ask_leaving_deleted_note(
+                Box::new(|this, window, cx| {
+                    if this.finish_window_close(cx) {
+                        window.remove_window();
+                    }
+                }),
+                window,
+                cx,
+            );
+            return false;
+        }
+        self.finish_window_close(cx)
+    }
+
+    fn finish_window_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.save_source_for_close(cx) {
+            return false;
+        }
+        self.record_ui_state(self.ui_state.was_active(), cx);
+        reader_ui_state::flush(cx);
+        true
+    }
+
     /// Navigation away from the note on screen (`target`, or another vault
     /// with `None`). Every presentation mode asks before leaving. The caller
     /// hands its navigation to `ask_leaving_deleted_note`.

@@ -6,16 +6,21 @@ gpui::actions!(okilum, [Quit]);
 pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| {
         // Defer until the dispatching Reader releases its entity borrow.
-        cx.defer(|cx| {
-            // A failed canonical save must not trap Quit when every latest
-            // edit is already durable in application draft state.
-            if crate::reader_editor::save_all_for_quit(cx) {
-                cx.quit();
-            }
-        });
+        cx.defer(request_quit);
     });
     cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
     set_menus(cx);
+}
+
+fn request_quit(cx: &mut App) {
+    if !crate::reader_editor::confirm_deleted_for_quit(request_quit, cx) {
+        return;
+    }
+    // A failed canonical save must not trap Quit when every latest
+    // edit is already durable in application draft state.
+    if crate::reader_editor::save_all_for_quit(cx) {
+        cx.quit();
+    }
 }
 pub(crate) fn set_menus(cx: &mut App) {
     cx.set_menus(vec![

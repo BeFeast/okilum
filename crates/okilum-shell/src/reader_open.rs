@@ -1377,15 +1377,8 @@ pub(crate) fn create_window(
         let weak = reader.downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             super::window_state::record_window(window, cx);
-            weak.update(cx, |reader, cx| {
-                if !reader.save_source_for_close(cx) {
-                    return false;
-                }
-                reader.record_ui_state(reader.ui_state.was_active(), cx);
-                super::reader_ui_state::flush(cx);
-                true
-            })
-            .unwrap_or(true)
+            weak.update(cx, |reader, cx| reader.prepare_window_close(window, cx))
+                .unwrap_or(true)
         });
         let root = cx.new(|cx| Root::new(reader, window, cx));
         super::window_state::track_with_restore(&root, frame_key, !duplicate, window, cx);
