@@ -150,36 +150,7 @@ pub(crate) fn set_enabled(feature: Feature, enabled: bool, cx: &mut App) {
     let mut saved = state.saved;
     saved.set(feature, enabled);
     if let Some(path) = &state.path {
-        let result = (|| -> anyhow::Result<()> {
-            use std::io::Write;
-            let parent = path
-                .parent()
-                .ok_or_else(|| anyhow::anyhow!("Missing profile directory"))?;
-            std::fs::create_dir_all(parent)?;
-            let lock = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(parent.join("features.lock"))?;
-            lock.try_lock()?;
-            let mut latest: serde_json::Value = if path.exists() {
-                anyhow::ensure!(
-                    std::fs::symlink_metadata(path)?.is_file()
-                        && std::fs::metadata(path)?.len() <= 16 * 1024,
-                    "Invalid module preferences file"
-                );
-                serde_json::from_slice(&std::fs::read(path)?)?
-            } else {
-                serde_json::json!({})
-            };
-            let _: Saved = serde_json::from_value(latest.clone())?;
-            latest[feature.key()] = serde_json::Value::Bool(enabled);
-            let mut file = tempfile::NamedTempFile::new_in(parent)?;
-            file.write_all(&serde_json::to_vec(&latest)?)?;
-            file.as_file().sync_all()?;
-            file.persist(path)?;
-            Ok(())
-        })();
+        let result = save(path, feature, enabled);
         if let Err(error) = result {
             state.error = Some(format!("Could not save module preferences: {error}"));
             // Refusing persistence must never prevent an immediate local stop.
@@ -200,10 +171,71 @@ pub(crate) fn set_enabled(feature: Feature, enabled: bool, cx: &mut App) {
     state.permits[feature.index()] = NetworkAccess::new(enabled);
     state.saved = saved;
     cx.set_global(state);
-    if !enabled {
+    if enabled {
+        resume(feature, cx);
+    } else {
         suspend(feature, cx);
     }
     cx.refresh_windows();
+}
+/// Write one module flag under the profile's preferences lock, keeping keys
+/// written by newer builds.
+fn save(path: &Path, feature: Feature, enabled: bool) -> anyhow::Result<()> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Missing profile directory"))?;
+    std::fs::create_dir_all(parent)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(parent.join("features.lock"))?;
+    lock.try_lock()?;
+    let mut latest: serde_json::Value = if path.exists() {
+        anyhow::ensure!(
+            std::fs::symlink_metadata(path)?.is_file()
+                && std::fs::metadata(path)?.len() <= 16 * 1024,
+            "Invalid module preferences file"
+        );
+        serde_json::from_slice(&std::fs::read(path)?)?
+    } else {
+        serde_json::json!({})
+    };
+    let _: Saved = serde_json::from_value(latest.clone())?;
+    latest[feature.key()] = serde_json::Value::Bool(enabled);
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(&serde_json::to_vec(&latest)?)?;
+    file.as_file().sync_all()?;
+    file.persist(path)?;
+    Ok(())
+}
+/// Headless consent (#2589): `okilum sync` pairing turns the Sync module on,
+/// like an opened pairing link, so the next app start keeps serving the pair.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn enable_saved(directory: &Path, feature: Feature) -> anyhow::Result<()> {
+    let path = directory.join("features.json");
+    if path.exists() {
+        anyhow::ensure!(
+            std::fs::symlink_metadata(&path)?.is_file()
+                && std::fs::metadata(&path)?.len() <= 16 * 1024,
+            "Invalid module preferences file"
+        );
+        let saved: Saved = serde_json::from_slice(&std::fs::read(&path)?)?;
+        if saved.get(feature) {
+            return Ok(());
+        }
+    }
+    save(&path, feature, true)
+}
+/// Turning Sync back on serves paired computers again without Settings (#2589).
+fn resume(feature: Feature, cx: &mut App) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if feature == Feature::Sync {
+        reader_settings_sync::serve_paired(cx);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = (feature, cx);
 }
 fn suspend(feature: Feature, cx: &mut App) {
     if feature == Feature::Agents {

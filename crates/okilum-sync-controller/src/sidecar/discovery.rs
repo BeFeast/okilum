@@ -318,7 +318,13 @@ pub fn managed_configuration_path(state: &std::path::Path) -> Result<Option<std:
     };
     let config = state.join("config");
     let file = config.join("config.xml");
-    for metadata in [metadata, fs::symlink_metadata(&config)?] {
+    // An interrupted first preparation leaves no configuration yet (#2589).
+    let config_metadata = match fs::symlink_metadata(&config) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    for metadata in [metadata, config_metadata] {
         ensure!(
             metadata.is_dir()
                 && !metadata.file_type().is_symlink()
@@ -327,7 +333,11 @@ pub fn managed_configuration_path(state: &std::path::Path) -> Result<Option<std:
             "private owned managed configuration directory required"
         );
     }
-    let metadata = fs::symlink_metadata(&file)?;
+    let metadata = match fs::symlink_metadata(&file) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
     ensure!(
         metadata.is_file()
             && !metadata.file_type().is_symlink()
@@ -371,15 +381,16 @@ mod managed_configuration_tests {
     }
 
     #[test]
-    fn incomplete_unsafe_and_linked_configuration_is_not_absence() -> Result<()> {
+    fn unprepared_is_absence_but_unsafe_and_linked_configuration_is_not() -> Result<()> {
         let root = tempfile::tempdir()?;
         let state = root.path();
         fs::set_permissions(state, fs::Permissions::from_mode(0o700))?;
-        assert!(managed_configuration_path(state).is_err());
+        // An interrupted first preparation (#2589) is "not prepared", not an error.
+        assert_eq!(managed_configuration_path(state)?, None);
         let config = state.join("config");
         fs::create_dir(&config)?;
         fs::set_permissions(&config, fs::Permissions::from_mode(0o700))?;
-        assert!(managed_configuration_path(state).is_err());
+        assert_eq!(managed_configuration_path(state)?, None);
         let file = config.join("config.xml");
         fs::write(&file, b"fixture")?;
         fs::set_permissions(&file, fs::Permissions::from_mode(0o600))?;

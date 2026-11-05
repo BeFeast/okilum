@@ -124,6 +124,17 @@ impl Syncthing {
         )?;
         verify_fields(&self.device(id)?, &changes)
     }
+    /// Make an existing device this daemon's introducer; addresses, folder
+    /// membership and every other device field stay intact.
+    pub fn set_device_introducer(&self, id: &str) -> Result<()> {
+        let changes = json!({"introducer": true});
+        self.request(
+            Method::PATCH,
+            &format!("/rest/config/devices/{}", segment(id)?),
+            Some(&changes),
+        )?;
+        verify_fields(&self.device(id)?, &changes)
+    }
     pub fn add_device(&self, device: &Value) -> Result<()> {
         let id = segment(device["deviceID"].as_str().context("missing device ID")?)?;
         let config = self.config()?;
@@ -241,6 +252,9 @@ impl Syncthing {
 
     pub fn connections(&self) -> Result<Value> {
         self.request(Method::GET, "/rest/system/connections", None)
+    }
+    pub fn device_stats(&self) -> Result<Value> {
+        self.request(Method::GET, "/rest/stats/device", None)
     }
     /// Caller must establish ownership before deleting either scoped record.
     pub fn remove_folder(&self, id: &str) -> Result<()> {

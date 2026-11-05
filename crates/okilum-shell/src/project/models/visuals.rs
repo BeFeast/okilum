@@ -8,6 +8,40 @@ use okilum_t3::ProviderCapability;
 const CLAUDE_BRAND: u32 = 0xD97757;
 const ANTIGRAVITY_COLOR: &str = "icons/providers/antigravity.png";
 
+/// Button's built-in icon/label content centers itself. Give every rail row
+/// one full-width content row so icons and names share the same left edge.
+pub(super) fn rail_label(
+    id: &'static str,
+    icon: IconName,
+    label: &'static str,
+    named: bool,
+) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .size(px(18.))
+                .flex_shrink_0()
+                .debug_selector(move || format!("project-model-rail-icon-{id}"))
+                .child(Icon::new(icon).size(px(18.))),
+        )
+        .when(named, |row| {
+            row.child(
+                div()
+                    .debug_selector(move || format!("project-model-rail-label-{id}"))
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(crate::project::design::LABEL))
+                    .line_height(px(crate::project::design::LINE))
+                    .child(label),
+            )
+        })
+}
+
 pub(super) fn provider_glyph(driver: &str) -> Icon {
     let glyph = if let Some(path) = provider_asset(driver) {
         Icon::default().path(path)

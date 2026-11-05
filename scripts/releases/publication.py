@@ -224,7 +224,7 @@ def publish(client, platform, run_id):
                 raise ValueError('Hourly artifact source differs from the requested source')
             import hourly_beta
             hourly_beta.main_source(source)
-            if not hourly_beta.green(source)[0]:
+            if not hourly_beta.beta_ready(source, platform):
                 raise ValueError('Hourly publication source is no longer certified green')
             previous = release_notes.predecessor(R2(), platform)
             if previous and previous['source'] != source:

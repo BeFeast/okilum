@@ -10,9 +10,15 @@ suite() {
     "$@" || failed=1
 }
 suite bash scripts/ci/local-writer-admission.sh
+# #2615: keep the complete Sync modal/approval suite visible before unrelated native tests.
+suite cargo test --locked -p okilum-shell --bin okilum reader_settings_sync:: -- --nocapture --test-threads=1
 # #2589: a real app pairing listener, fresh identity and repeated Add computer.
 suite cargo test --locked -p okilum-sync-controller --test first_computer -- --nocapture
 suite cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture
+# #2589: loopback pairing journal, listeners for every pinned endpoint, no daemon.
+suite cargo test --locked -p okilum-sync-controller --lib direct::tests:: -- --nocapture
+# #2589: invite --approve-first through a running `okilum sync serve`.
+suite cargo test --locked -p okilum-shell --bin okilum issue2589_ -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
 suite node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
 suite cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture
@@ -67,6 +73,8 @@ suite cargo test --locked -p okilum-sync-controller --test enrollment_storage --
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::store::tests::launch_authority:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::recovery:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::registration:: --no-fail-fast
+# #2589: the macOS Connect wait and REST readback, with offline OS fakes.
+suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connect:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::bundle:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connection:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::payload:: --no-fail-fast

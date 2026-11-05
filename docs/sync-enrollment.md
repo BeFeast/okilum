@@ -18,33 +18,32 @@ binaries alone do not establish that the same setup works there today.
 
 1. **On the computer that already has your notes**, open the vault and choose
    **Share with another computer…** from the app menu. In Settings → Sync, find
-   the vault under **Vaults on this computer** and select **Share with my
-   computers**. It becomes **Shared with approved computers**. An ordinary local
-   vault can be the source; it need not already be configured in Syncthing.
-2. Give **This computer** a recognizable name. Select **Add computer**, then
-   **Copy pairing URL**, and send the URL privately to the new computer. Keep
-   the first computer's Okilum open. The URL pairs one computer, expires after
-   **10 minutes**, and is not a folder path. Both computers must be on the
-   **same LAN for this first pairing**. There is no lifetime setting to adjust.
+   the vault under **Local vaults** or **Vaults** and select **Share with my
+   computers**. An ordinary local vault can be the source; it need not already
+   be configured in Syncthing.
+2. Select **Add computer**. In the modal, give this computer a recognizable name,
+   then select **Create pairing link** and **Copy link**. Send the link privately
+   to the new computer and keep Okilum open here. The current controller's link
+   pairs one computer and expires after **one hour**. Both computers must be on
+   the **same LAN for this first pairing**.
 3. **On the new computer**, choose **Get notes from another computer** on the
-   welcome screen. This opens Sync and enables the optional Sync feature.
-   Enter its name under **This computer**, paste the URL into **Paste pairing
-   URL**, and select **Connect**. You can also reach this step in Settings → Sync.
-4. **Back on the first computer**, check the requesting computer's name and
-   displayed identities. Select **Confirm computer** only for the computer you
-   intended to connect; reject an unexpected request. Only then can the new
-   computer see the vaults authorized for it.
-5. **On the new computer**, select the vault under **Available vaults** and
-   select **Choose local folder**. Okilum suggests a new folder based on the
-   vault name. Alternatively, **Use existing folder** lets you choose an empty
-   folder. Confirm the local destination. **A non-empty destination is refused**:
-   merging two existing copies with a lossless preview is still
-   [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043). Do not delete a
-   working copy to make setup proceed.
-6. Wait for **Bidirectional Sync active**. The first transfer starts automatically
-   and the received vault opens when it is ready. There is no extra Enable,
-   daemon setup, or promotion step. Save a small edit with **Ctrl+S**, check it
-   on the other computer, then save a change there to check the return direction.
+   welcome screen, or **Add computer → I have a link from another computer** in
+   Sync settings. Enter this computer's name, paste the link and select
+   **Request connection**. The wizard keeps waiting while you switch computers;
+   a lost approval reply does not require another link or request.
+4. **Back on the first computer**, check the name in the visible approval banner.
+   Select **Approve** only for the computer you intended to connect, or **Reject**.
+   An OS notification also directs you back to Okilum. Only approval makes the
+   authorized vault catalog available to the new computer.
+5. **On the new computer**, select **Choose local folder** for each wanted vault
+   under **Available vaults**. Alternatively, **Use existing folder** selects an
+   empty folder. These choices are staged until **Start first sync**. A non-empty
+   destination requires a lossless merge preview; do not delete a working copy
+   to make setup proceed.
+6. Follow the first transfer in the wizard or close it and inspect the vault's
+   state on the Sync page. The received vault opens when the controller reports
+   it ready. Save a small edit with **Ctrl+S**, check it on the other computer,
+   then save a change there to check the return direction.
 
 Opening Sync prepares the bundled Linux Syncthing only after checking that no
 existing or unavailable runtime needs attention. If a connection is already
@@ -94,6 +93,16 @@ your LAN or VPN. Custom relay routes require review before local-only mode can
 be reported. If a peer stays disconnected, check the named computer, its network
 and the firewall/TCP-port guidance in Settings. Local idle is not proof of a
 working peer connection.
+
+A paired computer that is asleep or switched off is not an error when its
+vaults keep syncing through another connected computer in the same Syncthing
+folder (for example one its share peer introduced). Settings then reads, for
+example, "hub is connected. idunn is offline and will catch up when it
+reconnects." The firewall/TCP-port hint appears only after 30 seconds and only
+when no connected computer carries one of that computer's bidirectional vaults.
+`okilum sync status` reports the same observation per paired computer as
+`connection` (`connected`, `relayed` with the carrying devices, or
+`unreachable`). These statuses come from the managed Linux connection.
 
 With external Syncthing, Settings shows the current network options and directs
 you to change them in Syncthing. Okilum does not apply its managed defaults or

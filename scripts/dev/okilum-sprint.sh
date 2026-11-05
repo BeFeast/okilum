@@ -1,5 +1,6 @@
 #!/bin/bash
 # Local-only Mac sprint build. Run in Terminal, never through the release lane.
+# From the one checkout: bash <(git show origin/main:scripts/dev/okilum-sprint.sh) <branch>
 set -Eeuo pipefail
 if [[ $# != 1 ]]; then echo "Usage: $0 <branch>" >&2; exit 2; fi
 if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
@@ -19,7 +20,8 @@ branch=$1
 sha=unknown
 short_sha=unknown
 root="$bootstrap"
-app="$HOME/Applications/Okilum Sprint.app"
+# One app (Oleg, 2026-11-04 #2589): the fast local build replaces the working Okilum.
+app="/Applications/Okilum.app"
 log="$bootstrap/build.log"
 run_log="$bootstrap/stages.log"
 cat > "$reporter" <<'SPRINT_REPORTER'
@@ -265,9 +267,15 @@ if ! command -v cargo >/dev/null; then
     echo "Install Rust, then rerun: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
     exit 1
 fi
-repo=https://git.oklabs.uk/BeFeast/okilum.git
+# One repository (Oleg, 2026-11-05): the build runs in a git worktree of his
+# own checkout, never in a separate clone. Its origin is the Forgejo SSH remote;
+# any SSH or HTTPS spelling of the same repository is accepted.
+checkout="${OKILUM_CHECKOUT:-$HOME/Developer/personal/okilum}"
+checkout=${checkout%/}
+origin_pattern='^((ssh://)?git@(git\.oklabs\.uk|10\.10\.0\.27)(:2222)?[:/]|https://git\.oklabs\.uk/)BeFeast/okilum(\.git)?$'
 git check-ref-format --branch "$branch" >/dev/null
-root="${OKILUM_SPRINT_HOME:-$HOME/Developer/personal/okilum-sprint}"
+# $root/src is the worktree; $root/target keeps the warm cargo cache.
+root="${OKILUM_SPRINT_HOME:-$HOME/Developer/worktrees/okilum/sprint}"
 root=${root%/}
 if [[ $root != /* || $root == / || $root == "$HOME" ]]; then
     echo 'OKILUM_SPRINT_HOME must be an absolute, dedicated directory.' >&2; exit 1
@@ -276,15 +284,18 @@ fi
 for path in "$root" "$root/src" "$root/target" "$app" "$HOME/Applications"; do
     if [[ -L $path ]]; then echo "Refusing symlink: $path" >&2; exit 1; fi
 done
-legacy="$HOME/okilum-sprint"
-if [[ ! -e $root && -e $legacy && $root != "$legacy" ]]; then
-    if [[ -L $legacy || -L $legacy/src || -L $legacy/target || ! -d $legacy || -e $legacy/build.lock ]]; then
-        echo "Cannot migrate $legacy: expected an idle, real Sprint directory." >&2; exit 1
+# Earlier versions kept a separate clone; move its warm cache here and delete it.
+for legacy in "$HOME/Developer/personal/okilum-sprint" "$HOME/okilum-sprint"; do
+    [[ $legacy != "$root" && -d $legacy && ! -L $legacy ]] || continue
+    if [[ -e $legacy/build.lock ]] || { [[ -d $legacy/src ]] && [[ -n $(git -C "$legacy/src" status --porcelain 2>/dev/null) ]]; }; then
+        echo "Old Sprint clone left in place (busy or has local changes): $legacy" >&2; continue
     fi
-    mkdir -p "$(dirname "$root")"
-    mv "$legacy" "$root"
-    printf 'Moved Sprint checkout and warm cache: %s → %s\n' "$legacy" "$root"
-fi
+    mkdir -p "$root"
+    if [[ ! -e $root/target && -d $legacy/target && ! -L $legacy/target ]]; then mv "$legacy/target" "$root/target"; fi
+    if [[ ! -e $root/Sparkle.tar.xz && -f $legacy/Sparkle.tar.xz ]]; then mv "$legacy/Sparkle.tar.xz" "$root/"; fi
+    rm -rf "$legacy"
+    printf 'Removed old Sprint clone %s; warm cache moved to %s\n' "$legacy" "$root"
+done
 mkdir -p "$root" "$HOME/Applications"
 if ! mkdir "$root/build.lock" 2>/dev/null; then
     echo "Sprint build is already running (lock: $root/build.lock)." >&2; exit 1
@@ -301,26 +312,35 @@ fi
 run_log="$root/stages.log"
 exec > >(tee -a "$run_log") 2>&1
 set_stage fetch
-if [[ ! -e $root/src ]]; then git clone "$repo" "$root/src"; fi
-cd "$root/src"
-[[ $(git rev-parse --show-toplevel) == "$root/src" ]] || { echo 'Not the dedicated sprint checkout.' >&2; exit 1; }
-[[ $(git remote get-url origin) == "$repo" ]] || { echo 'Unexpected sprint origin.' >&2; exit 1; }
-if [[ -n $(git status --porcelain --untracked-files=normal) ]]; then
-    echo "Sprint checkout has local changes; preserve them before rebuilding: $root/src" >&2; exit 1
+[[ -e $checkout/.git ]] || { echo "Okilum checkout not found: $checkout (set OKILUM_CHECKOUT)" >&2; exit 1; }
+origin=$(git -C "$checkout" remote get-url origin)
+[[ $origin =~ $origin_pattern ]] || { echo "Unexpected origin in $checkout: $origin" >&2; exit 1; }
+git -C "$checkout" fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+if [[ ! -e $root/src ]]; then
+    git -C "$checkout" worktree prune
+    git -C "$checkout" worktree add --detach "$root/src" "refs/remotes/origin/$branch"
 fi
-git fetch origin "refs/heads/$branch"
-git checkout -B sprint FETCH_HEAD
+cd "$root/src"
+[[ $(git rev-parse --show-toplevel) == "$root/src" ]] || { echo 'Not the Sprint worktree.' >&2; exit 1; }
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+[[ $common == "$(git -C "$checkout" rev-parse --path-format=absolute --git-common-dir)" ]] || {
+    echo "$root/src is not a worktree of $checkout; remove it and rerun." >&2; exit 1; }
+if [[ -n $(git status --porcelain --untracked-files=normal) ]]; then
+    echo "Sprint worktree has local changes; preserve them before rebuilding: $root/src" >&2; exit 1
+fi
+git checkout --detach "refs/remotes/origin/$branch"
 sha=$(git rev-parse HEAD)
 short_sha=$(git rev-parse --short HEAD)
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
 export SDKROOT
 export CARGO_TARGET_DIR="$root/target" CARGO_INCREMENTAL=1
-export OKILUM_SOURCE_COMMIT="$sha" OKILUM_BUILD_VERSION=1
-export OKILUM_RELEASE_VERSION="Sprint $short_sha"
+# Newer than the current beta so the updater keeps it; the next CI beta supersedes it.
+export OKILUM_SOURCE_COMMIT="$sha" OKILUM_BUILD_VERSION=27850
+export OKILUM_RELEASE_VERSION="0.1.27850"
 # Sync needs the Developer ID-signed helper and the bundled Syncthing runtime;
 # the app compiles this team and bundle into its helper policy (#2589).
-SPRINT_BUNDLE_ID=com.befeast.okilum.sprint
+SPRINT_BUNDLE_ID=com.befeast.okilum
 SPRINT_IDENTITY="${OKILUM_SIGNING_IDENTITY:-Developer ID Application: Oleg Kossoy (LA9V2K2376)}"
 source scripts/ci/supervisor-bundle.sh
 SPRINT_TEAM_ID=$(supervisor_team_id "$SPRINT_IDENTITY")
@@ -351,48 +371,31 @@ install -m 755 "$CARGO_TARGET_DIR/aarch64-apple-darwin/sprint/$SUPERVISOR_NAME" 
 mkdir -p "$bundle_stage/Contents/Library/LaunchAgents"
 cargo run --locked --profile sprint --target aarch64-apple-darwin -p okilum-sync-controller \
     --example bundled_plist -- "$SUPERVISOR_RELATIVE" "$bundle_stage/Contents/Library/LaunchAgents"
-python3 scripts/syncthing/bundle.py stage --app "$bundle_stage" --arch arm64
+# The Mac has no gpg (#2589): the pinned archive SHA256 still gates the bytes;
+# only the upstream signature check is skipped on a host without gpg.
+python3 - "$bundle_stage" <<'PY'
+import importlib.util, shutil, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("bundle", "scripts/syncthing/bundle.py")
+bundle = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bundle)
+if shutil.which("gpg") is None:
+    bundle.verify_upstream = lambda: {"skipped": "gpg unavailable; archive SHA256 pin enforced"}
+bundle.stage(Path(sys.argv[1]), "arm64", None)
+PY
 ditto vendor/sparkle/Sparkle.framework "$bundle_stage/Contents/Frameworks/Sparkle.framework"
 python3 scripts/third-party-notices.py --stage "$bundle_stage/Contents/Resources/Licenses"
-# Apply isolation on every launch, including Finder launches after this terminal closes.
-cat > "$bundle_stage/Contents/MacOS/sprint-launch" <<'LAUNCH'
-#!/bin/bash
-set -euo pipefail
-export OKILUM_STATE_DIR="$HOME/Library/Application Support/com.befeast.okilum.sprint"
-export XDG_CONFIG_HOME="$OKILUM_STATE_DIR/config"
-export XDG_CACHE_HOME="$OKILUM_STATE_DIR/cache"
-export XDG_STATE_HOME="$OKILUM_STATE_DIR/state"
-export XDG_DATA_HOME="$OKILUM_STATE_DIR/data"
-mkdir -p "$OKILUM_STATE_DIR" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME"
-cd "$(dirname "$0")"
-export OKILUM_SPRINT_REPORT_HELPER="$PWD/../Resources/sprint-report.py"
-export OKILUM_SPRINT_CONTEXT="$PWD/../Resources/sprint-context.json"
-exec ./okilum "$@"
-LAUNCH
-chmod +x "$bundle_stage/Contents/MacOS/sprint-launch"
 # Reuse the canonical bundle/Info.plist template from build-macos-ci.sh.
 python3 - "$bundle_stage" "$sha" <<'PY'
 import pathlib, plistlib, sys
 stage, sha = pathlib.Path(sys.argv[1]), sys.argv[2]
 source = pathlib.Path('scripts/build-macos-ci.sh').read_text()
 template = source.split('cat >"$APP/Contents/Info.plist" <<PLIST\n', 1)[1].split('\nPLIST\n', 1)[0]
-for key, value in {'BUNDLE_ID':'com.befeast.okilum.sprint', 'DISPLAY_VERSION':'0.1.1',
-                   'OKILUM_BUILD_VERSION':'1', 'SOURCE_SHA':sha, 'SOURCE_TREE':''}.items():
+for key, value in {'BUNDLE_ID':'com.befeast.okilum', 'DISPLAY_VERSION':'0.1.27850',
+                   'OKILUM_BUILD_VERSION':'27850', 'SOURCE_SHA':sha, 'SOURCE_TREE':'',
+                   'SPARKLE_PUBLIC_ED_KEY':'TH/Jc6vRfSSFtR3R2rLqBGBnFylMUWdKJ6dr18Ys8CY='}.items():
     template = template.replace('$' + key, value)
 info = plistlib.loads(template.encode())
-for key in list(info):
-    if key.startswith('SU'):
-        del info[key]
-# Accept explicit Dock/Finder drops without becoming a default document handler.
-for document in info.get('CFBundleDocumentTypes', []):
-    document['LSHandlerRank'] = 'None'
-# Keep the working app's URL protocol exclusive to the working app.
-info.pop('CFBundleURLTypes', None)
-for service in info.get('NSServices', []):
-    service['NSPortName'] = 'Okilum Sprint'
-info.update(CFBundleExecutable='sprint-launch', CFBundleName='Okilum Sprint',
-            CFBundleDisplayName='Okilum Sprint', SUEnableAutomaticChecks=False,
-            NSHumanReadableCopyright=f'Sprint source {sha}')
 (stage / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 PY
 # No LaunchServices environment injection; the launcher sets process env.
@@ -404,18 +407,6 @@ plutil -lint "$bundle_stage/Contents/Info.plist"
 # Reuse the approved icon rasterizer; add a bright amber sprint badge.
 env DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle" cargo run --locked --profile sprint \
     --target aarch64-apple-darwin -p okilum-shell --example macos_app_icon -- "$root/icon-rasters"
-python3 - "$root/icon-rasters" <<'PY'
-from pathlib import Path
-import sys
-for path in Path(sys.argv[1]).glob('*.rgba'):
-    size = int(path.stem)
-    rgba = bytearray(path.read_bytes())
-    for y in range(size * 2 // 3, size * 15 // 16):
-        for x in range(size * 2 // 3, size * 15 // 16):
-            offset = (y * size + x) * 4
-            rgba[offset:offset + 4] = bytes((255, 176, 0, 255))
-    path.write_bytes(rgba)
-PY
 python3 scripts/macos-icon.py "$root/icon-rasters" "$bundle_stage/Contents/Resources/Okilum.icns"
 # Inside-out Developer ID signing, as in scripts/updater/sign-bundle.sh, without
 # notarization: Sync only trusts a helper and runtime signed by this team.
@@ -433,13 +424,13 @@ codesign --force --options runtime --sign "$SPRINT_IDENTITY" "$bundle_stage"
 codesign --verify --deep --strict "$bundle_stage"
 # Target only the Sprint bundle ID. Quit must finish before replacing its bundle.
 if [[ -d $app ]]; then
-    osascript -e 'if application id "com.befeast.okilum.sprint" is running then tell application id "com.befeast.okilum.sprint" to quit'
+    osascript -e 'if application id "com.befeast.okilum" is running then tell application id "com.befeast.okilum" to quit'
     for ((attempt=0; attempt<15; attempt++)); do
-        running=$(osascript -e 'application id "com.befeast.okilum.sprint" is running')
+        running=$(osascript -e 'application id "com.befeast.okilum" is running')
         [[ $running == false ]] && break
         sleep 1
     done
-    [[ $running == false ]] || { echo 'Quit Okilum Sprint, then rerun; app was not replaced.' >&2; exit 1; }
+    [[ $running == false ]] || { echo 'Quit Okilum, then rerun; app was not replaced.' >&2; exit 1; }
 fi
 # Only these dedicated Sprint paths can be replaced; keep the previous app on failure.
 backup="$root/previous-Okilum-Sprint.app"

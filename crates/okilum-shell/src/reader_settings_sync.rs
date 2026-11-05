@@ -12,12 +12,89 @@ type DaemonIdentityForNetwork = okilum_sync_controller::daemon::DaemonIdentity;
 
 struct BackgroundSync(Entity<SyncSettings>);
 impl Global for BackgroundSync {}
+
+/// A failed background start (no network yet, say) tries again this often.
+const SERVE_RETRY: Duration = Duration::from_secs(30);
+
+/// #2589: a running app answers paired computers (catalog, vault transfers,
+/// approvals) for its whole run, not only after Settings → Sync was opened.
+/// When Sync is on and the saved journal pairs this computer or attaches a
+/// vault, the shared controller opens in the background. Settings reuses it,
+/// so the app keeps one controller and one listener.
+pub(crate) fn serve_paired(cx: &mut App) {
+    #[cfg(not(test))]
+    serve_paired_from(state_location, cx);
+    // Tests never read this computer's real Sync journal.
+    #[cfg(test)]
+    if let Some(state) = cx.try_global::<TestSyncState>().map(|s| s.0.clone()) {
+        serve_paired_from(move || Ok(state), cx);
+    }
+}
+fn serve_paired_from(
+    state: impl FnOnce() -> anyhow::Result<PathBuf> + Send + 'static,
+    cx: &mut App,
+) {
+    if !reader_features::enabled(reader_features::Feature::Sync, cx) {
+        return;
+    }
+    let access = reader_features::access(reader_features::Feature::Sync, cx);
+    let trace = reader_diagnostics::trace(cx);
+    // Off the UI thread, and offline: reading the journal never starts Sync.
+    let saved = cx.background_executor().spawn(async move {
+        state().and_then(|state| direct::has_paired_computers_or_vaults(&state))
+    });
+    cx.spawn(async move |cx| {
+        let saved = saved.await;
+        cx.update(|cx| {
+            if !access.allowed() || !reader_features::enabled(reader_features::Feature::Sync, cx) {
+                return;
+            }
+            match saved {
+                Ok(true) => start_serving(cx),
+                Ok(false) => {}
+                Err(error) => {
+                    if let Some(trace) = &trace {
+                        trace.event("sync_action_failed", failure_details("serve", &error));
+                    }
+                }
+            }
+        });
+    })
+    .detach();
+}
+fn start_serving(cx: &mut App) {
+    let view = match cx.try_global::<BackgroundSync>() {
+        Some(background) => background.0.clone(),
+        None => {
+            let view = cx.new(|_| SyncSettings::idle());
+            cx.set_global(BackgroundSync(view.clone()));
+            view
+        }
+    };
+    view.update(cx, |view, cx| {
+        if view.controller.is_none() && !view.busy {
+            view.serving = true;
+            // Like `okilum sync serve`: a refresh restores the listener this
+            // computer's pairs pin and reconciles transfers, without pairing.
+            view.run(Operation::Read, cx);
+        }
+    });
+}
+#[cfg(test)]
+struct TestSyncState(PathBuf);
+#[cfg(test)]
+impl Global for TestSyncState {}
+
 pub(super) fn shared(window: &mut Window, cx: &mut App) -> Entity<SyncSettings> {
     if let Some(background) = cx.try_global::<BackgroundSync>() {
         let view = background.0.clone();
-        if view.read(cx).snapshot.is_none() && !view.read(cx).busy {
-            view.update(cx, |view, cx| view.run(Operation::EnterPairing, cx));
-        }
+        view.update(cx, |view, cx| {
+            // A background-served controller has no fields until Settings shows it.
+            view.inputs(window, cx);
+            if view.snapshot.is_none() && !view.busy {
+                view.run(Operation::EnterPairing, cx);
+            }
+        });
         return view;
     }
     let view = cx.new(|cx| SyncSettings::new(window, cx));
@@ -41,18 +118,24 @@ pub(super) fn suspend(cx: &mut App) {
             if let Some(controller) = view.controller.take() {
                 controller.shutdown();
             }
+            control::app_released();
             view.snapshot = None;
             view.inspected = None;
             view.busy = false;
+            view.serving = false;
             view.error = None;
             view.awaiting_open = None;
             view.pending_destination = None;
             view.destination_error = None;
+            view.presentation = Default::default();
             cx.notify();
         });
     }
 }
 
+/// Also sent by `okilum sync` to the process that owns Sync (#2589).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
     Read,
     EnterPairing,
@@ -83,6 +166,7 @@ struct TestWorker(std::sync::Arc<dyn Fn(Operation) -> anyhow::Result<Output> + S
 impl Global for TestWorker {}
 
 struct Output {
+    overview: direct::Overview,
     connection_error: Option<String>,
     controller: Controller,
     snapshot: Snapshot,
@@ -94,6 +178,7 @@ struct Output {
     vaults: Vec<PathBuf>,
 }
 pub(super) struct SyncSettings {
+    presentation: presentation::Presentation,
     controller: Option<Controller>,
     snapshot: Option<Snapshot>,
     inspected: Option<ExistingVault>,
@@ -101,10 +186,13 @@ pub(super) struct SyncSettings {
     runtimes: Vec<linux_runtime::Choice>,
     #[cfg(target_os = "linux")]
     vaults: Vec<PathBuf>,
-    name: Entity<InputState>,
-    invitation: Entity<InputState>,
+    // Text fields need a window; the background service starts without one.
+    name: Option<Entity<InputState>>,
+    invitation: Option<Entity<InputState>>,
     selected_peer: Option<uuid::Uuid>,
     busy: bool,
+    /// Started for paired computers rather than by Settings: retry failures.
+    serving: bool,
     epoch: Epoch,
     lifetime: Epoch,
     error: Option<String>,
@@ -120,11 +208,19 @@ pub(super) struct SyncSettings {
 impl SyncSettings {
     pub(super) fn receive(&mut self, cx: &mut Context<Self>) {
         self.receiving = true;
+        self.presentation.wizard = Some(presentation::Step::Paste);
         self.scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     }
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut this = Self {
+        let mut this = Self::idle();
+        this.inputs(window, cx);
+        this.run(Operation::EnterPairing, cx);
+        this
+    }
+    fn idle() -> Self {
+        Self {
+            presentation: Default::default(),
             #[cfg(target_os = "linux")]
             runtimes: vec![],
             #[cfg(target_os = "linux")]
@@ -132,14 +228,11 @@ impl SyncSettings {
             controller: None,
             snapshot: None,
             inspected: None,
-            name: cx.new(|cx| {
-                let mut input = InputState::new(window, cx).placeholder("This computer’s name");
-                input.set_value(default_computer_name(), window, cx);
-                input
-            }),
-            invitation: cx.new(|cx| InputState::new(window, cx).placeholder("Paste pairing URL")),
+            name: None,
+            invitation: None,
             selected_peer: None,
             busy: false,
+            serving: false,
             epoch: Epoch::default(),
             lifetime: Epoch::default(),
             error: None,
@@ -150,9 +243,31 @@ impl SyncSettings {
             scroll: ScrollHandle::new(),
             #[cfg(target_os = "linux")]
             conflicts: Default::default(),
-        };
-        this.run(Operation::EnterPairing, cx);
-        this
+        }
+    }
+    /// The pairing fields, created on first use by a Settings window.
+    fn inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<InputState>, Entity<InputState>) {
+        let name = self
+            .name
+            .get_or_insert_with(|| {
+                cx.new(|cx| {
+                    let mut input = InputState::new(window, cx).placeholder("This computer’s name");
+                    input.set_value(default_computer_name(), window, cx);
+                    input
+                })
+            })
+            .clone();
+        let invitation = self
+            .invitation
+            .get_or_insert_with(|| {
+                cx.new(|cx| InputState::new(window, cx).placeholder("Paste pairing URL"))
+            })
+            .clone();
+        (name, invitation)
     }
     fn run(&mut self, operation: Operation, cx: &mut Context<Self>) {
         if self.busy || !reader_features::enabled(reader_features::Feature::Sync, cx) {
@@ -166,6 +281,17 @@ impl SyncSettings {
             _ => None,
         };
         let refresh = matches!(operation, Operation::Read);
+        self.presentation.retry = Some(operation.clone());
+        if !refresh {
+            self.presentation.details = false;
+            self.presentation.error_details = None;
+        }
+        if matches!(operation, Operation::Redeem(..)) {
+            self.presentation.wizard = Some(presentation::Step::Waiting);
+        }
+        if matches!(operation, Operation::Attach(..) | Operation::AttachNew(..)) {
+            self.presentation.wizard = Some(presentation::Step::Progress);
+        }
         let action = operation.action_name();
         let trace = reader_diagnostics::trace(cx);
         if !refresh {
@@ -192,6 +318,7 @@ impl SyncSettings {
                 .as_ref()
                 .zip(self.snapshot.as_ref())
                 .map(|(controller, snapshot)| Output {
+                    overview: self.presentation.overview.clone(),
                     connection_error: None,
                     controller: controller.clone(),
                     snapshot: snapshot.clone(),
@@ -244,7 +371,15 @@ impl SyncSettings {
                             guard.check()?;
                             return Ok(output);
                         }
-                        perform_scoped(controller, operation, &worker_epoch)
+                        let result = perform_scoped(controller, operation, &worker_epoch);
+                        // #2589: while the app owns Sync, `okilum sync` runs through it.
+                        #[cfg(not(test))]
+                        if let Ok(output) = &result {
+                            if worker_epoch.is_current() {
+                                control::app_owns(&output.controller);
+                            }
+                        }
+                        result
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
@@ -257,11 +392,20 @@ impl SyncSettings {
                         return;
                     }
                     this.busy = false;
+                    let succeeded = result.is_ok();
                     match result {
                         Ok(output) => {
+                            if action == "reject" {
+                                this.presentation.wizard = None;
+                            }
                             this.publish(output, cx);
                         }
                         Err(error) => {
+                            this.presentation.transfers.clear();
+                            this.presentation.error_details = failure_details(action, &error)
+                                ["error"]
+                                .as_str()
+                                .map(str::to_owned);
                             if let Some(trace) = &trace {
                                 trace.event("sync_action_failed", failure_details(action, &error));
                             }
@@ -274,6 +418,11 @@ impl SyncSettings {
                                 || message.contains("reject")
                                 || message.contains("cancel")
                             {
+                                if message.contains("expired") {
+                                    this.presentation.wizard = Some(presentation::Step::Expired);
+                                } else {
+                                    this.presentation.wizard = Some(presentation::Step::Paste);
+                                }
                                 if let Some(snapshot) = this.snapshot.as_mut() {
                                     snapshot.pending = None;
                                     snapshot.offer_url = None;
@@ -282,6 +431,7 @@ impl SyncSettings {
                             }
                             let message = user_error(&error);
                             if let Some(vault) = destination_vault {
+                                this.presentation.wizard = Some(presentation::Step::Vaults);
                                 this.destination_error = Some((vault, message.clone()));
                             }
                             this.error = Some(message);
@@ -289,6 +439,9 @@ impl SyncSettings {
                     }
                     cx.notify();
                     if let Some(operation) = this.pending_destination.take() {
+                        this.run(operation, cx);
+                    } else if succeeded && !this.presentation.transfers.is_empty() {
+                        let operation = this.presentation.transfers.pop_front().unwrap();
                         this.run(operation, cx);
                     } else {
                         this.schedule_refresh(cx);
@@ -300,6 +453,58 @@ impl SyncSettings {
         .detach();
     }
     fn publish(&mut self, output: Output, cx: &mut Context<Self>) {
+        self.presentation.overview = output.overview;
+        if let Some(pending) = output.snapshot.pending.as_ref().filter(|p| p.incoming) {
+            if self.presentation.notified != Some(pending.request_id) {
+                self.presentation.notified = Some(pending.request_id);
+                let name = pending.name.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        presentation::notify_approval(&name);
+                    })
+                    .detach();
+            }
+        }
+        if self.presentation.wizard.is_some()
+            && self.presentation.wizard != Some(presentation::Step::Computer)
+        {
+            if output.snapshot.offer_url.is_some() && output.snapshot.pending.is_none() {
+                self.presentation.wizard = Some(presentation::Step::Link);
+            } else if output
+                .snapshot
+                .pending
+                .as_ref()
+                .is_some_and(|p| !p.incoming)
+            {
+                self.presentation.wizard = Some(presentation::Step::Waiting);
+            } else if self.presentation.wizard == Some(presentation::Step::Link)
+                && self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.peers.len() < output.snapshot.peers.len())
+            {
+                self.presentation.wizard = None;
+            } else if !output.snapshot.catalog.is_empty() {
+                if !matches!(
+                    self.presentation.wizard,
+                    Some(presentation::Step::Progress | presentation::Step::Computer)
+                ) {
+                    self.presentation.wizard = Some(presentation::Step::Vaults);
+                }
+            } else if self.presentation.wizard == Some(presentation::Step::Link)
+                && output.snapshot.pending.is_none()
+                && self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.offer_url.is_some())
+                && self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.peers.len() == output.snapshot.peers.len())
+            {
+                self.presentation.wizard = Some(presentation::Step::Expired);
+            }
+        }
         self.error = output.connection_error;
         // Refreshes must not pull someone away while they read an unchanged step.
         let changed = self.snapshot.as_ref().is_none_or(|old| {
@@ -356,12 +561,19 @@ impl SyncSettings {
             }
         }
         self.snapshot = Some(output.snapshot);
+        // Approval banners can be visible in other Reader/Settings windows.
+        cx.refresh_windows();
         if let Some(inspected) = output.inspected {
             self.inspected = Some(inspected);
+            self.presentation.wizard = Some(presentation::Step::Existing);
         }
     }
     fn schedule_refresh(&self, cx: &mut Context<Self>) {
-        let Some(interval) = self.snapshot.as_ref().and_then(sync_refresh_interval) else {
+        let interval = match &self.snapshot {
+            Some(snapshot) => sync_refresh_interval(snapshot),
+            None => self.serving.then_some(SERVE_RETRY),
+        };
+        let Some(interval) = interval else {
             return;
         };
         let epoch = self.epoch.ticket();
@@ -376,7 +588,8 @@ impl SyncSettings {
         .detach();
     }
     fn start_pairing(&mut self, redeem: bool, cx: &mut Context<Self>) {
-        let name = self.name.read(cx).value().trim().to_string();
+        self.receiving = redeem;
+        let name = input_text(&self.name, cx);
         if direct::validate_name(&name).is_err() {
             self.error = Some(
                 "Give this computer a name of up to 100 bytes without control characters.".into(),
@@ -385,13 +598,16 @@ impl SyncSettings {
             return;
         }
         if redeem {
-            let invitation = self.invitation.read(cx).value().trim().to_string();
+            let invitation = input_text(&self.invitation, cx);
             if invitation.is_empty() {
                 self.error = Some("Paste the pairing URL from your other computer.".into());
                 cx.notify();
                 return;
             }
             if let Err(error) = direct::validate_pairing_input(&invitation, &name) {
+                if error.to_string().to_lowercase().contains("expired") {
+                    self.presentation.wizard = Some(presentation::Step::Expired);
+                }
                 self.error = Some(user_error(&error));
                 cx.notify();
                 return;
@@ -409,6 +625,7 @@ impl SyncSettings {
         cx: &mut Context<Self>,
     ) {
         let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            self.presentation.picking_vault = false;
             self.error =
                 Some("Your home folder is unavailable. Choose an existing empty folder.".into());
             cx.notify();
@@ -428,8 +645,9 @@ impl SyncSettings {
                     Ok(Ok(Some(path))) => {
                         this.accept_destination(Operation::AttachNew(peer, vault, path), cx);
                     }
-                    Ok(Ok(None)) => {} // Explicit dialog cancellation.
+                    Ok(Ok(None)) => { this.presentation.picking_vault=false; }
                     _ => {
+                        this.presentation.picking_vault=false;
                         let message = "The folder dialog could not return a local folder. Choose the folder again, or use an existing empty folder.".to_string();
                         this.destination_error = Some((vault, message.clone()));
                         this.error = Some(message);
@@ -441,6 +659,17 @@ impl SyncSettings {
         .detach();
     }
     fn accept_destination(&mut self, operation: Operation, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.presentation.picking_vault) {
+            if let Operation::Attach(_, ref vault, _) | Operation::AttachNew(_, ref vault, _) =
+                operation
+            {
+                self.presentation
+                    .destinations
+                    .insert(vault.clone(), operation);
+                cx.notify();
+                return;
+            }
+        }
         // A periodic refresh may still own the worker when the native picker
         // answers. Keep explicit user intent until that worker publishes.
         if self.busy {
@@ -465,25 +694,37 @@ impl SyncSettings {
         });
         let epoch = self.lifetime.ticket();
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = picker.await {
-                if let Some(path) = paths.into_iter().next() {
-                    let _ = this.update(cx, |this, cx| {
-                        if !epoch.is_current() {
-                            return;
-                        }
-                        this.accept_destination(
-                            match remote {
-                                Some((peer, vault)) => Operation::Attach(peer, vault, path),
-                                None => Operation::Inspect(path),
-                            },
-                            cx,
-                        );
-                    });
+            let path = picker
+                .await
+                .ok()
+                .and_then(|result| result.ok())
+                .flatten()
+                .and_then(|paths| paths.into_iter().next());
+            let _ = this.update(cx, |this, cx| {
+                if !epoch.is_current() {
+                    return;
                 }
-            }
+                if let Some(path) = path {
+                    this.accept_destination(
+                        match remote {
+                            Some((peer, vault)) => Operation::Attach(peer, vault, path),
+                            None => Operation::Inspect(path),
+                        },
+                        cx,
+                    );
+                } else {
+                    this.presentation.picking_vault = false;
+                }
+            });
         })
         .detach();
     }
+}
+fn input_text(input: &Option<Entity<InputState>>, cx: &App) -> String {
+    input
+        .as_ref()
+        .map(|input| input.read(cx).value().trim().to_string())
+        .unwrap_or_default()
 }
 fn destination_name(label: &str) -> String {
     let name: String = label
@@ -535,12 +776,16 @@ fn locations() -> anyhow::Result<(PathBuf, Vec<PathBuf>)> {
         }
         configs
     };
+    Ok((state_location()?, configs))
+}
+/// This computer's direct journal folder.
+fn state_location() -> anyhow::Result<PathBuf> {
     #[cfg(target_os = "linux")]
     let state = linux_runtime::state_path(&reader_history::state_directory()?)?;
     #[cfg(target_os = "macos")]
     let state =
         mac_direct_state(&okilum_sync_controller::sidecar::macos::account_state_directory()?)?;
-    Ok((state, configs))
+    Ok(state)
 }
 fn ensure_private_sync_directory(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
@@ -606,7 +851,16 @@ fn perform_scoped(
     operation: Operation,
     ticket: &Ticket,
 ) -> anyhow::Result<Output> {
+    let _serial = serial_actions();
     perform_with_locations(controller, operation, ticket, locations)
+}
+/// One Sync action at a time per process: Settings, `okilum sync serve` and the
+/// commands other processes forward to this one share a controller (#2589).
+fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
+    static ACTIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ACTIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 fn perform_with_locations(
     controller: Option<Controller>,
@@ -805,6 +1059,7 @@ fn perform_with_locations(
             runtime
         };
         Ok(Output {
+            overview: controller.overview().unwrap_or_default(),
             #[cfg(target_os = "linux")]
             connection_error: linux_runtime::connection_error(&runtime),
             #[cfg(target_os = "macos")]
@@ -829,7 +1084,7 @@ fn perform_with_locations(
 fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
     use anyhow::Context as _;
     use okilum_sync_controller::sidecar::{
-        macos::bootstrap::{connect_current_app, ConnectOutcome, SigningPolicy},
+        macos::bootstrap::{connect_current_app, ConnectBudget, ConnectOutcome, SigningPolicy},
         supervisor::ipc::code_requirement::CodeRequirement,
     };
     let team = option_env!("OKILUM_SIGNING_TEAM_ID").context("Sync signing policy unavailable")?;
@@ -839,7 +1094,9 @@ fn connect_managed_runtime(controller: &Controller) -> anyhow::Result<()> {
         helper: CodeRequirement::team_and_identifier(team, &format!("{identifier}.sync"))?,
         runtime: CodeRequirement::team_and_identifier(team, &format!("{identifier}.syncthing"))?,
     };
-    match connect_current_app(true, policy, Duration::from_secs(45))
+    // A first Connect prepares Sync and waits for its first helper launch, which
+    // on macOS outlasted a single shared budget (#2589).
+    match connect_current_app(true, policy, ConnectBudget::CONNECT)
         .context("macOS Sync connection setup failed")?
     {
         ConnectOutcome::Ready {
@@ -871,7 +1128,7 @@ fn user_error(error: &anyhow::Error) -> String {
     } else if text.contains("sync setup could not verify") {
         "Sync setup could not verify the bundled connection. Refresh to retry.".into()
     } else if text.starts_with("not connected to ") {
-        error.to_string()
+        "The other computer could not be reached. Keep Okilum open there and check that both computers have a network connection.".into()
     } else if cfg!(target_os = "linux") && text.contains("ignore policy") {
         "This vault’s .stignore needs review before sharing. Required exclusions: .okilum-index, .okilum-save-*, /.claude/worktrees and /worktrees. Includes and negated rules need a separately reviewed policy.".into()
     } else if cfg!(target_os = "linux") && text.contains("existing synced vault") {
@@ -898,7 +1155,8 @@ fn user_error(error: &anyhow::Error) -> String {
     } else if text.contains("reject") {
         "The other computer declined pairing. Create a new pairing URL to try again.".into()
     } else {
-        format!("Sync could not finish this step. {}", short_cause(error))
+        "Sync could not finish this step. Check the connection on both computers, then try again."
+            .into()
     }
 }
 
@@ -910,7 +1168,7 @@ fn prepare_mac_runtime(
 ) -> anyhow::Result<()> {
     // Creating an invitation uses the app's pairing listener and identity only.
     // Opening Settings and Add computer must not depend on SMAppService approval,
-    // global process inventory, signing checks or the 45-second runtime startup.
+    // global process inventory, signing checks or the bounded runtime startup.
     if matches!(
         operation,
         Operation::Redeem(..) | Operation::Attach(..) | Operation::AttachNew(..)
@@ -923,8 +1181,15 @@ fn prepare_mac_runtime(
 
 #[path = "reader_settings_sync/failure.rs"]
 mod failure;
-use failure::{failure_details, short_cause};
+use failure::failure_details;
 
+#[path = "reader_settings_sync/presentation.rs"]
+pub(super) mod presentation;
+
+#[path = "reader_settings_sync/cli.rs"]
+pub(crate) mod cli;
+#[path = "reader_settings_sync/control.rs"]
+mod control;
 #[path = "reader_settings_sync/epoch.rs"]
 mod epoch;
 #[cfg(test)]
@@ -943,3 +1208,6 @@ mod legacy;
 
 #[path = "reader_settings_sync/destination.rs"]
 mod destination;
+
+#[path = "reader_settings_sync/advanced.rs"]
+mod advanced;

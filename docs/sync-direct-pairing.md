@@ -35,6 +35,16 @@ A lifetime lock prevents two controllers from owning the same journal.
   pairing. This association itself never changes peers, folder settings or files.
 - `begin_pairing(name)` opens the application LAN listener and creates the URL.
   `begin_pairing_at` supplies an explicit bind/advertised IP for isolated fixtures.
+  A computer whose paired computers already pin an endpoint on it invites at
+  that same endpoint instead of a new random port, so every computer reaches
+  it at one address (#2589).
+- `refresh()` listens again on every distinct endpoint a paired computer pins on
+  this computer, not only the latest invitation's, so computers paired through
+  earlier invitations on other ports keep reaching it without pairing again.
+  A pin is this computer's when it shares the address this computer last
+  listened on and is not a computer this one joined (its catalog or a received
+  vault). An address no longer assigned here is skipped; any other bind failure
+  (a port taken by another program) is an error and never replaces a pin.
 - `redeem(url, name)`, `refresh()`, `approve(request_id)`, `reject(request_id)` and
   `cancel()` implement the confirmation ceremony. Only incoming pending requests
   can be approved locally. The first authenticated requester claims an invitation;
@@ -58,6 +68,27 @@ A lifetime lock prevents two controllers from owning the same journal.
   application's listening socket. It performs no network request, filesystem
   operation or Syncthing lifecycle action. Last-controller drop also terminates
   its listener. Disabling Sync must revoke application NetworkAccess and call it.
+- `has_paired_computers_or_vaults(state)` reads the saved journal without taking
+  its lock or creating it. When it is true and Sync is on, the desktop app opens
+  the controller in the background at launch (and when Sync is turned back on)
+  and refreshes it like `okilum sync serve`, so paired computers are answered
+  without opening Settings → Sync (#2589). Settings reuses that controller.
+
+### `okilum sync` while another process owns Sync (#2589)
+
+One process owns a computer's Sync journal (its lifetime lock). When that owner
+is `okilum sync serve` (the always-on hub's service) or the app with Sync
+started, it listens on `control.sock` inside the private journal folder (0700,
+socket 0600). Other `okilum sync` commands of the same user find it there and
+run each step through it, so `invite --approve-first` pairs a new computer
+while the hub keeps serving. Output and exit codes are the same as when the
+command owns Sync itself. Both ends check the other's user ID; there is no TCP
+listener. Paths are made absolute before they are sent. A different control
+protocol asks for a restart of the owner after updating. A socket left by an
+owner that exited answers nothing and is replaced by the next owner. While the
+app runs without a started Sync controller, commands still refuse with exit 3;
+`--quit-app` quits it as before. The client and the owner must use the same
+profile (`OKILUM_STATE_DIR`, XDG directories). Windows has no Sync commands.
 
 `configuration_paths()` returns `Result<Vec<PathBuf>>`. Linux includes its existing
 process/config inventory; macOS includes standard user configuration paths only.
@@ -124,8 +155,7 @@ network/discovery/relay/lifecycle settings are retained. Syncthing REST has no C
 external administrative writers still require coordination.
 
 Current explicit missing boundaries: fresh macOS native absence inventory and
-signed-package/offline staging composition; native acceptance;
-automatic application listener restoration after process restart; symmetric
+signed-package/offline staging composition; native acceptance; symmetric
 catalog serving from a formerly receiving computer; general catalog authorization
 changes and peer removal (ordinary-source sharing below grants its own additions). A running source controller serves additional authorized
 vault selections without a new URL, and paired identities/capabilities are durable,
@@ -210,15 +240,17 @@ second daemon or an implicit takeover. Ordinary Refresh never bootstraps.
 
 Action completions publish the new runtime and controller snapshot immediately.
 An invitation, pending confirmation, initial receive or paired computer keeps the
-revocable background refresh alive. The current status, URL/Copy, confirmation,
-waiting state and error are above the independently scrollable remaining steps.
-The owned Settings window keeps its opaque surface and full content height; Sync
-uses one internal scroll viewport rather than nested unbounded content.
+revocable background refresh alive. The current page follows layout A (#2615): status, Computers, Vaults, and
+collapsed Advanced. Pairing steps live in a native modal with contained focus;
+incoming approval is also visible in Reader and other Settings sections.
+Technical errors stay behind Details, with the complete redacted chain logged
+as sync_action_failed. See [Sync settings](sync-settings.md).
 
 After approval, the receiving computer chooses a vault and a local folder. The
 new-folder dialog proposes a safe single component of the vault name under HOME;
 the existing-folder picker remains available. Creating that explicitly chosen
-folder reuses the new-vault empty-directory guard. The controller still refuses
+folder is staged until Start first sync, which reuses the new-vault
+empty-directory guard for each chosen vault. The controller still refuses
 unknown nonempty destinations and retains its receiveonly/readiness/promotion
 rules. A vault selected in this session opens automatically after the controller
 reports initial receive complete; refreshes never open unrelated attached vaults.

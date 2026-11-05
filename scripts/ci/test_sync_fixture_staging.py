@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import importlib.util
 import io
+import multiprocessing
 import os
 from pathlib import Path
 import subprocess
@@ -125,7 +126,11 @@ class FixtureStagingTests(unittest.TestCase):
 
     def test_concurrent_cold_staging_and_exec(self):
         publish = helper.publish
-        barrier = threading.Barrier(8, timeout=10)
+        # Real fixture callers are separate helper processes. Forking exec
+        # probes from staging threads can transiently inherit another thread's
+        # open temp writer and manufacture ETXTBSY even after atomic publish.
+        context = multiprocessing.get_context('fork')
+        barrier = context.Barrier(8, timeout=10)
         def synchronized(destination, data, mode):
             if destination.name == 'syncthing':
                 barrier.wait()  # Every caller must take the publication path.
@@ -133,11 +138,21 @@ class FixtureStagingTests(unittest.TestCase):
             if destination.name == 'syncthing':
                 subprocess.run([str(destination), '-c', 'pass'], check=True)
         with patch.object(helper, 'publish', side_effect=synchronized):
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                binaries = list(pool.map(lambda _: helper.stage(self.cache), range(8)))
-        self.assertEqual(len(set(binaries)), 1)
-        self.assertEqual(binaries[0].read_bytes(), self.executable)
-        self.assertEqual(binaries[0].stat().st_mode & 0o777, 0o555)
+            processes = [context.Process(target=helper.stage, args=(self.cache,)) for _ in range(8)]
+            for process in processes:
+                process.start()
+            try:
+                for process in processes:
+                    process.join(timeout=20)
+                    self.assertEqual(process.exitcode, 0, 'every concurrent publisher must execute its result')
+            finally:
+                for process in processes:
+                    if process.is_alive():
+                        process.kill()
+                    process.join()
+        binary = self.cache / helper.BINARY_SHA256 / 'syncthing'
+        self.assertEqual(binary.read_bytes(), self.executable)
+        self.assertEqual(binary.stat().st_mode & 0o777, 0o555)
         self.assertEqual(list(self.cache.rglob('.stage-*')), [])
 
     def test_spawn_during_publication_has_no_writable_descriptor(self):

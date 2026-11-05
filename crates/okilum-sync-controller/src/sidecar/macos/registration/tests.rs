@@ -196,7 +196,7 @@ fn registration_without_live_signed_generation_never_grants_second_dispatch() {
 }
 #[test]
 fn existing_registration_in_every_native_state_is_inert_without_live_peer() {
-    for status in [Status::Enabled, Status::RequiresApproval, Status::NotFound] {
+    for status in [Status::Enabled, Status::RequiresApproval] {
         let world = World::new(true);
         world.status.set(status);
         assert_eq!(
@@ -468,4 +468,16 @@ fn a_competing_confirmed_click_cannot_create_a_second_daemon() {
     );
     assert!(exercised.get());
     assert_eq!(world.calls.get(), 1);
+}
+#[test]
+fn never_registered_agent_reported_not_found_registers_once() {
+    // #2589: BTM "record not found" before the first registration on macOS 15.
+    let world = World::new(true);
+    world.status.set(Status::NotFound);
+    let _ = world.guard().register_prepared();
+    assert_eq!(
+        world.calls.get(),
+        1,
+        "NotFound must permit the one registration"
+    );
 }

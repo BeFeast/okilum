@@ -1,4 +1,4 @@
-# Hourly green-main beta; hosted shipping only, corporate M4 CI stays disabled.
+# Hourly newest-main beta (no certification gate, #2589); hosted shipping only, corporate M4 CI stays disabled.
 name: macos-release
 
 on:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       hourly_source:
-        description: 'Internal source-pinned hourly retry; certified first-parent main source'
+        description: 'Internal source-pinned hourly retry; newest first-parent main source'
         required: false
         default: ''
       full_acceptance:
