@@ -552,6 +552,7 @@ impl ProjectView {
                     .await
                     {
                         Ok(stream) => {
+                            let phases = stream.phases();
                             let cancel = stream.cancellation().ok();
                             if !this
                                 .update_in(cx, |this, _, cx| {
@@ -559,6 +560,7 @@ impl ProjectView {
                                         return false;
                                     }
                                     this.native.cancel = cancel;
+                                    this.ttfm.socket_connected(phases);
                                     // The ticket/upgrade authenticated this native
                                     // connection. Warm config alongside history.
                                     this.ensure_native_catalog(cx);
@@ -602,14 +604,21 @@ impl ProjectView {
                 }
                 let mut stream = socket.take().unwrap();
                 let model = retained.clone();
-                let (stream, result, accepted_sync) =
+                let (stream, result, accepted_sync, snapshot_at) =
                     recovery::stream_io(cx.background_executor(), move || {
+                        let mut snapshot_at = None;
                         let result = stream.receive(|updates| {
                             let mut r = model.lock().unwrap();
                             if r.epoch != epoch {
                                 return Err(StreamError::Closed);
                             }
                             r.model.apply(updates)?;
+                            if updates
+                                .iter()
+                                .any(|update| matches!(update, ThreadUpdate::Snapshot { .. }))
+                            {
+                                snapshot_at = Some(std::time::Instant::now());
+                            }
                             synchronized |= updates
                                 .iter()
                                 .any(|update| matches!(update, ThreadUpdate::Synchronized));
@@ -623,7 +632,7 @@ impl ProjectView {
                                 r.valid = true;
                             }
                         }
-                        (stream, result, synchronized)
+                        (stream, result, synchronized, snapshot_at)
                     })
                     .await;
                 synchronized = accepted_sync;
@@ -647,6 +656,9 @@ impl ProjectView {
                         // authority only from that same retained model, never a
                         // synthetic ready state while the socket is reconnecting.
                         let ready = result.is_ok() && synchronized;
+                        if let Some(at) = snapshot_at {
+                            this.ttfm.mark(super::ttfm::Phase::Thread, at);
+                        }
                         if ready && !this.native.stream_ready && changes.actions.is_none() {
                             changes.actions = Some(r.model.action_state());
                         }

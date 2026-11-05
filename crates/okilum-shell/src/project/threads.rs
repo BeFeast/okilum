@@ -122,10 +122,10 @@ impl ProjectView {
                 }
                 if socket.is_none() {
                     let connection = client.clone();
-                    match cx
-                        .background_executor()
-                        .spawn(async move { connection.subscribe_shell() })
-                        .await
+                    match super::native::recovery::stream_io(cx.background_executor(), move || {
+                        connection.subscribe_shell()
+                    })
+                    .await
                     {
                         Ok(stream) => {
                             let cancel = stream.cancellation().ok();
@@ -186,15 +186,21 @@ impl ProjectView {
                 }
                 let mut stream = socket.take().unwrap();
                 let directory = model.clone();
-                let (stream, result, changed) = cx
-                    .background_executor()
-                    .spawn(async move {
+                let (stream, result, changed, snapshot_at) =
+                    super::native::recovery::stream_io(cx.background_executor(), move || {
                         let mut changed = false;
+                        let mut snapshot_at = None;
                         let result = stream.receive(|updates| {
                             changed = directory.lock().unwrap().apply(updates);
+                            if updates
+                                .iter()
+                                .any(|update| matches!(update, shell::Update::Snapshot(_)))
+                            {
+                                snapshot_at = Some(std::time::Instant::now());
+                            }
                             Ok(())
                         });
-                        (stream, result, changed)
+                        (stream, result, changed, snapshot_at)
                     })
                     .await;
                 let terminal_error = matches!(
@@ -214,6 +220,9 @@ impl ProjectView {
                         if terminal_error || !client.access_allowed() {
                             this.threads.handoff_revoked = Some(client.clone());
                             this.draft_handoff_connection_changing();
+                        }
+                        if let Some(at) = snapshot_at {
+                            this.ttfm.mark(super::ttfm::Phase::Shell, at);
                         }
                         if changed || this.threads.error != message {
                             this.threads.error = message;

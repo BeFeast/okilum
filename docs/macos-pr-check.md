@@ -34,6 +34,9 @@ native regressions. This includes all eleven portable native Manager modules
 ProjectView, models and connections tests. Each filter must list at least one
 test before executing; each suite reports its passed/failed/ignored counts.
 A failing suite remains a failure even if later independent suites pass.
+The three `manager_ttfm_` regressions also run as an explicit non-empty group;
+they live under `project::feed::` and `project::native::`, so both module filters
+cover them too. `project::ttfm` contains the measurement implementation only.
 Link the exact-head hosted run and native Manager counts in the PR.
 
 The shell build script defines `cfg(native_manager)` on Linux and macOS only.

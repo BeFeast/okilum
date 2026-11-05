@@ -75,6 +75,10 @@ cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 # Compile every workspace test target, including test-only cfg branches and integration tests.
 cargo "${cargo_args[@]}" --workspace --no-run
 
+# #2518: run the real-paint, missing-snapshot and row-measurement controls as
+# an explicit non-empty group, in addition to their feed/native module suites.
+run_tests okilum-shell --bins manager_ttfm_
+
 # #2517: compile and execute every native Manager module, including GPUI tests.
 # Each filter has its own positive control and libtest passed/failed counts.
 manager_skip=()

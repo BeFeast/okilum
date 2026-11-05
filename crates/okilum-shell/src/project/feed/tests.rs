@@ -926,3 +926,36 @@ fn prompt_history_uses_native_chronology_and_row_keys_across_id_retirement(
         "retired ID resolves through newest identical prompt"
     );
 }
+
+#[gpui::test]
+fn manager_ttfm_row_construction_does_not_count_as_visible_paint(cx: &mut TestAppContext) {
+    let (view, visual, _temp) = fixture(cx, 1);
+    let feed = view.read_with(visual, |view, _| view.feed.clone());
+    let ttfm = feed.update(visual, |feed, cx| {
+        let ttfm = super::super::ttfm::Ttfm::open(std::time::Instant::now(), true, cx);
+        feed.ttfm = Some(ttfm.clone());
+        feed.row_calls.set(0);
+        // MessageScroller also builds rows solely to measure their height.
+        drop(feed.row(0, cx));
+        assert_eq!(
+            feed.row_calls.get(),
+            1,
+            "positive control: a real row was built"
+        );
+        assert!(
+            ttfm.needs_paint(),
+            "row construction must not complete TTFM"
+        );
+        cx.notify();
+        ttfm
+    });
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    visual.run_until_parked();
+    assert!(
+        !ttfm.needs_paint(),
+        "positive control: a visible row actually painted"
+    );
+}
