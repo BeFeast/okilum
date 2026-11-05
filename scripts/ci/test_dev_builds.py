@@ -460,6 +460,8 @@ class LinuxScript(unittest.TestCase):
         build = (ROOT / 'scripts/appimage/build.sh').read_text()
         self.assertIn('local_dev=${OKILUM_LOCAL_DEV:-0}', build)
         self.assertIn('export NO_STRIP=1', build)
+        # check-elf.py needs DT_RELACOUNT; mold (a common local linker) omits it.
+        self.assertIn('-C link-arg=-fuse-ld=bfd"', build.split('\nelse\n', 1)[0])
         self.assertIn('[[ $local_dev == 1 ]] || python3 ../../scripts/appimage/provenance.py', build)
         # CI keeps its Ubuntu 22.04 guard and run-number build.
         ci = build.split('\nelse\n', 1)[1].split('\nfi\n', 1)[0]

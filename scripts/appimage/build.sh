@@ -18,6 +18,9 @@ if [[ $local_dev == 1 ]]; then
     # Production identity: never the PR acceptance harness, whatever the shell has.
     unset GITHUB_REF_NAME
     export NO_STRIP=1
+    # Link like the CI job (forgejo-linux.yml): check-elf.py needs the
+    # DT_RELACOUNT that GNU bfd writes and mold does not. The last -fuse-ld wins.
+    export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-fuse-ld=bfd"
     rm -rf dist/appimage/AppDir dist/appimage/Okilum-x86_64.AppImage
 else
     : "${GITHUB_SHA:?}"

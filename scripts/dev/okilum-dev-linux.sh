@@ -425,8 +425,9 @@ printf '\nBuilding %s %s (profile %s, target %s)\n' "$ref" "$short_sha" "${OKILU
 build_started=$SECONDS
 if ! CARGO_TARGET_DIR="$root/target" OKILUM_LOCAL_DEV=1 OKILUM_BUILD_VERSION="$build" \
     OKILUM_CARGO_PROFILE="${OKILUM_DEV_PROFILE:-release}" bash scripts/appimage/build.sh; then
-    echo "Build failed; first compiler error (full log: $log):" >&2
-    awk '/^error/ {print; n=8} n>0 {if ($0 !~ /^error/) print; n--}' "$log" | head -25 >&2 || true
+    echo "Build failed (full log: $log). First compiler error, or else the last lines:" >&2
+    { awk '/^error/ {print; n=8} n>0 {if ($0 !~ /^error/) print; n--}' "$log" | head -25 | grep . ||
+        tail -n 20 "$log"; } >&2 || true
     exit 1
 fi
 appimage="$src/dist/appimage/Okilum-x86_64.AppImage"
