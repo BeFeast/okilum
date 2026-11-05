@@ -193,14 +193,16 @@ impl Controller {
         if managed(&self.configuration_paths()?)?.is_none() {
             return Ok(());
         }
-        let (endpoint, peers) = {
+        let (served, peers) = {
             let db = self.shared.db.lock().unwrap();
-            (db.endpoint, db.peers.values().cloned().collect::<Vec<_>>())
+            (served(&db), db.peers.values().cloned().collect::<Vec<_>>())
         };
         for peer in peers {
             // Reapply durable hints at startup; an offline computer cannot erase them.
             self.apply_addresses(&peer, &peer.addresses)?;
-            if endpoint != Some(peer.endpoint) {
+            // A computer that joined this one reaches it at one of this
+            // computer's own endpoints; calling that would call this computer.
+            if !served.contains(&peer.endpoint) {
                 // Refresh transport hints without changing the user's selected
                 // catalog when more than one computer is paired.
                 match self.call(

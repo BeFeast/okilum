@@ -156,7 +156,11 @@ struct Shared {
     state: PathBuf,
     configs: Mutex<Vec<PathBuf>>,
     db: Mutex<Database>,
-    listener: Mutex<Option<Listener>>,
+    /// One accept loop per advertised endpoint: the current invitation's and
+    /// every other endpoint a paired computer pins on this computer (#2589).
+    listeners: Mutex<BTreeMap<SocketAddr, Listener>>,
+    /// Open paired-channel connections across all listeners.
+    connections: Arc<AtomicUsize>,
     stopped: AtomicBool,
     access: okilum_sync::NetworkAccess,
     observation_generation: Uuid,
@@ -301,7 +305,8 @@ impl Controller {
                 state,
                 configs: Mutex::new(configs),
                 db: Mutex::new(db),
-                listener: Mutex::new(None),
+                listeners: Mutex::new(BTreeMap::new()),
+                connections: Arc::new(AtomicUsize::new(0)),
                 stopped: AtomicBool::new(false),
                 access: okilum_sync::NetworkAccess::current(),
                 observation_generation: Uuid::new_v4(),
@@ -340,12 +345,12 @@ impl Controller {
         }
         Ok(())
     }
-    /// Nonblocking capability revocation. It closes the application listener and
+    /// Nonblocking capability revocation. It closes the application listeners and
     /// makes retained clones unable to send. It never stops an external daemon.
     pub fn shutdown(&self) {
         self.shared.stopped.store(true, Ordering::Release);
-        if let Ok(mut listener) = self.shared.listener.try_lock() {
-            listener.take();
+        if let Ok(mut listeners) = self.shared.listeners.try_lock() {
+            listeners.clear();
         }
     }
     /// The name this computer last offered or requested pairing under.
@@ -475,12 +480,79 @@ impl Controller {
         self.save(&db)?;
         snapshot(&db)
     }
+    /// The listener a new invitation advertises. A computer whose paired
+    /// computers already pin an endpoint here invites at that same endpoint
+    /// (#2589): a fresh random port per invitation left earlier computers
+    /// pinned to a port nobody listened on again. Only an explicit bind port, or
+    /// no usable pinned endpoint, opens a new listener.
     fn listen(&self, bind: SocketAddr, advertised: IpAddr) -> Result<()> {
         self.check()?;
-        let mut current = self.shared.listener.lock().unwrap();
-        if current.is_some() {
+        if bind.port() == 0 {
+            // Serving the other pins is best effort here; refresh reports failures.
+            let _ = self.serve_pinned();
+        }
+        let (current, pinned) = {
+            let db = self.shared.db.lock().unwrap();
+            (db.endpoint, served(&db))
+        };
+        let mut listeners = self.shared.listeners.lock().unwrap();
+        if current.is_some_and(|current| listeners.contains_key(&current)) {
             return Ok(());
         }
+        let reused = if bind.port() == 0 {
+            // Prefer the advertised address; another live pin keeps one endpoint.
+            let live: Vec<_> = pinned
+                .into_iter()
+                .filter(|endpoint| listeners.contains_key(endpoint))
+                .collect();
+            live.iter()
+                .find(|endpoint| endpoint.ip() == advertised)
+                .or_else(|| live.first())
+                .copied()
+        } else {
+            None
+        };
+        let endpoint = match reused {
+            Some(endpoint) => endpoint,
+            None => self.start(&mut listeners, bind, advertised)?,
+        };
+        drop(listeners);
+        self.shared.db.lock().unwrap().endpoint = Some(endpoint);
+        Ok(())
+    }
+    /// Listen again on every endpoint a paired computer pins on this computer.
+    /// An address no longer assigned to this computer is skipped. Any other
+    /// failure, such as a port now taken by another program, is returned after
+    /// the remaining endpoints were tried: never permission to replace a pin.
+    fn serve_pinned(&self) -> Result<()> {
+        self.check()?;
+        let pinned = served(&self.shared.db.lock().unwrap());
+        let mut listeners = self.shared.listeners.lock().unwrap();
+        let mut failure = None;
+        for endpoint in pinned {
+            if listeners.contains_key(&endpoint) {
+                continue;
+            }
+            // Rebind the exact advertised address and port.
+            match self.start(&mut listeners, endpoint, endpoint.ip()) {
+                Ok(_) => {}
+                Err(error) if not_local(&error) => {}
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+    /// Start one accept loop on `bind`, advertised at `advertised` and the bound
+    /// port, and return that advertised endpoint.
+    fn start(
+        &self,
+        listeners: &mut BTreeMap<SocketAddr, Listener>,
+        bind: SocketAddr,
+        advertised: IpAddr,
+    ) -> Result<SocketAddr> {
+        self.check()?;
         let listener = TcpListener::bind(bind)
             .or_else(|wildcard_error| {
                 if bind.ip().is_unspecified() && bind.port() == 0 {
@@ -496,12 +568,11 @@ impl Controller {
             .context("cannot start LAN pairing listener")?;
         listener.set_nonblocking(true)?;
         let endpoint = SocketAddr::new(advertised, listener.local_addr()?.port());
-        self.shared.db.lock().unwrap().endpoint = Some(endpoint);
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let socket = listener.try_clone()?;
         let weak = Arc::downgrade(&self.shared);
-        let connections = Arc::new(AtomicUsize::new(0));
+        let connections = self.shared.connections.clone();
         thread::Builder::new()
             .name("okilum-pairing".into())
             .spawn(move || {
@@ -551,8 +622,8 @@ impl Controller {
                     }
                 }
             })?;
-        *current = Some(Listener { stop, socket });
-        Ok(())
+        listeners.insert(endpoint, Listener { stop, socket });
+        Ok(endpoint)
     }
     pub fn redeem(&self, url: &str, name: &str) -> Result<Snapshot> {
         self.check()?;
@@ -602,19 +673,11 @@ impl Controller {
     }
     pub fn refresh(&self) -> Result<Snapshot> {
         self.check()?;
-        // Opening the journal stays offline. Explicit refresh restores only a
-        // source endpoint already pinned by a durable paired capability. A
-        // receiving peer's remote endpoint must never become a local listener.
-        let endpoint = {
-            let db = self.shared.db.lock().unwrap();
-            db.endpoint
-                .filter(|endpoint| db.peers.values().any(|peer| peer.endpoint == *endpoint))
-        };
-        if let Some(endpoint) = endpoint {
-            // Rebind the exact advertised address and port. An unavailable
-            // address is an error, never permission to invalidate peer pins.
-            self.listen(endpoint, endpoint.ip())?;
-        }
+        // Opening the journal stays offline. Explicit refresh restores every
+        // source endpoint already pinned by a durable paired capability (#2589),
+        // not only the latest invitation's. A receiving peer's remote endpoint
+        // must never become a local listener.
+        self.serve_pinned()?;
         self.refresh_pairing()?;
         self.reconcile_peer_addresses()?;
         self.reconcile_transfers()?;
@@ -741,7 +804,7 @@ impl Controller {
         }
         db.outbound = None;
         self.save(&db)?;
-        self.shared.listener.lock().unwrap().take();
+        self.shared.listeners.lock().unwrap().clear();
         snapshot(&db)
     }
     pub fn catalog(&self, peer_id: Uuid) -> Result<Vec<Vault>> {
@@ -1085,6 +1148,39 @@ impl Operation {
         }
         false
     }
+}
+/// Every distinct endpoint this computer serves its paired computers on, the
+/// current one first (#2589). Approval pins the inviter's own listener, so each
+/// such pin shares the address this computer last listened on; a computer that
+/// never listened serves nothing. A computer this one joined (its catalog or a
+/// vault received from it) is remote even on the same address: a receiving
+/// peer's endpoint never becomes a local listener, and no pin is invented.
+fn served(db: &Database) -> Vec<SocketAddr> {
+    let Some(own) = db.endpoint else {
+        return vec![];
+    };
+    let joined =
+        |id: &Uuid| db.catalog_peer == Some(*id) || db.transfers.iter().any(|t| t.peer() == *id);
+    let mut endpoints: Vec<_> = db
+        .peers
+        .iter()
+        .filter(|&(id, peer)| {
+            peer.endpoint == own || (peer.endpoint.ip() == own.ip() && !joined(id))
+        })
+        .map(|(_, peer)| peer.endpoint)
+        .collect();
+    endpoints.sort_by_key(|endpoint| (*endpoint != own, *endpoint));
+    endpoints.dedup();
+    endpoints.truncate(MAX_PEERS);
+    endpoints
+}
+/// The address is not assigned to this computer (any more).
+fn not_local(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::AddrNotAvailable)
+    })
 }
 fn snapshot(db: &Database) -> Result<Snapshot> {
     let current = now()?;
@@ -1705,12 +1801,12 @@ mod tests {
         assert_eq!(worker.strong_count(), 0, "source worker did not terminate");
         // No daemon or Syncthing configuration is used by this fixture.
         let source = controller(root.path(), "source")?;
-        assert!(source.shared.listener.lock().unwrap().is_none());
+        assert!(source.shared.listeners.lock().unwrap().is_empty());
         assert!(wire::connect(endpoint).is_err(), "open must stay offline");
         assert!(target.catalog(peer).is_err());
         let occupied = TcpListener::bind(endpoint)?;
         assert!(source.refresh().is_err(), "no alternate-port fallback");
-        assert!(source.shared.listener.lock().unwrap().is_none());
+        assert!(source.shared.listeners.lock().unwrap().is_empty());
         assert_eq!(source.shared.db.lock().unwrap().endpoint, Some(endpoint));
         drop(occupied);
         source.refresh()?;
@@ -1720,7 +1816,7 @@ mod tests {
         );
         assert_eq!(source.shared.db.lock().unwrap().endpoint, Some(endpoint));
         target.refresh()?;
-        assert!(target.shared.listener.lock().unwrap().is_none());
+        assert!(target.shared.listeners.lock().unwrap().is_empty());
         source.cancel()?;
         access.revoke();
         assert!(
@@ -1728,8 +1824,160 @@ mod tests {
             "revoked access restored a listener"
         );
         assert!(target.refresh().is_err());
-        assert!(source.shared.listener.lock().unwrap().is_none());
+        assert!(source.shared.listeners.lock().unwrap().is_empty());
         assert!(wire::connect(endpoint).is_err());
+        source.shutdown();
+        target.shutdown();
+        Ok(())
+    }
+    /// Pair `target` through an invitation `source` creates on `bind`; returns
+    /// the target's peer id and the endpoint the target pins.
+    fn pair_at(
+        source: &Controller,
+        target: &Controller,
+        name: &str,
+        bind: SocketAddr,
+    ) -> Result<(Uuid, SocketAddr)> {
+        let url = source
+            .begin_pairing_at("Source computer", bind, "127.0.0.1".parse()?)?
+            .offer_url
+            .unwrap();
+        target.redeem(&url, name)?;
+        source.approve(source.snapshot()?.pending.unwrap().request_id)?;
+        let paired = target.refresh_pairing()?;
+        assert!(paired.pending.is_none(), "positive control: {name} paired");
+        let peer = paired.peers.last().unwrap().id;
+        Ok((peer, decode_url(&url)?.endpoint))
+    }
+    /// Stop a controller like a quit app, then open its journal again offline.
+    fn reopen(root: &Path, name: &str, old: Controller) -> Result<Controller> {
+        let worker = Arc::downgrade(&old.shared);
+        old.shutdown();
+        drop(old);
+        // A worker finishing its last request may briefly retain the journal.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while worker.strong_count() != 0 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(worker.strong_count(), 0, "{name} worker did not terminate");
+        controller(root, name)
+    }
+    fn listening(controller: &Controller) -> Vec<SocketAddr> {
+        controller
+            .shared
+            .listeners
+            .lock()
+            .unwrap()
+            .keys()
+            .copied()
+            .collect()
+    }
+    #[test]
+    fn issue2589_refresh_serves_every_endpoint_paired_computers_pin() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let access = okilum_sync::NetworkAccess::new(true);
+        let _scope = access.enter();
+        let source = controller(root.path(), "source")?;
+        let muninn = controller(root.path(), "muninn")?;
+        let mac = controller(root.path(), "mac")?;
+        let (muninn_peer, first) = pair_at(&source, &muninn, "muninn", "127.0.0.1:0".parse()?)?;
+        // The live divergence: a later process invited the Mac on another port.
+        let source = reopen(root.path(), "source", source)?;
+        let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+        let (mac_peer, second) = pair_at(&source, &mac, "Mac", port)?;
+        assert_ne!(first, second, "positive control: the pins diverge");
+        assert_eq!(source.shared.db.lock().unwrap().endpoint, Some(second));
+        let source = reopen(root.path(), "source", source)?;
+        assert!(listening(&source).is_empty(), "open stays offline");
+        assert!(muninn.catalog(muninn_peer).is_err());
+        source.refresh()?;
+        let mut both = vec![first, second];
+        both.sort();
+        assert_eq!(listening(&source), both);
+        assert!(
+            muninn.catalog(muninn_peer)?.is_empty(),
+            "the first computer reaches the inviter again without pairing again"
+        );
+        assert!(mac.catalog(mac_peer)?.is_empty());
+        assert_eq!(
+            source.shared.db.lock().unwrap().endpoint,
+            Some(second),
+            "refresh keeps every pin and the invitation endpoint"
+        );
+        // An occupied pin is reported, and the other pin is still served.
+        let source = reopen(root.path(), "source", source)?;
+        let occupied = TcpListener::bind(first)?;
+        assert!(source.refresh().is_err(), "no alternate-port fallback");
+        assert_eq!(listening(&source), [second]);
+        assert!(mac.catalog(mac_peer)?.is_empty());
+        drop(occupied);
+        source.refresh()?;
+        assert!(muninn.catalog(muninn_peer)?.is_empty());
+        // A receiving computer never listens on its inviter's endpoint, even
+        // on a shared address after it invites a computer of its own.
+        let source = reopen(root.path(), "source", source)?;
+        let own = decode_url(&offer(&mac)?)?.endpoint;
+        muninn.refresh()?;
+        mac.refresh()?;
+        assert!(listening(&muninn).is_empty());
+        assert_eq!(listening(&mac), [own]);
+        assert!(wire::connect(first).is_err() && wire::connect(second).is_err());
+        source.shutdown();
+        muninn.shutdown();
+        mac.shutdown();
+        Ok(())
+    }
+    #[test]
+    fn issue2589_new_invitation_reuses_the_endpoint_paired_computers_pin() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let access = okilum_sync::NetworkAccess::new(true);
+        let _scope = access.enter();
+        let source = controller(root.path(), "source")?;
+        let muninn = controller(root.path(), "muninn")?;
+        let mac = controller(root.path(), "mac")?;
+        let (muninn_peer, first) = pair_at(&source, &muninn, "muninn", "127.0.0.1:0".parse()?)?;
+        // A new process (the app after a restart, or `okilum sync invite`)
+        // asks for any port; it gets the one muninn pins.
+        let source = reopen(root.path(), "source", source)?;
+        let (mac_peer, second) = pair_at(&source, &mac, "Mac", "127.0.0.1:0".parse()?)?;
+        assert_eq!(second, first, "the new invitation opened another port");
+        assert!(muninn.catalog(muninn_peer)?.is_empty());
+        assert!(mac.catalog(mac_peer)?.is_empty());
+        assert_eq!(served(&source.shared.db.lock().unwrap()), [first]);
+        // Cancel closes the listener; the next invitation listens there again.
+        source.cancel()?;
+        assert!(listening(&source).is_empty());
+        assert_eq!(decode_url(&offer(&source)?)?.endpoint, first);
+        assert!(muninn.catalog(muninn_peer)?.is_empty());
+        source.shutdown();
+        muninn.shutdown();
+        mac.shutdown();
+        Ok(())
+    }
+    #[test]
+    fn issue2589_refresh_skips_a_pinned_address_this_computer_no_longer_has() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let access = okilum_sync::NetworkAccess::new(true);
+        let _scope = access.enter();
+        let source = controller(root.path(), "source")?;
+        let target = controller(root.path(), "target")?;
+        let (peer, _) = pair_at(&source, &target, "Target", "127.0.0.1:0".parse()?)?;
+        let source = reopen(root.path(), "source", source)?;
+        // As after the address changed: TEST-NET-1 is assigned to no host.
+        let gone: SocketAddr = "192.0.2.10:45000".parse()?;
+        {
+            let mut db = source.shared.db.lock().unwrap();
+            db.endpoint = Some(gone);
+            db.peers.get_mut(&peer).unwrap().endpoint = gone;
+        }
+        assert_eq!(served(&source.shared.db.lock().unwrap()), [gone]);
+        source.refresh()?;
+        assert!(listening(&source).is_empty());
+        assert_eq!(
+            source.shared.db.lock().unwrap().peers[&peer].endpoint,
+            gone,
+            "a pin is never replaced"
+        );
         source.shutdown();
         target.shutdown();
         Ok(())

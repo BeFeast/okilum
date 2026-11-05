@@ -366,6 +366,10 @@ impl Transfer {
     pub(super) fn legacy_hold(&self) -> bool {
         self.owner.is_none() || self.destination_identity.is_none() || self.phase == Phase::Legacy
     }
+    /// The paired computer this vault is received from.
+    pub(super) fn peer(&self) -> Uuid {
+        self.peer
+    }
 }
 fn owned_label(transfer: &Transfer) -> Result<String> {
     Ok(format!(
