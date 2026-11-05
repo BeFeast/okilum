@@ -15,6 +15,8 @@ lifecycle = runpy.run_path(str(Path(__file__).with_name("sync-fixture-lifecycle.
 check = lifecycle["check"]
 
 TESTS = {
+    "managed_history_2045_broken_folder_warns_while_other_vault_receives",
+    "managed_history_2045_restore_retention_and_migration",
     "managed_real_conflicts_resolve_each_choice_with_hashes",
     "managed_source_share_empty_receive_and_bidirectional_hashes",
     "managed_source_skipped_share_negative_control",
@@ -87,6 +89,8 @@ def run_trials(args, evidence, processes):
             failed |= not trial["ok"]
             trials.append(trial)
             print(f"Run {trial['run']}: exit={trial['exit']} passed={len(passed)}/{len(TESTS)}", flush=True)
+            if trial["ok"]:
+                print("#2045 passed: pinned two-runtime delete/restore hashes, overwrite/stale guards, managed migrations, external preservation and time-shifted retention controls", flush=True)
             if not trial["ok"]:
                 print(output, flush=True)
     (evidence / "results.json").write_text(json.dumps(trials, indent=2) + "\n")

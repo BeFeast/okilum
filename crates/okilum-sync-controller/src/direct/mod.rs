@@ -2,6 +2,8 @@
 //! lifecycle. Opening this controller does not listen or start a daemon.
 mod addresses;
 mod existing;
+mod history;
+pub use history::{HistoryWarning, RetentionDays, RetentionSetting};
 #[cfg(target_os = "linux")]
 pub mod inventory;
 mod lan;
@@ -60,6 +62,8 @@ pub struct Vault {
 /// Serializable for the desktop's local `okilum sync` control channel (#2589).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub history_warnings: Vec<history::HistoryWarning>,
+    pub history_retention: Vec<RetentionSetting>,
     pub offer_url: Option<String>,
     pub pending: Option<Pending>,
     pub peers: Vec<Peer>,
@@ -158,6 +162,7 @@ struct Database {
 type InspectionHook = Arc<dyn Fn(Uuid) + Send + Sync>;
 
 struct Shared {
+    history_warnings: Mutex<Vec<history::HistoryWarning>>,
     state: PathBuf,
     configs: Mutex<Vec<PathBuf>>,
     db: Mutex<Database>,
@@ -316,6 +321,7 @@ impl Controller {
                 access: okilum_sync::NetworkAccess::current(),
                 observation_generation: Uuid::new_v4(),
                 transfer_lock: Mutex::new(()),
+                history_warnings: Mutex::new(Vec::new()),
                 connection_watch: Mutex::new(Default::default()),
                 delivered_approval: Mutex::new(None),
                 #[cfg(target_os = "linux")]
@@ -383,6 +389,7 @@ impl Controller {
         self.check()?;
         let db = self.shared.db.lock().unwrap();
         let mut snapshot = snapshot(&db)?;
+        snapshot.history_warnings = self.shared.history_warnings.lock().unwrap().clone();
         let held = db.transfers.iter().any(transfer::Transfer::legacy_hold);
         drop(db);
         if !held && snapshot.pending.is_none() && snapshot.offer_url.is_none() {
@@ -696,6 +703,7 @@ impl Controller {
         self.serve_pinned()?;
         self.refresh_pairing()?;
         self.reconcile_peer_addresses()?;
+        self.reconcile_history()?;
         self.reconcile_transfers()?;
         self.refresh_connection_status()?;
         self.refresh_attached()?;
@@ -1224,6 +1232,8 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
             .map(|(_, r)| pending(r, false))
     };
     Ok(Snapshot {
+        history_warnings: Vec::new(),
+        history_retention: history_settings(db),
         offer_url: offer.map(|i| encode_url(&i.offer)).transpose()?,
         pending,
         peers: db.peers.values().map(|p| p.peer.clone()).collect(),
@@ -1366,6 +1376,13 @@ fn decode_url(input: &str) -> Result<Offer> {
         "invalid pairing invitation lifetime"
     );
     Ok(offer)
+}
+
+fn history_settings(db: &Database) -> Vec<RetentionSetting> {
+    let mut settings = transfer::history_settings(db);
+    #[cfg(target_os = "linux")]
+    settings.extend(source::history_settings(db));
+    settings
 }
 
 #[cfg(test)]

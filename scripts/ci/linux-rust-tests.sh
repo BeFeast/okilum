@@ -67,6 +67,8 @@ suite reader-editor-lists-key-tests 120 cargo test --locked -p okilum-shell --bi
 suite reader-outline-tests-draft-1320 120 cargo test --locked -p okilum-shell --bin okilum reader_outline::tests::draft_1320_ -- --nocapture
 # #2518: explicit non-empty real-socket/paint timing regression before shell-full.
 suite manager-ttfm 120 cargo test --locked -p okilum-shell --bin okilum manager_ttfm_ -- --nocapture
+# #2045: require the native retention and restore regressions.
+suite issue2045 120 cargo test --locked -p okilum-shell --bin okilum issue2045_ -- --nocapture
 # #2044: explicit conflict controller and mounted shell acceptance.
 suite conflicts 120 cargo test --locked -p okilum-sync-controller --lib conflicts:: -- --nocapture
 suite issue2044 120 cargo test --locked -p okilum-shell --bin okilum issue2044_ -- --nocapture --test-threads=1

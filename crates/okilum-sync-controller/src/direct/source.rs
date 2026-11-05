@@ -17,6 +17,8 @@ pub(super) const IGNORES: &[&str] = &[
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Source {
+    #[serde(default)]
+    history: history::Policy,
     id: String,
     pub(super) path: PathBuf,
     root_identity: (u64, u64),
@@ -108,6 +110,7 @@ impl Controller {
                     .context("vault name missing")?
                     .to_string_lossy();
                 let source = Source {
+                    history: history::Policy::default(),
                     folder: json!({"id":id,"label":label,"path":path,"type":"sendreceive","paused":true,
                         "devices":[{"deviceID":daemon.device_id}],"maxConflicts":-1,
                         "versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}),
@@ -321,6 +324,81 @@ fn seed_policy(path: &Path, expected: &[u8]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+impl Controller {
+    fn source_history_binding(&self, source: &Source) -> Result<okilum_sync::Syncthing> {
+        ensure!(
+            source.active && source.witness.is_some(),
+            "Source history ownership missing"
+        );
+        let root = existing::VaultRoot::open(&source.path)?;
+        root.verify(&source.path)?;
+        ensure!(
+            root.identity()? == source.root_identity,
+            "Source directory identity changed"
+        );
+        let api = self.history_daemon(&source.daemon)?;
+        let folder = api.folder(&source.id)?;
+        ensure!(
+            folder["id"] == source.id
+                && folder["type"] == "sendreceive"
+                && Path::new(folder["path"].as_str().context("Missing source path")?)
+                    .canonicalize()?
+                    == source.path,
+            "Source history binding changed"
+        );
+        Ok(api)
+    }
+    fn apply_source_history(&self, source: &mut Source) -> Result<()> {
+        let api = self.source_history_binding(source)?;
+        if source.history.prepare(&api.folder(&source.id)?)? {
+            self.save_source(source)?;
+            self.check()?;
+            let after = source.history.apply(&api, &source.id)?;
+            source.witness = Some(after);
+            source.history.finish();
+            self.save_source(source)?;
+        }
+        Ok(())
+    }
+    pub(super) fn set_source_retention(&self, path: &Path, days: RetentionDays) -> Result<bool> {
+        let source = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .sources
+            .iter()
+            .find(|s| s.active && s.path == path)
+            .cloned();
+        let Some(mut source) = source else {
+            return Ok(false);
+        };
+        self.apply_source_history(&mut source)?;
+        source.history.days = days;
+        self.save_source(&source)?;
+        self.apply_source_history(&mut source)?;
+        Ok(true)
+    }
+    pub(super) fn reconcile_source_history(&self, warnings: &mut Vec<history::HistoryWarning>) {
+        let sources = self.shared.db.lock().unwrap().sources.clone();
+        for mut source in sources.into_iter().filter(|s| s.active) {
+            if let Err(error) = self.apply_source_history(&mut source) {
+                warnings.push(history::HistoryWarning { path: source.path.clone(), message: format!("Previous Sync versions could not be updated: {error:#}. Check this folder and its Sync connection.") });
+            }
+        }
+    }
+}
+pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {
+    db.sources
+        .iter()
+        .filter(|s| s.active)
+        .map(|s| RetentionSetting {
+            path: s.path.clone(),
+            days: s.history.days,
+        })
+        .collect()
 }
 
 #[cfg(test)]

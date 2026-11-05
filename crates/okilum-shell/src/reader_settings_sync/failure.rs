@@ -5,6 +5,7 @@ impl Operation {
     pub(super) fn action_name(&self) -> &'static str {
         match self {
             Self::Read => "refresh",
+            Self::Retention(..) => "history_retention",
             Self::EnterPairing => "open_settings",
             Self::Begin(_) => "add_computer",
             Self::Redeem(..) => "connect",
