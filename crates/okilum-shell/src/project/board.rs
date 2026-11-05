@@ -1011,8 +1011,17 @@ impl Reader {
                 }
             }
         }).detach();
-        cx.observe(&board, |_, _, cx| cx.notify()).detach();
+        cx.observe(&board, |this, _, cx| this.project_board_changed(cx))
+            .detach();
         self.project_navigation.boards.insert(area, board);
+    }
+    pub(in crate::project) fn project_board_changed(&mut self, cx: &mut Context<Self>) {
+        // The center and issue dock consume Board publications. The fixed
+        // Reader header has no new source data when Board geometry changes.
+        #[cfg(target_os = "linux")]
+        self.layout_signal.update(cx, |_, cx| cx.notify());
+        #[cfg(not(target_os = "linux"))]
+        cx.notify();
     }
     pub(crate) fn connect_project_board(
         &self,
