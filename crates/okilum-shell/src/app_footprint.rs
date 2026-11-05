@@ -1118,7 +1118,6 @@ mod tests {
         ("crates/okilum-shell/src/reader_open.rs", 6),
         // Sync lives under the state root; its systemd unit is removed by
         // the sync controller (Linux part of #974).
-        ("crates/okilum-shell/src/reader_settings_sync.rs", 1),
         // Managed Sync units share a systemd base. Uninstall checks the same
         // producer path and refuses until the controller has removed its unit.
         (

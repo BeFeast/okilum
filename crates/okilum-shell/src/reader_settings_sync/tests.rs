@@ -1885,7 +1885,11 @@ fn sync_2419_real_pairing_timer_skips_full_runtime_inspection(cx: &mut TestAppCo
 
 #[gpui::test]
 fn issue2615_overview_starts_quiet_and_add_opens_a_wizard(cx: &mut TestAppContext) {
-    cx.update(crate::test_init);
+    cx.update(|cx| {
+        crate::test_init(cx);
+        // Measure the resting modal position, not its first slide-in frame.
+        cx.set_reduce_motion(true);
+    });
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture(window, cx);
