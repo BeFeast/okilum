@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Exact-head regression gate for the source projection / native patch boundary.
-# Called inside fast-local.sh's existing source, compiler and target lock.
+# Called by fast.sh (OKILUM_LIVE_PREVIEW_TESTS=1) inside its source, compiler and target.
 set -euo pipefail
 scripts/vendor-setup.sh --verify
 # A renamed filter must fail loudly instead of silently running zero tests.

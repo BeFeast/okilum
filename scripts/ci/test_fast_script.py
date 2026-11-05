@@ -21,7 +21,9 @@ class FastScript(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / '.forgejo/workflows/fast.yml').read_text())
         steps = workflow['jobs']['check']['steps']
         validation = next(s['run'] for s in steps if 'certification-source ' in s.get('run', ''))
-        discovery = next(s['run'] for s in steps if 'ci-python ' in s.get('run', ''))
+        # #2589: the exact product's own suites run on GitHub. A product that
+        # predates the hosted check is rejected before any push or compiler.
+        bridge = next(s['run'] for s in steps if 'python3 "$OKILUM_HOSTED_BRIDGE/github-pr.py"' in s.get('run', ''))
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             repo = root / 'product'
@@ -92,25 +94,37 @@ class FastScript(unittest.TestCase):
             key, value = (root / 'github-env').read_text().strip().split('=', 1)
             env[key] = value
             self.assertTrue(Path(value).is_relative_to(root))
-            for outcome, status in [('pass', 0), ('self.fail("positive control")', 1),
-                                    ('__import__("time").sleep(60)', 124)]:
-                with self.subTest(outcome=outcome):
-                    (suite / 'test_product.py').write_text(
-                        'import unittest\nclass Product(unittest.TestCase):\n'
-                        f'    def test_product(self): {outcome}\n')
-                    result = subprocess.run(['bash', '-c', discovery.replace('ci-python 180', 'ci-python 1')],
-                                            cwd=repo, env=env, capture_output=True, text=True, timeout=5)
-                    self.assertEqual(result.returncode, status, result.stdout + result.stderr)
-                    self.assertIn('test_product (test_product.Product.test_product)', result.stderr)
-                    self.assertIn('TEST_GROUP_START group=ci-python limit=1s', result.stdout)
-                    if status == 124:
-                        self.assertIn('TEST_GROUP_TIMEOUT group=ci-python limit=1s', result.stdout)
+            pushed = root / 'bridge-ran'
+            env.update(PR_HEAD_SHA=source, OKILUM_HOSTED_BRIDGE=str(root / 'missing-bridge'))
+            fake_bridge = root / 'missing-bridge'
+            fake_bridge.mkdir()
+            (fake_bridge / 'github-pr.py').write_text(f'open({str(pushed)!r}, "w").close()\n')
+            result = subprocess.run(['bash', '-c', bridge], cwd=repo, env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn(f'Source {source} predates hosted check (#2589)', result.stderr)
+            self.assertFalse(pushed.exists())
+            # Positive control: the same step reaches the bridge once the exact
+            # product contains the hosted workflow.
+            (repo / '.github/workflows').mkdir(parents=True)
+            (repo / '.github/workflows/forgejo-check.yml').write_text('name: forgejo-check\n')
+            git('add', '.')
+            git('commit', '-m', 'Product with the hosted check')
+            env['PR_HEAD_SHA'] = git('rev-parse', 'HEAD')
+            result = subprocess.run(['bash', '-c', bridge], cwd=repo, env=env,
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(pushed.exists())
 
     def test_required_check_runs_full_isolated_python_discovery_and_fails_on_errors(self):
         workflow = (ROOT / '.forgejo/workflows/fast.yml').read_text()
         self.assertNotIn('  pull_request:', workflow)
-        check = workflow.split('  check:\n', 1)[1].split('\n  shell-full:', 1)[0]
-        self.assertNotIn('continue-on-error:', check)
+        # #2589: the certification check's suites run in its hosted run, in a
+        # job parallel to fast.sh; the bridge requires every named suite step.
+        hosted = (ROOT / '.github/workflows/forgejo-check.yml').read_text()
+        self.assertNotIn('continue-on-error:', hosted)
+        check = hosted.split('\n  python:\n', 1)[1].split('\n  check:\n', 1)[0] + '      - name:'
+        self.assertIn('Build Linux desktop and run fast unit tests', hosted.split('\n  check:\n', 1)[1])
         for directory, label in [('ci', 'CI tooling'), ('releases', 'releases'), ('updater', 'updater')]:
             with self.subTest(suite=directory):
                 name = f'Run the full {label} Python suite'
@@ -121,11 +135,10 @@ class FastScript(unittest.TestCase):
                 limit = '180' if directory == 'ci' else '90'
                 self.assertIn('        timeout-minutes: 5\n', step)
                 command = shlex.split(step.split('        run: ', 1)[1].strip())
-                self.assertEqual(command, ['bash', '${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}', f'{directory}-python', limit,
+                self.assertEqual(command, ['bash', 'scripts/ci/test-group.sh', f'{directory}-python', limit,
                                            'python3', '-I', '-m', 'unittest', 'discover',
                                            '-s', f'scripts/{directory}', '-p', 'test_*.py', '-v'])
-                self.assertLess(check.index(name),
-                                check.index('Build Linux desktop and run fast unit tests'))
+                self.assertLess(check.index('Prepare isolated Python test dependencies'), check.index(name))
                 with tempfile.TemporaryDirectory() as temp:
                     root = Path(temp)
                     suite = root / 'scripts' / directory
@@ -148,6 +161,14 @@ class FastScript(unittest.TestCase):
                             summary = ('OK' if outcome == 'pass' else 'FAILED (failures=1)'
                                        if outcome.startswith('self.fail') else 'FAILED (errors=1)')
                             self.assertIn(summary, result.stderr)
+                    # A hung suite is stopped by its own group deadline (scaled to 1 s).
+                    (suite / 'test_discovery.py').write_text(
+                        'import unittest\nclass Discovery(unittest.TestCase):\n'
+                        '    def test_discovered(self): __import__("time").sleep(60)\n')
+                    run = step.split('        run: ', 1)[1].strip().replace(f'{directory}-python {limit}', f'{directory}-python 1')
+                    result = subprocess.run(['bash', '-c', run], cwd=root, capture_output=True, text=True, timeout=40)
+                    self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+                    self.assertIn(f'TEST_GROUP_TIMEOUT group={directory}-python limit=1s', result.stdout)
 
     def test_platform_arguments_are_nonempty_without_bash32_optional_arrays(self):
         for platform, check_status in [('Linux', 0), ('macOS', 0), ('Windows', 0), ('Linux', 23)]:

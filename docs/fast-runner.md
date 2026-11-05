@@ -1,6 +1,14 @@
 # Fast runner admission
 
-`fast / check (pull_request)` runs on baldr's
+Since #2589 neither certification job compiles on baldr: `check` and
+`shell-full` wait on `bridge` while GitHub's dedicated runners execute them
+(see [Hosted certification check](#hosted-certification-check-2589) and
+[Hosted certification shell-full](#hosted-certification-shell-full-2589)).
+`fast-linux` now runs only nightly/manual `sync-source-sharing`. The slot pool
+(`fast-local.sh`, `fast-source.sh`) is removed; the sections below are the
+history behind the unchanged phase deadlines.
+
+`fast / check (pull_request)` ran on baldr's
 `forgejo-runner-fast.service`, label `fast-linux`. Its two independently locked
 persistent source/target pairs use three compiler workers each. The admission job
 keeps the complete desktop/supervisor build, workspace test compilation, appimage
@@ -228,7 +236,9 @@ budget after the slower measured bridge wait.
 
 A slow or failing hosted run is diagnosed from its GitHub log (linked in the
 Forgejo job). For a local reproduction run `scripts/ci/shell-full.sh` in a baldr
-`okilum-slot` build slot; `fast-local.sh` no longer has a shell-full mode.
+`okilum-slot` build slot.
+
+<!-- HOSTED-CHECK -->
 
 ## Test-group hard deadlines (#2503)
 
@@ -250,16 +260,17 @@ parent has already exited emits `TEST_GROUP_KILL` with the group and limit.
 Compilation and execution have separate shell budgets. Every enclosing deadline
 covers the sum of its children plus 60 s setup/cleanup overhead; job ceilings
 cover all bounded steps plus 90 s checkout/toolchain/final-cleanup margin.
-Job ceilings are now check 55 min and sync-source-sharing 30 min on
-`fast-linux`; the shell-full waiter has 60 min on `bridge` and its hosted job 45 min (#2589).
+Job ceilings are now sync-source-sharing 30 min on `fast-linux`; the check and
+shell-full waiters have 60 min each on `bridge`, the hosted check jobs 27 min
+(Python) and 47 min (`fast.sh`), the hosted shell-full job 45 min (#2589).
 These are ceilings for slow progressing work; a hung phase is still killed by
 its own original deadline plus at most 30 s cleanup:
 
 | Scope | Limit | Basis / margin |
 | --- | ---: | --- |
-| CI tooling Python discovery | 180 s | Recent green baldr runs: 45.595–81.114 s; current main run 21861 was still progressing when its old 120 s step expired. All three Python step ceilings are 5 min (#2536), including the 30 s cleanup grace. |
+| CI tooling Python discovery | 180 s | Recent green baldr runs: 45.595–81.114 s; current main run 21861 was still progressing when its old 120 s step expired; baldr certifications on 5 November took up to 167.813 s (30925). All three Python step ceilings are 5 min (#2536), including the 30 s cleanup grace, now in the hosted check's `python` job (#2589). |
 | Releases / updater Python discovery | 90 s each | Recent green runs: at most 4.802 / 0.107 s; #2536's 5 min step ceilings retained. |
-| Entire fast-local check / locked fast.sh | 2100 / 2040 s | 300 + 540 + 540 + 120 + 120 + optional 360 = 1980 s; locked gate adds 60 s, entrypoint adds 60 s including the default 20 s slot wait. Optional Live Preview is included conservatively. |
+| Hosted fast.sh group / gate step | 2040 s / 35 min | 300 + 540 + 540 + 120 + 120 + optional 360 = 1980 s plus 60 s, the former locked-gate limit, now on GitHub (#2589). The step adds the 30 s cleanup grace; the 47 min hosted job adds the 10 min apt step and 90 s setup/cleanup. Optional Live Preview is included conservatively. The baldr-only 2100 s `fast-local-check` entrypoint (slot wait, stable slot source) is removed. |
 | Check build / workspace test compilation | 540 s each | Loaded build 300 s in 20289; workspace check 324.35 s in the main probe above. Margins 240 / 215 s. Both phases may consume their full limits. |
 | Channel tests (including compilation) | 300 s | Cold appimage dependency variant took 126.62 s in the main probe; recent warm phases 0–4 s. |
 | Paste inventory / paste tests | 120 s each | Recent green Cargo compilation/listing at most 1.11 s; parsing execution at most 0.07 s. These small commands retain their existing caps. |
@@ -280,19 +291,21 @@ The slowest measured green test execution remains 805 s (run 21766), so 990 s
 retains 185 s (23%) headroom. Compilation retains 336 s above the loaded 504 s
 measurement. These observations do not establish a fleet p95.
 
-`test_fast_budgets.py` parses the actual workflow and scripts, follows both
-fast-local modes and the sync wrapper, includes the sync lock wait and optional
-Live Preview, and enforces each aggregate >= sum(children) + 60 s. Step ceilings
+`test_fast_budgets.py` parses the actual workflows (Forgejo `fast.yml` and both
+hosted runs) and scripts, follows the hosted gates and the sync wrapper, includes
+the sync lock wait and optional Live Preview, and enforces each aggregate
+>= sum(children) + 60 s. Step ceilings
 include the supervisor's 30 s cleanup; job ceilings include all bounded steps
 and another 90 s for setup/final cleanup. Mutation controls reject the old
 aggregate limits, growth of every child phase/lock, and insufficient step/job
 ceilings. The invariant test fails against the pre-fix limits.
 
-The check job retains #2536's three 5 min Python step ceilings and adds a
-2 min certification step: 900 + 120 + 2100 + 30 + 90 = 3240 s <= 3300 s.
-The shell-full waiter on `bridge` adds the same 2 min step to its 56 min hosted
-bridge step: 120 + 3360 + 90 = 3570 s <= 60 min (#2589). The invariant conservatively includes certification even on ordinary main/nightly
-runs, where that step is skipped.
+Both waiters on `bridge` (check and shell-full) add the 2 min certification
+step to their 56 min hosted bridge step: 120 + 3360 + 90 = 3570 s <= 60 min
+(#2589). #2536's three 5 min Python step ceilings moved with the suites into the
+hosted check's `python` job: 600 + 900 + 90 = 1590 s <= 27 min. The invariant
+conservatively includes certification even on ordinary main/nightly runs, where
+that step is skipped.
 
 Both exact-product validation steps use the same process-tree supervisor with a
 90 s limit and a 2 min step ceiling including cleanup. Baldr certification
@@ -304,12 +317,14 @@ only the two supervisor files into a job-owned `mktemp` directory under
 product may predate these files. Its tracked tree stays exact, while its Python
 and compiler entrypoints still receive an outer hard deadline. A real Git/HTTP
 control certifies such an older tree, checks the unchanged main ref and clean
-checkout, then exercises successful, failing and hung discovery through the
-staged supervisor. Phase supervision inside the product scripts applies when
-those scripts contain it.
+checkout, then shows that the bridge step rejects a product without
+`.github/workflows/forgejo-check.yml` before any push (#2589) and reaches the
+bridge once the product contains it. The hosted suites run the product's own
+supervisor; successful, failing, erroring and hung discovery are exercised on
+the hosted step commands.
 
-The owner reports baldr now allows a 60 min runner ceiling. Both fast-linux job
-ceilings (55/30 min) fit it; this change does not modify any host settings.
+The owner reports baldr now allows a 60 min runner ceiling. The remaining
+fast-linux job ceiling (30 min) fits it; no change modifies any host settings.
 
 The newer owner-authorized #2581 supersedes #2580's fifteen-minute PR gate:
 Forgejo fast.yml has no PR trigger and main has no required status checks.

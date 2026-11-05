@@ -36,7 +36,43 @@ class HostedPRTests(unittest.TestCase):
                     # Queue and run share the waiter's budget from its own start.
                     budget = bridge.BRIDGE_BUDGETS[lane]
                     expected.update(queue_timeout=budget, deadline=1000.0 + budget)
+                if lane in bridge.ALSO_REQUIRED:
+                    expected.update(also_required=bridge.ALSO_REQUIRED[lane])
                 self.assertEqual(wait.call_args.kwargs, expected)
+
+    def test_hosted_check_requires_every_python_suite_and_the_fast_gate(self):
+        # #2589: the certification check's two parallel hosted jobs are one gate.
+        job, step, _ = bridge.LANES['check']
+        required = ((job, step), *bridge.ALSO_REQUIRED['check'])
+        self.assertEqual({name for name, _ in required}, {'check', 'python'})
+        self.assertEqual(len(required), 4)
+        branch = f'forgejo-check-pr/12-{SHA}-345-1'
+        workflow = '.github/workflows/forgejo-check.yml'
+        run = dict(id=1, head_sha=SHA, head_branch=branch, event='push', path=workflow,
+                   status='completed', conclusion='success', html_url='https://github.com/run/1')
+        def jobs(**conclusions):
+            result = {}
+            for name, step_name in required:
+                result.setdefault(name, dict(name=name, conclusion='success', steps=[]))
+                result[name]['steps'].append(dict(name=step_name, conclusion=conclusions.get(step_name, 'success')))
+            return list(result.values())
+        def check(listed):
+            class API:
+                def request(self, path, method='GET'):
+                    return {'jobs': listed} if '/jobs?' in path else {'workflow_runs': [run]}
+            return bridge.transport.wait_for_run(API(), branch, SHA, workflow=workflow, job_name=job,
+                build_step=step, queue_timeout=0, clock=lambda: 1, sleep=lambda _: None, log=lambda *a, **k: None,
+                also_required=bridge.ALSO_REQUIRED['check'])[0]
+        self.assertEqual(check(jobs()), 'success')
+        for _, step_name in required:
+            for conclusion in ['skipped', 'failure', None]:
+                with self.subTest(step=step_name, conclusion=conclusion):
+                    self.assertEqual(check(jobs(**{step_name: conclusion})), 'failure')
+        # A missing python job (or a duplicated one) cannot pass on the fast gate alone.
+        self.assertEqual(check([j for j in jobs() if j['name'] != 'python']), 'failure')
+        self.assertEqual(check(jobs() + [j for j in jobs() if j['name'] == 'python']), 'failure')
+        failed_job = [dict(j, conclusion='failure') if j['name'] == 'python' else j for j in jobs()]
+        self.assertEqual(check(failed_job), 'failure')
 
     def test_unknown_lane_never_pushes(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
