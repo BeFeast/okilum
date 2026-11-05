@@ -641,7 +641,7 @@ fn issue2589_running_app_serves_paired_computers_without_opening_settings(cx: &m
 
     // Settings → Sync reuses that controller: no second open or listener.
     let window = cx.add_empty_window();
-    let settings = window.update(|window, cx| shared(window, cx));
+    let settings = window.update(shared);
     window.run_until_parked();
     assert!(settings == view, "Settings shows the serving controller");
     window.update(|_, cx| {
