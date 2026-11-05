@@ -74,6 +74,22 @@ A lifetime lock prevents two controllers from owning the same journal.
   and refreshes it like `okilum sync serve`, so paired computers are answered
   without opening Settings → Sync (#2589). Settings reuses that controller.
 
+### `okilum sync` while another process owns Sync (#2589)
+
+One process owns a computer's Sync journal (its lifetime lock). When that owner
+is `okilum sync serve` (the always-on hub's service) or the app with Sync
+started, it listens on `control.sock` inside the private journal folder (0700,
+socket 0600). Other `okilum sync` commands of the same user find it there and
+run each step through it, so `invite --approve-first` pairs a new computer
+while the hub keeps serving. Output and exit codes are the same as when the
+command owns Sync itself. Both ends check the other's user ID; there is no TCP
+listener. Paths are made absolute before they are sent. A different control
+protocol asks for a restart of the owner after updating. A socket left by an
+owner that exited answers nothing and is replaced by the next owner. While the
+app runs without a started Sync controller, commands still refuse with exit 3;
+`--quit-app` quits it as before. The client and the owner must use the same
+profile (`OKILUM_STATE_DIR`, XDG directories). Windows has no Sync commands.
+
 `configuration_paths()` returns `Result<Vec<PathBuf>>`. Linux includes its existing
 process/config inventory; macOS includes standard user configuration paths only.
 These paths do not prove absence of custom/unknown macOS daemons.

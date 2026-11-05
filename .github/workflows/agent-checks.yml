@@ -122,6 +122,13 @@ jobs:
         run: |
           cargo fmt --check
           cargo build --offline --locked -p okilum-shell -p okilum-sync-supervisor
+      # #2589: two isolated profiles with pinned Syncthing; the hub keeps serving.
+      - name: Pair through a running okilum sync serve
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          syncthing=$(python3 scripts/ci/sync-fixture-stage.py)
+          tini -s -- python3 -I scripts/ci/sync-cli-control.py --okilum target/debug/okilum --syncthing "$syncthing"
       - name: Run complete okilum-core suite offline
         env:
           CARGO_NET_OFFLINE: 'true'

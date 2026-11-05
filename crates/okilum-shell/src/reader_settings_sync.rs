@@ -118,6 +118,7 @@ pub(super) fn suspend(cx: &mut App) {
             if let Some(controller) = view.controller.take() {
                 controller.shutdown();
             }
+            control::app_released();
             view.snapshot = None;
             view.inspected = None;
             view.busy = false;
@@ -132,7 +133,9 @@ pub(super) fn suspend(cx: &mut App) {
     }
 }
 
-#[derive(Clone)]
+/// Also sent by `okilum sync` to the process that owns Sync (#2589).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
     Read,
     EnterPairing,
@@ -368,7 +371,15 @@ impl SyncSettings {
                             guard.check()?;
                             return Ok(output);
                         }
-                        perform_scoped(controller, operation, &worker_epoch)
+                        let result = perform_scoped(controller, operation, &worker_epoch);
+                        // #2589: while the app owns Sync, `okilum sync` runs through it.
+                        #[cfg(not(test))]
+                        if let Ok(output) = &result {
+                            if worker_epoch.is_current() {
+                                control::app_owns(&output.controller);
+                            }
+                        }
+                        result
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
@@ -839,7 +850,16 @@ fn perform_scoped(
     operation: Operation,
     ticket: &Ticket,
 ) -> anyhow::Result<Output> {
+    let _serial = serial_actions();
     perform_with_locations(controller, operation, ticket, locations)
+}
+/// One Sync action at a time per process: Settings, `okilum sync serve` and the
+/// commands other processes forward to this one share a controller (#2589).
+fn serial_actions() -> std::sync::MutexGuard<'static, ()> {
+    static ACTIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ACTIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 fn perform_with_locations(
     controller: Option<Controller>,
@@ -1167,6 +1187,8 @@ pub(super) mod presentation;
 
 #[path = "reader_settings_sync/cli.rs"]
 pub(crate) mod cli;
+#[path = "reader_settings_sync/control.rs"]
+mod control;
 #[path = "reader_settings_sync/epoch.rs"]
 mod epoch;
 #[cfg(test)]

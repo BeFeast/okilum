@@ -17,6 +17,8 @@ suite cargo test --locked -p okilum-sync-controller --test first_computer -- --n
 suite cargo test --locked -p okilum-sync-controller --lib direct::lan::tests:: -- --nocapture
 # #2589: loopback pairing journal, listeners for every pinned endpoint, no daemon.
 suite cargo test --locked -p okilum-sync-controller --lib direct::tests:: -- --nocapture
+# #2589: invite --approve-first through a running `okilum sync serve`.
+suite cargo test --locked -p okilum-shell --bin okilum issue2589_ -- --nocapture
 # #2049: explicit non-empty UI and compatibility verdicts before the full shell.
 suite node --test web/inbox/tests/retired-sync.test.js web/inbox/tests/sync-pairing.test.js
 suite cargo test --locked -p okilum-shell --bin okilum issue2049_ -- --nocapture
