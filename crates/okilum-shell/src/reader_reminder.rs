@@ -335,6 +335,11 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
             .try_global::<crate::note_paste::ManagedNoteClipboard>()
             .is_some_and(|clipboard| clipboard.0.has_content());
     let code_block = code_block.zip(editor.as_deref());
+    let markdown = facts
+        .2
+        .borrow()
+        .as_ref()
+        .is_some_and(|source| source.markdown);
     let menu = editor_entries(&capabilities, clipboard, date, code_block)
         .into_iter()
         .fold(menu, |menu, entry| match entry {
@@ -365,7 +370,16 @@ pub(super) fn editor_menu(menu: NativeMenu, facts: &MenuFacts, cx: &App) -> Nati
                         Box::new(crate::reader_editor::StopBlockExternally)
                     }
                 };
-                menu.menu_with_disabled(label, disabled, action)
+                let menu = menu.menu_with_disabled(label, disabled, action);
+                if command == Command::Copy && markdown {
+                    menu.menu_with_disabled(
+                        "Copy as Markdown",
+                        disabled,
+                        Box::new(crate::reader_read_menu::CopyAsMarkdown),
+                    )
+                } else {
+                    menu
+                }
             }
         });
     facts.1.menu(menu)

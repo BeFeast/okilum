@@ -112,6 +112,7 @@ fn catalog() -> Vec<Entry> {
         entry::<RevealFile>(Os::CURRENT.reveal(), Notes),
         entry::<CopyVaultPath>("Copy vault path", Notes),
         entry::<reader_read_menu::CopyAsMarkdown>("Copy as Markdown", Notes),
+        entry::<reader_read_menu::CopyWithFormatting>("Copy as Rich Text", Notes),
         entry::<reader_log::CopyRawLine>("Copy raw log line", Notes),
         entry::<reader_log::ToggleMark>("Mark log row", Notes),
         entry::<reader_log::NextMark>("Next marked log row", Navigation),
@@ -515,7 +516,10 @@ mod tests {
             .filter(|binding| binding.keystrokes() == expected.keystrokes())
             .map(|binding| binding.action().name())
             .collect();
-        assert_eq!(actions, [reader_read_menu::CopyAsMarkdown::name_for_type()]);
+        assert_eq!(
+            actions,
+            [reader_read_menu::CopyAsMarkdown::name_for_type(); 2]
+        );
     }
 
     #[gpui::test]

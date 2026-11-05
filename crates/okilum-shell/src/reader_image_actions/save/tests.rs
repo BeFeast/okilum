@@ -150,7 +150,7 @@ fn image_popup_copies_resolved_address_and_saves_original_bytes_with_selection_g
         .is_some());
     assert!(f
         .visual
-        .debug_bounds("read-menu-Copy with formatting")
+        .debug_bounds("read-menu-Copy as Rich Text")
         .is_some());
     f.pick("image-menu-Copy image address");
     f.visual.update(|_, cx| {
