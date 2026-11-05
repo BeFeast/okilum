@@ -7,6 +7,13 @@ a console window. Its final install/relaunch helper already uses
 as well. Delta downloads, checksum checks, full-package fallback and explicit
 installation consent keep their existing behavior.
 
+The after-update hook also refreshes Markdown Open With (three `reg.exe` calls),
+Explorer folder verbs (eight) and the `okilum:` protocol (three). All three
+registry wrappers now set `CREATE_NO_WINDOW` without changing their arguments
+or registry ownership. The existing native Windows registry round trips verify
+the folder/protocol operations and neighboring keys. This audit covers both
+preparation and post-install callbacks, not only the SDK's final launch helper.
+
 `scripts/velopack-setup.py` follows the existing checksum-pinned parser vendor
 recipe: verify the published crate archive, apply the small tracked diff and
 verify the complete generated tree. Only the diff, manifest and setup are
