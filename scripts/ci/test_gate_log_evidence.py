@@ -1,5 +1,7 @@
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -121,11 +123,16 @@ class TransportTests(unittest.TestCase):
         workflow = (HERE.parents[1] / '.github/workflows/forgejo-linux.yml').read_text()
         aggregate = workflow.split('  linux:\n', 1)[1]
         command = shlex.split(aggregate.split('        run: ', 1)[1].strip())
+        self.assertEqual(command[:2], ['python3', 'scripts/ci/gate-step.py'])
+        wrapper_spec = importlib.util.spec_from_file_location('aggregate_gate_step', HERE / 'gate-step.py')
+        wrapper = importlib.util.module_from_spec(wrapper_spec)
+        wrapper_spec.loader.exec_module(wrapper)
         step = 'Run full Linux gate'
         identity = dict(IDENTITY, job='linux', step=step)
         # PR #2079 skips the full checks on automatic main builds, while
         # branch/manual acceptance must execute them. Exercise the real wrapper
         # and shell, including a positive control for every event/ref pair.
+        cases = entrypoints = 0
         for ref in ['refs/heads/main', 'refs/heads/forgejo-linux-pr/2473']:
             for event in ['push', 'schedule', 'workflow_dispatch']:
                 expected = 'skipped' if ref == 'refs/heads/main' and event != 'workflow_dispatch' else 'success'
@@ -136,11 +143,28 @@ class TransportTests(unittest.TestCase):
                                        GITHUB_RUN_ATTEMPT='1', GITHUB_JOB='linux',
                                        GITHUB_REF=ref, GITHUB_EVENT_NAME=event,
                                        CHECKS=checks, APPIMAGE=appimage)
-                            result = subprocess.run(command, cwd=HERE.parents[1], env=env,
-                                                    capture_output=True, timeout=5)
+                            # Execute every real wrapper/Bash/marker path, without
+                            # paying Python startup 216 times on the warm runner.
+                            output = io.StringIO()
+                            with patch.dict(os.environ, env, clear=True), \
+                                    patch.object(sys, 'argv', command[1:]), \
+                                    contextlib.redirect_stdout(output):
+                                result = wrapper.main()
+                            raw = output.getvalue().encode()
                             passed = checks == expected and appimage == 'success'
-                            self.assertEqual(result.returncode == 0, passed, result.stdout + result.stderr)
-                            self.assertEqual(evidence.executed(result.stdout, **identity), passed)
+                            self.assertEqual(result == 0, passed, raw)
+                            self.assertEqual(evidence.executed(raw, **identity), passed)
+                            cases += 1
+                            # Keep successful and failing real CLI entrypoints for
+                            # every ref/event pair, independently of imported main.
+                            if checks == expected and appimage in ('success', 'failure'):
+                                child = subprocess.run(command, cwd=HERE.parents[1], env=env,
+                                                       capture_output=True, timeout=5)
+                                self.assertEqual(child.returncode, result, child.stdout + child.stderr)
+                                self.assertEqual(evidence.executed(child.stdout, **identity), passed)
+                                entrypoints += 1
+        self.assertEqual(cases, 216)
+        self.assertEqual(entrypoints, 12)
 
     def test_log_rate_limit_prevents_followup_api_calls(self):
         import io

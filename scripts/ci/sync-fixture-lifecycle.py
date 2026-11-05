@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real pinned-daemon lifetime controls; absence only counts after observing peers."""
 import ctypes
-from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 import os
 from pathlib import Path
 import runpy
@@ -83,8 +83,22 @@ def control(executable, evidence, mode):
                 staging['publish'](binary, data, 0o555)
                 output = subprocess.check_output([str(binary), '--version'], text=True)
                 assert output.startswith('syncthing v2.1.6 '), output
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                list(pool.map(publish_and_exec, range(4)))
+            # Match independent staging CLI processes. Forking from threads
+            # can carry another publisher's writable FD into an exec child.
+            context = multiprocessing.get_context('fork')
+            workers = [context.Process(target=publish_and_exec, args=(index,)) for index in range(4)]
+            try:
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join(timeout=30)
+                    assert worker.exitcode == 0, worker.exitcode
+            finally:
+                for worker in workers:
+                    if worker.is_alive():
+                        worker.kill()
+                    if worker.pid is not None:
+                        worker.join()
             assert {pid for pid, _ in fixtures(work)} == pids
             assert staging['stage'](binary.parent.parent) == binary
             print('Staging control: 4 concurrent publications + execs passed while 2 pinned daemons stayed live', flush=True)
