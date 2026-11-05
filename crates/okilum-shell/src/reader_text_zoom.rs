@@ -39,7 +39,7 @@ thread_local! {
 }
 
 pub(crate) fn bind_keys(cx: &mut App) {
-    let context = Some("Reader && !ManagerWeb");
+    let context = Some("Reader");
     // GPUI menus show the last binding of an action: ⌘= / Ctrl+= stays last.
     cx.bind_keys([
         KeyBinding::new("secondary-+", ZoomIn, context),

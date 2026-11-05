@@ -27,6 +27,7 @@ pub mod shell;
 mod tests;
 
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -104,6 +105,17 @@ impl ResumeCursor {
     }
 }
 
+/// Connect-phase timestamps captured while one subscription socket opens
+/// (#2518). `Instant` shares one process clock, so a caller can subtract its
+/// own connect start. Diagnostic only: no protocol or retry behavior.
+#[derive(Clone, Copy, Debug)]
+pub struct ConnectPhases {
+    /// The authenticated `/api/auth/websocket-ticket` request completed.
+    pub auth_done: Instant,
+    /// The WebSocket upgrade finished: the socket is open.
+    pub websocket_open: Instant,
+}
+
 /// Origin-bound native bearer, distinct from the MCP OAuth audience.
 pub struct NativeClient {
     environment: Environment,
@@ -114,6 +126,25 @@ pub struct NativeClient {
 }
 
 impl NativeClient {
+    /// Share the successfully installed native credential with Board/Projects
+    /// immediately after pairing, without exposing its secret or opening a socket.
+    pub fn project_gateway(
+        &self,
+        mcp: Option<Arc<dyn crate::ManagerGateway>>,
+    ) -> anyhow::Result<Arc<dyn crate::ManagerGateway>> {
+        let session =
+            crate::SessionGateway::native(self.environment.clone(), Some(self.token.clone()))?
+                .with_access(self.access.clone());
+        let mcp = match mcp {
+            Some(gateway) => gateway,
+            None => Arc::new(
+                crate::McpGateway::new(self.environment.clone(), None)?
+                    .with_access(self.access.clone()),
+            ),
+        };
+        Ok(Arc::new(crate::PairedGateway::new(session, mcp)))
+    }
+
     /// Immutable server origin bound to this native credential/client.
     pub fn origin(&self) -> String {
         self.environment.origin()
@@ -254,10 +285,11 @@ impl NativeClient {
                 "native session needs orchestration:operate permission",
             ));
         }
-        let (socket, cancel) = self.open_socket()?;
+        let (socket, cancel, phases) = self.open_socket()?;
         let mut rpc = ThreadSubscription {
             socket,
             cancel,
+            phases,
             origin: self.environment.origin(),
             thread_id: thread_id.to_owned(),
             cursor: None,
@@ -297,11 +329,18 @@ impl NativeClient {
         }
     }
 
-    fn open_socket(&self) -> StreamResult<(WebSocket<MaybeTlsStream<TcpStream>>, TcpStream)> {
+    fn open_socket(
+        &self,
+    ) -> StreamResult<(
+        WebSocket<MaybeTlsStream<TcpStream>>,
+        TcpStream,
+        ConnectPhases,
+    )> {
         if !self.access.allowed() {
             return Err(StreamError::Closed);
         }
         let ticket = auth::ticket(&self.http, &self.environment, &self.token)?;
+        let auth_done = Instant::now();
         let mut url = self.environment.endpoint("/ws");
         let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
         url.set_scheme(scheme)
@@ -374,7 +413,11 @@ impl NativeClient {
                     _ => transport_failure("WebSocket upgrade", false),
                 },
             )?;
-        Ok((socket, cancel))
+        let phases = ConnectPhases {
+            auth_done,
+            websocket_open: Instant::now(),
+        };
+        Ok((socket, cancel, phases))
     }
 
     /// One explicit connection attempt. Every reconnect obtains a new ticket;
@@ -398,10 +441,11 @@ impl NativeClient {
                 "resume cursor belongs to another thread or server",
             ));
         }
-        let (socket, cancel) = self.open_socket()?;
+        let (socket, cancel, phases) = self.open_socket()?;
         let mut subscription = ThreadSubscription {
             socket,
             cancel,
+            phases,
             origin: self.environment.origin(),
             thread_id: thread_id.into(),
             cursor: resume,
@@ -431,6 +475,7 @@ pub struct ThreadSubscription {
     access: crate::NetworkAccess,
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
     cancel: TcpStream,
+    phases: ConnectPhases,
     origin: String,
     thread_id: String,
     cursor: Option<ResumeCursor>,
@@ -438,6 +483,11 @@ pub struct ThreadSubscription {
 }
 
 impl ThreadSubscription {
+    /// Connect-phase timestamps captured while this socket opened (#2518).
+    pub fn phases(&self) -> ConnectPhases {
+        self.phases
+    }
+
     pub fn cancellation(&self) -> StreamResult<CancelSubscription> {
         self.cancel
             .try_clone()

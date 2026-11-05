@@ -444,29 +444,24 @@ impl Reader {
                         && this.project_request == request
                         && this.local_binding_target_current(&project)
                         && access.allowed())
-                    .then(|| cx.read_credentials(&environment.credential_url()))
+                    .then(|| {
+                        reader_project_navigation::restore_gateway(
+                            environment.clone(),
+                            None,
+                            access.clone(),
+                            cx,
+                        )
+                    })
                 }) {
                     Ok(Some(task)) => task,
                     _ => return,
                 };
-                let token = match credential.await {
-                    Ok(Some((_, bytes))) => okilum_t3::StoredToken::from_secret(&bytes).ok(),
-                    _ => None,
-                };
-                let request_access = access.clone();
+                let gateway = credential.await;
                 let expected_binding = binding.clone();
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        let _access = request_access.enter();
-                        let gateway = crate::reader_project_navigation::manager_gateway(
-                            environment.clone(),
-                            Arc::new(
-                                okilum_t3::McpGateway::new(environment.clone(), token)?
-                                    .with_access(request_access.clone()),
-                            ),
-                            request_access,
-                        )?;
+                        let gateway = gateway?;
                         verified_local_owner_choices(&expected_binding, environment, gateway)
                     })
                     .await;

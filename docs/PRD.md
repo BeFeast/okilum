@@ -123,6 +123,13 @@ to the existing Reader window through `ManagerGateway`. Managers remain in T3;
 credentials use OS storage and sends retain durable request identities. Executor
 controls, scheduled-task model following and live-server acceptance remain separate.
 
+**Mac native Manager (#2516 / #2522, Oleg 2026-11-03):**
+[Native Mac Manager](macos-native-manager.md) uses the same ProjectView and
+WebSocket T3 session as Linux, restores separate OS credentials, and keeps
+Open in T3 for the full desktop UI. Board Discuss appends to the visible draft;
+first message timing records visible paint. Native Mac acceptance remains
+separate from hosted tests and beta publication.
+
 **Linux Manager workspace (2026-10-31, #2098 / #2104):**
 [Native chat](project-manager.md#linux-manager-workspace-2098-2104) adds a scoped
 thread picker, independent drafts, live WebSocket replies and run status, with a

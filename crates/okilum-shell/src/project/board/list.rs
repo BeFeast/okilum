@@ -664,11 +664,11 @@ impl Board {
                 cx,
             ));
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let progress = agent
             .as_ref()
             .and_then(|a| self.manager_display.progress(scope, a.thread));
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let progress = agent.as_ref().and_then(|a| {
             self.manager
                 .as_ref()
@@ -734,13 +734,13 @@ impl Board {
                 .as_ref()
                 .is_some_and(|id| !id.is_empty())
                 && !agent.thread.settled;
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             let url = self
                 .manager_display
                 .identity
                 .as_ref()
                 .map(|identity| identity.thread_url(&agent.thread.thread_id));
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(native_manager))]
             let url = self.manager.as_ref().and_then(|m| {
                 m.read(cx)
                     .identity

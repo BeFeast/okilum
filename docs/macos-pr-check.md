@@ -2,8 +2,8 @@
 
 macOS validation runs on **GitHub-hosted arm64 runners**, through
 `forgejo-macos / macos`. Do not run CI on the corporate M4 or SSH to a Mac.
-Required `fast` checks run on PRs; the full Forgejo `ci` workflow is currently
-scheduled/manual. Its `macos-github` job bridges trusted same-repository heads
+Forgejo CI does not run on PRs. The scheduled/manual `ci` workflow
+can bridge trusted same-repository heads
 to unique `forgejo-pr/<number>-<sha>-...` refs on the GitHub mirror and reports
 the result back to Forgejo. No Forgejo credentials reach the hosted runner.
 
@@ -34,12 +34,19 @@ native regressions. This includes all eleven portable native Manager modules
 ProjectView, models and connections tests. Each filter must list at least one
 test before executing; each suite reports its passed/failed/ignored counts.
 A failing suite remains a failure even if later independent suites pass.
+The three `manager_ttfm_` regressions also run as an explicit non-empty group;
+they live under `project::feed::` and `project::native::`, so both module filters
+cover them too. `project::ttfm` contains the measurement implementation only.
 Link the exact-head hosted run and native Manager counts in the PR.
 
 The shell build script defines `cfg(native_manager)` on Linux and macOS only.
 This is compilation coverage, separate from the platform's runtime panel choice:
 macOS still mounts WKWebView until #2522. Its retained ProjectView does not
-implicitly restore a native token or start a native stream. Linux keeps its
+implicitly restore a native token or start a native stream. Explicit native
+selection (`ProjectView::threads.enabled`) uses the shared pairing/Keychain
+lifecycle; #2522 will enable it for the mounted Mac panel. The hosted lane runs
+the credential-store double and actual pairing exchange target-OS regression
+from #2519, without requiring an unlocked login Keychain. Linux keeps its
 native Manager, and Windows keeps its existing path.
 
 Linux cross-compilation cannot exercise the macOS Objective-C bridges, SDK,

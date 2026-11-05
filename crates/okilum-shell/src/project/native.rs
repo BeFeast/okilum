@@ -241,9 +241,10 @@ impl ProjectView {
         let attempt = ConnectionAttempt::begin(self, environment.origin());
         cx.spawn_in(window, async move |this, cx| {
             let task = match this.update_in(cx, |this, _, cx| {
-                attempt
-                    .current(this)
-                    .then(|| cx.read_credentials(&NativeToken::credential_key(&environment)))
+                attempt.current(this).then(|| {
+                    this.credentials
+                        .read(&NativeToken::credential_key(&environment), cx)
+                })
             }) {
                 Ok(Some(task)) => task,
                 _ => return,
@@ -277,6 +278,10 @@ impl ProjectView {
                     Ok(Some((client, expiry))) => this.install_native(client, expiry, window, cx),
                     Ok(None) => {
                         this.native.phase = ConnectionPhase::Paused;
+                        if this.threads.enabled {
+                            this.native.open = true;
+                            this.connection_details = true;
+                        }
                         this.draft_restore(window, cx);
                         if ask {
                             this.pair_enrolled_device(window, cx);
@@ -314,9 +319,10 @@ impl ProjectView {
         let attempt = ConnectionAttempt::begin(self, environment.origin());
         cx.spawn_in(window, async move |this, cx| {
             let task = match this.update_in(cx, |this, _, cx| {
-                attempt
-                    .current(this)
-                    .then(|| cx.read_credentials(&NativeToken::pairing_key(&environment)))
+                attempt.current(this).then(|| {
+                    this.credentials
+                        .read(&NativeToken::pairing_key(&environment), cx)
+                })
             }) {
                 Ok(Some(task)) => task,
                 _ => return,
@@ -395,10 +401,11 @@ impl ProjectView {
                         if !attempt.current(this) {
                             return None;
                         }
-                        Some(cx.write_credentials(
+                        Some(this.credentials.write(
                             &NativeToken::credential_key(&environment),
                             &environment.alias,
                             &bytes,
+                            cx,
                         ))
                     }) {
                         Ok(Some(task)) => task,
@@ -408,7 +415,8 @@ impl ProjectView {
                         Ok(()) => {
                             if let Ok(Some(cleanup)) = this.update_in(cx, |this, _, cx| {
                                 attempt.current(this).then(|| {
-                                    cx.delete_credentials(&NativeToken::pairing_key(&environment))
+                                    this.credentials
+                                        .delete(&NativeToken::pairing_key(&environment), cx)
                                 })
                             }) {
                                 let _ = cleanup.await;
@@ -457,6 +465,14 @@ impl ProjectView {
         let Some(binding) = &self.binding else {
             return;
         };
+        let gateway = match client.project_gateway(self.gateway.clone()) {
+            Ok(gateway) => gateway,
+            Err(error) => {
+                self.native.setup_error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
         let target = binding
             .manager
             .thread_id
@@ -466,6 +482,7 @@ impl ProjectView {
             self.set_threads_active(false, window, cx);
         }
         self.native.pause();
+        self.gateway = Some(gateway);
         self.native.client = Some(client);
         self.attachments.connection_changed();
         self.native.setup_error = None;
@@ -487,6 +504,7 @@ impl ProjectView {
         self.native_load_actions(window, cx);
         self.start_thread_directory(window, cx);
         self.native_start(window, cx);
+        cx.emit(NativeConnected);
         cx.notify();
     }
     pub(super) fn native_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -552,6 +570,7 @@ impl ProjectView {
                     .await
                     {
                         Ok(stream) => {
+                            let phases = stream.phases();
                             let cancel = stream.cancellation().ok();
                             if !this
                                 .update_in(cx, |this, _, cx| {
@@ -559,6 +578,7 @@ impl ProjectView {
                                         return false;
                                     }
                                     this.native.cancel = cancel;
+                                    this.ttfm.socket_connected(phases);
                                     // The ticket/upgrade authenticated this native
                                     // connection. Warm config alongside history.
                                     this.ensure_native_catalog(cx);
@@ -602,14 +622,21 @@ impl ProjectView {
                 }
                 let mut stream = socket.take().unwrap();
                 let model = retained.clone();
-                let (stream, result, accepted_sync) =
+                let (stream, result, accepted_sync, snapshot_at) =
                     recovery::stream_io(cx.background_executor(), move || {
+                        let mut snapshot_at = None;
                         let result = stream.receive(|updates| {
                             let mut r = model.lock().unwrap();
                             if r.epoch != epoch {
                                 return Err(StreamError::Closed);
                             }
                             r.model.apply(updates)?;
+                            if updates
+                                .iter()
+                                .any(|update| matches!(update, ThreadUpdate::Snapshot { .. }))
+                            {
+                                snapshot_at = Some(std::time::Instant::now());
+                            }
                             synchronized |= updates
                                 .iter()
                                 .any(|update| matches!(update, ThreadUpdate::Synchronized));
@@ -623,7 +650,7 @@ impl ProjectView {
                                 r.valid = true;
                             }
                         }
-                        (stream, result, synchronized)
+                        (stream, result, synchronized, snapshot_at)
                     })
                     .await;
                 synchronized = accepted_sync;
@@ -647,6 +674,9 @@ impl ProjectView {
                         // authority only from that same retained model, never a
                         // synthetic ready state while the socket is reconnecting.
                         let ready = result.is_ok() && synchronized;
+                        if let Some(at) = snapshot_at {
+                            this.ttfm.mark(super::ttfm::Phase::Thread, at);
+                        }
                         if ready && !this.native.stream_ready && changes.actions.is_none() {
                             changes.actions = Some(r.model.action_state());
                         }
@@ -934,5 +964,7 @@ fn terminal(error: &StreamError) -> bool {
 pub(super) fn delay(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.saturating_sub(1).min(4)).min(15))
 }
+#[cfg(test)]
+mod credential_tests;
 #[cfg(test)]
 mod tests;

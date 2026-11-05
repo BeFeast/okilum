@@ -60,6 +60,7 @@ fn send(ws: &mut WebSocket<TcpStream>, value: Value) {
 // and upgrade pairs from concurrent clients arrive in a fixed order.
 struct RecoverySockets {
     threads: mpsc::Receiver<(WebSocket<TcpStream>, Value)>,
+    shells: mpsc::Receiver<(WebSocket<TcpStream>, Value)>,
     address: SocketAddr,
     stopped: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
@@ -70,6 +71,7 @@ impl RecoverySockets {
         let stopped = Arc::new(AtomicBool::new(false));
         let stopping = stopped.clone();
         let (threads, accepted) = mpsc::channel();
+        let (shells, accepted_shells) = mpsc::channel();
         let worker = thread::spawn(move || {
             let mut workers = Vec::new();
             for incoming in listener.incoming() {
@@ -78,6 +80,7 @@ impl RecoverySockets {
                     break;
                 }
                 let threads = threads.clone();
+                let shells = shells.clone();
                 let stopping = stopping.clone();
                 workers.push(thread::spawn(move || {
                     stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -94,6 +97,9 @@ impl RecoverySockets {
                     match request["tag"].as_str() {
                         Some("orchestration.subscribeThread") => {
                             threads.send((ws, request)).unwrap();
+                        }
+                        Some("orchestration.subscribeShell") => {
+                            shells.send((ws, request)).unwrap();
                         }
                         Some("subscribeServerConfig") => {
                             assert_eq!(request["payload"], json!({}));
@@ -143,6 +149,7 @@ impl RecoverySockets {
         });
         Self {
             threads: accepted,
+            shells: accepted_shells,
             address,
             stopped,
             worker: Some(worker),
@@ -775,3 +782,6 @@ fn stale_connection_epochs_and_cancelled_credential_attempts_cannot_mutate_new_a
         view.native.pause();
     });
 }
+
+#[path = "ttfm_tests.rs"]
+mod ttfm_tests;

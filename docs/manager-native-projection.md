@@ -4,7 +4,7 @@ Linux can enable live updates with its own T3 native-client pairing. The saved
 native session is origin-bound under `/ws` and reused on restart/reconnect;
 expiry, revocation and incompatible protocol remain explicit. The existing
 Manager connection and durable send journal continue serving Send until slice 4
-moves actions to native dispatch. macOS keeps its embedded web UI.
+moves actions to native dispatch. macOS uses the same native ProjectView (#2522).
 
 The native background worker holds one live subscription, applies complete
 chunks atomically to a retained projection before ACK, and reconnects with its

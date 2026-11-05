@@ -6,9 +6,6 @@ set -Eeuo pipefail
 python3 scripts/ci/test_supervisor_bundle.py
 python3 scripts/ci/test_macos_rust_runner.py
 # Pure page guard units; no GUI/NSApp activation and no production browser data.
-node scripts/ci/test-manager-page-keys.mjs
-node scripts/ci/test-manager-webkit-compatibility.mjs
-bash scripts/ci/check-manager-key-routing.sh
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 export CC=/usr/bin/clang CXX=/usr/bin/clang++
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
@@ -75,6 +72,12 @@ cargo build --release --locked --target aarch64-apple-darwin -p okilum-shell
 # Compile every workspace test target, including test-only cfg branches and integration tests.
 cargo "${cargo_args[@]}" --workspace --no-run
 
+# #2518: run the real-paint, missing-snapshot and row-measurement controls as
+# an explicit non-empty group, in addition to their feed/native module suites.
+run_tests okilum-shell --bins manager_ttfm_
+# #2519: native pairing must advertise the actual build target.
+run_tests okilum-t3 --lib stream::tests::pairing_reports_build_target_os --exact
+
 # #2517: compile and execute every native Manager module, including GPUI tests.
 # Each filter has its own positive control and libtest passed/failed counts.
 manager_skip=()
@@ -86,6 +89,12 @@ done
 # connections, resources and launch/setup, with the same non-empty control.
 run_tests okilum-shell --bins 'project::' "${manager_skip[@]}"
 
+# #2520: the shell gateway must execute on macOS without a WKWebView;
+# include existing navigation, read-only summaries, session and Board regressions.
+run_tests okilum-shell --bins reader_project_navigation::
+run_tests okilum-t3 --lib session::
+run_tests okilum-t3 --lib board::
+
 # #2442: release-profile dependency fixtures and Sync macro imports must also run.
 run_tests okilum-shell --bins reader_log::remote::
 run_tests okilum-shell --bins reader_settings_sync::
@@ -93,8 +102,6 @@ run_tests okilum-sync-controller --test=first_computer ""
 run_tests okilum-sync-controller --lib direct::lan::tests::
 run_tests okilum-core --lib capture::attachments::tests::receipt_lookup_bounds_and_exact_ledger_binding_fail_closed --exact
 
-run_tests okilum-shell --bins reader_manager_compatibility::tests::
-run_tests okilum-shell --bins reader_manager_panel::status_tests::webkit_failure_preserves_thread_actions_without_retries_or_raw_ui_errors --exact
 # APFS rejects invalid UTF-8 filenames even though Unix OsString can represent them.
 run_tests okilum-core --lib link_rewrite::tests::sidecars_stay_excluded_and_invalid_utf8_remains_searchable_without_rewriting --exact
 for name in \
@@ -119,7 +126,6 @@ run_tests okilum-shell --bins reader_settings::tests::settings_files_shows_the_s
 # The shell has a single binary target; avoid example/test harnesses with zero matches.
 # #1510: dispatch unit tests run on hosted macOS; the real-NSApp fixture is
 # ignored because hosted runners cannot establish an active/key application.
-run_tests okilum-shell --bins reader_manager_focus::tests
 run_tests okilum-shell --bins platform::exact_macos_clipboard::native_tests
 run_tests okilum-shell --bins reader_replay::
 # #1462: use the platform NewNote shortcut after an external folder deletion.

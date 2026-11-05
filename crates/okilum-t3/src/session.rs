@@ -1,4 +1,11 @@
-//! [`ManagerGateway`] over T3's own web session: the browser-session cookie
+//! [`ManagerGateway`] over an explicitly paired native bearer, with the legacy
+//! browser-session adapter retained for transport compatibility tests.
+//!
+//! The shell uses `SessionGateway::native` on Linux and macOS; that path never
+//! reads cookies. Native absence permits the separate MCP fallback, while a
+//! refused/expired native grant remains visible and cannot switch audiences.
+//!
+//! Legacy transport: the browser-session cookie
 //! the Manager panel's web view signed in with (#1627).
 //!
 //! The Manager panel is T3's web app in a web view. Pairing it ("Okilum
@@ -73,6 +80,8 @@ pub struct SessionGateway {
     /// The cookie T3 accepted last; `None` until the first call connects.
     active: Mutex<Option<SessionCookie>>,
     observed: Mutex<Option<GatewayStatus>>,
+    /// Native mode never consults a browser store, including when unpaired.
+    native: Option<Option<crate::stream::NativeToken>>,
 }
 
 /// Why a request with one cookie failed.
@@ -98,7 +107,19 @@ impl SessionGateway {
             source,
             active: Mutex::new(None),
             observed: Mutex::new(None),
+            native: None,
         })
+    }
+
+    /// Board, Projects and icons share the explicitly paired native bearer.
+    /// An absent bearer permits the separate MCP fallback; a refused one does not.
+    pub fn native(
+        env: Environment,
+        token: Option<crate::stream::NativeToken>,
+    ) -> anyhow::Result<Self> {
+        let mut gateway = Self::new(env, Arc::new(NoSessionSource))?;
+        gateway.native = Some(token);
+        Ok(gateway)
     }
 
     pub fn with_access(mut self, access: crate::NetworkAccess) -> Self {
@@ -116,6 +137,9 @@ impl SessionGateway {
         if !self.access.allowed() {
             return Err(GatewayError::NotConnected);
         }
+        if self.native.is_some() {
+            return self.list_projects().map(drop);
+        }
         self.session().map(drop)
     }
 
@@ -130,6 +154,7 @@ impl SessionGateway {
             Ok(_) => None,
             Err(GatewayError::NotPaired { .. }) => Some(GatewayStatus::NotConnected),
             Err(GatewayError::Revoked) => Some(GatewayStatus::Revoked),
+            Err(GatewayError::Expired) => Some(GatewayStatus::Expired),
             Err(GatewayError::Unreachable(detail)) => Some(GatewayStatus::Unreachable {
                 detail: detail.clone(),
             }),
@@ -218,15 +243,42 @@ impl SessionGateway {
     /// the store once (the panel may have signed in since).
     fn send(
         &self,
-        request: impl Fn(&SessionCookie) -> reqwest::blocking::RequestBuilder,
+        write: bool,
+        request: impl Fn() -> reqwest::blocking::RequestBuilder,
     ) -> GatewayResult<Value> {
+        if let Some(token) = &self.native {
+            let result = (|| {
+                if !self.access.allowed() {
+                    return Err(GatewayError::NotConnected);
+                }
+                let token = token.as_ref().ok_or_else(|| self.not_paired())?;
+                let request = request().header(ACCEPT, "application/json");
+                let response = token
+                    .authenticate(&self.env, request, write)
+                    .map_err(|error| match error {
+                        crate::stream::StreamError::Expired => GatewayError::Expired,
+                        _ => GatewayError::Protocol(error.to_string()),
+                    })?
+                    .send()
+                    .map_err(|error| GatewayError::Unreachable(error.without_url().to_string()))?;
+                let response = refusal(response).map_err(|failure| match failure {
+                    Failure::Refused => GatewayError::Revoked,
+                    Failure::Gateway(error) => error,
+                })?;
+                response
+                    .json()
+                    .map_err(|error| GatewayError::Protocol(error.to_string()))
+            })();
+            self.observe(&result);
+            return result;
+        }
         let result = (|| {
             for _ in 0..2 {
                 let cookie = self.session()?;
                 if !self.access.allowed() {
                     return Err(GatewayError::NotConnected);
                 }
-                let response = request(&cookie)
+                let response = request()
                     .header(ACCEPT, "application/json")
                     .header(COOKIE, cookie_header(&cookie))
                     .send()
@@ -252,7 +304,7 @@ impl SessionGateway {
         struct Snapshot {
             projects: Vec<Value>,
         }
-        let value = self.send(|_| self.http.get(self.env.endpoint("/api/projects")))?;
+        let value = self.send(false, || self.http.get(self.env.endpoint("/api/projects")))?;
         let snapshot: Snapshot = serde_json::from_value(value)
             .map_err(|error| GatewayError::Protocol(format!("/api/projects: {error}")))?;
         snapshot
@@ -318,6 +370,23 @@ impl ManagerGateway for SessionGateway {
         if let Some(status) = self.observed.lock().unwrap().clone() {
             return status;
         }
+        if let Some(token) = &self.native {
+            return match token {
+                None => GatewayStatus::NotConnected,
+                Some(token) if token.expires_at() <= crate::unix_now() => GatewayStatus::Expired,
+                Some(token)
+                    if token.expires_at().saturating_sub(crate::unix_now())
+                        <= crate::EXPIRES_SOON_SECS =>
+                {
+                    GatewayStatus::ExpiresSoon {
+                        expires_at: token.expires_at(),
+                    }
+                }
+                Some(token) => GatewayStatus::Connected {
+                    expires_at: token.expires_at(),
+                },
+            };
+        }
         if self.active.lock().unwrap().is_some() {
             // The cookie's lifetime is T3's to know; it renews in the panel.
             GatewayStatus::Connected { expires_at: 0 }
@@ -359,7 +428,7 @@ impl ManagerGateway for SessionGateway {
             "projectIcon": icon,
         });
         let url = self.env.endpoint("/api/projects/mutate");
-        let value = self.send(|_| {
+        let value = self.send(true, || {
             self.http
                 .post(url.clone())
                 .header(CONTENT_TYPE, "application/json")
@@ -387,7 +456,7 @@ impl ManagerGateway for SessionGateway {
             "workspaceRoot": workspace_root,
         });
         let url = self.env.endpoint("/api/projects/mutate");
-        let value = self.send(|_| {
+        let value = self.send(true, || {
             self.http
                 .post(url.clone())
                 .header(CONTENT_TYPE, "application/json")
@@ -407,7 +476,7 @@ impl ManagerGateway for SessionGateway {
         // Required by T3's orchestration route schema, independently of the
         // browser-session cookie. Projects uses a different header contract.
         let value = self
-            .send(|_| {
+            .send(false, || {
                 self.http
                     .get(self.env.endpoint("/api/orchestration/shell"))
                     .header("x-t3-orchestration-protocol", "2")
@@ -448,9 +517,9 @@ impl ManagerGateway for SessionGateway {
 }
 
 /// The gateway the Projects page and the icon dialog use for one saved T3
-/// connection: projects and icons over the paired web session (the Manager
-/// panel's), including read-only thread summaries. Without a paired session an MCP token, if
-/// the user connected one, still serves the icons.
+/// connection: project/icon operations and read-only summaries over the paired
+/// native bearer. The legacy session adapter remains available to library callers.
+/// MCP serves these operations only when the paired credential is absent.
 pub struct PairedGateway {
     session: SessionGateway,
     mcp: Arc<dyn ManagerGateway>,
@@ -476,6 +545,9 @@ impl PairedGateway {
     ) -> GatewayResult<T> {
         match session(&self.session) {
             Err(GatewayError::NotPaired { .. }) if self.mcp_ready() => mcp(&*self.mcp),
+            Err(GatewayError::NotPaired { .. }) if self.session.native.is_some() => {
+                Err(GatewayError::NotConnected)
+            }
             result => result,
         }
     }
@@ -487,10 +559,23 @@ impl ManagerGateway for PairedGateway {
     }
 
     fn status(&self) -> GatewayStatus {
+        if matches!(self.session.native, Some(Some(_))) {
+            return self.session.status();
+        }
         self.mcp.status()
     }
 
+    fn token_expires_at(&self) -> Option<u64> {
+        match &self.session.native {
+            Some(Some(token)) => Some(token.expires_at()),
+            _ => self.mcp.token_expires_at(),
+        }
+    }
+
     fn server_identity(&self) -> GatewayResult<crate::ServerIdentity> {
+        if matches!(self.session.native, Some(Some(_))) {
+            return self.session.server_identity();
+        }
         self.mcp.server_identity()
     }
 

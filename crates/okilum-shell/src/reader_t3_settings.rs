@@ -1,8 +1,6 @@
 //! App-wide authenticated T3 connection and resumable browser authorization.
 use super::*;
 mod auth;
-#[cfg(target_os = "macos")]
-mod browser;
 
 #[derive(Default)]
 pub(super) struct Connection {
@@ -187,14 +185,6 @@ impl Render for T3Settings {
             .map(|e| auth::entry(&e.origin(), cx))
             .unwrap_or_default();
         let pending = entry.pending.clone();
-        #[cfg(target_os = "macos")]
-        if let Some(pending) = &pending {
-            if let Err(e) = browser::show(&pending.url, env.as_ref().unwrap(), _window, cx) {
-                self.error = Some(format!(
-                    "Sign-in view could not open: {e:#}. Use Open in browser below."
-                ));
-            }
-        }
         let status = env.as_ref().map(|e| auth::status(&e.origin(), cx));
         let error = self.error.clone().or(entry.error);
         v_flex()

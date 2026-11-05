@@ -67,10 +67,18 @@ fn t3_project(id: &str, icon: Value, deleted: bool) -> Value {
 /// T3's HTTP API as the web app uses it: the session cookie `GOOD` is
 /// signed in; `/api/projects` lists, `/api/projects/mutate` updates.
 fn fake_t3(stored: Arc<Mutex<Value>>) -> FakeServer {
+    fake_t3_auth(stored, false)
+}
+
+fn fake_t3_auth(stored: Arc<Mutex<Value>>, native: bool) -> FakeServer {
     FakeServer::start(move |request| {
-        let signed_in = request
-            .header("cookie")
-            .is_some_and(|cookie| cookie.split("; ").any(|part| part == GOOD));
+        let signed_in = if native {
+            request.header("authorization") == Some("Bearer native-2520")
+        } else {
+            request
+                .header("cookie")
+                .is_some_and(|cookie| cookie.split("; ").any(|part| part == GOOD))
+        };
         match (request.method.as_str(), request.path()) {
             ("GET", "/api/auth/session") => Response::json(
                 200,
@@ -664,4 +672,136 @@ fn disabled_module_refuses_session_http_before_cookie_discovery() {
         cookie_reads,
         "disabled access cannot even ask the webview to reconnect"
     );
+}
+
+fn native_token(env: &Environment, scope: &str) -> crate::stream::NativeToken {
+    crate::stream::NativeToken::from_secret(
+        env,
+        &serde_json::to_vec(&json!({
+            "origin":env.origin(),"access_token":"native-2520", "expires_at":u64::MAX,"scope":scope
+        }))
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_board_projects_icons_and_summaries_never_read_the_cookie_source() {
+    let server = fake_t3_auth(Arc::new(Mutex::new(Value::Null)), true);
+    let env = Environment::new("native", &server.origin).unwrap();
+    let mut session = SessionGateway::native(
+        env.clone(),
+        Some(native_token(
+            &env,
+            "orchestration:read orchestration:operate",
+        )),
+    )
+    .unwrap();
+    let store = Store::holding(&[("t3_session_abc", "live")]);
+    // The source is populated and working: ignoring it must be deliberate.
+    assert_eq!(
+        store.cookies(&env.host(), CONNECT_TIMEOUT).unwrap().len(),
+        1
+    );
+    store.reads.store(0, Ordering::SeqCst);
+    session.source = store.clone();
+    let mcp = Arc::new(Mcp {
+        connected: true,
+        icons: AtomicUsize::new(0),
+    });
+    let gateway = PairedGateway::new(session, mcp.clone());
+    assert_eq!(gateway.list_projects().unwrap()[0].id, "okilum");
+    assert_eq!(gateway.read_project("okilum").unwrap().id, "okilum");
+    assert_eq!(
+        gateway
+            .set_project_icon("okilum", Some(&calculator()))
+            .unwrap()
+            .project_icon,
+        Some(calculator())
+    );
+    assert_eq!(
+        gateway
+            .set_project_icon("okilum", None)
+            .unwrap()
+            .project_icon,
+        None
+    );
+    let threads = gateway.list_threads("okilum").unwrap();
+    assert_eq!(threads[0].active_run_id.as_deref(), Some("run-current"));
+    assert_eq!(store.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(mcp.icons.load(Ordering::SeqCst), 0);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 5);
+    assert!(requests
+        .iter()
+        .all(|request| request.header("cookie").is_none()
+            && request.header("authorization") == Some("Bearer native-2520")
+            && request.path() != "/api/auth/session"));
+}
+
+#[test]
+fn native_absence_uses_mcp_without_cookie_discovery() {
+    let env = Environment::new("native", "https://unpaired.example.test").unwrap();
+    let mut session = SessionGateway::native(env, None).unwrap();
+    let store = Store::holding(&[("t3_session_abc", "live")]);
+    session.source = store.clone();
+    let mcp = Arc::new(Mcp {
+        connected: true,
+        icons: AtomicUsize::new(0),
+    });
+    let gateway = PairedGateway::new(session, mcp.clone());
+    assert_eq!(gateway.list_projects().unwrap()[0].id, "via-mcp");
+    gateway.set_project_icon("p", Some(&calculator())).unwrap();
+    gateway.set_project_icon("p", None).unwrap();
+    assert!(gateway.list_threads("p").unwrap().is_empty());
+    assert_eq!(mcp.icons.load(Ordering::SeqCst), 2);
+    assert_eq!(store.reads.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn native_read_only_or_refused_grant_cannot_fall_back_to_mcp_for_icon_writes() {
+    let server = fake_t3_auth(Arc::new(Mutex::new(Value::Null)), true);
+    let env = Environment::new("native", &server.origin).unwrap();
+    let mcp = Arc::new(Mcp {
+        connected: true,
+        icons: AtomicUsize::new(0),
+    });
+    let gateway = PairedGateway::new(
+        SessionGateway::native(env.clone(), Some(native_token(&env, "orchestration:read")))
+            .unwrap(),
+        mcp.clone(),
+    );
+    assert_eq!(gateway.read_project("okilum").unwrap().id, "okilum");
+    assert!(gateway
+        .set_project_icon("okilum", Some(&calculator()))
+        .is_err());
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "read-only denial happens before HTTP mutation"
+    );
+    let refused = FakeServer::start(|_| Response::empty(401));
+    let env = Environment::new("refused", &refused.origin).unwrap();
+    let gateway = PairedGateway::new(
+        SessionGateway::native(
+            env.clone(),
+            Some(native_token(
+                &env,
+                "orchestration:read orchestration:operate",
+            )),
+        )
+        .unwrap(),
+        mcp.clone(),
+    );
+    assert_eq!(
+        gateway.set_project_icon("okilum", None).unwrap_err(),
+        GatewayError::Revoked
+    );
+    assert_eq!(gateway.status(), GatewayStatus::Revoked);
+    assert_eq!(
+        refused.requests().len(),
+        1,
+        "refused bearer is never retried"
+    );
+    assert_eq!(mcp.icons.load(Ordering::SeqCst), 0);
 }

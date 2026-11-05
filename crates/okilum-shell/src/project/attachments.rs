@@ -138,7 +138,7 @@ fn supported_image_mime(bytes: &[u8]) -> anyhow::Result<&'static str> {
     }
 }
 
-pub(super) fn thumbnail(bytes: &[u8]) -> Option<Arc<gpui::Image>> {
+fn decode_image(bytes: &[u8]) -> Option<image::DynamicImage> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
@@ -152,7 +152,11 @@ pub(super) fn thumbnail(bytes: &[u8]) -> Option<Arc<gpui::Image>> {
     let orientation = decoder.orientation().ok()?;
     let mut decoded = image::DynamicImage::from_decoder(decoder).ok()?;
     decoded.apply_orientation(orientation);
-    let image = decoded.thumbnail(640, 480);
+    Some(decoded)
+}
+
+pub(super) fn thumbnail(bytes: &[u8]) -> Option<Arc<gpui::Image>> {
+    let image = decode_image(bytes)?.thumbnail(640, 480);
     let mut png = std::io::Cursor::new(Vec::new());
     image.write_to(&mut png, image::ImageFormat::Png).ok()?;
     Some(Arc::new(gpui::Image::from_bytes(
@@ -205,6 +209,36 @@ pub(in crate::project) fn prepare_with_preview(
     }))
 }
 
+/// AppKit screenshots and Preview commonly offer TIFF. T3 accepts PNG,
+/// JPEG, GIF and WebP; convert TIFF on the preparation worker, with the same
+/// decoder limits and orientation handling as previews. Preserve other bytes.
+fn prepare_image(mut bytes: Vec<u8>, name: &str) -> anyhow::Result<(AttachmentMetadata, Vec<u8>)> {
+    let mut name = name.to_owned();
+    if image::guess_format(&bytes).ok() == Some(image::ImageFormat::Tiff) {
+        anyhow::ensure!(
+            bytes.len() <= crate::note_paste::offer::MAX_IMAGE_BYTES,
+            "Clipboard image is too large"
+        );
+        let decoded = decode_image(&bytes).context("This TIFF image could not be read safely")?;
+        let mut png = std::io::Cursor::new(Vec::new());
+        decoded.write_to(&mut png, image::ImageFormat::Png)?;
+        bytes = png.into_inner();
+        name = Path::new(&name)
+            .with_extension("png")
+            .to_string_lossy()
+            .into_owned();
+    }
+    Ok((
+        AttachmentMetadata {
+            kind: AttachmentKind::Image,
+            name,
+            mime_type: supported_image_mime(&bytes)?.into(),
+            size_bytes: 0,
+        },
+        bytes,
+    ))
+}
+
 fn prepare(
     source: &Source,
     name: &str,
@@ -225,26 +259,14 @@ fn prepare(
                 bytes.len() as u64 == size,
                 "File changed while it was being attached; select it again"
             );
-            let mut meta = metadata(name.to_owned());
+            let meta = metadata(name.to_owned());
             if image::guess_format(&bytes).is_ok() || meta.mime_type.starts_with("image/") {
-                meta.kind = AttachmentKind::Image;
-                meta.mime_type = supported_image_mime(&bytes)?.into();
+                prepare_image(bytes, name)?
+            } else {
+                (meta, bytes)
             }
-            (meta, bytes)
         }
-        Source::Image(bytes) => {
-            let mime = supported_image_mime(bytes)?;
-            let bytes = bytes.as_ref().clone();
-            (
-                AttachmentMetadata {
-                    kind: AttachmentKind::Image,
-                    name: name.to_owned(),
-                    mime_type: mime.into(),
-                    size_bytes: 0,
-                },
-                bytes,
-            )
-        }
+        Source::Image(bytes) => prepare_image(bytes.as_ref().clone(), name)?,
     };
     meta.size_bytes = bytes.len() as u64;
     if meta.kind == AttachmentKind::Image {
@@ -372,7 +394,7 @@ impl ProjectView {
             }
             Some(Ok(PasteOffer::Text(text))) => {
                 self.compose
-                    .update(cx, |input, cx| input.insert(text, window, cx));
+                    .update(cx, |input, cx| input.replace(text, window, cx));
                 return;
             }
             Some(Err(crate::note_paste::offer::OfferError::TooLarge)) => {
@@ -410,7 +432,7 @@ impl ProjectView {
             }
             if let Some(text) = item.text() {
                 self.compose
-                    .update(cx, |input, cx| input.insert(text, window, cx));
+                    .update(cx, |input, cx| input.replace(text, window, cx));
             }
         }
     }
@@ -1313,6 +1335,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn issue2521_tiff_attachment_converts_losslessly_with_preview_and_output_budgets() {
+        let pixels = image::RgbaImage::from_fn(8, 6, |x, y| {
+            image::Rgba([x as u8 * 20, y as u8 * 30, 7, if x == 0 { 0 } else { 255 }])
+        });
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(pixels.clone())
+            .write_to(&mut encoded, image::ImageFormat::Tiff)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Preview.tiff");
+        std::fs::write(&path, &bytes).unwrap();
+        for source in [Source::Image(Arc::new(bytes.clone())), Source::File(path)] {
+            let prepared = prepare_with_preview(&source, "Preview.tiff", 0).unwrap();
+            assert_eq!(prepared.metadata.kind, AttachmentKind::Image);
+            assert_eq!(prepared.metadata.name, "Preview.png");
+            assert_eq!(prepared.metadata.mime_type, "image/png");
+            assert_eq!(prepared.metadata.size_bytes, prepared.bytes.len() as u64);
+            assert_eq!(
+                image::load_from_memory(&prepared.bytes).unwrap().to_rgba8(),
+                pixels
+            );
+            assert!(prepared.previews.is_some());
+            assert!(prepare(&source, "Preview.tiff", MAX_TOTAL_IMAGE_BYTES)
+                .unwrap_err()
+                .to_string()
+                .contains("80 MiB"));
+        }
+        assert!(prepare(
+            &Source::Image(Arc::new(b"II*\0truncated TIFF".to_vec())),
+            "bad.tiff",
+            0
+        )
+        .is_err());
+    }
+
     #[gpui::test]
     fn chooser_remove_restore_guard_and_confirmed_native_references_preserve_text(
         cx: &mut TestAppContext,
@@ -1351,14 +1410,25 @@ mod tests {
         });
         visual.simulate_path_prompt_response(|options| {
             assert!(options.files && !options.directories && options.multiple);
-            Some(vec![PathBuf::from("/missing/notes.txt")])
+            Some(vec![
+                PathBuf::from("/missing/notes.pdf"),
+                PathBuf::from("/missing/image.png"),
+            ])
         });
         visual.run_until_parked();
         view.update_in(visual, |view, window, cx| {
-            assert_eq!(view.draft_attachments().len(), 1);
-            let id = view.draft_attachments()[0].id.clone();
+            assert_eq!(view.draft_attachments().len(), 2);
+            assert_eq!(view.draft_attachments()[0].mime_type, "application/pdf");
+            assert_eq!(view.draft_attachments()[1].mime_type, "image/png");
+            let ids: Vec<_> = view
+                .draft_attachments()
+                .iter()
+                .map(|row| row.id.clone())
+                .collect();
             assert!(view.prepared_attachments().is_err());
-            view.remove_attachment(&id, window, cx);
+            for id in ids {
+                view.remove_attachment(&id, window, cx);
+            }
             assert!(view.draft_attachments().is_empty());
             assert_eq!(
                 view.compose.read(cx).value().as_str(),

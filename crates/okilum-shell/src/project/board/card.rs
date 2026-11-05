@@ -135,13 +135,13 @@ impl Board {
         }
         meta = meta.child(labels);
         if let Some(agent) = &agent {
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             let url = self
                 .manager_display
                 .identity
                 .as_ref()
                 .map(|identity| identity.thread_url(&agent.thread.thread_id));
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(native_manager))]
             let url = self.manager.as_ref().and_then(|m| {
                 m.read(cx)
                     .identity
@@ -195,11 +195,11 @@ impl Board {
             .map(|p| p.checks.as_str());
         let failed = matches!(checks, Some("failure" | "error"));
         let stale = scope.stuck || agent.as_ref().is_some_and(|a| a.stuck);
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let progress = agent
             .as_ref()
             .and_then(|a| self.manager_display.progress(scope, a.thread));
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let progress = agent.as_ref().and_then(|a| {
             self.manager
                 .as_ref()

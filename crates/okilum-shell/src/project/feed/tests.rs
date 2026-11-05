@@ -431,6 +431,7 @@ fn tool_disclosure_keeps_latest_detail_without_repainting_hidden_output(cx: &mut
 
 #[gpui::test]
 fn questions_and_failures_stay_visible_and_reasoning_can_expand(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_global(super::super::desktop::TestHandler(true)));
     let (view, visual, _temp) = fixture(cx, 0);
     let mut reasoning = message(1);
     reasoning.kind = "reasoning".into();
@@ -925,4 +926,66 @@ fn prompt_history_uses_native_chronology_and_row_keys_across_id_retirement(
         step.prompt, "older",
         "retired ID resolves through newest identical prompt"
     );
+}
+
+#[gpui::test]
+fn manager_ttfm_row_construction_does_not_count_as_visible_paint(cx: &mut TestAppContext) {
+    let (view, visual, _temp) = fixture(cx, 1);
+    let feed = view.read_with(visual, |view, _| view.feed.clone());
+    let ttfm = feed.update(visual, |feed, cx| {
+        let ttfm = super::super::ttfm::Ttfm::open(std::time::Instant::now(), true, cx);
+        feed.ttfm = Some(ttfm.clone());
+        feed.row_calls.set(0);
+        // MessageScroller also builds rows solely to measure their height.
+        drop(feed.row(0, cx));
+        assert_eq!(
+            feed.row_calls.get(),
+            1,
+            "positive control: a real row was built"
+        );
+        assert!(
+            ttfm.needs_paint(),
+            "row construction must not complete TTFM"
+        );
+        cx.notify();
+        ttfm
+    });
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    visual.run_until_parked();
+    assert!(
+        !ttfm.needs_paint(),
+        "positive control: a visible row actually painted"
+    );
+}
+
+#[gpui::test]
+fn issue2521_edit_menu_copy_uses_focused_feed_selection(cx: &mut TestAppContext) {
+    let (view, visual, _temp) = fixture(cx, 0);
+    let mut item = message(1);
+    item.text = Some("Selected feed text 🧠".into());
+    view.update(visual, |view, cx| {
+        view.feed
+            .update(cx, |feed, cx| feed.apply(std::iter::once(&item), None, cx));
+    });
+    visual.run_until_parked();
+    let surface = visual.debug_bounds("project-message-surface-1").unwrap();
+    let header = visual.debug_bounds("project-message-header-1").unwrap();
+    visual.simulate_click(
+        point(surface.left() + px(30.), header.bottom() + px(12.)),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    super::super::composer::input_tests::menu(visual, "Select All");
+    visual
+        .update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string("sentinel".into())));
+    super::super::composer::input_tests::menu(visual, "Copy");
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some("Selected feed text 🧠")
+        )
+    });
 }

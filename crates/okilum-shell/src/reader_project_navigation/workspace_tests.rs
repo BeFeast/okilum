@@ -10,7 +10,7 @@ fn files_and_notes_shortcut_restore_the_global_tree_after_project_switches(
         crate::test_init(cx);
         bind_keys(cx);
     });
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     let vault = temp.path().join("vault");
     for folder in ["", "Work/App", "Music/Studio"] {
         let root = vault.join(folder);
@@ -184,7 +184,7 @@ fn files_and_notes_shortcut_restore_the_global_tree_after_project_switches(
 #[gpui::test]
 fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     let vault = temp.path().join("vault");
     let state = temp.path().join("state");
     std::fs::create_dir_all(vault.join("Work/App/ops")).unwrap();
@@ -370,7 +370,7 @@ fn persisted_project_restart_and_explicit_files_world(cx: &mut TestAppContext) {
 #[gpui::test]
 fn user_intent_cancels_inflight_workspace_restore(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
-    let temp = tempfile::tempdir().unwrap();
+    let temp = canonical_tempdir();
     let vault = temp.path().join("vault");
     let state = temp.path().join("state");
     std::fs::create_dir_all(vault.join("Work/ops")).unwrap();
