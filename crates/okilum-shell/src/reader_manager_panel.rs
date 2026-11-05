@@ -472,6 +472,22 @@ impl ManagerPanel {
         cx.notify();
     }
 
+    #[cfg(any(target_os = "macos", test))]
+    fn finish_page_load(&mut self, generation: u64, url: &str, cx: &mut Context<Self>) -> bool {
+        if self.closed || generation != self.generation || !self.watchdog.finished(generation, url)
+        {
+            return false;
+        }
+        self.failures = 0;
+        self.webview_unavailable = false;
+        #[cfg(target_os = "macos")]
+        if let Some(view) = &self.webview {
+            view.update(cx, |view, _| view.show());
+        }
+        cx.notify();
+        true
+    }
+
     /// A failed attempt: keep one quiet line and try again with backoff.
     fn failed(&mut self, error: String, window: &mut Window, cx: &mut Context<Self>) {
         self.failures = self.failures.saturating_add(1);
@@ -498,7 +514,7 @@ impl ManagerPanel {
         if !reader_features::enabled(reader_features::Feature::Agents, cx) {
             return;
         }
-        if self.loading || self.unsupported_webkit {
+        if self.loading || self.unsupported_webkit || self.connected() {
             return;
         }
         let Manager::Thread(thread) = self.project.manager.clone() else {
@@ -549,12 +565,16 @@ impl ManagerPanel {
                         #[cfg(target_os = "macos")]
                         match Self::browser(&links.browser, generation, window, cx) {
                             Ok((view, routing)) => {
+                                // Keep the fallback visible through retries. A
+                                // new native child is not a loaded T3 document.
+                                if this.webview_unavailable {
+                                    view.update(cx, |view, _| view.hide());
+                                }
                                 this.checking_webkit = true;
                                 this.focus_routing = Some(routing);
                                 this.webview = Some(view);
                                 this.error = None;
                                 this.retrying = false;
-                                this.webview_unavailable = false;
                                 this.occlusion_hidden = false;
                                 this.watch_browser(watchdog::Stage::Capability, window, cx);
                             }
@@ -647,10 +667,7 @@ impl ManagerPanel {
                                 this.watch_browser(watchdog::Stage::Page, window, cx);
                             }
                             if phase == "finished" {
-                                if this.watchdog.finished(generation, url) {
-                                    this.failures = 0;
-                                    cx.notify();
-                                }
+                                this.finish_page_load(generation, url, cx);
                                 if let Some(routing) = &this.focus_routing {
                                     routing.document_loaded();
                                 }
@@ -876,9 +893,10 @@ impl Render for ManagerPanel {
                     Button::new("manager-fallback-retry")
                         .small()
                         .label("Retry")
-                        .disabled(self.loading)
+                        .disabled(self.loading || self.connected())
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.unsupported_webkit = false;
+                            this.webview_unavailable = true;
                             this.connect(window, cx);
                         })),
                 )
@@ -1156,6 +1174,26 @@ mod status_tests {
                 panel.failures, 2,
                 "creating a view is not a successful load"
             );
+            panel.watch_browser(watchdog::Stage::Capability, window, cx);
+            assert!(
+                panel.webview_unavailable,
+                "retry preflight preserves fallback"
+            );
+            panel.watch_browser(watchdog::Stage::Page, window, cx);
+            assert!(
+                panel.webview_unavailable,
+                "retry navigation preserves fallback"
+            );
+            assert!(!panel.finish_page_load(
+                expired_generation,
+                "https://t3.example/env/thread",
+                cx
+            ));
+            assert!(!panel.finish_page_load(panel.generation, "about:blank", cx));
+            assert!(panel.webview_unavailable);
+            assert!(panel.finish_page_load(panel.generation, "https://t3.example/env/thread", cx));
+            assert!(!panel.webview_unavailable);
+            assert_eq!(panel.failures, 0);
             panel.hide(cx);
         });
     }

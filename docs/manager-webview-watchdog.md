@@ -12,7 +12,9 @@ the native Manager replaces this path, each browser generation has two deadlines
 Timeouts and native navigation errors release the child view before showing
 the existing fallback, retaining Open in T3, Open in browser and Retry.
 Transient failures use the existing 2/5/10/30-second connection backoff; only
-a completed web load resets the failure count. A definitive unsupported-engine
+a completed web load resets the failure count and dismisses fallback. Retry
+views stay hidden while preflight and navigation run behind the status UI.
+A definitive unsupported-engine
 report waits for a manual retry or address change. Old-generation callbacks
 and timers cannot affect a replacement or a closed panel.
 
