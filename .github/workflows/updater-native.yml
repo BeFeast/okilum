@@ -110,7 +110,8 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" = Windows ]]; then
-            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+            OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+            export OKILUM_WINDOWS_ICON
           fi
           filters=(updater:: reader_update_restart::tests:: reader_editor::tests::update_restart_refuses_unprotected_single_file_then_preserves_latest_draft)
           if [[ "$RUNNER_OS" = macOS ]]; then
