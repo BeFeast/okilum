@@ -53,7 +53,8 @@ pub struct Vault {
     pub id: String,
     pub label: String,
 }
-#[derive(Clone, Debug)]
+/// Serializable for the desktop's local `okilum sync` control channel (#2589).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub offer_url: Option<String>,
     pub pending: Option<Pending>,

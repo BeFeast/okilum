@@ -30,9 +30,11 @@ choose receives a vault (id or name, from the computer's catalog) into
 DESTINATION: a new folder is created, an existing one must be empty.
 --name defaults to this computer's host name.
 
-Okilum keeps Sync state for its whole run, so these commands refuse while the
-app is open. --quit-app quits it first (Linux: SIGTERM, which saves and exits;
-macOS: the AppleScript quit command).
+One process owns this computer's Sync state. While `okilum sync serve` or the
+app owns it, the other commands run through that process and it keeps running.
+The app owns Sync once Sync has started in it; until then these commands refuse
+while it is open. --quit-app quits it first instead (Linux: SIGTERM, which saves
+and exits; macOS: the AppleScript quit command).
 
 Exit codes: 0 success, 1 failure or timeout, 2 usage, 3 Okilum is running.
 ";
@@ -111,7 +113,20 @@ fn run(arguments: &[String]) -> i32 {
     let result = (|| -> anyhow::Result<i32> {
         use anyhow::Context as _;
         let directory = reader_history::state_directory()?;
-        if let Some(pid) = running_app(&directory)? {
+        let app = running_app(&directory)?;
+        // #2589: `okilum sync serve` or the app owns Sync here; it runs this
+        // command, so neither has to stop. --quit-app still quits the app.
+        if !(request.quit_app && app.is_some()) && !matches!(request.verb, Verb::Serve { .. }) {
+            if let Some(owner) = state_location()
+                .ok()
+                .map(|state| control::Client::find(&state))
+                .transpose()?
+                .flatten()
+            {
+                return execute(request.verb, Session::Owner(owner));
+            }
+        }
+        if let Some(pid) = app {
             if !request.quit_app {
                 eprintln!("okilum sync: {}", running_message(pid));
                 return Ok(3);
@@ -123,7 +138,7 @@ fn run(arguments: &[String]) -> i32 {
             reader_features::enable_saved(&directory, reader_features::Feature::Sync)
                 .context("turn on Sync in Settings → Features")?;
         }
-        execute(request.verb)
+        execute(request.verb, Session::default())
     })();
     result.unwrap_or_else(|error| {
         eprintln!("okilum sync: {error:#}");
@@ -334,27 +349,105 @@ fn quit_app(directory: &Path, pid: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One controller for the whole command, like the Settings view's cached one.
-#[derive(Default)]
-struct Session {
-    controller: Option<Controller>,
-    epoch: Epoch,
+/// Where the command's Sync steps run.
+enum Session {
+    /// One controller for the whole command, like the Settings view's cached one.
+    Local {
+        controller: Option<Controller>,
+        epoch: Epoch,
+    },
+    /// The process that owns this computer's Sync state runs them (#2589).
+    Owner(control::Client),
+}
+impl Default for Session {
+    fn default() -> Self {
+        Self::Local {
+            controller: None,
+            epoch: Epoch::default(),
+        }
+    }
 }
 impl Session {
-    fn perform(&mut self, operation: Operation) -> anyhow::Result<Output> {
-        let output = perform_scoped(self.controller.clone(), operation, &self.epoch.ticket())?;
-        self.controller = Some(output.controller.clone());
-        Ok(output)
+    fn perform(&mut self, operation: Operation) -> anyhow::Result<Step> {
+        match self {
+            Self::Local { controller, epoch } => {
+                let output = perform_scoped(controller.clone(), operation, &epoch.ticket())?;
+                *controller = Some(output.controller.clone());
+                Ok(Step::from(output))
+            }
+            Self::Owner(owner) => match owner.call(control::Call::Perform(Box::new(operation)))? {
+                control::Answer::Step(step) => Ok(*step),
+                _ => anyhow::bail!("unexpected answer from the process that owns Sync"),
+            },
+        }
+    }
+    fn controller(&self) -> anyhow::Result<&Controller> {
+        use anyhow::Context as _;
+        match self {
+            Self::Local { controller, .. } => controller.as_ref().context("Sync is not open"),
+            Self::Owner(_) => anyhow::bail!("Sync is owned by another process"),
+        }
+    }
+    fn pairing(
+        &self,
+        call: control::Call,
+        local: impl FnOnce(&Controller) -> anyhow::Result<Snapshot>,
+    ) -> anyhow::Result<Snapshot> {
+        let Self::Owner(owner) = self else {
+            return local(self.controller()?);
+        };
+        match owner.call(call)? {
+            control::Answer::Snapshot(snapshot) => Ok(*snapshot),
+            _ => anyhow::bail!("unexpected answer from the process that owns Sync"),
+        }
+    }
+    fn refresh_pairing(&self) -> anyhow::Result<Snapshot> {
+        self.pairing(control::Call::RefreshPairing, Controller::refresh_pairing)
+    }
+    fn approve(&self, request: uuid::Uuid) -> anyhow::Result<Snapshot> {
+        self.pairing(control::Call::Approve(request), |c| c.approve(request))
+    }
+    fn reject(&self, request: uuid::Uuid) -> anyhow::Result<Snapshot> {
+        self.pairing(control::Call::Reject(request), |c| c.reject(request))
+    }
+    fn approval_delivered(&self) -> anyhow::Result<bool> {
+        let Self::Owner(owner) = self else {
+            return self.controller()?.approval_delivered();
+        };
+        match owner.call(control::Call::ApprovalDelivered)? {
+            control::Answer::Delivered(delivered) => Ok(delivered),
+            _ => anyhow::bail!("unexpected answer from the process that owns Sync"),
+        }
     }
 }
 
-fn execute(verb: Verb) -> anyhow::Result<i32> {
+/// One step's result as the command follows and prints it, wherever it ran.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Step {
+    snapshot: Snapshot,
+    /// `okilum sync status` JSON, made beside the controller.
+    status: serde_json::Value,
+    inspected: Option<ExistingVault>,
+    selected_destination: Option<PathBuf>,
+}
+impl From<Output> for Step {
+    fn from(output: Output) -> Self {
+        Self {
+            status: status(&output),
+            snapshot: output.snapshot,
+            inspected: output.inspected,
+            selected_destination: output.selected_destination,
+        }
+    }
+}
+
+fn execute(verb: Verb, mut session: Session) -> anyhow::Result<i32> {
     use anyhow::{bail, Context as _};
-    let mut session = Session::default();
     match verb {
         Verb::Status => {
             let output = session.perform(Operation::Read)?;
-            print_json(&status(&output));
+            print_json(&output.status);
         }
         Verb::Invite {
             name,
@@ -364,11 +457,24 @@ fn execute(verb: Verb) -> anyhow::Result<i32> {
         Verb::Connect { url, name, wait } => return connect(&mut session, url, name, wait),
         Verb::Cancel => {
             let output = session.perform(Operation::Cancel)?;
-            print_json(&status(&output));
+            print_json(&output.status);
         }
         Verb::Serve { wait } => {
             let deadline = wait.map(|wait| Instant::now() + wait);
             let mut output = session.perform(Operation::Read)?;
+            // #2589: other `okilum sync` commands of this user run through
+            // this process, so pairing another computer keeps it serving.
+            let controller = session.controller()?.clone();
+            let _control = state_location()
+                .and_then(|state| {
+                    control::Host::start(&state, move |call| {
+                        control::answer(&controller, call, control::perform_owned)
+                    })
+                })
+                .map_err(|error| {
+                    eprintln!("okilum sync: other commands cannot reach this process: {error:#}")
+                })
+                .ok();
             eprintln!(
                 "okilum sync: serving {} paired computer(s)",
                 output.snapshot.peers.len()
@@ -380,22 +486,25 @@ fn execute(verb: Verb) -> anyhow::Result<i32> {
                     Err(error) => eprintln!("okilum sync: refresh failed: {error:#}"),
                 }
             }
-            print_json(&status(&output));
+            print_json(&output.status);
         }
         #[cfg(target_os = "linux")]
         Verb::Share(path) => {
+            // Paths are this shell's; the process that owns Sync may run elsewhere.
+            let path = std::path::absolute(path)?;
             let mut output = session.perform(Operation::Share(path))?;
             // Share on an existing Syncthing folder becomes inspection; the
             // explicit command is the consent the Settings view asks for.
             if let Some(inspected) = output.inspected.take() {
                 output = session.perform(Operation::Consent(inspected))?;
             }
-            print_json(&status(&output));
+            print_json(&output.status);
         }
         #[cfg(target_os = "linux")]
         Verb::Select(path) => {
+            let path = std::path::absolute(path)?;
             let output = session.perform(Operation::SelectConnection(path))?;
-            print_json(&status(&output));
+            print_json(&output.status);
         }
         #[cfg(not(target_os = "linux"))]
         Verb::Share(_) | Verb::Select(_) => bail!("this command is available on Linux"),
@@ -405,6 +514,7 @@ fn execute(verb: Verb) -> anyhow::Result<i32> {
             destination,
             wait,
         } => {
+            let destination = std::path::absolute(destination)?;
             let output = session.perform(Operation::Read)?;
             let peer = find_peer(&output.snapshot.peers, &peer)?;
             let catalog = session.perform(Operation::Catalog(peer))?.snapshot.catalog;
@@ -439,7 +549,7 @@ fn execute(verb: Verb) -> anyhow::Result<i32> {
                 || !output.snapshot.attached.iter().any(|v| v.path == path)
             {
                 if Instant::now() >= deadline {
-                    print_json(&status(&output));
+                    print_json(&output.status);
                     bail!(
                         "{} is still being received; keep `okilum sync serve` running on the \
                          other computer and run this again",
@@ -452,7 +562,7 @@ fn execute(verb: Verb) -> anyhow::Result<i32> {
                     Err(error) => eprintln!("okilum sync: refresh failed: {error:#}"),
                 }
             }
-            print_json(&status(&output));
+            print_json(&output.status);
         }
     }
     Ok(0)
@@ -471,7 +581,6 @@ fn invite(
         .offer_url
         .clone()
         .context("Sync did not create a pairing URL")?;
-    let controller = output.controller;
     println!("{url}");
     std::io::stdout().flush()?;
     eprintln!(
@@ -482,7 +591,7 @@ fn invite(
     let mut approved: Option<(Pending, Option<Peer>)> = None;
     loop {
         if let Some((pending, peer)) = &approved {
-            if controller.approval_delivered()? {
+            if session.approval_delivered()? {
                 // The listener has written the approval; let the joiner read it.
                 std::thread::sleep(Duration::from_secs(1));
                 print_json(&serde_json::json!({
@@ -493,19 +602,19 @@ fn invite(
                 return Ok(0);
             }
         } else {
-            // The Settings view's 1-second pairing poll on its cached controller.
-            let snapshot = controller.refresh_pairing()?;
+            // The Settings view's pairing poll on its cached controller.
+            let snapshot = session.refresh_pairing()?;
             if let Some(pending) = snapshot.pending.clone().filter(|p| p.incoming) {
                 eprintln!(
                     "okilum sync: request from {:?}, fingerprint {}",
                     pending.name, pending.fingerprint
                 );
                 if !decide(&approval, &pending)? {
-                    controller.reject(pending.request_id)?;
+                    session.reject(pending.request_id)?;
                     bail!("declined the request from {:?}", pending.name);
                 }
                 let before: HashSet<_> = snapshot.peers.iter().map(|p| p.id).collect();
-                let after = controller.approve(pending.request_id)?;
+                let after = session.approve(pending.request_id)?;
                 let peer = after.peers.into_iter().find(|p| !before.contains(&p.id));
                 eprintln!("okilum sync: approved; waiting until it receives the approval");
                 approved = Some((pending, peer));
@@ -520,7 +629,12 @@ fn invite(
             if approved.is_some() {
                 eprintln!(
                     "okilum sync: approved, but the other computer did not collect the \
-                     approval in time. Run `okilum sync serve` here while it connects again."
+                     approval in time. {}",
+                    if matches!(session, Session::Owner(_)) {
+                        "This computer keeps serving; connect again from the other computer."
+                    } else {
+                        "Run `okilum sync serve` here while it connects again."
+                    }
                 );
             }
             return Ok(1);
@@ -567,7 +681,6 @@ fn connect(
     // first launch can take a few minutes (#2589).
     eprintln!("okilum sync: connecting (a first Connect also starts Sync here)");
     let output = session.perform(Operation::Redeem(url, name))?;
-    let controller = output.controller;
     let mut snapshot = output.snapshot;
     let deadline = Instant::now() + wait;
     eprintln!("okilum sync: waiting for approval on the other computer");
@@ -593,7 +706,7 @@ fn connect(
             return Ok(1);
         }
         std::thread::sleep(Duration::from_secs(1));
-        match controller.refresh_pairing() {
+        match session.refresh_pairing() {
             Ok(next) => snapshot = next,
             Err(error) if pairing_ended(&error) => return Err(error),
             Err(error) => eprintln!("okilum sync: still waiting ({error:#})"),
@@ -806,6 +919,79 @@ mod tests {
         );
         drop(lock);
         assert_eq!(running_app(directory.path()).unwrap(), None, "app quit");
+    }
+
+    /// The hub's actions without this machine's Syncthing inventory: its
+    /// invitation listens on loopback.
+    fn loopback(controller: Controller, operation: Operation) -> anyhow::Result<Output> {
+        let snapshot = match operation {
+            Operation::Begin(name) => {
+                controller.begin_pairing_at(&name, "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
+            }
+            Operation::Read => controller.snapshot()?,
+            _ => anyhow::bail!("not part of this pairing"),
+        };
+        Ok(Output {
+            connection_error: None,
+            controller,
+            snapshot,
+            inspected: None,
+            selected_destination: None,
+            #[cfg(target_os = "linux")]
+            runtimes: vec![],
+            #[cfg(target_os = "linux")]
+            vaults: vec![],
+        })
+    }
+
+    #[test]
+    fn issue2589_invite_approve_first_runs_through_the_serving_process() -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        let root = tempfile::tempdir()?;
+        // Profile A: `okilum sync serve` owns the hub's Sync state.
+        let hub_state = root.path().join("hub");
+        let hub = Controller::open(hub_state.clone(), vec![])?;
+        let serving = hub.clone();
+        let _serve = control::Host::start(&hub_state, move |call| {
+            control::answer(&serving, call, loopback)
+        })?;
+        // A second command in profile A runs through it instead of refusing.
+        let owner = control::Client::find(&hub_state)?.context("serve answers")?;
+        let inviting = std::thread::spawn(move || {
+            invite(
+                &mut Session::Owner(owner),
+                Some("Hub".into()),
+                Approval::First,
+                Duration::from_secs(60),
+            )
+        });
+        // Profile B connects with the URL `invite` printed.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let url = loop {
+            if let Some(url) = hub.snapshot()?.offer_url {
+                break url;
+            }
+            anyhow::ensure!(Instant::now() < deadline, "no invitation");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let laptop = Controller::open(root.path().join("laptop"), vec![])?;
+        let mut joined = laptop.redeem(&url, "Laptop")?;
+        while joined.pending.is_some() {
+            anyhow::ensure!(Instant::now() < deadline, "no approval");
+            std::thread::sleep(Duration::from_millis(100));
+            joined = laptop.refresh_pairing()?;
+        }
+        assert_eq!(inviting.join().unwrap()?, 0, "invite reports the pairing");
+        let names = |peers: &[Peer]| peers.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&joined.peers), ["Hub"]);
+        assert_eq!(names(&hub.snapshot()?.peers), ["Laptop"]);
+        // `okilum sync status` from yet another command, through the hub.
+        let owner = control::Client::find(&hub_state)?.context("still serving")?;
+        let status = Session::Owner(owner).perform(Operation::Read)?.status;
+        assert_eq!(status["computer"], "Hub");
+        assert_eq!(status["peers"][0]["name"], "Laptop");
+        assert_eq!(status["invitation_open"], false);
+        Ok(())
     }
 
     #[test]
