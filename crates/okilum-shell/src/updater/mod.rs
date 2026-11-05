@@ -8,6 +8,7 @@ mod macos;
 mod policy;
 #[cfg(any(windows, test))]
 mod ready;
+mod restart_feedback;
 mod scheduler;
 pub(crate) use policy::{mode, Mode};
 pub(crate) mod status;
@@ -153,6 +154,7 @@ fn install_schedule(cx: &mut App) {
         // Ticks only consult the policy; the network runs once per due interval.
         cx.background_executor().timer(Duration::from_secs(1)).await;
         run_check(Trigger::Interval);
+        cx.update(restart_feedback::present);
     })
     .detach();
 }
@@ -186,6 +188,7 @@ fn with_startup_window(cx: &App, confirm: impl FnOnce()) {
 
 /// Start Sparkle before the menus are built, so they reflect its availability.
 pub(crate) fn install(_cx: &mut App) {
+    restart_feedback::install(_cx);
     crate::reader_settings::install(_cx);
     install_schedule(_cx);
     #[cfg(target_os = "linux")]
@@ -459,7 +462,10 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     {
         use std::sync::atomic::{AtomicBool, Ordering};
         static ANNOUNCED: AtomicBool = AtomicBool::new(false);
-        if !macos::ready() {
+        if !matches!(
+            status::get(),
+            status::CheckStatus::Ready | status::CheckStatus::RestartRetry(_)
+        ) {
             ANNOUNCED.store(false, Ordering::Relaxed);
         } else if window.is_window_active() && !ANNOUNCED.swap(true, Ordering::Relaxed) {
             show_ready_notice(window, cx, macos::restart);

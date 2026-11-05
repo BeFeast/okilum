@@ -523,19 +523,27 @@ class WorkflowContract(unittest.TestCase):
                          "fast-${{ github.event_name }}-${{ github.ref }}-${{ inputs.certification_source != '' && github.run_id || 'ordinary' }}")
         self.assertEqual(data['concurrency']['cancel-in-progress'],
                          "${{ github.event_name == 'workflow_dispatch' && inputs.certification_source == '' }}")
-        for name in ['check', 'shell-full']:
+        # #2589: shell-full waits on a bridge while GitHub's dedicated runner
+        # executes the exact source's suite; check stays on the warm runner.
+        for name, runner in [('check', 'fast-linux'), ('shell-full', 'bridge')]:
             job = data['jobs'][name]
-            self.assertEqual(job['runs-on'], 'fast-linux')
+            self.assertEqual(job['runs-on'], runner)
             self.assertNotIn("!= 'push'", job.get('if', ''))
         self.assertEqual(data['jobs']['shell-full']['needs'], ['check'])
         # Main, nightly and manual certification share bounded test entrypoints.
-        for name, command in [
-            ('check', 'fast-local-check 2100 bash scripts/ci/fast-local.sh'),
-            ('shell-full', 'fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full'),
-        ]:
-            step = data['jobs'][name]['steps'][-1]
-            self.assertNotIn('if', step)
-            self.assertIn('bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ' + command, step['run'])
+        step = data['jobs']['check']['steps'][-1]
+        self.assertNotIn('if', step)
+        self.assertIn('bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" '
+                      'fast-local-check 2100 bash scripts/ci/fast-local.sh', step['run'])
+        step = data['jobs']['shell-full']['steps'][-1]
+        self.assertNotIn('if', step)
+        self.assertEqual(step['env']['CI_LANE'], 'shell-full')
+        self.assertEqual(step['env']['PR_HEAD_SHA'], '${{ inputs.certification_source || github.sha }}')
+        self.assertIn('python3 "$OKILUM_HOSTED_BRIDGE/github-pr.py"', step['run'])
+        hosted = self.load('.github/workflows/forgejo-shell-full.yml')
+        self.assertEqual(hosted['on'], {'push': {'branches': ['forgejo-shell-full-pr/**']}})
+        self.assertIn('bash scripts/ci/test-group.sh shell-full.sh 1920 bash scripts/ci/shell-full.sh',
+                      hosted['jobs']['shell-full']['steps'][-2]['run'])
         for directory in ['ci', 'releases', 'updater']:
             limit = 180 if directory == 'ci' else 90
             command = ('bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" ' + f'{directory}-python {limit} '
@@ -550,8 +558,10 @@ class WorkflowContract(unittest.TestCase):
                           'python3 scripts/releases/hourly_beta.py certify-source', validation['run'])
             self.assertEqual(validation['timeout-minutes'], '2')
             self.assertEqual(validation['env']['CERTIFICATION_SOURCE'], '${{ inputs.certification_source }}')
+            # Validation precedes compilation, or the hosted push of that source.
+            first_use = 'Prepare local Linux toolchain' if name == 'check' else 'Run the complete Linux shell binary suite on GitHub'
             self.assertLess(steps.index(validation), next(i for i, s in enumerate(steps)
-                            if s.get('name') == 'Prepare local Linux toolchain'))
+                            if s.get('name') == first_use))
         self.assertIn("inputs.certification_source == ''", data['jobs']['sync-source-sharing']['if'])
         # Beta's gate reports right after check; shell-full reports on its own.
         for name, needs in [('certification-status', ['check']), ('shell-full-status', ['shell-full'])]:

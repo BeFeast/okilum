@@ -31,8 +31,12 @@ class ProcessV2(unittest.TestCase):
         self.assertEqual(job['runs-on'], 'fast-linux')
         self.assertEqual(job['timeout-minutes'], '55')
         text = (ROOT / '.forgejo/workflows/fast.yml').read_text()
-        self.assertNotIn('github-pr.py', text)
-        self.assertIn('fast-local.sh', text)
+        check = text.split('  check:\n', 1)[1].split('\n  shell-full:', 1)[0]
+        self.assertNotIn('github-pr.py', check)
+        self.assertIn('fast-local.sh', check)
+        # #2589: only the full shell suite waits on GitHub; never the fast lane.
+        self.assertIn('CI_LANE: shell-full', text)
+        self.assertNotIn('CI_LANE: fast', text)
         pool = (ROOT / 'scripts/ci/fast-local.sh').read_text()
         self.assertIn('CARGO_TARGET_DIR', pool)
         self.assertIn('flock -n', pool)

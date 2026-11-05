@@ -37,6 +37,10 @@ extern "C" fn report(kind: c_int, text: *const c_char) {
             .to_string_lossy()
             .into_owned()
     };
+    super::restart_feedback::report(kind, &text);
+    if kind == 13 {
+        return;
+    }
     if kind == 6 {
         status::begin_restart();
         return;
@@ -123,11 +127,11 @@ pub(super) fn ready() -> bool {
     unsafe { okilum_updater_ready() }
 }
 pub(super) fn restart(_cx: &mut gpui::App) {
-    if !ready() {
-        return;
-    }
+    super::restart_feedback::attempt();
     // Freshness is asynchronous. The final save guards run after it completes,
     // through finish_requested_restart, even for Sparkle's own Restart button.
+    // The bridge reports stale, busy and accepted clicks, including callers
+    // holding an older toast. Never discard its refusal without feedback.
     unsafe { okilum_updater_restart() };
 }
 
@@ -148,6 +152,7 @@ pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
         || unsafe { okilum_updater_refuse_restart() },
     );
     if let Err(error) = result {
+        super::restart_feedback::refused(format!("Could not restart to update: {error}. Save or close the affected note, then try again."));
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, cx| {
                 crate::reader_toast::error(

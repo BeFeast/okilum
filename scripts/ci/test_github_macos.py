@@ -118,6 +118,44 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.wait(CannotCancel(
             runs=[dict(RUN, status='in_progress', conclusion=None)])), 'failure')
 
+    def test_shared_deadline_caps_queue_and_run_for_a_fixed_caller_budget(self):
+        # #2589: a waiter inside a fixed Forgejo step budget. A run that starts
+        # late gets only the remaining budget, never its full run timeout.
+        def wait(api, clock, deadline=None):
+            return bridge.wait_for_run(api, BRANCH, SHA, clock=clock, sleep=clock.sleep,
+                                       queue_timeout=3000, run_timeout=2000, deadline=deadline)
+        clock = Clock()
+        queued = API(runs=[dict(RUN, status='queued', conclusion=None)])
+        with self.assertRaisesRegex(bridge.Unavailable, 'within 900 seconds'):
+            wait(queued, clock, deadline=900)
+        self.assertEqual(clock(), 900)
+        self.assertIn(('actions/runs/1/cancel', 'POST'), queued.calls)
+        clock = Clock()
+        class LateStart(API):
+            def request(self, path, method='GET', data=None):
+                if method == 'GET' and '/jobs?' not in path:
+                    self.runs = [dict(RUN, status='queued' if clock() < 600 else 'in_progress', conclusion=None)]
+                return super().request(path, method, data)
+        late = LateStart()
+        result, message = wait(late, clock, deadline=1200)
+        self.assertEqual(result, 'failure')
+        self.assertIn('exceeded its execution deadline', message)
+        self.assertEqual(clock(), 1200)
+        self.assertIn(('actions/runs/1/cancel', 'POST'), late.calls)
+        # Without a deadline the same late start keeps its full run timeout.
+        clock = Clock()
+        late = LateStart()
+        self.assertEqual(wait(late, clock)[0], 'failure')
+        self.assertTrue(600 + 2000 <= clock() < 600 + 2000 + 30, clock())
+        # A run that completes inside the budget passes normally.
+        clock = Clock()
+        class Finishes(API):
+            def request(self, path, method='GET', data=None):
+                if method == 'GET' and '/jobs?' not in path:
+                    self.runs = [dict(RUN, status='queued', conclusion=None)] if clock() < 900 else [RUN]
+                return super().request(path, method, data)
+        self.assertEqual(wait(Finishes(), clock, deadline=1200)[0], 'success')
+
     def test_default_queue_budget_allows_start_after_old_eight_minute_limit(self):
         clock = Clock()
         class SlowQueue(API):
