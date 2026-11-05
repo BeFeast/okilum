@@ -46,13 +46,53 @@ fn windows_protocol_registered() -> anyhow::Result<bool> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn macos_protocol_registered() -> bool {
+    extern "C" {
+        fn okilum_t3_protocol_registered() -> bool;
+    }
+    // SAFETY: read-only NSWorkspace lookup, called on the application UI thread.
+    unsafe { okilum_t3_protocol_registered() }
+}
+
+// TestPlatform does not install T3. Tests supply the OS lookup result explicitly.
+#[cfg(test)]
+pub(in crate::project) struct TestHandler(pub bool);
+#[cfg(test)]
+impl Global for TestHandler {}
+
+fn missing_handler(cx: &App) -> anyhow::Result<bool> {
+    #[cfg(test)]
+    if let Some(handler) = cx.try_global::<TestHandler>() {
+        return Ok(!handler.0);
+    }
+    let _ = cx;
+    #[cfg(windows)]
+    return windows_protocol_registered().map(|registered| !registered);
+    #[cfg(target_os = "macos")]
+    return Ok(!macos_protocol_registered());
+    #[cfg(not(any(windows, target_os = "macos")))]
+    Ok(false)
+}
+
+fn open_thread(
+    identity: &ServerIdentity,
+    thread: &str,
+    env: Option<&Environment>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    let url = target_url(identity, thread, env, missing_handler(cx)?)?;
+    open_desktop_url(&url, cx);
+    Ok(())
+}
+
 fn target_url(
     identity: &okilum_t3::ServerIdentity,
     thread: &str,
     environment: Option<&Environment>,
-    windows_missing_handler: bool,
+    missing_handler: bool,
 ) -> anyhow::Result<String> {
-    if windows_missing_handler {
+    if missing_handler {
         let environment = environment
             .ok_or_else(|| anyhow::anyhow!("Connect to T3 before opening the web fallback"))?;
         return Ok(okilum_t3::projects::manager_url(environment, identity, thread)?.into());
@@ -66,23 +106,9 @@ impl ProjectView {
             return;
         };
         if let Some(identity) = &self.identity {
-            #[cfg(windows)]
-            let missing = match windows_protocol_registered() {
-                Ok(registered) => !registered,
-                Err(e) => {
-                    self.error = Some(format!("Could not check T3 desktop registration: {e}"));
-                    cx.notify();
-                    return;
-                }
-            };
-            #[cfg(not(windows))]
-            let missing = false;
-            match target_url(identity, &thread, self.environment.as_ref(), missing) {
-                Ok(url) => open_desktop_url(&url, cx),
-                Err(e) => {
-                    self.error = Some(e.to_string());
-                    cx.notify();
-                }
+            if let Err(error) = open_thread(identity, &thread, self.environment.as_ref(), cx) {
+                self.error = Some(format!("Could not open this thread in T3: {error}"));
+                cx.notify();
             }
             return;
         }
@@ -116,7 +142,12 @@ impl ProjectView {
                     }
                     match identity {
                         Ok(identity) => {
-                            open_desktop_url(&identity.thread_url(&thread), cx);
+                            if let Err(error) =
+                                open_thread(&identity, &thread, this.environment.as_ref(), cx)
+                            {
+                                this.error =
+                                    Some(format!("Could not open this thread in T3: {error}"));
+                            }
                             this.identity = Some(identity);
                         }
                         Err(error) => {
@@ -139,7 +170,7 @@ mod protocol_tests {
     use super::*;
     use ::core::prelude::v1::test;
     #[test]
-    fn desktop_is_preferred_and_missing_windows_handler_uses_the_configured_server() {
+    fn desktop_is_preferred_and_missing_handler_uses_the_configured_server() {
         let identity = okilum_t3::ServerIdentity {
             environment_id: "env".into(),
             label: "T3".into(),

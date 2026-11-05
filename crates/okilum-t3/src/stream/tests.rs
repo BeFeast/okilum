@@ -1758,3 +1758,29 @@ fn model_confirmation_accepts_reordered_options_but_rejects_different_values_or_
         fixture.finish();
     }
 }
+
+#[test]
+fn pairing_reports_build_target_os() {
+    let server = FakeServer::start(|request| {
+        let form: std::collections::HashMap<_, _> =
+            url::form_urlencoded::parse(request.body.as_bytes()).collect();
+        #[cfg(target_os = "linux")]
+        assert_eq!(form["client_os"], "linux");
+        #[cfg(target_os = "macos")]
+        assert_eq!(form["client_os"], "macos");
+        #[cfg(target_os = "windows")]
+        assert_eq!(form["client_os"], "windows");
+        assert_eq!(form["client_device_type"], "desktop");
+        Response::json(
+            200,
+            json!({"access_token":BEARER,"token_type":"Bearer","scope":"orchestration:read","expires_in":3600}),
+        )
+    });
+    let env = Environment::new("fixture", &server.origin).unwrap();
+    NativeToken::pair(&env, PAIRING, Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        server.requests.lock().unwrap().len(),
+        1,
+        "the exchange must actually run"
+    );
+}

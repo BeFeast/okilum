@@ -193,6 +193,7 @@ fn server_cleanup_preserves_failure_during_unwinding() {
 enum Input {
     Chooser,
     Pixels,
+    Tiff,
     CopiedFile,
     Drop,
 }
@@ -205,9 +206,25 @@ async fn delivery(cx: &mut TestAppContext, input: Input, fail_upload: bool) {
     let path = temp.path().join("exact image.png");
     let mut encoded = std::io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(8, 6)
-        .write_to(&mut encoded, image::ImageFormat::Png)
+        .write_to(
+            &mut encoded,
+            if matches!(input, Input::Tiff) {
+                image::ImageFormat::Tiff
+            } else {
+                image::ImageFormat::Png
+            },
+        )
         .unwrap();
     let bytes = encoded.into_inner();
+    let expected = if matches!(input, Input::Tiff) {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(8, 6)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        png.into_inner()
+    } else {
+        bytes.clone()
+    };
     std::fs::write(&path, &bytes).unwrap();
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
@@ -280,6 +297,50 @@ async fn delivery(cx: &mut TestAppContext, input: Input, fail_upload: bool) {
                 "ctrl-v"
             });
         }
+        Input::Tiff => {
+            // The macOS named-NSPasteboard test proves TIFF acquisition; inject
+            // that offer at the production clipboard boundary for full delivery.
+            struct Clipboard(Vec<u8>);
+            impl crate::note_paste::NoteClipboard for Clipboard {
+                fn read_offer(
+                    &self,
+                ) -> Result<
+                    crate::note_paste::offer::PasteOffer,
+                    crate::note_paste::offer::OfferError,
+                > {
+                    Ok(crate::note_paste::offer::PasteOffer::Image(
+                        crate::note_paste::offer::PastedImage {
+                            bytes: self.0.clone(),
+                            kind: crate::note_paste::offer::ImageKind::Tiff,
+                            source: None,
+                        },
+                    ))
+                }
+                fn has_content(&self) -> bool {
+                    true
+                }
+                fn route(
+                    &self,
+                    _: &crate::note_paste::router::RouteContext,
+                ) -> Result<crate::note_paste::router::Routed, crate::note_paste::offer::OfferError>
+                {
+                    unreachable!("chat must use its typed clipboard offer")
+                }
+                fn read_attachment(&self) -> Option<crate::note_paste::offer::ClipAttachment> {
+                    None
+                }
+            }
+            visual.update(|_, cx| {
+                cx.set_global(crate::note_paste::ManagedNoteClipboard(Arc::new(
+                    Clipboard(bytes.clone()),
+                )))
+            });
+            visual.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-v"
+            } else {
+                "ctrl-v"
+            });
+        }
         Input::Drop => {
             let position = visual
                 .debug_bounds("project-composer-input")
@@ -309,6 +370,18 @@ async fn delivery(cx: &mut TestAppContext, input: Input, fail_upload: bool) {
             })
         })
         .await;
+    if !fail_upload {
+        view.read_with(visual, |view, _| {
+            assert!(
+                matches!(
+                    view.draft_attachments()[0].state,
+                    AttachmentState::Uploaded { .. }
+                ),
+                "image must upload successfully: {:?}",
+                view.draft_attachments()[0].state
+            )
+        });
+    }
     if fail_upload {
         let id = view.read_with(visual, |view, cx| {
             assert!(matches!(
@@ -394,10 +467,10 @@ async fn delivery(cx: &mut TestAppContext, input: Input, fail_upload: bool) {
     let received = server.received.lock().unwrap();
     assert_eq!(
         received.uploads,
-        vec![bytes.clone(); if fail_upload { 2 } else { 1 }]
+        vec![expected.clone(); if fail_upload { 2 } else { 1 }]
     );
     assert_eq!(received.commands.len(), 1);
-    assert_eq!(received.provider_images, vec![bytes]);
+    assert_eq!(received.provider_images, vec![expected]);
 }
 
 #[gpui::test]
@@ -407,6 +480,12 @@ async fn chooser_upload_send_reaches_provider_with_exact_image(cx: &mut TestAppC
 #[gpui::test]
 async fn screenshot_paste_upload_send_reaches_provider_with_exact_image(cx: &mut TestAppContext) {
     delivery(cx, Input::Pixels, false).await;
+}
+#[gpui::test]
+async fn issue2521_tiff_paste_upload_send_reaches_provider_with_lossless_png(
+    cx: &mut TestAppContext,
+) {
+    delivery(cx, Input::Tiff, false).await;
 }
 #[gpui::test]
 async fn copied_file_paste_upload_send_reaches_provider_with_exact_image(cx: &mut TestAppContext) {

@@ -117,7 +117,8 @@ pub type PasteOutbox = Arc<Mutex<Outbox>>;
 
 gpui::actions!(okilum_edit, [PasteFromMenu]);
 
-/// The Edit menu. Paste is the paste command for the focused note editor,
+/// The Edit menu. Editing actions use the focused input or feed selection.
+/// Paste is the paste command for the focused note editor,
 /// for a mouse user and for tools that press the menu item instead of posting
 /// Cmd+V (#1602). It has no key equivalent of its own; Cmd+V stays with the
 /// editor's binding, and the Cmd+V key monitor finds this item by its title
@@ -128,9 +129,16 @@ pub fn edit_menu() -> gpui::Menu {
         name: "Edit".into(),
         disabled: false,
         items: vec![
+            gpui::MenuItem::action("Undo", gpui_component::input::Undo),
+            gpui::MenuItem::action("Redo", gpui_component::input::Redo),
+            gpui::MenuItem::separator(),
+            gpui::MenuItem::action("Cut", gpui_component::input::Cut),
+            gpui::MenuItem::action("Copy", gpui_component::input::Copy),
             gpui::MenuItem::action("Paste", PasteFromMenu),
             gpui::MenuItem::action("Paste as Plain Text", PasteAsPlainText),
             gpui::MenuItem::action("Paste as Titled Link", PasteAsTitledLink),
+            gpui::MenuItem::separator(),
+            gpui::MenuItem::action("Select All", gpui_component::input::SelectAll),
         ],
     }
 }

@@ -1,8 +1,13 @@
-# Project manager chat (#1418, #1415)
+# Project Manager chat
+
+macOS and Linux now share the native T3 session (#2516 / #2522). See
+[Mac native Manager](macos-native-manager.md) for pairing, parity, timing and
+acceptance. Older platform-specific sections below describe earlier slices.
+
 
 ## Linux Manager workspace (#2098, #2104)
 
-With Agents enabled, Linux opens a native conversation over T3 WebSocket v2.
+With Agents enabled, macOS and Linux open a native conversation over T3 WebSocket v2.
 The panel shows only `binding.manager.thread_id` for the current project
 (#2203, 1 November scope override). Its ordinary title, transcript, composer,
 model selection and runtime actions all belong to that configured Manager.
@@ -46,7 +51,7 @@ by this client. The existing manual recovery is confined to Diagnostics.
 Closing Manager, changing server or disabling Agents cancels subscriptions and
 revokes the corresponding network lease. Reopening requires a fresh synchronized
 thread response before any send is enabled. Reconnect never resends an
-unconfirmed command automatically. The macOS embedded Manager is unchanged.
+unconfirmed command automatically. macOS shares the native Manager (#2522).
 
 The sections below describe the earlier MCP-compatible surfaces and their
 incremental history; this Linux workspace supersedes their primary chat UI.

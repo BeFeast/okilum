@@ -75,7 +75,7 @@ impl NativeToken {
                 ("scope", "orchestration:read orchestration:operate"),
                 ("client_label", "Okilum native Manager"),
                 ("client_device_type", "desktop"),
-                ("client_os", "linux"),
+                ("client_os", std::env::consts::OS),
             ])
             .send()
             .map_err(|_| StreamError::Unreachable)?;
@@ -127,6 +127,22 @@ impl NativeToken {
             .map_err(|_| StreamError::Protocol("unreadable native credential"))?;
         token.validate(environment, crate::unix_now())?;
         Ok(token)
+    }
+
+    /// Authenticate a native HTTP operation without exposing the bearer or
+    /// accepting an MCP credential. Revalidate origin, expiry and read scope
+    /// for every request; writes additionally require the operate grant.
+    pub(crate) fn authenticate(
+        &self,
+        environment: &Environment,
+        request: reqwest::blocking::RequestBuilder,
+        write: bool,
+    ) -> StreamResult<reqwest::blocking::RequestBuilder> {
+        self.validate(environment, crate::unix_now())?;
+        if write && !self.can_operate() {
+            return Err(StreamError::Rejected);
+        }
+        Ok(request.bearer_auth(&self.access_token))
     }
 
     pub(super) fn validate(&self, environment: &Environment, now: u64) -> StreamResult<()> {

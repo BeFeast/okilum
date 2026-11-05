@@ -4,7 +4,7 @@
 //! T3's external MCP endpoint (`/mcp`) as an OAuth client and never runs an
 //! agent itself. [`ManagerGateway`] is the transport-agnostic surface the UI
 //! uses; [`McpGateway`] is its first implementation. [`SessionGateway`]
-//! reads projects and writes icons with the Manager panel's T3 web session,
+//! reads projects and writes icons with the separately paired native bearer,
 //! and [`PairedGateway`] joins the two for one saved connection.
 //!
 //! The access token is a secret: it lives in the OS keychain (the shell writes

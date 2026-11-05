@@ -13,7 +13,7 @@ fn run(command: &mut Command) {
 /// Compiles the Sparkle bridge and links the vendored stock Sparkle.framework.
 fn main() {
     // Compile the portable native Manager on both platforms. Runtime panel
-    // selection stays separate: macOS still mounts WKWebView until #2522.
+    // macOS and Linux mount the same native session.
     println!("cargo:rustc-check-cfg=cfg(native_manager)");
     if matches!(
         env::var("CARGO_CFG_TARGET_OS").as_deref(),
@@ -121,26 +121,22 @@ fn main() {
             "-o",
         ])
         .arg(&quicklook));
-    println!("cargo:rerun-if-changed=src/reader_manager_focus/bridge.m");
-    println!("cargo:rerun-if-changed=src/reader_manager_focus/keys.inc");
-    println!("cargo:rerun-if-changed=src/reader_manager_focus/page_keys.js");
-    println!("cargo:rerun-if-changed=src/reader_manager_focus/page_keys.inc");
-    let manager_focus = out.join("manager_focus.o");
+    println!("cargo:rerun-if-changed=src/project/desktop/macos.m");
+    let t3_desktop = out.join("t3_desktop.o");
     run(Command::new("xcrun")
         .args([
             "clang",
             "-fobjc-arc",
-            "-fblocks",
             "-Wall",
             "-Werror",
             "-arch",
             architecture,
             "-mmacosx-version-min=11.0",
             "-c",
-            "src/reader_manager_focus/bridge.m",
+            "src/project/desktop/macos.m",
             "-o",
         ])
-        .arg(&manager_focus));
+        .arg(&t3_desktop));
     println!("cargo:rerun-if-changed=src/folder_service/bridge.m");
     let folder_service = out.join("folder_service.o");
     run(Command::new("xcrun")
@@ -177,14 +173,13 @@ fn main() {
         .arg(object)
         .arg(thumbnail)
         .arg(quicklook)
-        .arg(manager_focus)
+        .arg(t3_desktop)
         .arg(folder_service));
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=okilum_updater");
     println!("cargo:rustc-link-search=framework={}", framework.display());
     println!("cargo:rustc-link-lib=framework=Sparkle");
     println!("cargo:rustc-link-lib=framework=AppKit");
-    println!("cargo:rustc-link-lib=framework=WebKit");
     println!("cargo:rustc-link-lib=framework=Quartz");
     println!("cargo:rustc-link-lib=framework=QuickLookThumbnailing");
     // With a library target Cargo attaches rustc-link-lib to that target only.
@@ -192,13 +187,7 @@ fn main() {
     // the new shared component library. Preserve its native links explicitly,
     // including the binary's libtest harness, without changing main.rs.
     println!("cargo:rustc-link-arg-bin=okilum=-lokilum_updater");
-    for name in [
-        "Sparkle",
-        "AppKit",
-        "WebKit",
-        "Quartz",
-        "QuickLookThumbnailing",
-    ] {
+    for name in ["Sparkle", "AppKit", "Quartz", "QuickLookThumbnailing"] {
         println!("cargo:rustc-link-arg-bin=okilum=-Wl,-framework,{name}");
     }
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Frameworks");

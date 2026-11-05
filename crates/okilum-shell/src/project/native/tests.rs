@@ -149,6 +149,7 @@ fn open_in_t3_loads_native_identity_and_only_dispatches_the_exact_desktop_thread
     cx: &mut TestAppContext,
 ) {
     cx.update(crate::test_init);
+    cx.update(|cx| cx.set_global(super::super::desktop::TestHandler(true)));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
@@ -219,6 +220,14 @@ fn open_in_t3_loads_native_identity_and_only_dispatches_the_exact_desktop_thread
             "actual-remote-env"
         )
     });
+    // A missing OS handler must dispatch this same thread through the configured
+    // server, including after the identity was loaded asynchronously above.
+    visual.update(|_, cx| cx.set_global(super::super::desktop::TestHandler(false)));
+    let button = visual.debug_bounds("project-open-t3").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    let expected = format!("{origin}/actual-remote-env/mcp:fixture-manager");
+    assert_eq!(visual.opened_url().as_deref(), Some(expected.as_str()));
     server.join().unwrap();
 }
 
@@ -455,14 +464,13 @@ fn deleted_live_thread_disables_send_with_a_visible_reason(cx: &mut TestAppConte
     drop(root);
 }
 
-// Compiling the native implementation must not silently switch the Mac panel
-// or restore another session behind its retained WKWebView (#2517 / #2522).
+// The shipping Mac surface selects native restoration at construction.
 #[cfg(target_os = "macos")]
 #[gpui::test]
-fn macos_project_lifecycle_keeps_native_restore_explicit(cx: &mut TestAppContext) {
+fn macos_project_lifecycle_selects_native_manager_2522(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     cx.update(reader_features::enable_test_modules);
-    let files = tempfile::tempdir().unwrap();
+    let files = super::super::fixture::canonical_tempdir();
     let gateway = Arc::new(fixture::Fake::default());
     cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
@@ -470,23 +478,68 @@ fn macos_project_lifecycle_keeps_native_restore_explicit(cx: &mut TestAppContext
                 None,
                 Some(files.path().join("state")),
                 files.path().to_owned(),
+                std::time::Instant::now(),
                 window,
                 cx,
             );
-            assert!(!view.threads.enabled);
+            assert!(
+                view.threads.enabled,
+                "production Mac constructor must select native"
+            );
+            view.credentials.test = Some(Default::default());
             let environment = Environment::new("fixture", "https://t3.example.test").unwrap();
             view.finish_connection(Ok((environment, gateway)), window, cx);
-            assert!(!view.native_pairing_busy());
-            assert!(!view.native.active());
+            assert!(
+                view.native_pairing_busy(),
+                "connection automatically restores native credentials"
+            );
             view.set_active(false, window, cx);
-            view.set_active(true, window, cx);
-            assert!(!view.native_pairing_busy());
             assert!(!view.native.active());
-            // Positive control: this same view can detect a restore request.
-            view.native_restore(false, window, cx);
-            assert!(view.native_pairing_busy());
             view
         });
         Root::new(view, window, cx)
+    });
+}
+
+#[gpui::test]
+fn native_pairing_immediately_replaces_the_boards_unpaired_gateway_2520(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    cx.update(reader_features::enable_test_modules);
+    let temp = super::super::fixture::canonical_tempdir();
+    let env = Environment::new("fixture", "https://t3.example.test").unwrap();
+    let token = NativeToken::from_secret(&env, &serde_json::to_vec(&json!({
+        "origin":env.origin(), "access_token":"synthetic-newly-paired-token", "expires_at":u64::MAX,
+        "scope":"orchestration:read"
+    })).unwrap()).unwrap();
+    let client = Arc::new(NativeClient::new(env, token, Duration::from_secs(2)).unwrap());
+    let (view, visual) = cx.add_window_view(|window, cx| {
+        let mut view = super::super::fixture::view(
+            temp.path().to_owned(),
+            Arc::new(super::super::fixture::Fake {
+                connection_status: Some(GatewayStatus::NotConnected),
+                ..Default::default()
+            }),
+            window,
+            cx,
+        );
+        view.active = false;
+        assert_eq!(
+            view.gateway.as_ref().unwrap().status(),
+            GatewayStatus::NotConnected
+        );
+        view.install_native(client, u64::MAX, window, cx);
+        view
+    });
+    view.read_with(visual, |view, _| {
+        assert!(
+            view.native.active(),
+            "positive control: pairing installed a native client"
+        );
+        assert_eq!(
+            view.gateway.as_ref().unwrap().status(),
+            GatewayStatus::Connected {
+                expires_at: u64::MAX
+            }
+        );
     });
 }

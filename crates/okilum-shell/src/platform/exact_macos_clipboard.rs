@@ -55,6 +55,9 @@ impl NoteClipboard for MacClipboard {
     fn read_offer(&self) -> Result<PasteOffer, OfferError> {
         autoreleasepool(|_| offer::read_offer(&MacBoard(&NSPasteboard::generalPasteboard())))
     }
+    fn read_chat_offer(&self) -> Result<PasteOffer, OfferError> {
+        autoreleasepool(|_| read_chat_board(&NSPasteboard::generalPasteboard()))
+    }
     fn has_content(&self) -> bool {
         autoreleasepool(|_| {
             !MacBoard(&NSPasteboard::generalPasteboard())
@@ -71,6 +74,10 @@ impl NoteClipboard for MacClipboard {
     fn read_attachment(&self) -> Option<offer::ClipAttachment> {
         autoreleasepool(|_| offer::read_attachment(&MacBoard(&NSPasteboard::generalPasteboard())))
     }
+}
+
+fn read_chat_board(board: &NSPasteboard) -> Result<PasteOffer, OfferError> {
+    offer::read_chat_offer(&MacBoard(board))
 }
 
 /// The general pasteboard's text in any text representation, in this process.
@@ -370,11 +377,63 @@ mod native_tests {
     fn named_pasteboard_offers_images() {
         autoreleasepool(|_| {
             let board = board();
-            put(&board.0, "public.png", b"\x89PNG\r\n\x1a\n");
-            match offer::read_offer(&MacBoard(&board.0)) {
-                Ok(PasteOffer::Image(image)) => assert_eq!(image.kind, ImageKind::Png),
-                other => panic!("{other:?}"),
+            for (kind, format, expected) in [
+                ("public.png", image::ImageFormat::Png, ImageKind::Png),
+                ("public.tiff", image::ImageFormat::Tiff, ImageKind::Tiff),
+            ] {
+                let mut encoded = std::io::Cursor::new(Vec::new());
+                image::DynamicImage::new_rgb8(8, 6)
+                    .write_to(&mut encoded, format)
+                    .unwrap();
+                let bytes = encoded.into_inner();
+                put(&board.0, kind, &bytes);
+                for offer in [
+                    offer::read_offer(&MacBoard(&board.0)),
+                    read_chat_board(&board.0),
+                ] {
+                    match offer {
+                        Ok(PasteOffer::Image(image)) => {
+                            assert_eq!(image.kind, expected);
+                            assert_eq!(image.bytes, bytes);
+                            assert_eq!(image::load_from_memory(&image.bytes).unwrap().width(), 8);
+                        }
+                        other => panic!("{other:?}"),
+                    }
+                }
             }
+        });
+    }
+    #[test]
+    fn issue2521_chat_file_flavors_preserve_missing_paths_without_ui_filesystem_probes() {
+        autoreleasepool(|_| {
+            let board = board();
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("missing image 🧠.png");
+            let url = url::Url::from_file_path(&path).unwrap().to_string();
+            put(&board.0, offer::FILE_URL, url.as_bytes());
+            assert_eq!(read_chat_board(&board.0), Ok(PasteOffer::Files(vec![path])));
+            let paths = vec![
+                temp.path().join("first.pdf"),
+                temp.path().join("second.png"),
+            ];
+            let plist = format!("<?xml version=\"1.0\"?><plist version=\"1.0\"><array><string>{}</string><string>{}</string><string>{}</string></array></plist>", paths[0].display(), paths[1].display(), paths[0].display());
+            put(&board.0, offer::FILENAMES, plist.as_bytes());
+            assert_eq!(read_chat_board(&board.0), Ok(PasteOffer::Files(paths)));
+        });
+    }
+
+    #[test]
+    fn issue2521_chat_plain_cached_path_stays_text() {
+        autoreleasepool(|_| {
+            let board = board();
+            let temp = tempfile::tempdir().unwrap();
+            let cache = temp.path().join("com.raycast.macos/clipboard");
+            std::fs::create_dir_all(&cache).unwrap();
+            let path = cache.join("cached.png");
+            std::fs::write(&path, b"clipboard cache").unwrap();
+            let text = path.to_str().unwrap().to_owned();
+            put(&board.0, offer::UTF8_TEXT, text.as_bytes());
+            assert_eq!(read_chat_board(&board.0), Ok(PasteOffer::Text(text)));
         });
     }
 }

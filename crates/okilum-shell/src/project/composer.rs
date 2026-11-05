@@ -42,6 +42,8 @@ pub(super) struct TypedPanelChanged;
 impl EventEmitter<TypedPanelChanged> for Composer {}
 
 #[cfg(test)]
+pub(super) mod input_tests;
+#[cfg(test)]
 mod typed_1478_tests;
 
 fn type_icon(kind: MessageType) -> IconName {
@@ -1473,6 +1475,54 @@ mod tests {
                 [Mode::Auto, Mode::Queue, Mode::Steer][..=index]
             );
         }
+        // Real preedit and commit callbacks, including candidate-confirming
+        // Enter delivered after the marked range has already been cleared.
+        use gpui::EntityInputHandler as _;
+        composer.update_in(visual, |composer, window, cx| {
+            composer.input.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+                input.focus(window, cx);
+                input.replace_and_mark_text_in_range(None, "か", None, window, cx);
+            });
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert_eq!(sent.borrow().len(), 3, "marked-text Enter cannot send");
+        composer.update_in(visual, |composer, window, cx| {
+            composer.input.update(cx, |input, cx| {
+                let marked = input.marked_text_range(window, cx);
+                assert!(marked.is_some(), "positive control: real marked text");
+                input.replace_text_in_range(marked, "漢", window, cx);
+                assert!(!input.ime_composing());
+                assert!(input.ime_settling(cx));
+            });
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert_eq!(
+            sent.borrow().len(),
+            3,
+            "candidate-confirming Enter cannot send"
+        );
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(composer.input.read(cx).value().as_str(), "漢")
+        });
+        visual.executor().advance_clock(Duration::from_millis(600));
+        visual.simulate_keystrokes("shift-enter");
+        visual.run_until_parked();
+        composer.read_with(visual, |composer, cx| {
+            assert_eq!(composer.input.read(cx).value().as_str(), "漢\n")
+        });
+        assert_eq!(sent.borrow().len(), 3);
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert_eq!(
+            sent.borrow().len(),
+            4,
+            "positive control: settled Enter sends"
+        );
         let trigger = visual.debug_bounds("project-send-mode").unwrap();
         visual.simulate_click(trigger.center(), Modifiers::default());
         visual.run_until_parked();
@@ -1506,7 +1556,7 @@ mod tests {
         });
         assert_eq!(
             sent.borrow().len(),
-            3,
+            4,
             "disclosure interactions never dispatch a message"
         );
         composer.update(visual, |composer, cx| composer.set_native(true, false, cx));

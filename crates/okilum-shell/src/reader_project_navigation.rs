@@ -12,7 +12,15 @@ use okilum_t3::projects::{
 pub(super) type Gateways = std::collections::BTreeMap<String, Arc<dyn okilum_t3::ManagerGateway>>;
 
 #[cfg(test)]
+mod token_tests;
+#[cfg(test)]
 mod workspace_tests;
+
+/// Reader normalizes vault roots; macOS's /var alias must not change fixture identity.
+#[cfg(test)]
+fn canonical_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+}
 
 /// Local metadata and logo paths are available before any network operation.
 fn cached_project_icons(
@@ -81,66 +89,37 @@ struct ShownIcon {
     manifest: Option<ProjectIcon>,
 }
 
-/// Where the Manager panel's T3 sign-in lives (#1627): its web view's store.
-#[cfg(target_os = "macos")]
-fn manager_session() -> Arc<dyn okilum_t3::SessionSource> {
-    Arc::new(crate::reader_manager_store::ManagerCookies)
-}
-
-/// No Manager web view here: icons use an MCP token if one is connected.
-#[cfg(not(target_os = "macos"))]
-fn manager_session() -> Arc<dyn okilum_t3::SessionSource> {
-    Arc::new(okilum_t3::NoSessionSource)
-}
-
-/// The paired gateway of one saved T3 connection: projects and icons with
-/// the Manager panel's T3 session (connected on the first call, within
-/// `okilum_t3::CONNECT_TIMEOUT`), including read-only thread summaries. MCP
-/// remains the fallback when no browser session exists.
-fn paired_gateway(
+/// Read the two separate OS credential audiences on the UI thread, then build
+/// the shared gateway off-thread. Merely reading never pairs or opens a browser.
+/// A saved but invalid native bearer is an error, never an MCP fallback.
+pub(super) fn restore_gateway(
     env: okilum_t3::Environment,
-    token: Option<okilum_t3::StoredToken>,
-    session: Arc<dyn okilum_t3::SessionSource>,
-) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
-    let mcp = okilum_t3::McpGateway::new(env.clone(), token)?;
-    with_manager_session(env, Arc::new(mcp), session)
+    mcp: Option<Arc<dyn okilum_t3::ManagerGateway>>,
+    access: okilum_t3::NetworkAccess,
+    cx: &App,
+) -> Task<anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>>> {
+    project::credentials::Store::default().gateway(env, mcp, access, cx)
 }
 
-fn with_manager_session(
-    env: okilum_t3::Environment,
-    mcp: Arc<dyn okilum_t3::ManagerGateway>,
-    source: Arc<dyn okilum_t3::SessionSource>,
-) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
-    let session = okilum_t3::SessionGateway::new(env, source)?;
-    Ok(Arc::new(okilum_t3::PairedGateway::new(session, mcp)))
-}
-
-/// Native Board reads on macOS use the Manager's persistent browser session,
-/// through the same gateway as project icons. MCP-only native UI keeps its
-/// existing transport and credential lifecycle on the other platforms.
+/// Board, Projects, icons and read-only summaries use the native bearer on
+/// Linux and macOS. MCP remains available when no native credential exists.
 pub(super) fn manager_gateway(
     env: okilum_t3::Environment,
     mcp: Arc<dyn okilum_t3::ManagerGateway>,
+    native: Option<okilum_t3::stream::NativeToken>,
     access: okilum_t3::NetworkAccess,
 ) -> anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>> {
     anyhow::ensure!(access.allowed(), "Agents is disabled");
     let _access = access.enter();
     #[cfg(test)]
     t3_probe::record_manager_gateway();
-    #[cfg(target_os = "macos")]
-    {
-        with_manager_session(env, mcp, manager_session())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = env;
-        Ok(mcp)
-    }
+    let session = okilum_t3::SessionGateway::native(env, native)?.with_access(access);
+    Ok(Arc::new(okilum_t3::PairedGateway::new(session, mcp)))
 }
 
 /// One gateway per T3 connection saved on this machine (t3-connections.json,
-/// written when the Manager panel connects): the panel's T3 session for
-/// projects, icons and read-only Board threads, MCP for commands. `None` once
+/// written when the Manager panel connects): native bearer reads and icon
+/// writes, with the separate MCP fallback. `None` once
 /// the Reader is gone.
 pub(super) async fn t3_gateways(
     this: &WeakEntity<Reader>,
@@ -182,23 +161,20 @@ pub(super) async fn t3_gateways(
                 gateways.insert(alias.clone(), gateway);
                 continue;
             }
-            let task = this
-                .update_in_own_window(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
-                .ok()?;
-            let token = match task.await {
-                Ok(Some((_, bytes))) => okilum_t3::StoredToken::from_secret(&bytes).ok(),
-                _ => None,
-            };
             #[cfg(test)]
-            let token = token.or_else(|| probe.as_ref().and_then(|p| p.token.clone()));
-            let access = access.clone();
-            let gateway = cx
-                .background_executor()
-                .spawn(async move {
-                    let _access = access.enter();
-                    paired_gateway(env, token, manager_session())
-                })
-                .await;
+            let mcp = probe.as_ref().and_then(|p| p.token.clone()).map(|token| {
+                Arc::new(
+                    okilum_t3::McpGateway::new(env.clone(), Some(token))
+                        .unwrap()
+                        .with_access(access.clone()),
+                ) as Arc<dyn okilum_t3::ManagerGateway>
+            });
+            #[cfg(not(test))]
+            let mcp = None;
+            let task = this
+                .update_in_own_window(cx, |_, _, cx| restore_gateway(env, mcp, access.clone(), cx))
+                .ok()?;
+            let gateway = task.await;
             match gateway {
                 Ok(gateway) => {
                     gateways.insert(alias, gateway);
@@ -212,7 +188,7 @@ pub(super) async fn t3_gateways(
 
 /// Test-only instrument (#1521): every attempt this file makes to reach T3
 /// is counted, also those that would fail, and a probed connection gets a
-/// fake gateway in place of the MCP and T3 session transports.
+/// fake gateway in place of the native bearer and MCP transports.
 #[cfg(test)]
 mod t3_probe {
     use super::*;
@@ -315,6 +291,8 @@ pub(super) struct State {
     pub loading: bool,
     /// The T3 connections of the last status sweep, kept for icon writes.
     pub t3_gateways: Gateways,
+    /// Credential changes invalidate remote results without cancelling discovery.
+    pub gateway_generation: u64,
     /// `discovery` holds this vault's scan, possibly empty (#1518).
     pub discovered: bool,
     pub generation: u64,
@@ -324,7 +302,6 @@ pub(super) struct State {
     pub(super) saved: Option<Saved>,
     /// Shared Project presentation for this vault, persisted independently of Tree.
     pub(super) layout: Option<reader_layout::ViewLayout>,
-    pub manager_panel: Option<Entity<reader_manager_panel::ManagerPanel>>,
     /// The shared #1520 picker is the Projects section surface.
     pub picker: Option<Entity<ProjectsPicker>>,
     /// The same picker as the title-bar switcher's popover (#1519), fed by
@@ -367,9 +344,6 @@ impl Reader {
 
     pub(super) fn reset_vault_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_workspace_restore();
-        if let Some(panel) = self.project_navigation.manager_panel.take() {
-            panel.update(cx, |panel, cx| panel.hide(cx));
-        }
         self.close_project(window, cx);
         self.title_nav.close();
         let generation = self.project_navigation.generation.wrapping_add(1);
@@ -554,13 +528,14 @@ impl Reader {
             .collect()
     }
 
-    fn refresh_project_statuses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn refresh_project_statuses(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !reader_features::enabled(reader_features::Feature::Agents, cx) {
             return;
         }
         let projects = self.project_navigation.discovery.projects.clone();
         let state = self.session_directory.clone();
         let generation = self.project_navigation.generation;
+        let gateway_generation = self.project_navigation.gateway_generation;
         let vault = self.vault_root.clone();
         cx.spawn_in(window, async move |this, cx| {
             let Some(gateways) = t3_gateways(&this, state.clone(), cx).await else {
@@ -582,7 +557,9 @@ impl Reader {
                 .await;
             let current = this
                 .update_in_own_window(cx, |this, _, cx| {
-                    if this.vault_root != vault || this.project_navigation.generation != generation
+                    if this.vault_root != vault
+                        || this.project_navigation.generation != generation
+                        || this.project_navigation.gateway_generation != gateway_generation
                     {
                         return false;
                     }
@@ -603,7 +580,10 @@ impl Reader {
                 .spawn(async move { okilum_t3::projects::statuses(&projects, &gateways) })
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
-                if this.vault_root == vault && this.project_navigation.generation == generation {
+                if this.vault_root == vault
+                    && this.project_navigation.generation == generation
+                    && this.project_navigation.gateway_generation == gateway_generation
+                {
                     this.project_navigation.statuses = statuses;
                     this.project_navigation.status_managers = managers;
                     this.sync_projects_picker_statuses(cx);
@@ -645,6 +625,7 @@ impl Reader {
         let state = self.session_directory.clone();
         let vault = self.vault_root.clone();
         let known = self.project_navigation.t3_gateways.clone();
+        let gateway_generation = self.project_navigation.gateway_generation;
         cx.spawn_in(window, async move |this, cx| {
             let gateways = if known.is_empty() {
                 match t3_gateways(&this, state.clone(), cx).await {
@@ -668,7 +649,9 @@ impl Reader {
                 })
                 .await;
             let _ = this.update_in_own_window(cx, |this, _, cx| {
-                if this.vault_root != vault {
+                if this.vault_root != vault
+                    || this.project_navigation.gateway_generation != gateway_generation
+                {
                     return;
                 }
                 if this.project_navigation.t3_gateways.is_empty() {
@@ -1168,20 +1151,6 @@ impl Reader {
         self.panel_widths_revision = self.panel_widths_revision.wrapping_add(1);
         self.tree_sticky.clear();
         self.tree_earlier_roots.clear();
-        if let Some(panel) = self.project_navigation.manager_panel.take() {
-            panel.update(cx, |panel, cx| panel.hide(cx));
-        }
-        self.project_navigation.manager_panel = Some(cx.new(|cx| {
-            reader_manager_panel::ManagerPanel::new(
-                project.clone(),
-                self.session_directory.clone(),
-                window,
-                cx,
-            )
-        }));
-        if let Some(panel) = &self.project_navigation.manager_panel {
-            cx.observe(panel, |_, _, cx| cx.notify()).detach();
-        }
         self.project_navigation.active = Some(project.clone());
         self.project_navigation.section = Section::Reader;
         self.record_recent_project(&project.folder, cx);
@@ -1202,9 +1171,6 @@ impl Reader {
             ));
         }
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
-        if let Some(panel) = self.project_navigation.manager_panel.take() {
-            panel.update(cx, |panel, cx| panel.hide(cx));
-        }
         self.close_project(window, cx);
         self.project_navigation.active = None;
         self.project_navigation.section = Section::Reader;
@@ -1592,7 +1558,7 @@ mod icon_save_tests {
             crate::test_init(cx);
             bind_keys(cx);
         });
-        let temp = tempfile::tempdir().unwrap();
+        let temp = canonical_tempdir();
         let root = temp.path().join("vault");
         let state = temp.path().join("state");
         std::fs::create_dir_all(&root).unwrap();
@@ -1679,7 +1645,7 @@ mod icon_save_tests {
             crate::test_init(cx);
             bind_keys(cx);
         });
-        let temp = tempfile::tempdir().unwrap();
+        let temp = canonical_tempdir();
         let root = temp.path().join("vault");
         let state = temp.path().join("state");
         let folder = root.join("Dev/Areas/okilum");
@@ -1806,7 +1772,7 @@ mod icon_save_tests {
             crate::test_init(cx);
             bind_keys(cx);
         });
-        let temp = tempfile::tempdir().unwrap();
+        let temp = canonical_tempdir();
         let root = temp.path().join("vault");
         let folder = root.join("Dev/Areas/okilum");
         std::fs::create_dir_all(folder.join("ops")).unwrap();
@@ -2266,7 +2232,6 @@ mod local_reader_without_t3_tests {
         let navigation = &reader.project_navigation;
         assert!(navigation.t3_gateways.is_empty(), "{after}");
         assert!(navigation.statuses.is_empty(), "{after}: no T3 status");
-        assert!(navigation.manager_panel.is_none(), "{after}");
         assert!(navigation.boards.is_empty(), "{after}");
         assert!(navigation.active.is_none(), "{after}");
     }
@@ -2622,7 +2587,7 @@ mod local_reader_without_t3_tests {
                     .is_some_and(|detail| detail.contains(UNREACHABLE)),
                 "the Projects view says T3 is unreachable"
             );
-            assert!(navigation.active.is_none() && navigation.manager_panel.is_none());
+            assert!(navigation.active.is_none());
         });
         assert_no_error_toast(visual, "an unreachable T3");
 
@@ -2885,7 +2850,7 @@ mod local_reader_without_t3_tests {
                 picker.model().manager_detail(folder).is_some(),
                 "the Projects view says why T3 is unreachable"
             );
-            assert!(navigation.active.is_none() && navigation.manager_panel.is_none());
+            assert!(navigation.active.is_none());
         });
         assert_no_error_toast(visual, "an unreachable T3");
 

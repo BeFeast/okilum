@@ -169,7 +169,7 @@ fn list_2530_source_time_does_not_invent_age_and_ci_type_is_theme_role() {
 }
 
 #[gpui::test]
-fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
+async fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
@@ -239,8 +239,23 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
             cx.notify();
         });
     });
-    visual.run_until_parked();
+    // Project entry validates the folder asynchronously. Parking the executor
+    // alone does not prove that the Reader has mounted this Board yet.
+    visual
+        .condition(&reader, |reader, _| {
+            reader.project_navigation.board_visible
+                && reader
+                    .project_navigation
+                    .active
+                    .as_ref()
+                    .is_some_and(|project| project.folder == area)
+        })
+        .await;
     let board = reader.read_with(visual, |r, _| r.project_navigation.boards[&area].clone());
+    visual
+        .condition(&board, |board, _| board.snapshot.forgejo.value.len() == 240)
+        .await;
+    visual.run_until_parked();
     click(visual, "board-chip-oleg");
     visual.simulate_keystrokes("/");
     visual.simulate_input("Synthetic task");
@@ -264,6 +279,13 @@ fn list_2530_real_reader_note_roundtrip_retains_selection_and_scrolled_viewport(
         "positive control: the actual List viewport scrolled"
     );
     click(visual, "board-note-230-0");
+    // Opening the note prepares its document off the UI thread too.
+    visual
+        .condition(&reader, |reader, _| {
+            reader.current_rel == "project/note.md" && !reader.project_navigation.board_visible
+        })
+        .await;
+    visual.run_until_parked();
     reader.read_with(visual, |r, _| {
         assert_eq!(r.current_rel, "project/note.md");
         assert!(!r.project_navigation.board_visible);

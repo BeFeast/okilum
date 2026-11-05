@@ -133,7 +133,6 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                             }
                             return;
                         }
-                        #[cfg(not(target_os = "macos"))]
                         if let Event::Ready(pending) = &event {
                             cx.open_url(&pending.url);
                         }
@@ -308,7 +307,7 @@ pub(super) fn sign_out(env: Environment, cx: &mut App) {
         let result = async {
             cx.update(|cx| cx.delete_credentials(&env.credential_url()))
                 .await?;
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             cx.update(|cx| {
                 cx.delete_credentials(&okilum_t3::stream::NativeToken::credential_key(&env))
             })

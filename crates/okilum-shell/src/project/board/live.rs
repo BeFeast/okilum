@@ -3,14 +3,14 @@ use okilum_t3::{board::Scope, chat::Conversation, ThreadSummary};
 
 /// Board-owned presentation data. Rendering a card must not read the Manager
 /// entity: doing so ties the cached Board to every composer notification.
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 #[derive(Default, PartialEq)]
 pub(super) struct ManagerDisplay {
     pub identity: Option<okilum_t3::ServerIdentity>,
     thread: Option<String>,
     progress: std::collections::BTreeMap<String, String>,
 }
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 impl ManagerDisplay {
     pub fn read(
         identity: Option<&okilum_t3::ServerIdentity>,
@@ -144,7 +144,7 @@ pub(super) fn agent<'a>(
 /// Progress is issue-specific only with exact thread/run evidence already cached
 /// by the Manager. A summary title or a different run is never progress text.
 // Linux reads progress through the Manager display cache instead.
-#[cfg_attr(all(target_os = "linux", not(test)), allow(dead_code))]
+#[cfg_attr(all(native_manager, not(test)), allow(dead_code))]
 pub(super) fn progress(
     scope: &Scope,
     thread: &ThreadSummary,
@@ -298,7 +298,7 @@ mod tests {
         assert!(progress(&scope, &thread, Some(&cached)).is_none());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     #[test]
     fn retained_manager_display_matches_progress_and_ignores_hidden_suffix_changes() {
         let (mut scope, mut thread) = fixture();

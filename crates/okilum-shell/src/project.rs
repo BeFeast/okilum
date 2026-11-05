@@ -7,7 +7,7 @@ use gpui_component::input::{Textarea, TextareaState};
 use okilum_t3::{
     chat::{Conversation, MessageJournal, MessageRecord},
     manifest::AreaBinding,
-    Environment, GatewayStatus, ManagerGateway, McpGateway, ServerIdentity, StoredToken,
+    Environment, GatewayStatus, ManagerGateway, ServerIdentity,
 };
 use std::time::Duration;
 
@@ -17,11 +17,12 @@ mod agent_skills;
 mod attachments;
 pub(crate) mod board;
 mod chat_ui;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod chrome;
 #[cfg(native_manager)]
 mod composer;
 mod connections;
+pub(crate) mod credentials;
 mod design;
 mod desktop;
 #[cfg(native_manager)]
@@ -49,6 +50,8 @@ mod rules_reread;
 mod setup;
 #[cfg(native_manager)]
 mod threads;
+#[cfg(native_manager)]
+mod ttfm;
 
 pub(super) fn save_browser_environment(
     state: &Path,
@@ -68,14 +71,6 @@ pub(super) fn browser_connections(
 
 pub(super) fn prefill_app_browser_origin(state: Option<&Path>) -> anyhow::Result<Option<String>> {
     connections::last_origin(state)
-}
-
-pub(super) fn project_browser_origin(
-    area: &Path,
-    alias: &str,
-    state: Option<&Path>,
-) -> anyhow::Result<Option<String>> {
-    connections::project_origin(area, alias, state)
 }
 
 pub(super) fn prefill_browser_origin(
@@ -128,6 +123,7 @@ pub(crate) struct ProjectView {
     rotation_policy: rotation::policy_owner::State,
     #[cfg(native_manager)]
     express: express_session::State,
+    credentials: credentials::Store,
     state: Option<PathBuf>,
     environment: Option<Environment>,
     project_override: bool,
@@ -167,7 +163,7 @@ pub(crate) struct ProjectView {
     last_poll_status: Option<GatewayStatus>,
     #[cfg(native_manager)]
     feed: Entity<feed::Feed>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     chrome: Entity<chrome::Chrome>,
     #[cfg(native_manager)]
     composer: Entity<composer::Composer>,
@@ -179,16 +175,24 @@ pub(crate) struct ProjectView {
     native: native::Native,
     #[cfg(native_manager)]
     threads: threads::Directory,
+    #[cfg(native_manager)]
+    ttfm: ttfm::Ttfm,
 }
 
 pub(super) struct ManagerStarted;
 impl EventEmitter<ManagerStarted> for ProjectView {}
+
+#[cfg(native_manager)]
+pub(super) struct NativeConnected;
+#[cfg(native_manager)]
+impl EventEmitter<NativeConnected> for ProjectView {}
 
 impl ProjectView {
     pub(crate) fn new(
         binding: Option<AreaBinding>,
         state: Option<PathBuf>,
         area: PathBuf,
+        opened: std::time::Instant,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -196,7 +200,8 @@ impl ProjectView {
         let mut view = Self::empty(state.clone(), window, cx);
         #[cfg(native_manager)]
         {
-            view.threads.enabled = cfg!(target_os = "linux");
+            view.threads.enabled = true;
+            view.ttfm_open(opened, cx);
         }
         let area_copy = area.clone();
         view.area = Some(area);
@@ -264,52 +269,14 @@ impl ProjectView {
             let Some(env) = env else {
                 return;
             };
-            let reused = this
-                .update_in(cx, |_, _, cx| reader_t3_settings::gateway(&env, cx))
-                .ok()
-                .flatten();
-            if let Some(gateway) = reused {
-                let result = cx
-                    .background_executor()
-                    .spawn(async move {
-                        reader_project_navigation::manager_gateway(env.clone(), gateway, access)
-                            .map(|gateway| (env, gateway))
-                    })
-                    .await;
-                let _ = this.update_in(cx, |this, window, cx| {
-                    this.finish_connection(result, window, cx)
-                });
-                return;
-            }
-            #[cfg(target_os = "macos")]
-            let token: anyhow::Result<Option<StoredToken>> = Ok(None);
-            #[cfg(not(target_os = "macos"))]
-            let token = {
-                let url = env.credential_url();
-                let task = match this.update_in(cx, |_, _, cx| cx.read_credentials(&url)) {
-                    Ok(task) => task,
-                    Err(_) => return,
-                };
-                match task.await {
-                    Ok(Some((_, bytes))) => StoredToken::from_secret(&bytes).map(Some),
-                    Ok(None) => Ok(None),
-                    Err(error) => Err(error),
-                }
+            let task = match this.update_in(cx, |this, _, cx| {
+                let mcp = reader_t3_settings::gateway(&env, cx);
+                this.credentials.gateway(env.clone(), mcp, access, cx)
+            }) {
+                Ok(task) => task,
+                Err(_) => return,
             };
-            let result = match token {
-                Ok(token) => {
-                    cx.background_executor()
-                        .spawn(async move {
-                            let gateway = Arc::new(
-                                McpGateway::new(env.clone(), token)?.with_access(access.clone()),
-                            );
-                            reader_project_navigation::manager_gateway(env.clone(), gateway, access)
-                                .map(|gateway| (env, gateway))
-                        })
-                        .await
-                }
-                Err(error) => Err(error),
-            };
+            let result = task.await.map(|gateway| (env, gateway));
             let _ = this.update_in(cx, |this, window, cx| {
                 this.finish_connection(result, window, cx)
             });
@@ -332,8 +299,14 @@ impl ProjectView {
         #[cfg(native_manager)]
         let parent = cx.entity().downgrade();
         #[cfg(native_manager)]
-        let feed = cx.new(|cx| feed::Feed::new(parent.clone(), cx));
-        #[cfg(target_os = "linux")]
+        let ttfm = ttfm::Ttfm::open(std::time::Instant::now(), false, cx);
+        #[cfg(native_manager)]
+        let feed = cx.new(|cx| {
+            let mut feed = feed::Feed::new(parent.clone(), cx);
+            feed.ttfm = Some(ttfm.clone());
+            feed
+        });
+        #[cfg(native_manager)]
         let chrome = cx.new(|cx| chrome::Chrome::new(parent.clone(), cx));
         #[cfg(native_manager)]
         let composer = cx.new(|cx| {
@@ -471,6 +444,7 @@ impl ProjectView {
             rotation_policy: Default::default(),
             #[cfg(native_manager)]
             express: Default::default(),
+            credentials: credentials::Store::default(),
             state,
             environment: None,
             project_override: true,
@@ -510,7 +484,7 @@ impl ProjectView {
             last_poll_status: None,
             #[cfg(native_manager)]
             feed,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             chrome,
             #[cfg(native_manager)]
             composer,
@@ -522,6 +496,8 @@ impl ProjectView {
             native,
             #[cfg(native_manager)]
             threads: threads::Directory::default(),
+            #[cfg(native_manager)]
+            ttfm,
         }
     }
 
@@ -910,8 +886,23 @@ impl ProjectView {
     }
 
     pub(crate) fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_active_since(active, std::time::Instant::now(), window, cx);
+    }
+
+    fn set_active_since(
+        &mut self,
+        active: bool,
+        opened: std::time::Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(native_manager)]
+        if active && !self.active {
+            self.ttfm_open(opened, cx);
+        }
         #[cfg(native_manager)]
         if !active {
+            self.ttfm.cancel();
             self.invalidate_rotation(cx);
         }
         #[cfg(native_manager)]
@@ -927,7 +918,7 @@ impl ProjectView {
         #[cfg(native_manager)]
         self.set_threads_active(active, window, cx);
         #[cfg(native_manager)]
-        if active && (cfg!(target_os = "linux") || self.native.active()) {
+        if active && (self.threads.enabled || self.native.active()) {
             self.draft_restore(window, cx);
             self.native_start(window, cx);
             if self.threads.enabled && !self.native.active() && self.environment.is_some() {
@@ -1004,7 +995,7 @@ impl ProjectView {
                 self.generation += 1;
                 self.start_polling(window, cx);
                 #[cfg(native_manager)]
-                if cfg!(target_os = "linux") {
+                if self.threads.enabled {
                     self.native_restore(false, window, cx);
                 }
             }
@@ -1250,36 +1241,26 @@ impl ProjectView {
         self.busy = true;
         let state = self.state.clone().filter(|_| self.project_override);
         cx.spawn_in(window, async move |this, cx| {
-            #[cfg(target_os = "macos")]
-            let token: anyhow::Result<Option<StoredToken>> = Ok(None);
-            #[cfg(not(target_os = "macos"))]
-            let token = {
-                let Some(task) = this
-                    .update_in(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
-                    .ok()
-                else {
-                    return;
-                };
-                task.await.and_then(|saved| {
-                    saved
-                        .map(|(_, bytes)| StoredToken::from_secret(&bytes))
-                        .transpose()
-                })
+            let task = match this.update_in(cx, |this, _, cx| {
+                let mcp = reader_t3_settings::gateway(&env, cx);
+                this.credentials.gateway(env.clone(), mcp, access, cx)
+            }) {
+                Ok(task) => task,
+                Err(_) => return,
             };
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let gateway = reader_project_navigation::manager_gateway(
-                        env.clone(),
-                        Arc::new(McpGateway::new(env.clone(), token?)?.with_access(access.clone())),
-                        access,
-                    )?;
-                    if let Some(state) = state {
-                        connections::save(&state, &env)?;
-                    }
-                    Ok((env, gateway))
-                })
-                .await;
+            let result = match task.await {
+                Ok(gateway) => {
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Some(state) = state {
+                                connections::save(&state, &env)?;
+                            }
+                            Ok((env, gateway))
+                        })
+                        .await
+                }
+                Err(error) => Err(error),
+            };
             let _ = this.update_in(cx, |this, window, cx| {
                 this.finish_connection(result, window, cx)
             });
@@ -2162,7 +2143,7 @@ impl Render for ProjectView {
         };
         // The mounted workspace owns the identity header. Section navigation
         // and notices follow it, so the conversation aligns with the panel top.
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let chrome = self
             .chrome
             .clone()
@@ -2173,7 +2154,7 @@ impl Render for ProjectView {
                     .flex_shrink_0(),
             )
             .into_any_element();
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let chrome = self.render_chrome(cx);
         let surface = v_flex().size_full().min_w_0().min_h_0().child(chrome);
         #[cfg(native_manager)]
@@ -2242,6 +2223,7 @@ impl Reader {
         if let Some(previous) = &self.project {
             previous.update(cx, |view, cx| view.set_active(false, window, cx));
         }
+        let opened = std::time::Instant::now();
         self.project_open = true;
         self.project = None;
         self.project_request = self.project_request.wrapping_add(1);
@@ -2277,14 +2259,22 @@ impl Reader {
                 let project = match binding {
                     Ok((key, binding)) => match this.project_views.get(&key).cloned() {
                         Some(project) => {
-                            project.update(cx, |project, cx| project.set_active(true, window, cx));
+                            project.update(cx, |project, cx| {
+                                project.set_active_since(true, opened, window, cx)
+                            });
                             project
                         }
                         None => {
                             let state = this.session_directory.clone();
                             let project = cx.new(|cx| {
-                                let mut view =
-                                    ProjectView::new(binding, state, key.0.clone(), window, cx);
+                                let mut view = ProjectView::new(
+                                    binding,
+                                    state,
+                                    key.0.clone(),
+                                    opened,
+                                    window,
+                                    cx,
+                                );
                                 view.context_path = key
                                     .0
                                     .strip_prefix(&this.vault_root)
@@ -2295,6 +2285,20 @@ impl Reader {
                             });
                             #[cfg(native_manager)]
                             this.connect_manager_links(&project, window, cx);
+                            #[cfg(native_manager)]
+                            cx.subscribe_in(
+                                &project,
+                                window,
+                                |this, _, _: &NativeConnected, window, cx| {
+                                    // Discard pre-pairing snapshots before refreshing
+                                    // project status and icon gateways with the saved bearer.
+                                    this.project_navigation.gateway_generation =
+                                        this.project_navigation.gateway_generation.wrapping_add(1);
+                                    this.project_navigation.t3_gateways.clear();
+                                    this.refresh_project_statuses(window, cx);
+                                },
+                            )
+                            .detach();
                             cx.subscribe_in(
                                 &project,
                                 window,

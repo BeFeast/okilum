@@ -126,7 +126,7 @@ pub enum PasteOffer {
     Text(String),
     Image(PastedImage),
     /// Copied files (Finder, or a clipboard manager's cached image/file):
-    /// existing local paths, in clipboard order.
+    /// local paths in clipboard order; chat validates them on its worker.
     Files(Vec<PathBuf>),
     /// No usable representation; the type names (never contents) for the log.
     Nothing {
@@ -388,6 +388,24 @@ pub fn read_offer(board: &impl Pasteboard) -> Result<PasteOffer, OfferError> {
     read_offer_with(board, true)
 }
 
+/// Chat only treats explicit file flavors as attachments. Keep ordinary paths
+/// as text and defer all filesystem access to the attachment background worker.
+pub fn read_chat_offer(board: &impl Pasteboard) -> Result<PasteOffer, OfferError> {
+    for _ in 0..ATTEMPTS {
+        let before = board.change_count();
+        let paths = explicit_file_paths(board, &board.types());
+        let offer = if paths.is_empty() {
+            read_once(board, false)
+        } else {
+            Ok(PasteOffer::Files(paths))
+        };
+        if board.change_count() == before {
+            return offer;
+        }
+    }
+    Err(OfferError::Changed)
+}
+
 /// Like [`read_offer`]; `files == false` for a text-only field, where a copied
 /// file pastes as its name (the text next to it) rather than as a file.
 pub fn read_offer_with(board: &impl Pasteboard, files: bool) -> Result<PasteOffer, OfferError> {
@@ -530,6 +548,13 @@ pub fn cached_clipboard_file(text: &str) -> Option<PathBuf> {
 /// Local files the clipboard points at that exist, without duplicates:
 /// every item's `public.file-url`, the legacy filename list, a file `public.url`.
 pub fn file_paths(board: &(impl Pasteboard + ?Sized), types: &[String]) -> Vec<PathBuf> {
+    explicit_file_paths(board, types)
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect()
+}
+
+fn explicit_file_paths(board: &(impl Pasteboard + ?Sized), types: &[String]) -> Vec<PathBuf> {
     let has = |kind: &str| types.iter().any(|t| t == kind);
     let mut raw: Vec<String> = Vec::new();
     if has(FILE_URL) {
@@ -556,7 +581,7 @@ pub fn file_paths(board: &(impl Pasteboard + ?Sized), types: &[String]) -> Vec<P
         let Some(path) = local_path(&entry) else {
             continue;
         };
-        if path.exists() && !paths.contains(&path) {
+        if !paths.contains(&path) {
             paths.push(path);
         }
     }
