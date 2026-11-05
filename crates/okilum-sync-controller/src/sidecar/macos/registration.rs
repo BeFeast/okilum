@@ -62,7 +62,8 @@ impl<D: StateDir, P: RegistrationProof, A: RegistrationPort> RegistrationGuard<D
     pub fn status(&self) -> ManagedStatus {
         self.status_until(Instant::now() + self.budget)
     }
-    fn status_until(&self, deadline: Instant) -> ManagedStatus {
+    /// `status` within the caller's whole-operation deadline, never a renewed budget.
+    pub fn status_until(&self, deadline: Instant) -> ManagedStatus {
         let attempt = || -> Result<ManagedStatus> {
             ensure!(Instant::now() < deadline, "registration deadline elapsed");
             let saved = {
@@ -247,6 +248,9 @@ mod native {
         }
         pub fn status(&self) -> ManagedStatus {
             self.0.status()
+        }
+        pub fn status_until(&self, deadline: Instant) -> ManagedStatus {
+            self.0.status_until(deadline)
         }
     }
 }

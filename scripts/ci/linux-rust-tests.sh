@@ -67,6 +67,8 @@ suite cargo test --locked -p okilum-sync-controller --test enrollment_storage --
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::store::tests::launch_authority:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::recovery:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::registration:: --no-fail-fast
+# #2589: the macOS Connect wait and REST readback, with offline OS fakes.
+suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connect:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::bundle:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::connection:: --no-fail-fast
 suite cargo test --locked -p okilum-sync-controller --lib sidecar::macos::payload:: --no-fail-fast
