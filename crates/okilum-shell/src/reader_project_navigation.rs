@@ -98,36 +98,7 @@ pub(super) fn restore_gateway(
     access: okilum_t3::NetworkAccess,
     cx: &App,
 ) -> Task<anyhow::Result<Arc<dyn okilum_t3::ManagerGateway>>> {
-    if !access.allowed() {
-        return Task::ready(Err(anyhow::anyhow!("Agents is disabled")));
-    }
-    let saved_mcp = if mcp.is_none() {
-        cx.read_credentials(&env.credential_url())
-    } else {
-        Task::ready(Ok(None))
-    };
-    let saved_native = if cfg!(any(target_os = "linux", target_os = "macos")) {
-        cx.read_credentials(&okilum_t3::stream::NativeToken::credential_key(&env))
-    } else {
-        Task::ready(Ok(None))
-    };
-    cx.background_executor().spawn(async move {
-        let token = saved_mcp
-            .await?
-            .map(|(_, bytes)| okilum_t3::StoredToken::from_secret(&bytes))
-            .transpose()?;
-        let native = saved_native
-            .await?
-            .map(|(_, bytes)| okilum_t3::stream::NativeToken::from_secret(&env, &bytes))
-            .transpose()?;
-        let mcp = match mcp {
-            Some(gateway) => gateway,
-            None => Arc::new(
-                okilum_t3::McpGateway::new(env.clone(), token)?.with_access(access.clone()),
-            ),
-        };
-        manager_gateway(env, mcp, native, access)
-    })
+    project::credentials::Store::default().gateway(env, mcp, access, cx)
 }
 
 /// Board, Projects, icons and read-only summaries use the native bearer on
@@ -331,7 +302,6 @@ pub(super) struct State {
     pub(super) saved: Option<Saved>,
     /// Shared Project presentation for this vault, persisted independently of Tree.
     pub(super) layout: Option<reader_layout::ViewLayout>,
-    pub manager_panel: Option<Entity<reader_manager_panel::ManagerPanel>>,
     /// The shared #1520 picker is the Projects section surface.
     pub picker: Option<Entity<ProjectsPicker>>,
     /// The same picker as the title-bar switcher's popover (#1519), fed by
@@ -374,9 +344,6 @@ impl Reader {
 
     pub(super) fn reset_vault_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_workspace_restore();
-        if let Some(panel) = self.project_navigation.manager_panel.take() {
-            panel.update(cx, |panel, cx| panel.hide(cx));
-        }
         self.close_project(window, cx);
         self.title_nav.close();
         let generation = self.project_navigation.generation.wrapping_add(1);
@@ -1184,20 +1151,6 @@ impl Reader {
         self.panel_widths_revision = self.panel_widths_revision.wrapping_add(1);
         self.tree_sticky.clear();
         self.tree_earlier_roots.clear();
-        if let Some(panel) = self.project_navigation.manager_panel.take() {
-            panel.update(cx, |panel, cx| panel.hide(cx));
-        }
-        self.project_navigation.manager_panel = Some(cx.new(|cx| {
-            reader_manager_panel::ManagerPanel::new(
-                project.clone(),
-                self.session_directory.clone(),
-                window,
-                cx,
-            )
-        }));
-        if let Some(panel) = &self.project_navigation.manager_panel {
-            cx.observe(panel, |_, _, cx| cx.notify()).detach();
-        }
         self.project_navigation.active = Some(project.clone());
         self.project_navigation.section = Section::Reader;
         self.record_recent_project(&project.folder, cx);
@@ -1218,9 +1171,6 @@ impl Reader {
             ));
         }
         self.project_navigation.generation = self.project_navigation.generation.wrapping_add(1);
-        if let Some(panel) = self.project_navigation.manager_panel.take() {
-            panel.update(cx, |panel, cx| panel.hide(cx));
-        }
         self.close_project(window, cx);
         self.project_navigation.active = None;
         self.project_navigation.section = Section::Reader;
@@ -2282,7 +2232,6 @@ mod local_reader_without_t3_tests {
         let navigation = &reader.project_navigation;
         assert!(navigation.t3_gateways.is_empty(), "{after}");
         assert!(navigation.statuses.is_empty(), "{after}: no T3 status");
-        assert!(navigation.manager_panel.is_none(), "{after}");
         assert!(navigation.boards.is_empty(), "{after}");
         assert!(navigation.active.is_none(), "{after}");
     }
@@ -2638,7 +2587,7 @@ mod local_reader_without_t3_tests {
                     .is_some_and(|detail| detail.contains(UNREACHABLE)),
                 "the Projects view says T3 is unreachable"
             );
-            assert!(navigation.active.is_none() && navigation.manager_panel.is_none());
+            assert!(navigation.active.is_none());
         });
         assert_no_error_toast(visual, "an unreachable T3");
 
@@ -2901,7 +2850,7 @@ mod local_reader_without_t3_tests {
                 picker.model().manager_detail(folder).is_some(),
                 "the Projects view says why T3 is unreachable"
             );
-            assert!(navigation.active.is_none() && navigation.manager_panel.is_none());
+            assert!(navigation.active.is_none());
         });
         assert_no_error_toast(visual, "an unreachable T3");
 

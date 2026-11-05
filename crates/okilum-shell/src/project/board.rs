@@ -36,11 +36,11 @@ pub(crate) struct Board {
     snapshot: Snapshot,
     manager: Option<Entity<ProjectView>>,
     _manager_observer: Option<Subscription>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     _manager_feed_observer: Option<Subscription>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     manager_publication: Option<(Option<ServerIdentity>, Option<String>, u64)>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     manager_display: live::ManagerDisplay,
     active: bool,
     ticker: Option<Task<()>>,
@@ -208,11 +208,11 @@ impl Board {
             snapshot: Snapshot::new(owner),
             manager: None,
             _manager_observer: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             _manager_feed_observer: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             manager_publication: None,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             manager_display: live::ManagerDisplay::default(),
             active: false,
             ticker: None,
@@ -370,12 +370,12 @@ impl Board {
         self.notes_loading = false;
         self.manager = Some(manager.clone());
         self._manager_observer = Some(cx.observe(&manager, |this, _, cx| {
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             this.sync_manager_display(cx);
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(native_manager))]
             cx.notify();
         }));
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         {
             self.manager_publication = None;
             let feed = manager.read(cx).feed.clone();
@@ -387,7 +387,7 @@ impl Board {
             self.refresh(window, cx);
         }
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     fn sync_manager_display(&mut self, cx: &mut Context<Self>) {
         let Some(manager) = &self.manager else {
             return;
@@ -968,7 +968,7 @@ impl Reader {
                 }
                 Action::Discuss(text) => {
                     board.update(cx, |board,cx| { board.peek.manager_tab = true; cx.notify(); });
-                    #[cfg(target_os = "linux")]
+                    #[cfg(native_manager)]
                     let result = this.project.clone().ok_or(okilum_t3::draft_handoff::Refusal::Unavailable)
                         .and_then(|manager| {
                             if manager.read(cx).area.as_deref() != Some(owner.as_path()) {
@@ -989,7 +989,7 @@ impl Reader {
                                 manager.append_board_context(&owner, text.clone(), window, cx)
                             })
                         });
-                    #[cfg(target_os = "linux")]
+                    #[cfg(native_manager)]
                     let notice = match result {
                         Ok(()) => {
                             "Context appended to the existing Manager draft. Review and send when ready; Undo removes the block."
@@ -998,11 +998,7 @@ impl Reader {
                             "Manager target changed. Check its draft before trying again.",
                         Err(_) => "Manager draft unavailable. Open the Manager and try again.",
                     };
-                    // No supported atomic web composer bridge is published. Never
-                    // report success after changing an invisible native fallback.
-                    #[cfg(target_os = "macos")]
-                    let notice = "Draft handoff to the Manager webview is unavailable. No draft was changed.";
-                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    #[cfg(not(native_manager))]
                     let notice = "Draft handoff to this Manager panel is unavailable. No draft was changed.";
                     board.update(cx, |board, cx| {
                         board.notice = Some(notice.into());
@@ -1018,9 +1014,9 @@ impl Reader {
     pub(in crate::project) fn project_board_changed(&mut self, cx: &mut Context<Self>) {
         // The center and issue dock consume Board publications. The fixed
         // Reader header has no new source data when Board geometry changes.
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         self.layout_signal.update(cx, |_, cx| cx.notify());
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         cx.notify();
     }
     pub(crate) fn connect_project_board(
@@ -1106,7 +1102,7 @@ impl Reader {
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, native_manager))]
 mod discuss_tests;
 
 #[cfg(all(target_os = "linux", any(test, feature = "project-ui-harness")))]

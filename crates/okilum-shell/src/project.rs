@@ -7,7 +7,7 @@ use gpui_component::input::{Textarea, TextareaState};
 use okilum_t3::{
     chat::{Conversation, MessageJournal, MessageRecord},
     manifest::AreaBinding,
-    Environment, GatewayStatus, ManagerGateway, ServerIdentity, StoredToken,
+    Environment, GatewayStatus, ManagerGateway, ServerIdentity,
 };
 use std::time::Duration;
 
@@ -17,12 +17,12 @@ mod agent_skills;
 mod attachments;
 pub(crate) mod board;
 mod chat_ui;
-#[cfg(target_os = "linux")]
+#[cfg(native_manager)]
 mod chrome;
 #[cfg(native_manager)]
 mod composer;
 mod connections;
-mod credentials;
+pub(crate) mod credentials;
 mod design;
 mod desktop;
 #[cfg(native_manager)]
@@ -171,7 +171,7 @@ pub(crate) struct ProjectView {
     last_poll_status: Option<GatewayStatus>,
     #[cfg(native_manager)]
     feed: Entity<feed::Feed>,
-    #[cfg(target_os = "linux")]
+    #[cfg(native_manager)]
     chrome: Entity<chrome::Chrome>,
     #[cfg(native_manager)]
     composer: Entity<composer::Composer>,
@@ -208,7 +208,7 @@ impl ProjectView {
         let mut view = Self::empty(state.clone(), window, cx);
         #[cfg(native_manager)]
         {
-            view.threads.enabled = cfg!(target_os = "linux");
+            view.threads.enabled = true;
             view.ttfm_open(opened, cx);
         }
         let area_copy = area.clone();
@@ -277,9 +277,9 @@ impl ProjectView {
             let Some(env) = env else {
                 return;
             };
-            let task = match this.update_in(cx, |_, _, cx| {
+            let task = match this.update_in(cx, |this, _, cx| {
                 let mcp = reader_t3_settings::gateway(&env, cx);
-                reader_project_navigation::restore_gateway(env.clone(), mcp, access, cx)
+                this.credentials.gateway(env.clone(), mcp, access, cx)
             }) {
                 Ok(task) => task,
                 Err(_) => return,
@@ -314,7 +314,7 @@ impl ProjectView {
             feed.ttfm = Some(ttfm.clone());
             feed
         });
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let chrome = cx.new(|cx| chrome::Chrome::new(parent.clone(), cx));
         #[cfg(native_manager)]
         let composer = cx.new(|cx| {
@@ -492,7 +492,7 @@ impl ProjectView {
             last_poll_status: None,
             #[cfg(native_manager)]
             feed,
-            #[cfg(target_os = "linux")]
+            #[cfg(native_manager)]
             chrome,
             #[cfg(native_manager)]
             composer,
@@ -1249,9 +1249,9 @@ impl ProjectView {
         self.busy = true;
         let state = self.state.clone().filter(|_| self.project_override);
         cx.spawn_in(window, async move |this, cx| {
-            let task = match this.update_in(cx, |_, _, cx| {
+            let task = match this.update_in(cx, |this, _, cx| {
                 let mcp = reader_t3_settings::gateway(&env, cx);
-                reader_project_navigation::restore_gateway(env.clone(), mcp, access, cx)
+                this.credentials.gateway(env.clone(), mcp, access, cx)
             }) {
                 Ok(task) => task,
                 Err(_) => return,
@@ -2151,7 +2151,7 @@ impl Render for ProjectView {
         };
         // The mounted workspace owns the identity header. Section navigation
         // and notices follow it, so the conversation aligns with the panel top.
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         let chrome = self
             .chrome
             .clone()
@@ -2162,7 +2162,7 @@ impl Render for ProjectView {
                     .flex_shrink_0(),
             )
             .into_any_element();
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(native_manager))]
         let chrome = self.render_chrome(cx);
         let surface = v_flex().size_full().min_w_0().min_h_0().child(chrome);
         #[cfg(native_manager)]

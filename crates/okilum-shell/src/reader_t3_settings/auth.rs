@@ -133,7 +133,6 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
                             }
                             return;
                         }
-                        #[cfg(not(target_os = "macos"))]
                         if let Event::Ready(pending) = &event {
                             cx.open_url(&pending.url);
                         }

@@ -5,7 +5,7 @@ use ::core::prelude::v1::test;
 async fn selected_native_manager_restores_stored_token(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     let environment = Environment::new("fixture", "https://pairing.example.test").unwrap();
-    let token = StoredToken {
+    let token = okilum_t3::StoredToken {
         access_token: "synthetic-mcp-token".into(),
         expires_at: u64::MAX,
         scope: "mcp".into(),
@@ -28,21 +28,22 @@ async fn selected_native_manager_restores_stored_token(cx: &mut TestAppContext) 
     });
     write.await.unwrap();
     let read = view.read_with(visual, |view, cx| {
-        view.restore_stored_token(&environment, cx)
+        view.credentials.gateway(
+            environment.clone(),
+            None,
+            okilum_t3::NetworkAccess::default(),
+            cx,
+        )
     });
-    assert_eq!(read.await.unwrap().unwrap(), token);
-    assert_eq!(store.lock().unwrap().reads, [environment.credential_url()]);
-    #[cfg(target_os = "macos")]
-    {
-        // The same retained view must not touch Keychain behind WKWebView.
-        view.update(visual, |view, _| view.threads.enabled = false);
-        store.lock().unwrap().reads.clear();
-        let read = view.read_with(visual, |view, cx| {
-            view.restore_stored_token(&environment, cx)
-        });
-        assert!(read.await.unwrap().is_none());
-        assert!(store.lock().unwrap().reads.is_empty());
-    }
+    let gateway = read.await.unwrap();
+    assert!(matches!(gateway.status(), GatewayStatus::Connected { .. }));
+    assert_eq!(
+        store.lock().unwrap().reads,
+        [
+            environment.credential_url(),
+            okilum_t3::stream::NativeToken::credential_key(&environment),
+        ]
+    );
 }
 
 #[gpui::test]

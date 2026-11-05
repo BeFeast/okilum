@@ -1,7 +1,6 @@
 # Native Manager input on macOS (#2521)
 
-The native Manager uses the shared GPUI textarea and feed. Its compilation and
-hosted tests do not change the macOS runtime panel: #2522 owns that switch.
+The native Manager uses the shared GPUI textarea and feed. Both macOS and Linux mount this native surface (#2522).
 
 Enter submits; Shift+Enter inserts a newline. Composer retains the Reader's
 500 ms IME commit settle interval: an Enter during preedit or immediately after
@@ -34,7 +33,7 @@ file URL/legacy filename decoding; GPUI file drops; chooser options; and exact
 image upload/send/provider bytes. These fixtures never touch the user's general
 pasteboard, real T3 projects or credentials.
 
-The owner still checks an active Mac application after #2522: real Japanese /
+Mac acceptance still requires an active application under project authority: real Japanese /
 Chinese candidate windows, Hebrew/Russian dead keys, AppKit menu enablement and
 key equivalents, screenshot/Preview/Safari clipboard acquisition, Finder copy
 and drop delivery, and the visible NSOpenPanel with multiple images and PDFs.

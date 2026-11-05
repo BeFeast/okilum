@@ -17,10 +17,11 @@ The shell does not read or send browser cookies, or probe `/api/auth/session`.
 The HTTP contract and project mutation scopes were checked against T3 contract
 revision `71a283aed2` (`environmentHttp.ts`, `project/http.ts`, `settings.ts`).
 
-The Mac Manager panel remains WKWebView until #2522. Its stable app-specific
-website-data store and verification remain because that panel still uses them.
-`ManagerCookies` and `okilum_manager_store_cookies` have no remaining consumers
-and are removed. No cookie export bridge is needed for Open in T3.
+The Mac Manager now mounts the native ProjectView (#2522). The WKWebView,
+its website-data-store adapter and focus bridge are removed from the app.
+Settings OAuth opens the system browser on every platform. Old browser data
+is left untouched; native pairing neither migrates nor revokes that session.
+Open in T3 uses the OS handler or the configured server's web fallback.
 
 A Mac with only the old webview session now shows the same native connect state
 as Linux for Board/Projects. Existing Settings > T3 sign-in can connect MCP;

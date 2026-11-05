@@ -2,8 +2,8 @@
 
 macOS validation runs on **GitHub-hosted arm64 runners**, through
 `forgejo-macos / macos`. Do not run CI on the corporate M4 or SSH to a Mac.
-Required `fast` checks run on PRs; the full Forgejo `ci` workflow is currently
-scheduled/manual. Its `macos-github` job bridges trusted same-repository heads
+Forgejo CI does not run on PRs. The scheduled/manual `ci` workflow
+can bridge trusted same-repository heads
 to unique `forgejo-pr/<number>-<sha>-...` refs on the GitHub mirror and reports
 the result back to Forgejo. No Forgejo credentials reach the hosted runner.
 

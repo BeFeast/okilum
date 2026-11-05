@@ -4,7 +4,7 @@ use super::*;
 type Saved = Option<(String, Vec<u8>)>;
 
 #[derive(Default)]
-pub(super) struct Store {
+pub(crate) struct Store {
     #[cfg(test)]
     pub(super) test: Option<Arc<std::sync::Mutex<TestStore>>>,
 }
@@ -53,30 +53,6 @@ impl Store {
     }
 }
 
-impl ProjectView {
-    pub(super) fn restore_stored_token(
-        &self,
-        environment: &Environment,
-        cx: &App,
-    ) -> Task<anyhow::Result<Option<StoredToken>>> {
-        #[cfg(native_manager)]
-        let native_panel = self.threads.enabled;
-        #[cfg(not(native_manager))]
-        let native_panel = false;
-        // A retained ProjectView must not prompt for Keychain access behind the
-        // Mac WKWebView. #2522 selects the native panel through threads.enabled.
-        if cfg!(target_os = "macos") && !native_panel {
-            return Task::ready(Ok(None));
-        }
-        let read = self.credentials.read(&environment.credential_url(), cx);
-        cx.background_executor().spawn(async move {
-            read.await?
-                .map(|(_, bytes)| StoredToken::from_secret(&bytes))
-                .transpose()
-        })
-    }
-}
-
 #[cfg(test)]
 #[derive(Default)]
 pub(super) struct TestStore {
@@ -87,3 +63,44 @@ pub(super) struct TestStore {
 
 #[cfg(all(test, native_manager))]
 mod tests;
+
+impl Store {
+    pub(crate) fn gateway(
+        &self,
+        env: Environment,
+        mcp: Option<Arc<dyn ManagerGateway>>,
+        access: okilum_t3::NetworkAccess,
+        cx: &App,
+    ) -> Task<anyhow::Result<Arc<dyn ManagerGateway>>> {
+        if !access.allowed() {
+            return Task::ready(Err(anyhow::anyhow!("Agents is disabled")));
+        }
+        let saved_mcp = if mcp.is_none() {
+            self.read(&env.credential_url(), cx)
+        } else {
+            Task::ready(Ok(None))
+        };
+        let saved_native = if cfg!(any(target_os = "linux", target_os = "macos")) {
+            self.read(&okilum_t3::stream::NativeToken::credential_key(&env), cx)
+        } else {
+            Task::ready(Ok(None))
+        };
+        cx.background_executor().spawn(async move {
+            let token = saved_mcp
+                .await?
+                .map(|(_, bytes)| okilum_t3::StoredToken::from_secret(&bytes))
+                .transpose()?;
+            let native = saved_native
+                .await?
+                .map(|(_, bytes)| okilum_t3::stream::NativeToken::from_secret(&env, &bytes))
+                .transpose()?;
+            let mcp = match mcp {
+                Some(gateway) => gateway,
+                None => Arc::new(
+                    okilum_t3::McpGateway::new(env.clone(), token)?.with_access(access.clone()),
+                ),
+            };
+            reader_project_navigation::manager_gateway(env, mcp, native, access)
+        })
+    }
+}

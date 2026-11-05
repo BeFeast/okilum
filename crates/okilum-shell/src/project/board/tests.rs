@@ -506,7 +506,7 @@ fn real_reader_note_and_board_roundtrip_preserves_navigation_and_manager_draft(
     // Real Reader integration: opening the existing Manager must not push the
     // first or last Board lane beyond the center at a compact window width.
     reader.read_with(visual, |reader, _| {
-        assert!(reader.project_navigation.manager_panel.is_some());
+        assert!(reader.project.is_some());
     });
     for width in [1100., 1400.] {
         visual.simulate_resize(size(px(width), px(1000.)));

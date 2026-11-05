@@ -93,18 +93,12 @@ mod reader_loading;
 mod reader_log;
 mod reader_log_kubernetes;
 mod reader_log_sftp;
-#[cfg(any(target_os = "macos", test))]
-mod reader_manager_compatibility;
-#[cfg(target_os = "macos")]
-mod reader_manager_focus;
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 mod reader_manager_links;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 mod reader_manager_occlusion;
 mod reader_manager_panel;
 mod reader_manager_start;
-#[cfg(any(target_os = "macos", test))]
-mod reader_manager_store;
 mod reader_mermaid;
 #[cfg(any(unix, windows))]
 mod reader_move;
@@ -7680,15 +7674,7 @@ impl Render for Reader {
         let workspace_panels = self.workspace_panels();
         let panel_widths = workspace_panels.widths(&self.panel_widths, available);
         self.sync_project_board_visibility(window, cx);
-        if let Some(panel) = &self.project_navigation.manager_panel {
-            let visible = self.project_navigation.active.is_some()
-                && self
-                    .panels
-                    .visible(reader_layout::Panel::Backlinks, available)
-                && !self.project_issue_peek_visible(cx);
-            panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
-        }
-        #[cfg(target_os = "linux")]
+        #[cfg(native_manager)]
         if let Some(project) = &self.project {
             let visible = self.project_open
                 && self.project_navigation.active.is_some()
@@ -7745,17 +7731,7 @@ impl Render for Reader {
             });
         // A mounted native conversation supplies its own identity/status/actions.
         // Do not stack the Reader's generic Manager title above that header.
-        // The Mac webview likewise supplies its own T3 thread header.
-        let manager_headerless = (cfg!(not(target_os = "macos"))
-            && self.project_navigation.active.is_some()
-            && self.project.is_some())
-            || (cfg!(target_os = "macos")
-                && self.project_navigation.manager_panel.is_some()
-                && self
-                    .project_navigation
-                    .active
-                    .as_ref()
-                    .is_some_and(|p| p.manager != okilum_t3::projects::Manager::NotStarted));
+        let manager_headerless = self.project_navigation.active.is_some() && self.project.is_some();
         let panels: Vec<_> = [reader_layout::Panel::Notes, reader_layout::Panel::Backlinks]
             .into_iter()
             .filter(|panel| workspace_panels.visible(*panel, available))
@@ -7868,24 +7844,24 @@ impl Render for Reader {
             .min_w_0()
             .min_h_0()
             .relative()
-            .key_context(if self.manager_browser_focused(cx) {
-                "ManagerWeb"
-            } else if self
-                .active_timeline()
-                .is_some_and(|t| t.selected.is_some() || self.editing.is_none())
-                && !self.quick_open.open
-                && !self.shortcut_sheet.open
-            {
-                if self.read_copy_available() {
-                    "Reader ReaderHistory ReaderRead"
+            .key_context(
+                if self
+                    .active_timeline()
+                    .is_some_and(|t| t.selected.is_some() || self.editing.is_none())
+                    && !self.quick_open.open
+                    && !self.shortcut_sheet.open
+                {
+                    if self.read_copy_available() {
+                        "Reader ReaderHistory ReaderRead"
+                    } else {
+                        "Reader ReaderHistory"
+                    }
+                } else if self.read_copy_available() {
+                    "Reader ReaderRead"
                 } else {
-                    "Reader ReaderHistory"
-                }
-            } else if self.read_copy_available() {
-                "Reader ReaderRead"
-            } else {
-                READER_CONTEXT
-            })
+                    READER_CONTEXT
+                },
+            )
             .track_focus(&self.focus_handle)
             .on_action(
                 cx.listener(|this, _: &reader_read_menu::CopyAsMarkdown, window, cx| {

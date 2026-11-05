@@ -1,4 +1,11 @@
-# Native Manager stream transport (#1787, #2519)
+# Native Manager stream transport
+
+macOS and Linux mount the same native session (#2522). The app contains no
+Manager WKWebView, cookie export or AppKit webview focus bridge. A legacy
+web session is left untouched and requires explicit native pairing once.
+Settings OAuth opens the system browser. Native credentials and MCP credentials
+remain separate in OS storage. See [Mac native Manager](macos-native-manager.md).
+
 
 The native Manager uses T3's orchestration protocol v2. Linux mounts it today;
 macOS compiles and tests the same implementation under `cfg(native_manager)`.
