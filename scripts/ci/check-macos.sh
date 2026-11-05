@@ -36,6 +36,7 @@ export DYLD_FRAMEWORK_PATH="$PWD/vendor/sparkle"
 # #1603: only the hosted lane runs the isolated signed update/relaunch fixture.
 # Local/corporate runners must not execute it.
 if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://github.com ]]; then
+    python3 scripts/ci/sparkle-freshness/negative_control.py "$archive"
     python3 scripts/ci/sparkle-freshness/run.py "$archive"
 fi
 cargo_args=(test --release --locked --target aarch64-apple-darwin)
@@ -173,6 +174,7 @@ run_tests okilum-shell --bins updater::policy::
 run_tests okilum-shell --bins updater::scheduler::
 run_tests okilum-shell --bins updater::tests::window_activation_reaches_the_shared_scheduler_without_polling --exact
 run_tests okilum-shell --bins updater::progress_ui_tests::
+run_tests okilum-shell --bins updater::restart_feedback::tests::
 
 # Real GPUI editor protection at the same final boundary used by both Quit and Restart.
 if [[ "${GITHUB_ACTIONS:-}" == true && "${GITHUB_SERVER_URL:-}" == https://github.com ]]; then

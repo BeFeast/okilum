@@ -22,10 +22,18 @@ Never substitute a newer main result or a PR result for that source. If absent,
 dispatch `fast.yml` on main with `certification_source` set to the candidate SHA
 and wait for that source's full-suite result. Beta still uses check alone.
 
+Since #2589 the `shell-full` job waits on a `bridge` runner while GitHub's
+dedicated `ubuntu-24.04` runner executes that source's own
+`scripts/ci/shell-full.sh` (`.github/workflows/forgejo-shell-full.yml`). The
+status context the Stable gate reads, `fast / shell-full (workflow_dispatch)`,
+and its reporting job are unchanged. A source that predates the hosted workflow
+fails at once with `predates hosted shell-full`; certify a newer main commit.
+Details and budgets: `docs/fast-runner.md`.
+
 All three beta workflows tick at :17 UTC. The Linux coordinator requests at most
 one automatic fast certification per UTC hour. Both fast suites compile and test
-the requested product checkout, independently of the workflow snapshot or
-subsequent main merges. Beta is gated by `fast / check` alone: its status is
+the requested product checkout (`check` on baldr, `shell-full` on GitHub),
+independently of the workflow snapshot or subsequent main merges. Beta is gated by `fast / check` alone: its status is
 reported the moment `check` finishes, and a green `check` immediately dispatches
 all three source-pinned release workflows; the next tick recovers missed
 dispatches. `fast / shell-full` is reported separately on the same source for

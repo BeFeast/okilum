@@ -167,13 +167,20 @@ pub(super) fn check(download: bool) -> bool {
     true
 }
 pub(super) fn restart(cx: &mut gpui::App) {
+    super::restart_feedback::attempt();
     if !crate::linux_sprint::allows_updates() {
+        super::restart_feedback::refused(
+            "Updates are disabled for this Sprint. Open the installed AppImage to update.",
+        );
         return;
     }
     if BUSY
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
+        super::restart_feedback::refused(
+            "The updater is busy. Wait for it to finish, then choose Restart now again.",
+        );
         return;
     }
     let result = (|| -> anyhow::Result<()> {
@@ -188,13 +195,21 @@ pub(super) fn restart(cx: &mut gpui::App) {
             .ok_or_else(|| anyhow::anyhow!("Check for updates again"))?;
         let recovery = staged.arm(&args)?;
         eprintln!("AppImage update recovery directory: {}", recovery.display());
+        super::restart_feedback::record(
+            "accepted",
+            "AppImage armed after editor protection and state persistence",
+        );
         cx.quit();
         Ok(())
     })();
     if let Err(error) = result {
-        status::set(CheckStatus::Failed(format!(
-            "Could not restart to update: {error}"
-        )));
+        super::restart_feedback::refused(format!("Could not restart to update: {error}. Save or close the affected note, then try again."));
+        let reason = format!("Could not restart to update: {error}");
+        status::set(if ready() {
+            CheckStatus::RestartRetry(reason)
+        } else {
+            CheckStatus::Failed(reason)
+        });
     }
     BUSY.store(false, Ordering::SeqCst);
 }
@@ -240,6 +255,25 @@ pub(super) fn confirm_startup() {
 /// Shared by the production Restart action and real-editor regression tests.
 pub(crate) fn prepare_restart(cx: &mut gpui::App) -> anyhow::Result<Vec<std::ffi::OsString>> {
     crate::reader_update_restart::prepare(cx)
+}
+
+#[cfg(all(test, not(feature = "linux-sprint")))]
+mod restart_tests {
+    use super::*;
+
+    #[gpui::test]
+    fn busy_restart_reports_a_retry_reason_without_arming_or_quitting(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _guard = super::super::restart_feedback::TEST_LOCK.lock().unwrap();
+        cx.update(crate::test_init);
+        assert!(!BUSY.swap(true, Ordering::SeqCst));
+        cx.update(restart);
+        BUSY.store(false, Ordering::SeqCst);
+        assert!(super::super::restart_feedback::pending_message()
+            .is_some_and(|reason| reason.contains("busy") && reason.contains("Restart now again")));
+        assert!(!ready());
+    }
 }
 
 #[cfg(feature = "appimage-acceptance-harness")]
