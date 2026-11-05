@@ -318,9 +318,10 @@ impl ProjectView {
                         h_flex()
                             .w_full()
                             .min_w_0()
-                            .min_h(px(18.))
+                            .min_h(px(ui::LINE))
                             .items_center()
-                            .line_height(px(18.))
+                            .text_size(px(ui::BODY))
+                            .line_height(px(ui::LINE))
                             .gap_1()
                             .child(
                                 div()
