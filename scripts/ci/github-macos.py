@@ -237,10 +237,24 @@ RUN_TIMEOUT = 75 * 60
 PROGRESS_EVERY = 300
 
 
+def executed_step(jobs, job_name, step_name):
+    """Exactly one successful job of this name with exactly one successful named step."""
+    named = [job for job in jobs if job["name"] == job_name]
+    steps = [step for job in named for step in job.get("steps", [])
+             if step.get("name") == step_name]
+    return (len(named) == 1 and named[0].get("conclusion") == "success"
+            and len(steps) == 1 and steps[0].get("conclusion") == "success")
+
+
 def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                  queue_timeout=QUEUE_TIMEOUT, run_timeout=RUN_TIMEOUT, workflow=WORKFLOW,
-                 job_name="macos", build_step=BUILD_STEP, log=print, deadline=None):
-    """`deadline` (same clock) caps both the queue and the run for a fixed caller budget."""
+                 job_name="macos", build_step=BUILD_STEP, log=print, deadline=None,
+                 also_required=()):
+    """`deadline` (same clock) caps both the queue and the run for a fixed caller budget.
+
+    `also_required` lists further (job, step) pairs of the same run that must each
+    have executed and passed; they are proven by the jobs API only, never by logs.
+    """
     def capped(moment):
         return moment if deadline is None else min(moment, deadline)
 
@@ -282,10 +296,8 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                     else:
                         raise Unavailable(f"GitHub jobs pagination exceeded 10 pages: {url}")
                     native = [job for job in jobs if job["name"] == job_name]
-                    steps = [step for job in native for step in job.get("steps", [])
-                             if step.get("name") == build_step]
-                    if (len(native) == 1 and native[0].get("conclusion") == "success"
-                            and len(steps) == 1 and steps[0].get("conclusion") == "success"):
+                    also = all(executed_step(jobs, *pair) for pair in also_required)
+                    if also and executed_step(jobs, job_name, build_step):
                         return "success", f"GitHub native gate passed: {url}"
                     evidence = [{key: job.get(key) for key in
                                  ("id", "name", "status", "conclusion", "steps")}
@@ -293,12 +305,13 @@ def wait_for_run(api, branch, sha, *, clock=time.monotonic, sleep=time.sleep,
                     log(f"GitHub gate evidence {attempt + 1}/3: run_id={run['id']} "
                         f"status={run['status']} conclusion={run['conclusion']} "
                         f"expected_job={job_name!r} expected_step={build_step!r} "
+                        f"also_required={list(also_required)!r} "
                         f"jobs={evidence!r} — {url}", flush=True)
                     if attempt < 2:
                         sleep(poll_delay())
                 # Only an EMPTY steps projection may use log evidence. A known
                 # skipped/failed/pending step must never be overridden by a log.
-                if (len(native) == 1 and native[0].get('status') == 'completed'
+                if (also and len(native) == 1 and native[0].get('status') == 'completed'
                         and native[0].get('conclusion') == 'success'
                         and native[0].get('steps') == []
                         and native[0].get('run_id') == run['id']
@@ -350,7 +363,7 @@ BRIDGE_PREFIXES = (
     "forgejo-pr", "forgejo-linux-pr", "forgejo-shared-pr", "forgejo-linux-binary-pr",
     "forgejo-brain-pr", "forgejo-inbox-pr", "forgejo-arch-pr", "forgejo-windows-release-pr",
     "forgejo-native-core-pr", "forgejo-native-sync-pr", "forgejo-native-shell-pr",
-    "forgejo-perf-linux-pr", "forgejo-fast-pr", "forgejo-shell-full-pr",
+    "forgejo-perf-linux-pr", "forgejo-fast-pr", "forgejo-shell-full-pr", "forgejo-check-pr",
 )
 
 
