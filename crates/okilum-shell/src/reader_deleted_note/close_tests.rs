@@ -197,6 +197,17 @@ fn close_dont_save_refuses_a_failed_recovery_write(cx: &mut TestAppContext) {
     std::fs::remove_file(root.join("Start.md")).unwrap();
     assert!(!visual.simulate_close());
     visual.run_until_parked();
+    // The new close guard asks before the lifecycle save, so no journal need
+    // exist yet. First persist a real recoverable snapshot, then obstruct its
+    // next write; do not depend on the recovery debounce firing by chance.
+    reader.update_in(&mut visual, |r, _, cx| {
+        assert!(!r.save_source_for_close(cx));
+    });
+    assert!(okilum_core::file_editor::FileEditor::has_unsaved_draft(
+        &root.join("Start.md"),
+        &state.join("editor-drafts")
+    )
+    .unwrap());
     // Keep the editor's live lock in place: Windows does not permit renaming
     // its directory. A directory at the JSON destination fails real journal
     // publication on both platforms, independently of user permissions.
