@@ -213,6 +213,10 @@ fn short_window_picker_opens_after_release_and_all_columns_remain_reachable(
     scroll(visual, options, -10000.);
     let last_option = bounds(visual, "project-model-option-2-1");
     inside(last_option, options, "last boolean option");
+    assert!(
+        view.read_with(visual, |view, _| view.model_ui.option_scroll.offset().y) < px(0.),
+        "positive control: the settings content actually scrolled"
+    );
     assert_eq!(
         view.read_with(visual, |view, _| {
             view.model_ui.list_scroll.0.borrow().base_handle.offset()
@@ -244,6 +248,13 @@ fn short_window_picker_opens_after_release_and_all_columns_remain_reachable(
     assert!(
         gateway.model_writes.lock().unwrap().is_empty(),
         "opening, scrolling and changing the provider rail never select a model"
+    );
+    let close = bounds(visual, "project-model-close");
+    visual.simulate_click(close.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("project-model-panel").is_none(),
+        "the stacked settings scrollbar cannot intercept Close after scrolling"
     );
     assert!(gateway.sends.lock().unwrap().is_empty());
 }
@@ -336,16 +347,12 @@ fn last_current_model_and_option_heading_lineboxes_fit_large_window_popup(cx: &m
         "the current last model is visible without an offscreen click"
     );
     let options = bounds(visual, "project-model-option-column");
-    inside(
-        bounds(visual, "project-model-inspector-title"),
-        options,
-        "current-model inspector identity",
-    );
-    inside(
-        bounds(visual, "project-model-settings-title"),
-        options,
-        "supported settings heading",
-    );
+    assert!(visual
+        .debug_bounds("project-model-inspector-title")
+        .is_none());
+    assert!(visual
+        .debug_bounds("project-model-settings-title")
+        .is_none());
     let reasoning = bounds(visual, "project-model-option-heading-0");
     assert!(
         reasoning.size.height >= px(18.),
@@ -509,9 +516,7 @@ fn provider_search_options_and_loading_keep_one_surface_and_long_catalog_tail_re
             }
         });
         assert!(
-            visual
-                .debug_bounds("project-model-settings-title")
-                .is_some(),
+            visual.debug_bounds("project-model-option-column").is_some(),
             "settings stay discoverable while searching"
         );
     }
@@ -529,9 +534,7 @@ fn provider_search_options_and_loading_keep_one_surface_and_long_catalog_tail_re
         "server-confirmed model without descriptors",
     );
     assert!(visual.debug_bounds("project-model-no-options").is_some());
-    assert!(visual
-        .debug_bounds("project-model-settings-title")
-        .is_some());
+    assert!(visual.debug_bounds("project-model-option-column").is_some());
     redraw_picker(&view, visual, |view, _, _| {
         view.models = None;
         view.model_busy = true;
@@ -701,6 +704,9 @@ fn compact_header_and_aligned_rail_fit_real_provider_names_without_ellipsis(
         search.size.width >= px(300.),
         "search retains a useful text width"
     );
+    assert!(search.size.width <= px(320.), "search has a finite width");
+    assert_eq!(search.size.height, px(32.));
+    assert!(visual.debug_bounds("project-model-status").is_none());
     let account = bounds(visual, "project-model-account-label-0");
     for selector in [
         "project-model-rail-label-favorites",
@@ -774,4 +780,85 @@ fn full_pilot_account_name_wraps_inside_the_rail_instead_of_truncating(cx: &mut 
         bounds(visual, "project-model-providers"),
         "account row",
     );
+}
+
+#[gpui::test]
+fn seven_reasoning_choices_and_fast_mode_fit_without_clipping_at_default_size(
+    cx: &mut TestAppContext,
+) {
+    let (view, visual, _state, gateway) = fixture(cx, size(px(1000.), px(760.)), 0, None);
+    redraw_picker(&view, visual, |view, _, cx| {
+        brand::apply_theme(cx);
+        view.models.as_mut().unwrap().catalog.providers[0].models[0].capabilities = Some(
+            serde_json::from_value(json!({"optionDescriptors":[
+                {"type":"select","id":"reasoning","label":"Reasoning","options":[
+                    {"id":"low","label":"Low"},
+                    {"id":"medium","label":"Medium","isDefault":true},
+                    {"id":"high","label":"High"},
+                    {"id":"xhigh","label":"Extra High"},
+                    {"id":"max","label":"Max"},
+                    {"id":"ultracode","label":"Ultracode"},
+                    {"id":"ultrathink","label":"Ultrathink"}
+                ]},
+                {"type":"boolean","id":"fastMode","label":"Fast Mode","currentValue":false}
+            ]}))
+            .unwrap(),
+        );
+    });
+    interleaved_open(visual);
+    // The normal 880 x 500 dialog and a shorter, ordinary window both expose
+    // the entire advertised set before any wheel input. Extra settings use the
+    // independent scroll viewport exercised by the short-window regression.
+    for viewport in [size(px(1000.), px(760.)), size(px(900.), px(650.))] {
+        visual.simulate_resize(viewport);
+        visual.run_until_parked();
+        let panel = bounds(visual, "project-model-panel");
+        let title = bounds(visual, "project-model-title");
+        let search = bounds(visual, "project-model-search");
+        assert_eq!(search.size.height, px(32.));
+        assert!((title.center().y - search.center().y).abs() <= px(1.));
+        let column = bounds(visual, "project-model-option-column");
+        inside(column, panel, "complete settings viewport");
+        assert!(visual
+            .debug_bounds("project-model-settings-title")
+            .is_none());
+        assert!(visual
+            .debug_bounds("project-model-inspector-title")
+            .is_none());
+        let heading = bounds(visual, "project-model-option-heading-0");
+        assert_eq!(
+            heading.top(),
+            column.top() + px(super::super::design::INSET)
+        );
+        for selector in [
+            "project-model-option-0-0",
+            "project-model-option-0-6",
+            "project-model-option-heading-1",
+            "project-model-option-1-0",
+            "project-model-option-1-1",
+        ] {
+            inside(bounds(visual, selector), column, selector);
+        }
+        let first = bounds(visual, "project-model-option-0-0");
+        assert_eq!(first.size.height, px(28.));
+        // Neither list can be clipped by the panel's overflow mask.
+        let choices = bounds(visual, "project-model-choices");
+        let rail = bounds(visual, "project-model-provider-rail");
+        inside(choices, panel, "models");
+        inside(rail, panel, "providers");
+        assert_eq!(rail.bottom(), choices.bottom());
+        assert_eq!(column.bottom(), choices.bottom());
+        inside(
+            bounds(visual, "project-model-show-current"),
+            rail,
+            "selected model action",
+        );
+        assert_eq!(
+            view.read_with(visual, |view, _| view.model_ui.option_scroll.offset().y),
+            px(0.),
+            "ordinary settings need no scroll to reveal Fast Mode"
+        );
+    }
+    assert!(gateway.model_writes.lock().unwrap().is_empty());
+    assert!(gateway.sends.lock().unwrap().is_empty());
 }
