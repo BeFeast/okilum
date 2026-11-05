@@ -74,6 +74,8 @@ pub(super) struct ManagerPanel {
     unsupported_webkit: bool,
     webview_unavailable: bool,
     #[cfg(any(target_os = "macos", test))]
+    surface_visible: bool,
+    #[cfg(any(target_os = "macos", test))]
     watchdog: watchdog::Watchdog,
     #[cfg(target_os = "macos")]
     occlusion_hidden: bool,
@@ -197,6 +199,8 @@ impl ManagerPanel {
             unsupported_webkit: false,
             webview_unavailable: false,
             #[cfg(any(target_os = "macos", test))]
+            surface_visible: false,
+            #[cfg(any(target_os = "macos", test))]
             watchdog: watchdog::Watchdog::default(),
             #[cfg(target_os = "macos")]
             occlusion_hidden: false,
@@ -237,6 +241,11 @@ impl ManagerPanel {
     }
 
     pub(super) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        #[cfg(any(target_os = "macos", test))]
+        {
+            self.surface_visible = visible;
+        }
+        let visible = visible && !self.webview_unavailable;
         #[cfg(target_os = "macos")]
         if let Some(view) = &self.webview {
             view.update(cx, |view, _| {
@@ -480,10 +489,7 @@ impl ManagerPanel {
         }
         self.failures = 0;
         self.webview_unavailable = false;
-        #[cfg(target_os = "macos")]
-        if let Some(view) = &self.webview {
-            view.update(cx, |view, _| view.show());
-        }
+        self.set_visible(self.surface_visible, cx);
         cx.notify();
         true
     }
@@ -567,7 +573,7 @@ impl ManagerPanel {
                             Ok((view, routing)) => {
                                 // Keep the fallback visible through retries. A
                                 // new native child is not a loaded T3 document.
-                                if this.webview_unavailable {
+                                if this.webview_unavailable || !this.surface_visible {
                                     view.update(cx, |view, _| view.hide());
                                 }
                                 this.checking_webkit = true;
@@ -1191,8 +1197,18 @@ mod status_tests {
             ));
             assert!(!panel.finish_page_load(panel.generation, "about:blank", cx));
             assert!(panel.webview_unavailable);
+            panel.set_visible(true, cx);
+            assert!(
+                panel.webview_unavailable,
+                "parent visibility preserves fallback"
+            );
+            panel.set_visible(false, cx);
             assert!(panel.finish_page_load(panel.generation, "https://t3.example/env/thread", cx));
             assert!(!panel.webview_unavailable);
+            assert!(
+                !panel.surface_visible,
+                "background completion preserves panel visibility"
+            );
             assert_eq!(panel.failures, 0);
             panel.hide(cx);
         });
