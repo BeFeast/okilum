@@ -35,11 +35,11 @@ binaries alone do not establish that the same setup works there today.
    Select **Approve** only for the computer you intended to connect, or **Reject**.
    An OS notification also directs you back to Okilum. Only approval makes the
    authorized vault catalog available to the new computer.
-5. **On the new computer**, select **Choose local folder** for each wanted vault
-   under **Available vaults**. Alternatively, **Use existing folder** selects an
-   empty folder. These choices are staged until **Start first sync**. A non-empty
-   destination requires a lossless merge preview; do not delete a working copy
-   to make setup proceed.
+5. **On the new computer**, select **Choose folder** for each wanted vault under
+   **Available vaults**. Select an existing folder or create one in the native
+   folder dialog. These choices are staged until **Start first sync**. If an
+   unknown destination already has files, Okilum leaves them untouched and asks
+   you to choose an empty folder; do not delete a working copy to make setup proceed.
 6. Follow the first transfer in the wizard or close it and inspect the vault's
    state on the Sync page. The received vault opens when the controller reports
    it ready. Save a small edit with **Ctrl+S**, check it on the other computer,

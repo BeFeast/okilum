@@ -322,7 +322,7 @@ fn sync_new_destination_receive_and_existing_empty_control() -> Result<()> {
             let error = result.err().context("unsafe destination must fail")?;
             let message = user_error(&error);
             if case == "nonempty" {
-                assert!(message.contains("Lossless merge preview"), "{message}");
+                assert!(message.contains("Your files have not changed"), "{message}");
                 assert_eq!(std::fs::read(path.join("keep.md"))?, b"keep these bytes\n");
                 assert_eq!(path.read_dir()?.count(), 1);
             } else {

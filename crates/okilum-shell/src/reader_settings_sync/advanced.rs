@@ -19,7 +19,7 @@ impl SyncSettings {
                     h_flex()
                         .gap_2()
                         .child(div().text_sm().child(format!(
-                            "{}…{} · {} vaults",
+                            "{}…{} · {}",
                             runtime
                                 .identity
                                 .device_id
@@ -36,7 +36,7 @@ impl SyncSettings {
                                 .chars()
                                 .rev()
                                 .collect::<String>(),
-                            runtime.folders
+                            presentation::vault_count(runtime.folders)
                         )))
                         .child(
                             Button::new(("sync-select-runtime", index))

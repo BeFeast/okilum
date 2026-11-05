@@ -19,12 +19,37 @@ struct SettingsOwners(std::collections::HashMap<Option<WindowId>, WindowHandle<R
 impl Global for SettingsOwners {}
 
 pub(crate) fn install(cx: &mut App) {
+    #[cfg(all(target_os = "linux", not(test)))]
+    install_opaque_settings_rule(cx);
     cx.bind_keys([
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-w", CloseSettings, Some("OkilumSettings")),
         KeyBinding::new("escape", CloseSettings, Some("OkilumSettings")),
     ]);
     cx.on_action(|_: &OpenSettings, cx| show(None, cx));
+}
+
+/// Omarchy gives every native window 98.5% active / 96% inactive opacity.
+/// An opaque GPUI surface cannot counter compositor alpha. Opt Settings out
+/// using its own app id; no user configuration file or Reader window changes.
+#[cfg(all(target_os = "linux", not(test)))]
+fn install_opaque_settings_rule(cx: &App) {
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        return;
+    }
+    cx.background_executor().spawn(async {
+        let result = std::process::Command::new("hyprctl")
+            .args([
+                "eval",
+                "if not _G.okilum_settings_opaque then _G.okilum_settings_opaque = hl.window_rule({ match = { class = '^okilum-settings$' }, opacity = '1 override 1 override' }) end",
+            ])
+            .output();
+        match result {
+            Ok(output) if output.status.success() && output.stdout == b"ok\n" => {}
+            Ok(output) => eprintln!("Could not request opaque Settings: {}", String::from_utf8_lossy(&output.stdout).trim()),
+            Err(error) => eprintln!("Could not request opaque Settings: {error}"),
+        }
+    }).detach();
 }
 
 pub(crate) fn show(reader: Option<WeakEntity<Reader>>, cx: &mut App) {
@@ -163,12 +188,14 @@ fn show_section_from(
                 return;
             }
         }
-        let options = reader_owned_windows::options(
+        let mut options = reader_owned_windows::options(
             owner,
             size(px(780.), px(520.)),
             size(px(700.), px(440.)),
             cx,
         );
+        options.app_id = Some("okilum-settings".into());
+        options.window_background = gpui::WindowBackgroundAppearance::Opaque;
         match cx.open_window(options, move |window, cx| {
             window.set_window_title("Okilum Settings");
             reader_owned_windows::attach(owner, window, cx);
@@ -434,8 +461,7 @@ fn log_sources_heading(root: Option<&Path>, cx: &App) -> String {
     }
 }
 
-const INBOX_HELP: &str =
-    "Inbox brings in notes you send from your phone or other apps. Connecting to it will come later.";
+const INBOX_HELP: &str = "Inbox brings in notes you send from your phone or other apps. Connecting to it will come later.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
