@@ -30,12 +30,12 @@ impl RetentionDays {
         self.0
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RetentionSetting {
     pub path: PathBuf,
     pub days: RetentionDays,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryWarning {
     pub path: PathBuf,
     pub message: String,
