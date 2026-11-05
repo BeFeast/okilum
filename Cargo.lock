@@ -6574,6 +6574,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-channel",
+ "async-io",
  "base64 0.22.1",
  "chrono",
  "core-foundation-sys",

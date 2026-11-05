@@ -12,7 +12,8 @@ from pathlib import Path
 REPO = "BeFeast/okilum"
 WORKFLOW = "agent-checks.yml"
 INFRA_STEPS = {
-    "Set up job", "Record exact source and runner", "Install system libraries",
+    "Set up job", "Record exact source and runner", "Reclaim unused hosted SDKs for Rust artifacts",
+    "Install system libraries",
     "Verify pinned Rust toolchain", "Restore Rust downloads and target cache",
     "Fetch locked public dependencies", "Save Rust downloads and target cache",
     "Prepare isolated Python test dependencies",
@@ -45,6 +46,7 @@ def verdict(info, sha, benchmark=False, publication_controls=False):
     steps = linux.get("steps", [])
     required = {"Prepare and verify pinned vendor and comrak", "Lint every workspace target offline",
                 "Build Linux desktop offline", "Run complete okilum-core suite offline", "Run Linux Rust suites offline",
+                "Verify agent helper controls", "Stress private reveal bus (20 runs)",
                 "Run CI, releases and updater Python suites"}
     if publication_controls:
         required.add("Compare editor publication with pinned main on this host")
@@ -64,6 +66,18 @@ def verdict(info, sha, benchmark=False, publication_controls=False):
     if not failed or any(s["name"] in INFRA_STEPS or "actions/checkout@" in s["name"] for s in failed):
         return 75
     return 1
+
+
+
+def infrastructure_failure(logs):
+    # A watchdog's deliberate KILL is a failing test deadline, not an OOM/no
+    # verdict. Explicit disk/memory/network failures still retain infra status.
+    if any(marker in logs for marker in (
+            "No space left on device", "Cannot allocate memory",
+            "Could not resolve host", "Connection timed out")):
+        return True
+    return "TEST_GROUP_TIMEOUT group=" not in logs and any(
+        marker in logs for marker in ("exit code 137", "signal: 9, SIGKILL"))
 
 
 def find_run(branch, sha, event):
@@ -179,9 +193,7 @@ def main():
         if logs.returncode:
             return 75
         # Shell exits for OOM/killed processes are infrastructure, not a code verdict.
-        if any(marker in logs.stdout for marker in (
-                "exit code 137", "No space left on device", "Cannot allocate memory",
-                "signal: 9, SIGKILL", "Could not resolve host", "Connection timed out")):
+        if infrastructure_failure(logs.stdout):
             return 75
     print(f"Exact head {sha}: exit={result} {info['url']}")
     return result
