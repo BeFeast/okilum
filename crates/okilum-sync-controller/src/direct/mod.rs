@@ -9,6 +9,7 @@ mod origin;
 #[cfg(target_os = "linux")]
 mod source;
 mod transfer;
+pub use addresses::{PeerLink, Relay};
 pub use transfer::received_vault_names;
 mod wire;
 use crate::private;
@@ -796,9 +797,8 @@ impl Controller {
             },
         };
         let frame = wire::seal(scope, credential, &seed, &message)?;
-        let mut stream = wire::connect(endpoint).with_context(|| format!(
-            "Not connected to the other computer at {endpoint}. Its firewall may block incoming connections. Open TCP port {} on that computer, or keep both computers on the same network.", endpoint.port()
-        ))?;
+        let mut stream =
+            wire::connect(endpoint).map_err(|error| transfer::not_connected(endpoint, error))?;
         self.check()?;
         if redeem {
             // The other computer may be busy (daemon inventory, disk). A pairing

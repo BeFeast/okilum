@@ -6,6 +6,10 @@ use okilum_sync::{validate_destination, Destination};
 use serde_json::{json, Value};
 use std::time::Instant;
 
+/// The Syncthing name a source gives every receiving computer. Introduction
+/// copies it to other members, so it never identifies a computer (#2589).
+pub(super) const PAIRED_DEVICE_NAME: &str = "Okilum paired computer";
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Connection {
@@ -77,7 +81,7 @@ pub(super) fn share(
         };
     if !devices.iter().any(|d| d["deviceID"] == device) {
         api.add_device(
-            &json!({"deviceID":device,"name":"Okilum paired computer","addresses":addresses,
+            &json!({"deviceID":device,"name":PAIRED_DEVICE_NAME,"addresses":addresses,
             "introducer":false,"autoAcceptFolders":false}),
         )?;
     }
@@ -777,9 +781,37 @@ pub(super) fn offline(error: &anyhow::Error) -> bool {
                         | std::io::ErrorKind::ConnectionAborted
                         | std::io::ErrorKind::TimedOut
                         | std::io::ErrorKind::NotConnected
-                )
+                ) || host_down(e)
             })
     })
+}
+/// No computer answers at that address: it is switched off, asleep or on
+/// another network. A background refresh treats it as offline, never as a
+/// failure, and it is not a firewall problem (#2589). macOS reports a sleeping
+/// LAN host as EHOSTDOWN, which std leaves uncategorized.
+pub(super) fn host_down(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::HostUnreachable
+            | std::io::ErrorKind::NetworkUnreachable
+            | std::io::ErrorKind::NetworkDown
+    ) || error.raw_os_error() == Some(libc::EHOSTDOWN)
+}
+/// The paired channel's connect error, with a hint that matches the cause.
+pub(super) fn not_connected(endpoint: SocketAddr, error: anyhow::Error) -> anyhow::Error {
+    let asleep = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(host_down)
+    });
+    let hint = if asleep {
+        "It may be asleep, switched off or on another network. Wake it, or keep both computers on the same network.".to_owned()
+    } else {
+        format!("Its firewall may block incoming connections. Open TCP port {} on that computer, or keep both computers on the same network.", endpoint.port())
+    };
+    error.context(format!(
+        "Not connected to the other computer at {endpoint}. {hint}"
+    ))
 }
 impl Controller {
     /// Called by refresh. No service grant and no externally supplied readiness
@@ -1527,5 +1559,47 @@ mod tests {
         std::fs::create_dir(&destination)?;
         assert_ne!(identity, DirectoryIdentity::read(&destination)?);
         Ok(())
+    }
+    #[test]
+    fn issue2589_a_sleeping_paired_computer_is_offline_without_a_firewall_hint() {
+        use std::io::{Error, ErrorKind};
+        let endpoint: SocketAddr = "10.10.0.83:42321".parse().unwrap();
+        let connect = |error: Error| {
+            not_connected(
+                endpoint,
+                anyhow::Error::new(error).context("paired computer unavailable"),
+            )
+        };
+        for error in [
+            Error::from(ErrorKind::HostUnreachable),
+            Error::from(ErrorKind::NetworkUnreachable),
+            Error::from(ErrorKind::NetworkDown),
+            // macOS: a sleeping LAN host, which std does not categorize.
+            Error::from_raw_os_error(libc::EHOSTDOWN),
+        ] {
+            let kind = error.kind();
+            let error = connect(error);
+            // Background refresh defers a sleeping computer like a refused one.
+            assert!(offline(&error), "{kind:?}");
+            let text = error.to_string();
+            assert!(
+                text.starts_with("Not connected to the other computer at 10.10.0.83:42321.")
+                    && text.contains("asleep")
+                    && !text.contains("firewall"),
+                "{kind:?}: {text}"
+            );
+        }
+        // A refused or silently dropped connection keeps the firewall hint.
+        for kind in [ErrorKind::ConnectionRefused, ErrorKind::TimedOut] {
+            let error = connect(Error::from(kind));
+            assert!(offline(&error));
+            assert!(
+                error.to_string().contains("Open TCP port 42321"),
+                "{kind:?}"
+            );
+        }
+        assert!(!offline(&anyhow::Error::new(Error::from(
+            ErrorKind::PermissionDenied
+        ))));
     }
 }
