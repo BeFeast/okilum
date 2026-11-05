@@ -78,6 +78,8 @@ cargo "${cargo_args[@]}" --workspace --no-run
 # #2518: run the real-paint, missing-snapshot and row-measurement controls as
 # an explicit non-empty group, in addition to their feed/native module suites.
 run_tests okilum-shell --bins manager_ttfm_
+# #2519: native pairing must advertise the actual build target.
+run_tests okilum-t3 --lib stream::tests::pairing_reports_build_target_os --exact
 
 # #2517: compile and execute every native Manager module, including GPUI tests.
 # Each filter has its own positive control and libtest passed/failed counts.

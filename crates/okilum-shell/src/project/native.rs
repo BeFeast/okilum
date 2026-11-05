@@ -241,9 +241,10 @@ impl ProjectView {
         let attempt = ConnectionAttempt::begin(self, environment.origin());
         cx.spawn_in(window, async move |this, cx| {
             let task = match this.update_in(cx, |this, _, cx| {
-                attempt
-                    .current(this)
-                    .then(|| cx.read_credentials(&NativeToken::credential_key(&environment)))
+                attempt.current(this).then(|| {
+                    this.credentials
+                        .read(&NativeToken::credential_key(&environment), cx)
+                })
             }) {
                 Ok(Some(task)) => task,
                 _ => return,
@@ -277,6 +278,10 @@ impl ProjectView {
                     Ok(Some((client, expiry))) => this.install_native(client, expiry, window, cx),
                     Ok(None) => {
                         this.native.phase = ConnectionPhase::Paused;
+                        if this.threads.enabled {
+                            this.native.open = true;
+                            this.connection_details = true;
+                        }
                         this.draft_restore(window, cx);
                         if ask {
                             this.pair_enrolled_device(window, cx);
@@ -314,9 +319,10 @@ impl ProjectView {
         let attempt = ConnectionAttempt::begin(self, environment.origin());
         cx.spawn_in(window, async move |this, cx| {
             let task = match this.update_in(cx, |this, _, cx| {
-                attempt
-                    .current(this)
-                    .then(|| cx.read_credentials(&NativeToken::pairing_key(&environment)))
+                attempt.current(this).then(|| {
+                    this.credentials
+                        .read(&NativeToken::pairing_key(&environment), cx)
+                })
             }) {
                 Ok(Some(task)) => task,
                 _ => return,
@@ -395,10 +401,11 @@ impl ProjectView {
                         if !attempt.current(this) {
                             return None;
                         }
-                        Some(cx.write_credentials(
+                        Some(this.credentials.write(
                             &NativeToken::credential_key(&environment),
                             &environment.alias,
                             &bytes,
+                            cx,
                         ))
                     }) {
                         Ok(Some(task)) => task,
@@ -408,7 +415,8 @@ impl ProjectView {
                         Ok(()) => {
                             if let Ok(Some(cleanup)) = this.update_in(cx, |this, _, cx| {
                                 attempt.current(this).then(|| {
-                                    cx.delete_credentials(&NativeToken::pairing_key(&environment))
+                                    this.credentials
+                                        .delete(&NativeToken::pairing_key(&environment), cx)
                                 })
                             }) {
                                 let _ = cleanup.await;
@@ -946,5 +954,7 @@ fn terminal(error: &StreamError) -> bool {
 pub(super) fn delay(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.saturating_sub(1).min(4)).min(15))
 }
+#[cfg(test)]
+mod credential_tests;
 #[cfg(test)]
 mod tests;

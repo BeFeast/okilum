@@ -42,7 +42,11 @@ Link the exact-head hosted run and native Manager counts in the PR.
 The shell build script defines `cfg(native_manager)` on Linux and macOS only.
 This is compilation coverage, separate from the platform's runtime panel choice:
 macOS still mounts WKWebView until #2522. Its retained ProjectView does not
-implicitly restore a native token or start a native stream. Linux keeps its
+implicitly restore a native token or start a native stream. Explicit native
+selection (`ProjectView::threads.enabled`) uses the shared pairing/Keychain
+lifecycle; #2522 will enable it for the mounted Mac panel. The hosted lane runs
+the credential-store double and actual pairing exchange target-OS regression
+from #2519, without requiring an unlocked login Keychain. Linux keeps its
 native Manager, and Windows keeps its existing path.
 
 Linux cross-compilation cannot exercise the macOS Objective-C bridges, SDK,

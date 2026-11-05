@@ -22,6 +22,7 @@ mod chrome;
 #[cfg(native_manager)]
 mod composer;
 mod connections;
+mod credentials;
 mod design;
 mod desktop;
 #[cfg(native_manager)]
@@ -130,6 +131,7 @@ pub(crate) struct ProjectView {
     rotation_policy: rotation::policy_owner::State,
     #[cfg(native_manager)]
     express: express_session::State,
+    credentials: credentials::Store,
     state: Option<PathBuf>,
     environment: Option<Environment>,
     project_override: bool,
@@ -287,21 +289,11 @@ impl ProjectView {
                 });
                 return;
             }
-            #[cfg(target_os = "macos")]
-            let token: anyhow::Result<Option<StoredToken>> = Ok(None);
-            #[cfg(not(target_os = "macos"))]
-            let token = {
-                let url = env.credential_url();
-                let task = match this.update_in(cx, |_, _, cx| cx.read_credentials(&url)) {
-                    Ok(task) => task,
-                    Err(_) => return,
-                };
-                match task.await {
-                    Ok(Some((_, bytes))) => StoredToken::from_secret(&bytes).map(Some),
-                    Ok(None) => Ok(None),
-                    Err(error) => Err(error),
-                }
+            let task = match this.update_in(cx, |this, _, cx| this.restore_stored_token(&env, cx)) {
+                Ok(task) => task,
+                Err(_) => return,
             };
+            let token = task.await;
             let result = match token {
                 Ok(token) => {
                     cx.background_executor()
@@ -483,6 +475,7 @@ impl ProjectView {
             rotation_policy: Default::default(),
             #[cfg(native_manager)]
             express: Default::default(),
+            credentials: credentials::Store::default(),
             state,
             environment: None,
             project_override: true,
@@ -956,7 +949,7 @@ impl ProjectView {
         #[cfg(native_manager)]
         self.set_threads_active(active, window, cx);
         #[cfg(native_manager)]
-        if active && (cfg!(target_os = "linux") || self.native.active()) {
+        if active && (self.threads.enabled || self.native.active()) {
             self.draft_restore(window, cx);
             self.native_start(window, cx);
             if self.threads.enabled && !self.native.active() && self.environment.is_some() {
@@ -1033,7 +1026,7 @@ impl ProjectView {
                 self.generation += 1;
                 self.start_polling(window, cx);
                 #[cfg(native_manager)]
-                if cfg!(target_os = "linux") {
+                if self.threads.enabled {
                     self.native_restore(false, window, cx);
                 }
             }
@@ -1279,22 +1272,13 @@ impl ProjectView {
         self.busy = true;
         let state = self.state.clone().filter(|_| self.project_override);
         cx.spawn_in(window, async move |this, cx| {
-            #[cfg(target_os = "macos")]
-            let token: anyhow::Result<Option<StoredToken>> = Ok(None);
-            #[cfg(not(target_os = "macos"))]
-            let token = {
-                let Some(task) = this
-                    .update_in(cx, |_, _, cx| cx.read_credentials(&env.credential_url()))
-                    .ok()
-                else {
-                    return;
-                };
-                task.await.and_then(|saved| {
-                    saved
-                        .map(|(_, bytes)| StoredToken::from_secret(&bytes))
-                        .transpose()
-                })
+            let Some(task) = this
+                .update_in(cx, |this, _, cx| this.restore_stored_token(&env, cx))
+                .ok()
+            else {
+                return;
             };
+            let token = task.await;
             let result = cx
                 .background_executor()
                 .spawn(async move {
