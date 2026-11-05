@@ -1,8 +1,9 @@
 # Beta is automatic; stable requires an explicit owner-approved build.
+# The GitHub rolling Beta is refreshed by release-publish after every platform
+# publication; there is no polling schedule. Manual recovery: dispatch this
+# workflow on main with empty inputs.
 name: releases
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       sync_stable:

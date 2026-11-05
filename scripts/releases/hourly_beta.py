@@ -1,31 +1,31 @@
-"""Hourly beta admission shared by Forgejo and the public GitHub producers.
+"""Beta admission shared by the Forgejo and public GitHub producers.
 
-Admission follows certified main history, independently of a moving branch tip.
-Never infer merge health from PR checks: certify the exact product checkout.
-NEWEST_MAIN_BETA platforms skip certification and always take main's tip.
+Oleg 05.11: every push to main starts each platform's beta build from that
+exact commit, and a newer push cancels an unfinished build of an older one
+(workflow concurrency). Beta has no certification gate: merges are gated by
+the worker's exact-HEAD check, and the platform compile/package/sign run is
+the beta gate. Fast certification stays source-pinned and on demand; it gates
+Stable only (`fast / shell-full` on the exact candidate).
+(The module keeps its historical name; nothing here runs hourly any more.)
 """
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import time
 import urllib.request
 
 REPOSITORY = 'BeFeast/okilum'
 WORKFLOWS = {'linux': 'linux-release.yml', 'macos': 'macos-release.yml',
              'windows': 'windows-diagnostic.yml'}
+# Source-pinned certification contexts. Stable requires shell-full on its exact
+# candidate; Beta never reads either of them.
 REQUIRED = ('fast / check (workflow_dispatch)', 'fast / shell-full (workflow_dispatch)')
-# Beta gates on the shipping check only. shell-full is the full runtime suite:
-# it is still certified and reported on the same source, but it informs Stable
-# and never holds Beta (03.11 rule: CI never gates development).
-BETA_REQUIRED = REQUIRED[:1]
-# Oleg 04.11: these betas build the newest first-parent main with no
-# certification gate; a newer merge supersedes an older unfinished one. The
-# hosted compile/sign/notarize run is the gate. Fast certification still runs
-# and informs Stable. (#2589: an old certified source shipped hours after main.)
-NEWEST_MAIN_BETA = frozenset({'macos'})
 CERTIFICATION_JOBS = dict(zip(('check', 'shell-full'), REQUIRED))
+# The Forgejo push and the GitHub mirror of that push start together, and the
+# mirror shares the capacity-1 publish runner with release selection.
+MIRROR_WAIT_SECONDS = 600
 SHIPPING_JOBS = {
     # Stable Linux uses AppImage; frozen/independent Arch cannot delay its gate.
     'linux': ('select', 'appimage-reuse', 'appimage-publication'),
@@ -53,8 +53,13 @@ def published_beta(source, platform):
     from release_notes import predecessor
     head = predecessor(PublicFeeds(), platform, 'beta')
     # A source catalog can describe archive-only work. Only the actual beta
-    # feed proves this source reached users and suppresses the next hourly build.
+    # feed proves this source reached users and suppresses a duplicate build.
     return {**head, 'platform': platform} if head else None
+
+
+def feed_platform(platform):
+    """Linux beta is the AppImage feed; frozen pacman never suppresses or admits it."""
+    return 'linux-appimage' if platform == 'linux' else platform
 
 
 def api(path, method='GET', body=None):
@@ -69,22 +74,6 @@ def api(path, method='GET', body=None):
     with urllib.request.urlopen(request, timeout=30) as response:
         payload = response.read()
     return json.loads(payload) if payload else None
-
-
-def green(source):
-    data = api('/commits/' + source + '/status?limit=100')
-    if data['sha'] != source or data['total_count'] != len(data['statuses']):
-        raise ValueError('Incomplete or mismatched main status inventory')
-    for context in BETA_REQUIRED:
-        matches = [s for s in data['statuses'] if s['context'] == context]
-        if len(matches) != 1 or matches[0]['status'] != 'success':
-            return False, f'Waiting for {context} success on main source {source}'
-    return True, 'Required post-merge fast checks succeeded'
-
-
-def beta_ready(source, platform):
-    """Whether this platform's beta may ship the source (newest-main lanes always may)."""
-    return platform in NEWEST_MAIN_BETA or green(source)[0]
 
 
 def main_history(tip):
@@ -108,75 +97,41 @@ def main_source(source, tip=None):
 
 
 def candidate(tip, platform, descriptor, expected=''):
-    published_platform = 'linux-appimage' if platform == 'linux' else platform
+    """Main's tip, unless it already is this platform's beta.
+
+    The published beta must be a first-parent ancestor of the tip, so a feed
+    that is ahead of or off main fails closed instead of being replaced.
+    """
+    published_platform = feed_platform(platform)
     published = descriptor(tip, published_platform)
     floor = published['source'] if published else None
     if published and (published.get('platform') != published_platform
                       or not re.fullmatch('[0-9a-f]{40}', floor)):
         raise ValueError('Invalid beta publication descriptor')
-    selected = None
-    admitted = lambda: selected if not expected or expected == selected else None
-    for source in main_history(tip):
-        if source == floor:
-            return admitted()
-        if selected is None and beta_ready(source, platform):
-            selected = source
-            if floor is None:
-                return admitted()
-    if floor:
+    if tip == floor:
+        return None
+    if floor and floor not in main_history(tip):
         raise ValueError('Published beta is outside first-parent main history')
-    return admitted()
+    return tip if not expected or expected == tip else None
 
 
-def certify(source, now=None):
-    """One automatic request per UTC hour, owned only by the Linux cron tick.
+def push_select(source, platform, env, descriptor):
+    """A main push builds exactly the pushed commit (Oleg 05.11).
 
-    Forgejo owns the dispatch history, including failed/cancelled capture races;
-    no disposable runner cache is used as operational state. New main merges do
-    not dispatch anything. Advancing main never invalidates an older source.
+    No certification and no main-tip lookup: a newer push starts its own run,
+    and that run's workflow concurrency cancels this one if it is unfinished.
+    The only skip is a source that already is this platform's beta. Publishers
+    still refuse a build older than the feed under their shared lock.
     """
-    now = now or datetime.now(timezone.utc)
-    hour = now.replace(minute=0, second=0, microsecond=0)
-    page, seen = 1, 0
-    while True:
-        data = api('/actions/runs?workflow_id=fast.yml&event=workflow_dispatch'
-                   '&ref=refs%2Fheads%2Fmain&limit=100&page=' + str(page))
-        runs = data['workflow_runs']
-        if (not isinstance(runs, list) or type(data['total_count']) is not int
-                or data['total_count'] < seen + len(runs)):
-            raise ValueError('Incomplete fast certification inventory')
-        older = False
-        for run in runs:
-            if (run['workflow_id'] != 'fast.yml' or run['prettyref'] != 'main'
-                    or run['trigger_event'] != 'workflow_dispatch' or run['is_fork_pull_request']):
-                raise ValueError('Unexpected fast certification identity')
-            created = datetime.fromisoformat(run['created'].replace('Z', '+00:00'))
-            payload = run['event_payload']
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            requested = payload.get('inputs', {}).get('certification_source', '')
-            if requested:
-                if created >= hour:
-                    return 'Certification already requested this UTC hour; retry next hour'
-                if requested == source and run['status'] in ('waiting', 'running', 'pending'):
-                    return 'Newest main certification is still pending; retry next hour'
-            older |= created < hour
-        seen += len(runs)
-        # Runs are newest first. Inspect a whole page so a still-running source
-        # from the preceding hour is not needlessly restarted.
-        if older or seen == data['total_count']:
-            break
-        if not runs:
-            raise ValueError('Incomplete fast certification inventory')
-        page += 1
-    # This Forgejo does not emit native statuses for workflow_dispatch runs.
-    # Pending also makes a failed dispatch fail closed until the next tick.
-    for context in REQUIRED:
-        api('/statuses/' + source, 'POST', {'context': context, 'state': 'pending',
-            'description': 'Hourly main certification queued'})
-    api('/actions/workflows/fast.yml/dispatches', 'POST',
-        {'ref': 'main', 'inputs': {'certification_source': source}})
-    return 'Dispatched fast certification for newest main ' + source + '; retry next hour'
+    if env.get('GITHUB_REF') != 'refs/heads/main' or not re.fullmatch('[0-9a-f]{40}', source or ''):
+        raise ValueError('Push beta requires an exact main commit')
+    published_platform = feed_platform(platform)
+    published = descriptor(source, published_platform)
+    if published and published.get('platform') != published_platform:
+        raise ValueError('Invalid beta publication descriptor')
+    if published and published.get('source') == source:
+        return False, source, f'Pushed main {source} already is the {platform} beta'
+    return True, source, f'Build pushed main {source}'
 
 
 def certification_source(env):
@@ -210,10 +165,15 @@ def report_statuses(source, contexts, env):
             raise ValueError('Unexpected job result')
         api('/statuses/' + source, 'POST', {'context': context,
             'state': 'failure' if result == 'cancelled' else result,
-            'description': 'Hourly job ' + result, 'target_url': target})
+            'description': 'Job ' + result, 'target_url': target})
 
 
 def report_certification(env):
+    """Record a source-pinned certification result for the Stable selector.
+
+    It never starts beta work: every main push already builds its own beta,
+    and a certification dispatch would only duplicate or resurrect one.
+    """
     source = env['CERTIFICATION_SOURCE']
     results = json.loads(env['JOB_RESULTS'])
     # check reports as soon as it finishes; shell-full reports separately later.
@@ -225,20 +185,16 @@ def report_certification(env):
     main_source(source)
     report_statuses(source, [(CERTIFICATION_JOBS[job], result['result'])
         for job, result in results.items()], env)
-    if results.get('check', {}).get('result') == 'success':
-        # Publication is independently re-admitted against the current feed.
-        # A failed dispatch is recovered by the next ordinary platform tick.
-        for workflow in WORKFLOWS.values():
-            api('/actions/workflows/' + workflow + '/dispatches', 'POST',
-                {'ref': 'main', 'inputs': {'hourly_source': source}})
 
 
 def report_shipping(platform, env):
     source = env['SOURCE']
     event = env['GITHUB_EVENT_NAME']
     results = json.loads(env['JOB_RESULTS'])
+    # Push runs carry native Forgejo statuses with the same context names
+    # (`<platform>-release / <job> (push)`); only dispatches need reporting.
     if (env['GITHUB_REF'] != 'refs/heads/main'
-            or event not in ('schedule', 'workflow_dispatch')
+            or event != 'workflow_dispatch'
             or set(results) != set(SHIPPING_JOBS[platform])):
         raise ValueError('Shipping statuses require the exact beta source run')
     main_source(source)
@@ -247,25 +203,17 @@ def report_shipping(platform, env):
 
 
 def select(event, source, platform, env, descriptor):
+    """Manual main dispatch (recovery or urgent rebuild): newest main, no certification."""
     if env.get('GITHUB_REF') != 'refs/heads/main':
-        raise ValueError('Hourly beta requires main')
+        raise ValueError('Manual beta requires main')
     tip = api('/branches/main')['commit']['id']
     if not re.fullmatch('[0-9a-f]{40}', tip):
         raise ValueError('Invalid newest main identity')
     pinned = env.get('HOURLY_SOURCE', '')
-    if platform in NEWEST_MAIN_BETA:
-        label = 'newest main'
-        reason = (f'Newest main {tip} superseded {pinned}' if pinned and pinned != tip
-                  else f'Newest main {tip} is already the beta')
-    else:
-        label = 'certified unpublished main'
-        ready, reason = green(tip)
-        if not ready and platform == 'linux' and event == 'schedule':
-            reason += '; ' + certify(tip)
-        reason += '; no unpublished certified main source'
     selected = candidate(tip, platform, descriptor, pinned)
     if selected is None:
-        return False, source, reason + '; retry next hour'
+        return False, source, (f'Newest main {tip} superseded {pinned}' if pinned and pinned != tip
+                               else f'Newest main {tip} is already the beta')
     # Compare order from the current tip. Walking backwards from an older
     # product to find a newer workflow would needlessly scan the entire repo.
     newer_than_workflow = (selected != source and next(
@@ -274,8 +222,8 @@ def select(event, source, platform, env, descriptor):
             or newer_than_workflow):
         api('/actions/workflows/' + WORKFLOWS[platform] + '/dispatches', 'POST',
             {'ref': 'main', 'inputs': {'hourly_source': selected}})
-        return False, source, f'Dispatched {label} {selected} with current delivery tooling'
-    return True, selected, f'Build {label} {selected}'
+        return False, source, f'Dispatched newest main {selected} with current delivery tooling'
+    return True, selected, f'Build newest main {selected}'
 
 
 def github_main(platform, env, descriptor):
@@ -292,9 +240,9 @@ def github_main(platform, env, descriptor):
     if env['GITHUB_REF'] == pinned_ref:
         # Forgejo is LAN-only: GitHub-hosted runners cannot read its API. Only
         # Forgejo's dispatch_linux creates or dispatches this write-once ref, and
-        # it does so after main_source() and green() on the exact source. The
-        # Forgejo publisher re-admits the bytes against the feed under its lock.
-        published = descriptor(source, 'linux-appimage' if platform == 'linux' else platform)
+        # it does so after main_source() on the exact source. The Forgejo
+        # publisher re-admits the bytes against the feed under its lock.
+        published = descriptor(source, feed_platform(platform))
         if published is not None and published.get('source') == source:
             return False, 'Pinned source is already the beta head; no compiler work'
     else:
@@ -303,10 +251,10 @@ def github_main(platform, env, descriptor):
         except OSError as error:
             return False, f'Forgejo admission is unreachable from GitHub ({error}); no build'
         if candidate(tip, platform, descriptor, expected) != source:
-            return False, 'Source is uncertified or already published; no compiler work'
+            return False, 'Source is not the unpublished main tip; no compiler work'
     if github_produced(platform, source, env):
         return False, 'Exact-source GitHub producer already completed; reuse its bytes'
-    return True, 'Build certified mirror source'
+    return True, 'Build exact mirror source'
 
 
 def github_api(path, env):
@@ -351,13 +299,35 @@ def github_produced(platform, source, env, *, pending=False):
     return False
 
 
+def wait_for_mirror(client, source, *, wait=MIRROR_WAIT_SECONDS, clock=time.monotonic, sleep=time.sleep):
+    """A push-started beta can reach this point before github-mirror pushed main.
+
+    A GitHub ref can only point at a commit GitHub already has. Poll the exact
+    commit, bounded; quota exhaustion and a mismatched object still fail at once.
+    """
+    import appimage_artifact
+    transport = appimage_artifact.transport
+    deadline = clock() + wait
+    while True:
+        try:
+            commit = client.request('git/commits/' + source)
+        except transport.RateLimitExhausted:
+            raise
+        except transport.Unavailable:
+            if clock() >= deadline:
+                raise ValueError('GitHub mirror has not received the pushed source; no AppImage producer')
+            sleep(15)
+            continue
+        if not isinstance(commit, dict) or commit.get('sha') != source:
+            raise ValueError('GitHub mirror returned a different commit identity')
+        return
+
+
 def dispatch_linux(source):
-    """Urgent manual Forgejo beta does not wait for the next GitHub cron."""
+    """Start the exact-source GitHub AppImage producer for a pushed or manual beta."""
     import appimage_artifact
     client = appimage_artifact.transport.GitHub()
     main_source(source)
-    if not green(source)[0]:
-        raise ValueError('AppImage dispatch requires a certified green main source')
     if github_produced('linux', source, {'GH_TOKEN': client.token, 'GITHUB_RUN_ID': ''}, pending=True):
         print('Original AppImage producer already exists; reuse without dispatch')
         return
@@ -367,8 +337,11 @@ def dispatch_linux(source):
     refs = client.request('git/matching-refs/heads/' + branch)
     exact = [ref for ref in refs if ref['ref'] == 'refs/heads/' + branch]
     if not exact:
+        wait_for_mirror(client, source)
+        # The push trigger starts the exact-source producer immediately. Its
+        # concurrency group cancels an unfinished producer of an older source.
         client.request('git/refs', 'POST', {'ref': 'refs/heads/' + branch, 'sha': source})
-        return  # The push trigger starts the exact-source producer immediately.
+        return
     if len(exact) != 1 or exact[0]['object']['sha'] != source:
         raise ValueError('Pinned hourly producer ref has changed')
     client.request('actions/workflows/forgejo-linux.yml/dispatches', 'POST',

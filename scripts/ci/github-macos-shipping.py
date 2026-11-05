@@ -16,6 +16,7 @@ bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 WORKFLOW = '.github/workflows/forgejo-macos-shipping.yml'
 STEP = 'Build, sign and notarize exact product source'
+MIRROR_WAIT_SECONDS = 600
 
 
 def read(api, path):
@@ -109,8 +110,10 @@ def main():
     api.log_quota()
     remote = read(api, 'git/ref/heads/main')
     # Push and mirror run independently. Wait only for the trusted mirror,
-    # accepting newer tooling solely when it is also on Forgejo main.
-    mirror_deadline = time.monotonic() + 120
+    # accepting newer tooling solely when it is also on Forgejo main. A push
+    # beta starts together with github-mirror, which shares the capacity-1
+    # publish runner with release selection and publication.
+    mirror_deadline = time.monotonic() + MIRROR_WAIT_SECONDS
     while remote['object']['sha'] != tooling:
         candidate = remote['object']['sha']
         if not re.fullmatch('[0-9a-f]{40}', candidate):

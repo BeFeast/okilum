@@ -24,8 +24,9 @@ and release-tag mirror is unchanged. Push the implementation branch to Forgejo
 and open its PR there as usual. Before merge, require gh-check green on this
 exact HEAD, then merge the PR yourself. Any later commit needs a new check.
 Forgejo CI does not run on PRs; main has no required status checks. Forgejo
-runs nightly and on workflow_dispatch; hourly Beta and pre-Stable certification
-remain source-pinned. Main pushes only mirror source or publish releases.
+suites run nightly and on workflow_dispatch; pre-Stable certification remains
+source-pinned and on demand. Main pushes only mirror source and build the beta of
+that exact commit for every OS.
 Ordinary fast manual retries on one ref supersede older manual runs; each
 certification dispatch has its own concurrency group and is never cancelled.
 

@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       certification_source:
-        description: 'Internal hourly main certification; must match the run commit'
+        description: 'Source-pinned main certification for a Stable candidate (on demand)'
         required: false
         default: ''
 concurrency:
@@ -167,8 +167,8 @@ jobs:
           bash "${OKILUM_TEST_GROUP:-scripts/ci/test-group.sh}" fast-local-shell-full 1980 bash scripts/ci/fast-local.sh shell-full
 
   certification-status:
-    # Beta gates on check alone: report and dispatch as soon as it finishes,
-    # never behind shell-full's queue slot and 20-minute runner ceiling.
+    # Report check as soon as it finishes, never behind shell-full's queue slot
+    # and 20-minute runner ceiling. Beta never waits for it (Oleg 05.11).
     needs: [check]
     if: always() && inputs.certification_source != ''
     runs-on: bridge
@@ -187,7 +187,7 @@ jobs:
         run: python3 scripts/releases/hourly_beta.py certification-status
 
   shell-full-status:
-    # Stable information only; a red or timed-out shell-full never holds Beta.
+    # The Stable gate; a red or timed-out shell-full never holds Beta.
     needs: [shell-full]
     if: always() && inputs.certification_source != ''
     runs-on: bridge

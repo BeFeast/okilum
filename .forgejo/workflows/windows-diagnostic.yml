@@ -1,12 +1,14 @@
+# Beta on every main push for the exact pushed commit (Oleg 05.11; no cron, no
+# certification gate). Push builds stay unsigned; daily re-sign is unchanged.
 name: windows-release
 
 on:
-  schedule:
-    - cron: '17 * * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       hourly_source:
-        description: 'Internal source-pinned hourly retry; certified first-parent main source'
+        description: 'Internal source-pinned retry of a manual run; newest first-parent main source'
         required: false
         default: ''
       cache-benchmark:
@@ -22,9 +24,11 @@ on:
         required: false
         default: ''
 
+# A newer main push cancels this platform's unfinished beta of an older commit.
+# Manual, pinned, archive and re-sign dispatches keep their own groups and finish.
 concurrency:
-  group: windows-beta-${{ inputs.hourly_source || (github.event_name == 'schedule' && 'hourly') || github.run_id }}
-  cancel-in-progress: false
+  group: windows-beta-${{ github.event_name == 'push' && 'main' || inputs.hourly_source || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   select:
@@ -39,7 +43,7 @@ jobs:
         with:
           fetch-depth: ${{ inputs.source != '' && '0' || '1' }}
           persist-credentials: false
-      - name: Select hourly or manual build
+      - name: Select pushed or manual build
         id: select
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -73,9 +77,9 @@ jobs:
     steps:
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:
-          # An explicit older main commit (#1040) or a scheduled tick (main tip, chosen by
-          # select) sets the checkout; manual and pull-request runs keep the default ref.
-          ref: ${{ (inputs.source != '' || inputs.hourly_source != '' || github.event_name == 'schedule') && needs.select.outputs.source || '' }}
+          # An explicit older main commit (#1040) or a pinned retry sets the checkout;
+          # a push builds its own commit, which is the default ref.
+          ref: ${{ (inputs.source != '' || inputs.hourly_source != '') && needs.select.outputs.source || '' }}
           persist-credentials: false
       - name: Install cross-build tools
         run: |
@@ -336,7 +340,8 @@ jobs:
 
   shipping-status:
     needs: [select, release, resign, package, windows-release-github]
-    if: always() && needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # Push runs get native `windows-release / <job> (push)` statuses on their own commit.
+    if: always() && needs.select.outputs.build == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: bridge
     timeout-minutes: 2
     steps:

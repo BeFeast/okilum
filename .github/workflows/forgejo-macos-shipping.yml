@@ -38,8 +38,12 @@ env:
 permissions:
   contents: read
 concurrency:
-  group: macos-shipping-${{ inputs.source }}
-  cancel-in-progress: false
+  # Beta shipping runs share one group: a newer main push supersedes an
+  # unfinished older one (its Forgejo producer was already cancelled), and the
+  # always() keychain cleanup still runs on cancellation. Verify-only PR
+  # artifacts keep a per-source group and always finish.
+  group: macos-shipping-${{ inputs.verify_only == 'true' && inputs.source || 'beta' }}
+  cancel-in-progress: ${{ inputs.verify_only != 'true' }}
 jobs:
   shipping:
     if: github.ref == 'refs/heads/main' && github.run_attempt == 1
