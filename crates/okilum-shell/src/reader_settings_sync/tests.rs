@@ -1796,6 +1796,7 @@ fn issue2615_reject_does_not_show_an_expired_invitation(cx: &mut TestAppContext)
         Root::new(view, window, cx)
     });
     visual.run_until_parked();
+    assert_visible(visual, "sync-reject-computer");
     let reject = visual.debug_bounds("sync-reject-computer").unwrap();
     visual.simulate_click(reject.center(), Modifiers::default());
     visual.run_until_parked();

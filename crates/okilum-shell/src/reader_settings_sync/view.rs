@@ -349,6 +349,9 @@ impl SyncSettings {
                 div()
                     .id("sync-status")
                     .debug_selector(|| "sync-status".into())
+                    .flex_1()
+                    .min_w_0()
+                    .whitespace_normal()
                     .text_sm()
                     .child(status),
             );
@@ -487,6 +490,7 @@ impl SyncSettings {
             .id("sync-approval-banner")
             .debug_selector(|| "sync-approval-banner".into())
             .w_full()
+            .min_w_0()
             .flex_shrink_0()
             .p_4()
             .gap_4()
@@ -494,17 +498,29 @@ impl SyncSettings {
             .child(
                 v_flex()
                     .flex_1()
+                    .min_w_0()
                     .gap_1()
-                    .child(format!("{} wants to connect", pending.name))
                     .child(
-                        div().text_sm().text_color(p.text_muted).child(
-                            "Approve this computer before it can choose your shared vaults.",
-                        ),
+                        div()
+                            .w_full()
+                            .whitespace_normal()
+                            .child(format!("{} wants to connect", pending.name)),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .whitespace_normal()
+                            .text_sm()
+                            .text_color(p.text_muted)
+                            .child(
+                                "Approve this computer before it can choose your shared vaults.",
+                            ),
                     ),
             )
             .child(
                 Button::new("sync-reject-computer")
                     .debug_selector(|| "sync-reject-computer".into())
+                    .flex_shrink_0()
                     .ghost()
                     .label("Reject")
                     .disabled(self.busy)
@@ -515,6 +531,7 @@ impl SyncSettings {
             .child(
                 Button::new("sync-approve-computer")
                     .debug_selector(|| "sync-approve-computer".into())
+                    .flex_shrink_0()
                     .primary()
                     .label("Approve")
                     .disabled(self.busy)
