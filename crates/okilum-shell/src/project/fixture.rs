@@ -404,6 +404,8 @@ fn open_mounted_header(state: PathBuf, gateway: Arc<Fake>, cx: &mut App) {
                     let board = cx.new(|cx| {
                         super::board::Board::performance_fixture(vault.clone(), window, cx)
                     });
+                    cx.observe(&board, |reader, _, cx| reader.project_board_changed(cx))
+                        .detach();
                     reader
                         .project_navigation
                         .boards

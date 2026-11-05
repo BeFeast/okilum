@@ -1138,6 +1138,7 @@ impl Board {
             window,
             cx,
         );
+        board.peek.reader = Some(Arc::new(|_, _| Ok(Vec::new())));
         board.list.preferences.mode = list::Mode::Board;
         let mut source: serde_json::Value = serde_json::from_str(include_str!(
             "../../../okilum-t3/tests/fixtures/board-legacy.yaml"
