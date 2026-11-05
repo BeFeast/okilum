@@ -1022,7 +1022,10 @@ mod tests {
         local["localTotalItems"] = json!(2);
         assert!(interval_complete(&first, &second, &local)?);
         local["localFiles"] = json!(0);
-        assert!(!interval_complete(&first, &second, &local)?, "a missing file is not ready");
+        assert!(
+            !interval_complete(&first, &second, &local)?,
+            "a missing file is not ready"
+        );
         Ok(())
     }
     #[test]

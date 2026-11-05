@@ -67,7 +67,10 @@ pub(super) fn output(command: &mut Command, deadline: Instant, limit: usize) -> 
                     status.success(),
                     "inventory/offline command failed: {} {:?} ({status})",
                     command.get_program().to_string_lossy(),
-                    command.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>()
+                    command
+                        .get_args()
+                        .map(|a| a.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
                 );
                 return Ok(bytes);
             }
