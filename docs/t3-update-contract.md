@@ -36,7 +36,9 @@ and removed/opaque/deep-field controls. No acceptance was relaxed to obtain PASS
 
 Never build Rust/Okilum, run Rust tests, or start a T3 candidate/probe server on
 maestro. Build the client artifact and run candidate servers/tests on baldr or CI.
-On baldr use `nice -n 19`, at most four Cargo jobs, and the shared `build.lock`.
+On baldr build in an `okilum-slot` build slot: it sets `nice -n 19`, the Cargo
+job count and the slot's warm target, so do not set your own `CARGO_TARGET_DIR`.
+The old shared `build.lock` recipe is retired.
 The `--client-probe` argument always names a **prebuilt artifact from CI/baldr**;
 it is not a request to compile locally. This CLI never builds that artifact.
 
