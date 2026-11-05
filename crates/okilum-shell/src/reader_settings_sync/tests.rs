@@ -189,6 +189,7 @@ fn settings_2487_close_focused_field(cx: &mut TestAppContext, button: bool, invi
         field.update(cx, |input, cx| input.focus(window, cx));
     });
     visual.run_until_parked();
+    visual.simulate_keystrokes("ctrl-a");
     visual.simulate_input("Desktop 2487");
     visual.update(|window, cx| {
         let input = field.read(cx);
@@ -780,11 +781,11 @@ fn assert_visible(visual: &mut VisualTestContext, selector: &'static str) {
         "empty {selector}"
     );
     assert!(
-        element.top() >= panel.top()
-            && element.bottom() <= panel.bottom()
-            && element.left() >= panel.left()
-            && element.right() <= panel.right(),
-        "{selector} {element:?} outside panel {panel:?}"
+        element.top() >= px(0.)
+            && element.bottom() <= viewport.height
+            && element.left() >= px(0.)
+            && element.right() <= viewport.width,
+        "{selector} {element:?} outside window {viewport:?} (native dialogs may cover the sidebar)"
     );
 }
 
@@ -1760,4 +1761,66 @@ fn issue2615_error_details_are_hidden_until_requested(cx: &mut TestAppContext) {
     visual.simulate_click(details.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("sync-technical-details").is_some());
+}
+
+#[gpui::test]
+fn issue2615_reject_does_not_show_an_expired_invitation(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.presentation.wizard = Some(super::presentation::Step::Link);
+            let mut pending = snapshot(Some(direct::Pending {
+                request_id: uuid::Uuid::new_v4(),
+                incoming: true,
+                name: "QA laptop".into(),
+                device_id: "synthetic-device".into(),
+                fingerprint: "synthetic-fingerprint".into(),
+            }));
+            pending.offer_url = Some("synthetic-offer".into());
+            view.snapshot = Some(pending);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let reject = visual.debug_bounds("sync-reject-computer").unwrap();
+    visual.simulate_click(reject.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec!["other"]);
+    assert!(visual.debug_bounds("sync-new-link").is_none());
+    assert!(visual.debug_bounds("sync-modal").is_none());
+}
+
+#[gpui::test]
+fn issue2615_computer_vaults_open_observations_before_any_catalog_request(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let calls = guided_worker(cx, vec![snapshot(None)]);
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.presentation = Default::default();
+            let mut saved = snapshot(None);
+            saved.peers.push(direct::Peer {
+                id: uuid::Uuid::new_v4(),
+                name: "QA laptop".into(),
+                device_id: "synthetic-device".into(),
+            });
+            view.snapshot = Some(saved);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1000.), px(900.)));
+    visual.run_until_parked();
+    let vaults = visual.debug_bounds("sync-catalog-0").unwrap();
+    visual.simulate_click(vaults.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("sync-modal").is_some());
+    assert!(visual.debug_bounds("sync-authorized-catalog").is_none());
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "computer details must not query an inviter's own endpoint"
+    );
 }

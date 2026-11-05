@@ -172,8 +172,8 @@ impl SyncSettings {
             _ => None,
         };
         let refresh = matches!(operation, Operation::Read);
+        self.presentation.retry = Some(operation.clone());
         if !refresh {
-            self.presentation.retry = Some(operation.clone());
             self.presentation.details = false;
             self.presentation.error_details = None;
         }
@@ -278,6 +278,9 @@ impl SyncSettings {
                     let succeeded = result.is_ok();
                     match result {
                         Ok(output) => {
+                            if action == "reject" {
+                                this.presentation.wizard = None;
+                            }
                             this.publish(output, cx);
                         }
                         Err(error) => {
@@ -345,7 +348,9 @@ impl SyncSettings {
                     .detach();
             }
         }
-        if self.presentation.wizard.is_some() {
+        if self.presentation.wizard.is_some()
+            && self.presentation.wizard != Some(presentation::Step::Computer)
+        {
             if output.snapshot.offer_url.is_some() && output.snapshot.pending.is_none() {
                 self.presentation.wizard = Some(presentation::Step::Link);
             } else if output
@@ -355,10 +360,6 @@ impl SyncSettings {
                 .is_some_and(|p| !p.incoming)
             {
                 self.presentation.wizard = Some(presentation::Step::Waiting);
-            } else if !output.snapshot.catalog.is_empty() {
-                if self.presentation.wizard != Some(presentation::Step::Progress) {
-                    self.presentation.wizard = Some(presentation::Step::Vaults);
-                }
             } else if self.presentation.wizard == Some(presentation::Step::Link)
                 && self
                     .snapshot
@@ -366,6 +367,13 @@ impl SyncSettings {
                     .is_some_and(|s| s.peers.len() < output.snapshot.peers.len())
             {
                 self.presentation.wizard = None;
+            } else if !output.snapshot.catalog.is_empty() {
+                if !matches!(
+                    self.presentation.wizard,
+                    Some(presentation::Step::Progress | presentation::Step::Computer)
+                ) {
+                    self.presentation.wizard = Some(presentation::Step::Vaults);
+                }
             } else if self.presentation.wizard == Some(presentation::Step::Link)
                 && output.snapshot.pending.is_none()
                 && self
@@ -474,6 +482,9 @@ impl SyncSettings {
                 return;
             }
             if let Err(error) = direct::validate_pairing_input(&invitation, &name) {
+                if error.to_string().to_lowercase().contains("expired") {
+                    self.presentation.wizard = Some(presentation::Step::Expired);
+                }
                 self.error = Some(user_error(&error));
                 cx.notify();
                 return;

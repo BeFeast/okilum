@@ -8,12 +8,15 @@ pub struct Overview {
 }
 #[derive(Clone, Debug, Default)]
 pub struct ComputerOverview {
+    pub can_receive: bool,
+    pub shared_vaults: Vec<PathBuf>,
     pub connected: Option<bool>,
     pub last_seen: Option<String>,
-    pub vaults: usize,
+    pub vaults: Option<usize>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct VaultOverview {
+    pub available: bool,
     pub state: String,
     pub files: u64,
     pub bytes: u64,
@@ -24,18 +27,43 @@ impl Controller {
     /// Called on the background executor, never from Render.
     pub fn overview(&self) -> Result<Overview> {
         self.check()?;
-        let (peers, attached) = {
+        let (peers, attached, endpoint) = {
             let db = self.shared.db.lock().unwrap();
-            (
-                db.peers.values().cloned().collect::<Vec<_>>(),
-                db.attached.clone(),
-            )
+            let mut peers = db.peers.values().cloned().collect::<Vec<_>>();
+            // External Syncthing does not participate in managed transport
+            // exchange, but a completed share reply already names its device.
+            for (id, device) in db
+                .transfers
+                .iter()
+                .filter_map(transfer::Transfer::overview_binding)
+            {
+                if let Some(peer) = peers
+                    .iter_mut()
+                    .find(|peer| peer.peer.id == id && peer.syncthing_device.is_none())
+                {
+                    peer.syncthing_device = Some(device);
+                }
+            }
+            (peers, db.attached.clone(), db.endpoint)
         };
         let mut result = Overview::default();
         for peer in &peers {
-            result
-                .computers
-                .insert(peer.peer.id, ComputerOverview::default());
+            result.computers.insert(
+                peer.peer.id,
+                ComputerOverview {
+                    can_receive: Some(peer.endpoint) != endpoint,
+                    shared_vaults: attached
+                        .iter()
+                        .filter(|vault| {
+                            peer.syncthing_device
+                                .as_ref()
+                                .is_some_and(|device| vault.peers.contains(device))
+                        })
+                        .map(|vault| vault.path.clone())
+                        .collect(),
+                    ..Default::default()
+                },
+            );
         }
         for vault in &attached {
             let mut observed = VaultOverview {
@@ -61,6 +89,7 @@ impl Controller {
             }
             if let Ok(api) = vault.daemon.connect() {
                 if let Ok(status) = api.status(&vault.folder_id) {
+                    observed.available = true;
                     observed.files = status["globalFiles"].as_u64().unwrap_or(0);
                     observed.bytes = status["globalBytes"].as_u64().unwrap_or(0);
                     observed.needed_bytes = status["needBytes"].as_u64().unwrap_or(0);
@@ -107,7 +136,7 @@ impl Controller {
                         .as_str()
                         .filter(|seen| !seen.starts_with("1970-") && !seen.starts_with("0001-"))
                         .map(str::to_owned);
-                    computer.vaults += config["folders"]
+                    let count = config["folders"]
                         .as_array()
                         .map(|folders| {
                             folders
@@ -120,6 +149,7 @@ impl Controller {
                                 .count()
                         })
                         .unwrap_or(0);
+                    computer.vaults = Some(computer.vaults.unwrap_or(0) + count);
                 }
             }
         }

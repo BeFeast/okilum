@@ -23,6 +23,7 @@ impl Render for SyncSettings {
             window.open_dialog(cx, move |dialog, _, _| {
                 dialog
                     .width(px(560.))
+                    .margin_top(px(24.))
                     .close_button(false)
                     .overlay_closable(false)
                     .child(wizard.clone())
@@ -133,14 +134,15 @@ impl Render for SyncSettings {
                                     .size_6()
                                     .text_color(p.text_muted),
                             )
-                            .child(
-                                v_flex().flex_1().gap_1().child(peer.name.clone()).child(
-                                    div().text_sm().text_color(p.text_muted).child(format!(
-                                        "OS not reported · {} vaults",
-                                        observed.vaults
+                            .child(v_flex().flex_1().gap_1().child(peer.name.clone()).child(
+                                div().text_sm().text_color(p.text_muted).child(format!(
+                                        "OS not reported · {}",
+                                        observed
+                                            .vaults
+                                            .map(|n| format!("{n} vaults"))
+                                            .unwrap_or_else(|| "Vault count not checked".into())
                                     )),
-                                ),
-                            )
+                            ))
                             .child(
                                 v_flex()
                                     .gap_1()
@@ -156,11 +158,8 @@ impl Render for SyncSettings {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.selected_peer = Some(id);
                                         this.presentation.destinations.clear();
-                                        this.presentation.wizard = Some(Step::Vaults);
-                                        if let Some(s) = this.snapshot.as_mut() {
-                                            s.catalog.clear();
-                                        }
-                                        this.run(Operation::Catalog(id), cx);
+                                        this.presentation.wizard = Some(Step::Computer);
+                                        cx.notify();
                                     })),
                             ),
                     );
@@ -223,11 +222,17 @@ impl Render for SyncSettings {
                                 } else {
                                     observed.state
                                 }))
-                                .child(div().text_xs().text_color(p.text_muted).child(format!(
-                                    "{} files · {} MB",
-                                    observed.files,
-                                    observed.bytes / 1_000_000
-                                ))),
+                                .child(div().text_xs().text_color(p.text_muted).child(
+                                    if observed.available {
+                                        format!(
+                                            "{} files · {} MB",
+                                            observed.files,
+                                            observed.bytes / 1_000_000
+                                        )
+                                    } else {
+                                        "Status not checked".into()
+                                    },
+                                )),
                         )
                         .child(
                             Button::new(("sync-manage", index))
@@ -334,7 +339,11 @@ impl SyncSettings {
             .gap_4()
             .justify_between()
             .rounded_lg()
-            .bg(p.selected)
+            .bg(if self.error.is_some() {
+                p.warning.opacity(0.12)
+            } else {
+                p.selected
+            })
             .child(
                 div()
                     .id("sync-status")
@@ -343,16 +352,42 @@ impl SyncSettings {
                     .child(status),
             );
         if self.error.is_some() {
+            let existing = self
+                .error
+                .as_ref()
+                .is_some_and(|e| e.contains("already belongs to Syncthing"));
+            let connection = self.error.as_ref().is_some_and(|e| {
+                e.contains("Choose which existing Sync connection")
+                    || e.contains("Select the existing instance explicitly")
+            });
             line = line.child(
                 Button::new("sync-retry")
                     .label(if self.presentation.wizard == Some(Step::Expired) {
                         "Create new link"
+                    } else if existing {
+                        "Review existing setup"
+                    } else if connection {
+                        "Choose connection"
                     } else {
                         "Try again"
                     })
                     .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if this.presentation.wizard == Some(Step::Expired) {
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if existing {
+                            this.presentation.advanced = true;
+                            this.presentation.wizard = None;
+                            #[cfg(target_os = "linux")]
+                            if let Some(Operation::Share(path)) = this.presentation.retry.clone() {
+                                this.run(Operation::Inspect(path), cx);
+                                return;
+                            }
+                            this.choose_folder(None, cx);
+                        } else if connection {
+                            this.presentation.advanced = true;
+                            this.presentation.wizard = None;
+                            this.scroll.set_offset(point(px(0.), px(-500.)));
+                            cx.notify();
+                        } else if this.presentation.wizard == Some(Step::Expired) {
                             this.presentation.wizard = Some(Step::Start);
                             this.error = None;
                             cx.notify();
@@ -377,6 +412,7 @@ impl SyncSettings {
         if self.error.is_some() {
             result = result.child(
                 Button::new("sync-error-details")
+                    .debug_selector(|| "sync-error-details".into())
                     .ghost()
                     .label(if self.presentation.details {
                         "▾ Details"
@@ -493,7 +529,7 @@ impl SyncSettings {
         if let Some(snapshot) = &self.snapshot {
             if snapshot.pending.as_ref().is_some_and(|p| !p.incoming) {
                 step = Step::Waiting;
-            } else if snapshot.offer_url.is_some() && step != Step::Expired {
+            } else if snapshot.offer_url.is_some() && matches!(step, Step::Start | Step::Link) {
                 step = Step::Link;
             }
         }
@@ -520,6 +556,7 @@ impl SyncSettings {
             Step::Link=>("Copy this link to your other computer".into(),format!("On {local}, copy the link. On the other computer open Settings → Sync → Add computer → I have a link. Return to {local} to approve its request.")),
             Step::Waiting=>(format!("Waiting for {remote} to approve"),format!("{local} has requested a connection. On {remote}, approve “{local} wants to connect”. This window keeps waiting; you do not need to retry.")),
             Step::Vaults=>(format!("Choose vaults for {local}"),format!("On {local}, choose a vault from the approved computer and a local folder. New or empty folders start Sync; existing files require a lossless merge preview.")),
+            Step::Computer=>(remote.clone(),format!("Vaults shared between {local} and {remote}.")),
             Step::Progress=>("Your first sync is in progress".into(),format!("Receiving on {local}. Keep both computers online until the first transfer finishes. You can close this window and follow progress on the Sync page.")),
             Step::Expired=>("Your pairing link expired".into(),"On the computer with your notes, create a new link, then paste it on the other computer. Your vaults have not changed.".into()),
         };
@@ -652,9 +689,16 @@ impl SyncSettings {
             Step::Vaults => {
                 body = body.child(self.render_catalog(cx));
             }
+            Step::Computer => {
+                body = body.child(self.render_computer(cx));
+            }
             Step::Progress => {
                 if let Some(snapshot) = &self.snapshot {
-                    if !snapshot.preparing && !snapshot.attached.is_empty() {
+                    if !self.busy
+                        && self.presentation.transfers.is_empty()
+                        && !snapshot.preparing
+                        && !snapshot.attached.is_empty()
+                    {
                         body = body.child(
                             "First sync complete. Saved changes now sync in both directions.",
                         );
@@ -665,6 +709,7 @@ impl SyncSettings {
                             v_flex().gap_2().child(vault.label.clone()).child(
                                 div().text_sm().child(
                                     state
+                                        .filter(|s| s.available)
                                         .map(|s| {
                                             format!(
                                                 "{} · {} MB remaining of {} MB",
@@ -681,6 +726,7 @@ impl SyncSettings {
                 }
                 body = body.child(
                     Button::new("sync-choose-more-vaults")
+                        .debug_selector(|| "sync-choose-more-vaults".into())
                         .ghost()
                         .label("Choose more vaults")
                         .disabled(self.busy)
@@ -699,7 +745,16 @@ impl SyncSettings {
                         .disabled(self.busy)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.error = None;
-                            this.start_pairing(false, cx);
+                            // A receiving computer cannot create an invitation
+                            // on the source. Return to the explicit source step
+                            // rather than silently reverse the pairing roles.
+                            if this.receiving || !this.invitation.read(cx).value().trim().is_empty()
+                            {
+                                this.presentation.wizard = Some(Step::Start);
+                                cx.notify();
+                            } else {
+                                this.start_pairing(false, cx);
+                            }
                         })),
                 );
             }
@@ -805,6 +860,68 @@ impl SyncSettings {
                         }
                     })),
             );
+        }
+        body.into_any_element()
+    }
+    fn render_computer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut body = v_flex().gap_3();
+        let Some(peer) = self
+            .selected_peer
+            .and_then(|id| self.snapshot.as_ref()?.peers.iter().find(|p| p.id == id))
+        else {
+            return body.into_any_element();
+        };
+        let observed = self
+            .presentation
+            .overview
+            .computers
+            .get(&peer.id)
+            .cloned()
+            .unwrap_or_default();
+        body = body.child(match observed.connected {
+            Some(true) => "Online",
+            Some(false) => "Offline",
+            None => "Connection not checked",
+        });
+        let mut count = 0;
+        if let Some(snapshot) = &self.snapshot {
+            for vault in &snapshot.attached {
+                if observed.shared_vaults.contains(&vault.path) {
+                    body = body.child(
+                        v_flex().gap_1().child(vault.label.clone()).child(
+                            div()
+                                .text_sm()
+                                .text_color(brand::palette(cx).text_muted)
+                                .child(vault.path.display().to_string()),
+                        ),
+                    );
+                    count += 1;
+                }
+            }
+        }
+        if count == 0 {
+            body = body.child("No shared vaults are listed on this computer yet.");
+        }
+        if observed.can_receive {
+            let id = peer.id;
+            body = body.child(
+                Button::new("sync-receive-more")
+                    .primary()
+                    .label("Choose vaults to receive")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.presentation.wizard = Some(Step::Vaults);
+                        if let Some(s) = this.snapshot.as_mut() {
+                            s.catalog.clear();
+                        }
+                        this.run(Operation::Catalog(id), cx);
+                    })),
+            );
+        } else {
+            body = body.child(format!(
+                "To receive another vault on {}, open Sync there and choose it from this computer.",
+                peer.name
+            ));
         }
         body.into_any_element()
     }

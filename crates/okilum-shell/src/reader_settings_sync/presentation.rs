@@ -8,6 +8,7 @@ pub(super) enum Step {
     Link,
     Waiting,
     Vaults,
+    Computer,
     Progress,
     Expired,
 }
@@ -42,7 +43,7 @@ impl Render for Wizard {
             window.close_dialog(cx);
             return div().into_any_element();
         }
-        let max_height = (window.viewport_size().height - px(100.)).max(px(160.));
+        let max_height = (window.viewport_size().height - px(120.)).max(px(160.));
         sync.update(cx, |view, cx| {
             let body = if view.presentation.managing.is_some() {
                 view.render_manage(cx)
@@ -151,7 +152,7 @@ pub(super) fn notify_approval(name: &str) {
             "Open Okilum to approve or reject this computer. No files are shared before approval.";
         #[cfg(target_os = "linux")]
         let result = Command::new("notify-send")
-            .args(["--app-name=Okilum", &title, body])
+            .args(["--app-name=Okilum", "--", &title, body])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -159,8 +160,12 @@ pub(super) fn notify_approval(name: &str) {
         #[cfg(target_os = "macos")]
         let result = Command::new("osascript").args(["-e", "on run argv\n display notification (item 2 of argv) with title (item 1 of argv)\nend run", &title, body])
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
-        if let Err(error) = result {
-            eprintln!("okilum-sync: approval notification failed: {error}");
+        match result {
+            Err(error) => eprintln!("okilum-sync: approval notification failed: {error}"),
+            Ok(status) if !status.success() => {
+                eprintln!("okilum-sync: approval notification failed: {status}")
+            }
+            _ => {}
         }
     }
     #[cfg(test)]
