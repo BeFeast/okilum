@@ -19,8 +19,11 @@ impl Reader {
     }
 
     pub(super) fn copy_read_markdown(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editing) = self.editing.as_ref().filter(|editing| editing.markdown) {
-            let text = editing.input.read(cx).selected_text().to_string();
+        if let Some(text) = self
+            .editing
+            .as_ref()
+            .and_then(|editing| editing.selected_markdown(cx))
+        {
             if !text.is_empty() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }

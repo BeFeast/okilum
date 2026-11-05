@@ -416,6 +416,11 @@ impl Editing {
         &self.input
     }
 
+    pub(super) fn selected_markdown(&self, cx: &App) -> Option<String> {
+        self.markdown
+            .then(|| self.input.read(cx).selected_text().to_string())
+    }
+
     #[cfg(test)]
     pub(super) fn menu_facts(&self) -> &reader_reminder::MenuFacts {
         &self.menu_facts

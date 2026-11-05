@@ -273,7 +273,7 @@ fn source_and_live_markdown_shortcuts_copy_the_exact_selected_source(cx: &mut Te
         });
         f.visual.run_until_parked();
         let input = f.reader.read_with(f.visual, |reader, _| {
-            reader.editing.as_ref().unwrap().input.clone()
+            reader.editing.as_ref().unwrap().input().clone()
         });
         input.update(f.visual, |input, cx| input.set_selection(0..NOTE.len(), cx));
         f.visual
