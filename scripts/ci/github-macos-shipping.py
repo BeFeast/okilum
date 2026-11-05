@@ -18,6 +18,12 @@ WORKFLOW = '.github/workflows/forgejo-macos-shipping.yml'
 STEP = 'Build, sign and notarize exact product source'
 
 
+def read(api, path):
+    """GET with the bridge's bounded backoff (#2589: one GitHub 502 while the
+    hosted build ran failed the hourly beta). Never used for the dispatch POST."""
+    return bridge.hosted_request(api, path, sleep=time.sleep)
+
+
 def beta_publication(env, source):
     return (env.get('VERIFY_ONLY') != 'true' and env.get('GITHUB_REF') == 'refs/heads/main'
             and (source == env.get('GITHUB_SHA') or source == env.get('HOURLY_SOURCE'))
@@ -101,7 +107,7 @@ def main():
     verify_only = os.environ.get("VERIFY_ONLY") == "true"
     api = bridge.GitHub()
     api.log_quota()
-    remote = api.request('git/ref/heads/main')
+    remote = read(api, 'git/ref/heads/main')
     # Push and mirror run independently. Wait only for the trusted mirror,
     # accepting newer tooling solely when it is also on Forgejo main.
     mirror_deadline = time.monotonic() + 120
@@ -118,7 +124,7 @@ def main():
         if time.monotonic() >= mirror_deadline:
             raise ValueError('Mirror has not reached the trusted product source; no dispatch')
         time.sleep(5)
-        remote = api.request('git/ref/heads/main')
+        remote = read(api, 'git/ref/heads/main')
     label = f"Mac shipping Forgejo {os.environ['GITHUB_RUN_ID']} attempt {os.environ['GITHUB_RUN_ATTEMPT']}"
     data = {'ref': 'main', 'inputs': {'source': source, 'build': build,
             'producer': os.environ['GITHUB_RUN_ID'], 'producer_number': os.environ['GITHUB_RUN_NUMBER'], 'attempt': os.environ['GITHUB_RUN_ATTEMPT'],
@@ -133,19 +139,19 @@ def main():
                       'workflow_sha': tooling, 'build': build, 'producer': label}), flush=True)
     deadline = time.monotonic() + 100 * 60
     while time.monotonic() < deadline:
-        runs = api.request('actions/workflows/forgejo-macos-shipping.yml/runs?event=workflow_dispatch&per_page=100')['workflow_runs']
+        runs = read(api, 'actions/workflows/forgejo-macos-shipping.yml/runs?event=workflow_dispatch&per_page=100')['workflow_runs']
         run = accepted_run(runs, tooling, label)
         if run:
             print('Hosted shipping artifact run: ' + run['html_url'], flush=True)
             if run['status'] == 'completed':
                 if run['conclusion'] != 'success' or run.get('run_attempt') != 1:
                     raise ValueError('Hosted artifact failed or was rerun; no fallback')
-                jobs = api.request(f"actions/runs/{run['id']}/jobs?per_page=100")['jobs']
+                jobs = read(api, f"actions/runs/{run['id']}/jobs?per_page=100")['jobs']
                 valid = [j for j in jobs if j['name'] == 'shipping' and j['conclusion'] == 'success'
                          and any(s['name'] == STEP and s['conclusion'] == 'success' for s in j['steps'])]
                 if len(jobs) != 1 or len(valid) != 1:
                     raise ValueError('Required signing/notarization job did not execute')
-                artifacts = api.request(f"actions/runs/{run['id']}/artifacts?per_page=100")['artifacts']
+                artifacts = read(api, f"actions/runs/{run['id']}/artifacts?per_page=100")['artifacts']
                 expected = f"{'macos-verify' if verify_only else 'macos-shipping'}-{source}-{build}"
                 matches = [a for a in artifacts if a['name'] == expected and not a['expired']
                            and re.fullmatch('sha256:[0-9a-f]{64}', a.get('digest', ''))]
