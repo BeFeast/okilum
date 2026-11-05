@@ -416,8 +416,8 @@ impl Editing {
         &self.input
     }
 
-    pub(super) fn selected_markdown(&self, cx: &App) -> Option<String> {
-        self.markdown
+    pub(super) fn selected_markdown(&self, window: &Window, cx: &App) -> Option<String> {
+        (self.markdown && self.input.focus_handle(cx).is_focused(window))
             .then(|| self.input.read(cx).selected_text().to_string())
     }
 

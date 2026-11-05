@@ -22,7 +22,7 @@ impl Reader {
         if let Some(text) = self
             .editing
             .as_ref()
-            .and_then(|editing| editing.selected_markdown(cx))
+            .and_then(|editing| editing.selected_markdown(window, cx))
         {
             if !text.is_empty() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));

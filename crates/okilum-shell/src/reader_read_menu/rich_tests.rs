@@ -292,6 +292,16 @@ fn source_and_live_markdown_shortcuts_copy_the_exact_selected_source(cx: &mut Te
             std::fs::read(f.root.join("note.md")).unwrap(),
             NOTE.as_bytes()
         );
+        f.seed_clipboard();
+        f.reader.update_in(f.visual, |reader, window, cx| {
+            reader.focus_handle.focus(window, cx);
+            reader.copy_read_markdown(window, cx);
+        });
+        assert_eq!(
+            f.clipboard(),
+            "sentinel",
+            "an inactive editor cannot supply a stale selection"
+        );
     }
 }
 
