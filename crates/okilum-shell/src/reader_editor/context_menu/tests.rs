@@ -21,17 +21,18 @@ fn formatting_is_only_offered_in_writable_markdown() {
             _ => None,
         })
         .collect();
-    assert_eq!(actions.len(), 11);
+    assert_eq!(actions.len(), 12);
     assert_eq!(actions[0], ("Bold", format::ToggleBold.name()));
     assert_eq!(actions[3], ("Inline Code", format::ToggleInlineCode.name()));
-    assert_eq!(actions[4], ("Heading 1", format::Heading1.name()));
-    assert_eq!(actions[10], ("Paragraph", format::Paragraph.name()));
+    assert_eq!(actions[4], ("Quote", format::ToggleQuote.name()));
+    assert_eq!(actions[5], ("Heading 1", format::Heading1.name()));
+    assert_eq!(actions[11], ("Paragraph", format::Paragraph.name()));
 }
 
 // The real right-click builder and native-menu fallback, not a direct call to
 // the formatter. The fallback dispatches the same typed actions as Win32/Cocoa.
 #[cfg(target_os = "linux")]
-fn format_selection_from_context_menu(cx: &mut TestAppContext, live: bool) {
+fn format_selection_from_context_menu(cx: &mut TestAppContext, live: bool, quote: bool) {
     cx.update(|cx| {
         crate::test_init(cx);
         crate::bind_keys(cx);
@@ -88,11 +89,19 @@ fn format_selection_from_context_menu(cx: &mut TestAppContext, live: bool) {
     visual.run_until_parked();
     visual.simulate_keystrokes("right");
     visual.run_until_parked();
+    if quote {
+        visual.simulate_keystrokes("down down down down");
+        visual.run_until_parked();
+    }
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
     assert_eq!(
         input.read_with(visual, |input, _| input.value().to_string()),
-        "**chosen** text remains\n",
+        if quote {
+            "> chosen text remains\n"
+        } else {
+            "**chosen** text remains\n"
+        },
         "real context action must fire"
     );
     visual.dispatch_action(Undo);
@@ -112,11 +121,23 @@ fn format_selection_from_context_menu(cx: &mut TestAppContext, live: bool) {
 #[cfg(target_os = "linux")]
 #[gpui::test]
 fn source_context_formatting_preserves_selection_and_undo(cx: &mut TestAppContext) {
-    format_selection_from_context_menu(cx, false);
+    format_selection_from_context_menu(cx, false, false);
 }
 
 #[cfg(target_os = "linux")]
 #[gpui::test]
 fn live_preview_context_formatting_preserves_selection_and_undo(cx: &mut TestAppContext) {
-    format_selection_from_context_menu(cx, true);
+    format_selection_from_context_menu(cx, true, false);
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn quote_2625_source_context_menu_toggles_whole_line(cx: &mut TestAppContext) {
+    format_selection_from_context_menu(cx, false, true);
+}
+
+#[cfg(target_os = "linux")]
+#[gpui::test]
+fn quote_2625_live_context_menu_toggles_whole_line(cx: &mut TestAppContext) {
+    format_selection_from_context_menu(cx, true, true);
 }

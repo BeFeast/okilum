@@ -47,6 +47,54 @@ fn actions(key: &str, context: &[&str], cx: &App) -> Vec<String> {
 }
 
 #[gpui::test]
+fn quote_2625_editor_binding_can_be_disabled_rebound_and_reset(cx: &mut TestAppContext) {
+    use crate::reader_editor::format::{self, ToggleQuote};
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        format::bind_keys(cx);
+        install_at(Some(directory.path().join("keymap.json")), cx);
+        let quote = ToggleQuote::name_for_type();
+        assert_eq!(
+            actions("secondary-shift-q", &["ReaderSource", "Input"], cx),
+            [quote]
+        );
+        assert!(actions("secondary-shift-q", &["ReaderRead"], cx).is_empty());
+        assert!(actions("secondary-shift-q", &["Input"], cx).is_empty());
+        adopt(
+            Ok(Some(bytes(vec![
+                override_for("Editor", "secondary-shift-q", None),
+                override_for("Editor", "f7", Some(quote)),
+            ]))),
+            cx,
+        );
+        assert!(actions("secondary-shift-q", &["ReaderSource", "Input"], cx).is_empty());
+        assert_eq!(actions("f7", &["ReaderSource", "Input"], cx), [quote]);
+        let row = cx
+            .global::<Keymap>()
+            .rows
+            .iter()
+            .find(|row| row.action == quote && row.context == context("Editor").unwrap().unwrap())
+            .unwrap();
+        assert!(row.changed);
+        assert_eq!(row.keys, ["f7"]);
+        let global = cx
+            .global::<Keymap>()
+            .rows
+            .iter()
+            .find(|row| row.action == quote && row.context == "Global")
+            .unwrap();
+        assert!(!global.changed);
+        assert!(global.keys.is_empty());
+        adopt(Ok(None), cx);
+        assert_eq!(
+            actions("secondary-shift-q", &["ReaderSource", "Input"], cx),
+            [quote]
+        );
+    });
+}
+
+#[gpui::test]
 fn keymap_2626_overrides_null_aliases_and_multiple_bindings_preserve_other_contexts(
     cx: &mut TestAppContext,
 ) {
