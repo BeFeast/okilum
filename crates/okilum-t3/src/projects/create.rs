@@ -2,7 +2,7 @@
 //! folder in the tree and «+ New project…» under the Projects list.
 //!
 //! The dialog's state is a [`Draft`]: name, kind, icon and, for a code or
-//! hybrid project, where its code is. [`create`] writes `ops/project.yaml`
+//! hybrid project, where its code is. [`create`] writes `ops/project.toml`
 //! (and `_index.md` when the folder has none), the manifest the Projects
 //! list reads. Creating the T3 project is a separate, optional step
 //! ([`create_in_t3`]); when it succeeds, [`link_t3`] adds the T3 binding to
@@ -15,7 +15,7 @@ use std::io::Write as _;
 use std::path::Path;
 
 /// The manifest, relative to the project folder.
-pub const MANIFEST: &str = "ops/project.yaml";
+pub const MANIFEST: &str = "ops/project.toml";
 /// The folder's entry note.
 pub const INDEX: &str = "_index.md";
 /// The kinds in the dialog's order.
@@ -173,7 +173,7 @@ pub fn folder_name(folder: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// A folder that already has `ops/project.yaml` is a project: the tree
+/// A folder that already has `ops/project.toml` is a project: the tree
 /// does not offer «Make this a project…» for it.
 pub fn is_project(folder: &Path) -> bool {
     ["project.toml", "project.yaml"]
@@ -210,39 +210,30 @@ fn quoted(text: &str) -> String {
 pub fn manifest(draft: &Draft, relative: &str) -> String {
     let name = draft.name.trim();
     let domain = relative.split('/').next().unwrap_or(relative);
-    let mut out = String::new();
-    out.push_str("# Okilum project manifest, created in Okilum (okilum#1475).\n");
-    out.push_str("schema_version: 1\n");
-    out.push_str(&format!("slug: {}\n", slug(name)));
-    out.push_str(&format!("name: {}\n", quoted(name)));
-    out.push_str(&format!(
-        "kind: {}   # code | knowledge | hybrid\n",
-        kind_name(draft.kind)
-    ));
-    out.push_str(&format!("domain: {}\n", quoted(domain)));
-    out.push_str(&format!(
-        "index: {}\n",
-        quoted(&if relative.is_empty() {
-            INDEX.into()
-        } else {
-            format!("{relative}/{INDEX}")
-        })
-    ));
+    let mut value = serde_json::json!({
+        "schema_version": 1,
+        "slug": slug(name),
+        "name": name,
+        "kind": kind_name(draft.kind),
+        "domain": domain,
+        "index": if relative.is_empty() { INDEX.to_owned() } else { format!("{relative}/{INDEX}") },
+    });
     if let Some(icon) = &draft.icon {
-        out.push_str(&format!("icon: {}\n", icon.to_yaml_flow()));
+        value["icon"] = serde_json::to_value(icon).expect("project icon is serializable");
     }
     match draft.source() {
         Some(Source::Checkout(path)) => {
-            out.push_str("execution:\n");
-            out.push_str(&format!("  source_checkout: {}\n", quoted(&path)));
+            value["execution"] = serde_json::json!({"source_checkout": path});
         }
         Some(Source::Repo(url)) => {
-            out.push_str("repo:\n");
-            out.push_str(&format!("  clone_url: {}\n", quoted(&url)));
+            value["repo"] = serde_json::json!({"clone_url": url});
         }
         None => {}
     }
-    out
+    format!(
+        "# Okilum project manifest, created in Okilum (okilum#1475).\n{}",
+        toml::to_string_pretty(&value).expect("project manifest contains TOML-compatible values")
+    )
 }
 
 /// What [`create`] wrote.
@@ -271,7 +262,7 @@ fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
     written
 }
 
-/// Turn `folder` (inside `vault`) into a project: `ops/project.yaml`, and
+/// Turn `folder` (inside `vault`) into a project: `ops/project.toml`, and
 /// `_index.md` with the name as its H1 when the folder has none. A folder
 /// that already is a project is refused and nothing is written.
 pub fn create(vault: &Path, folder: &Path, draft: &Draft) -> Result<Created> {
