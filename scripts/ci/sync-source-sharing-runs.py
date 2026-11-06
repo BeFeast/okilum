@@ -15,6 +15,7 @@ lifecycle = runpy.run_path(str(Path(__file__).with_name("sync-fixture-lifecycle.
 check = lifecycle["check"]
 
 TESTS = {
+    "managed_remove_2042_plain_introducer_handoff_refused_without_host_authority",
     "managed_remove_2042_remote_request_preserves_unrequested_association",
     "managed_remove_2042_reaches_plain_introducer_peer_without_touching_other_folders",
     "managed_remove_2042_from_receiver_propagates_and_keeps_files",

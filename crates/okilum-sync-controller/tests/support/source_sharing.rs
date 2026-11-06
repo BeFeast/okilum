@@ -1956,6 +1956,14 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
 #[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
 fn managed_remove_2042_reaches_plain_introducer_peer_without_touching_other_folders() -> Result<()>
 {
+    plain_peer_removal(false)
+}
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_remove_2042_plain_introducer_handoff_refused_without_host_authority() -> Result<()> {
+    plain_peer_removal(true)
+}
+fn plain_peer_removal(remove_root: bool) -> Result<()> {
     let pair = Pair::loopback()?;
     fs::write(
         pair.source.vault.join("seed.md"),
@@ -2000,6 +2008,26 @@ fn managed_remove_2042_reaches_plain_introducer_peer_without_touching_other_fold
                     }))
         },
     )?;
+    if remove_root {
+        let source_before = pair.source.api.folder(&id)?;
+        let target_before = pair.target.api.folder(&id)?;
+        let plain_before = plain.api.folder(&id)?;
+        let error = pair.second.remove_computer(&pair.source.id).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("plain Syncthing"),
+            "{error:#}"
+        );
+        assert_eq!(pair.source.api.folder(&id)?, source_before);
+        assert_eq!(pair.target.api.folder(&id)?, target_before);
+        assert_eq!(plain.api.folder(&id)?, plain_before);
+        for peer in [&pair.source, &pair.target, &plain] {
+            assert_eq!(
+                fs::read(peer.vault.join("seed.md"))?,
+                b"plain server keeps this copy"
+            );
+        }
+        return Ok(());
+    }
     // The same device has an unrelated relationship on the plain daemon.
     // Removing it from this vault must preserve that external folder verbatim.
     let unrelated = pair._root.path().join("plain-unrelated");
