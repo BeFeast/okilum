@@ -231,6 +231,10 @@ pub struct Controller {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
+    PollRemovals {},
+    AcknowledgeRemoval {
+        id: Uuid,
+    },
     RemoveComputer {
         id: Uuid,
         device: String,
@@ -273,6 +277,9 @@ struct Response {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum Reply {
+    Removals {
+        requests: Vec<removal::Request>,
+    },
     RemovalRecorded {
         id: Uuid,
     },
@@ -913,8 +920,7 @@ impl Controller {
     ) -> Result<Reply> {
         self.check()?;
         let read_only = operation.read_only();
-        let exchange_transport =
-            !read_only && !matches!(operation, Operation::RemoveComputer { .. });
+        let exchange_transport = !read_only && !operation.removal_only();
         let redeem = matches!(operation, Operation::Redeem { .. });
         let seed = self.shared.db.lock().unwrap().seed;
         let message = Message {
@@ -1005,7 +1011,7 @@ impl Controller {
         self.check()?;
         if !db.peers.contains_key(&scope) && db.revoked_peers.contains_key(&scope) {
             ensure!(
-                matches!(&message.operation,Operation::RemoveComputer { id,device,.. } if db.removals.iter().any(|r|r.matches(*id,device)))
+                removal::revoked_operation_allowed(&db, scope, &message.operation)
                     && message.transport.is_none(),
                 "Pairing authorization was removed"
             );
@@ -1098,6 +1104,20 @@ impl Controller {
         signer: Vec<u8>,
     ) -> Result<Reply> {
         match operation {
+            Operation::PollRemovals {} => {
+                ensure!(
+                    db.peers.contains_key(&scope) || db.revoked_peers.contains_key(&scope),
+                    "unknown removal capability"
+                );
+                Ok(Reply::Removals {
+                    requests: removal::requests(db, scope),
+                })
+            }
+            Operation::AcknowledgeRemoval { id } => {
+                removal::acknowledge(db, scope, id)?;
+                self.save(db)?;
+                Ok(Reply::RemovalRecorded { id })
+            }
             Operation::RemoveComputer { .. } => {
                 anyhow::bail!("removal requires serialized lock-free dispatch")
             }
@@ -1239,6 +1259,12 @@ impl Controller {
     }
 }
 impl Operation {
+    fn removal_only(&self) -> bool {
+        matches!(
+            self,
+            Self::RemoveComputer { .. } | Self::PollRemovals {} | Self::AcknowledgeRemoval { .. }
+        )
+    }
     fn read_only(&self) -> bool {
         #[cfg(target_os = "linux")]
         if matches!(self, Self::Inspect { .. }) {
