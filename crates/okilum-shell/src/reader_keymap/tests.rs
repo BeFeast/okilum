@@ -74,10 +74,18 @@ fn quote_2625_editor_binding_can_be_disabled_rebound_and_reset(cx: &mut TestAppC
             .global::<Keymap>()
             .rows
             .iter()
-            .find(|row| row.action == quote)
+            .find(|row| row.action == quote && row.context == context("Editor").unwrap().unwrap())
             .unwrap();
         assert!(row.changed);
         assert_eq!(row.keys, ["f7"]);
+        let global = cx
+            .global::<Keymap>()
+            .rows
+            .iter()
+            .find(|row| row.action == quote && row.context == "Global")
+            .unwrap();
+        assert!(!global.changed);
+        assert!(global.keys.is_empty());
         adopt(Ok(None), cx);
         assert_eq!(
             actions("secondary-shift-q", &["ReaderSource", "Input"], cx),
