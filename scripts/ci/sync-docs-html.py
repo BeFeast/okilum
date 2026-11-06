@@ -5,15 +5,16 @@ out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True);rows=[]
 with sync_playwright() as p:
  browser=p.chromium.launch(executable_path='/usr/bin/google-chrome',args=['--no-sandbox'])
  page=browser.new_page(viewport={'width':1440,'height':1000},device_scale_factor=1,reduced_motion='reduce')
- for label,source in [('before','3123a1b46a2078c3e3393830db776144df674657'),('after','657d1f347c44429c9ed31371778e5ab28d1f1b08')]:
+ for label,source in [('before','3123a1b46a2078c3e3393830db776144df674657'),('after','abc5900fb1c14393adf7178ac9503d89892941bc')]:
   subprocess.run(['git','checkout','--detach',source],check=True)
   subprocess.run(['python3','docs/help/sync/check.py'],check=True)
   document=pathlib.Path('docs/help/sync/index.html').resolve()
   page.goto(document.as_uri(),wait_until='load');page.evaluate('document.fonts.ready');page.wait_for_timeout(1000)
-  for section,selector in [('connect','section#connect'),('save','section[aria-labelledby="everyday-title"]')]:
+  for section,selector in [('connect','section#connect'),('save','section[aria-labelledby="everyday-title"]'),('footer','footer')]:
    node=page.locator(selector);text=node.inner_text()
-   if label=='after':assert ('29262' in text and 'Login Items' in text) if section=='connect' else ('Cmd+S' in text and 'Ctrl+S' in text)
-   if label=='before':assert ('macOS is coming' in text) if section=='connect' else ('Ctrl+S' in text and 'Cmd+S' not in text)
+   if label=='after' and section!='footer':assert ('29262' in text and 'Login Items' in text) if section=='connect' else ('Cmd+S' in text and 'Ctrl+S' in text)
+   if label=='before' and section!='footer':assert ('macOS is coming' in text) if section=='connect' else ('Ctrl+S' in text and 'Cmd+S' not in text)
+   if section=='footer':assert ('Linux and macOS' in text) if label=='after' else ('Sync · Linux' in text)
    image=out/(label+'-HTML-'+section+'.png');node.screenshot(path=str(image),animations='disabled')
    (out/(label+'-'+section+'-text.txt')).write_text(text)
    rows.append(dict(label=label,section=section,source=source,html_sha256=hashlib.sha256(document.read_bytes()).hexdigest(),screenshot_sha256=hashlib.sha256(image.read_bytes()).hexdigest(),offline_checker_passed=True))
