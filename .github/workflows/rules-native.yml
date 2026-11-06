@@ -1,0 +1,112 @@
+# Explicit issue-scoped native regression refs; no release or signing work.
+name: rules-native
+on:
+  push:
+    branches: ['rules-native/**']
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+concurrency:
+  group: rules-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  icon:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          python3 -m venv "$RUNNER_TEMP/icon-env"
+          "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
+          "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: updater-windows-icon
+          path: target/windows-dist/okilum.ico
+          if-no-files-found: error
+          retention-days: 1
+  native-rust:
+    needs: icon
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    steps:
+      - name: Keep source and vendor patches in LF format
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: rules-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.github/workflows/rules-native.yml') }}-${{ github.sha }}
+          restore-keys: |
+            rules-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.github/workflows/rules-native.yml') }}-
+            quote-native-v1-${{ runner.os }}-
+            keymap-native-v1-${{ runner.os }}-
+            math-native-v1-${{ runner.os }}-
+            updater-native-v1-${{ runner.os }}-
+      - uses: actions/download-artifact@v4
+        with:
+          name: updater-windows-icon
+          path: target/windows-dist
+      - name: Verify exact source and prepare native dependencies
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          if [[ "$RUNNER_OS" = macOS ]]; then
+            test "$(uname -m)" = arm64
+            archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+            python3 scripts/updater/sparkle.py fetch "$archive"
+            python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+            echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
+          fi
+      - name: Run native Rules scrolling, import accounting and wording regressions
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+            export OKILUM_WINDOWS_ICON
+          fi
+          cargo test --locked -p okilum-core rules_1590_ -- --list | tee "$RUNNER_TEMP/rules-core-tests.txt"
+          grep -q ': test$' "$RUNNER_TEMP/rules-core-tests.txt"
+          cargo test --locked -p okilum-core rules_1590_ -- --nocapture --test-threads=1
+          filters=(rules_1590_)
+          for filter in "${filters[@]}"; do
+            cargo test --locked -p okilum-shell --bin okilum "$filter" -- --list | tee "$RUNNER_TEMP/updater-tests.txt"
+            grep -q ': test$' "$RUNNER_TEMP/updater-tests.txt"
+            cargo test --locked -p okilum-shell --bin okilum "$filter" -- --nocapture --test-threads=1
+          done
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            python3 scripts/ci/rules-check.py
+          fi
+      - uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: ${{ steps.cache.outputs.cache-primary-key }}
