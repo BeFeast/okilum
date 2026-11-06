@@ -1,0 +1,150 @@
+--- a/crates/base/src/text/mod.rs
++++ b/crates/base/src/text/mod.rs
+@@ -16,7 +16,7 @@
+ 
+ use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
+ pub use markdown_ext::*;
+-pub use node::{CodeBlock, TableData};
++pub use node::{CodeBlock, TableData, TextMark};
+ pub use state::*;
+ pub use style::*;
+ pub use text_view::*;
+--- a/crates/base/src/text/markdown_ext.rs
++++ b/crates/base/src/text/markdown_ext.rs
+@@ -38,6 +38,17 @@
+ /// Type for a custom Markdown block renderer.
+ pub type MarkdownBlockRenderFn =
+     dyn Fn(&MarkdownNode, &mut Window, &mut App) -> AnyElement + Send + Sync;
++
++/// Styled text returned by an inline parser. It uses the ordinary paragraph
++/// layout, selection, search and wrapping paths, without a custom element.
++#[derive(Clone, Debug, Default)]
++pub struct MarkdownInline {
++    pub text: String,
++    pub marks: Vec<(std::ops::Range<usize>, super::TextMark)>,
++}
++
++pub type MarkdownInlineParserFn =
++    dyn Fn(&mdast::Node) -> Option<MarkdownInline> + Send + Sync;
+ 
+ /// A reusable Markdown extension that parses and renders one custom node.
+ pub trait MarkdownPlugin: Send + Sync + 'static {
+@@ -274,6 +285,7 @@
+ pub struct MarkdownExtensions {
+     enable_mdx: bool,
+     block_parsers: Vec<Arc<MarkdownBlockParserFn>>,
++    inline_parsers: Vec<Arc<MarkdownInlineParserFn>>,
+     block_renderers: HashMap<SharedString, Arc<MarkdownBlockRenderFn>>,
+     revision: u64,
+ }
+@@ -301,6 +313,32 @@
+         self
+     }
+ 
++    /// Replace an inline AST node with ordinary styled text.
++    pub fn inline_parser<F>(mut self, parser: F) -> Self
++    where
++        F: Fn(&mdast::Node) -> Option<MarkdownInline> + Send + Sync + 'static,
++    {
++        self.push_inline_parser(parser);
++        self
++    }
++
++    pub(crate) fn push_inline_parser<F>(&mut self, parser: F)
++    where
++        F: Fn(&mdast::Node) -> Option<MarkdownInline> + Send + Sync + 'static,
++    {
++        self.inline_parsers.push(Arc::new(parser));
++        self.bump_revision();
++    }
++
++    pub(crate) fn parse_inline(&self, node: &mdast::Node) -> Option<MarkdownInline> {
++        self.inline_parsers.iter().find_map(|parser| {
++            let parsed = parser(node)?;
++            parsed.marks.iter().all(|(range, _)| {
++                range.start <= range.end && parsed.text.get(range.clone()).is_some()
++            }).then_some(parsed)
++        })
++    }
++
+     /// Register a renderer for a custom block node name.
+     pub fn block_renderer<F, E>(mut self, name: impl Into<SharedString>, renderer: F) -> Self
+     where
+@@ -344,6 +382,7 @@
+     pub(crate) fn has_same_parser_configuration(&self, other: &Self) -> bool {
+         self.enable_mdx == other.enable_mdx
+             && self.block_parsers.len() == other.block_parsers.len()
++            && self.inline_parsers.len() == other.inline_parsers.len()
+             && self.block_renderers.len() == other.block_renderers.len()
+             && self
+                 .block_renderers
+--- a/crates/base/src/text/text_view.rs
++++ b/crates/base/src/text/text_view.rs
+@@ -543,6 +543,18 @@
+     pub fn markdown_mdx(mut self) -> Self {
+         let extensions = Arc::make_mut(&mut self.markdown_extensions);
+         *extensions = extensions.clone().mdx();
++        self
++    }
++
++    /// Replace an inline Markdown node with styled text in the paragraph.
++    pub fn markdown_inline_parser<F>(mut self, parser: F) -> Self
++    where
++        F: Fn(&markdown::mdast::Node) -> Option<crate::text::MarkdownInline>
++            + Send
++            + Sync
++            + 'static,
++    {
++        Arc::make_mut(&mut self.markdown_extensions).push_inline_parser(parser);
+         self
+     }
+ 
+--- a/crates/base/src/text/format/markdown.rs
++++ b/crates/base/src/text/format/markdown.rs
+@@ -243,6 +243,11 @@
+         paragraph.set_span(span);
+     }
+ 
++    if let Some(inline) = cx.markdown_extensions.parse_inline(node) {
++        paragraph.push(InlineNode::new(&inline.text).marks(inline.marks));
++        return inline.text;
++    }
++
+     let mut text = String::new();
+ 
+     match node {
+@@ -633,6 +638,34 @@
+     use crate::text::{MarkdownExtensions, MarkdownNode, MarkdownPlugin};
+ 
+     #[test]
++    fn inline_parser_retains_paragraph_marks_and_selection_text() {
++        let extensions = MarkdownExtensions::default().inline_parser(|node| {
++            let Node::Link(link) = node else { return None; };
++            (link.url == "formula:x").then(|| crate::text::MarkdownInline {
++                text: "α²".into(),
++                marks: vec![(0.."α".len(), TextMark::default().italic())],
++            })
++        });
++        let mut cx = NodeContext { markdown_extensions: extensions.into(), ..Default::default() };
++        let document = parse("**Area [source](formula:x)** and `literal`", &mut cx).unwrap();
++        assert_eq!(document.text(), "Area α² and literal\n");
++        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else { panic!("paragraph"); };
++        assert!(paragraph.children.iter().flat_map(|node| &node.marks).any(|(_, mark)| mark.bold));
++        assert!(paragraph.children.iter().flat_map(|node| &node.marks).any(|(_, mark)| mark.italic));
++    }
++
++    #[test]
++    fn inline_parser_rejects_invalid_utf8_mark_ranges() {
++        let extensions = MarkdownExtensions::default().inline_parser(|node| {
++            matches!(node, Node::InlineCode(_)).then(|| crate::text::MarkdownInline {
++                text: "α".into(), marks: vec![(0..1, TextMark::default().italic())],
++            })
++        });
++        let mut cx = NodeContext { markdown_extensions: extensions.into(), ..Default::default() };
++        assert_eq!(parse("`literal`", &mut cx).unwrap().text(), "literal\n");
++    }
++
++    #[test]
+     fn table_rows_use_header_column_count() {
+         let mut cx = NodeContext::default();
+         let document = parse(

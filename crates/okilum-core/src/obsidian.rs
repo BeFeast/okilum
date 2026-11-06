@@ -10,9 +10,9 @@
 //!   lines, so it cannot split the paragraph around it. An unpaired `%%` is
 //!   text: hiding the rest of a note behind a stray marker would hide content
 //!   the user cannot see is there.
-//! - Math has no renderer in the shell. Inline `$x$` becomes a code span and
-//!   display `$$…$$` a fence tagged [`MATH_LANG`]: the TeX source, legible and
-//!   copyable, instead of a formula that silently looks like prose.
+//! - Inline math becomes an internal tagged link, with its exact source as
+//!   the fallback label. Display math becomes a fence tagged [`MATH_LANG`].
+//!   The shell draws both through the native TeX renderer (#2596).
 //! - Footnotes are numbered in order of first reference, as Obsidian numbers
 //!   them. A reference becomes a superscript link to the definition; each
 //!   definition moves to the end of the note inside a fence tagged
@@ -29,6 +29,8 @@ use std::ops::Range;
 
 /// Info-string tag of the fence a display formula is wrapped in.
 pub const MATH_LANG: &str = "math";
+/// Internal inline formula projection; the source label remains an honest fallback.
+pub const MATH_SCHEME: &str = "okilum://math/";
 /// Info-string tag of a footnote definition fence: `footnote <n> <id>`, the id
 /// percent-encoded as in a `okilum://` URL.
 pub const FOOTNOTE_LANG: &str = "footnote";
@@ -37,7 +39,7 @@ pub const FOOTNOTE_SCHEME: &str = "okilum://footnote/";
 /// A footnote definition's back-link: lands on the first reference.
 pub const FOOTNOTE_BACK_SCHEME: &str = "okilum://footnote-back/";
 
-/// Hide `%%comments%%`, render math as its source, number footnotes and mark
+/// Hide `%%comments%%`, tag math for rendering, number footnotes and mark
 /// block IDs. The shell's Reader runs this; the MCP `read_note` does not, so
 /// an agent still reads the note as written.
 ///
@@ -145,7 +147,7 @@ fn fence_for(body: &str) -> String {
 }
 
 /// Rewrite display `$$…$$` into [`MATH_LANG`] fences and inline `$…$` into
-/// code spans. Obsidian's (Pandoc's) inline rule: the opening `$` is not
+/// internal math links. Obsidian's (Pandoc's) inline rule: the opening `$` is not
 /// followed by whitespace, the closing one is not preceded by whitespace nor
 /// followed by a digit, and both are on one line — so `$5 and $10` is money.
 /// Conservatively, the closing `$` is the next one, and a bare number such
@@ -274,7 +276,11 @@ fn inline_math(seg: &str) -> String {
         match found {
             Some((start, end, next)) => {
                 out.push_str(&seg[pos..i]);
-                out.push_str(&code_span(seg[start..end].trim()));
+                out.push_str(&format!(
+                    "[{}]({MATH_SCHEME}{})",
+                    code_span(&seg[i..next]),
+                    crate::document_links::encode(seg[start..end].trim()),
+                ));
                 pos = next;
                 i = next;
             }
@@ -752,18 +758,27 @@ mod tests {
 
     #[test]
     fn inline_math_follows_the_dollar_rules() {
-        assert_eq!(rewrite_math("e $x^2$ f"), "e `x^2` f");
+        assert_eq!(
+            rewrite_math("e $x^2$ f"),
+            "e [`$x^2$`](okilum://math/x%5E2) f"
+        );
         assert_eq!(rewrite_math("$5 and $10"), "$5 and $10");
         assert_eq!(rewrite_math("$ x $"), "$ x $");
         assert_eq!(rewrite_math("$x$5"), "$x$5");
         assert_eq!(rewrite_math(r"\$x$ and $y\$"), r"\$x$ and $y\$");
         assert_eq!(rewrite_math("`$x$`"), "`$x$`");
-        assert_eq!(rewrite_math("a $$x+y$$ b"), "a `x+y` b");
-        assert_eq!(rewrite_math("$a`b$"), "``a`b``");
+        assert_eq!(
+            rewrite_math("a $$x+y$$ b"),
+            "a [`$$x+y$$`](okilum://math/x%2By) b"
+        );
+        assert_eq!(rewrite_math("$a`b$"), "[``$a`b$``](okilum://math/a%60b)");
         // #1645: financial notes keep their dollars.
         assert_eq!(rewrite_math("~$1.5k/mo and $2$"), "~$1.5k/mo and $2$");
         assert_eq!(rewrite_math("pay $2$ now"), "pay $2$ now");
-        assert_eq!(rewrite_math("$x$ costs $2$"), "`x` costs $2$");
+        assert_eq!(
+            rewrite_math("$x$ costs $2$"),
+            "[`$x$`](okilum://math/x) costs $2$"
+        );
     }
 
     #[test]

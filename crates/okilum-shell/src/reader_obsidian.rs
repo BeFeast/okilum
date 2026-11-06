@@ -98,6 +98,7 @@ pub(super) fn render_footnote(
 #[derive(Clone)]
 pub(super) struct Math {
     pub offset: usize,
+    pub parsed: Result<Vec<okilum_core::tex::Node>, okilum_core::tex::Error>,
 }
 
 /// Parse a [`MATH_LANG`] fence into a `"math"` node.
@@ -113,34 +114,95 @@ pub(super) fn parse_math(
     }
     let offset = cx.offset() + node.position()?.start.offset;
     Some(
-        MarkdownNode::new("math", Math { offset })
-            .plain_part("tex", code.value.clone())
-            .text(code.value.clone())
-            .markdown(cx.node_source(node).unwrap_or("").to_string()),
+        MarkdownNode::new(
+            "math",
+            Math {
+                offset,
+                parsed: okilum_core::tex::parse(&code.value),
+            },
+        )
+        .plain_part("tex", code.value.clone())
+        .text(code.value.clone())
+        .markdown(cx.node_source(node).unwrap_or("").to_string()),
     )
 }
 
-/// The formula's TeX source, centred in the monospace face on the code
-/// tint: there is no math renderer, and the source is the honest fallback.
+/// Shared native two-dimensional layout, with visible source and a reason
+/// when the bounded TeX subset cannot draw the formula.
 pub(super) fn render_math(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement {
     let Some(data) = node.data::<Math>() else {
         return div().into_any_element();
     };
     let offset = data.offset;
-    let theme = cx.theme();
-    let font = theme.mono_font_family.clone();
-    let bg = brand::reader_palette_for_theme(theme).code_bg;
+    let color = cx.theme().foreground;
+    let size = reader_ui_state::font_size(cx) * 1.2;
+    let body = match &data.parsed {
+        Ok(nodes) => div()
+            .debug_selector(move || format!("reader-math-formula-{offset}"))
+            .child(reader_editor::math_preview::row(nodes, size, color))
+            .into_any_element(),
+        Err(error) => v_flex()
+            .debug_selector(move || format!("reader-math-error-{offset}"))
+            .child(node.render_part("tex", |style| style, window, cx))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(brand::palette(cx).danger)
+                    .child(error.to_string()),
+            )
+            .into_any_element(),
+    };
     h_flex()
         .my_1()
         .px_3()
         .py_2()
         .justify_center()
-        .rounded(px(8.))
-        .bg(bg)
-        .font_family(font)
+        .font_family(reader_fonts::note(cx))
+        .text_color(color)
         .debug_selector(move || format!("reader-math-{offset}"))
-        .child(node.render_part("tex", |style| style, window, cx))
+        .child(body)
         .into_any_element()
+}
+
+/// Internal math links become ordinary styled text, sharing Live Preview's
+/// linear renderer and paragraph selection/wrapping. Authored code is untouched.
+pub(super) fn parse_inline_math(
+    node: &markdown_ast::Node,
+) -> Option<gpui_component::text::MarkdownInline> {
+    use gpui_component::text::{MarkdownInline, TextMark};
+    let markdown_ast::Node::Link(link) = node else {
+        return None;
+    };
+    let encoded = link.url.strip_prefix(obsidian::MATH_SCHEME)?;
+    let tex = okilum_core::document_links::decode(encoded);
+    match okilum_core::tex::linear(&tex) {
+        Ok(linear) => Some(MarkdownInline {
+            text: linear.text,
+            marks: linear
+                .runs
+                .into_iter()
+                .map(|run| {
+                    (
+                        run.range,
+                        TextMark {
+                            italic: run.italic,
+                            bold: run.bold,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+        }),
+        Err(_) => {
+            let markdown_ast::Node::InlineCode(code) = link.children.first()? else {
+                return None;
+            };
+            Some(MarkdownInline {
+                text: code.value.clone(),
+                marks: vec![(0..code.value.len(), TextMark::default().code())],
+            })
+        }
+    }
 }
 
 /// A block ID alone on its line, left by core as a marker: it occupies no
@@ -240,6 +302,71 @@ mod tests {
             include_str!("../../../fixtures/reader/obsidian-syntax.md"),
         )
         .rendered
+    }
+
+    #[gpui::test]
+    fn math_2596_read_inline_uses_the_live_renderer_and_keeps_source(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let original = r"Area $x^2$ and $\alpha_1$; pay $5 and $2$; `$x^2$`; $\foo$; **bold**.";
+        let rendered = obsidian::before_links(original);
+        let state = cx.new(|cx| TextViewState::markdown(&rendered, cx));
+        state.update(cx, |state, cx| {
+            markdown_plugins(
+                TextView::new(&cx.entity()),
+                Arc::new(|_, _, _, _| {}),
+                Arc::new(|_| None),
+                SelectionFormat::Plain,
+            )
+            .prepare_state(state, cx);
+            state.set_text_with_source(&rendered, Some(original.to_owned().into()), cx);
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            state.select_all(cx);
+            assert_eq!(
+                state.selected_text_as(SelectionFormat::Plain),
+                "Area x² and α₁; pay $5 and $2$; $x^2$; $\\foo$; bold."
+            );
+            assert_eq!(state.document_source().unwrap().as_ref(), original);
+            assert_eq!(state.selected_text_as(SelectionFormat::Source), original);
+            state.set_search_query("x²", cx);
+            assert_eq!(
+                state.search_status().1,
+                1,
+                "search sees the rendered formula"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn math_2596_read_display_uses_two_dimensional_layout_and_reports_errors(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        let source = obsidian::before_links("$$\\frac{a}{b^2}$$\n\n$$\\unknown{x}$$\n");
+        let good = source.find("~~~~math").unwrap();
+        let bad = source.rfind("~~~~math").unwrap();
+        let (_, visual) = cx.add_window_view(|_, _| Fixture {
+            source,
+            clicked: Default::default(),
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let formula = visual
+            .debug_bounds(sel(format!("reader-math-formula-{good}")))
+            .expect("display TeX is drawn, not shown raw");
+        assert!(
+            formula.size.height > px(BODY_FONT_SIZE * 2.),
+            "the fraction is stacked: {formula:?}"
+        );
+        assert!(
+            visual
+                .debug_bounds(sel(format!("reader-math-error-{bad}")))
+                .is_some(),
+            "unsupported TeX keeps its source and a visible reason"
+        );
     }
 
     #[gpui::test]

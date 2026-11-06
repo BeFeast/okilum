@@ -2002,6 +2002,47 @@ mod tests {
         (reader, input, visual, directory)
     }
 
+    #[gpui::test]
+    fn math_2596_live_display_renders_and_reveals_exact_source(cx: &mut TestAppContext) {
+        for formula in ["$$\\frac{a}{b^2}$$", "$$\r\n\\sum_{i=1}^n i\r\n$$"] {
+            let note = format!("Before $x^2$; pay $5 and $2$.\r\n\r\n{formula}\r\n\r\nEnd.\r\n");
+            let start = note.find("$$").unwrap();
+            let range = start..start + formula.len();
+            let (reader, input, visual, directory) = live_fixture(cx, &note);
+            assert!(
+                visual.debug_bounds("reader-math-formula-0").is_some(),
+                "inactive display math uses the shared two-dimensional renderer"
+            );
+            reader.read_with(visual, |r, cx| {
+                assert!(r
+                    .editing
+                    .as_ref()
+                    .unwrap()
+                    .live_preview
+                    .rendered_blocks(&input.read(cx).source_snapshot())
+                    .contains(&range));
+            });
+            input.update(visual, |input, cx| {
+                input.set_selected_range(start + 2..start + 2, cx)
+            });
+            block_draw(visual);
+            assert!(
+                visual.debug_bounds("reader-math-formula-0").is_none(),
+                "caret reveals the source"
+            );
+            assert_eq!(input.read_with(visual, |i, _| i.value().to_string()), note);
+            input.update(visual, |input, cx| {
+                input.set_selected_range(note.len()..note.len(), cx)
+            });
+            block_draw(visual);
+            assert!(visual.debug_bounds("reader-math-formula-0").is_some());
+            assert_eq!(
+                std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
+                note
+            );
+        }
+    }
+
     fn block_draw(visual: &mut VisualTestContext) {
         for _ in 0..3 {
             visual.run_until_parked();

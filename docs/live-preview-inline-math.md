@@ -1,4 +1,4 @@
-# Live Preview inline math (#1645)
+# Native math in Read and Live Preview (#1645, #2596)
 
 Point 14 of research #1537, accepted 2026-10-24. Live Preview draws inline
 `$…$` formulas instead of leaving their TeX raw.
@@ -18,7 +18,17 @@ Point 14 of research #1537, accepted 2026-10-24. Live Preview draws inline
   superscript, `&` alignment): the line shows the exact source, delimiters
   included, and the card states the reason in the danger color instead of
   showing an empty box.
-- Display math (`$$…$$`) is unchanged: exact source in Live Preview.
+- Read uses the same linear inline rendering, including italic/bold runs,
+  paragraph wrapping, selection and search. Unsupported inline TeX shows its
+  exact source with delimiters. Literal code and money stay unchanged.
+- Display math (`$$…$$`, standalone on one or multiple lines) uses the same
+  native two-dimensional layout as the caret card in Read and Live Preview.
+  In Live Preview, a caret, selection, IME composition or replacement touching
+  that block reveals its exact source. Leaving it draws the formula again.
+  Source mode and canonical Markdown bytes remain unchanged. Display math in
+  a rendered callout uses that callout's existing source reveal boundary.
+- Unsupported display TeX retains its source and a visible error reason;
+  it never becomes an empty formula. The supported TeX subset is unchanged.
 
 ## Conservative detection
 
@@ -31,7 +41,7 @@ number with separators and at most one `k`/`M`/`B`/`%` suffix. So
 and their paragraphs keep rendering their other formatting. A `$` left as text
 no longer forces its paragraph to raw source.
 
-The Reader's code-span fallback applies the same amount rule, and its closing
+The Reader's internal inline-math projection applies the same amount rule, and its closing
 `$` must be the next unescaped one, so `$1.5k/mo and $2$` is no longer read as
 the formula `1.5k/mo and $2`.
 
@@ -42,7 +52,9 @@ subset (4 KiB per formula, nesting depth 24) into a small layout tree. The
 in-place rendering is that tree written on one line in Unicode, so it uses the
 editor's own text layout, wrapping, selection and hit-testing; the card lays
 the same tree out with GPUI flex elements. No raster, no background job, no
-new dependency, no vendor patch.
+new dependency. A small gpui-kit inline-parser extension replaces tagged
+Reader math with ordinary styled paragraph text; no gpui core changes are needed.
+The tags carry exact-source fallback labels and are presentation data only.
 
 ## Cost on the editing path
 
@@ -59,3 +71,13 @@ new dependency, no vendor patch.
 Native GUI rendering (glyph coverage of the note font for symbols such as `∑`
 and `ℝ`, card placement near window edges, IME inside a formula) was checked
 only through headless GPUI tests, not on a real display.
+
+## #2596 verification
+
+The required hosted gate covers the conservative dollar rules and projection
+source mapping. The `math-native` workflow executes Read selection/search/source
+copy, stacked display fractions, unsupported-TeX fallback, and Live Preview
+render/reveal with CRLF source on macOS and Windows. A Windows mutation removes
+the Read inline/display renderer registrations, requires both compiled tests to
+fail at runtime, then restores the exact bytes and reruns the complete math tests.
+These native-runner GPUI tests do not claim installed tester acceptance.

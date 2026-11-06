@@ -1653,6 +1653,7 @@ fn markdown_plugins_at(
     .markdown_block_renderer("footnote", move |node, window, cx| {
         reader_obsidian::render_footnote(node, &footnote_link_handler, window, cx)
     })
+    .markdown_inline_parser(reader_obsidian::parse_inline_math)
     .markdown_block_parser(reader_obsidian::parse_math)
     .markdown_block_renderer("math", reader_obsidian::render_math)
     .markdown_block_parser(reader_obsidian::parse_block_marker)

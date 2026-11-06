@@ -808,7 +808,7 @@ fn process_source(body: &str, vault: &Vault, from: &str, expand: bool) -> String
 }
 
 /// `reader` adds the Obsidian presentation passes (#651): comments hidden,
-/// math as source, footnotes numbered, block IDs marked. The MCP source keeps
+/// math tagged for native rendering, footnotes numbered, block IDs marked. The MCP source keeps
 /// the note as written.
 fn process_source_collect(
     body: &str,
