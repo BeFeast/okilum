@@ -1,0 +1,39 @@
+name: sync-v2-mac-ui-feasibility
+on:
+  push:
+    branches: ['sync-v2-mac-ui-probe/**']
+permissions:
+  contents: read
+jobs:
+  screen:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - name: Inspect hosted display and real capture capability
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          cat > "$RUNNER_TEMP/probe.swift" <<'SWIFT'
+          import AppKit
+          import CoreGraphics
+          var count: UInt32 = 0
+          let code = CGGetActiveDisplayList(0, nil, &count)
+          print("activeDisplayStatus=\(code.rawValue) count=\(count)")
+          print("screenCapturePreflight=\(CGPreflightScreenCaptureAccess())")
+          print("accessibilityTrusted=\(AXIsProcessTrusted())")
+          print("screenCount=\(NSScreen.screens.count)")
+          print("session=\(String(describing: CGSessionCopyCurrentDictionary()))")
+          SWIFT
+          swift "$RUNNER_TEMP/probe.swift" | tee "$RUNNER_TEMP/evidence/display.txt"
+          set +e
+          /usr/sbin/screencapture -x "$RUNNER_TEMP/evidence/hosted-desktop.png" > "$RUNNER_TEMP/evidence/capture.txt" 2>&1
+          code=$?
+          printf 'screencapture_exit=%s\n' "$code" | tee -a "$RUNNER_TEMP/evidence/capture.txt"
+          ls -l "$RUNNER_TEMP/evidence"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sync-v2-hosted-screen-feasibility
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
+          retention-days: 3
