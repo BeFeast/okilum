@@ -1,0 +1,59 @@
+name: sync-v2-mac-ui-artifacts
+on:
+  push:
+    branches: ['sync-v2-mac-ui-artifacts/**']
+permissions:
+  contents: read
+jobs:
+  artifacts:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 80b64fbe7c34bda2a2f5978658d02e1656aa790d
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agent-macos-sync-v1
+      - name: Prepare verified native dependencies
+        run: |
+          test "$(uname -m)" = arm64
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          python3 scripts/updater/sparkle.py fetch "$archive"
+          python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+          printf 'DYLD_FRAMEWORK_PATH=%s/vendor/sparkle\n' "$PWD" >> "$GITHUB_ENV"
+      - name: Build production UI binaries without test support or installation
+        run: |
+          evidence="$RUNNER_TEMP/sync-ui"
+          mkdir -p "$evidence/Frameworks"
+          ditto vendor/sparkle/Sparkle.framework "$evidence/Frameworks/Sparkle.framework"
+          for entry in after:80b64fbe7c34bda2a2f5978658d02e1656aa790d before:4345e255ff01603cde56ffb317c332ce68988076; do
+            label=${entry%%:*}
+            source=${entry#*:}
+            git checkout --detach "$source"
+            test "$(git rev-parse HEAD)" = "$source"
+            bash scripts/vendor-setup.sh --verify
+            OKILUM_SOURCE_COMMIT="$source" cargo build --locked -p okilum-shell --bin okilum
+            mkdir -p "$evidence/$label"
+            cp target/debug/okilum "$evidence/$label/okilum"
+            "$evidence/$label/okilum" --build-info | tee "$evidence/$label/build-info.txt"
+            grep -q "$source" "$evidence/$label/build-info.txt"
+            grep -q 'gpui-test-support: no' "$evidence/$label/build-info.txt"
+            shasum -a 256 "$evidence/$label/okilum" > "$evidence/$label/sha256.txt"
+            otool -L "$evidence/$label/okilum" > "$evidence/$label/libraries.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sync-v2-Mac-production-UI-before-after
+          path: ${{ runner.temp }}/sync-ui
+          if-no-files-found: error
+          retention-days: 3
