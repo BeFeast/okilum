@@ -29,6 +29,46 @@ struct FolderRemoval {
     before: serde_json::Value,
     after: serde_json::Value,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Request {
+    id: Uuid,
+    device: String,
+    vaults: BTreeSet<String>,
+}
+pub(super) fn requests(db: &Database, scope: Uuid) -> Vec<Request> {
+    db.removals
+        .iter()
+        .filter(|r| r.local_applied && r.pending.contains_key(&scope))
+        .map(|r| Request {
+            id: r.id,
+            device: r.device.clone(),
+            vaults: r.vaults.clone(),
+        })
+        .collect()
+}
+pub(super) fn acknowledge(db: &mut Database, scope: Uuid, id: Uuid) -> Result<()> {
+    let removal = db
+        .removals
+        .iter_mut()
+        .find(|r| r.id == id && r.local_applied)
+        .context("Unknown removal acknowledgement")?;
+    removal.pending.remove(&scope);
+    Ok(())
+}
+pub(super) fn revoked_operation_allowed(db: &Database, scope: Uuid, operation: &Operation) -> bool {
+    match operation {
+        Operation::RemoveComputer { id, device, .. } => {
+            db.removals.iter().any(|r| r.matches(*id, device))
+        }
+        Operation::PollRemovals {} => db.removals.iter().any(|r| r.pending.contains_key(&scope)),
+        Operation::AcknowledgeRemoval { id } => db
+            .removals
+            .iter()
+            .any(|r| r.id == *id && r.pending.contains_key(&scope)),
+        _ => false,
+    }
+}
 impl Removal {
     pub(super) fn matches(&self, id: Uuid, device: &str) -> bool {
         self.id == id && self.device == device
@@ -391,6 +431,46 @@ impl Controller {
     }
     pub(super) fn reconcile_removals(&self) -> Result<()> {
         self.check()?;
+        // Pairing pins the inviter's listener on both ends. Joiners therefore
+        // pull pending operations through that authenticated channel; attempting
+        // to push to an inviter-owned endpoint would call ourselves.
+        let (local, peers) = {
+            let db = self.shared.db.lock().unwrap();
+            (
+                served(&db),
+                db.peers
+                    .iter()
+                    .chain(db.revoked_peers.iter())
+                    .map(|(id, p)| (*id, p.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for (scope, peer) in peers {
+            if local.contains(&peer.endpoint) {
+                continue;
+            }
+            let Ok(Reply::Removals { requests }) = self.call(
+                peer.endpoint,
+                scope,
+                &peer.key,
+                &peer.public,
+                Operation::PollRemovals {},
+            ) else {
+                continue;
+            };
+            for request in requests {
+                self.receive_removal(scope, request.id, request.device, request.vaults)?;
+                // A lost acknowledgement is replayed on the next pull. The
+                // receiver records and applies before acknowledging, never after.
+                let _ = self.call(
+                    peer.endpoint,
+                    scope,
+                    &peer.key,
+                    &peer.public,
+                    Operation::AcknowledgeRemoval { id: request.id },
+                );
+            }
+        }
         let removals = self.shared.db.lock().unwrap().removals.clone();
         for removal in removals {
             self.prepare_removal(removal.id)?;
@@ -399,6 +479,9 @@ impl Controller {
                 self.apply_removal(removal.id)?;
             }
             for (id, peer) in removal.pending {
+                if local.contains(&peer.endpoint) {
+                    continue;
+                }
                 let reply = self.call(
                     peer.endpoint,
                     id,
