@@ -26,6 +26,24 @@ def ocr(name='current'):
 def click(text,timeout=30):
  def locate():return next((r for r in ocr() if r['text'].strip().casefold()==text.casefold()),None)
  row=wait('visible '+text,locate,timeout);run(driver,'activate',app_pid);run(driver,'click',row['x'],row['y']);event('clicked '+text);time.sleep(1)
+def allow_local_network_dialog():
+ rows=ocr()
+ text=' '.join(r['text'] for r in rows).casefold()
+ if 'local networks' not in text or not any(name in text for name in ['okilum','syncthing']):return False
+ allow=next((r for r in rows if r['text'].strip().casefold()=='allow'),None)
+ if not allow:return False
+ screen('01b-local-network-consent')
+ run(driver,'click',allow['x'],allow['y'])
+ event('allowed named Okilum/Syncthing local-network OS consent on disposable Mac')
+ time.sleep(.5);return True
+
+def bindings(value):
+ if isinstance(value,dict):
+  if all(k in value for k in ['owner','state_directory','supervisor']):yield value
+  for v in value.values():yield from bindings(v)
+ elif isinstance(value,list):
+  for v in value:yield from bindings(v)
+
 def api_from(path):
  xml=ET.parse(path).getroot();address=xml.findtext('gui/address');key=xml.findtext('gui/apikey')
  def api(path,post=False):
@@ -68,6 +86,7 @@ try:
  recorder=subprocess.Popen(['ffmpeg','-hide_banner','-loglevel','warning','-f','avfoundation','-framerate','10','-capture_cursor','1','-i',match[1]+':none','-an','-vf','scale=1024:-2','-c:v','libx264','-preset','ultrafast','-crf','24','-pix_fmt','yuv420p','-movflags','+frag_keyframe+empty_moov',str(out/'raw-pairing.mp4')],stdin=subprocess.PIPE,stdout=open(out/'recorder.log','w'),stderr=subprocess.STDOUT,text=True,start_new_session=True);record_started=time.monotonic();time.sleep(2);assert recorder.poll() is None,'recorder exited'
  click('Share with my computers')
  def shared():
+  allow_local_network_dialog()
   try:return next((s for s in journal().get('sources',[]) if s.get('path')==str(source) and s.get('active')),None)
   except (OSError,ValueError):return None
  owned=wait('UI-created active managed source',shared,120);source_api=api_from(managed/'config/config.xml');source_id=source_api('/rest/system/status')['myID'];folder=owned['id'];assert owned['daemon']['device_id']==source_id
@@ -135,7 +154,11 @@ except BaseException as error:
  event('failure: '+str(error))
  try:screen('failure')
  except Exception:pass
- (out/'failure.txt').write_text(str(error)+'\n');raise
+ (out/'failure.txt').write_text(str(error)+'\n')
+ diagnostics={'managed_exists':managed.exists(),'managed_config_exists':(managed/'config/config.xml').exists(),'direct_exists':direct.exists()}
+ try:diagnostics['source_rows']=[{k:r.get(k) for k in ['id','path','active']} for r in journal().get('sources',[])]
+ except (OSError,ValueError):pass
+ (out/'failure-state.json').write_text(json.dumps(diagnostics,indent=2)+'\n');raise
 finally:
  stop_recording()
  cleanup={}
@@ -163,7 +186,11 @@ finally:
   cleanup['app_pid_gone']=subprocess.run(['ps','-p',str(app_pid)],capture_output=True).returncode!=0
  registration=subprocess.run(['launchctl','print',label],capture_output=True,text=True)
  if registration.returncode==0:
-  assert str(app) in registration.stdout,'refuse cleanup of a different service'
+  (out/'launchctl-before-cleanup.txt').write_text(registration.stdout)
+  saved=json.loads((managed/'sidecar.json').read_text());owned_bindings=list(bindings(saved));assert owned_bindings,'missing exact service ownership binding'
+  assert all(v['owner']==str(os.getuid()) and v['state_directory']==str(managed) and pathlib.Path(v['supervisor']).is_relative_to(app) for v in owned_bindings),'refuse cleanup of a different service binding'
+  run('codesign','--verify','--strict',owned_bindings[0]['supervisor'])
+  cleanup['exact_verified_service_binding']=True
   runtime_pids=owned_runtime_pids();subprocess.run(['launchctl','bootout',label],check=True,capture_output=True)
   for pid in runtime_pids:
    try:os.kill(pid,signal.SIGTERM)

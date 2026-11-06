@@ -62,6 +62,9 @@ jobs:
             ${{ runner.temp }}/sync-v2-evidence/0*.png
             ${{ runner.temp }}/sync-v2-evidence/failure.png
             ${{ runner.temp }}/sync-v2-evidence/failure.txt
+            ${{ runner.temp }}/sync-v2-evidence/failure-state.json
+            ${{ runner.temp }}/sync-v2-evidence/launchctl-before-cleanup.txt
+            ${{ runner.temp }}/sync-v2-evidence/raw-pairing.mp4
             ${{ runner.temp }}/sync-v2-evidence/fresh-Mac-beta-pairing.mp4
             ${{ runner.temp }}/sync-v2-evidence/acceptance-receipt.json
             ${{ runner.temp }}/sync-v2-evidence/cleanup.json
