@@ -1,20 +1,19 @@
 # Sync between your computers
 
 Sync copies a vault's notes and attachments between approved computers using
-Syncthing. On Linux, Okilum can set this up from a fresh installation with its
+Syncthing. On Linux and macOS, Okilum can set this up from a fresh installation with its
 bundled runtime. You do not need an Okilum account, a service, or a server.
 After the first transfer, saved changes and deletions sync automatically in both
 directions. Keep a separate backup: Sync can copy an accidental deletion too.
 
-This describes the Linux flow on `origin/main`, checked at
-`7956dd816ab2f71c747c7eef50aeaa1f5fd4ed5a` (2026-11-06). The
+This describes the shipped Linux and macOS flow. The
 [Linux outcome](https://git.oklabs.uk/BeFeast/okilum/issues/2039#issuecomment-46260)
-records the fresh two-computer run on beta 7538. macOS is **coming** in
-[#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is **coming** in
-[#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490). Platform code and bundled
-binaries alone do not establish that the same setup works there today.
+records the fresh two-computer run on beta 7538. macOS beta 29262 or later supports
+fresh setup in either role; [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489)
+records the native Mac flow, both-direction file checks and walkthrough. Windows
+is **coming** in [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
 
-## Connect two Linux computers
+## Connect Linux and Mac computers
 
 1. **On the computer that already has your notes**, open the vault and choose
    **Share with another computer…** from the app menu. In Settings → Sync, find
@@ -42,13 +41,20 @@ binaries alone do not establish that the same setup works there today.
    you to choose an empty folder; do not delete a working copy to make setup proceed.
 6. Follow the first transfer in the wizard or close it and inspect the vault's
    state on the Sync page. The received vault opens when the controller reports
-   it ready. Save a small edit with **Ctrl+S**, check it on the other computer,
+   it ready. Save a small edit with **Cmd+S** on Mac or **Ctrl+S** on Linux, check it on the other computer,
    then save a change there to check the return direction.
 
-Opening Sync prepares the bundled Linux Syncthing only after checking that no
+On Linux, Okilum prepares its bundled connection only after checking that no
 existing or unavailable runtime needs attention. If a connection is already
 present, explicitly select **Use connection**; Okilum does not silently take it
 over or start a second daemon. See [existing Syncthing](#existing-syncthing).
+
+On Mac, use the installed signed beta. **Share with my computers** or
+**Request connection** prepares the bundled Sync connection. Allow local network
+access when macOS asks. If macOS requires Login Items approval, allow Okilum Sync
+in System Settings → General → Login Items, then use **Try again**. Keep the
+existing Sync state and paired identity; opening Settings alone does not start
+another connection.
 
 Computers pair once. Further authorized vault selections between that pair do
 not need a new URL. Sharing another ordinary vault makes it available to already

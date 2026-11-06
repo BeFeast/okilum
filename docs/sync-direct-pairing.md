@@ -177,18 +177,25 @@ Executed Linux two-daemon evidence and exact source hashes are recorded in
 network/discovery/relay/lifecycle settings are retained. Syncthing REST has no CAS;
 external administrative writers still require coordination.
 
-Current explicit missing boundaries: fresh macOS native absence inventory and
-signed-package/offline staging composition; native acceptance; symmetric
-catalog serving from a formerly receiving computer; general catalog authorization
-changes (ordinary-source sharing below grants its own additions; fleet removal is described above). A running source controller serves additional authorized
-vault selections without a new URL, and paired identities/capabilities are durable,
-but these missing lifecycle boundaries must not be presented as delivered.
+macOS fresh-runtime inventory and signed-package preparation are composed in
+`sidecar/macos/bootstrap.rs`. The installed signed beta prepares on explicit
+Share or Request connection, checks the claimed helper and authenticated REST
+identity, then enrolls or receives the selected vault. It never starts a fallback
+daemon. macOS beta 29262 includes bundled-app executable authentication (#2676);
+[#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489) records actual signed-beta
+native source/receiver UI, file and video evidence. Native compile tests alone
+remain insufficient to establish that flow.
+
+Remaining boundaries include symmetric catalog serving from a formerly receiving
+computer and general catalog authorization changes. Ordinary-source sharing below
+grants its own additions; fleet removal is described above. A running source
+controller serves additional authorized vault selections without a new URL, and
+paired identities/capabilities are durable.
 
 All acceptance uses isolated temporary states/configs and disposable daemons.
 Never mutate the live brain, working configuration, peers or installed app, or
-start a second daemon. The first harness blocker stops that harness. Parent owns
-integration, packaging, native gate and beta delivery; this source does not claim
-a fresh Mac is ready.
+start a second daemon. A failing harness must preserve its evidence and clean up
+its owned processes before another attempt.
 
 ## Ordinary Linux source sharing (#2367)
 
@@ -196,7 +203,9 @@ Settings → Sync lists known and currently open full vaults. **Share with my
 computers** enrolls an ordinary vault in the already selected bundled runtime;
 **Shared with approved computers** records completion. **Choose existing synced
 vault** retains its existing read-only association flow for external replicas.
-No share operation prepares, launches, registers, or stops a daemon.
+`Controller::share_vault` itself never prepares, launches, registers or stops a
+daemon. The platform executor prepares the managed connection on explicit Share
+before calling this source-enrollment API.
 
 `share_vault(prepared, vault)` authenticates the existing private preparation
 receipt, pinned 2.1.6 executable digest and selected daemon/certificate before
