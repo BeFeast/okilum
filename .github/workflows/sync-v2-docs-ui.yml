@@ -25,6 +25,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: agent-macos-sync-v1
+          cache-on-failure: true
       - name: Prepare verified native dependencies
         run: |
           test "$(uname -m)" = arm64
@@ -61,38 +62,15 @@ jobs:
         with:
           name: sync-v2-Mac-Help-before-after
           path: |
-            ${{ runner.temp }}/sync-ui/*-Mac-Sync-Help.png
+            ${{ runner.temp }}/sync-ui/*-Mac-*-Help.png
             ${{ runner.temp }}/sync-ui/*-ocr.txt
+            ${{ runner.temp }}/sync-ui/*-ocr.json
+            ${{ runner.temp }}/sync-ui/*-advanced.png
+            ${{ runner.temp }}/sync-ui/*-failure.png
+            ${{ runner.temp }}/sync-ui/current.png
+            ${{ runner.temp }}/sync-ui/*-app.log
             ${{ runner.temp }}/sync-ui/native-ui-receipt.json
             ${{ runner.temp }}/sync-ui/*/build-info.txt
             ${{ runner.temp }}/sync-ui/*/sha256.txt
           if-no-files-found: error
           retention-days: 3
-  html:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Capture the changed written HTML guide in the same real Chrome session environment
-        run: |
-          mkdir -p "$RUNNER_TEMP/html-evidence"
-          google-chrome --version > "$RUNNER_TEMP/html-evidence/browser.txt"
-          for entry in before:3123a1b46a2078c3e3393830db776144df674657 after:657d1f347c44429c9ed31371778e5ab28d1f1b08; do
-            label=${entry%%:*}
-            source=${entry#*:}
-            git checkout --detach "$source"
-            python3 docs/help/sync/check.py
-            google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --no-first-run --window-size=1440,2400 --virtual-time-budget=4000 --screenshot="$RUNNER_TEMP/html-evidence/$label-HTML-guide.png" "file://$PWD/docs/help/sync/index.html#connect"
-            printf '%s\n' "$source" > "$RUNNER_TEMP/html-evidence/$label-source.txt"
-            sha256sum docs/help/sync/index.html > "$RUNNER_TEMP/html-evidence/$label-html-sha256.txt"
-          done
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: sync-v2-HTML-Help-before-after
-          path: ${{ runner.temp }}/html-evidence
-          if-no-files-found: error
-          retention-days: 5

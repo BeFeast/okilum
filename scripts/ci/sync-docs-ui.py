@@ -11,7 +11,7 @@ def wait(name,fn,timeout=60):
   if time.monotonic()>end:raise RuntimeError(name)
   time.sleep(.5)
 def ocr():
- run('/usr/sbin/screencapture','-x',base/'current.png');return json.loads(run(driver,'ocrjson',base/'current.png'))
+ run('/usr/sbin/screencapture','-x',base/'current.png');rows=json.loads(run(driver,'ocrjson',base/'current.png'));(base/'current-ocr.json').write_text(json.dumps(rows,indent=2));return rows
 def click(text,contains=False):
  found=wait('visible '+text,lambda:next((r for r in ocr() if (text.casefold() in r['text'].casefold() if contains else r['text'].strip().lstrip('›>▾ ').casefold()==text.casefold())),None))
  run(driver,'click',found['x'],found['y']);time.sleep(1)
@@ -31,15 +31,28 @@ for label in ['before','after']:
   wait('Settings window',settings);run(driver,'resize',process.pid);time.sleep(2)
   for _ in range(7):
    if any('Advanced' in r['text'] for r in ocr()):break
-   run(driver,'scroll',966,610,-7);time.sleep(.7)
+   run(driver,'scroll',880,570,-5);time.sleep(.7)
   click('Advanced',contains=True)
+  run('/usr/sbin/screencapture','-x',base/(label+'-advanced.png'))
+  (base/(label+'-advanced-ocr.json')).write_text(json.dumps(ocr(),indent=2))
   for _ in range(7):
    if any('Help: connect a computer' in r['text'] for r in ocr()):break
-   run(driver,'scroll',966,610,-7);time.sleep(.7)
-  click('Help: connect a computer');wait('native Help title',lambda:any('Sync setup help' in r['text'] for r in ocr()));time.sleep(2)
+   run(driver,'scroll',880,570,-5);time.sleep(.7)
+  click('connect a computer',contains=True);wait('native Help title',lambda:any('Sync setup help' in r['text'] for r in ocr()));time.sleep(2)
   image=base/(label+'-Mac-Sync-Help.png');run('/usr/sbin/screencapture','-x',image);text=run(driver,'ocr',image);(base/(label+'-ocr.txt')).write_text(text)
   assert ('macos is coming' in text.casefold()) if label=='before' else ('29262' in text and 'macos' in text.casefold()),text
+  for _ in range(30):
+   visible=ocr()
+   if any('Check both directions' in r['text'] for r in visible):break
+   run(driver,'scroll',850,550,-4);time.sleep(.6)
+  wait('visible Save keyboard instruction',lambda:any(('Cmd+S' if label=='after' else 'Ctrl+S') in r['text'] for r in ocr()))
+  save_image=base/(label+'-Mac-Save-Help.png');run('/usr/sbin/screencapture','-x',save_image)
+  (base/(label+'-save-ocr.txt')).write_text(run(driver,'ocr',save_image))
   rows.append(dict(label=label,build_info=(base/label/'build-info.txt').read_text(),screenshot_sha256=hashlib.sha256(image.read_bytes()).hexdigest(),native_help_rendered=True,ocr_control_passed=True))
+ except BaseException:
+  run('/usr/sbin/screencapture','-x',base/(label+'-failure.png'))
+  (base/(label+'-failure-ocr.json')).write_text(json.dumps(ocr(),indent=2))
+  raise
  finally:
   if process.poll() is None:
    os.killpg(process.pid,signal.SIGTERM)
