@@ -74,6 +74,24 @@ A lifetime lock prevents two controllers from owning the same journal.
   and refreshes it like `okilum sync serve`, so paired computers are answered
   without opening Settings → Sync (#2589). Settings reuses that controller.
 
+### Fleet removal (#2042)
+
+`sync_computers()` combines paired identities with the members of associated
+Syncthing folders. `remove_computer(device_id)` records a durable removal before
+changing any folder. Exact before/after folder plans make a lost REST reply
+replayable; removed computers keep their files and pause their associated copies.
+Unrelated folders and external device relationships remain unchanged.
+
+The paired channel is directional: both journals pin the inviter's listener.
+Joiners pull pending removals from that listener during refresh, apply the
+operation, then acknowledge it. Inviters never try to push to their own endpoint.
+Offline deliveries and ACK loss survive restart. A removed pairing retains only
+the credentials needed for its recorded removal replay, scoped pull and ACK;
+it cannot read a catalog, exchange transport hints or grant new membership.
+The introducer mesh carries folder membership removals to plain Syncthing peers
+that trust the introducer with introduction removals enabled. No device list is
+stored in the vault. Settings shows pending delivery until acknowledgement.
+
 ### `okilum sync` while another process owns Sync (#2589)
 
 One process owns a computer's Sync journal (its lifetime lock). When that owner
@@ -157,7 +175,7 @@ external administrative writers still require coordination.
 Current explicit missing boundaries: fresh macOS native absence inventory and
 signed-package/offline staging composition; native acceptance; symmetric
 catalog serving from a formerly receiving computer; general catalog authorization
-changes and peer removal (ordinary-source sharing below grants its own additions). A running source controller serves additional authorized
+changes (ordinary-source sharing below grants its own additions; fleet removal is described above). A running source controller serves additional authorized
 vault selections without a new URL, and paired identities/capabilities are durable,
 but these missing lifecycle boundaries must not be presented as delivered.
 
