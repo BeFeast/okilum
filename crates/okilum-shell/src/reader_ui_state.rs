@@ -1336,7 +1336,7 @@ impl Reader {
             note: self
                 .file_preview
                 .as_ref()
-                .filter(|p| p.log.is_some() || reader_delimited::editable(&p.rel))
+                .filter(|p| p.log.is_some() || reader_delimited::previewable(&p.rel))
                 .map_or_else(|| self.current_rel.clone(), |p| p.rel.clone()),
             history,
             history_index: self.navigation.history_ix,

@@ -52,6 +52,11 @@ pub(crate) fn editable(rel: &str) -> bool {
             .is_some_and(|e| e.eq_ignore_ascii_case("txt"))
 }
 
+/// Document admission/restoration is separate from write authority.
+pub(crate) fn previewable(rel: &str) -> bool {
+    editable(rel) || crate::reader_code_file::eligible(rel)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Cell {
     row: usize,

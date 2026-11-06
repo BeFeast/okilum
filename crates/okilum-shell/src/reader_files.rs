@@ -511,7 +511,7 @@ impl Reader {
                     self.discover_source_recovery(cx);
                 }
                 self.show_window_title(Some(self.selected_title()), window, cx);
-                if log || reader_delimited::editable(rel) {
+                if log || reader_delimited::previewable(rel) {
                     self.record_usable_document(cx);
                 } else {
                     self.focus_handle.focus(window, cx);

@@ -244,3 +244,52 @@ fn data_view_2669_native_32_mib_multiline_file_keeps_full_find_and_numbered_edit
     });
     assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
 }
+
+#[gpui::test]
+fn data_view_2669_native_standalone_xml_mounts_and_restores_a_preview_without_markdown_or_editing(
+    cx: &mut TestAppContext,
+) {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("vault");
+    std::fs::create_dir(&root).unwrap();
+    let source = "<root><value>read-only</value></root>\n";
+    let path = root.join("data.xml");
+    std::fs::write(&path, source).unwrap();
+    cx.update(crate::test_init);
+    let mut reader = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let entity = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    open_path: Some(path.clone()),
+                    single_file: true,
+                    index_dir: Some(fixture.path().join("index")),
+                    session_directory: Some(fixture.path().join("state")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        reader = Some(entity.clone());
+        Root::new(entity, window, cx)
+    });
+    let reader = reader.unwrap();
+    visual.run_until_parked();
+    reader.update_in(visual, |reader, window, cx| {
+        assert!(reader.single_file);
+        assert_eq!(reader.selected_file(), "data.xml");
+        let input = reader
+            .code_view_input(cx)
+            .expect("direct XML is not projected as Markdown");
+        assert_eq!(input.read(cx).value().as_ref(), source);
+        assert!(input.read(cx).is_readonly());
+        assert!(reader.editing.is_none());
+        assert!(!reader.code_file_editable(cx));
+        // This must not widen the existing writable-format gate.
+        reader.toggle_source(window, cx);
+        assert!(reader.editing.is_none());
+        reader.record_usable_document(cx);
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+}

@@ -276,7 +276,7 @@ fn prepare_first_existing_document(
     }
     if quick_file
         && canonical_path.is_file()
-        && reader_delimited::editable(&canonical_path.to_string_lossy())
+        && reader_delimited::previewable(&canonical_path.to_string_lossy())
     {
         return prepare_plain_file(&canonical_path, root, cancel);
     }
@@ -392,7 +392,7 @@ fn prepare_first_existing_document(
                 .filter(|hint| !hint.is_empty())
                 // Logs are only remembered by the quick viewer.
                 .filter(|hint| !okilum_core::log::is_log_path(Path::new(hint)))
-                .filter(|hint| !reader_delimited::editable(hint))
+                .filter(|hint| !reader_delimited::previewable(hint))
                 .filter(|hint| !opens_as_file(hint))
                 .and_then(|hint| {
                     let path = intent.root.join(&hint);
@@ -1658,7 +1658,7 @@ impl Reader {
             .intent
             .note
             .clone()
-            .filter(|rel| reader_delimited::editable(rel) || opens_as_file(rel));
+            .filter(|rel| reader_delimited::previewable(rel) || opens_as_file(rel));
         let created_note = pending.intent.created_note;
         reader_open::register(cx.entity().downgrade(), pending.intent.root, cx);
         if preserve_document {
@@ -2213,7 +2213,9 @@ impl Reader {
         }
         // A log in the quick viewer is the document to restore (#602).
         let document = match &self.file_preview {
-            Some(preview) if preview.log.is_some() || reader_delimited::editable(&preview.rel) => {
+            Some(preview)
+                if preview.log.is_some() || reader_delimited::previewable(&preview.rel) =>
+            {
                 preview.rel.clone()
             }
             _ => self.current_rel.clone(),
