@@ -29,6 +29,7 @@ suite http-updates 180 cargo test --locked -p okilum-http --features updates --n
 suite issue2572 120 cargo test --locked -p okilum-shell --bin okilum issue2572_ -- --nocapture
 # #1587: preserve explicit non-empty classifier/tree/badge click evidence.
 suite issue1587 120 cargo test --locked -p okilum-shell --bin okilum issue1587_ -- --nocapture
+suite issue1622 120 cargo test --locked -p okilum-shell --bin okilum issue1622_ -- --nocapture
 # Keep an explicit non-empty Settings dismissal verdict ahead of the full shell.
 # Keep Board filter interaction and model verdicts explicit and non-empty.
 suite issue2532 120 cargo test --locked -p okilum-shell --bin okilum issue2532_ -- --nocapture

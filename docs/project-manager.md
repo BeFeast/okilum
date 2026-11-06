@@ -380,6 +380,26 @@ plans preserve all Markdown, and todo lists retain every step and its status.
 
 The mounted panel names its identity **Manager** once. Section navigation uses **Chat**, **Rules** and **Skills**; the conversation tab must not repeat the identity heading (#2463). Status, options and Open in T3 stay in the compact header above every section.
 
+### Local instruction Rules (#1590)
+
+Rules lists local ancestor instruction files and their imports in discovery
+order. A repeated canonical source remains a reference to its first occurrence,
+with no second source payload, byte/token charge or duplicate-text flag. Cycles
+and unavailable imports retain visible diagnostics. Provider-specific candidates
+remain visible with unknown precedence; their bytes are separate from the unique
+instruction totals. This inventory cannot establish what a remote agent loaded.
+
+Exact duplicate lines and similar wording across distinct instruction sources
+are flagged separately. Similarity uses normalized word overlap and a bounded
+heading edit comparison; each hint names the peer file and line. These are
+review hints, not semantic-equivalence or contradiction verdicts. Analysis limits
+produce a visible partial-analysis message without truncating source snapshots
+or changing their totals.
+
+The list scrolls within the project panel while the Manager header stays fixed.
+Open read only shows the discovered snapshot; returning to layers retains the
+list position. Rules never writes the instruction files.
+
 The generated [workspace concept](https://pomoi.co/f/88b2efbd-aae4-4eea-ad8a-ae015cb393f0/01-workspace.png) and [model-selector concept](https://pomoi.co/f/c0a007cd-f9cd-45c7-85b5-dc1d1ef825aa/02-model-selector.png) guide the native composition. They are design references, not product screenshots or acceptance evidence. Their synthetic avatars, tasks and model metadata are not app features.
 
 Manager shares one typography and spacing scale across its compact identity header, readable message history and single message surface. Active status/current request and the exact run-scoped Stop action belong above text entry inside that surface. Attachments, the real model control and Send/mode disclosure belong to its wrapping toolbar. Composer observes its owning ProjectView for confirmed model/catalog state; ordinary keystrokes remain local to Composer and do not invalidate history.

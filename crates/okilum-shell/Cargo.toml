@@ -19,6 +19,8 @@ settings-ui-harness = []
 appimage-acceptance-harness = ["okilum-appimage/acceptance-harness"]
 # Non-publishing downloaded-update visual fixture; never starts an updater.
 updater-ui-harness = []
+# Synthetic native clipboard/Finder/Explorer acceptance; never a release feature.
+embed-native-harness = []
 # Non-publishing Project UI fixture; never registers OAuth clients or threads.
 project-ui-harness = ["gpui/profiler"]
 
@@ -56,6 +58,8 @@ url = "2"
 # Names of downloaded pasted images (#1611); already locked through url.
 percent-encoding = "2"
 regex = "1"
+# Native Source hover uses the editor's existing protocol types.
+lsp-types = "=0.97.0"
 resvg = "=0.45.1"
 # Mermaid diagrams in Reader and Live Preview (#1739, #1182).
 merman = "=0.9.2"

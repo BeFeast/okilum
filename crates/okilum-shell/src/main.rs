@@ -130,6 +130,7 @@ mod reader_settings;
 // One module for Linux and macOS: an `include!` wrapper made every name in
 // it macro-expanded on macOS only, so `use super::*` plus an explicit
 // `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
+mod reader_keymap;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod reader_settings_sync;
 mod reader_settings_vaults;
@@ -256,7 +257,6 @@ use gpui_component::{
     v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Root, Selectable as _,
     Sizable as _, Theme, TitleBar,
 };
-use platform::labels::with_shortcut;
 // The schemes come from core, not from copies here. The shell only needs to
 // recognise what core emitted; two independent definitions are free to drift,
 // and the click handler would then quietly stop matching links the renderer
@@ -1007,8 +1007,12 @@ struct Opts {
 #[derive(Clone)]
 struct LocalImage {
     url: String,
-    caption: String,
     drawing_size: Option<(f32, Option<f32>)>,
+}
+#[derive(Clone)]
+struct LocalImages {
+    images: Vec<LocalImage>,
+    caption: String,
 }
 
 fn mdast_text(node: &markdown_ast::Node, out: &mut String) {
@@ -1339,7 +1343,7 @@ fn reader_plugins_at(
             }
         }),
         Arc::new(move |url| {
-            if url == okilum_core::render::UNAVAILABLE_IMAGE {
+            if url.starts_with(okilum_core::render::UNAVAILABLE_IMAGE) {
                 return Some(MarkdownImage::Unavailable);
             }
             if let Some(payload) = url.strip_prefix("okilum-drawing-unavailable:") {
@@ -1447,78 +1451,101 @@ fn markdown_plugins_at(
         let markdown_ast::Node::Paragraph(p) = node else {
             return None;
         };
-        let mut url = None;
-        let mut unavailable = false;
+        let mut images = Vec::new();
         let mut caption = String::new();
-        let mut drawing_size = None;
         for child in &p.children {
             match child {
                 markdown_ast::Node::Image(image)
-                    if url.is_none()
-                        && !image.url.starts_with(okilum_core::obsidian::MATH_SCHEME) =>
+                    if !image.url.starts_with(okilum_core::obsidian::MATH_SCHEME)
+                        && parse_image(&image.url).is_some() =>
                 {
-                    drawing_size = image.title.as_deref().and_then(reader_drawing::parse_size);
-                    if let Some(image_source) = parse_image(&image.url) {
-                        unavailable = matches!(image_source, MarkdownImage::Unavailable);
-                        url = Some(image.url.clone());
-                    }
+                    images.push(LocalImage {
+                        url: image.url.clone(),
+                        drawing_size: image.title.as_deref().and_then(reader_drawing::parse_size),
+                    });
                 }
                 other => caption.push_str(cx.node_source(other)?),
             }
         }
-        let url = url?;
-        let node = MarkdownNode::new(
-            "local-image",
-            LocalImage {
-                url,
-                caption: caption.trim().to_string(),
-                drawing_size,
-            },
-        );
-        Some(if unavailable {
-            node.plain_part("status", "Image unavailable")
-        } else {
-            node.markdown_part("caption", caption.trim().to_string())
-        })
-    })
-    .markdown_block_renderer("local-image", move |node, _window, cx| {
-        match node.data::<LocalImage>() {
-            Some(data) => {
-                match render_image(&data.url) {
-                    Some(MarkdownImage::Drawing(root, path)) => {
-                        return reader_drawing::render(&root, &path, data.drawing_size, _window, cx)
-                    }
-                    Some(MarkdownImage::DrawingUnavailable(payload)) => {
-                        return reader_drawing::unavailable(&payload, cx);
-                    }
-                    _ => {}
-                }
-                let Some(MarkdownImage::Source(image)) = render_image(&data.url) else {
-                    let element = node.render_part("status", |style| style, _window, cx);
-                    return match &image_actions {
-                        Some(reader) => {
-                            reader_image_actions::decorate(reader.clone(), &data.url, element, cx)
-                        }
-                        None => element,
-                    };
-                };
-                let mut el = v_flex()
-                    .py_2()
-                    .gap_1()
-                    .child(reader_image::ReaderImage::new(image));
-                if !data.caption.is_empty() {
-                    el = el.child(node.render_part("caption", |style| style, _window, cx));
-                }
-                let element = el.into_any_element();
-                match &image_actions {
-                    Some(reader) => {
-                        reader_image_actions::decorate(reader.clone(), &data.url, element, cx)
-                    }
-                    None => element,
-                }
-            }
-            None => div().into_any_element(),
+        if images.is_empty() {
+            return None;
         }
+        let mut node = MarkdownNode::new(
+            "local-image",
+            LocalImages {
+                images: images.clone(),
+                caption: caption.trim().to_owned(),
+            },
+        )
+        .markdown_part("caption", caption.trim().to_owned());
+        for (index, image) in images.iter().enumerate() {
+            if matches!(parse_image(&image.url), Some(MarkdownImage::Unavailable)) {
+                let missing =
+                    okilum_core::render::unavailable_target(&image.url).unwrap_or_default();
+                node = node.plain_part(
+                    format!("status-{index}"),
+                    format!("File not found or ambiguous: {missing}"),
+                );
+            }
+        }
+        Some(node)
+    })
+    .markdown_block_renderer("local-image", move |node, window, cx| {
+        let Some(data) = node.data::<LocalImages>() else {
+            return div().into_any_element();
+        };
+        let mut column = v_flex().py_2().gap_1();
+        for (index, image) in data.images.iter().enumerate() {
+            let element = match render_image(&image.url) {
+                Some(MarkdownImage::Drawing(root, path)) => {
+                    reader_drawing::render(&root, &path, image.drawing_size, window, cx)
+                }
+                Some(MarkdownImage::DrawingUnavailable(payload)) => {
+                    reader_drawing::unavailable(&payload, cx)
+                }
+                _ => {
+                    if let Some(reader) = &image_actions {
+                        if let Some(element) =
+                            reader_image_actions::attachment(reader.clone(), &image.url, cx)
+                        {
+                            column = column.child(element);
+                            continue;
+                        }
+                    }
+                    let element = match render_image(&image.url) {
+                        Some(MarkdownImage::Source(source)) => {
+                            reader_image::ReaderImage::new(source)
+                                .with_error_message("File not found or unreadable")
+                                .into_any_element()
+                        }
+                        _ => div()
+                            .debug_selector(|| "live-image-unavailable".into())
+                            .child(node.render_part(
+                                &format!("status-{index}"),
+                                |style| style,
+                                window,
+                                cx,
+                            ))
+                            .into_any_element(),
+                    };
+                    match &image_actions {
+                        Some(reader) => reader_image_actions::decorate(
+                            reader.clone(),
+                            &image.url,
+                            element,
+                            live,
+                            cx,
+                        ),
+                        None => element,
+                    }
+                }
+            };
+            column = column.child(element);
+        }
+        if !data.caption.is_empty() {
+            column = column.child(node.render_part("caption", |style| style, window, cx));
+        }
+        column.into_any_element()
     })
     .markdown_block_parser(move |node, cx| parse_callout(node, cx, fold_base))
     .markdown_block_renderer("callout", move |node, _window, cx| {
@@ -4730,7 +4757,14 @@ impl Reader {
                     .ghost()
                     .small()
                     .icon(IconName::ChevronUp)
-                    .tooltip(with_shortcut("Previous match", "shift-enter"))
+                    .tooltip(reader_shortcuts::hint(
+                        "Previous match",
+                        &gpui_component::input::Enter {
+                            secondary: false,
+                            shift: true,
+                        },
+                        cx,
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| this.find_step(-1, cx))),
             )
             .child(
@@ -4739,7 +4773,14 @@ impl Reader {
                     .ghost()
                     .small()
                     .icon(IconName::ChevronDown)
-                    .tooltip(with_shortcut("Next match", "enter"))
+                    .tooltip(reader_shortcuts::hint(
+                        "Next match",
+                        &gpui_component::input::Enter {
+                            secondary: false,
+                            shift: false,
+                        },
+                        cx,
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| this.find_step(1, cx))),
             )
             .child(
@@ -8403,11 +8444,10 @@ impl Render for Reader {
             .children(sheet_layer)
             .children(dialog_layer)
             .children(notification_layer)
-            .children(
-                self.file_menu
-                    .as_ref()
-                    .map(|(menu, position)| anchored().position(*position).child(menu.clone())),
-            )
+            .children(self.file_menu.as_ref().map(|(menu, position)| {
+                deferred(anchored().position(*position).child(menu.clone()))
+                    .with_priority(gpui_base::POPUP_PRIORITY)
+            }))
             .children(self.render_title_nav_overlay(cx))
             .map(|view| {
                 #[cfg(all(target_os = "linux", feature = "project-ui-harness"))]
@@ -8440,6 +8480,10 @@ OPTIONS:
 ";
 
 fn main() {
+    #[cfg(feature = "embed-native-harness")]
+    if reader_image_actions::native_harness::entry() {
+        return;
+    }
     if let Err(error) = linux_sprint::initialize() {
         eprintln!("Linux Sprint isolation: {error:#}");
         std::process::exit(1);
@@ -8703,6 +8747,7 @@ fn main() {
             eprintln!("Embedded typography unavailable: {error}");
         }
         reader_fonts::install(cx);
+        reader_keymap::install(cx);
         drop(fonts_phase);
         let appearance_phase = diagnostics.phase("appearance_load");
         let (appearance, theme) = load_appearance(cx);

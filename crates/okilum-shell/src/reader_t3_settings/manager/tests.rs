@@ -75,7 +75,7 @@ fn clipboard_is_untouched_without_consent_for_foreign_links_and_after_cancel(
     let link = "https://t3.example/pair#token=23456789ABCD";
     cx.update(|cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(link.into()));
-        activated(cx);
+        consume_clipboard(project::credentials::Store::default(), cx);
         assert_eq!(entry(&env, cx).stage, Stage::NotConnected);
         assert_eq!(
             cx.read_from_clipboard().unwrap().text().as_deref(),
@@ -85,15 +85,29 @@ fn clipboard_is_untouched_without_consent_for_foreign_links_and_after_cancel(
         assert_eq!(entry(&env, cx).stage, Stage::Waiting);
         let foreign = "https://foreign.example/pair#token=23456789ABCD";
         cx.write_to_clipboard(ClipboardItem::new_string(foreign.into()));
-        activated(cx);
+        consume_clipboard(project::credentials::Store::default(), cx);
         assert_eq!(entry(&env, cx).stage, Stage::Waiting);
         assert_eq!(
             cx.read_from_clipboard().unwrap().text().as_deref(),
             Some(foreign)
         );
+        let previous_activation = waiting_generations(cx);
+        cancel(&env, cx);
+        begin(&env, cx);
+        cx.write_to_clipboard(ClipboardItem::new_string(link.into()));
+        assert!(!consume_clipboard_at(
+            project::credentials::Store::default(),
+            &previous_activation,
+            cx,
+        ));
+        assert_eq!(entry(&env, cx).stage, Stage::Waiting);
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some(link)
+        );
         cancel(&env, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(link.into()));
-        activated(cx);
+        consume_clipboard(project::credentials::Store::default(), cx);
         assert_eq!(entry(&env, cx).stage, Stage::NotConnected);
         assert_eq!(
             cx.read_from_clipboard().unwrap().text().as_deref(),
@@ -158,6 +172,7 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
     let focus_returns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let returns = focus_returns.clone();
     let focus_env = env.clone();
+    let delivered_link = format!("{}/pair#token=23456789ABCD", env.origin());
     let (root, visual) = cx.add_window_view(|window, cx| {
         // The production Settings/panel observes Connections; this minimal
         // surface must notify the condition waiter on the same global updates.
@@ -167,8 +182,12 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
             if window.is_window_active() {
                 if entry(&focus_env, cx).stage == Stage::Waiting {
                     returns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    // Model Wayland: Selection arrives after the Enter callback.
+                    let link = delivered_link.clone();
+                    cx.defer(move |cx| cx.write_to_clipboard(ClipboardItem::new_string(link)));
                 }
-                consume_clipboard(
+                activated_with_store(
+                    window,
                     project::credentials::Store {
                         test: Some(store_for_focus.clone()),
                     },
@@ -181,10 +200,11 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
         Root::new(surface, window, cx)
     });
     visual.deactivate_window();
-    let text = format!("{}/pair#token=23456789ABCD", env.origin());
     visual.update(|_, cx| {
         begin(&env, cx);
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "the previous clipboard offer".into(),
+        ));
         assert_eq!(entry(&env, cx).stage, Stage::Waiting);
     });
     visual.update(|window, _| window.activate_window());
@@ -203,7 +223,7 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
             .and_then(|item| item.text())
             .unwrap_or_default()
             .is_empty());
-        activated(cx); // Duplicate activation must not exchange twice.
+        consume_clipboard(project::credentials::Store::default(), cx); // Duplicate activation must not exchange twice.
     });
     visual.update(|_, cx| {
         let e = entry(&env, cx);

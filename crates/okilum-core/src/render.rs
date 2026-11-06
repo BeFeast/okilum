@@ -38,12 +38,39 @@ fn embed_regex() -> &'static Regex {
     &EMBED
 }
 
+/// Attachments retain a visible file surface instead of becoming ordinary links.
+/// Extensionless wiki targets keep note transclusion semantics.
+pub fn file_embed_target(target: &str) -> bool {
+    target
+        .rsplit('/')
+        .next()
+        .unwrap_or(target)
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| !matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown"))
+}
+
+pub fn unavailable_file(target: &str) -> String {
+    format!(
+        "{UNAVAILABLE_IMAGE}?target={}",
+        crate::document_links::encode(target)
+    )
+}
+
+pub fn unavailable_target(url: &str) -> Option<String> {
+    url.strip_prefix(&format!("{UNAVAILABLE_IMAGE}?target="))
+        .map(crate::document_links::decode)
+}
+
 /// Obsidian embeds `![[x]]` are not comrak wikilinks; turn image embeds into
 /// standard images and other embeds into plain wikilinks before parsing.
 ///
 /// Code spans and blocks are left alone: an embed written inside one is an
 /// example, not an embed (#20).
 pub fn preprocess(text: &str) -> String {
+    preprocess_with_files(text, |_| false)
+}
+
+fn preprocess_with_files(text: &str, is_file: impl Fn(&str) -> bool) -> String {
     replace_in_prose(text, |prose| {
         embed_regex()
             .replace_all(prose, |cap: &regex::Captures| {
@@ -63,12 +90,7 @@ pub fn preprocess(text: &str) -> String {
                         title
                     );
                 }
-                let ext = base.rsplit('.').next().unwrap_or("").to_lowercase();
-                if [
-                    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "heic", "heif",
-                ]
-                .contains(&ext.as_str())
-                {
+                if file_embed_target(base) || is_file(base) {
                     format!("![]({})", base.replace(' ', "%20"))
                 } else {
                     format!("[[{inner}]]")
@@ -105,7 +127,7 @@ pub fn rewrite_links<'a>(root: &'a AstNode<'a>, vault: &Vault, note_rel: &str, s
             NodeValue::Image(img) => {
                 if !img.url.contains("://") {
                     img.url = image_file_url(&img.url, vault, &resolver, note_rel)
-                        .unwrap_or_else(|| UNAVAILABLE_IMAGE.into());
+                        .unwrap_or_else(|| unavailable_file(&img.url));
                 }
             }
             NodeValue::Link(link) => {
@@ -360,8 +382,7 @@ fn rewrite_source_images_indexed(
             );
         }
         Some(
-            image_file_url(url, vault, resolver, note_rel)
-                .unwrap_or_else(|| UNAVAILABLE_IMAGE.into()),
+            image_file_url(url, vault, resolver, note_rel).unwrap_or_else(|| unavailable_file(url)),
         )
     })
 }
@@ -826,19 +847,50 @@ fn process_source_collect(
     } else {
         std::borrow::Cow::Borrowed(body)
     };
+    let resolver = crate::document_links::IndexedResolver::new(vault);
+    // Resolve wiki file identity before lowering to Markdown image syntax:
+    // wiki root-exact lookup must not acquire Markdown's source-relative bias.
+    let body = replace_in_prose(&body, |prose| {
+        embed_regex()
+            .replace_all(prose, |cap: &regex::Captures| {
+                let base = crate::document_links::wiki_parts(cap[1].trim())
+                    .0
+                    .split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                if crate::excalidraw::is_drawing(base) {
+                    return cap[0].to_owned();
+                }
+                let resolved = resolver.resolve(base, true, from);
+                if resolved.status == "attachment" {
+                    if let Some(url) = resolved
+                        .candidates
+                        .first()
+                        .and_then(|path| url::Url::from_file_path(vault.root.join(path)).ok())
+                    {
+                        return format!("![]({url})");
+                    }
+                }
+                if file_embed_target(base) && vault.paths_complete() {
+                    return format!("![]({})", unavailable_file(base));
+                }
+                cap[0].to_owned()
+            })
+            .into_owned()
+    });
     let s = if expand {
         {
             let _phase = crate::open_diagnostics::phase("embeds");
             expand_embeds_collect(&body, vault, from, identities)
         }
     } else {
-        body.into_owned()
+        body
     };
     let s = {
         let _phase = crate::open_diagnostics::phase("preprocess");
         preprocess(&s)
     };
-    let resolver = crate::document_links::IndexedResolver::new(vault);
     let s = {
         let _phase = crate::open_diagnostics::phase("images");
         rewrite_source_images_indexed(&s, vault, &resolver, from)

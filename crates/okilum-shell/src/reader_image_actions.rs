@@ -8,6 +8,10 @@ use gpui_component::{
 use std::io::Read;
 
 mod metadata;
+#[cfg(feature = "embed-native-harness")]
+pub(super) mod native_harness;
+mod source_hover;
+pub(super) use source_hover::provider as source_hover;
 mod save;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +20,7 @@ enum Command {
     Open,
     Sidebar,
     CopyPath,
+    CopyRelative,
     CopyImage,
     CopyAddress,
     SaveAs,
@@ -42,6 +47,20 @@ pub(super) struct ImageCommand {
     command: Command,
 }
 
+/// Opt-in native QA diagnostics; never include paths or source text.
+fn diagnostics(message: impl std::fmt::Display) {
+    if std::env::var_os("OKILUM_EMBED_DIAGNOSTICS").is_some() {
+        eprintln!("embed-actions: {message}");
+    }
+}
+
+pub(super) fn open_modifier(os: platform::labels::Os, modifiers: Modifiers) -> bool {
+    match os {
+        platform::labels::Os::Mac => modifiers.platform,
+        _ => modifiers.control || modifiers.platform,
+    }
+}
+
 fn reveal_label(os: platform::labels::Os) -> &'static str {
     match os {
         platform::labels::Os::Mac => "Show in Finder",
@@ -62,6 +81,7 @@ impl Target {
             .as_ref()
             .and_then(|path| path.strip_prefix(&reader.vault_root).ok())
             .map(okilum_core::vault::note_path);
+        let missing = url.and_then(okilum_core::render::unavailable_target);
         let remote = parsed
             .as_ref()
             .is_some_and(|url| matches!(url.scheme(), "https" | "http"));
@@ -75,7 +95,7 @@ impl Target {
             generation: reader.navigation.preparation_generation,
             url: (relative.is_some() || remote).then(|| url.unwrap().to_owned()),
             local,
-            relative,
+            relative: relative.or(missing),
             placeholder,
             accepted_source: None,
         }
@@ -95,14 +115,13 @@ impl Target {
             })
     }
     fn entries(&self) -> Vec<(&'static str, Command, bool)> {
+        self.entries_for(platform::labels::Os::CURRENT)
+    }
+    fn entries_for(&self, os: platform::labels::Os) -> Vec<(&'static str, Command, bool)> {
         let available = self.url.is_some();
         let mut entries = Vec::new();
         if self.local.is_some() || !available {
-            entries.push((
-                reveal_label(platform::labels::Os::CURRENT),
-                Command::Reveal,
-                !available,
-            ));
+            entries.push((reveal_label(os), Command::Reveal, !available));
         }
         entries.push((
             if self.local.is_none() && available {
@@ -115,32 +134,76 @@ impl Target {
         ));
         if self.local.is_some() || !available {
             entries.push(("Show in sidebar", Command::Sidebar, self.relative.is_none()));
-            entries.push(("Copy path", Command::CopyPath, !available));
+            entries.push(("Copy path", Command::CopyRelative, self.relative.is_none()));
+            entries.push(("Copy absolute path", Command::CopyPath, !available));
         }
-        entries.push((
-            "Copy image",
-            Command::CopyImage,
-            !available || self.placeholder,
-        ));
-        entries.push(("Copy image address", Command::CopyAddress, !available));
-        // Source/Live Preview keep their existing menu and editing authority.
-        if self.accepted_source.is_some() {
+        if self.is_image() {
             entries.push((
-                "Save image as…",
-                Command::SaveAs,
+                "Copy image",
+                Command::CopyImage,
                 !available || self.placeholder,
             ));
+            entries.push(("Copy image address", Command::CopyAddress, !available));
+            // Source/Live Preview keep their existing menu and editing authority.
+            if self.accepted_source.is_some() {
+                entries.push((
+                    "Save image as…",
+                    Command::SaveAs,
+                    !available || self.placeholder,
+                ));
+            }
         }
-        if self.placeholder {
+        if self.placeholder && self.is_image() {
             entries.push(("Download from iCloud", Command::Download, false));
         }
         entries
     }
+    fn is_image(&self) -> bool {
+        self.local.as_ref().is_none_or(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "png"
+                            | "jpg"
+                            | "jpeg"
+                            | "gif"
+                            | "webp"
+                            | "svg"
+                            | "bmp"
+                            | "heic"
+                            | "heif"
+                            | "tiff"
+                            | "tif"
+                            | "avif"
+                    )
+                })
+        })
+    }
+    fn reference(
+        reader: &Reader,
+        image: &okilum_core::render::image_reference::ImageReference,
+    ) -> Self {
+        Self::captured(
+            reader,
+            Some(
+                &image
+                    .url
+                    .clone()
+                    .unwrap_or_else(|| okilum_core::render::unavailable_file(&image.target)),
+            ),
+        )
+    }
     fn notice(&self) -> Option<&'static str> {
         if self.placeholder {
-            Some("Download this image from iCloud before opening or copying it.")
+            Some(if self.is_image() {
+                "Download this image from iCloud before opening or copying it."
+            } else {
+                "Download this file from iCloud before opening it."
+            })
         } else if self.url.is_none() {
-            Some("Image file not found, outside this vault, or ambiguous.")
+            Some("File not found, outside this vault, or ambiguous.")
         } else {
             None
         }
@@ -153,11 +216,13 @@ pub(super) fn decorate(
     reader: WeakEntity<Reader>,
     url: &str,
     element: AnyElement,
+    live: bool,
     cx: &App,
 ) -> AnyElement {
     let Some(entity) = reader.upgrade() else {
         return element;
     };
+    let menu_open = entity.read(cx).file_menu.is_some();
     let target = Target::captured(entity.read(cx), Some(url));
     let open = target.clone();
     let menu_reader = reader.clone();
@@ -165,37 +230,66 @@ pub(super) fn decorate(
         .id(SharedString::from(format!("image-actions-{url}")))
         .debug_selector(|| "image-action-surface".into())
         .child(element)
-        .tooltip({
-            let target = target.clone();
-            let reader = reader.clone();
-            move |window, cx| metadata::tooltip(reader.clone(), target.clone(), window, cx)
+        .when(live, |el| {
+            el.children(target.relative.clone().map(|path| {
+                div()
+                    .debug_selector(|| "embed-path-caption".into())
+                    .text_size(px(12.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(path)
+            }))
         })
-        .on_mouse_down(MouseButton::Right, move |_, window, cx| {
-            cx.stop_propagation();
-            let target = target.clone();
-            let _ = menu_reader.update(cx, |reader, cx| reader.image_menu(target, window, cx));
+        .when(!menu_open, |el| {
+            el.tooltip({
+                let target = target.clone();
+                let reader = reader.clone();
+                move |window, cx| metadata::tooltip(reader.clone(), target.clone(), window, cx)
+            })
         })
-        .on_mouse_down(MouseButton::Left, move |event, window, cx| {
-            let modified = if cfg!(target_os = "macos") {
-                event.modifiers.platform
-            } else {
-                event.modifiers.control || event.modifiers.platform
+        // A rendered block must claim its own commands before the enclosing
+        // editor arms a second, native context menu for the same press.
+        .capture_any_mouse_down(move |event, window, cx| {
+            let command = match event.button {
+                MouseButton::Right => None,
+                MouseButton::Left
+                    if open_modifier(platform::labels::Os::CURRENT, event.modifiers) =>
+                {
+                    Some(Command::Open)
+                }
+                _ => return,
             };
-            if modified {
-                cx.stop_propagation();
-                let _ = reader.update(cx, |reader, cx| {
-                    reader.image_command(
-                        &ImageCommand {
-                            target: open.clone(),
-                            command: Command::Open,
-                        },
-                        window,
-                        cx,
-                    )
-                });
-            }
+            cx.stop_propagation();
+            let target = if command.is_some() {
+                open.clone()
+            } else {
+                target.clone()
+            };
+            let result = menu_reader.update(cx, |reader, cx| match command {
+                Some(command) => {
+                    reader.image_command(&ImageCommand { target, command }, window, cx)
+                }
+                None => reader.image_menu(target, window, cx),
+            });
+            diagnostics(format_args!("image press dispatched={}", result.is_ok()));
         })
         .into_any_element()
+}
+
+/// Non-image attachments share the same captured identity and platform actions.
+pub(super) fn attachment(reader: WeakEntity<Reader>, url: &str, cx: &App) -> Option<AnyElement> {
+    let entity = reader.upgrade()?;
+    let target = Target::captured(entity.read(cx), Some(url));
+    if target.is_image() {
+        return None;
+    }
+    let label = target.relative.clone()?;
+    let element = h_flex()
+        .gap_2()
+        .py_2()
+        .child(Icon::new(IconName::File).small())
+        .child(label)
+        .into_any_element();
+    Some(decorate(reader, url, element, false, cx))
 }
 
 impl Reader {
@@ -217,7 +311,7 @@ impl Reader {
         };
         self.image_command(
             &ImageCommand {
-                target: Target::captured(self, image.url.as_deref()),
+                target: Target::reference(self, &image),
                 command: Command::Open,
             },
             window,
@@ -227,6 +321,7 @@ impl Reader {
     }
 
     fn image_menu(&mut self, mut target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        diagnostics(format_args!("image menu current={}", target.matches(self)));
         if !target.matches(self) {
             return;
         }
@@ -270,13 +365,19 @@ impl Reader {
             }
             menu
         });
-        cx.subscribe(&popup, |reader, _, _: &DismissEvent, cx| {
+        // Match the toolkit's popup ownership so active image tooltips cannot
+        // cover the menu or arm a second editor context menu underneath it.
+        let popup_context = gpui_base::GlobalState::register_deferred_popover(cx);
+        cx.subscribe(&popup, move |reader, _, _: &DismissEvent, cx| {
+            let _popup_context = &popup_context;
+            diagnostics("image menu dismissed");
             reader.file_menu = None;
             cx.notify();
         })
         .detach();
         popup.focus_handle(cx).focus(window, cx);
         self.file_menu = Some((popup, window.mouse_position()));
+        diagnostics("image menu opened");
         cx.notify();
     }
 
@@ -303,6 +404,12 @@ impl Reader {
                 window,
                 cx,
             );
+            return;
+        }
+        if command == Command::CopyRelative {
+            if let Some(path) = &target.relative {
+                cx.write_to_clipboard(ClipboardItem::new_string(path.clone()));
+            }
             return;
         }
         if command == Command::CopyAddress {
@@ -538,7 +645,7 @@ impl SourceFacts {
             .ranges
             .iter()
             .find(|image| image.range.contains(&cursor))
-            .map(|image| Target::captured(reader, image.url.as_deref()));
+            .map(|image| Target::reference(reader, image));
     }
     pub(super) fn menu(&self, mut menu: NativeMenu) -> NativeMenu {
         let selected = self.0.borrow().selected.clone();
@@ -596,11 +703,80 @@ mod tests {
     }
 
     #[test]
+    fn issue1622_attachment_menu_keeps_both_paths_and_read_only_commands() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("attachments")).unwrap();
+        let path = "attachments/manual.pdf";
+        std::fs::write(root.join(path), "synthetic pdf").unwrap();
+        let file = target(&root, path);
+        let entries = file.entries();
+        for (label, command) in [
+            ("Copy path", Command::CopyRelative),
+            ("Copy absolute path", Command::CopyPath),
+            ("Open in default app", Command::Open),
+        ] {
+            assert!(entries.contains(&(label, command, false)));
+        }
+        assert!(!entries
+            .iter()
+            .any(|(_, cmd, _)| matches!(cmd, Command::CopyImage | Command::SaveAs)));
+        for command in [Command::Reveal, Command::Open, Command::CopyPath] {
+            assert!(
+                matches!(prepare(&file, command).unwrap(), Prepared::Path(p) if p == root.join(path))
+            );
+        }
+        assert_eq!(std::fs::read(root.join(path)).unwrap(), b"synthetic pdf");
+        let cloud_file = Target {
+            placeholder: true,
+            ..file.clone()
+        };
+        assert!(!cloud_file.entries().iter().any(|(_, command, _)| matches!(
+            command,
+            Command::Download | Command::SaveAs | Command::CopyImage
+        )));
+        assert!(cloud_file
+            .entries()
+            .contains(&("Open in default app", Command::Open, true)));
+
+        for os in [
+            platform::labels::Os::Mac,
+            platform::labels::Os::Windows,
+            platform::labels::Os::Linux,
+        ] {
+            assert!(file
+                .entries_for(os)
+                .contains(&(reveal_label(os), Command::Reveal, false)));
+            assert!(file
+                .entries_for(os)
+                .contains(&("Copy path", Command::CopyRelative, false)));
+            assert!(!open_modifier(os, Modifiers::default()));
+            assert!(open_modifier(
+                os,
+                Modifiers {
+                    platform: true,
+                    ..Default::default()
+                }
+            ));
+            assert_eq!(
+                open_modifier(
+                    os,
+                    Modifiers {
+                        control: true,
+                        ..Default::default()
+                    }
+                ),
+                os != platform::labels::Os::Mac
+            );
+        }
+    }
+
+    #[test]
     fn image_menu_capabilities_distinguish_local_remote_missing_and_placeholder() {
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let local = target(&root, "attachments/Привет image.png");
-        assert_eq!(local.entries().len(), 6);
+        assert_eq!(local.entries().len(), 7);
         assert!(local.entries().iter().all(|(_, _, disabled)| !disabled));
         let remote = Target {
             url: Some("https://example.invalid/image.png".into()),
@@ -618,7 +794,7 @@ mod tests {
             relative: None,
             ..local.clone()
         };
-        assert_eq!(missing.entries().len(), 6);
+        assert_eq!(missing.entries().len(), 7);
         assert!(missing.entries().iter().all(|(_, _, disabled)| *disabled));
         assert!(missing.notice().unwrap().contains("not found"));
         let placeholder = Target {

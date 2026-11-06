@@ -86,7 +86,9 @@ pub fn references(source: &str, vault: &Vault, from: &str) -> Vec<ImageReference
                 .next()
                 .unwrap_or("")
                 .trim();
-            let prepared = preprocess(authored);
+            let prepared = preprocess_with_files(authored, |base| {
+                resolver.resolve(base, true, from).status == "attachment"
+            });
             // Notes and drawings keep their existing, separate interactions.
             if !prepared.starts_with("![](") || crate::excalidraw::is_drawing(base) {
                 continue;
@@ -99,7 +101,16 @@ pub fn references(source: &str, vault: &Vault, from: &str) -> Vec<ImageReference
             if let Some(target) = target {
                 images.push(ImageReference {
                     range,
-                    url: resolve(&target, vault, &resolver, from),
+                    url: if vault.paths_complete() {
+                        let resolved = resolver.resolve(base, true, from);
+                        (resolved.status == "attachment")
+                            .then(|| resolved.candidates.first())
+                            .flatten()
+                            .and_then(|path| url::Url::from_file_path(vault.root.join(path)).ok())
+                            .map(String::from)
+                    } else {
+                        resolve(&target, vault, &resolver, from)
+                    },
                     target,
                 });
             }
@@ -147,6 +158,84 @@ pub fn local_path(root: &Path, url: &url::Url) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue1622_attachment_embeds_keep_ranges_paths_and_broken_identity() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("attachments")).unwrap();
+        for path in [
+            "root.png",
+            "attachments/photo.png",
+            "attachments/manual.pdf",
+            "bundle.zip",
+            "sample.unknown",
+        ] {
+            std::fs::write(root.join(path), "synthetic file").unwrap();
+        }
+        let vault = Vault::scan(&root).unwrap();
+        let source = "![[root.png]]\n\n![[attachments/photo.png]]\n\n![[attachments/manual.pdf]]\n\n![[bundle.zip]]\n\n![other](sample.unknown)\n\n![[missing.zip]]\n\n`![[ignored.zip]]`\n";
+        let refs = references(source, &vault, "note.md");
+        assert_eq!(refs.len(), 6);
+        for (reference, path) in refs.iter().zip([
+            "root.png",
+            "attachments/photo.png",
+            "attachments/manual.pdf",
+            "bundle.zip",
+            "sample.unknown",
+        ]) {
+            assert_eq!(
+                reference.url.as_deref(),
+                Some(url::Url::from_file_path(root.join(path)).unwrap().as_str())
+            );
+            assert!(source[reference.range.clone()].starts_with("!["));
+        }
+        assert!(refs[5].url.is_none());
+        let rendered =
+            crate::render::reader_document_from_source(&vault, "note.md", source).rendered;
+        for path in ["root.png", "attachments/manual.pdf", "bundle.zip"] {
+            assert!(
+                rendered.contains(url::Url::from_file_path(root.join(path)).unwrap().as_str()),
+                "{rendered}"
+            );
+        }
+        assert!(
+            rendered.contains(&format!(
+                "{}?target=missing.zip",
+                crate::render::UNAVAILABLE_IMAGE
+            )),
+            "{rendered}"
+        );
+        assert!(!root.join("missing.zip").exists());
+    }
+
+    #[test]
+    fn issue1622_wiki_file_embeds_keep_root_identity_while_markdown_is_relative() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("notes")).unwrap();
+        for path in ["manual.pdf", "notes/manual.pdf"] {
+            std::fs::write(root.join(path), "synthetic").unwrap();
+        }
+        let vault = Vault::scan(&root).unwrap();
+        let source = "![[manual.pdf]]\n\n![local](manual.pdf)\n";
+        let refs = references(source, &vault, "notes/current.md");
+        assert_eq!(refs.len(), 2);
+        let wiki = url::Url::from_file_path(root.join("manual.pdf"))
+            .unwrap()
+            .to_string();
+        let markdown = url::Url::from_file_path(root.join("notes/manual.pdf"))
+            .unwrap()
+            .to_string();
+        assert_eq!(refs[0].url.as_deref(), Some(wiki.as_str()));
+        assert_eq!(refs[1].url.as_deref(), Some(markdown.as_str()));
+        let rendered =
+            crate::render::reader_document_from_source(&vault, "notes/current.md", source).rendered;
+        assert!(
+            rendered.find(&wiki).unwrap() < rendered.find(&markdown).unwrap(),
+            "{rendered}"
+        );
+    }
 
     #[test]
     fn file_image_actions_reject_outside_paths_and_decoded_traversal() {

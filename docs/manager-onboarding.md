@@ -15,6 +15,12 @@ must match; foreign origins, unrelated paths and ambiguous fragments are ignored
 A bare code has no verifiable origin, so only Details accepts it manually.
 Clipboard content is compared again before clearing; unrelated/newer content
 is retained. The pair link is never saved or included in errors/Debug output.
+On Wayland, keyboard focus can arrive before the clipboard Selection offer.
+Activation therefore allows the platform event pump to finish and retries for
+at most 750 ms, only while the window is active and the same explicit Connect
+request is still armed. Cancelling, starting another flow or closing the window
+invalidates the pending read. The focus regression delivers the link after the
+activation callback, matching this native event ordering.
 Only the resulting native credential is saved in the OS credential store, under
 the origin's `/ws` key, independently of the MCP OAuth `/mcp` credential.
 
@@ -46,3 +52,21 @@ Hosted tests cover the state mapping, same-origin recognition and foreign-link
 controls, duplicate activation, conditional clipboard clearing, scope narrowing,
 OS-store failure, native/MCP isolation and redacted failure diagnostics. Native
 beta verification remains a separate acceptance step.
+
+## CLI fallback (#2523)
+
+Settings and Manager Details share a Copy command control for the configured
+server. The supported `t3 auth pairing create` invocation creates a five-minute,
+one-time grant limited to orchestration read/operate, printing a ready pair link.
+Run it on the T3 host in bash/zsh, under the server account and matching data
+directory (`--base-dir` for a custom installation). The user explicitly pastes
+its output in Details; Okilum does not execute a shell or mint a server token.
+The URL is shell-quoted, including IPv6 and non-default ports. Normal onboarding
+continues to use the browser flow above.
+
+One shared authorization for both MCP and native transport is not implemented:
+MCP tokens remain rejected outside `/mcp`, and their scopes cannot mint native
+pairing grants. An app-only change must not elevate that token. The existing
+first-run and browser grant flow are shared across projects; that does not claim
+that the two server credential audiences are unified. The server dependency is
+tracked explicitly in [#2673](https://git.oklabs.uk/BeFeast/okilum/issues/2673).

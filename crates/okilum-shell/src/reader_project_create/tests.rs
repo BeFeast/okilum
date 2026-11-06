@@ -141,6 +141,9 @@ fn open(
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");
     std::fs::create_dir_all(root.join("HomeLab")).unwrap();
+    // Reader canonicalizes its vault, including Windows verbatim path prefixes.
+    // Folder selections must use that same identity, as the real tree does.
+    let root = root.canonicalize().unwrap();
     std::fs::write(root.join("HomeLab/mesh.md"), "# Mesh\n").unwrap();
     std::fs::create_dir_all(root.join("Dev/Areas/app/ops")).unwrap();
     std::fs::write(
@@ -224,11 +227,11 @@ fn make_this_a_project_is_hidden_for_folders_that_are_projects(cx: &mut TestAppC
     reader.read_with(visual, |r, _| assert!(!r.can_make_project("HomeLab")));
 }
 
-/// The folder's menu → the dialog → Create project: project.yaml and
+/// The folder's menu → the dialog → Create project: project.toml and
 /// `_index.md` are written, the dialog closes, and the project is in the
 /// Projects list at once. Nothing reaches T3 for a knowledge project.
 #[gpui::test]
-fn make_this_a_project_writes_the_manifest_and_lists_the_project(cx: &mut TestAppContext) {
+fn issue1859_make_this_a_project_writes_toml_and_lists_the_project(cx: &mut TestAppContext) {
     let (_temp, root, reader, visual) = open(cx);
     let t3 = Arc::new(FakeT3::default());
     reader.update_in(visual, |r, window, cx| {
@@ -242,10 +245,13 @@ fn make_this_a_project_writes_the_manifest_and_lists_the_project(cx: &mut TestAp
     assert!(!drawn(visual, "new-project-dialog"), "the dialog closes");
 
     let folder = root.join("HomeLab");
-    let manifest = std::fs::read_to_string(folder.join("ops/project.yaml")).unwrap();
-    assert!(manifest.contains("name: \"HomeLab\"\n"), "{manifest}");
-    assert!(manifest.contains("kind: knowledge"));
-    assert!(!manifest.contains("t3:"), "T3 is off for knowledge");
+    let manifest = std::fs::read_to_string(folder.join("ops/project.toml")).unwrap();
+    let document =
+        okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
+    assert_eq!(document["name"].as_str(), Some("HomeLab"));
+    assert_eq!(document["kind"].as_str(), Some("knowledge"));
+    assert!(document.get("t3").is_none(), "T3 is off for knowledge");
+    assert!(!folder.join("ops/project.yaml").exists());
     assert_eq!(
         std::fs::read_to_string(folder.join("_index.md")).unwrap(),
         "# HomeLab\n"
@@ -281,9 +287,11 @@ fn new_project_starts_with_the_selected_folder_and_keeps_its_index(cx: &mut Test
         std::fs::read_to_string(root.join("Dev/Areas/tool/_index.md")).unwrap(),
         "# Tool notes\n"
     );
-    let manifest = std::fs::read_to_string(root.join("Dev/Areas/tool/ops/project.yaml")).unwrap();
-    assert!(manifest.contains("name: \"tool\"\n"), "{manifest}");
-    assert!(manifest.contains("domain: \"Dev\"\n"));
+    let manifest = std::fs::read_to_string(root.join("Dev/Areas/tool/ops/project.toml")).unwrap();
+    let document =
+        okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
+    assert_eq!(document["name"].as_str(), Some("tool"));
+    assert_eq!(document["domain"].as_str(), Some("Dev"));
 }
 
 fn code_draft(folder: &Path, icon: Option<ProjectIcon>) -> Draft {
@@ -298,7 +306,7 @@ fn code_draft(folder: &Path, icon: Option<ProjectIcon>) -> Draft {
 
 /// A code project with «Create the project in T3»: T3's create at the
 /// checkout with the chosen icon over the paired connection, then the
-/// `t3:` binding in project.yaml and T3's icon on the project.
+/// `t3` binding in project.toml and T3's icon on the project.
 #[gpui::test]
 fn t3_creates_the_project_with_its_icon_and_the_manifest_binds_it(cx: &mut TestAppContext) {
     let (_temp, root, reader, visual) = open(cx);
@@ -329,11 +337,17 @@ fn t3_creates_the_project_with_its_icon_and_the_manifest_binds_it(cx: &mut TestA
         *t3.icons.lock().unwrap(),
         [("new-1".to_owned(), Some(icon.clone()))]
     );
-    let manifest = std::fs::read_to_string(folder.join("ops/project.yaml")).unwrap();
-    assert!(manifest.contains("execution:\n  source_checkout: \"/srv/src/tool\"\n"));
-    assert!(
-        manifest.contains("  environment: \"test\"\n  executor_project_id: \"new-1\"\n"),
-        "{manifest}"
+    let manifest = std::fs::read_to_string(folder.join("ops/project.toml")).unwrap();
+    let document =
+        okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
+    assert_eq!(
+        document["execution"]["source_checkout"].as_str(),
+        Some("/srv/src/tool")
+    );
+    assert_eq!(document["t3"]["environment"].as_str(), Some("test"));
+    assert_eq!(
+        document["t3"]["executor_project_id"].as_str(),
+        Some("new-1")
     );
     reader.read_with(visual, |r, cx| {
         let project = r
@@ -358,7 +372,7 @@ fn t3_creates_the_project_with_its_icon_and_the_manifest_binds_it(cx: &mut TestA
     assert!(!drawn(visual, "reader-error-toast"));
 }
 
-/// T3 refuses: a clear error toast, and project.yaml stays written,
+/// T3 refuses: a clear error toast, and project.toml stays written,
 /// without a T3 binding.
 #[gpui::test]
 fn a_t3_failure_is_a_toast_and_the_manifest_stays(cx: &mut TestAppContext) {
@@ -382,9 +396,11 @@ fn a_t3_failure_is_a_toast_and_the_manifest_stays(cx: &mut TestAppContext) {
     });
     visual.run_until_parked();
     assert_eq!(t3.creates.lock().unwrap().len(), 1);
-    let manifest = std::fs::read_to_string(folder.join("ops/project.yaml")).unwrap();
-    assert!(manifest.contains("kind: code"));
-    assert!(!manifest.contains("t3:"), "{manifest}");
+    let manifest = std::fs::read_to_string(folder.join("ops/project.toml")).unwrap();
+    let document =
+        okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
+    assert_eq!(document["kind"].as_str(), Some("code"));
+    assert!(document.get("t3").is_none());
     assert!(
         drawn(visual, "reader-error-toast"),
         "the refusal is a toast"
@@ -414,13 +430,15 @@ fn root_code_project_starts_locally_and_does_not_call_a_saved_remote_gateway(
         r.create_project(dialog.downgrade(), root.clone(), draft, window, cx);
     });
     visual.run_until_parked();
-    assert!(root.join("ops/project.yaml").is_file());
+    assert!(root.join("ops/project.toml").is_file());
     assert!(
         t3.creates.lock().unwrap().is_empty(),
         "local creation must not dispatch remote project.create"
     );
-    let manifest = std::fs::read_to_string(root.join("ops/project.yaml")).unwrap();
-    assert!(!manifest.contains("t3:"));
+    let manifest = std::fs::read_to_string(root.join("ops/project.toml")).unwrap();
+    let document =
+        okilum_t3::area_files::parse(&manifest, okilum_t3::area_files::Format::Toml).unwrap();
+    assert!(document.get("t3").is_none());
     reader.read_with(visual, |r, _| {
         assert!(r
             .project_navigation

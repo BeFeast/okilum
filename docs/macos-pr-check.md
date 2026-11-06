@@ -28,8 +28,8 @@ Markdown-only PRs from macOS.
 
 `scripts/ci/check-macos.sh` verifies the vendor patches, compiles the production
 Reader and **every workspace test target** in release mode, then runs selected
-native regressions. This includes all eleven portable native Manager modules
-(`attachments`, `composer`, `discuss_handoff`, `drafts`, `express_session`, `feed`,
+native regressions. This includes all ten portable native Manager modules
+(`attachments`, `composer`, `discuss_handoff`, `drafts`, `feed`,
 `links`, `message_types`, `native`, `rotation`, `threads`) and the shared
 ProjectView, models and connections tests. Each filter must list at least one
 test before executing; each suite reports its passed/failed/ignored counts.
