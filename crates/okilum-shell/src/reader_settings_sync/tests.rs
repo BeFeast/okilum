@@ -2303,6 +2303,20 @@ fn issue2045_retention_reduction_requires_explicit_confirmation(cx: &mut TestApp
             7
         )
     });
+    // The completed worker publishes a new snapshot and re-enables the row.
+    // Draw that frame before reading button bounds; the modal's previous frame
+    // still carries debug bounds until then.
+    view.update(&mut visual, |view, cx| {
+        assert!(
+            !view.busy,
+            "completed retention worker must release its controls"
+        );
+        view.scroll.set_offset(point(px(0.), px(-4000.)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert_visible(&mut visual, "sync-history-days-0-90");
     // Increasing retention remains immediate and provides a fired-path control.
     let increase = visual.debug_bounds("sync-history-days-0-90").unwrap();
     visual.simulate_click(increase.center(), Modifiers::default());
