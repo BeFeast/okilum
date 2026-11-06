@@ -86,7 +86,7 @@ pub(crate) fn entry() -> bool {
                     }
                 }
                 std::fs::write(directory.join("complete"), b"native actions observed").unwrap();
-                cx.update(|cx| cx.quit()).unwrap();
+                cx.update(|cx| cx.quit());
             })
             .detach();
         });
