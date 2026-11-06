@@ -164,7 +164,6 @@ pub(super) fn seed(path: &Path, identity: (u64, u64), bytes: &[u8]) -> Result<()
 
 impl Controller {
     pub(super) fn record_ignore_policy(&self, path: &Path, bytes: &[u8]) -> Result<()> {
-        #[cfg(target_os = "linux")]
         self.record_source_ignore_policy(path, bytes)?;
         self.record_transfer_ignore_policy(path, bytes)
     }

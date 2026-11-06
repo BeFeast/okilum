@@ -426,9 +426,12 @@ measurable.
 
 ## 10. Still open
 
-- Remaining direct Sync work: non-empty first merge, shared device/ignore lists,
-  propagated removal, complete cross-platform history UI, untrusted-server encryption
-  and macOS/Windows delivery (see [the Sync status](sync-enrollment.md)).
+- Remaining direct Sync work: non-empty first merge, untrusted-server encryption
+  and native release acceptance (see [the Sync status](sync-enrollment.md)).
+  Fleet removal uses the introducer mesh without a device list in the vault;
+  common exclusions live in `.okilum/sync-ignore` with preserved local exceptions.
+  Managed folders retain 30 days of previous remote versions, restored through
+  Note history. Source support does not establish delivery or native acceptance.
 - The maximum corpus, document, and media scale, and the performance bounds that go
   with them.
 - Which Obsidian dialect features define the first acceptance corpus.

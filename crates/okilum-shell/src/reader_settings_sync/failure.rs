@@ -22,7 +22,6 @@ impl Operation {
             Self::SelectConnection(_) => "select_connection",
             #[cfg(target_os = "linux")]
             Self::Network(..) => "network_policy",
-            #[cfg(target_os = "linux")]
             Self::Share(_) => "share_vault",
         }
     }

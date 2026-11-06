@@ -148,7 +148,6 @@ enum Operation {
         DaemonIdentityForNetwork,
         okilum_sync_controller::network_policy::Policy,
     ),
-    #[cfg(target_os = "linux")]
     Share(PathBuf),
     Begin(String),
     Redeem(String, String),
@@ -176,7 +175,6 @@ struct Output {
     selected_destination: Option<PathBuf>,
     #[cfg(target_os = "linux")]
     runtimes: Vec<linux_runtime::Choice>,
-    #[cfg(target_os = "linux")]
     vaults: Vec<PathBuf>,
 }
 pub(super) struct SyncSettings {
@@ -186,7 +184,6 @@ pub(super) struct SyncSettings {
     inspected: Option<ExistingVault>,
     #[cfg(target_os = "linux")]
     runtimes: Vec<linux_runtime::Choice>,
-    #[cfg(target_os = "linux")]
     vaults: Vec<PathBuf>,
     // Text fields need a window; the background service starts without one.
     name: Option<Entity<InputState>>,
@@ -307,7 +304,6 @@ impl SyncSettings {
             presentation: Default::default(),
             #[cfg(target_os = "linux")]
             runtimes: vec![],
-            #[cfg(target_os = "linux")]
             vaults: vec![],
             controller: None,
             snapshot: None,
@@ -410,7 +406,6 @@ impl SyncSettings {
                     selected_destination: None,
                     #[cfg(target_os = "linux")]
                     runtimes: self.runtimes.clone(),
-                    #[cfg(target_os = "linux")]
                     vaults: self.vaults.clone(),
                 })
         } else {
@@ -614,8 +609,8 @@ impl SyncSettings {
         #[cfg(target_os = "linux")]
         {
             self.runtimes = output.runtimes;
-            self.vaults = output.vaults;
         }
+        self.vaults = output.vaults;
         super::vault_name::remember_sync(
             output
                 .snapshot
@@ -1101,12 +1096,14 @@ fn perform_with_locations(
             Operation::Read | Operation::EnterPairing => controller.refresh()?,
             #[cfg(target_os = "linux")]
             Operation::SelectConnection(_) | Operation::Network(..) => controller.refresh()?,
-            #[cfg(target_os = "linux")]
             Operation::Share(path) => {
+                #[cfg(target_os = "linux")]
                 let prepared = state
                     .parent()
                     .ok_or_else(|| anyhow::anyhow!("Sync state parent unavailable"))?
                     .join("managed/prepared");
+                #[cfg(target_os = "macos")]
+                let prepared = okilum_sync_controller::sidecar::macos::account_state_directory()?;
                 controller.share_vault(&prepared, &path).with_context(|| {
                     format!(
                         "share vault {} using {}",
@@ -1168,6 +1165,8 @@ fn perform_with_locations(
                     .and_then(Path::parent)
                     .ok_or_else(|| anyhow::anyhow!("Sync profile unavailable"))?,
             )?,
+            #[cfg(target_os = "macos")]
+            vaults: vec![],
         })
     })?
 }
@@ -1260,6 +1259,23 @@ fn prepare_mac_runtime(
     // Creating an invitation uses the app's pairing listener and identity only.
     // Opening Settings and Add computer must not depend on SMAppService approval,
     // global process inventory, signing checks or the bounded runtime startup.
+    if matches!(operation, Operation::Share(_)) {
+        #[cfg(target_os = "macos")]
+        {
+            let configs = controller.configuration_paths()?;
+            if !configs.is_empty() {
+                let managed =
+                    okilum_sync_controller::sidecar::discovery::managed_configuration_path(
+                        &okilum_sync_controller::sidecar::macos::account_state_directory()?,
+                    )?;
+                anyhow::ensure!(
+                    configs.len() == 1 && managed.as_ref().is_some_and(|p| p == &configs[0]),
+                    "Use Choose existing synced vault for an external Mac Sync connection"
+                );
+            }
+        }
+        return connect(controller);
+    }
     if matches!(
         operation,
         Operation::Redeem(..) | Operation::Attach(..) | Operation::AttachNew(..)

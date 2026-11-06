@@ -306,8 +306,9 @@ Okilum sends the removal through its authenticated paired connections and the
 sharing/introducer computer to the other peers. A disconnected computer follows
 when it reconnects. Pending delivery is visible; requests and acknowledgements
 survive restarts outside the index. Old credentials retained for lost-reply
-recovery can acknowledge only that exact already-recorded removal, never read a
-catalog, share a vault or change transport settings. A fresh invitation is needed
+recovery can replay that recorded removal, pull only pending deliveries scoped
+to the same pairing and acknowledge them; they cannot read a catalog, share a
+vault or change transport settings. A fresh invitation is needed
 before a removed computer can be approved again.
 
 There is no device list in the vault. First setup, common-folder authorization,

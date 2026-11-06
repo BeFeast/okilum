@@ -203,6 +203,7 @@ pub trait Pasteboard {
         Some((url, name))
     }
     /// The HTML flavor (`public.html`, then the legacy Apple type) as text.
+    #[cfg(any(windows, test))]
     fn html_string(&self) -> Option<String> {
         HTML.into_iter().find_map(|kind| self.text_flavor(kind))
     }

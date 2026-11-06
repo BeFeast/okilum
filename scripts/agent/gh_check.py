@@ -34,13 +34,18 @@ def gh_json(*args):
     return json.loads(output("gh", *args))
 
 
-def verdict(info, sha, benchmark=False, publication_controls=False):
+def verdict(info, sha, benchmark=False, publication_controls=False, macos_sync=False):
     """Missing/mismatched/partial/cancelled work never counts as a verdict."""
     if info.get("headSha") != sha or info.get("status") != "completed":
         return 75
     jobs = info.get("jobs", [])
-    if len(jobs) != 2 or {job.get("name") for job in jobs} != {"linux", "windows-recovery"}:
+    names = {job.get("name") for job in jobs}
+    if (len(names) != len(jobs) or not {"linux", "windows-recovery"} <= names
+            or not names <= {"linux", "windows-recovery", "macos-sync"}
+            or (macos_sync and "macos-sync" not in names)):
         return 75
+    mac = next((job for job in jobs if job.get("name") == "macos-sync"), None)
+    mac_steps = {"Prepare and verify Mac Sync vendor", "Lint native Mac Sync targets", "Run native Mac Sync controls"}
     linux = next(job for job in jobs if job.get("name") == "linux")
     windows = next(job for job in jobs if job.get("name") == "windows-recovery")
     steps = linux.get("steps", [])
@@ -56,6 +61,12 @@ def verdict(info, sha, benchmark=False, publication_controls=False):
     if info.get("conclusion") == "success":
         passed = {s["name"] for s in steps if s.get("conclusion") == "success"}
         native = {s["name"] for s in windows.get("steps", []) if s.get("conclusion") == "success"}
+        if macos_sync:
+            if (mac is None or mac.get("conclusion") != "success" or not mac_steps <= {
+                    step["name"] for step in mac.get("steps", []) if step.get("conclusion") == "success"}):
+                return 75
+        elif mac is not None and mac.get("conclusion") not in ("skipped", "success"):
+            return 75
         return 0 if (required <= passed and linux.get("conclusion") == "success"
                      and windows.get("conclusion") == "success"
                      and {"Prepare and verify Windows vendor", "Run native Windows recovery controls",
@@ -105,6 +116,7 @@ def summarize(info):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rerun", action="store_true", help="rerun this exact SHA (also measures warm cache)")
+    parser.add_argument("--macos-sync", action="store_true", help="require native Mac Sync controls; requires --dispatch")
     parser.add_argument("--dispatch", action="store_true", help="dispatch after pushing instead of using the push run")
     parser.add_argument("--timeout", type=int, default=7200, help="total wait ceiling in seconds")
     parser.add_argument("--receipt", type=Path, help="also write the final GitHub JSON receipt to this path")
@@ -113,6 +125,8 @@ def main():
     args = parser.parse_args()
     if args.publication_baseline and (not args.dispatch or not re.fullmatch(r"[0-9a-f]{40}", args.publication_baseline)):
         parser.error("--publication-baseline requires --dispatch and a full lowercase SHA")
+    if args.macos_sync and not args.dispatch:
+        parser.error("--macos-sync requires --dispatch")
     if args.rerun and args.dispatch:
         parser.error("choose --rerun or --dispatch")
     if args.timeout <= 0:
@@ -141,6 +155,8 @@ def main():
     if args.dispatch:
         previous_runs = {r["id"] for r in find_run(branch, sha, event)}
         dispatch = ["gh", "workflow", "run", WORKFLOW, "-R", REPO, "--ref", branch]
+        if args.macos_sync:
+            dispatch += ["-f", "macos_sync_check=true"]
         if args.publication_baseline:
             dispatch += ["-f", "publication_baseline=" + args.publication_baseline]
         run(*dispatch)
@@ -184,7 +200,7 @@ def main():
     summarize(info)
     if attempt is not None and info["attempt"] <= attempt:
         return 75
-    result = verdict(info, sha, args.benchmark, bool(args.publication_baseline))
+    result = verdict(info, sha, args.benchmark, bool(args.publication_baseline), args.macos_sync)
     if result:
         logs = subprocess.run(["gh", "run", "view", run_id, "-R", REPO, "--log-failed"],
                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)

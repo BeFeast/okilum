@@ -205,3 +205,18 @@ parent has closed and renamed it. A dedicated positive control demonstrates that
 kernel behavior. Eight cold publishers and four live-daemon publishers still
 must all publish/exec successfully; checksum, inode, cleanup and old-tar negative
 controls remain. Twenty repeated eight-process cold controls passed locally.
+
+Mac Sync source changes also use the same exact-source helper with native
+GitHub-hosted macOS compilation and non-empty source/Settings controls:
+
+```bash
+H=github scripts/agent/gh-check.sh --dispatch --macos-sync
+```
+
+This requires the `macos-sync` job and every named native step in addition to
+Linux and Windows. Missing/skipped native work cannot pass a requested Mac run.
+Without that option the optional Mac job stays skipped. The lane installs no
+app, registers no Sync helper, signs/publishes nothing and carries no secrets.
+Native compile/tests do not certify first pairing through the signed beta UI;
+record that installation/build, both-direction file evidence and the short video
+separately for #2489.

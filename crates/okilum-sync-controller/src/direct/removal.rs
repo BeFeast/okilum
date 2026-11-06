@@ -488,7 +488,6 @@ impl Controller {
                 }
                 {
                     let db = self.shared.db.lock().unwrap();
-                    #[cfg(target_os = "linux")]
                     source::validate_removal(&db, &fresh, &before)?;
                     transfer::validate_removal(&db, &fresh, &before)?;
                 }
@@ -611,7 +610,6 @@ impl Controller {
                 "Removal readback changed unrelated configuration"
             );
             let mut db = self.shared.db.lock().unwrap();
-            #[cfg(target_os = "linux")]
             source::record_removed_membership(&mut db, &fresh, &readback);
             transfer::record_removed_membership(&mut db, &fresh, &removal.device, &readback);
             self.save(&db)?;
@@ -812,7 +810,6 @@ fn deny(db: &mut Database, removal: &Removal, removed_self: bool) {
         }
     }
     if removed_self {
-        #[cfg(target_os = "linux")]
         for source in &mut db.sources {
             source.active = false;
         }

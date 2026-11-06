@@ -3,10 +3,13 @@
 use std::{
     io::Write as _,
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex, OnceLock,
-    },
+    sync::{Mutex, OnceLock},
+};
+
+#[cfg(any(target_os = "linux", windows, test))]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,8 +85,10 @@ pub(super) fn set_mode(mode: Mode) -> anyhow::Result<()> {
 /// A cancelled transfer keeps its single-flight claim until its worker exits.
 /// Final publication and cancellation use the same lock, so a late cancel
 /// cannot leave a cancelled package marked Ready (or clobber a completed one).
+#[cfg(any(target_os = "linux", windows, test))]
 #[derive(Default)]
 pub(super) struct Download(Mutex<Option<Arc<AtomicBool>>>);
+#[cfg(any(target_os = "linux", windows, test))]
 impl Download {
     pub(super) fn begin(&self) -> Arc<AtomicBool> {
         let token = Arc::new(AtomicBool::new(false));

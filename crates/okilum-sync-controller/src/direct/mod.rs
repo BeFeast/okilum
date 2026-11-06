@@ -18,7 +18,6 @@ pub use history::{HistoryWarning, RetentionDays, RetentionSetting};
 pub mod inventory;
 mod lan;
 mod origin;
-#[cfg(target_os = "linux")]
 mod source;
 mod transfer;
 pub use addresses::{PeerLink, Relay};
@@ -82,7 +81,6 @@ pub struct Snapshot {
     pub peers: Vec<Peer>,
     pub catalog: Vec<Vault>,
     pub attached: Vec<ExistingVault>,
-    #[cfg(target_os = "linux")]
     pub shared: Vec<PathBuf>,
     pub status: String,
     /// An owned first receive still needs guarded bidirectional promotion.
@@ -173,7 +171,6 @@ struct Database {
     transfers: Vec<transfer::Transfer>,
     #[serde(default)]
     share_grants: Vec<transfer::ShareGrant>,
-    #[cfg(target_os = "linux")]
     #[serde(default)]
     sources: Vec<source::Source>,
 }
@@ -343,7 +340,6 @@ impl Controller {
                 removals: vec![],
                 transfers: vec![],
                 share_grants: vec![],
-                #[cfg(target_os = "linux")]
                 sources: vec![],
             }
         };
@@ -1347,7 +1343,6 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
                 named
             })
             .collect(),
-        #[cfg(target_os = "linux")]
         shared: db
             .sources
             .iter()
@@ -1483,10 +1478,8 @@ impl Controller {
         self.check()?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
         let mut warnings = Vec::new();
-        #[cfg(target_os = "linux")]
         self.reconcile_source_ignores(&mut warnings);
         self.reconcile_transfer_ignores(&mut warnings);
-        #[cfg(target_os = "linux")]
         self.reconcile_source_shared_ignores(&mut warnings);
         self.reconcile_transfer_shared_ignores(&mut warnings);
         *self.shared.policy_warnings.lock().unwrap() = warnings;
@@ -1495,13 +1488,8 @@ impl Controller {
 }
 
 fn history_settings(db: &Database) -> Vec<RetentionSetting> {
-    let settings = transfer::history_settings(db);
-    #[cfg(target_os = "linux")]
-    let settings = {
-        let mut settings = settings;
-        settings.extend(source::history_settings(db));
-        settings
-    };
+    let mut settings = transfer::history_settings(db);
+    settings.extend(source::history_settings(db));
     settings
 }
 

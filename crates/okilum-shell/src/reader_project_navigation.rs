@@ -2081,6 +2081,7 @@ mod local_reader_without_t3_tests {
     /// a wait on `HUNG_T3` could use it up.
     const MARGIN: Duration = Duration::from_secs(5);
     /// How long the libc boundary child may run before it is killed.
+    #[cfg(target_os = "linux")]
     const CHILD_DEADLINE: Duration = Duration::from_secs(60);
     /// How long a listener may take to report a connection made to it.
     const READY: Duration = Duration::from_secs(2);
@@ -2669,6 +2670,7 @@ mod local_reader_without_t3_tests {
         assert_eq!(std::fs::read(root.join("start.md")).unwrap(), original);
     }
 
+    #[cfg(target_os = "linux")]
     const BOUNDARY_CHILD: &str = "OKILUM_1521_LIBC_BOUNDARY_CHILD";
 
     /// The same flows with the real T3 transports and no fake, watched at

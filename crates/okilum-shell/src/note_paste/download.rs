@@ -61,12 +61,6 @@ fn client() -> Option<&'static reqwest::blocking::Client> {
         .as_ref()
 }
 
-/// Download the image at `url` into `folder` and return the saved file name.
-pub fn save_remote_image(url: &str, folder: &Path, stamp: &str) -> Result<String, DownloadError> {
-    save_remote_image_with(url, folder, stamp, super::image_import::Options::disabled())
-        .map(|saved| saved.name)
-}
-
 pub fn save_remote_image_with(
     url: &str,
     folder: &Path,

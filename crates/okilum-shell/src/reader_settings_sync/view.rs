@@ -395,10 +395,7 @@ impl Render for SyncSettings {
                 );
             }
         }
-        #[cfg(target_os = "linux")]
-        {
-            content = content.child(self.render_local_vaults(cx));
-        }
+        content = content.child(self.render_local_vaults(cx));
         if let Some(snapshot) = &self.snapshot {
             for (index, setting) in snapshot.history_retention.iter().enumerate() {
                 content = content.child(v_flex().gap_1()
@@ -549,7 +546,6 @@ impl SyncSettings {
                         if existing {
                             this.presentation.advanced = true;
                             this.presentation.wizard = None;
-                            #[cfg(target_os = "linux")]
                             if let Some(Operation::Share(path)) = this.presentation.retry.clone() {
                                 this.run(Operation::Inspect(path), cx);
                                 return;
