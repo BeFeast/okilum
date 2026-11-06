@@ -158,3 +158,58 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
     });
     assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
 }
+
+#[gpui::test]
+fn data_view_2669_native_32_mib_multiline_file_keeps_full_find_and_numbered_editor(
+    cx: &mut TestAppContext,
+) {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("big.txt");
+    let line = format!("{}\n", "abcdefgh".repeat(31));
+    let source = format!("{}NEEDLE\n", line.repeat(32 * 1024 * 1024 / line.len()));
+    std::fs::write(&path, &source).unwrap();
+    cx.update(crate::test_init);
+    let mut preview = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            CodePreview::new(
+                fixture.path().to_owned(),
+                "big.txt".into(),
+                path.clone(),
+                window,
+                cx,
+            )
+        });
+        preview = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let preview = preview.unwrap();
+    visual.run_until_parked();
+    let started = Instant::now();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let draw = started.elapsed();
+    eprintln!(
+        "DATA_VIEW_2669 multiline_bytes={} first_draw_ms={}",
+        source.len(),
+        draw.as_millis()
+    );
+    assert!(
+        draw < std::time::Duration::from_secs(2),
+        "multi-line first draw: {draw:?}"
+    );
+    preview.update_in(visual, |p, _, cx| {
+        assert!(!p.editable());
+        assert_eq!(p.document.as_ref().unwrap().pages.len(), 1);
+        p.input().unwrap().update(cx, |input, cx| {
+            assert!(input.is_readonly());
+            assert_eq!(input.text().len(), source.len());
+            input.set_search_query("NEEDLE", false, cx);
+            assert_eq!(input.search_session().matcher.matched_ranges().len(), 1);
+            assert_eq!(
+                input.search_session().matcher.matched_ranges()[0].start,
+                source.find("NEEDLE").unwrap()
+            );
+        });
+    });
+    assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+}

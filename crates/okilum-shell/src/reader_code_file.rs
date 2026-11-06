@@ -193,7 +193,15 @@ impl CodePreview {
                             text
                         };
                         let range = document::first_page(&shown);
+                        let apply_started = Instant::now();
                         let input = cx.new(|cx| editor(language, &shown[range], window, cx));
+                        if shown.len() > EDIT_BYTES {
+                            eprintln!(
+                                "DATA_VIEW_2669 bytes={} editor_apply_ms={}",
+                                shown.len(),
+                                apply_started.elapsed().as_millis()
+                            );
+                        }
                         this.prepare_document(shown, window, cx);
                         timing(&input, started, cx);
                         State::Content(input)
