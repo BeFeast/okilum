@@ -42,6 +42,29 @@ if command == "scroll" {
     CGEvent(scrollWheelEvent2Source:nil,units:.line,wheelCount:1,wheel1:Int32(args[4])!,wheel2:0,wheel3:0)!.post(tap:.cghidEventTap)
     exit(0)
 }
+if command == "folder-path" {
+    var directory: ObjCBool = false
+    guard args[2].contains("/okilum-beta-ui-"), FileManager.default.fileExists(atPath:args[2],isDirectory:&directory), directory.boolValue else { exit(10) }
+    var raw: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(),kAXFocusedUIElementAttribute as CFString,&raw) == .success, let raw = raw else { exit(11) }
+    let field = raw as! AXUIElement
+    var role: CFTypeRef?
+    AXUIElementCopyAttributeValue(field,kAXRoleAttribute as CFString,&role)
+    var owner: pid_t = 0
+    AXUIElementGetPid(field,&owner)
+    let identifier = NSRunningApplication(processIdentifier:owner)?.bundleIdentifier ?? ""
+    guard (role as? String) == "AXTextField", owner == pid_t(args[3])! || (identifier.hasPrefix("com.apple.") && identifier.lowercased().contains("openandsave")) else {
+        print("refused focused UI role=\(String(describing:role)) owner=\(owner) bundle=\(identifier)"); exit(12)
+    }
+    let changed = AXUIElementSetAttributeValue(field,kAXValueAttribute as CFString,args[2] as CFString)
+    var value: CFTypeRef?
+    AXUIElementCopyAttributeValue(field,kAXValueAttribute as CFString,&value)
+    guard changed == .success, (value as? String) == args[2] else {
+        print("native path field refused AX value: \(changed.rawValue)"); exit(13)
+    }
+    print("{\"native_focused_text_field\":true,\"value_readback_exact\":true,\"owner_pid\":\(owner),\"owner_bundle\":\"\(identifier)\"}")
+    exit(0)
+}
 if command == "escape" {
     for down in [true,false] { CGEvent(keyboardEventSource:nil,virtualKey:53,keyDown:down)!.post(tap:.cghidEventTap) }
     exit(0)

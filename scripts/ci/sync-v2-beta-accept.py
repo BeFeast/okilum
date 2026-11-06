@@ -179,7 +179,7 @@ try:
  wait('native folder picker',lambda:any('new folder' in row['text'].casefold() for row in ocr()),30);screen('05-native-folder-picker')
  run(driver,'go-folder')
  wait('native Go to Folder field is visible',lambda:any('go to folder' in row['text'].casefold() for row in ocr()),30)
- click('Go to Folder');run('pbcopy',input=str(destination));run(driver,'paste')
+ click('Go to Folder');native_path=run(driver,'folder-path',destination,app_pid);(out/'native-folder-path.json').write_text(native_path.stdout);event('native Go to Folder text field accepted and read back the exact destination path')
  wait('actual destination path is rendered in Go to Folder',lambda:any('received-vault' in row['text'] for row in ocr()),30);screen('05b-native-destination-path');run(driver,'return')
  wait('native Go to Folder sheet closed',lambda:not any(row['text'].strip()=='Go to Folder' for row in ocr()),30)
  click('Use folder for ordinary-vault');event('clicked native Go to Folder and confirmed the existing empty destination')
