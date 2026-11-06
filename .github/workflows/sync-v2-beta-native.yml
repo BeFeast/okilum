@@ -60,7 +60,9 @@ jobs:
           name: sync-v2-signed-beta-Mac-UI
           path: |
             ${{ runner.temp }}/sync-v2-evidence/0*.png
-            ${{ runner.temp }}/sync-v2-evidence/failure.png
+            ${{ runner.temp }}/sync-v2-evidence/failure*.png
+            ${{ runner.temp }}/sync-v2-evidence/failure-details-ocr.json
+            ${{ runner.temp }}/sync-v2-evidence/runtime-observations.jsonl
             ${{ runner.temp }}/sync-v2-evidence/failure.txt
             ${{ runner.temp }}/sync-v2-evidence/failure-state.json
             ${{ runner.temp }}/sync-v2-evidence/launchctl-before-cleanup.txt

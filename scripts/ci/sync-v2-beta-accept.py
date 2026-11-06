@@ -66,6 +66,27 @@ def journal():return json.loads((direct/'direct.json').read_text())
 def owned_runtime_pids():
  needle=str(managed/'runtime')
  return [int(line.split(None,1)[0]) for line in run('ps','-axo','pid=,command=').stdout.splitlines() if needle in line and 'syncthing' in line]
+last_observation=0
+def observe_runtime(force=False):
+ global last_observation
+ if not force and time.monotonic()-last_observation<10:return
+ last_observation=time.monotonic()
+ row={'seconds':round(time.monotonic()-started,3)}
+ try:
+  saved=json.loads((managed/'sidecar.json').read_text())
+  row['sidecar']={k:saved.get(k) for k in ['schema','revision','intent']}
+  launch=saved.get('launch') or {}
+  row['launch_phase']=launch.get('phase')
+  row['pending_stop']=saved.get('stop') is not None
+  row['pending_update']=saved.get('update') is not None
+ except (OSError,ValueError):row['sidecar']='not present'
+ row['runtime_pids']=owned_runtime_pids()
+ try:
+  rest=api_from(managed/'config/config.xml')
+  status=rest('/rest/system/status')
+  row['rest']={'ready':True,'uptime':status.get('uptime'),'version':rest('/rest/system/version').get('version')}
+ except Exception as e:row['rest']={'ready':False,'error_type':type(e).__name__}
+ with (out/'runtime-observations.jsonl').open('a') as f:f.write(json.dumps(row)+'\n')
 def stop_recording():
  global recorder
  if not recorder:return None
@@ -91,6 +112,7 @@ try:
  click('Share with my computers')
  def shared():
   allow_local_network_dialog()
+  observe_runtime()
   try:return next((s for s in journal().get('sources',[]) if s.get('path')==str(source) and s.get('active')),None)
   except (OSError,ValueError):return None
  owned=wait('UI-created active managed source within production preparation/startup bounds',shared,source_wait);source_api=api_from(managed/'config/config.xml');source_id=source_api('/rest/system/status')['myID'];folder=owned['id'];assert owned['daemon']['device_id']==source_id
@@ -170,6 +192,11 @@ except BaseException as error:
  event('failure: '+str(error))
  try:screen('failure')
  except Exception:pass
+ try:
+  observe_runtime(True)
+  click('Details',timeout=5);screen('failure-details')
+  (out/'failure-details-ocr.json').write_text(json.dumps(ocr(),indent=2)+'\n')
+ except Exception as e:(out/'details-diagnostic-error.txt').write_text(type(e).__name__+'\n')
  (out/'failure.txt').write_text(str(error)+'\n')
  diagnostics={'managed_exists':managed.exists(),'managed_config_exists':(managed/'config/config.xml').exists(),'direct_exists':direct.exists()}
  try:diagnostics['source_rows']=[{k:r.get(k) for k in ['id','path','active']} for r in journal().get('sources',[])]
