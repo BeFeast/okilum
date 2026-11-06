@@ -195,11 +195,6 @@ set the direction. These parts remain unfinished:
   does not enable this flow. Merged PRs
   [#2511](https://git.oklabs.uk/BeFeast/okilum/pulls/2511) and
   [#2513](https://git.oklabs.uk/BeFeast/okilum/pulls/2513) supply inventory/preflight groundwork, not a complete first-merge UI.
-- [#2046](https://git.oklabs.uk/BeFeast/okilum/issues/2046): one shared ignore
-  policy for the whole vault. Today source enrollment seeds/verifies local
-  `.stignore` rules and first receive applies approved ignores; Syncthing does
-  not transport `.stignore`. Indexes, save temporaries and worktrees are excluded;
-  `.claude/skills` can sync. Incompatible existing policy requires review.
 - Untrusted-server encryption and the limits of removal for already copied data.
 
 The old service/hub/passkey enrollment is gone from the desktop user flow
@@ -253,3 +248,42 @@ pending transitions require review. Settings shows a path-specific warning;
 Okilum preserves those bytes rather than guessing precedence. Existing external
 folders are not enrolled by the migration. No staging file is deleted by this
 change. Shared policy editing/explicit migration is tracked by #2046.
+
+## One shared ignore policy (#2046)
+
+Settings → Sync → **Shared exclusions** on a vault previews the shared rules and
+this computer's resulting `.stignore`. **Save shared policy** writes the ordinary
+synced file `.okilum/sync-ignore`. The first local line is
+`#include .okilum/sync-ignore`; the remaining device-local block is preserved
+byte for byte, including comments, CRLF and local negations. Shared rules come
+first, so local exceptions cannot re-include protected service data. Computer
+and server-local additions are allowed. They are not promoted into fleet rules.
+
+For a legacy vault, the editor offers `_Schema/stignore.template` as the initial
+shared source when that regular file exists. It adds the required index,
+save/create staging and worktree exclusions, including `/worktrees`. Without a
+template it offers those rules plus Git and Obsidian state exclusions. The user
+reviews the actual source before saving. Changes to either canonical or local
+bytes after preview refuse the save; no guessed merge replaces them.
+
+An existing owned receiver/source with the exact generated local policy adds
+the include when the shared file arrives. Custom or divergent local rules are
+reported for explicit preview/apply instead. Editing the shared file later
+updates every including Syncthing peer, without rewriting its local block.
+Multiple policy conflict copies, missing includes, symlinks, unsupported patterns
+and policies excluding their own file produce visible warnings. They are never
+silently resolved or replaced. External folder association does not authorize
+automatic ignore migration.
+
+A missing include is an error in pinned Syncthing 2.1.6. During first receive,
+Okilum therefore validates and seeds the policy from the authenticated share
+response while the new owned folder is paused, before installing `.stignore`.
+The normal synced file takes over after transfer starts. Existing non-empty
+unknown destinations remain refused; this does not enable #2043.
+
+For a plain Syncthing server, first let the shared file arrive under its current
+rules. Back up that server's `.stignore`, then prepend the one include line while
+retaining all device-local rules. Review the server's readback and an ordinary
+note transfer before removing a former template dependency. Installing that line
+on a live server is a host change; follow its administrator's approval boundary.
+Do not point an include at a missing file or replace a local policy blindly.

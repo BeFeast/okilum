@@ -2,6 +2,8 @@
 //! lifecycle. Opening this controller does not listen or start a daemon.
 mod addresses;
 mod create_ignores;
+pub mod shared_ignores;
+pub use shared_ignores::IgnorePreview;
 mod existing;
 mod history;
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -169,6 +171,7 @@ struct Database {
 type InspectionHook = Arc<dyn Fn(Uuid) + Send + Sync>;
 
 struct Shared {
+    policy_revisions: Mutex<BTreeMap<PathBuf, String>>,
     policy_warnings: Mutex<Vec<PolicyWarning>>,
     history_warnings: Mutex<Vec<history::HistoryWarning>>,
     state: PathBuf,
@@ -329,6 +332,7 @@ impl Controller {
                 access: okilum_sync::NetworkAccess::current(),
                 observation_generation: Uuid::new_v4(),
                 transfer_lock: Mutex::new(()),
+                policy_revisions: Mutex::new(BTreeMap::new()),
                 policy_warnings: Mutex::new(Vec::new()),
                 history_warnings: Mutex::new(Vec::new()),
                 connection_watch: Mutex::new(Default::default()),
@@ -1398,6 +1402,9 @@ impl Controller {
         #[cfg(target_os = "linux")]
         self.reconcile_source_ignores(&mut warnings);
         self.reconcile_transfer_ignores(&mut warnings);
+        #[cfg(target_os = "linux")]
+        self.reconcile_source_shared_ignores(&mut warnings);
+        self.reconcile_transfer_shared_ignores(&mut warnings);
         *self.shared.policy_warnings.lock().unwrap() = warnings;
         Ok(())
     }

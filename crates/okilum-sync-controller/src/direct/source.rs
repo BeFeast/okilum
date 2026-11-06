@@ -282,6 +282,12 @@ fn policy(path: &Path) -> Result<Vec<u8>> {
             );
             let bytes = fs::read(&file)
                 .with_context(|| format!("read ignore policy {}", file.display()))?;
+            if std::str::from_utf8(&bytes)?
+                .lines()
+                .any(|s| s.starts_with("#include"))
+            {
+                return shared_ignores::validate_source_file(path);
+            }
             let text = std::str::from_utf8(&bytes)?;
             let lines = text.lines().map(str::trim).collect::<Vec<_>>();
             // Do not guess includes or precedence of user negations. Existing
@@ -394,6 +400,47 @@ impl Controller {
                     path: source.path.clone(),
                     message: format!("{error:#}"),
                 });
+            }
+        }
+    }
+    pub(super) fn record_source_ignore_policy(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        let source = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .sources
+            .iter()
+            .find(|s| s.active && s.path == path)
+            .cloned();
+        if let Some(mut source) = source {
+            self.source_history_binding(&source)?;
+            source.ignores = bytes.to_vec();
+            source.create_ignores = create_ignores::Policy::current();
+            self.save_source(&source)?;
+        }
+        Ok(())
+    }
+    pub(super) fn reconcile_source_shared_ignores(&self, warnings: &mut Vec<PolicyWarning>) {
+        let sources = self.shared.db.lock().unwrap().sources.clone();
+        for source in sources.into_iter().filter(|s| s.active) {
+            let result = self.source_history_binding(&source).and_then(|_| {
+                self.reconcile_shared_ignore(&source.path, source.root_identity, &source.ignores)
+            });
+            match result {
+                Ok(Some(bytes)) => {
+                    if let Err(error) = self.record_source_ignore_policy(&source.path, &bytes) {
+                        warnings.push(PolicyWarning {
+                            path: source.path.clone(),
+                            message: format!("{error:#}"),
+                        });
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => warnings.push(PolicyWarning {
+                    path: source.path.clone(),
+                    message: format!("{error:#}"),
+                }),
             }
         }
     }
