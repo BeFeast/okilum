@@ -177,7 +177,12 @@ try:
   allow_local_network_dialog();peer_command('refresh');return any(row['text'].strip()=='Choose folder' for row in ocr())
  wait('approved native Mac catalog and Choose folder',available,90);screen('04-received-catalog');click('Choose folder')
  wait('native folder picker',lambda:any('new folder' in row['text'].casefold() for row in ocr()),30);screen('05-native-folder-picker')
- run(driver,'go-folder');time.sleep(.5);run('pbcopy',input=str(destination));run(driver,'paste');time.sleep(.5);run(driver,'return');time.sleep(1);run(driver,'return');event('clicked native Go to Folder and confirmed the existing empty destination')
+ run(driver,'go-folder')
+ wait('native Go to Folder field is visible',lambda:any('go to folder' in row['text'].casefold() for row in ocr()),30)
+ click('Go to Folder');run('pbcopy',input=str(destination));run(driver,'paste')
+ wait('actual destination path is rendered in Go to Folder',lambda:any('received-vault' in row['text'] for row in ocr()),30);screen('05b-native-destination-path');run(driver,'return')
+ wait('native Go to Folder sheet closed',lambda:not any(row['text'].strip()=='Go to Folder' for row in ocr()),30)
+ click('Use folder for ordinary-vault');event('clicked native Go to Folder and confirmed the existing empty destination')
  wait('destination selected in native Mac UI',lambda:any(row['text'].strip()=='Start first sync' for row in ocr()),30);assert not list(destination.iterdir());screen('06-empty-destination-selected');click('Start first sync')
  def received():
   allow_local_network_dialog();peer_command('refresh')
