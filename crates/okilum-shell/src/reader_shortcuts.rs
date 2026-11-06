@@ -85,6 +85,7 @@ fn catalog() -> Vec<Entry> {
         entry::<format::ToggleItalic>("Italic", Format),
         entry::<format::ToggleStrikethrough>("Strikethrough", Format),
         entry::<format::ToggleInlineCode>("Inline code", Format),
+        entry::<format::ToggleQuote>("Quote", Format),
         entry::<format::Heading1>("Heading 1", Format),
         entry::<format::Heading2>("Heading 2", Format),
         entry::<format::Heading3>("Heading 3", Format),

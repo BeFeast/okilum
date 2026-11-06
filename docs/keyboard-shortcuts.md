@@ -17,6 +17,19 @@ Editor can use the same combination independently. Ctrl+Alt on Windows warns
 about AltGr, and commonly reserved OS/window-manager combinations have a soft
 warning. Okilum cannot capture a combination the OS never delivers.
 
+## Quote formatting
+
+**Quote (#2625):** Format → Quote, also in the editor's context menu, toggles
+one outer blockquote level with Cmd/Ctrl+Shift+Q. It applies to the current line
+or every line touched by a selection in Source and Live Preview; an ending at
+the next line's start leaves that line alone. When every selected line already
+has a `>` marker, it removes one level. Otherwise it adds `> ` to every selected
+line, including blank lines and already quoted lines. Text, indentation, BOM
+and line endings are retained. Each toggle is one Undo step and does not save
+the file. Frontmatter and selections with boundaries inside fenced code are
+left unchanged, matching the other formatting commands' source guards.
+The `okilum::ToggleQuote` action uses the Editor context and can be rebound here.
+
 ## File and precedence
 
 `keymap.json` lives beside the other JSON preferences, under

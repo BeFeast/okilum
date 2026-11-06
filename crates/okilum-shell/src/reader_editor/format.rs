@@ -30,6 +30,7 @@ gpui::actions!(
         ToggleItalic,
         ToggleStrikethrough,
         ToggleInlineCode,
+        ToggleQuote,
         Heading1,
         Heading2,
         Heading3,
@@ -50,6 +51,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-i", ToggleItalic, keys),
         // Letters keep shift on macOS too, so one string fits.
         KeyBinding::new("secondary-shift-x", ToggleStrikethrough, keys),
+        KeyBinding::new("secondary-shift-q", ToggleQuote, keys),
         // Cmd+E is Edit / Read (#916): inline code is Cmd+` (Oleg, 24.10).
         // macOS may keep Cmd+` for "Move focus to next window"; Ctrl+`
         // (Typora's key) works there too. The Cmd binding comes later, so
@@ -79,6 +81,7 @@ pub(crate) fn format_menu() -> Menu {
             MenuItem::action("Italic", ToggleItalic),
             MenuItem::action("Strikethrough", ToggleStrikethrough),
             MenuItem::action("Inline Code", ToggleInlineCode),
+            MenuItem::action("Quote", ToggleQuote),
             MenuItem::separator(),
             MenuItem::action("Heading 1", Heading1),
             MenuItem::action("Heading 2", Heading2),
@@ -384,6 +387,66 @@ pub(crate) fn toggle(text: &str, selection: Range<usize>, kind: Inline) -> Optio
 fn past_bom(text: &str, selection: Range<usize>) -> Range<usize> {
     let bom = lists::bom(text);
     selection.start.max(bom)..selection.end.max(bom)
+}
+
+/// Toggle one outer quote level on whole selected lines. Mixed selections get
+/// one new level on every line, so toggling again restores the original bytes.
+/// A selection ending at the next line's start does not include that line.
+pub(crate) fn quote(text: &str, selection: Range<usize>) -> Option<ListEdit> {
+    let selection = past_bom(text, selection);
+    let first = lists::line_start(text, selection.start);
+    let last = if !selection.is_empty() && text[..selection.end].ends_with('\n') {
+        selection.end - 1
+    } else {
+        selection.end
+    };
+    // Match the other formatting commands: never rewrite front matter or a
+    // selection whose boundary is inside a code fence.
+    if lists::in_code(text, first) || lists::in_code(text, lists::line_start(text, last)) {
+        return None;
+    }
+    let mut lines = Vec::new();
+    let mut start = first;
+    loop {
+        if lines.len() == lists::SCAN_LINES {
+            return None; // Refuse a too-large selection instead of a partial edit.
+        }
+        let end = lists::line_end(text, start);
+        let raw = &text[start..end];
+        let indent = raw.bytes().take_while(|&b| b == b' ').take(3).count();
+        let marker = start + indent;
+        let prefix = (text.as_bytes().get(marker) == Some(&b'>')).then(|| {
+            let after = marker + 1;
+            let space = usize::from(matches!(text.as_bytes().get(after), Some(b' ' | b'\t')));
+            marker..after + space
+        });
+        lines.push((start, prefix));
+        let Some(newline) = text[end..].find('\n') else {
+            break;
+        };
+        start = end + newline + 1;
+        if start > last {
+            break;
+        }
+    }
+    let remove = lines.iter().all(|(_, prefix)| prefix.is_some());
+    let edits: Vec<Edit> = lines
+        .into_iter()
+        .map(|(start, prefix)| {
+            if remove {
+                (prefix.unwrap(), String::new())
+            } else {
+                (start..start, "> ".into())
+            }
+        })
+        .collect();
+    let selection = lists::map_offset(&edits, selection.start, true)
+        ..lists::map_offset(&edits, selection.end, true);
+    Some(ListEdit {
+        edits,
+        selection,
+        revert: None,
+    })
 }
 
 /// Cmd/Ctrl+1…6 (`level`) and Cmd/Ctrl+Alt+0 (0): every line of the
@@ -733,6 +796,9 @@ impl Reader {
             .on_action(cx.listener(|this, _: &ToggleInlineCode, window, cx| {
                 this.format_inline(Inline::Code, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &ToggleQuote, window, cx| {
+                this.format_command(quote, window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &Heading1, window, cx| this.format_heading(1, window, cx)),
             )
@@ -797,6 +863,49 @@ mod tests {
 
     fn level(text: &str, level: usize) -> Option<String> {
         run(text, |t, s| heading(t, s, level))
+    }
+
+    #[test]
+    fn quote_2625_lines_selection_boundaries_and_nested_levels() {
+        for (before, after) in [
+            ("he|llo", "> he|llo"),
+            ("|", "> |"),
+            ("> he|llo", "he|llo"),
+            (">> he|llo", "> he|llo"),
+            ("  > he|llo", "  he|llo"),
+            (">\the|llo", "he|llo"),
+            ("[one\ntwo\n]three", "> [one\n> two\n]three"),
+            ("[one\n\ntwo]", "> [one\n> \n> two]"),
+            ("[> one\ntwo]", "> [> one\n> two]"),
+            ("[> one\n> > two]", "[one\n> two]"),
+            ("[one\n- two]", "> [one\n> - two]"),
+        ] {
+            assert_eq!(run(before, quote).as_deref(), Some(after), "{before:?}");
+        }
+    }
+
+    #[test]
+    fn quote_2625_preserves_bom_unicode_crlf_and_mixed_selection_roundtrip() {
+        let original = "\u{feff}שלום α\r\n> мир\r\n\r\nnext";
+        let start = '\u{feff}'.len_utf8();
+        let end = original.find("next").unwrap();
+        let added = quote(original, start..end).unwrap();
+        let quoted = lists::apply(original, &added.edits);
+        assert_eq!(quoted, "\u{feff}> שלום α\r\n> > мир\r\n> \r\nnext");
+        assert!(quoted.is_char_boundary(added.selection.start));
+        assert_eq!(&quoted[added.selection.end..], "next");
+        let removed = quote(&quoted, added.selection).unwrap();
+        assert_eq!(lists::apply(&quoted, &removed.edits), original);
+        assert_eq!(removed.selection, start..end);
+        assert_eq!(run("\u{feff}|", quote).as_deref(), Some("\u{feff}> |"));
+    }
+
+    #[test]
+    fn quote_2625_code_frontmatter_and_oversize_are_atomic_noops() {
+        assert!(run("---\ntitle: a|\n---\nbody", quote).is_none());
+        assert!(run("```\na|\n```", quote).is_none());
+        let text = "line\n".repeat(lists::SCAN_LINES + 1);
+        assert!(quote(&text, 0..text.len()).is_none());
     }
 
     const ON: Pairing = Pairing {
@@ -1227,6 +1336,64 @@ mod key_tests {
     fn redo(visual: &mut VisualTestContext) {
         visual.dispatch_action(Redo);
         visual.run_until_parked();
+    }
+
+    fn quote_editor_flow(cx: &mut TestAppContext, menu: bool) {
+        let (note, visual) = open(cx);
+        let path = note._directory.path().join("vault/note.md");
+        let original = std::fs::read(&path).unwrap();
+        for live in [false, true] {
+            note.reader.update_in(visual, |reader, window, cx| {
+                reader.set_live_preview(live, window, cx);
+            });
+            set(&note, visual, "[שלום α\nмир]\nuntouched");
+            let fire = |visual: &mut VisualTestContext| {
+                if menu {
+                    let action = format_menu()
+                        .items
+                        .into_iter()
+                        .find_map(|item| match item {
+                            MenuItem::Action { name, action, .. } if name == "Quote" => {
+                                Some(action)
+                            }
+                            _ => None,
+                        })
+                        .expect("Format → Quote must be present");
+                    visual.update(|window, cx| window.dispatch_action(action, cx));
+                    visual.run_until_parked();
+                } else {
+                    keys(visual, "secondary-shift-q");
+                }
+            };
+            fire(visual);
+            assert_eq!(shown(&note, visual), "> [שלום α\n> мир]\nuntouched");
+            fire(visual);
+            assert_eq!(shown(&note, visual), "[שלום α\nмир]\nuntouched");
+            undo(visual);
+            assert_eq!(shown(&note, visual), "> [שלום α\n> мир]\nuntouched");
+            undo(visual);
+            assert_eq!(shown(&note, visual), "[שלום α\nмир]\nuntouched");
+            redo(visual);
+            assert_eq!(shown(&note, visual), "> [שלום α\n> мир]\nuntouched");
+            set(&note, visual, "one\ntw|o\nthree");
+            fire(visual);
+            assert_eq!(shown(&note, visual), "one\n> tw|o\nthree");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                original,
+                "no implicit disk save"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn quote_2625_keyboard_source_live_toggle_and_undo(cx: &mut TestAppContext) {
+        quote_editor_flow(cx, false);
+    }
+
+    #[gpui::test]
+    fn quote_2625_menu_source_live_toggle_and_undo(cx: &mut TestAppContext) {
+        quote_editor_flow(cx, true);
     }
 
     #[gpui::test]
