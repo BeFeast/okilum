@@ -137,6 +137,7 @@ pub(super) fn suspend(cx: &mut App) {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
+    Retention(PathBuf, direct::RetentionDays),
     Read,
     EnterPairing,
     #[cfg(target_os = "linux")]
@@ -206,6 +207,60 @@ pub(super) struct SyncSettings {
         std::collections::BTreeMap<PathBuf, Entity<crate::reader_sync_conflicts::InventoryView>>,
 }
 impl SyncSettings {
+    fn choose_retention(
+        &mut self,
+        path: PathBuf,
+        days: direct::RetentionDays,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        let Some(current) = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .history_retention
+                    .iter()
+                    .find(|setting| setting.path == path)
+            })
+            .map(|setting| setting.days)
+        else {
+            return;
+        };
+        if days.days() >= current.days() {
+            self.run(Operation::Retention(path, days), cx);
+            return;
+        }
+        let answer = reader_confirm::confirm(window, cx, "Keep fewer previous Sync versions?", reader_confirm::Body {
+            intro: vec![format!("Reduce history from {} to {} days on this computer? This removes {} days of history from the retention window.", current.days(), days.days(), current.days() - days.days())],
+            items: vec![path.display().to_string()],
+            outro: vec![format!("Syncthing will permanently delete previous versions older than {} days during cleanup. Increasing retention later cannot recover them.", days.days())],
+        }, "Reduce history");
+        let lifetime = self.lifetime.ticket();
+        cx.spawn(async move |view, cx| {
+            if answer.recv().await != Ok(true) {
+                return;
+            }
+            let _ = view.update(cx, |view, cx| {
+                // Consent belongs to this folder and displayed policy. A
+                // refresh, disconnect or feature revocation cannot widen it.
+                if lifetime.is_current()
+                    && view.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot
+                            .history_retention
+                            .iter()
+                            .any(|setting| setting.path == path && setting.days == current)
+                    })
+                {
+                    view.run(Operation::Retention(path, days), cx);
+                }
+            });
+        })
+        .detach();
+    }
     pub(super) fn receive(&mut self, cx: &mut Context<Self>) {
         self.receiving = true;
         self.presentation.wizard = Some(presentation::Step::Paste);
@@ -1012,6 +1067,7 @@ fn perform_with_locations(
         );
         let mut inspected = None;
         let snapshot = match operation {
+            Operation::Retention(path, days) => controller.set_history_retention(&path, days)?,
             Operation::Read | Operation::EnterPairing => controller.refresh()?,
             #[cfg(target_os = "linux")]
             Operation::SelectConnection(_) | Operation::Network(..) => controller.refresh()?,

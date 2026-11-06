@@ -137,6 +137,11 @@ impl Reader {
                 .spawn(async move {
                     let drafts = state.join("editor-drafts");
                     let mut listing = source_history::list(&drafts, &root)?;
+                    #[cfg(unix)]
+                    match source_history::sync::list(&root, Some(Path::new(&rel))) {
+                        Ok(sync) => { listing.versions.extend(sync.versions); listing.warnings.extend(sync.warnings); }
+                        Err(error) => listing.warnings.push(format!("Cannot read Sync history: {error:#}")),
+                    }
                     #[cfg(target_os = "linux")]
                     crate::reader_sync_conflicts::append_history(&state, &root, &mut listing)?;
                     let moves = source_history::move_versions(&state, &root)?;
@@ -223,7 +228,8 @@ impl Reader {
             let loaded = cx
                 .background_executor()
                 .spawn(async move {
-                    let current = std::fs::read_to_string(&version.note).ok();
+                    let current_bytes = std::fs::read(&version.note).ok();
+                    let current = current_bytes.as_ref().map(|b| String::from_utf8_lossy(b).into_owned());
                     let document = okilum_core::render::reader_document_from_source(
                         &vault,
                         &rel,
@@ -249,7 +255,7 @@ impl Reader {
                         },
                     );
                     let states = Arc::new(links.identities(&document.links));
-                    Ok::<_, anyhow::Error>((version, current, document, states))
+                    Ok::<_, anyhow::Error>((version, current, current_bytes, document, states))
                 })
                 .await;
             let _ = this.update_in_own_window(cx, |r, window, cx| {
@@ -264,7 +270,7 @@ impl Reader {
                         t.loading = false;
                         t.message = Some(format!("Cannot preview version: {e:#}"));
                     }
-                    Ok((version, current, document, states)) => {
+                    Ok((version, current, current_bytes, document, states)) => {
                         let configured = reader_plugins(
                             r.vault_root.clone(),
                             TextView::markdown("history-config", ""),
@@ -299,6 +305,7 @@ impl Reader {
                         t.loading = false;
                         if current.is_none() { t.message = Some("Current file is unavailable. Save as a recovered note to keep this version.".into()); }
                         t.current = current;
+                        t.current_bytes = current_bytes;
                         t.content = Some(content);
                         t.source = Some(source);
                         t.states = states;
@@ -388,6 +395,8 @@ impl Reader {
         };
         let version = t.versions[index].clone();
         let Some(reviewed) = t.current.clone() else {
+            let root = t.root.clone();
+            self.preview_source_version(version, root, window, cx);
             return;
         };
         if version.link_move {
@@ -621,7 +630,7 @@ impl Reader {
                                         cx,
                                     )
                                     .debug_selector(|| "history-restore".into())
-                                    .disabled(t.loading || version.link_move || t.current.is_none())
+                                    .disabled(t.loading || version.link_move)
                                     .on_click(cx.listener(|r, _, w, cx| r.restore_timeline(w, cx))),
                                 )
                                 .child(
@@ -1023,5 +1032,113 @@ mod tests {
             "Don't Save never restores it"
         );
         std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[cfg(unix)]
+    #[gpui::test]
+    fn issue2045_sync_history_uses_native_restore_and_deleted_recovery(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            crate::test_init(cx);
+            bind_keys(cx);
+            cx.set_reduce_motion(true);
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("notes");
+        std::fs::create_dir_all(root.join(".stversions")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let old = b"\xef\xbb\xbf# Sync preimage\r\n";
+        std::fs::write(root.join("note.md"), b"# Current").unwrap();
+        std::fs::write(root.join(".stversions/note~20261102-120000.md"), old).unwrap();
+        let mut reader = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                Reader::new(
+                    Opts {
+                        vault: Some(root.clone()),
+                        open_path: Some(root.join("note.md")),
+                        index_dir: Some(directory.path().join("index")),
+                        session_directory: Some(directory.path().join("state")),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                )
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        visual.run_until_parked();
+        reader.update_in(visual, |r, w, cx| r.source_history(false, w, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, w, cx| {
+            let t = r.active_timeline().unwrap();
+            assert_eq!(
+                t.versions.len(),
+                1,
+                "Sync archive must enter ordinary Note history"
+            );
+            assert_eq!(t.versions[0].bytes(), old);
+            r.select_timeline_version(0, w, cx);
+        });
+        visual.run_until_parked();
+        std::fs::write(root.join("note.md"), b"newer local edit").unwrap();
+        reader.update_in(visual, |r, w, cx| {
+            r.restore_timeline(w, cx);
+            assert!(r
+                .active_timeline()
+                .unwrap()
+                .message
+                .as_ref()
+                .unwrap()
+                .contains("changed"));
+            r.select_timeline_version(0, w, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, w, cx| r.restore_timeline(w, cx));
+        assert_eq!(std::fs::read(root.join("note.md")).unwrap(), old);
+        visual.run_until_parked();
+        std::fs::remove_file(root.join("note.md")).unwrap();
+        reader.update_in(visual, |r, w, cx| r.source_history(false, w, cx));
+        visual.run_until_parked();
+        reader.update_in(visual, |r, w, cx| {
+            let index = r
+                .active_timeline()
+                .unwrap()
+                .versions
+                .iter()
+                .position(|v| v.bytes() == old)
+                .unwrap();
+            r.select_timeline_version(index, w, cx);
+        });
+        visual.run_until_parked();
+        reader.update_in(visual, |r, w, cx| r.restore_timeline(w, cx));
+        visual.run_until_parked();
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        let button = visual
+            .debug_bounds("recover-source-original")
+            .expect("deleted note Restore action");
+        // A file appearing after the preview must never be overwritten.
+        std::fs::write(root.join("note.md"), b"racing local creation").unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            std::fs::read(root.join("note.md")).unwrap(),
+            b"racing local creation"
+        );
+        std::fs::remove_file(root.join("note.md")).unwrap();
+        reader.update_in(visual, |r, w, cx| {
+            let listing = source_history::sync::list(&root, None).unwrap();
+            r.preview_source_version(listing.versions[0].clone(), root.clone(), w, cx);
+        });
+        visual.run_until_parked();
+        visual.update(|w, cx| w.draw(cx).clear(cx));
+        let button = visual.debug_bounds("recover-source-original").unwrap();
+        visual.simulate_click(button.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(std::fs::read(root.join("note.md")).unwrap(), old);
+        assert_eq!(
+            std::fs::read(root.join(".stversions/note~20261102-120000.md")).unwrap(),
+            old
+        );
     }
 }

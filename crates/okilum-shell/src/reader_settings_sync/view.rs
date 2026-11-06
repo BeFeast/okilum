@@ -305,6 +305,22 @@ impl Render for SyncSettings {
         {
             content = content.child(self.render_local_vaults(cx));
         }
+        if let Some(snapshot) = &self.snapshot {
+            for (index, setting) in snapshot.history_retention.iter().enumerate() {
+                content = content.child(v_flex().gap_1()
+                    .child(format!("Previous Sync versions · {}", setting.path.display()))
+                    .child(format!("Keep for {} days on this computer. Restore from Note history or Recover notes. Sync is not a backup of every local edit.", setting.days.days()))
+                    .child(h_flex().gap_2().children([7u16, 30, 90, 365].into_iter().map(|days| {
+                        let path = setting.path.clone();
+                        Button::new(("sync-history-days", index * 4 + [7,30,90,365].iter().position(|d| *d == days).unwrap()))
+                            .debug_selector(move || format!("sync-history-days-{index}-{days}"))
+                            .label(format!("{days} days"))
+                            .selected(setting.days.days() == days)
+                            .disabled(self.busy)
+                            .on_click(cx.listener(move |this, _, window, cx| this.choose_retention(path.clone(), direct::RetentionDays::try_from(days).expect("valid retention preset"), window, cx)))
+                    }))));
+            }
+        }
         content = content.child(
             Button::new("sync-advanced")
                 .debug_selector(|| "sync-advanced".into())
@@ -501,6 +517,16 @@ impl SyncSettings {
                                 .clone()
                                 .unwrap_or_else(|| "No technical details available.".into()),
                         ),
+                );
+            }
+        }
+        if let Some(snapshot) = &self.snapshot {
+            for (index, warning) in snapshot.history_warnings.iter().enumerate() {
+                result = result.child(
+                    div()
+                        .id(("sync-history-warning", index))
+                        .text_sm()
+                        .child(format!("{}: {}", warning.path.display(), warning.message)),
                 );
             }
         }

@@ -20,6 +20,8 @@ pub(super) struct Connection {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Transfer {
+    #[serde(default)]
+    history: history::Policy,
     peer: Uuid,
     vault: String,
     path: PathBuf,
@@ -210,6 +212,7 @@ impl Controller {
                     "use attach-existing for an existing replica"
                 );
                 let t = Transfer {
+                    history: history::Policy::default(),
                     peer: peer_id,
                     vault: vault_id.into(),
                     path: path.clone(),
@@ -400,6 +403,15 @@ fn expected_label(transfer: &Transfer) -> Result<String> {
         None => owned_label(transfer),
     }
 }
+#[derive(Debug)]
+struct MembershipChanged;
+impl std::fmt::Display for MembershipChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("owned replica membership changed")
+    }
+}
+impl std::error::Error for MembershipChanged {}
+
 fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     ensure!(
         !transfer.legacy_hold(),
@@ -449,15 +461,9 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     ];
     actual_peers.sort();
     expected_peers.sort();
-    ensure!(
-        actual_peers == expected_peers,
-        "owned replica membership changed"
-    );
-    ensure!(
-        folder["versioning"]["type"] == "staggered"
-            && folder["versioning"]["params"]["maxAge"] == "2592000",
-        "owned version history policy changed"
-    );
+    if actual_peers != expected_peers {
+        return Err(MembershipChanged.into());
+    }
     let allowed_mode = match transfer.phase {
         Phase::Promoting => folder["type"] == "receiveonly" || folder["type"] == "sendreceive",
         Phase::Bidirectional => folder["type"] == "sendreceive",
@@ -469,7 +475,7 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     );
     if let Some(expected) = &transfer.witness {
         let mut expected = owned_view(transfer, expected)?;
-        let mut actual = owned;
+        let mut actual = owned_view(transfer, &transfer.history.witness_folder(folder)?)?;
         // Label changes require a durable authorized intent above; all other
         // fields still match the full preparation/promotion witness.
         expected["label"] = actual["label"].clone();
@@ -483,8 +489,16 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
         );
     } else {
         ensure!(
-            transfer.phase == Phase::Preparing && folder["paused"] == true,
-            "missing first-receive configuration witness"
+            transfer.phase == Phase::Preparing
+                && folder["paused"] == true
+                && folder["versioning"]["type"] == "staggered"
+                && folder["versioning"]["params"]["maxAge"].as_str()
+                    == Some(
+                        (u64::from(transfer.history.days.days()) * 86400)
+                            .to_string()
+                            .as_str()
+                    ),
+            "missing first-receive configuration witness or history policy"
         );
     }
     Ok(())
@@ -834,7 +848,16 @@ impl Controller {
         self.check()?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
         let transfers = self.shared.db.lock().unwrap().transfers.clone();
+        let history_warnings = self.shared.history_warnings.lock().unwrap().clone();
         for mut transfer in transfers {
+            // A failed history ownership check must not be retried through a
+            // different mutation path, or stop healthy folders progressing.
+            if history_warnings
+                .iter()
+                .any(|warning| warning.path == transfer.path)
+            {
+                continue;
+            }
             if transfer.legacy_hold() || !transfer.active || transfer.phase == Phase::Preparing {
                 continue;
             }
@@ -1089,12 +1112,81 @@ pub fn received_vault_names(state: &Path) -> Result<Vec<(PathBuf, String)>> {
         .collect())
 }
 
+impl Controller {
+    fn apply_transfer_history(&self, transfer: &mut Transfer) -> Result<()> {
+        let api = self.history_daemon(&transfer.daemon)?;
+        let folder = api.folder(&transfer.vault)?;
+        validate_owned(transfer, &folder)?;
+        if transfer.history.prepare(&folder)? {
+            self.save_transfer(transfer)?;
+            self.check()?;
+            let after = transfer.history.apply(&api, &transfer.vault)?;
+            transfer.witness = Some(after);
+            transfer.history.finish();
+            self.save_transfer(transfer)?;
+        }
+        Ok(())
+    }
+    pub(super) fn set_transfer_retention(&self, path: &Path, days: RetentionDays) -> Result<bool> {
+        let transfer = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .transfers
+            .iter()
+            .find(|t| t.active && !t.legacy_hold() && t.path == path)
+            .cloned();
+        let Some(mut transfer) = transfer else {
+            return Ok(false);
+        };
+        self.apply_transfer_history(&mut transfer)?;
+        transfer.history.days = days;
+        self.save_transfer(&transfer)?;
+        self.apply_transfer_history(&mut transfer)?;
+        Ok(true)
+    }
+    pub(super) fn reconcile_transfer_history(
+        &self,
+        warnings: &mut Vec<history::HistoryWarning>,
+    ) -> Result<()> {
+        let mut membership_error = None;
+        let transfers = self.shared.db.lock().unwrap().transfers.clone();
+        for mut transfer in transfers
+            .into_iter()
+            .filter(|t| t.active && !t.legacy_hold() && t.phase != Phase::Preparing)
+        {
+            if let Err(error) = self.apply_transfer_history(&mut transfer) {
+                warnings.push(history::HistoryWarning { path: transfer.path.clone(), message: format!("Previous Sync versions could not be updated: {error:#}. Check this folder and its Sync connection.") });
+                if error.is::<MembershipChanged>() {
+                    membership_error = Some(error);
+                }
+            }
+        }
+        match membership_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {
+    db.transfers
+        .iter()
+        .filter(|t| t.active && !t.legacy_hold())
+        .map(|t| RetentionSetting {
+            path: t.path.clone(),
+            days: t.history.days,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn fixture() -> Result<(tempfile::TempDir, Transfer, Value, Observation, Value)> {
         let root = tempfile::tempdir()?;
         let transfer = Transfer {
+            history: history::Policy::default(),
             peer: Uuid::new_v4(),
             vault: "fixture".into(),
             path: root.path().to_owned(),
@@ -1328,6 +1420,40 @@ mod tests {
         let mut removed = folder;
         removed["type"] = json!("sendreceive");
         validate_owned(&transfer, &removed)?;
+        Ok(())
+    }
+    #[test]
+    fn issue2045_history_transition_preserves_introducer_ownership_guards() -> Result<()> {
+        let (_root, mut transfer, mut folder, _, _) = fixture()?;
+        folder["devices"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"deviceID":"hub","introducedBy":"sender","encryptionPassword":""}));
+        transfer.witness = Some(folder.clone());
+        transfer.history.days = RetentionDays::try_from(90)?;
+        assert!(transfer.history.prepare(&folder)?);
+        validate_owned(&transfer, &folder)?;
+        // Simulate a lost acknowledgement of the journaled history PATCH.
+        let mut after = folder.clone();
+        after["versioning"]["type"] = json!("staggered");
+        after["versioning"]["params"]["maxAge"] = json!("7776000");
+        validate_owned(&transfer, &after)?;
+        let mut unrelated = after.clone();
+        unrelated["paused"] = json!(true);
+        assert!(validate_owned(&transfer, &unrelated).is_err());
+        transfer.witness = Some(after.clone());
+        transfer.history.finish();
+        validate_owned(&transfer, &after)?;
+        after["devices"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|d| d["deviceID"] != "hub");
+        validate_owned(&transfer, &after)?;
+        after["devices"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"deviceID":"stranger"}));
+        assert!(validate_owned(&transfer, &after).is_err());
         Ok(())
     }
     #[test]

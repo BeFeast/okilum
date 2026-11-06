@@ -13,7 +13,7 @@ use gpui::{
     point, px, size, AppContext, ClickEvent, Context, Focusable, Modifiers, ScrollHandle,
     TestAppContext, VisualTestContext, Window,
 };
-use gpui_component::{input::InputState, Root};
+use gpui_component::{input::InputState, Root, WindowExt};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -374,6 +374,8 @@ fn issue2589_action_failure_is_logged_with_chain_and_visible_cause(cx: &mut Test
 
 fn snapshot(pending: Option<direct::Pending>) -> Snapshot {
     Snapshot {
+        history_warnings: vec![],
+        history_retention: vec![],
         offer_url: None,
         preparing: false,
         pending,
@@ -885,6 +887,7 @@ fn guided_worker(
                 Operation::Begin(_) => "offer",
                 Operation::Redeem(_, _) => "connect",
                 Operation::Approve(_) => "approve",
+                Operation::Retention(_, _) => "retention",
                 _ => "other",
             };
             recorded.lock().unwrap().push(tag);
@@ -2212,4 +2215,118 @@ fn issue2615_expired_source_link_is_recreated_in_one_action_after_receiving(
     visual.run_until_parked();
     assert_eq!(*calls.lock().unwrap(), vec!["offer", "offer"]);
     assert!(visual.debug_bounds("sync-copy-url").is_some());
+}
+
+#[gpui::test]
+fn issue2045_retention_reduction_requires_explicit_confirmation(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|cx| {
+        cx.set_reduce_motion(true);
+        crate::test_init(cx);
+        super::super::bind_keys(cx);
+        reader_settings::install(cx);
+        crate::reader_ui_state::install(directory.path(), cx);
+        reader_features::install(directory.path(), cx);
+    });
+    let state = |days| {
+        let mut state = snapshot(None);
+        state.history_retention.push(direct::RetentionSetting {
+            path: Path::new("/fixture-history-vault").into(),
+            days: direct::RetentionDays::try_from(days).unwrap(),
+        });
+        state
+    };
+    let calls = guided_worker(cx, vec![state(365), state(7), state(90)]);
+    cx.update(|cx| reader_settings::show(None, cx));
+    cx.run_until_parked();
+    let handle = cx.update(|cx| cx.windows()[0]);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(900.), px(900.)));
+    visual.run_until_parked();
+    let sync = visual.debug_bounds("settings-section-Sync").unwrap();
+    visual.simulate_click(sync.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
+    let view = visual.update(|_, cx| cx.global::<BackgroundSync>().0.clone());
+    // The worker supplies twelve local vault rows. Scroll the real overview
+    // before clicking; offscreen debug bounds do not exercise a button.
+    view.update(&mut visual, |view, cx| {
+        view.scroll.set_offset(point(px(0.), px(-4000.)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_visible(&mut visual, "sync-history-days-0-7");
+    // Opening a reduced preset must not invoke the blocking controller.
+    for dismissal in ["escape", "cancel"] {
+        let reduce = visual.debug_bounds("sync-history-days-0-7").unwrap();
+        visual.simulate_click(reduce.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.update(|window, cx| window.has_active_dialog(cx)),
+            "the visible retention button must open the confirmation"
+        );
+        assert!(visual.debug_bounds("confirm-action").is_some());
+        assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
+        assert!(visual.update(|window, cx| window.has_active_dialog(cx)));
+        if dismissal == "escape" {
+            visual.simulate_keystrokes("escape");
+        } else {
+            let cancel = visual.debug_bounds("cancel-confirm").unwrap();
+            visual.simulate_click(cancel.center(), Modifiers::default());
+        }
+        visual.run_until_parked();
+        assert!(!visual.update(|window, cx| window.has_active_dialog(cx)));
+        assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
+        view.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.snapshot.as_ref().unwrap().history_retention[0]
+                    .days
+                    .days(),
+                365
+            )
+        });
+    }
+    let reduce = visual.debug_bounds("sync-history-days-0-7").unwrap();
+    visual.simulate_click(reduce.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let confirm = visual.debug_bounds("confirm-action").unwrap();
+    visual.simulate_click(confirm.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec!["enter", "retention"]);
+    view.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.snapshot.as_ref().unwrap().history_retention[0]
+                .days
+                .days(),
+            7
+        )
+    });
+    // The completed worker publishes a new snapshot and re-enables the row.
+    // Draw that frame before reading button bounds; the modal's previous frame
+    // still carries debug bounds until then.
+    view.update(&mut visual, |view, cx| {
+        assert!(
+            !view.busy,
+            "completed retention worker must release its controls"
+        );
+        view.scroll.set_offset(point(px(0.), px(-4000.)));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    assert_visible(&mut visual, "sync-history-days-0-90");
+    // Increasing retention remains immediate and provides a fired-path control.
+    let increase = visual.debug_bounds("sync-history-days-0-90").unwrap();
+    visual.simulate_click(increase.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(!visual.update(|window, cx| window.has_active_dialog(cx)));
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["enter", "retention", "retention"]
+    );
 }
