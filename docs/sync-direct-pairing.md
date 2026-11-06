@@ -115,7 +115,7 @@ to recover a lost approval response during the original lifetime. Its durable
 paired credential survives invitation expiry. Syncthing's own certificate-bound
 TLS separately authenticates the actual file-transfer peer.
 
-Implementation bounds: invitations last ten minutes, with no UI setting; at most
+Implementation bounds: invitations last one hour, with no UI setting; at most
 64 paired computers per controller; 100-byte names; 256 KiB maximum wire frame;
 three-second connection/read/write limits; a single bounded connection worker.
 Unknown versions, capabilities, signatures, recipients, fields and stale responses
