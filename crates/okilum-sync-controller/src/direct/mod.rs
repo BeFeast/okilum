@@ -1052,6 +1052,11 @@ impl Controller {
             }
         };
         let reply = result.unwrap_or_else(|error| {
+            if let Some(message) = removal::public_refusal(&error) {
+                return Reply::Error {
+                    message: message.into(),
+                };
+            }
             #[cfg(target_os = "linux")]
             if let Some(message) = inventory::public_refusal(&error) {
                 return Reply::Error {

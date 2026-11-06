@@ -4,6 +4,19 @@ use super::*;
 use serde_json::json;
 use std::collections::BTreeSet;
 
+const HANDOFF_REFUSAL: &str = "This introducer still serves plain Syncthing computers. Their surviving relationships need an explicit handoff before removing this computer; no folder was changed";
+#[derive(Debug)]
+struct NeedsHandoff;
+impl std::fmt::Display for NeedsHandoff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(HANDOFF_REFUSAL)
+    }
+}
+impl std::error::Error for NeedsHandoff {}
+pub(super) fn public_refusal(error: &anyhow::Error) -> Option<&'static str> {
+    error.is::<NeedsHandoff>().then_some(HANDOFF_REFUSAL)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyncComputer {
     pub device_id: String,
@@ -463,10 +476,14 @@ impl Controller {
                 if fresh.daemon.device_id == removal.device {
                     let peers = capture_mesh(&api.config()?, &before, &removal.device)?;
                     let db = self.shared.db.lock().unwrap();
-                    ensure!(peers.iter().all(|member| db.peers.iter().any(|(scope, peer)|
-                        peer.syncthing_device.as_deref() == Some(member.device.as_str())
-                            && knows(&db, *scope, &fresh.folder_id))),
-                        "This introducer still serves plain Syncthing computers. Their surviving relationships need an explicit handoff before removing this computer; no folder was changed");
+                    if !peers.iter().all(|member| {
+                        db.peers.iter().any(|(scope, peer)| {
+                            peer.syncthing_device.as_deref() == Some(member.device.as_str())
+                                && knows(&db, *scope, &fresh.folder_id)
+                        })
+                    }) {
+                        return Err(NeedsHandoff.into());
+                    }
                     mesh.insert(fresh.folder_id.clone(), peers);
                 }
                 {
