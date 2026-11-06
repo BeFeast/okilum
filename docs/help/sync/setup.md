@@ -44,9 +44,9 @@ If an incoming change reaches a note with unsaved edits, Okilum keeps your text 
 
 ## Common questions
 
-**Do I need an always-on server?** No. An always-on Linux computer running Okilum can receive a copy using these steps and act as another trusted peer. A Linux server can run `okilum sync serve` without a window. Pair through the running service with `okilum sync invite`. On a plain Syncthing server, share the vault explicitly, then edit the trusted sharing device → Advanced → Introducer. Leave Skip Introduction Removals disabled. New computers sharing that vault can then be introduced without repeated server configuration. Manually added devices still need manual removal; copied files remain on the removed device. Fleet-wide Okilum removal remains #2042.
+**Do I need an always-on server?** No. An always-on Linux computer running Okilum can receive a copy using these steps and act as another trusted peer. A Linux server can run `okilum sync serve` without a window. Pair through the running service with `okilum sync invite`. On a plain Syncthing server, share the vault explicitly, then edit the trusted sharing device → Advanced → Introducer. Leave Skip Introduction Removals disabled. New computers sharing that vault can then be introduced without repeated server configuration. Manually added devices still need manual removal; copied files remain on the removed device. Settings → Sync → Remove stops sharing with that computer and propagates through authenticated paired/introducer routes. Confirm its device ID first; disconnected computers follow when reconnected (#2042).
 
-**Does disconnecting erase the other computer's copy?** No. Fleet-wide removal is not available in this flow. Removing shares/connections in Syncthing does not recall files already copied. Closing Okilum or disabling its optional Sync UI is not remote revocation.
+**Does disconnecting erase the other computer's copy?** No. Remove in Sync settings leaves that computer’s own files in place. Manually configured Syncthing relationships outside the introducer still need manual removal, and copied files cannot be recalled. Closing Okilum or disabling its optional Sync UI is not remote revocation.
 
 **Do I sign in with a passkey?** No. The former service/hub/passkey desktop enrollment is gone (#2049). Pair directly with the URL and confirmation above.
 
