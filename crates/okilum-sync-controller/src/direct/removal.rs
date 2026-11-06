@@ -68,13 +68,20 @@ impl Controller {
             })
             .collect();
         for vault in attached {
-            let fresh = inspect_existing(&configs, &vault.path)?;
-            ensure!(
-                existing::same_binding(&vault, &fresh),
-                "Computer inventory vault identity changed"
-            );
-            let api = fresh.daemon.connect()?;
-            let config = api.config()?;
+            // Inventory must not turn a moved/unavailable history binding into
+            // a global Sync failure. Mutation paths still require exact binding.
+            let Ok(fresh) = inspect_existing(&configs, &vault.path) else {
+                continue;
+            };
+            if !existing::same_binding(&vault, &fresh) {
+                continue;
+            }
+            let Ok(api) = fresh.daemon.connect() else {
+                continue;
+            };
+            let Ok(config) = api.config() else {
+                continue;
+            };
             let connections = api.connections().ok();
             for device in fresh
                 .peers
@@ -89,7 +96,9 @@ impl Controller {
                     .and_then(|d| d["name"].as_str())
                     .filter(|s| !s.is_empty())
                     .map(str::to_owned)
-                    .unwrap_or_else(|| format!("Computer {}…", &device[..device.len().min(7)]));
+                    .unwrap_or_else(|| {
+                        format!("Computer {}…", device.chars().take(7).collect::<String>())
+                    });
                 let row = result.entry(device.clone()).or_insert(SyncComputer {
                     device_id: device.clone(),
                     name,

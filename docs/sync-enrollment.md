@@ -178,9 +178,10 @@ the owner does not trust remains open; transport encryption does not solve that.
 
 ## Removal, ignores, and remaining work
 
-The direct Settings flow does not yet offer fleet-wide device removal or
-propagated revocation. To disconnect a plain/external Syncthing peer, remove its
-folder shares and device connections in Syncthing on the relevant computers.
+Settings offers [Remove computer](#remove-a-computer-2042) with propagated
+sharing/pairing revocation. For a manually configured plain/external Syncthing
+relationship outside the introducer, remove its shares/connections in Syncthing
+on the relevant computers.
 Stopping a local app or disabling its optional Sync UI is not remote revocation.
 Already copied files remain on a disconnected or lost computer; they cannot be
 recalled. A new invitation does not revoke an earlier pairing.
@@ -188,8 +189,6 @@ recalled. A new invitation does not revoke an earlier pairing.
 The [30 October decisions and 1 November clarification](https://git.oklabs.uk/BeFeast/okilum/issues/2039)
 set the direction. These parts remain unfinished:
 
-- [#2042](https://git.oklabs.uk/BeFeast/okilum/issues/2042): propagated removal through the
-  introducer mesh; the 06 November decision does not add a vault device list.
 - [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043): preview and lossless
   first merge when the destination already has files. Local preview groundwork
   does not enable this flow. Merged PRs

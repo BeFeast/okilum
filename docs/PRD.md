@@ -51,8 +51,9 @@ peers require explicit Syncthing configuration. A receiver's Okilum-managed
 Syncthing marks the computer that shared the vault as its introducer once the vault
 is bidirectional, so it also syncs directly with every computer that one shares the
 vault with; those computers must still accept it (#2589). [Headless installation and plain-peer introducer setup](sync-headless.md)
-use the same controller (#2048). Propagated removal remains #2042; the
-06 November decision uses introducer mesh without a device list in the vault.
+use the same controller (#2048). [Remove computer](sync-enrollment.md#remove-a-computer-2042) propagates
+through authenticated paired/introducer routes (#2042); no device list is stored
+in the vault. Removed computers keep their files.
 Copied data cannot be recalled, and untrusted-server encryption remains open.
 
 A non-empty new destination is refused pending lossless preview/merge (#2043);
