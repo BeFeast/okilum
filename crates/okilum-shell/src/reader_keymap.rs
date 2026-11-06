@@ -420,6 +420,10 @@ pub(crate) fn key_label(key: &str) -> String {
 
 fn save(path: &Path, expected: &Option<Vec<u8>>, document: &Document) -> anyhow::Result<Vec<u8>> {
     use std::io::Write;
+    static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _write = SAVE_LOCK.lock().map_err(|_| {
+        anyhow::anyhow!("A previous keymap write failed; reopen Okilum before saving")
+    })?;
     anyhow::ensure!(
         &read(path).map_err(|e| anyhow::anyhow!("{e}"))? == expected,
         "keymap.json changed on disk. Reload the list before saving again"

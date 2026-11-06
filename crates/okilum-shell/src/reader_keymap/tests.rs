@@ -279,6 +279,38 @@ fn keymap_2626_atomic_save_refuses_external_edits_and_round_trips_null() {
     assert_eq!(std::fs::read(&path).unwrap(), external);
 }
 
+#[test]
+fn keymap_2626_concurrent_settings_saves_preserve_the_first_accepted_revision() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("keymap.json");
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let jobs: Vec<_> = ["f6", "f7"]
+        .into_iter()
+        .map(|key| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let document = Document {
+                    version: 1,
+                    bindings: vec![override_for("Global", key, None)],
+                };
+                barrier.wait();
+                save(&path, &None, &document).ok()
+            })
+        })
+        .collect();
+    let accepted: Vec<_> = jobs
+        .into_iter()
+        .filter_map(|job| job.join().unwrap())
+        .collect();
+    assert_eq!(
+        accepted.len(),
+        1,
+        "only one Settings window can replace the absent revision"
+    );
+    assert_eq!(std::fs::read(path).unwrap(), accepted[0]);
+}
+
 #[gpui::test]
 fn keymap_2626_conflicts_distinguish_same_disjoint_and_global_contexts(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();

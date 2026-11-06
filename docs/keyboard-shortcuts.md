@@ -67,7 +67,7 @@ The complete file is validated before changing the active keymap. Invalid JSON,
 unknown actions, bad keys/predicates, duplicate context/key pairs, unsupported
 versions and oversized files show an error in Settings while the last working
 bindings remain active. The file is not rewritten to hide errors. Settings saves
-use an atomic replacement and refuse to overwrite a file changed externally since
+are serialized between Settings windows, use an atomic replacement and refuse to overwrite a file changed externally since
 it was loaded. Fix/reload an invalid file before editing it through Settings.
 
 Menus, the shortcut sheet and hints use the active GPUI keymap; native application
