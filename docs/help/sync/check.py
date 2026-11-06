@@ -131,10 +131,10 @@ def main():
     guide = (ROOT / "setup.md").read_text()
     headings = re.findall(r"^## ([1-6])\. (.*)$", guide, re.M)
     assert [number for number, _ in headings] == list("123456")
-    for required in ("including two fresh installations", "Share with another computer…", "Share with my computers", "Get notes from another computer", "Only local network and VPN", ".okilum-conflict-<time>-<random>", "This computer", "Use this connection", "Copy pairing URL", "Paste pairing URL", "Confirm computer", "Choose local folder", "Bidirectional Sync active", "not real-time latency evidence or Oleg acceptance"):
+    for required in ("including two fresh installations", "Share with another computer…", "Share with my computers", "Get notes from another computer", "Only local network and VPN", ".okilum-conflict-<time>-<random>", "This computer", "Use this connection", "Create pairing link", "Copy link", "Request connection", "Approve", "Choose folder", "Start first sync", "First sync complete", "not real-time latency evidence or Oleg acceptance"):
         assert required in guide, required
     text = " ".join(page.text)
-    for required in ("Share with another computer…", "Share with my computers", "Get notes from another computer", "Only local network and VPN", "10 minutes", "#2043", "#2049", "macOS is coming", "Windows is coming"):
+    for required in ("Share with another computer…", "Share with my computers", "Get notes from another computer", "Only local network and VPN", "one hour", "#2043", "#2049", "macOS is coming", "Windows is coming"):
         assert required in text, required
     for stale in ("Fresh-host bootstrap is not ready", "existing, configured Syncthing runtime on both computers", "fresh passkey confirmation"):
         assert stale not in guide and stale not in text, stale

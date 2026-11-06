@@ -91,6 +91,14 @@ impl SyncSettings {
                 }
             }
         }
+        content = content.child(
+            v_flex().gap_2()
+                .child("Servers and other Syncthing apps")
+                .child(div().text_sm().text_color(p.text_muted).child(
+                    "No server is required. For a plain Syncthing peer, share this vault in Syncthing, then edit the trusted sharing computer → Advanced → Introducer. Leave Skip Introduction Removals off. New computers sharing the vault can then connect without repeated server setup. Devices added manually still need manual removal; a removed computer keeps its files."))
+                .child(div().text_sm().text_color(p.text_muted).child(
+                    "On a Linux server, okilum sync serve runs without a window. Use okilum sync invite as the same user to pair through the running service. See Help for the setup guide.")),
+        );
         content = content.child(v_flex().gap_2()
             .child("Already syncing this vault with Syncthing?")
             .child(div().text_sm().text_color(p.text_muted)
