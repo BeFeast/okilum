@@ -2250,8 +2250,10 @@ fn issue2045_retention_reduction_requires_explicit_confirmation(cx: &mut TestApp
     let view = visual.update(|_, cx| cx.global::<BackgroundSync>().0.clone());
     // The worker supplies twelve local vault rows. Scroll the real overview
     // before clicking; offscreen debug bounds do not exercise a button.
-    let viewport = visual.debug_bounds("sync-steps").unwrap();
-    visual.simulate_scroll(viewport.center(), point(px(0.), px(-4000.)));
+    view.update(&mut visual, |view, cx| {
+        view.scroll.set_offset(point(px(0.), px(-4000.)));
+        cx.notify();
+    });
     visual.run_until_parked();
     assert_visible(&mut visual, "sync-history-days-0-7");
     // Opening a reduced preset must not invoke the blocking controller.
