@@ -1,0 +1,98 @@
+name: sync-v2-docs-native-before-after
+on:
+  push:
+    branches: ['sync-v2-docs-native-before-after/**']
+permissions:
+  contents: read
+jobs:
+  artifacts:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare stock desktop input and capture driver
+        run: |
+          swiftc scripts/ci/sync-docs-ui.swift -o "$RUNNER_TEMP/sync-ui-driver"
+          cp scripts/ci/sync-docs-ui.py "$RUNNER_TEMP/sync-ui-hosted.py"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: agent-macos-sync-v1
+      - name: Prepare verified native dependencies
+        run: |
+          test "$(uname -m)" = arm64
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          archive="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          python3 scripts/updater/sparkle.py fetch "$archive"
+          python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
+          printf 'DYLD_FRAMEWORK_PATH=%s/vendor/sparkle\n' "$PWD" >> "$GITHUB_ENV"
+      - name: Build production UI binaries without test support or installation
+        run: |
+          evidence="$RUNNER_TEMP/sync-ui"
+          mkdir -p "$evidence/Frameworks"
+          ditto vendor/sparkle/Sparkle.framework "$evidence/Frameworks/Sparkle.framework"
+          for entry in after:657d1f347c44429c9ed31371778e5ab28d1f1b08 before:3123a1b46a2078c3e3393830db776144df674657; do
+            label=${entry%%:*}
+            source=${entry#*:}
+            git checkout --detach "$source"
+            test "$(git rev-parse HEAD)" = "$source"
+            bash scripts/vendor-setup.sh --verify
+            OKILUM_SOURCE_COMMIT="$source" cargo build --locked -p okilum-shell --bin okilum
+            mkdir -p "$evidence/$label"
+            cp target/debug/okilum "$evidence/$label/okilum"
+            "$evidence/$label/okilum" --build-info | tee "$evidence/$label/build-info.txt"
+            grep -q "$source" "$evidence/$label/build-info.txt"
+            grep -q 'gpui-test-support: no' "$evidence/$label/build-info.txt"
+            shasum -a 256 "$evidence/$label/okilum" > "$evidence/$label/sha256.txt"
+            otool -L "$evidence/$label/okilum" > "$evidence/$label/libraries.txt"
+          done
+      - name: Capture actual native before and after Settings
+        run: python3 "$RUNNER_TEMP/sync-ui-hosted.py" "$RUNNER_TEMP/sync-ui" "$RUNNER_TEMP/sync-ui-driver"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sync-v2-Mac-Help-before-after
+          path: |
+            ${{ runner.temp }}/sync-ui/*-Mac-Sync-Help.png
+            ${{ runner.temp }}/sync-ui/*-ocr.txt
+            ${{ runner.temp }}/sync-ui/native-ui-receipt.json
+            ${{ runner.temp }}/sync-ui/*/build-info.txt
+            ${{ runner.temp }}/sync-ui/*/sha256.txt
+          if-no-files-found: error
+          retention-days: 3
+  html:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Capture the changed written HTML guide in the same real Chrome session environment
+        run: |
+          mkdir -p "$RUNNER_TEMP/html-evidence"
+          google-chrome --version > "$RUNNER_TEMP/html-evidence/browser.txt"
+          for entry in before:3123a1b46a2078c3e3393830db776144df674657 after:657d1f347c44429c9ed31371778e5ab28d1f1b08; do
+            label=${entry%%:*}
+            source=${entry#*:}
+            git checkout --detach "$source"
+            python3 docs/help/sync/check.py
+            google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --no-first-run --window-size=1440,2400 --virtual-time-budget=4000 --screenshot="$RUNNER_TEMP/html-evidence/$label-HTML-guide.png" "file://$PWD/docs/help/sync/index.html#connect"
+            printf '%s\n' "$source" > "$RUNNER_TEMP/html-evidence/$label-source.txt"
+            sha256sum docs/help/sync/index.html > "$RUNNER_TEMP/html-evidence/$label-html-sha256.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sync-v2-HTML-Help-before-after
+          path: ${{ runner.temp }}/html-evidence
+          if-no-files-found: error
+          retention-days: 5

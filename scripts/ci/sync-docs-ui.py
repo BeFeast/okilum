@@ -1,0 +1,47 @@
+"""Actual compiled GPUI Help text on stock hosted Mac; no helper registration."""
+import hashlib,json,os,pathlib,signal,subprocess,sys,tempfile,time
+base=pathlib.Path(sys.argv[1]);driver=sys.argv[2];root=pathlib.Path(tempfile.mkdtemp(prefix='okilum-docs-ui-'));vault=root/'ordinary-vault';vault.mkdir();(vault/'seed.md').write_text('# Disposable Mac Help capture\n')
+rows=[]
+def run(*args):return subprocess.check_output([str(a) for a in args],text=True,timeout=30)
+def wait(name,fn,timeout=60):
+ end=time.monotonic()+timeout
+ while True:
+  value=fn()
+  if value:return value
+  if time.monotonic()>end:raise RuntimeError(name)
+  time.sleep(.5)
+def ocr():
+ run('/usr/sbin/screencapture','-x',base/'current.png');return json.loads(run(driver,'ocrjson',base/'current.png'))
+def click(text,contains=False):
+ found=wait('visible '+text,lambda:next((r for r in ocr() if (text.casefold() in r['text'].casefold() if contains else r['text'].strip().lstrip('›>▾ ').casefold()==text.casefold())),None))
+ run(driver,'click',found['x'],found['y']);time.sleep(1)
+for label in ['before','after']:
+ profile=root/label;profile.mkdir();(profile/'features.json').write_text('{"sync":true}');(profile/'reader-ui.json').write_text('{"version":1,"settings_section":"sync"}')
+ env=dict(os.environ,OKILUM_STATE_DIR=str(profile),DYLD_FRAMEWORK_PATH=str(base/'Frameworks'));binary=base/label/'okilum'
+ process=subprocess.Popen([str(binary),'--vault',str(vault),'--note','seed.md'],env=env,stdout=open(base/(label+'-app.log'),'w'),stderr=subprocess.STDOUT,start_new_session=True)
+ try:
+  wait('Reader window',lambda:json.loads(run(driver,'list',process.pid)));run(driver,'activate',process.pid)
+  wait('rendered Help seed note',lambda:any('Disposable Mac Help capture' in r['text'] for r in ocr()))
+  next_key=0
+  def settings():
+   global next_key
+   if any('Settings' in w.get('kCGWindowName','') for w in json.loads(run(driver,'list',process.pid))):return True
+   if time.monotonic()>next_key:run(driver,'settings',process.pid);next_key=time.monotonic()+5
+   return False
+  wait('Settings window',settings);run(driver,'resize',process.pid);time.sleep(2)
+  click('Advanced',contains=True)
+  for _ in range(7):
+   if any('Help: connect a computer' in r['text'] for r in ocr()):break
+   run(driver,'scroll',966,610,-7);time.sleep(.7)
+  click('Help: connect a computer');wait('native Help title',lambda:any('Sync setup help' in r['text'] for r in ocr()));time.sleep(2)
+  image=base/(label+'-Mac-Sync-Help.png');run('/usr/sbin/screencapture','-x',image);text=run(driver,'ocr',image);(base/(label+'-ocr.txt')).write_text(text)
+  assert ('macos is coming' in text.casefold()) if label=='before' else ('29262' in text and 'macos' in text.casefold()),text
+  rows.append(dict(label=label,build_info=(base/label/'build-info.txt').read_text(),screenshot_sha256=hashlib.sha256(image.read_bytes()).hexdigest(),native_help_rendered=True,ocr_control_passed=True))
+ finally:
+  if process.poll() is None:
+   os.killpg(process.pid,signal.SIGTERM)
+   try:process.wait(timeout=15)
+   except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.wait()
+  assert process.poll() is not None
+managed=pathlib.Path.home()/'Library/Application Support/Okilum/Sync';assert not managed.exists(),'Help started managed runtime'
+(base/'native-ui-receipt.json').write_text(json.dumps(dict(captures=rows,no_managed_runtime_created=True,all_owned_actors_reaped=True),indent=2)+'\n');print('NATIVE_COMPILED_HELP_BEFORE_AFTER_PASS')
