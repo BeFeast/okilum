@@ -353,3 +353,57 @@ pub(super) fn pending(db: &Database) -> usize {
         .filter(|r| !r.local_applied || !r.pending.is_empty())
         .count()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn authenticated_peer_without_a_shared_vault_cannot_remove_a_computer() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let first = Controller::open(root.path().join("first"), vec![])?;
+        let second = Controller::open(root.path().join("second"), vec![])?;
+        let url = first
+            .begin_pairing_at("First", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
+            .offer_url
+            .unwrap();
+        second.redeem(&url, "Second")?;
+        first.approve(first.snapshot()?.pending.unwrap().request_id)?;
+        second.refresh_pairing()?;
+        let peer = second
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .peers
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        assert!(
+            second.catalog(peer.peer.id)?.is_empty(),
+            "authenticated positive channel control"
+        );
+        let file = first.shared.state.join("direct.json");
+        let before = std::fs::read(&file)?;
+        let reply = second.call(
+            peer.endpoint,
+            peer.peer.id,
+            &peer.key,
+            &peer.public,
+            Operation::RemoveComputer {
+                id: Uuid::new_v4(),
+                device: ["AAAAAAA"; 8].join("-"),
+                vaults: BTreeSet::from(["not-authorized".into()]),
+            },
+        )?;
+        assert!(matches!(reply, Reply::Error { .. }));
+        assert_eq!(
+            std::fs::read(file)?,
+            before,
+            "unauthorized removal wrote durable state"
+        );
+        first.shutdown();
+        second.shutdown();
+        Ok(())
+    }
+}
