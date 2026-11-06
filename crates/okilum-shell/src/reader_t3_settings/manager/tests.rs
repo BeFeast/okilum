@@ -101,7 +101,10 @@ fn clipboard_is_untouched_without_consent_for_foreign_links_and_after_cancel(
             cx,
         ));
         assert_eq!(entry(&env, cx).stage, Stage::Waiting);
-        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(link));
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some(link)
+        );
         cancel(&env, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(link.into()));
         consume_clipboard(project::credentials::Store::default(), cx);
@@ -181,9 +184,7 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
                     returns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     // Model Wayland: Selection arrives after the Enter callback.
                     let link = delivered_link.clone();
-                    cx.defer(move |cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(link))
-                    });
+                    cx.defer(move |cx| cx.write_to_clipboard(ClipboardItem::new_string(link)));
                 }
                 activated_with_store(
                     window,
