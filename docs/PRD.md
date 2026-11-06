@@ -101,6 +101,12 @@ application settings; unavailable fonts quietly use the embedded Noto Sans /
 Cascadia Code defaults. Reset restores both defaults. UI chrome and the independent
 color emoji fallback keep their existing typography.
 
+**User keyboard shortcuts (#2626, Oleg 2026-11-06):**
+[Keyboard Shortcuts](keyboard-shortcuts.md) adds contextual user overrides in
+`keymap.json`, live reload with last-good validation, and a Settings editor with
+key recording, conflict/reassignment choices and reset. Displayed shortcut hints
+follow the active keymap; OS-reserved combinations may remain unavailable.
+
 **Core-first optional modules (#2091/#2092, 2026-10-31):**
 [Settings → Features](optional-features.md) makes Agents, Second brain and Sync
 opt-in, off by default, with immediate UI/lifecycle changes and no disabled-module

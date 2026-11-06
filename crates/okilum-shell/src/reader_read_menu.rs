@@ -149,22 +149,22 @@ fn build(
     for &command in commands(has_selection) {
         let snapshot = snapshot.clone();
         let reader = reader.clone();
+        let hint_reader = reader.clone();
         menu = menu.item(
             PopupMenuItem::element(move |_, cx| {
+                let editing = hint_reader
+                    .upgrade()
+                    .is_some_and(|reader| reader.read(cx).editing.is_some());
+                let hints =
+                    |action: &dyn Action| reader_shortcuts::content_shortcuts(action, editing, cx);
                 h_flex()
                     .debug_selector(move || format!("read-menu-{}", command.label()))
                     .child(div().flex_1().child(command.label()))
                     .child(match command {
-                        Command::Plain => {
-                            reader_shortcuts::all_shortcuts(&gpui_component::input::Copy, cx)
-                        }
-                        Command::Markdown | Command::Document => {
-                            reader_shortcuts::all_shortcuts(&CopyAsMarkdown, cx)
-                        }
-                        Command::Rich => reader_shortcuts::all_shortcuts(&CopyWithFormatting, cx),
-                        Command::SelectAll => {
-                            reader_shortcuts::all_shortcuts(&gpui_component::input::SelectAll, cx)
-                        }
+                        Command::Plain => hints(&gpui_component::input::Copy),
+                        Command::Markdown | Command::Document => hints(&CopyAsMarkdown),
+                        Command::Rich => hints(&CopyWithFormatting),
+                        Command::SelectAll => hints(&gpui_component::input::SelectAll),
                     })
             })
             .disabled(
