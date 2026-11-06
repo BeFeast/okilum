@@ -133,6 +133,15 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         draw < std::time::Duration::from_secs(2),
         "bounded page first draw: {draw:?}"
     );
+    // Draw the real Raw handoff before its replacement AST is available.
+    preview.update_in(visual, |p, window, cx| {
+        assert!(p.structure_view);
+        p.show_json(false, window, cx);
+        assert!(!p.structure_view);
+        assert!(p.document.is_none());
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    visual.run_until_parked();
     let fold = visual
         .debug_bounds("data-fold-all")
         .expect("Fold all for the complete minified AST");

@@ -298,6 +298,7 @@ impl CodePreview {
     fn prepare_document(&mut self, shown: String, window: &mut Window, cx: &mut Context<Self>) {
         self.page = 0;
         self.document = None;
+        self.structure_view = false;
         self.matches.clear();
         self.document_revision += 1;
         self.search_revision += 1;
