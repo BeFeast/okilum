@@ -197,10 +197,12 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
         "positive control: actual window activation consumed the clipboard"
     );
     visual.update(|_, cx| {
-        assert_eq!(
-            cx.read_from_clipboard().unwrap().text().as_deref(),
-            Some("")
-        );
+        // GPUI represents an empty text clipboard as no text entry.
+        assert!(cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default()
+            .is_empty());
         activated(cx); // Duplicate activation must not exchange twice.
     });
     visual.update(|_, cx| {
