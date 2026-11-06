@@ -73,7 +73,12 @@ def main():
             try:
                 for phase, expected in [("relative", relative), ("absolute", str(target.resolve())),
                                         ("reveal", str(target.resolve()))]:
-                    wait_for(lambda: (directory / f"ready-{phase}").exists(), phase + " dispatch")
+                    def ready():
+                        if process.poll() is not None:
+                            details = (Path(os.environ["RUNNER_TEMP"]) / "embed-native-app.log").read_text()
+                            raise AssertionError(f"native app exited before {phase}: {details[-4000:]}")
+                        return (directory / f"ready-{phase}").exists()
+                    wait_for(ready, phase + " dispatch")
                     if phase == "reveal":
                         def revealed():
                             return any(os.path.normcase(os.path.normpath(item)) ==

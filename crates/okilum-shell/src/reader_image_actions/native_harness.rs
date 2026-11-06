@@ -59,17 +59,18 @@ pub(crate) fn entry() -> bool {
                                 )
                                 .into_iter()
                                 .find(|reference| {
-                                    reference.target == "attachments/manual space.pdf"
+                                    source.get(reference.range.clone())
+                                        == Some("![[attachments/manual space.pdf]]")
                                 })
-                                .expect("attachment resolves through the production parser");
-                                reader.image_command(
-                                    &ImageCommand {
-                                        target: Target::reference(reader, &reference),
-                                        command,
-                                    },
-                                    window,
-                                    cx,
+                                .expect("authored attachment range survives the production parser");
+                                let target = Target::reference(reader, &reference);
+                                assert_eq!(
+                                    target.relative.as_deref(),
+                                    Some("attachments/manual space.pdf"),
+                                    "production resolver decodes the captured path"
                                 );
+                                assert!(target.url.is_some(), "attachment is resolved");
+                                reader.image_command(&ImageCommand { target, command }, window, cx);
                             });
                         })
                         .unwrap();
