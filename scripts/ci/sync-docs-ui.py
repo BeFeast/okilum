@@ -29,6 +29,9 @@ for label in ['before','after']:
    if time.monotonic()>next_key:run(driver,'settings',process.pid);next_key=time.monotonic()+5
    return False
   wait('Settings window',settings);run(driver,'resize',process.pid);time.sleep(2)
+  for _ in range(7):
+   if any('Advanced' in r['text'] for r in ocr()):break
+   run(driver,'scroll',966,610,-7);time.sleep(.7)
   click('Advanced',contains=True)
   for _ in range(7):
    if any('Help: connect a computer' in r['text'] for r in ocr()):break
