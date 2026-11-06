@@ -40,7 +40,7 @@ jobs:
           evidence="$RUNNER_TEMP/sync-ui"
           mkdir -p "$evidence/Frameworks"
           ditto vendor/sparkle/Sparkle.framework "$evidence/Frameworks/Sparkle.framework"
-          for entry in after:657d1f347c44429c9ed31371778e5ab28d1f1b08 before:3123a1b46a2078c3e3393830db776144df674657; do
+          for entry in after:abc5900fb1c14393adf7178ac9503d89892941bc before:3123a1b46a2078c3e3393830db776144df674657; do
             label=${entry%%:*}
             source=${entry#*:}
             git checkout --detach "$source"

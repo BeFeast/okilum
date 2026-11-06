@@ -41,14 +41,19 @@ for label in ['before','after']:
   click('connect a computer',contains=True);wait('native Help title',lambda:any('Sync setup help' in r['text'] for r in ocr()));time.sleep(2)
   image=base/(label+'-Mac-Sync-Help.png');run('/usr/sbin/screencapture','-x',image);text=run(driver,'ocr',image);(base/(label+'-ocr.txt')).write_text(text)
   assert ('macos is coming' in text.casefold()) if label=='before' else ('29262' in text and 'macos' in text.casefold()),text
-  for _ in range(30):
-   visible=ocr()
-   if any('Check both directions' in r['text'] for r in visible):break
-   run(driver,'scroll',850,550,-4);time.sleep(.6)
-  wait('visible Save keyboard instruction',lambda:any(('Cmd+S' if label=='after' else 'Ctrl+S') in r['text'] for r in ocr()))
-  save_image=base/(label+'-Mac-Save-Help.png');run('/usr/sbin/screencapture','-x',save_image)
-  (base/(label+'-save-ocr.txt')).write_text(run(driver,'ocr',save_image))
-  rows.append(dict(label=label,build_info=(base/label/'build-info.txt').read_text(),screenshot_sha256=hashlib.sha256(image.read_bytes()).hexdigest(),native_help_rendered=True,ocr_control_passed=True))
+  sections=[]
+  for name,fragment,expected in [('Request','request the','Request connection'),('Save','Check both directions','Cmd+S' if label=='after' else 'Ctrl+S')]:
+   for _ in range(45):
+    visible=ocr();heading=next((r for r in visible if fragment.casefold() in r['text'].casefold() and r['x']>420),None)
+    if heading and heading['y']<300:break
+    run(driver,'scroll',850,550,-2 if heading else -4);time.sleep(.6)
+   def instruction_visible():
+    return any(expected in r['text'].replace('CtrI+S','Ctrl+S') for r in ocr())
+   wait('visible '+name+' instruction',instruction_visible)
+   section_image=base/(label+'-Mac-'+name+'-Help.png');run('/usr/sbin/screencapture','-x',section_image)
+   (base/(label+'-'+name.lower()+'-ocr.txt')).write_text(run(driver,'ocr',section_image))
+   sections.append(dict(name=name,screenshot_sha256=hashlib.sha256(section_image.read_bytes()).hexdigest(),expected_instruction=expected))
+  rows.append(dict(label=label,build_info=(base/label/'build-info.txt').read_text(),screenshot_sha256=hashlib.sha256(image.read_bytes()).hexdigest(),native_help_rendered=True,ocr_control_passed=True,sections=sections))
  except BaseException:
   run('/usr/sbin/screencapture','-x',base/(label+'-failure.png'))
   (base/(label+'-failure-ocr.json')).write_text(json.dumps(ocr(),indent=2))
