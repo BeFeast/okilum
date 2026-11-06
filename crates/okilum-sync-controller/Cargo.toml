@@ -19,6 +19,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "blo
 url = "2"
 xmltree = "0.11"
 getrandom = "0.3"
+globset = "=0.4.20"
 ring = "=0.17.14"
 
 [dev-dependencies]
