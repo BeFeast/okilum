@@ -121,7 +121,7 @@ try:
  devices=subprocess.run(['ffmpeg','-hide_banner','-f','avfoundation','-list_devices','true','-i',''],capture_output=True,text=True,timeout=20);match=re.search(r'\[(\d+)\] Capture screen 0',devices.stderr);assert match,devices.stderr
  recorder=subprocess.Popen(['ffmpeg','-hide_banner','-loglevel','warning','-f','avfoundation','-framerate','10','-capture_cursor','1','-i',match[1]+':none','-an','-vf','scale=1024:-2','-c:v','libx264','-preset','ultrafast','-crf','24','-pix_fmt','yuv420p','-movflags','+frag_keyframe+empty_moov',str(out/'raw-pairing.mp4')],stdin=subprocess.PIPE,stdout=open(out/'recorder.log','w'),stderr=subprocess.STDOUT,text=True,start_new_session=True);record_started=time.monotonic();time.sleep(2);assert recorder.poll() is None,'recorder exited'
  # A normal existing source on the independent headless counterpart; all paths are disposable.
- peer_home=root/'peer-runtime';peer_state=root/'peer-controller';peer_vault=root/'source-vault';peer_vault.mkdir();(peer_vault/'seed.md').write_bytes(seed);peer_state.mkdir(mode=0o700);destination=root/'received-vault';destination.mkdir()
+ peer_home=root/'peer-runtime';peer_state=root/'peer-controller';peer_vault=root/'source-vault';peer_vault.mkdir();(peer_vault/'seed.md').write_bytes(seed);peer_state.mkdir(mode=0o700);destination=pathlib.Path(tempfile.mkdtemp(prefix='received-vault-',dir=pathlib.Path.home()/'Documents'))
  run(runtime,'generate','--home',peer_home,timeout=45)
  ports=[]
  for _ in range(2):
@@ -177,12 +177,14 @@ try:
   allow_local_network_dialog();peer_command('refresh');return any(row['text'].strip()=='Choose folder' for row in ocr())
  wait('approved native Mac catalog and Choose folder',available,90);screen('04-received-catalog');click('Choose folder')
  wait('native folder picker',lambda:any('new folder' in row['text'].casefold() for row in ocr()),30);screen('05-native-folder-picker')
- run(driver,'go-folder')
- wait('native Go to Folder field is visible',lambda:any('go to folder' in row['text'].casefold() for row in ocr()),30)
- click('Go to Folder');native_path=run(driver,'folder-path',destination,app_pid);(out/'native-folder-path.json').write_text(native_path.stdout);event('native Go to Folder text field accepted and read back the exact destination path')
- wait('actual destination path is rendered in Go to Folder',lambda:any('received-vault' in row['text'] for row in ocr()),30);screen('05b-native-destination-path');run(driver,'return')
- wait('native Go to Folder sheet closed',lambda:not any(row['text'].strip()=='Go to Folder' for row in ocr()),30)
- click('Use folder for ordinary-vault');event('clicked native Go to Folder and confirmed the existing empty destination')
+ def choose_destination_row():
+  rows=ocr();row=next((r for r in rows if r['text'].strip().startswith('received-vault-')),None)
+  if row:return row
+  documents=next((r for r in rows if r['text'].strip()=='Documents' and r['x']<240),None)
+  if documents:run(driver,'click',documents['x'],documents['y'])
+  return None
+ row=wait('owned empty directory row in the native Documents picker',choose_destination_row,30);run(driver,'click',row['x'],row['y']);event('clicked owned empty destination directory in the native picker');time.sleep(1);screen('05b-native-destination-selected')
+ click('Use folder for ordinary-vault');event('confirmed the existing empty destination through the native folder picker')
  wait('destination selected in native Mac UI',lambda:any(row['text'].strip()=='Start first sync' for row in ocr()),30);assert not list(destination.iterdir());screen('06-empty-destination-selected');click('Start first sync')
  def received():
   allow_local_network_dialog();peer_command('refresh')
@@ -287,11 +289,24 @@ finally:
   assert all(v['owner']==str(os.getuid()) and v['state_directory']==str(managed) and pathlib.Path(v['supervisor']).is_relative_to(app) for v in owned_bindings),'refuse cleanup of a different service binding'
   run('codesign','--verify','--strict',owned_bindings[0]['supervisor'])
   cleanup['exact_verified_service_binding']=True
-  runtime_pids=owned_runtime_pids();subprocess.run(['launchctl','bootout',label],check=True,capture_output=True)
+  runtime_pids=owned_runtime_pids();runtime_births={pid:run('ps','-p',pid,'-o','lstart=').stdout.strip() for pid in runtime_pids};subprocess.run(['launchctl','bootout',label],check=True,capture_output=True)
   for pid in runtime_pids:
    try:os.kill(pid,signal.SIGTERM)
    except ProcessLookupError:pass
-  time.sleep(1);cleanup['managed_registration_removed']=subprocess.run(['launchctl','print',label],capture_output=True).returncode!=0;cleanup['managed_runtime_processes_gone']=not owned_runtime_pids()
+  deadline=time.monotonic()+20
+  while owned_runtime_pids() and time.monotonic()<deadline:time.sleep(.25)
+  forced=[]
+  remaining=owned_runtime_pids()
+  for pid in runtime_pids:
+   if pid in remaining:
+    live=subprocess.run(['ps','-p',str(pid),'-o','lstart='],capture_output=True,text=True)
+    if live.returncode==0 and live.stdout.strip()==runtime_births[pid]:
+     try:os.kill(pid,signal.SIGKILL);forced.append(pid)
+     except ProcessLookupError:pass
+  deadline=time.monotonic()+5
+  while owned_runtime_pids() and time.monotonic()<deadline:time.sleep(.25)
+  cleanup['managed_registration_removed']=subprocess.run(['launchctl','print',label],capture_output=True).returncode!=0;cleanup['managed_runtime_processes_gone']=not owned_runtime_pids()
+  (out/'fixture-stop.json').write_text(json.dumps({'grace_seconds':20,'forced_only_same_captured_pid_and_birth':forced},indent=2)+'\n')
  (out/'cleanup.json').write_text(json.dumps(cleanup,indent=2)+'\n')
  if result:
   result['cleanup']=cleanup;(out/'acceptance-receipt.json').write_text(json.dumps(result,indent=2)+'\n')
