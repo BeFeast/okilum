@@ -18,7 +18,7 @@ Select Add computer, enter This computer’s name, then Create pairing link and 
 
 ## 3. Second computer: request the connection
 
-On the welcome screen, select Get notes from another computer. This opens Settings → Sync and enables the Sync feature. Select I have a link from another computer, enter this computer's own recognizable name under This computer, paste the invitation, then select Request connection. If you already have a vault open, you can also use Settings → Sync. Choose Use connection if prompted about an existing runtime.
+On the welcome screen, select Get notes from another computer. This opens Settings → Sync and enables the Sync feature. In Sync, select I already have a pairing link, or Add computer → I have a link from another computer. Enter this computer's own recognizable name under This computer, paste the invitation, then select Request connection. If you already have a vault open, you can also use Settings → Sync. Choose Use connection if prompted about an existing runtime.
 
 ## 4. First computer: confirm the identity
 
