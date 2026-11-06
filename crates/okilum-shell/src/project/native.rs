@@ -2,6 +2,7 @@
 //! and cursor are paired under a mutex, including during concurrent history loads.
 use super::*;
 pub(super) mod actions;
+mod onboarding;
 pub(super) mod recovery;
 mod recovery_state;
 use okilum_t3::{
@@ -25,13 +26,15 @@ pub(super) struct Native {
     input: Entity<InputState>,
     pub(super) actions: Entity<actions::Actions>,
     request_lease: Arc<()>,
-    open: bool,
     busy: bool,
+    flow_blocked: bool,
     setup_error: Option<String>,
+    setup_cause: Option<StreamError>,
     history_error: Option<String>,
     failure: Option<ConnectionFailure>,
     phase: ConnectionPhase,
     pub(super) connection_epoch: u64,
+    retry_epoch: u64,
     ever_ready: bool,
     stream_ready: bool,
     expires_at: Option<u64>,
@@ -49,6 +52,10 @@ pub(super) struct Native {
     _actions_visibility: Subscription,
 }
 impl Native {
+    #[cfg(test)]
+    pub(super) fn set_detail_test_expiry(&mut self, expiry: u64) {
+        self.expires_at = Some(expiry);
+    }
     #[cfg(test)]
     pub(super) fn set_detail_test_client(&mut self, client: Arc<NativeClient>) {
         self.client = Some(client);
@@ -68,16 +75,18 @@ impl Native {
             request_lease: Arc::new(()),
             input: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("One-time T3 pairing token")
+                    .placeholder("Paste a T3 pair link or pairing code")
                     .masked(true)
             }),
-            open: false,
             busy: false,
+            flow_blocked: false,
             setup_error: None,
+            setup_cause: None,
             history_error: None,
             failure: None,
             phase: ConnectionPhase::Paused,
             connection_epoch: 0,
+            retry_epoch: 0,
             ever_ready: false,
             stream_ready: false,
             expires_at: None,
@@ -99,7 +108,10 @@ impl Native {
         !self.busy && self.stream_ready && self.failure.is_none()
     }
     pub(super) fn client_can_operate(&self) -> bool {
-        !self.busy && self.stream_ready && self.client.as_ref().is_some_and(|c| c.can_operate())
+        !self.busy
+            && !self.flow_blocked
+            && self.stream_ready
+            && self.client.as_ref().is_some_and(|c| c.can_operate())
     }
     pub(super) fn deleted(&self) -> bool {
         self.metadata.deleted
@@ -156,12 +168,6 @@ impl Native {
             "Connected"
         }
     }
-    pub(super) fn renew_due(&self) -> bool {
-        self.expires_at.is_some_and(|expiry| {
-            expiry.saturating_sub(chrono::Utc::now().timestamp().max(0) as u64)
-                <= okilum_t3::EXPIRES_SOON_SECS
-        })
-    }
     pub(super) fn pause(&mut self) {
         self.stream_ready = false;
         self.catalog_observer.take();
@@ -187,13 +193,14 @@ impl Native {
         self.client = None;
         self.retained = None;
         self.setup_error = None;
+        self.setup_cause = None;
+        self.flow_blocked = false;
         self.history_error = None;
         self.failure = None;
         self.ever_ready = false;
         self.metadata = Metadata::default();
         self.busy = false;
         self.history_busy = false;
-        self.open = false;
         self.expires_at = None;
     }
 }
@@ -203,20 +210,24 @@ impl Drop for Native {
     }
 }
 impl ProjectView {
+    #[cfg(test)]
     pub(super) fn native_pairing_busy(&self) -> bool {
         self.native.busy
     }
-    pub(super) fn pair_manager(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.environment.is_none() {
-            match self.connection_environment(cx) {
-                Ok(environment) => self.environment = Some(environment),
-                Err(_) => {
-                    reader_settings::show_t3(cx);
-                    return;
-                }
-            }
+    pub(super) fn pair_manager(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let environment = self
+            .environment
+            .clone()
+            .or_else(|| self.connection_environment(cx).ok());
+        if let Some(environment) = environment {
+            self.native.pause();
+            self.environment = Some(environment.clone());
+            self.native.setup_error = None;
+            self.native.setup_cause = None;
+            reader_t3_settings::manager::begin(&environment, cx);
+        } else {
+            reader_settings::show_t3(cx);
         }
-        self.native_restore(true, window, cx);
     }
 
     pub(super) fn native_restore(
@@ -249,8 +260,12 @@ impl ProjectView {
                 Ok(Some(task)) => task,
                 _ => return,
             };
+            let mut saved_expiry = None;
             let result = match task.await {
-                Ok(Some((_, bytes))) => NativeToken::from_secret(&environment, &bytes).map(Some),
+                Ok(Some((_, bytes))) => {
+                    saved_expiry = NativeToken::saved_expiry(&environment, &bytes);
+                    NativeToken::from_secret(&environment, &bytes).map(Some)
+                }
                 Ok(None) => Ok(None),
                 Err(_) => Err(StreamError::Protocol(
                     "the saved live connection could not be read; pair again explicitly",
@@ -274,26 +289,24 @@ impl ProjectView {
                     return;
                 }
                 this.native.busy = false;
+                this.native.expires_at = saved_expiry;
                 match result {
                     Ok(Some((client, expiry))) => this.install_native(client, expiry, window, cx),
                     Ok(None) => {
                         this.native.phase = ConnectionPhase::Paused;
-                        if this.threads.enabled {
-                            this.native.open = true;
-                            this.connection_details = true;
-                        }
                         this.draft_restore(window, cx);
                         if ask {
-                            this.pair_enrolled_device(window, cx);
+                            this.pair_manager(window, cx);
                         }
                         cx.notify();
                     }
                     Err(error) => {
                         this.native.phase = ConnectionPhase::Terminal;
                         this.native.setup_error = Some(error.to_string());
+                        this.native.setup_cause = Some(error);
                         this.draft_restore(window, cx);
                         if ask {
-                            this.pair_enrolled_device(window, cx);
+                            this.pair_manager(window, cx);
                         }
                         cx.notify();
                     }
@@ -304,156 +317,6 @@ impl ProjectView {
         if ask {
             cx.notify();
         }
-    }
-    fn native_pair(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let credential = self.native.input.read(cx).value().to_string();
-        self.pair_native_credential(credential, window, cx);
-    }
-    fn pair_enrolled_device(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(environment) = self.environment.clone() else {
-            return;
-        };
-        self.native.busy = true;
-        self.freeze_native_actions(window, cx);
-        self.native.phase = ConnectionPhase::Connecting;
-        let attempt = ConnectionAttempt::begin(self, environment.origin());
-        cx.spawn_in(window, async move |this, cx| {
-            let task = match this.update_in(cx, |this, _, cx| {
-                attempt.current(this).then(|| {
-                    this.credentials
-                        .read(&NativeToken::pairing_key(&environment), cx)
-                })
-            }) {
-                Ok(Some(task)) => task,
-                _ => return,
-            };
-            let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                if !attempt.current(this) {
-                    return;
-                }
-                this.native.busy = false;
-                match result {
-                    Ok(Some((_, bytes))) => match String::from_utf8(bytes) {
-                        Ok(credential) => this.pair_native_credential(credential, window, cx),
-                        Err(_) => {
-                            this.native.setup_error =
-                                Some("The saved device enrollment could not be read".into())
-                        }
-                    },
-                    _ => this.native.setup_error = Some(
-                        "This device has not been enrolled with T3. Open Diagnostics to connect."
-                            .into(),
-                    ),
-                }
-                if this.native.setup_error.is_some() {
-                    this.native.phase = ConnectionPhase::Terminal;
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-    fn pair_native_credential(
-        &mut self,
-        credential: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !reader_features::enabled(reader_features::Feature::Agents, cx) {
-            return;
-        }
-        let access = reader_features::access(reader_features::Feature::Agents, cx);
-        if self.native.busy {
-            return;
-        }
-        let Some(environment) = self.environment.clone() else {
-            return;
-        };
-        if credential.trim().is_empty() {
-            self.native.setup_error = Some("Enter a one-time T3 pairing token".into());
-            cx.notify();
-            return;
-        }
-        self.native
-            .input
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.native.busy = true;
-        self.native.setup_error = None;
-        self.freeze_native_actions(window, cx);
-        self.native.phase = ConnectionPhase::Connecting;
-        let attempt = ConnectionAttempt::begin(self, environment.origin());
-        cx.spawn_in(window, async move |this, cx| {
-            let env = environment.clone();
-            let pair_access = access.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let _access = pair_access.enter();
-                    NativeToken::pair(&env, &credential, Duration::from_secs(10))
-                })
-                .await;
-            let result = match result {
-                Ok(token) => {
-                    let expiry = token.expires_at();
-                    let bytes = token.to_secret();
-                    let task = match this.update_in(cx, |this, _, cx| {
-                        if !attempt.current(this) {
-                            return None;
-                        }
-                        Some(this.credentials.write(
-                            &NativeToken::credential_key(&environment),
-                            &environment.alias,
-                            &bytes,
-                            cx,
-                        ))
-                    }) {
-                        Ok(Some(task)) => task,
-                        _ => return,
-                    };
-                    match task.await {
-                        Ok(()) => {
-                            if let Ok(Some(cleanup)) = this.update_in(cx, |this, _, cx| {
-                                attempt.current(this).then(|| {
-                                    this.credentials
-                                        .delete(&NativeToken::pairing_key(&environment), cx)
-                                })
-                            }) {
-                                let _ = cleanup.await;
-                            }
-                            cx.background_executor()
-                                .spawn(async move {
-                                    NativeClient::new(environment, token, Duration::from_secs(10))
-                                        .map(|client| {
-                                            (Arc::new(client.with_access(access)), expiry)
-                                        })
-                                })
-                                .await
-                        }
-                        Err(_) => Err(StreamError::Protocol(
-                            "the live connection could not be saved",
-                        )),
-                    }
-                }
-                Err(error) => Err(error),
-            };
-            let _ = this.update_in(cx, |this, window, cx| {
-                if !attempt.current(this) {
-                    return;
-                }
-                this.native.busy = false;
-                match result {
-                    Ok((client, expiry)) => this.install_native(client, expiry, window, cx),
-                    Err(error) => {
-                        this.native.phase = ConnectionPhase::Terminal;
-                        this.native.setup_error = Some(error.to_string());
-                        cx.notify();
-                    }
-                }
-            });
-        })
-        .detach();
-        cx.notify();
     }
     pub(super) fn install_native(
         &mut self,
@@ -484,11 +347,12 @@ impl ProjectView {
         self.native.pause();
         self.gateway = Some(gateway);
         self.native.client = Some(client);
+        self.native.flow_blocked = false;
         self.attachments.connection_changed();
         self.native.setup_error = None;
+        self.native.setup_cause = None;
         self.native.failure = None;
         self.native.expires_at = Some(expiry);
-        self.native.open = false;
         self.sync_native_action_surface(cx);
         if self.native.retained.is_none() {
             if let Some((thread, project)) = target {
@@ -745,6 +609,16 @@ impl ProjectView {
                             this.native.failure = None;
                             this.native.phase = ConnectionPhase::Connected;
                             this.native.ever_ready = true;
+                            if let Some(env) = &this.environment {
+                                reader_t3_settings::manager::transport(
+                                    env,
+                                    client.clone(),
+                                    this.native.expires_at.unwrap_or(0),
+                                    reader_t3_settings::manager::Stage::Connected,
+                                    None,
+                                    cx,
+                                );
+                            }
                         }
                         if let Some(metadata) = metadata {
                             notify |= this.native.metadata != metadata;
@@ -850,45 +724,15 @@ impl ProjectView {
         cx.notify();
     }
     pub(super) fn render_native(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let compact = !self.connection_details;
         let enabled = self.native.client_can_operate() && self.native.failure.is_none();
         self.native
             .actions
             .update(cx, |a, cx| a.set_enabled(enabled, cx));
-        let mut controls = h_flex().flex_wrap().gap_2().child(
-            Button::new("project-live-connect")
-                .ghost()
-                .label(if self.native.active() {
-                    "Reconnect live updates"
-                } else {
-                    "Enable live updates"
-                })
-                .debug_selector(|| "project-live-connect".into())
-                .disabled(self.native.busy || self.environment.is_none())
-                .on_click(cx.listener(|this, _, window, cx| {
-                    if this.native.active() {
-                        this.native_reconnect(window, cx);
-                    } else {
-                        this.native_restore(true, window, cx);
-                    }
-                })),
-        );
-        if self.native.active() {
-            controls = controls.child(
-                Button::new("project-live-pair-again")
-                    .ghost()
-                    .label("Pair again")
-                    .disabled(self.native.busy)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.native.open = true;
-                        cx.notify();
-                    })),
-            );
-        }
-        let mut view = v_flex().w_full().min_w_0().gap_1();
-        if !compact {
-            view = view.child(controls);
-        }
+        let mut view = v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .child(self.render_manager_onboarding(window, cx));
         if self.native.metadata.has_more_history && self.native.metadata.history_cursor.is_some() {
             view = view.child(
                 Button::new("project-live-history")
@@ -903,40 +747,6 @@ impl ProjectView {
                     })
                     .disabled(self.native.history_busy)
                     .on_click(cx.listener(|this, _, window, cx| this.native_history(window, cx))),
-            );
-        }
-        if self.native.open && !compact {
-            view=view.child(div().w_full().min_w_0().whitespace_normal()
-                .child("Live updates need a separate T3 client pairing with permission to read threads and control agents. Paste its one-time pairing token; the saved connection is reused until it expires."))
-                .child(div().w_full().min_w_0().debug_selector(||"project-live-token-row".into()).child(Input::new(&self.native.input).w_full()))
-                .child(Button::new("project-live-pair").ghost().label("Pair").disabled(self.native.busy)
-                    .on_click(cx.listener(|this,_,window,cx|this.native_pair(window,cx))));
-            if let Some(origin) = self.environment.as_ref().map(Environment::origin) {
-                view = view.child(
-                    Button::new("project-live-open-browser")
-                        .ghost()
-                        .label("Open T3")
-                        .on_click(move |_, _, cx| cx.open_url(&origin)),
-                );
-            }
-        }
-        if let Some(expiry) = self.native.expires_at.filter(|_| !compact) {
-            let renew = self.native.renew_due();
-            view = view.child(
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .whitespace_normal()
-                    .text_color(brand::palette(cx).text_muted)
-                    .child(format!(
-                        "Live {}{}",
-                        super::expiry_note(expiry).trim_start_matches("Connection "),
-                        if renew {
-                            " — pair again to renew"
-                        } else {
-                            ""
-                        }
-                    )),
             );
         }
         if self.native.metadata.deleted {
@@ -964,7 +774,5 @@ fn terminal(error: &StreamError) -> bool {
 pub(super) fn delay(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.saturating_sub(1).min(4)).min(15))
 }
-#[cfg(test)]
-mod credential_tests;
 #[cfg(test)]
 mod tests;

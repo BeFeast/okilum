@@ -414,6 +414,25 @@ impl ProjectView {
                     }
                 });
             });
+        #[cfg(native_manager)]
+        {
+            let weak = cx.weak_entity();
+            window
+                .observe_global::<reader_t3_settings::manager::Connections>(
+                    cx,
+                    move |window, cx| {
+                        let _ =
+                            weak.update(cx, |this, cx| this.manager_connection_changed(window, cx));
+                    },
+                )
+                .detach();
+            cx.observe_window_activation(window, |_, window, cx| {
+                if window.is_window_active() {
+                    reader_t3_settings::manager::activated(cx);
+                }
+            })
+            .detach();
+        }
         Self {
             binding: None,
             area: None,
@@ -1042,7 +1061,7 @@ impl ProjectView {
     }
 
     fn connection_is_compact(&self, _status: &GatewayStatus) -> bool {
-        !self.connection_details && self.environment.is_some()
+        cfg!(native_manager) || (!self.connection_details && self.environment.is_some())
     }
 
     fn connection_line(&self, status: &GatewayStatus, cx: &mut Context<Self>) -> AnyElement {
@@ -1056,15 +1075,15 @@ impl ProjectView {
             .map(|url| url[url::Position::BeforeHost..url::Position::AfterPort].to_owned())
             .unwrap_or(origin);
         let _ = host;
+        #[cfg(not(native_manager))]
         let label = match status {
             GatewayStatus::Connected { .. } | GatewayStatus::ExpiresSoon { .. } => "Connected",
             _ => "Offline",
         };
         #[cfg(native_manager)]
-        let label = if self.native.active() || self.threads.enabled {
-            self.native.status_label(cx)
-        } else {
-            label
+        let label = match self.manager_stage(cx) {
+            reader_t3_settings::manager::Stage::Connected => self.native.status_label(cx),
+            stage => stage.label(),
         };
         let owner = cx.entity().downgrade();
         let disabled = self.busy || self.model_busy || !reader_t3_settings::can_sign_out(&env, cx);
@@ -1077,6 +1096,8 @@ impl ProjectView {
             .child(div().size(px(6.)).rounded_full().bg(match label {
                 "Connected" | "Ready" => brand::palette(cx).success,
                 "Working" => brand::palette(cx).accent,
+                "Connecting" | "Reconnecting" | "Reconnect needed" => brand::palette(cx).warning,
+                "Error" => cx.theme().danger,
                 _ => brand::palette(cx).text_muted,
             }))
             .child(
@@ -1105,7 +1126,7 @@ impl ProjectView {
                         let menu = menu
                             .item(rotation::policy_owner::menu_item(owner.clone(), cx))
                             .item(express_session::menu_item(owner.clone(), cx));
-                        menu.item(PopupMenuItem::new("Diagnostics").on_click(move |_, _, cx| {
+                        menu.item(PopupMenuItem::new("Details").on_click(move |_, _, cx| {
                             let _ = diagnostics.update(cx, |this, cx| {
                                 this.connection_details = true;
                                 cx.notify();
@@ -1695,14 +1716,15 @@ impl ProjectView {
     }
 }
 
-fn expiry_note(expires_at: u64) -> String {
+pub(super) fn expiry_note(expires_at: u64) -> String {
     i64::try_from(expires_at)
         .ok()
         .and_then(|seconds| chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0))
         .map(|date| {
             format!(
-                "Connection token expires {} UTC",
-                date.format("%Y-%m-%d %H:%M")
+                "Connection valid until {}",
+                date.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M %Z")
             )
         })
         .unwrap_or_else(|| "Connection expiry unavailable".into())
@@ -1929,7 +1951,7 @@ impl ProjectView {
             .text_color(brand::palette(cx).text)
             .bg(brand::palette(cx).surface)
             .gap_2()
-            .when(self.connection_details, |view| view.child(self.render_chat_diagnostics(cx)))
+            .when(self.connection_details && !cfg!(native_manager), |view| view.child(self.render_chat_diagnostics(cx)))
             .when(
                 self.binding
                     .as_ref()
@@ -1998,7 +2020,7 @@ impl ProjectView {
                 )
             })
             .when_some(expiry.filter(|_| !compact), |view, expiry| view.child(div().w_full().min_w_0().whitespace_normal().debug_selector(|| "project-token-expiry".into()).text_color(brand::palette(cx).text_muted).child(expiry)))
-            .when(self.connection_details, |view| view.child(Button::new("project-connection-done")
+            .when(self.connection_details && !cfg!(native_manager), |view| view.child(Button::new("project-connection-done")
                 .debug_selector(|| "project-connection-done".into()).ghost().icon(IconName::Check).tooltip("Done with connection settings")
                 .on_click(cx.listener(|this, _, _, cx| { this.connection_details = false; cx.notify(); }))))
             .when(self.binding.is_some() && browser_help && legacy_controls, |view| {
@@ -2023,6 +2045,8 @@ impl ProjectView {
             )
             .when_some(self.error.clone().or_else(|| self.environment.as_ref().and_then(|env| reader_t3_settings::connection_error(&env.origin(), cx))), |view, error| {
                 #[cfg(native_manager)]
+                if self.binding.is_some() { return view; }
+                #[cfg(native_manager)]
                 if self.native.active() {
                     return if let Some(banner) = self.native_setup_error_banner(error, _window, cx) {
                         view.child(banner)
@@ -2034,7 +2058,7 @@ impl ProjectView {
                     div()
                         .debug_selector(|| "project-error".into())
                         .text_color(cx.theme().danger)
-                        .child(if compact { "Could not connect. Open Diagnostics to retry.".to_owned() } else { error }),
+                        .child(if compact { "Could not connect. Open Details to retry.".to_owned() } else { error }),
                 )
             })
             .when(self.launch.open, |view| view.child(self.render_launch(cx)))

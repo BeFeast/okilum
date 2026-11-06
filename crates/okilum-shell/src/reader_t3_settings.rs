@@ -1,6 +1,8 @@
 //! App-wide authenticated T3 connection and resumable browser authorization.
 use super::*;
 mod auth;
+#[cfg(native_manager)]
+pub(crate) mod manager;
 
 #[derive(Default)]
 pub(super) struct Connection {
@@ -73,6 +75,10 @@ pub(super) struct T3Settings {
     error_details_open: bool,
     _input: Subscription,
     _auth: Subscription,
+    #[cfg(native_manager)]
+    manager_input: Entity<InputState>,
+    #[cfg(native_manager)]
+    manager_details_open: bool,
 }
 impl T3Settings {
     pub(super) fn new(
@@ -137,6 +143,8 @@ impl T3Settings {
                         this.origin
                             .update(cx, |input, cx| input.set_value(value.clone(), window, cx));
                         if let Ok(env) = okilum_t3::Environment::from_input("app", &value) {
+                            #[cfg(native_manager)]
+                            manager::restore(env.clone(), cx);
                             auth::connect(env, this.state.clone(), false, cx);
                         }
                     }
@@ -147,7 +155,28 @@ impl T3Settings {
             });
         })
         .detach();
+        #[cfg(native_manager)]
+        let manager_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Paste a T3 pair link or pairing code")
+                .masked(true)
+        });
+        #[cfg(native_manager)]
+        {
+            cx.observe_global::<manager::Connections>(|_, cx| cx.notify())
+                .detach();
+            cx.observe_window_activation(window, |_, window, cx| {
+                if window.is_window_active() {
+                    manager::activated(cx);
+                }
+            })
+            .detach();
+        }
         Self {
+            #[cfg(native_manager)]
+            manager_input,
+            #[cfg(native_manager)]
+            manager_details_open: false,
             origin,
             callback,
             state,
@@ -170,6 +199,8 @@ impl T3Settings {
                     .update(cx, |input, cx| input.set_value(env.origin(), window, cx));
                 self.error = None;
                 self.error_details_open = false;
+                #[cfg(native_manager)]
+                manager::restore(env.clone(), cx);
                 auth::connect(env, self.state.clone(), true, cx);
             }
             Err(e) => self.error = Some(format!("{e:#}")),
@@ -177,6 +208,149 @@ impl T3Settings {
         cx.notify();
     }
 }
+#[cfg(native_manager)]
+impl T3Settings {
+    fn render_manager(&self, cx: &mut Context<Self>) -> AnyElement {
+        use manager::Stage;
+        let env = okilum_t3::Environment::from_input("app", &self.origin.read(cx).value()).ok();
+        let entry = env
+            .as_ref()
+            .map(|env| manager::entry(env, cx))
+            .unwrap_or_default();
+        let signed_in = env.as_ref().is_some_and(|env| gateway(env, cx).is_some());
+        let stage = if entry.stage == Stage::NotConnected && !signed_in {
+            Stage::SignedOut
+        } else if entry.stage == Stage::Connected
+            && entry
+                .expiry
+                .is_some_and(|expiry| expiry <= chrono::Local::now().timestamp().max(0) as u64)
+        {
+            Stage::Expired
+        } else {
+            entry.stage
+        };
+        let details = format!(
+            "Manager: {}\nServer: {}\n{}\nLast error: {}",
+            stage.label(),
+            env.as_ref()
+                .map(|env| env.origin())
+                .unwrap_or_else(|| "Not configured".into()),
+            entry
+                .expiry
+                .map(project::expiry_note)
+                .unwrap_or_else(|| "No saved Manager credential".into()),
+            entry.error.unwrap_or_else(|| "None".into())
+        );
+        let copy = details.clone();
+        v_flex()
+            .w_full()
+            .min_w_0()
+            .gap_2()
+            .debug_selector(|| "t3-manager-connection".into())
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("Manager · {}", stage.label())),
+            )
+            .child(div().whitespace_normal().child(stage.sentence()))
+            .child(
+                Button::new("t3-manager-connect")
+                    .debug_selector(|| "t3-manager-connect".into())
+                    .primary()
+                    .label(stage.action())
+                    .disabled(stage == Stage::Connecting || env.is_none())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let Some(env) = okilum_t3::Environment::from_input(
+                            "app",
+                            &this.origin.read(cx).value(),
+                        )
+                        .ok() else {
+                            return;
+                        };
+                        match stage {
+                            Stage::SignedOut => this.connect(window, cx),
+                            Stage::Connected | Stage::Waiting => {
+                                cx.open_url(&manager::connections_url(&env))
+                            }
+                            Stage::Connecting => {}
+                            Stage::Offline => manager::retry(&env, cx),
+                            _ => manager::begin(&env, cx),
+                        }
+                    })),
+            )
+            .child(
+                Button::new("t3-manager-details-toggle")
+                    .ghost()
+                    .small()
+                    .label(if self.manager_details_open {
+                        "▾ Details"
+                    } else {
+                        "▸ Details"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.manager_details_open = !this.manager_details_open;
+                        cx.notify();
+                    })),
+            )
+            .when(self.manager_details_open, |view| {
+                view.child(
+                    v_flex()
+                        .w_full()
+                        .min_w_0()
+                        .gap_2()
+                        .debug_selector(|| "t3-manager-details".into())
+                        .child(div().whitespace_normal().text_sm().child(details))
+                        .child(
+                            Button::new("t3-manager-copy-details")
+                                .ghost()
+                                .small()
+                                .label("Copy details")
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                                }),
+                        )
+                        .child(Input::new(&self.manager_input).w_full())
+                        .child(
+                            Button::new("t3-manager-paste-link")
+                                .ghost()
+                                .small()
+                                .label("Use pasted link")
+                                .disabled(stage == Stage::Connecting)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if let Ok(env) = okilum_t3::Environment::from_input(
+                                        "app",
+                                        &this.origin.read(cx).value(),
+                                    ) {
+                                        let text = this.manager_input.read(cx).value().to_string();
+                                        this.manager_input.update(cx, |input, cx| {
+                                            input.set_value("", window, cx)
+                                        });
+                                        manager::paste(env, &text, cx);
+                                    }
+                                })),
+                        )
+                        .when(stage == Stage::Waiting, |view| {
+                            view.child(
+                                Button::new("t3-manager-cancel")
+                                    .ghost()
+                                    .small()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Ok(env) = okilum_t3::Environment::from_input(
+                                            "app",
+                                            &this.origin.read(cx).value(),
+                                        ) {
+                                            manager::cancel(&env, cx);
+                                        }
+                                    })),
+                            )
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+}
+
 impl Render for T3Settings {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let env = okilum_t3::Environment::from_input("app", &self.origin.read(cx).value()).ok();
@@ -199,8 +373,8 @@ impl Render for T3Settings {
                     cx.stop_propagation();
                 }
             }))
-            .child("Projects / T3")
-            .child("Sign in once for every project in this app. Sprint keeps its own connection.")
+            .child("T3")
+            .child("Sign in once for every project in this app.")
             .child(
                 h_flex()
                     .gap_2()
@@ -222,6 +396,11 @@ impl Render for T3Settings {
                     .text_color(cx.theme().muted_foreground)
                     .child(s)
             }))
+            .when(cfg!(native_manager), |view| {
+                #[cfg(native_manager)]
+                let view = view.child(self.render_manager(cx));
+                view
+            })
             .when_some(pending, |view, pending| {
                 let paste = pending.input.clone();
                 let extend = pending.input.clone();

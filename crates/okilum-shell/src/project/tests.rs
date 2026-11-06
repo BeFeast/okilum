@@ -403,7 +403,7 @@ fn a_revoked_connection_has_a_visible_reason_and_keeps_the_draft(cx: &mut TestAp
     });
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds("project-connection-status").is_some(),
+        visual.debug_bounds("manager-details").is_some(),
         "revocation details remain available on request"
     );
 }
@@ -494,7 +494,11 @@ fn a_manager_from_another_project_is_not_enabled_for_sending(cx: &mut TestAppCon
             .unwrap()
             .contains("another T3 project"));
     });
-    assert!(visual.debug_bounds("project-error").is_some());
+    assert!(visual.debug_bounds("manager-onboarding").is_some());
+    assert!(
+        visual.debug_bounds("project-error").is_none(),
+        "raw setup errors stay under Details"
+    );
 }
 
 #[gpui::test]
@@ -1346,69 +1350,57 @@ fn unavailable_questions_keep_manager_history_and_send_working(cx: &mut TestAppC
 }
 
 #[gpui::test]
-fn connected_controls_collapse_until_requested_and_keep_the_renew_reminder(
-    cx: &mut TestAppContext,
-) {
+fn connected_controls_collapse_until_details_is_requested(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
     let state = tempfile::tempdir().unwrap();
-    let expiry = chrono::DateTime::parse_from_rfc3339("2026-10-30T15:00:00Z")
-        .unwrap()
-        .timestamp() as u64;
-    assert_eq!(
-        expiry_note(expiry),
-        "Connection token expires 2026-10-30 15:00 UTC"
-    );
-    for status in [
-        GatewayStatus::ExpiresSoon { expires_at: expiry },
-        GatewayStatus::Connected { expires_at: expiry },
+    let expiry = chrono::Utc::now().timestamp().max(0) as u64 + 3600;
+    let gateway = Arc::new(fixture::Fake::default());
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture::view(state.path().to_owned(), gateway.clone(), window, cx);
+            view.native.set_detail_test_expiry(expiry);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("project-connected-line").is_some());
+    assert!(visual.debug_bounds("manager-details").is_none());
+    for selector in [
+        "project-token-expiry",
+        "project-renew",
+        "project-sign-in-again",
+        "project-live-connect",
+        "project-pair",
+        "project-diagnostics",
     ] {
-        let soon = matches!(status, GatewayStatus::ExpiresSoon { .. });
-        let gateway = Arc::new(fixture::Fake {
-            connection_status: Some(status),
-            ..Default::default()
-        });
-        let (root, visual) = cx.add_window_view(|window, cx| {
-            let view =
-                cx.new(|cx| fixture::view(state.path().to_owned(), gateway.clone(), window, cx));
-            Root::new(view, window, cx)
-        });
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("project-connected-line").is_some());
-        assert!(visual.debug_bounds("project-connection-menu").is_some());
-        assert!(visual.debug_bounds("project-token-expiry").is_none());
-        assert!(visual.debug_bounds("project-renew").is_none());
-        assert!(visual.debug_bounds("project-sign-in-again").is_none());
-        assert!(visual.debug_bounds("project-live-connect").is_none());
-        let view = root.read_with(visual, |root, _| {
-            root.view().clone().downcast::<ProjectView>().unwrap()
-        });
-        // The menu's explicit Change/Renew request reveals the existing form.
-        view.update_in(visual, |view, _, cx| {
-            view.connection_details = true;
-            cx.notify();
-        });
-        visual.run_until_parked();
         assert!(
-            visual.debug_bounds("project-token-expiry").is_some(),
-            "EXPIRY1773: token expiry must be visible"
+            visual.debug_bounds(selector).is_none(),
+            "old connection dump: {selector}"
         );
-        assert_eq!(visual.debug_bounds("project-renew").is_some(), soon);
-        assert_eq!(
-            visual.debug_bounds("project-sign-in-again").is_some(),
-            !soon
-        );
-        assert!(gateway.sends.lock().unwrap().is_empty());
-        assert_eq!(
-            visual.opened_url(),
-            None,
-            "a reminder cannot open OAuth automatically"
-        );
-        let done = visual.debug_bounds("project-connection-done").unwrap();
-        visual.simulate_click(done.center(), Modifiers::default());
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("project-connected-line").is_some());
-        assert!(visual.debug_bounds("project-token-expiry").is_none());
     }
+    let details = visual.debug_bounds("manager-details-toggle").unwrap();
+    visual.simulate_click(details.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("manager-details").is_some());
+    let copy = visual.debug_bounds("manager-copy-details").unwrap();
+    visual.simulate_click(copy.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        let text = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(text.contains(&expiry_note(expiry)));
+        let local = chrono::DateTime::from_timestamp(expiry as i64, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        assert!(text.contains(&local.format("%Y-%m-%d %H:%M %Z").to_string()));
+    });
+    let details = visual.debug_bounds("manager-details-toggle").unwrap();
+    visual.simulate_click(details.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("manager-details").is_none());
+    assert!(gateway.sends.lock().unwrap().is_empty());
+    assert_eq!(visual.opened_url(), None);
+    drop(root);
 }
 
 #[gpui::test]
