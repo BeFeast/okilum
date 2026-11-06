@@ -56,19 +56,24 @@ fn quote_2625_editor_binding_can_be_disabled_rebound_and_reset(cx: &mut TestAppC
         install_at(Some(directory.path().join("keymap.json")), cx);
         let quote = ToggleQuote::name_for_type();
         assert_eq!(
-            actions("secondary-shift-q", &["ReaderSource", "Input"], cx),
+            actions("ctrl-shift-q", &["ReaderSource", "Input"], cx),
             [quote]
         );
-        assert!(actions("secondary-shift-q", &["ReaderRead"], cx).is_empty());
-        assert!(actions("secondary-shift-q", &["Input"], cx).is_empty());
+        #[cfg(target_os = "macos")]
+        assert!(
+            actions("cmd-shift-q", &["ReaderSource", "Input"], cx).is_empty(),
+            "macOS reserves Shift+Command+Q for logout"
+        );
+        assert!(actions("ctrl-shift-q", &["ReaderRead"], cx).is_empty());
+        assert!(actions("ctrl-shift-q", &["Input"], cx).is_empty());
         adopt(
             Ok(Some(bytes(vec![
-                override_for("Editor", "secondary-shift-q", None),
+                override_for("Editor", "ctrl-shift-q", None),
                 override_for("Editor", "f7", Some(quote)),
             ]))),
             cx,
         );
-        assert!(actions("secondary-shift-q", &["ReaderSource", "Input"], cx).is_empty());
+        assert!(actions("ctrl-shift-q", &["ReaderSource", "Input"], cx).is_empty());
         assert_eq!(actions("f7", &["ReaderSource", "Input"], cx), [quote]);
         let row = cx
             .global::<Keymap>()
@@ -88,7 +93,7 @@ fn quote_2625_editor_binding_can_be_disabled_rebound_and_reset(cx: &mut TestAppC
         assert!(global.keys.is_empty());
         adopt(Ok(None), cx);
         assert_eq!(
-            actions("secondary-shift-q", &["ReaderSource", "Input"], cx),
+            actions("ctrl-shift-q", &["ReaderSource", "Input"], cx),
             [quote]
         );
     });
