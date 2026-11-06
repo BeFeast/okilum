@@ -1,7 +1,7 @@
 name: sync-v2-docs-native-before-after
 on:
   push:
-    branches: ['sync-v2-docs-native-before-after/**']
+    branches: ['sync-v2-docs-ui/**']
 permissions:
   contents: read
 jobs:
