@@ -60,7 +60,7 @@ def main():
         payload = b"%PDF-1.0 synthetic acceptance file\n"
         target.write_bytes(payload)
         source = f"# Files\n\n![[{relative}]]\n"
-        (root / "note.md").write_text(source, encoding="utf-8")
+        (root / "note.md").write_bytes(source.encode("utf-8"))
         # Seed a value that cannot be mistaken for either copied path.
         if sys.platform == "darwin":
             subprocess.run(["pbcopy"], input=b"native sentinel", check=True)
