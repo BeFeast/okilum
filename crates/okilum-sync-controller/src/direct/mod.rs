@@ -1322,7 +1322,7 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
             .collect(),
         preparing: db.transfers.iter().any(transfer::Transfer::preparing),
         status: if db.local_removed {
-            "This computer was removed from Sync. Its files are kept.".into()
+            "This computer was removed from Sync. Its files are kept."
         } else if db
             .outbound
             .as_ref()
