@@ -84,7 +84,10 @@ impl Render for SyncSettings {
         );
         let header = header.child(self.render_status(cx));
         let mut content = v_flex().gap_6().w_full().min_w_0();
-        let empty = self.snapshot.as_ref().is_none_or(|s| s.peers.is_empty());
+        let empty = self
+            .snapshot
+            .as_ref()
+            .is_none_or(|s| s.peers.is_empty() && s.computers.is_empty());
         if empty {
             content = content.child(v_flex().id("sync-empty").debug_selector(|| "sync-empty".into())
                 .w_full().p_6().gap_4().items_center().border_1().border_color(p.border).rounded_lg()
@@ -183,6 +186,31 @@ impl Render for SyncSettings {
                                             .child(seen),
                                     ),
                             )
+                            .children(
+                                snapshot
+                                    .computers
+                                    .iter()
+                                    .find(|c| c.paired == Some(id))
+                                    .map(|computer| {
+                                        let device = computer.device_id.clone();
+                                        let name = computer.name.clone();
+                                        Button::new(("sync-remove-computer", index))
+                                            .debug_selector(move || {
+                                                format!("sync-remove-computer-{index}")
+                                            })
+                                            .ghost()
+                                            .label("Remove")
+                                            .disabled(self.busy)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.confirm_remove_computer(
+                                                    device.clone(),
+                                                    name.clone(),
+                                                    window,
+                                                    cx,
+                                                )
+                                            }))
+                                    }),
+                            )
                             .child(
                                 Button::new(("sync-catalog", index))
                                     .debug_selector(move || format!("sync-catalog-{index}"))
@@ -200,6 +228,61 @@ impl Render for SyncSettings {
                     );
                 }
                 content = content.child(computers);
+            }
+        }
+        if let Some(snapshot) = &self.snapshot {
+            for (index, computer) in snapshot
+                .computers
+                .iter()
+                .filter(|c| c.paired.is_none())
+                .enumerate()
+            {
+                let device = computer.device_id.clone();
+                let name = computer.name.clone();
+                content = content.child(
+                    h_flex()
+                        .w_full()
+                        .gap_4()
+                        .p_4()
+                        .border_1()
+                        .border_color(p.border)
+                        .rounded_lg()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(div().whitespace_normal().child(computer.name.clone()))
+                                .child(div().text_xs().text_color(p.text_muted).child(format!(
+                                    "{} · {}",
+                                    computer.device_id,
+                                    if computer.connected == Some(true) {
+                                        "Online"
+                                    } else {
+                                        "Connected through your shared vaults"
+                                    }
+                                ))),
+                        )
+                        .child(
+                            Button::new(("sync-remove-introduced", index))
+                                .debug_selector(move || format!("sync-remove-introduced-{index}"))
+                                .ghost()
+                                .label("Remove")
+                                .disabled(self.busy)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.confirm_remove_computer(
+                                        device.clone(),
+                                        name.clone(),
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        ),
+                );
+            }
+            if snapshot.pending_removals > 0 {
+                content = content.child(div().text_sm().whitespace_normal()
+                    .child("Removal is still being delivered to other computers. Keep Okilum open; disconnected computers follow when they reconnect."));
             }
         }
         content = content.child(div().font_weight(FontWeight::SEMIBOLD).child(if empty {

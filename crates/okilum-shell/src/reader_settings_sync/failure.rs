@@ -4,6 +4,7 @@ use super::Operation;
 impl Operation {
     pub(super) fn action_name(&self) -> &'static str {
         match self {
+            Self::Remove(_) => "remove_computer",
             Self::Read => "refresh",
             Self::Retention(..) => "history_retention",
             Self::EnterPairing => "open_settings",

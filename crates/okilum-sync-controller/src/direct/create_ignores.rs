@@ -75,6 +75,9 @@ fn read(root: &Path, identity: (u64, u64)) -> Result<Vec<u8>> {
 }
 
 impl Policy {
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
     pub fn current() -> Self {
         Self {
             complete: true,

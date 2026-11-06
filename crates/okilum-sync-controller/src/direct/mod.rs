@@ -2,6 +2,8 @@
 //! lifecycle. Opening this controller does not listen or start a daemon.
 mod addresses;
 mod create_ignores;
+mod removal;
+pub use removal::SyncComputer;
 pub mod shared_ignores;
 pub use shared_ignores::IgnorePreview;
 mod existing;
@@ -70,6 +72,8 @@ pub struct Vault {
 /// Serializable for the desktop's local `okilum sync` control channel (#2589).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub computers: Vec<SyncComputer>,
+    pub pending_removals: usize,
     pub policy_warnings: Vec<PolicyWarning>,
     pub history_warnings: Vec<history::HistoryWarning>,
     pub history_retention: Vec<RetentionSetting>,
@@ -148,6 +152,12 @@ struct Paired {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Database {
+    #[serde(default)]
+    local_removed: bool,
+    #[serde(default)]
+    revoked_peers: BTreeMap<Uuid, Paired>,
+    #[serde(default)]
+    removals: Vec<removal::Removal>,
     seed: [u8; 32],
     name: String,
     endpoint: Option<SocketAddr>,
@@ -221,6 +231,15 @@ pub struct Controller {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
+    PollRemovals {},
+    AcknowledgeRemoval {
+        id: Uuid,
+    },
+    RemoveComputer {
+        id: Uuid,
+        device: String,
+        vaults: std::collections::BTreeSet<String>,
+    },
     Redeem {
         request: Request,
     },
@@ -258,6 +277,12 @@ struct Response {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum Reply {
+    Removals {
+        requests: Vec<removal::Request>,
+    },
+    RemovalRecorded {
+        id: Uuid,
+    },
     Pending,
     Rejected,
     Approved {
@@ -313,6 +338,9 @@ impl Controller {
                 attached: vec![],
                 catalog: vec![],
                 catalog_peer: None,
+                local_removed: false,
+                revoked_peers: BTreeMap::new(),
+                removals: vec![],
                 transfers: vec![],
                 share_grants: vec![],
                 #[cfg(target_os = "linux")]
@@ -404,9 +432,10 @@ impl Controller {
         let mut snapshot = snapshot(&db)?;
         snapshot.policy_warnings = self.shared.policy_warnings.lock().unwrap().clone();
         snapshot.history_warnings = self.shared.history_warnings.lock().unwrap().clone();
+        let removed = db.local_removed;
         let held = db.transfers.iter().any(transfer::Transfer::legacy_hold);
         drop(db);
-        if !held && snapshot.pending.is_none() && snapshot.offer_url.is_none() {
+        if !removed && !held && snapshot.pending.is_none() && snapshot.offer_url.is_none() {
             if let Some(status) = &self.shared.connection_watch.lock().unwrap().status {
                 snapshot.status = status.clone();
             }
@@ -716,13 +745,19 @@ impl Controller {
         // must never become a local listener.
         self.serve_pinned()?;
         self.refresh_pairing()?;
+        self.reconcile_removals()?;
+        if self.shared.db.lock().unwrap().local_removed {
+            return self.snapshot();
+        }
         self.reconcile_peer_addresses()?;
         self.reconcile_create_ignores()?;
         self.reconcile_history()?;
         self.reconcile_transfers()?;
         self.refresh_connection_status()?;
         self.refresh_attached()?;
-        self.snapshot()
+        let mut snapshot = self.snapshot()?;
+        snapshot.computers = self.sync_computers()?;
+        Ok(snapshot)
     }
     /// Refresh the pairing journal/channel without daemon inventory, binary
     /// verification or transfer reconciliation. Used while a pairing step is open.
@@ -885,16 +920,17 @@ impl Controller {
     ) -> Result<Reply> {
         self.check()?;
         let read_only = operation.read_only();
+        let exchange_transport = !read_only && !operation.removal_only();
         let redeem = matches!(operation, Operation::Redeem { .. });
         let seed = self.shared.db.lock().unwrap().seed;
         let message = Message {
             nonce: Uuid::new_v4(),
             target: public.to_vec(),
             operation,
-            transport: if read_only {
-                None
-            } else {
+            transport: if exchange_transport {
                 self.local_transport()?
+            } else {
+                None
             },
         };
         let frame = wire::seal(scope, credential, &seed, &message)?;
@@ -955,7 +991,11 @@ impl Controller {
             ensure!(i.offer.expires > now()?, "invitation expired");
             (i.offer.key, i.request.as_ref().map(|r| r.public.clone()))
         } else {
-            let peer = db.peers.get(&scope).context("unknown pairing capability")?;
+            let peer = db
+                .peers
+                .get(&scope)
+                .or_else(|| db.revoked_peers.get(&scope))
+                .context("unknown pairing capability")?;
             (peer.key, Some(peer.public.clone()))
         };
         let (message, signer): (Message, _) =
@@ -969,6 +1009,13 @@ impl Controller {
             "wrong intended computer"
         );
         self.check()?;
+        if !db.peers.contains_key(&scope) && db.revoked_peers.contains_key(&scope) {
+            ensure!(
+                removal::revoked_operation_allowed(&db, scope, &message.operation)
+                    && message.transport.is_none(),
+                "Pairing authorization was removed"
+            );
+        }
         // Only an approved, authenticated capability may update a pinned peer.
         let peer_id = if db.peers.contains_key(&scope) {
             Some(scope)
@@ -989,6 +1036,10 @@ impl Controller {
         }
         let seed = db.seed;
         let result = match message.operation {
+            Operation::RemoveComputer { id, device, vaults } => {
+                drop(db);
+                self.receive_removal(scope, id, device, vaults, None)
+            }
             #[cfg(target_os = "linux")]
             Operation::Inspect { request } => {
                 drop(db);
@@ -1005,6 +1056,11 @@ impl Controller {
             }
         };
         let reply = result.unwrap_or_else(|error| {
+            if let Some(message) = removal::public_refusal(&error) {
+                return Reply::Error {
+                    message: message.into(),
+                };
+            }
             #[cfg(target_os = "linux")]
             if let Some(message) = inventory::public_refusal(&error) {
                 return Reply::Error {
@@ -1053,6 +1109,23 @@ impl Controller {
         signer: Vec<u8>,
     ) -> Result<Reply> {
         match operation {
+            Operation::PollRemovals {} => {
+                ensure!(
+                    db.peers.contains_key(&scope) || db.revoked_peers.contains_key(&scope),
+                    "unknown removal capability"
+                );
+                Ok(Reply::Removals {
+                    requests: removal::requests(db, scope),
+                })
+            }
+            Operation::AcknowledgeRemoval { id } => {
+                removal::acknowledge(db, scope, id)?;
+                self.save(db)?;
+                Ok(Reply::RemovalRecorded { id })
+            }
+            Operation::RemoveComputer { .. } => {
+                anyhow::bail!("removal requires serialized lock-free dispatch")
+            }
             Operation::Redeem { request } => {
                 request.validate(&signer)?;
                 let invitation = db.invitation.as_mut().context("no invitation")?;
@@ -1191,6 +1264,12 @@ impl Controller {
     }
 }
 impl Operation {
+    fn removal_only(&self) -> bool {
+        matches!(
+            self,
+            Self::RemoveComputer { .. } | Self::PollRemovals {} | Self::AcknowledgeRemoval { .. }
+        )
+    }
     fn read_only(&self) -> bool {
         #[cfg(target_os = "linux")]
         if matches!(self, Self::Inspect { .. }) {
@@ -1214,6 +1293,7 @@ fn served(db: &Database) -> Vec<SocketAddr> {
     let mut endpoints: Vec<_> = db
         .peers
         .iter()
+        .chain(db.revoked_peers.iter())
         .filter(|&(id, peer)| {
             peer.endpoint == own || (peer.endpoint.ip() == own.ip() && !joined(id))
         })
@@ -1247,6 +1327,8 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
             .map(|(_, r)| pending(r, false))
     };
     Ok(Snapshot {
+        computers: vec![],
+        pending_removals: removal::pending(db),
         policy_warnings: Vec::new(),
         history_warnings: Vec::new(),
         history_retention: history_settings(db),
@@ -1273,7 +1355,9 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
             .map(|s| s.path.clone())
             .collect(),
         preparing: db.transfers.iter().any(transfer::Transfer::preparing),
-        status: if db
+        status: if db.local_removed {
+            "This computer was removed from Sync. Its files are kept."
+        } else if db
             .outbound
             .as_ref()
             .is_some_and(|(o, _)| o.expires <= current)
