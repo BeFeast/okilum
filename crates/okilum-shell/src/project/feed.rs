@@ -141,7 +141,7 @@ impl Feed {
             render_calls: std::cell::Cell::new(0),
         }
     }
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(in crate::project) fn performance_scroll_position(&self, cx: &App) -> usize {
         self.scroller.read(cx).logical_scroll_top().item_ix
     }
