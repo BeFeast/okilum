@@ -1349,6 +1349,7 @@ fn unavailable_questions_keep_manager_history_and_send_working(cx: &mut TestAppC
     });
 }
 
+#[cfg(native_manager)]
 #[gpui::test]
 fn connected_controls_collapse_until_details_is_requested(cx: &mut TestAppContext) {
     cx.update(crate::test_init);

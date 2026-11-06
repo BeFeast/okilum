@@ -86,6 +86,9 @@ jobs:
             export OKILUM_WINDOWS_ICON
           fi
           filters=(math_2596_)
+          if [[ "$RUNNER_OS" = macOS ]]; then
+            filters+=(project::tests::connected_controls_collapse_until_details_is_requested)
+          fi
           for filter in "${filters[@]}"; do
             cargo test --locked -p okilum-shell --bin okilum "$filter" -- --list | tee "$RUNNER_TEMP/updater-tests.txt"
             grep -q ': test$' "$RUNNER_TEMP/updater-tests.txt"
