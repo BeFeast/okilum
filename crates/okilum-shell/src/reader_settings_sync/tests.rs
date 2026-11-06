@@ -15,7 +15,6 @@ use gpui::{
 };
 use gpui_component::{input::InputState, Root, WindowExt};
 use okilum_sync_controller::direct::{self, Controller, ExistingVault, Snapshot};
-#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::{path::Path, time::Duration};
 

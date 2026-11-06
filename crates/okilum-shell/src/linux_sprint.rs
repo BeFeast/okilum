@@ -22,6 +22,7 @@ pub(crate) const fn name() -> &'static str {
 }
 
 /// Used before the updater inspects APPIMAGE or opens any update engine.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const fn allows_updates() -> bool {
     !enabled()
 }

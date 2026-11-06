@@ -284,6 +284,7 @@ pub(crate) fn apply_pending_at_start() -> bool {
     windows::apply_pending_at_start()
 }
 
+#[cfg(any(target_os = "linux", windows))]
 pub(super) fn startup_check() {
     run_check(Trigger::Focus);
 }
@@ -684,7 +685,7 @@ pub(crate) use macos::protect_verified_install;
 pub(crate) fn can_cancel_update() -> bool {
     #[cfg(target_os = "macos")]
     {
-        return macos::can_cancel();
+        macos::can_cancel()
     }
     #[cfg(any(target_os = "linux", windows))]
     return policy::DOWNLOAD.active();

@@ -18,7 +18,7 @@ fn exit_peer_fixture() -> Result<()> {
     stream.write_all(b"ready")?;
     let mut command = [0u8];
     stream.read_exact(&mut command)?;
-    ensure!(command == [b'x'], "unexpected fixture command");
+    ensure!(command == *b"x", "unexpected fixture command");
     Ok(())
 }
 

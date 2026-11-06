@@ -633,7 +633,7 @@ pub(crate) fn uninstall_from_settings(window: &mut gpui::Window, cx: &mut gpui::
         if answer.recv().await != Ok(true) {
             return;
         }
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_default();

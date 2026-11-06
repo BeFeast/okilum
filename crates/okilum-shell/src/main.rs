@@ -8258,6 +8258,8 @@ impl Render for Reader {
                                 let drag_view = view.clone();
                                 window.on_mouse_event(
                                     move |event: &MouseMoveEvent, phase, window, cx| {
+                                        #[cfg(not(target_os = "linux"))]
+                                        let _ = window;
                                         if !phase.bubble() {
                                             return;
                                         }

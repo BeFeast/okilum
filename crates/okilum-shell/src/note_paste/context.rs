@@ -112,6 +112,7 @@ fn strip_quote_markers(line: &str) -> &str {
 /// The prefix a continuation line needs at the caret's line: the line's
 /// quote markers, then spaces for its list marker (or its own indentation).
 /// `None` when the caret sits before those markers.
+#[cfg(test)]
 pub fn continuation(line_before_caret: &str, whole_line: &str) -> Option<String> {
     let (pad, markers) = line_prefix(whole_line);
     (line_before_caret.len() >= markers).then_some(pad)

@@ -6,8 +6,10 @@ use gpui::{App, Task};
 use gpui_component::input::clipboard::{
     ClipboardReadError as Error, ClipboardReadRequest, ExactClipboardProvider,
 };
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -58,16 +60,23 @@ impl ExactClipboardProvider for WaylandClipboard {
     /// with GPUI on X11, on GNOME's Mutter (no wlr data-control) or on an
     /// inherited socket it refused every paste as Unsupported.
     fn read_text_now(&self, cx: &App) -> Option<Result<Option<String>, Error>> {
-        let exact = match &self.socket {
-            #[cfg(target_os = "linux")]
-            Some(socket) => linux::read_in_command(socket, self.seat.clone()),
-            _ => Err(Error::Unsupported),
-        };
-        Some(settle(exact, || platform_text(cx)))
+        #[cfg(target_os = "linux")]
+        {
+            let exact = match &self.socket {
+                Some(socket) => linux::read_in_command(socket, self.seat.clone()),
+                _ => Err(Error::Unsupported),
+            };
+            Some(settle(exact, || platform_text(cx)))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Some(platform_text(cx))
+        }
     }
 }
 
 /// What the compositor's data-control holds for an in-command read.
+#[cfg(any(target_os = "linux", test))]
 #[derive(Debug, PartialEq)]
 enum Exact {
     /// The selection's exact text; `None` when there is no selection.
@@ -83,6 +92,7 @@ enum Exact {
 /// bytes on X11; on Wayland GPUI folds CRLF into LF, which the note editor's
 /// document newlines (#848) do to pasted text anyway. What the exact read
 /// found wrong with the clipboard itself stands.
+#[cfg(any(target_os = "linux", test))]
 fn settle(
     exact: Result<Exact, Error>,
     platform: impl FnOnce() -> Result<Option<String>, Error>,
