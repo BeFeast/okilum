@@ -85,7 +85,7 @@ impl KeyboardSettings {
         self.error = None;
         self.status = None;
         self.pending = Some(Pending {
-            owner: window.window_id(),
+            owner: window.window_handle().window_id(),
             generation: cx.global::<Keymap>().generation,
             row,
             key: None,
@@ -93,7 +93,7 @@ impl KeyboardSettings {
             warnings: Vec::new(),
             reset: None,
         });
-        set_recording(Some(window.window_id()), cx);
+        set_recording(Some(window.window_handle().window_id()), cx);
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -269,7 +269,7 @@ impl KeyboardSettings {
             self.persist(document, false, window, cx);
         } else {
             self.pending = Some(Pending {
-                owner: window.window_id(),
+                owner: window.window_handle().window_id(),
                 generation: cx.global::<Keymap>().generation,
                 row,
                 key: None,
@@ -277,7 +277,7 @@ impl KeyboardSettings {
                 warnings: Vec::new(),
                 reset: Some(document),
             });
-            set_recording(Some(window.window_id()), cx);
+            set_recording(Some(window.window_handle().window_id()), cx);
             window.focus(&self.focus, cx);
             cx.notify();
         }

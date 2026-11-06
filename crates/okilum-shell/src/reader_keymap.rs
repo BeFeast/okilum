@@ -62,6 +62,7 @@ pub(crate) struct Keymap {
     pub rows: Vec<Row>,
     seen: Option<Vec<u8>>,
     read_error: bool,
+    _poll: Option<Task<()>>,
     pub generation: u64,
     pub recording: Option<WindowId>,
 }
@@ -357,9 +358,10 @@ pub(crate) fn install(cx: &mut App) {
 fn poll_file(path: PathBuf, cx: &mut App) {
     // Never poll the filesystem on the input/render executor. A malformed
     // edit is retried on the next change and does not reset working bindings.
-    cx.spawn(async move |cx| loop {
+    let task = cx.spawn(async move |cx| loop {
         cx.background_executor().timer(Duration::from_secs(1)).await;
-        let Ok(generation) = cx.update(|cx| cx.global::<Keymap>().generation) else {
+        let Some(generation) = cx.update(|cx| cx.try_global::<Keymap>().map(|map| map.generation))
+        else {
             break;
         };
         let path = path.clone();
@@ -367,18 +369,16 @@ fn poll_file(path: PathBuf, cx: &mut App) {
             .background_executor()
             .spawn(async move { read(&path) })
             .await;
-        if cx
-            .update(|cx| {
-                if cx.global::<Keymap>().generation == generation {
-                    adopt(bytes, cx);
-                }
-            })
-            .is_err()
-        {
-            break;
-        }
-    })
-    .detach();
+        cx.update(|cx| {
+            if cx
+                .try_global::<Keymap>()
+                .is_some_and(|map| map.generation == generation)
+            {
+                adopt(bytes, cx);
+            }
+        });
+    });
+    cx.update_global::<Keymap, _>(|map, _| map._poll = Some(task));
 }
 
 fn install_at(path: Option<PathBuf>, cx: &mut App) {
@@ -392,6 +392,7 @@ fn install_at(path: Option<PathBuf>, cx: &mut App) {
         rows,
         seen: None,
         read_error: false,
+        _poll: None,
         generation: 0,
         recording: None,
     });
@@ -402,7 +403,7 @@ fn install_at(path: Option<PathBuf>, cx: &mut App) {
 
 pub(crate) fn is_recording(window: &Window, cx: &App) -> bool {
     cx.try_global::<Keymap>()
-        .is_some_and(|map| map.recording == Some(window.window_id()))
+        .is_some_and(|map| map.recording == Some(window.window_handle().window_id()))
 }
 
 fn set_recording(value: Option<WindowId>, cx: &mut App) {
@@ -496,19 +497,24 @@ fn conflicts(row: &Row, key: &str, cx: &App) -> (Vec<String>, Vec<String>) {
     if cfg!(target_os = "windows") && key.contains("ctrl-") && key.contains("alt-") {
         warnings.push("Ctrl+Alt can be AltGr on Windows and may interfere with typing.".into());
     }
-    if key.contains("super-")
-        || [
-            "alt-tab",
-            "alt-f4",
-            "ctrl-alt-delete",
-            "ctrl-space",
-            "cmd-space",
-            "cmd-tab",
-            "cmd-alt-escape",
-        ]
-        .contains(&key)
-    {
-        warnings.push("Your operating system or window manager may reserve this shortcut.".into());
+    let reserved = [
+        "alt-tab",
+        "alt-f4",
+        "ctrl-alt-delete",
+        "ctrl-space",
+        "cmd-space",
+        "cmd-tab",
+        "cmd-alt-escape",
+    ]
+    .into_iter()
+    .find(|reserved| *reserved == key);
+    if let Some(reserved) = reserved {
+        warnings.push(
+            platform::labels::with_shortcut("May be reserved by your operating system:", reserved)
+                .into(),
+        );
+    } else if key.contains("super-") {
+        warnings.push("Your window manager may reserve this shortcut.".into());
     }
     same.sort();
     same.dedup();
