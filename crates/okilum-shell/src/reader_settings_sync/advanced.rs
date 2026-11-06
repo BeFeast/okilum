@@ -177,11 +177,9 @@ impl SyncSettings {
                     }))))
             .into_any_element()
     }
-    #[cfg(target_os = "linux")]
     pub(super) fn render_local_vaults(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = brand::palette(cx);
         let mut content = v_flex().gap_2();
-        #[cfg(target_os = "linux")]
         {
             let mut vaults = self.vaults.clone();
             for reader in reader_open::readers(cx) {

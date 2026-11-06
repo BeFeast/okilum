@@ -75,7 +75,11 @@ impl Controller {
                 anyhow::bail!("existing Syncthing vault requires Choose existing synced vault");
             }
         }
-        let daemon = daemon::managed_identity(prepared).with_context(|| {
+        #[cfg(target_os = "linux")]
+        let daemon = daemon::managed_identity(prepared);
+        #[cfg(target_os = "macos")]
+        let daemon = crate::sidecar::macos::bootstrap::managed_source_identity(prepared);
+        let daemon = daemon.with_context(|| {
             format!("open prepared managed Sync runtime {}", prepared.display())
         })?;
         ensure!(

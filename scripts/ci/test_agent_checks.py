@@ -46,6 +46,22 @@ class VerdictTests(unittest.TestCase):
             'Warm Linux Rust suites offline')]
         self.assertEqual(helper.verdict(info, SHA, benchmark=True), 0)
 
+    def test_native_mac_sync_is_required_only_when_requested(self):
+        data = receipt()
+        self.assertEqual(helper.verdict(data, SHA, macos_sync=True), 75)
+        mac = dict(name="macos-sync", conclusion="skipped", steps=[])
+        data["jobs"].append(mac)
+        self.assertEqual(helper.verdict(data, SHA), 0)
+        self.assertEqual(helper.verdict(data, SHA, macos_sync=True), 75)
+        mac["conclusion"] = "success"
+        for step in ("Prepare and verify Mac Sync vendor", "Lint native Mac Sync targets", "Run native Mac Sync controls"):
+            self.assertEqual(helper.verdict(data, SHA, macos_sync=True), 75)
+            mac["steps"].append(dict(name=step, conclusion="success"))
+        self.assertEqual(helper.verdict(data, SHA, macos_sync=True), 0)
+        self.assertEqual(helper.verdict(data, "b" * 40, macos_sync=True), 75)
+        data["jobs"].append(dict(mac))
+        self.assertEqual(helper.verdict(data, SHA, macos_sync=True), 75)
+
     def test_requested_publication_control_is_a_required_successful_step(self):
         data = receipt()
         self.assertEqual(helper.verdict(data, SHA, publication_controls=True), 75)

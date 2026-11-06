@@ -236,7 +236,6 @@ mod tests {
             peers: vec![],
             catalog: vec![],
             attached: vec![],
-            #[cfg(target_os = "linux")]
             shared: vec![],
             status: "Ready".into(),
             preparing: false,
@@ -287,7 +286,6 @@ mod tests {
                 peers: vec![],
                 root_identity: None,
             }],
-            #[cfg(target_os = "linux")]
             shared: vec![],
             status: "Ready".into(),
             preparing: false,
@@ -351,7 +349,6 @@ mod tests {
             peers: vec![],
             catalog: vec![],
             attached: vec![],
-            #[cfg(target_os = "linux")]
             shared: vec![],
             status: "Not connected to QA laptop".into(),
             preparing: true,

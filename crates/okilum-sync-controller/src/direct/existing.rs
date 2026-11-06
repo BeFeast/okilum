@@ -21,7 +21,6 @@ impl VaultRoot {
         Ok(root)
     }
 
-    #[cfg(target_os = "linux")]
     pub(super) fn identity(&self) -> Result<(u64, u64)> {
         use std::os::unix::fs::MetadataExt;
         let metadata = self.0.metadata()?;

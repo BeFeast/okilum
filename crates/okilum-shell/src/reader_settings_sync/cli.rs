@@ -15,7 +15,7 @@ USAGE:
     okilum sync cancel
     okilum sync remove <COMPUTER>
     okilum sync serve [--wait SECONDS]
-    okilum sync share <VAULT>                       (Linux)
+    okilum sync share <VAULT>
     okilum sync choose <COMPUTER> <VAULT> <DESTINATION> [--wait SECONDS]
     okilum sync select <SYNCTHING-CONFIG.xml>       (Linux)
 
@@ -507,7 +507,6 @@ fn execute(verb: Verb, mut session: Session) -> anyhow::Result<i32> {
             }
             print_json(&output.status);
         }
-        #[cfg(target_os = "linux")]
         Verb::Share(path) => {
             // Paths are this shell's; the process that owns Sync may run elsewhere.
             let path = std::path::absolute(path)?;
@@ -526,7 +525,7 @@ fn execute(verb: Verb, mut session: Session) -> anyhow::Result<i32> {
             print_json(&output.status);
         }
         #[cfg(not(target_os = "linux"))]
-        Verb::Share(_) | Verb::Select(_) => bail!("this command is available on Linux"),
+        Verb::Select(_) => bail!("this command is available on Linux"),
         Verb::Choose {
             peer,
             vault,
@@ -971,7 +970,6 @@ mod tests {
             selected_destination: None,
             #[cfg(target_os = "linux")]
             runtimes: vec![],
-            #[cfg(target_os = "linux")]
             vaults: vec![],
         })
     }

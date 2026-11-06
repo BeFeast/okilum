@@ -29,7 +29,6 @@ fn fixture(window: &mut Window, cx: &mut Context<SyncSettings>) -> SyncSettings 
         },
         #[cfg(target_os = "linux")]
         runtimes: vec![],
-        #[cfg(target_os = "linux")]
         vaults: vec![],
         controller: None,
         snapshot: None,
@@ -385,7 +384,6 @@ fn snapshot(pending: Option<direct::Pending>) -> Snapshot {
         peers: vec![],
         catalog: vec![],
         attached: vec![],
-        #[cfg(target_os = "linux")]
         shared: vec![],
         status: "Waiting for confirmation".into(),
     }
@@ -919,7 +917,6 @@ fn guided_worker(
                     selected: true,
                     network: None,
                 }],
-                #[cfg(target_os = "linux")]
                 vaults: (0..12)
                     .map(|i| PathBuf::from(format!("/fixture-vault-{i}")))
                     .collect(),
@@ -1589,7 +1586,6 @@ fn sync_new_destination_failure_is_visible_beside_vault_after_refresh(cx: &mut T
                 selected_destination: None,
                 #[cfg(target_os = "linux")]
                 runtimes: vec![],
-                #[cfg(target_os = "linux")]
                 vaults: vec![],
             })
         })));
@@ -1989,7 +1985,6 @@ fn issue2615_old_catalog_refresh_preserves_add_computer_steps(cx: &mut TestAppCo
                     selected_destination: None,
                     #[cfg(target_os = "linux")]
                     runtimes: vec![],
-                    #[cfg(target_os = "linux")]
                     vaults: vec![],
                 },
                 cx,
@@ -2318,4 +2313,113 @@ fn issue2045_retention_reduction_requires_explicit_confirmation(cx: &mut TestApp
         *calls.lock().unwrap(),
         vec!["enter", "retention", "retention"]
     );
+}
+
+#[test]
+fn issue2489_mac_source_bootstrap_requires_the_explicit_share_action() -> anyhow::Result<()> {
+    use std::cell::Cell;
+    let directory = tempfile::tempdir()?;
+    let controller = Controller::open(directory.path().join("direct"), vec![])?;
+    let fired = Cell::new(false);
+    super::prepare_mac_runtime(&controller, &Operation::Read, |_| {
+        fired.set(true);
+        Ok(())
+    })?;
+    assert!(!fired.get(), "ordinary refresh cannot start a Mac helper");
+    let error = super::prepare_mac_runtime(
+        &controller,
+        &Operation::Share(directory.path().join("Notes")),
+        |_| {
+            fired.set(true);
+            anyhow::bail!("macOS Sync approval required")
+        },
+    )
+    .unwrap_err();
+    assert!(
+        fired.get(),
+        "an explicit first Share must exercise managed bootstrap"
+    );
+    assert!(error.to_string().contains("approval"));
+    Ok(())
+}
+
+#[gpui::test]
+fn issue2489_local_vault_share_is_visible_and_dispatches_on_both_desktops(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("Notes");
+    std::fs::create_dir(&path).unwrap();
+    let controller = Controller::open(root.path().join("direct"), vec![]).unwrap();
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let recorded = calls.clone();
+    let vault = path.clone();
+    cx.update(|cx| {
+        cx.set_global(TestWorker(std::sync::Arc::new(move |operation| {
+            let _keep = &root;
+            let Operation::Share(selected) = operation else {
+                panic!("unexpected action");
+            };
+            recorded.lock().unwrap().push(selected.clone());
+            let mut snapshot = snapshot(None);
+            snapshot.shared.push(selected.clone());
+            snapshot.attached.push(ExistingVault {
+                daemon: okilum_sync_controller::daemon::DaemonIdentity {
+                    config_file: vault.join("fixture-config.xml"),
+                    device_id: "fixture-device".into(),
+                    certificate_hash: "fixture-certificate".into(),
+                },
+                version: "v2.1.6".into(),
+                folder_id: "shared-vault".into(),
+                path: selected,
+                label: "Notes".into(),
+                paused: false,
+                folder_type: "sendreceive".into(),
+                peers: vec![],
+                root_identity: None,
+            });
+            Ok(Output {
+                overview: Default::default(),
+                connection_error: None,
+                controller: controller.clone(),
+                snapshot,
+                inspected: None,
+                selected_destination: None,
+                #[cfg(target_os = "linux")]
+                runtimes: vec![],
+                vaults: vec![vault.clone()],
+            })
+        })))
+    });
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.presentation = Default::default();
+            view.snapshot = Some(snapshot(None));
+            view.vaults = vec![path.clone()];
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.simulate_resize(size(px(1000.), px(1000.)));
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds("sync-share-vault-0")
+        .expect("Share must be present on Mac as well as Linux");
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(*calls.lock().unwrap(), vec![path.clone()]);
+    assert!(
+        visual.debug_bounds("sync-share-vault-0").is_none(),
+        "shared vault moves to the normal vault list"
+    );
+    root.read_with(visual, |root, cx| {
+        let view = root.view().clone().downcast::<SyncSettings>().unwrap();
+        assert!(view
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .shared
+            .contains(&path));
+    });
 }

@@ -214,6 +214,45 @@ pub fn connect_current_app(
     complete_explicit_connect(&mut registration, identity, budget, verify_rest)
 }
 
+/// Source enrollment after explicit signed Connect. This does not launch,
+/// register, repair or select a runtime; it verifies the same claimed receipt.
+pub fn managed_source_identity(state: &Path) -> Result<DaemonIdentity> {
+    use crate::sidecar::authority::{launch::Phase, Intent};
+    ensure!(
+        state == super::account_state_directory()?,
+        "Mac source requires its account-owned Sync state"
+    );
+    let store = UnixStore::open_existing(state)?;
+    let saved = {
+        let tx = store.begin(Instant::now() + std::time::Duration::from_secs(5))?;
+        tx.current()?
+            .context("Mac source launch receipt missing")?
+            .clone()
+    };
+    ensure!(
+        saved.intent() == Intent::Enabled
+            && saved.stop().is_none()
+            && saved.update().is_none()
+            && saved
+                .launch_registration()
+                .is_some_and(|launch| launch.phase() == Phase::Claimed),
+        "Mac source requires a ready claimed Sync connection"
+    );
+    let receipt: Receipt =
+        serde_json::from_slice(&private::read(&state.join("prepared-identity.json"))?)?;
+    let binding = saved.binding();
+    ensure!(
+        binding.owner == rustix::process::geteuid().as_raw().to_string()
+            && binding.state_directory == state.to_string_lossy().as_ref()
+            && binding.device_identity == receipt.identity.device_id
+            && receipt.identity.config_file == state.join("config/config.xml").canonicalize()?,
+        "Mac source identity binding changed"
+    );
+    receipt.identity.verify_local()?;
+    receipt.identity.connect()?;
+    Ok(receipt.identity)
+}
+
 impl ConnectRegistration for NativeRegistrationGuard {
     fn register_prepared(&mut self) -> Result<ManagedStatus> {
         NativeRegistrationGuard::register_prepared(self)

@@ -138,7 +138,6 @@ impl Controller {
     pub fn set_history_retention(&self, path: &Path, days: RetentionDays) -> Result<Snapshot> {
         self.check()?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
-        #[cfg(target_os = "linux")]
         if self.set_source_retention(path, days)? {
             return self.snapshot();
         }
@@ -165,7 +164,6 @@ impl Controller {
         self.check()?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
         let mut warnings = Vec::new();
-        #[cfg(target_os = "linux")]
         self.reconcile_source_history(&mut warnings);
         let result = self.reconcile_transfer_history(&mut warnings);
         *self.shared.history_warnings.lock().unwrap() = warnings;
