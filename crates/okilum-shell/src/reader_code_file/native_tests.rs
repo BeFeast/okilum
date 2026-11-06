@@ -39,7 +39,7 @@ fn data_view_2669_native_fold_copy_find_and_readonly_source(cx: &mut TestAppCont
             )
         });
         preview = Some(view.clone());
-        Root::new(view, window, cx)
+        Root::new(cx.new(|_| Surface(view)), window, cx)
     });
     let preview = preview.unwrap();
     visual.run_until_parked();
@@ -117,7 +117,7 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
             )
         });
         preview = Some(view.clone());
-        Root::new(view, window, cx)
+        Root::new(cx.new(|_| Surface(view)), window, cx)
     });
     let preview = preview.unwrap();
     visual.run_until_parked();
@@ -161,6 +161,13 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         )
     });
     visual.update(|window, cx| window.draw(cx).clear(cx));
+    let viewport = visual
+        .debug_bounds("data-structure-viewport")
+        .expect("bounded structure viewport");
+    assert!(
+        viewport.size.height >= px(96.),
+        "three real rows fit: {viewport:?}"
+    );
     let copy = visual
         .debug_bounds("data-node-copy-2")
         .expect("whole footer node beyond the first page");
@@ -221,7 +228,7 @@ fn data_view_2669_native_32_mib_multiline_file_keeps_full_find_and_numbered_edit
             )
         });
         preview = Some(view.clone());
-        Root::new(view, window, cx)
+        Root::new(cx.new(|_| Surface(view)), window, cx)
     });
     let preview = preview.unwrap();
     visual.run_until_parked();

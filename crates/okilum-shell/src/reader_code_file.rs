@@ -106,6 +106,16 @@ pub(crate) struct CodePreview {
     _find_subscription: Subscription,
 }
 
+/// The native probe hosts the preview in the same bounded flex layout as Reader.
+#[cfg(any(test, feature = "data-view-native-harness"))]
+struct Surface(Entity<CodePreview>);
+#[cfg(any(test, feature = "data-view-native-harness"))]
+impl Render for Surface {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        v_flex().size_full().child(self.0.clone())
+    }
+}
+
 /// Above this a JSON file opens raw; Pretty formats it on a worker on request.
 const PRETTY_BYTES: usize = 1024 * 1024;
 

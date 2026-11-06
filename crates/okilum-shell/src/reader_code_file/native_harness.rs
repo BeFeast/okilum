@@ -22,7 +22,7 @@ pub(crate) fn entry() -> bool {
                 let handle = cx.update(|cx| cx.open_window(WindowOptions::default(), |window, cx| {
                     let view = cx.new(|cx| CodePreview::new(directory.clone(), name.into(), directory.join(name), window, cx));
                     preview = Some(view.clone());
-                    cx.new(|cx| Root::new(view, window, cx))
+                    cx.new(|cx| Root::new(cx.new(|_| Surface(view)), window, cx))
                 })).unwrap();
                 let preview = preview.unwrap();
                 let mut previous = started;

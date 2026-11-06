@@ -70,6 +70,7 @@ impl CodePreview {
 
     pub(super) fn structure_element(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
+            .debug_selector(|| "data-structure-viewport".into())
             .flex_1()
             .min_h_0()
             .w_full()
@@ -130,7 +131,7 @@ impl CodePreview {
                         "▾"
                     })
                     .disabled(!branch)
-                    .debug_selector(move || format!("data-node-fold-{index}").into())
+                    .debug_selector(move || format!("data-node-fold-{index}"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(doc) = &this.document {
                             this.structure.toggle(index, doc);
@@ -166,7 +167,7 @@ impl CodePreview {
                     .small()
                     .ghost()
                     .label("Copy node")
-                    .debug_selector(move || format!("data-node-copy-{index}").into())
+                    .debug_selector(move || format!("data-node-copy-{index}"))
                     .on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(
                             node_source[range.clone()].to_owned(),
