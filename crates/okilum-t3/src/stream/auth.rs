@@ -129,6 +129,13 @@ impl NativeToken {
         Ok(token)
     }
 
+    /// Display-only metadata for an origin-bound saved connection, including
+    /// an expired one. This never returns a credential or authenticates a client.
+    pub fn saved_expiry(environment: &Environment, secret: &[u8]) -> Option<u64> {
+        let token: Self = serde_json::from_slice(secret).ok()?;
+        (token.origin == environment.origin()).then_some(token.expires_at)
+    }
+
     /// Authenticate a native HTTP operation without exposing the bearer or
     /// accepting an MCP credential. Revalidate origin, expiry and read scope
     /// for every request; writes additionally require the operate grant.

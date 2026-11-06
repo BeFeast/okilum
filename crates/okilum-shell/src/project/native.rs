@@ -250,8 +250,12 @@ impl ProjectView {
                 Ok(Some(task)) => task,
                 _ => return,
             };
+            let mut saved_expiry = None;
             let result = match task.await {
-                Ok(Some((_, bytes))) => NativeToken::from_secret(&environment, &bytes).map(Some),
+                Ok(Some((_, bytes))) => {
+                    saved_expiry = NativeToken::saved_expiry(&environment, &bytes);
+                    NativeToken::from_secret(&environment, &bytes).map(Some)
+                }
                 Ok(None) => Ok(None),
                 Err(_) => Err(StreamError::Protocol(
                     "the saved live connection could not be read; pair again explicitly",
@@ -275,6 +279,7 @@ impl ProjectView {
                     return;
                 }
                 this.native.busy = false;
+                this.native.expires_at = saved_expiry;
                 match result {
                     Ok(Some((client, expiry))) => this.install_native(client, expiry, window, cx),
                     Ok(None) => {

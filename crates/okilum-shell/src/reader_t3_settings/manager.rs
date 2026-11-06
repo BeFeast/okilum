@@ -336,8 +336,10 @@ pub(crate) fn restore(env: Environment, cx: &mut App) {
     let saved = cx.read_credentials(&NativeToken::credential_key(&env));
     cx.spawn(async move |cx| {
         let worker_env = env.clone();
+        let mut saved_expiry = None;
         let result = match saved.await {
             Ok(Some((_, bytes))) => {
+                saved_expiry = NativeToken::saved_expiry(&env, &bytes);
                 cx.background_executor()
                     .spawn(async move {
                         let token = NativeToken::from_secret(&worker_env, &bytes)?;
@@ -354,18 +356,22 @@ pub(crate) fn restore(env: Environment, cx: &mut App) {
             if !access.allowed() || entry(&env, cx).generation != generation {
                 return;
             }
-            edit(&env, cx, |e| match result {
-                Ok(Some(expiry)) => {
-                    e.stage = Stage::Connected;
-                    e.expiry = Some(expiry);
-                }
-                Ok(None) => {}
-                Err(StreamError::Expired | StreamError::PairingRequired) => {
-                    e.stage = Stage::Expired
-                }
-                Err(error) => {
-                    e.stage = Stage::Error;
-                    e.error = Some(error.to_string());
+            edit(&env, cx, |e| {
+                e.expiry = saved_expiry;
+                match result {
+                    Ok(Some(expiry)) => {
+                        e.stage = Stage::Connected;
+                        e.expiry = Some(expiry);
+                    }
+                    Ok(None) => {}
+                    Err(StreamError::Expired | StreamError::PairingRequired) => {
+                        e.stage = Stage::Expired;
+                        e.error = Some(StreamError::Expired.to_string());
+                    }
+                    Err(error) => {
+                        e.stage = Stage::Error;
+                        e.error = Some(error.to_string());
+                    }
                 }
             });
         });

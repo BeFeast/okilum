@@ -116,6 +116,13 @@ impl ProjectView {
             .map(|env| manager::entry(env, cx))
             .unwrap_or_default();
         let mut lines = vec![format!("Manager: {}", self.manager_stage(cx).label())];
+        if let Some(status) = self
+            .gateway
+            .as_ref()
+            .and_then(|gateway| super::super::status_note(&gateway.status()))
+        {
+            lines.push(format!("Projects connection: {status}"));
+        }
         if let Some(env) = &self.environment {
             lines.push(format!("Server: {}", env.origin()));
         }

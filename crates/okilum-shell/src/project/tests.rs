@@ -403,7 +403,7 @@ fn a_revoked_connection_has_a_visible_reason_and_keeps_the_draft(cx: &mut TestAp
     });
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds("project-connection-status").is_some(),
+        visual.debug_bounds("manager-details").is_some(),
         "revocation details remain available on request"
     );
 }
@@ -494,7 +494,11 @@ fn a_manager_from_another_project_is_not_enabled_for_sending(cx: &mut TestAppCon
             .unwrap()
             .contains("another T3 project"));
     });
-    assert!(visual.debug_bounds("project-error").is_some());
+    assert!(visual.debug_bounds("manager-onboarding").is_some());
+    assert!(
+        visual.debug_bounds("project-error").is_none(),
+        "raw setup errors stay under Details"
+    );
 }
 
 #[gpui::test]

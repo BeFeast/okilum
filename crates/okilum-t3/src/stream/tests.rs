@@ -1784,3 +1784,24 @@ fn pairing_reports_build_target_os() {
         "the exchange must actually run"
     );
 }
+
+#[test]
+fn expired_native_metadata_is_display_only_and_still_origin_bound_2653() {
+    let env = Environment::new("test", "https://t3.example").unwrap();
+    let secret = serde_json::to_vec(
+        &json!({"origin":env.origin(), "access_token":"synthetic-only",
+        "expires_at":1, "scope":"orchestration:read orchestration:operate"}),
+    )
+    .unwrap();
+    assert_eq!(NativeToken::saved_expiry(&env, &secret), Some(1));
+    assert!(
+        matches!(
+            NativeToken::from_secret(&env, &secret),
+            Err(StreamError::Expired)
+        ),
+        "displaying expiry cannot authorize an expired credential"
+    );
+    let foreign = Environment::new("other", "https://foreign.example").unwrap();
+    assert_eq!(NativeToken::saved_expiry(&foreign, &secret), None);
+    assert_eq!(NativeToken::saved_expiry(&env, b"not a credential"), None);
+}
