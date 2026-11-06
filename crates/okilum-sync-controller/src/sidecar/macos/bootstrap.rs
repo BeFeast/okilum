@@ -217,7 +217,7 @@ pub fn connect_current_app(
 /// Source enrollment after explicit signed Connect. This does not launch,
 /// register, repair or select a runtime; it verifies the same claimed receipt.
 pub fn managed_source_identity(state: &Path) -> Result<DaemonIdentity> {
-    use crate::sidecar::authority::{launch::Phase, Intent};
+    use crate::sidecar::{authority::launch::Phase, Intent};
     ensure!(
         state == super::account_state_directory()?,
         "Mac source requires its account-owned Sync state"
