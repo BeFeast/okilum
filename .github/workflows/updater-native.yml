@@ -106,14 +106,14 @@ jobs:
             python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
             echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
           fi
-      - name: Run native updater, window restoration and final editor guards
+      - name: Run native updater, window close and final editor guards
         shell: bash
         run: |
           if [[ "$RUNNER_OS" = Windows ]]; then
             OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
             export OKILUM_WINDOWS_ICON
           fi
-          filters=(updater:: reader_update_restart::tests:: reader_editor::tests::update_restart_refuses_unprotected_single_file_then_preserves_latest_draft)
+          filters=(updater:: reader_update_restart::tests:: reader_deleted_note::close_tests:: reader_editor::tests::update_restart_refuses_unprotected_single_file_then_preserves_latest_draft)
           if [[ "$RUNNER_OS" = macOS ]]; then
             filters+=(reader_editor::tests::update_install_post_verification_protects_latest_edits_and_refuses_failure)
           fi
@@ -122,6 +122,9 @@ jobs:
             grep -q ': test$' "$RUNNER_TEMP/updater-tests.txt"
             cargo test --locked -p okilum-shell --bin okilum "$filter" -- --nocapture --test-threads=1
           done
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            python3 scripts/ci/deleted-note-close-check.py
+          fi
       - uses: actions/cache/save@v4
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
         with:

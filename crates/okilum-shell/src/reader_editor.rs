@@ -342,6 +342,38 @@ mod saved_agents_revision_tests {
 struct Editors(Vec<(WeakEntity<Reader>, AnyWindowHandle)>);
 impl Global for Editors {}
 
+/// Ask one deleted-note window at a time before the app-owned Quit path saves
+/// editors. A toast about a canonical conflict cannot substitute for a choice.
+pub(crate) fn confirm_deleted_for_quit(retry: fn(&mut App), cx: &mut App) -> bool {
+    let editors = cx.default_global::<Editors>().0.clone();
+    let windows = cx.windows();
+    for (editor, owner) in editors {
+        if !windows.contains(&owner) {
+            continue;
+        }
+        let asking = owner
+            .update(cx, |_, window, cx| {
+                editor.update(cx, |reader, cx| {
+                    if !reader.leaving_deleted_note(None, cx) {
+                        return false;
+                    }
+                    window.activate_window();
+                    reader.ask_leaving_deleted_note(
+                        Box::new(move |_, _, cx| cx.defer(retry)),
+                        window,
+                        cx,
+                    );
+                    true
+                })
+            })
+            .is_ok_and(|result| result.unwrap_or(false));
+        if asking {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 pub(crate) fn save_all(cx: &mut App) -> bool {
     save_all_outcomes(cx).0

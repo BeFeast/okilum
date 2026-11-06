@@ -13,6 +13,8 @@
 //! what it had and offers to reload the version on disk; it never silently
 //! replaces the only copy of the old contents. In the editor the existing
 //! conflict view already offers Reload / Keep my version for that case.
+#[cfg(test)]
+mod close_tests;
 mod navigation;
 
 use super::*;
@@ -634,11 +636,11 @@ mod tests {
     use gpui_component::WindowExt as _;
     use std::path::Path;
 
-    const START: &str = "# Start\n\nonly copy of these words\n";
+    pub(super) const START: &str = "# Start\n\nonly copy of these words\n";
 
     /// Real time for the OS watcher, test time for the Reader's timers,
     /// until `done` holds or ~15 s are up.
-    fn settle(
+    pub(super) fn settle(
         visual: &mut VisualTestContext,
         reader: &Entity<Reader>,
         what: &str,
@@ -716,7 +718,7 @@ mod tests {
         (reader, visual)
     }
 
-    fn vault() -> (tempfile::TempDir, PathBuf) {
+    pub(super) fn vault() -> (tempfile::TempDir, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("vault");
         std::fs::create_dir(&root).unwrap();
@@ -736,7 +738,7 @@ mod tests {
         visual.update(|window, cx| window.draw(cx).clear(cx));
     }
 
-    fn click(visual: &mut VisualTestContext, selector: &'static str) {
+    pub(super) fn click(visual: &mut VisualTestContext, selector: &'static str) {
         draw(visual);
         let bounds = visual
             .debug_bounds(selector)
