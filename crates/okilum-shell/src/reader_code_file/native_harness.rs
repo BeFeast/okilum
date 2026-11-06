@@ -16,8 +16,8 @@ pub(crate) fn entry() -> bool {
         brand::apply_theme(cx);
         cx.activate(true);
         cx.spawn(async move |cx| {
-            // Closing the final native window quits the app on Windows. Keep
-            // probe windows alive until every file and clipboard check finishes.
+            // Keep all probe windows alive until every fixture finishes, so a
+            // native last-window close cannot terminate the multi-file probe.
             let mut windows = Vec::new();
             for name in ["data.xml", "big.json", "big.xml", "big.txt"] {
                 let started = Instant::now();

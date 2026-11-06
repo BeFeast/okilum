@@ -49,3 +49,9 @@ chosen Edit mode/tree focus, byte-preserving save/conflict recovery, typed viewe
 identity across window-mode changes and SVG image-refresh regressions. SVG keeps
 its existing image viewer. Probe windows stay alive until every fixture finishes;
 closing the final native window is allowed to quit the app.
+
+Toolbar controls/rows are erased into AnyElement at separate construction
+boundaries to bound unoptimized native Windows render frames. The real native
+probe records its PE stack reserve and trace phases; no stack reserve override
+is introduced. It runs before the slower compiled negative/restored controls so
+a native startup/render failure is reported first. All controls remain required.

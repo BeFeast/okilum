@@ -25,6 +25,13 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/icon-env"
           "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
           "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
+      - name: Exercise read-only data viewing and compiled negative controls
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          fi
+          python3 scripts/ci/data-view-native.py
       - uses: actions/upload-artifact@v4
         with:
           name: updater-windows-icon
@@ -82,13 +89,6 @@ jobs:
             python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
             echo "DYLD_FRAMEWORK_PATH=$PWD/vendor/sparkle" >> "$GITHUB_ENV"
           fi
-      - name: Exercise read-only data viewing and compiled negative controls
-        shell: bash
-        run: |
-          if [[ "$RUNNER_OS" = Windows ]]; then
-            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
-          fi
-          python3 scripts/ci/data-view-native.py
       - name: Build real native app without GPUI test support
         shell: bash
         run: |

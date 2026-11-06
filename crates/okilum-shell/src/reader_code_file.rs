@@ -10,6 +10,7 @@ mod document;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;
 mod structure;
+mod toolbar;
 use document::Document;
 
 /// Bounded text loading; large files remain read-only.
@@ -436,218 +437,6 @@ impl CodePreview {
         }
     }
 
-    fn toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let root = self.root.clone();
-        let rel = self.rel.clone();
-        let copy_input = self.input();
-        let paged = self
-            .document
-            .as_ref()
-            .is_some_and(|doc| doc.pages.len() > 1);
-        v_flex()
-            .gap_1()
-            .pb_2()
-            .child(
-                h_flex()
-                    .gap_1()
-                    .flex_wrap()
-                    .child(
-                        Button::new("data-find")
-                            .small()
-                            .ghost()
-                            .label("Find")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if !this.open_paged_find(window, cx) {
-                                    if let Some(input) = this.input() {
-                                        input.update(cx, |state, cx| {
-                                            state.open_search(false, cx);
-                                            state.focus(window, cx);
-                                        });
-                                    }
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("data-fold-all")
-                            .small()
-                            .ghost()
-                            .label("Fold all")
-                            .disabled(self.document.is_none())
-                            .debug_selector(|| "data-fold-all".into())
-                            .on_click(cx.listener(|this, _, _, cx| this.fold_all(true, cx))),
-                    )
-                    .child(
-                        Button::new("data-unfold-all")
-                            .small()
-                            .ghost()
-                            .label("Unfold all")
-                            .disabled(self.document.is_none())
-                            .debug_selector(|| "data-unfold-all".into())
-                            .on_click(cx.listener(|this, _, _, cx| this.fold_all(false, cx))),
-                    )
-                    .child(
-                        Button::new("data-copy-selection")
-                            .small()
-                            .ghost()
-                            .label("Copy selection")
-                            .disabled(self.structure_view)
-                            .debug_selector(|| "data-copy-selection".into())
-                            .on_click(move |_, _, cx| {
-                                if let Some(input) = &copy_input {
-                                    let state = input.read(cx);
-                                    let range = state.selected_range();
-                                    if !range.is_empty() {
-                                        let text = state.text().slice(range).to_string();
-                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
-                                    }
-                                }
-                            }),
-                    )
-                    .child(
-                        Button::new("data-copy-node")
-                            .small()
-                            .ghost()
-                            .label("Copy node")
-                            .disabled(
-                                self.document.is_none() || language(&self.rel) == Some("text"),
-                            )
-                            .debug_selector(|| "data-copy-node".into())
-                            .on_click(cx.listener(|this, _, _, cx| this.copy_node(cx))),
-                    )
-                    .child(
-                        Button::new("data-open-external")
-                            .small()
-                            .ghost()
-                            .label("Open in default editor")
-                            .on_click(move |_, window, cx| {
-                                reader_files::run(
-                                    reader_files::FileAction::Open,
-                                    &root,
-                                    &rel,
-                                    window,
-                                    cx,
-                                );
-                            }),
-                    ),
-            )
-            .when(paged, |view| {
-                let doc = self.document.as_ref().unwrap();
-                let range = &doc.pages[self.page];
-                view.child(
-                    h_flex()
-                        .gap_1()
-                        .child(
-                            Button::new("data-structure")
-                                .small()
-                                .ghost()
-                                .label("Structure")
-                                .selected(self.structure_view)
-                                .disabled(doc.structure.is_empty())
-                                .debug_selector(|| "data-structure".into())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.structure_view = true;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("data-source")
-                                .small()
-                                .ghost()
-                                .label("Source")
-                                .selected(!self.structure_view)
-                                .debug_selector(|| "data-source".into())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.structure_view = false;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .flex_wrap()
-                        .child(div().text_sm().child(format!(
-                            "Long-line view · page {}/{} · bytes {}–{} of {}",
-                            self.page + 1,
-                            doc.pages.len(),
-                            range.start + 1,
-                            range.end,
-                            doc.text.len()
-                        )))
-                        .child(
-                            Button::new("data-prev-page")
-                                .small()
-                                .ghost()
-                                .label("Previous")
-                                .disabled(self.page == 0)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.show_page(this.page.saturating_sub(1), window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("data-next-page")
-                                .small()
-                                .ghost()
-                                .label("Next")
-                                .disabled(self.page + 1 >= doc.pages.len())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.show_page(this.page + 1, window, cx)
-                                })),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .child(div().w_64().child(Input::new(&self.find).small()))
-                        .child(div().text_sm().child(if self.searching {
-                            "Searching…".into()
-                        } else {
-                            format!(
-                                "{} / {} matches",
-                                if self.matches.is_empty() {
-                                    0
-                                } else {
-                                    self.match_index + 1
-                                },
-                                self.matches.len()
-                            )
-                        }))
-                        .child(
-                            Button::new("data-prev-match")
-                                .small()
-                                .ghost()
-                                .label("Previous match")
-                                .disabled(self.matches.is_empty())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if !this.matches.is_empty() {
-                                        this.match_index = (this.match_index + this.matches.len()
-                                            - 1)
-                                            % this.matches.len();
-                                        this.show_match(window, cx);
-                                    }
-                                })),
-                        )
-                        .child(
-                            Button::new("data-next-match")
-                                .small()
-                                .ghost()
-                                .label("Next match")
-                                .disabled(self.matches.is_empty())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if !this.matches.is_empty() {
-                                        this.match_index =
-                                            (this.match_index + 1) % this.matches.len();
-                                        this.show_match(window, cx);
-                                    }
-                                })),
-                        ),
-                )
-            })
-            .into_any_element()
-    }
-
     /// The Pretty / Raw switch and why a file stays raw.
     fn json_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let json = self.json.as_ref()?;
@@ -819,6 +608,8 @@ impl JsonText {
 
 impl Render for CodePreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "data-view-native-harness")]
+        native_trace("preview.render.begin");
         let view = v_flex()
             .id("reader-code-file")
             .key_context(KEY_CONTEXT)
@@ -831,7 +622,7 @@ impl Render for CodePreview {
             .min_h_0()
             .px(px(READER_SIDE_PADDING))
             .pb_6();
-        match &self.state {
+        let result = match &self.state {
             State::Loading => view.child(
                 div()
                     .text_color(cx.theme().muted_foreground)
@@ -890,7 +681,10 @@ impl Render for CodePreview {
                             .size_full(),
                     )
                 }),
-        }
+        };
+        #[cfg(feature = "data-view-native-harness")]
+        native_trace("preview.render.end");
+        result
     }
 }
 
@@ -1001,3 +795,10 @@ mod tests {
 
 #[cfg(test)]
 mod native_tests;
+
+#[cfg(feature = "data-view-native-harness")]
+fn native_trace(phase: &str) {
+    if std::env::var_os("OKILUM_DATA_VIEW_NATIVE_FIXTURE").is_some() {
+        eprintln!("DATA_VIEW_2669_NATIVE_TRACE {phase}");
+    }
+}

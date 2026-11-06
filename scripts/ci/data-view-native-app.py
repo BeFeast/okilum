@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 import time
@@ -20,6 +21,19 @@ def clipboard():
 def main():
     assert sys.platform in ('darwin', 'win32')
     binary = str(Path(sys.argv[1]).resolve())
+    if sys.platform == 'win32':
+        # Record the linked reserve; fixing a render frame must not be confused
+        # with silently increasing the native process stack.
+        with open(binary, 'rb') as executable:
+            executable.seek(0x3c)
+            pe_offset = struct.unpack('<I', executable.read(4))[0]
+            executable.seek(pe_offset)
+            assert executable.read(4) == b'PE\0\0'
+            executable.seek(pe_offset + 24)
+            assert struct.unpack('<H', executable.read(2))[0] == 0x20b
+            executable.seek(pe_offset + 24 + 72)
+            stack_reserve = struct.unpack('<Q', executable.read(8))[0]
+        print(json.dumps({'native_windows_stack_reserve_bytes': stack_reserve}), flush=True)
     with tempfile.TemporaryDirectory(prefix='data-view-2669-', dir=os.environ['RUNNER_TEMP']) as tmp:
         directory = Path(tmp)
         fixtures = {
