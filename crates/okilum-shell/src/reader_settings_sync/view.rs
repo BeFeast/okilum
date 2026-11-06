@@ -313,7 +313,7 @@ impl Render for SyncSettings {
                     .child(h_flex().gap_2().children([7u16, 30, 90, 365].into_iter().map(|days| {
                         let path = setting.path.clone();
                         Button::new(("sync-history-days", index * 4 + [7,30,90,365].iter().position(|d| *d == days).unwrap()))
-                            .debug_selector(move || format!("sync-history-days-{index}-{days}").into())
+                            .debug_selector(move || format!("sync-history-days-{index}-{days}"))
                             .label(format!("{days} days"))
                             .selected(setting.days.days() == days)
                             .disabled(self.busy)

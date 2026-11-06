@@ -2269,7 +2269,7 @@ fn issue2045_retention_reduction_requires_explicit_confirmation(cx: &mut TestApp
         visual.run_until_parked();
         assert!(!visual.update(|window, cx| window.has_active_dialog(cx)));
         assert_eq!(*calls.lock().unwrap(), vec!["enter"]);
-        view.read_with(&mut visual, |view, _| {
+        view.read_with(&visual, |view, _| {
             assert_eq!(
                 view.snapshot.as_ref().unwrap().history_retention[0]
                     .days
@@ -2286,7 +2286,7 @@ fn issue2045_retention_reduction_requires_explicit_confirmation(cx: &mut TestApp
     visual.simulate_click(confirm.center(), Modifiers::default());
     visual.run_until_parked();
     assert_eq!(*calls.lock().unwrap(), vec!["enter", "retention"]);
-    view.read_with(&mut visual, |view, _| {
+    view.read_with(&visual, |view, _| {
         assert_eq!(
             view.snapshot.as_ref().unwrap().history_retention[0]
                 .days
