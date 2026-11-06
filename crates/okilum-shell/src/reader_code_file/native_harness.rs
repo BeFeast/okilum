@@ -49,7 +49,7 @@ pub(crate) fn entry() -> bool {
                         }
                         let doc = p.document.as_ref().unwrap();
                         let input = p.input().unwrap();
-                        assert!(input.read(cx).is_readonly());
+                        assert!(!input.read(cx).is_editable());
                         if name == "big.json" {
                             assert!(p.structure_view, "minified native view uses the complete AST");
                             assert_eq!(p.structure.visible.len(), 3);

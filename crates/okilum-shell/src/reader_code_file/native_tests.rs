@@ -50,7 +50,7 @@ fn data_view_2669_native_fold_copy_find_and_readonly_source(cx: &mut TestAppCont
         p.input().expect("XML opens in the code viewer")
     });
     input.read_with(visual, |s, _| {
-        assert!(s.is_readonly());
+        assert!(!s.is_editable());
         assert_eq!(s.value().as_ref(), source);
     });
     let fold = visual.debug_bounds("data-fold-all").expect("Fold all");
@@ -241,7 +241,7 @@ fn data_view_2669_native_32_mib_multiline_file_keeps_full_find_and_numbered_edit
         assert!(!p.editable());
         assert_eq!(p.document.as_ref().unwrap().pages.len(), 1);
         p.input().unwrap().update(cx, |input, cx| {
-            assert!(input.is_readonly());
+            assert!(!input.is_editable());
             assert_eq!(input.text().len(), source.len());
             input.set_search_query("NEEDLE", false, cx);
             assert_eq!(input.search_session().matcher.matched_ranges().len(), 1);
@@ -292,7 +292,7 @@ fn data_view_2669_native_standalone_xml_mounts_and_restores_a_preview_without_ma
             .code_view_input(cx)
             .expect("direct XML is not projected as Markdown");
         assert_eq!(input.read(cx).value().as_ref(), source);
-        assert!(input.read(cx).is_readonly());
+        assert!(!input.read(cx).is_editable());
         assert!(reader.editing.is_none());
         assert!(!reader.code_file_editable(cx));
         // This must not widen the existing writable-format gate.
