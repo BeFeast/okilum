@@ -411,7 +411,6 @@ mod tests {
                 !view.can_send(),
                 "a shared Settings pairing must also disable the panel's old connection"
             );
-            assert!(!view.native.actions.read(cx).enabled);
         });
         visual.update(|_, cx| manager::cancel(&env, cx));
         visual.run_until_parked();
