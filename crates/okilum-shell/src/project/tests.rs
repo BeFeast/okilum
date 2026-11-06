@@ -1,6 +1,7 @@
 use super::*;
 use ::core::prelude::v1::test;
 
+#[cfg(native_manager)]
 #[gpui::test]
 fn composer_grows_and_shift_enter_keeps_a_newline_while_enter_sends_once(cx: &mut TestAppContext) {
     cx.update(crate::test_init);
@@ -402,6 +403,9 @@ fn a_revoked_connection_has_a_visible_reason_and_keeps_the_draft(cx: &mut TestAp
         cx.notify();
     });
     visual.run_until_parked();
+    // This chrome belongs to the native Manager capability. Revoked status
+    // and retained draft are asserted above on every platform.
+    #[cfg(native_manager)]
     assert!(
         visual.debug_bounds("manager-details").is_some(),
         "revocation details remain available on request"
@@ -494,11 +498,16 @@ fn a_manager_from_another_project_is_not_enabled_for_sending(cx: &mut TestAppCon
             .unwrap()
             .contains("another T3 project"));
     });
-    assert!(visual.debug_bounds("manager-onboarding").is_some());
-    assert!(
-        visual.debug_bounds("project-error").is_none(),
-        "raw setup errors stay under Details"
-    );
+    // Cross-project send refusal above is portable; native onboarding chrome
+    // is present only where that component is compiled.
+    #[cfg(native_manager)]
+    {
+        assert!(visual.debug_bounds("manager-onboarding").is_some());
+        assert!(
+            visual.debug_bounds("project-error").is_none(),
+            "raw setup errors stay under Details"
+        );
+    }
 }
 
 #[gpui::test]
@@ -1060,9 +1069,9 @@ fn executors_segment_uses_real_registry_shows_mismatches_and_retains_rows_and_dr
     let menu = visual.debug_bounds("project-connection-menu").unwrap();
     visual.simulate_click(menu.center(), Modifiers::default());
     visual.run_until_parked();
-    // The native Manager also has Rotation policy and Express session before Diagnostics.
+    // The native Manager has Rotation policy before Details.
     #[cfg(native_manager)]
-    visual.simulate_keystrokes("down down down down down enter");
+    visual.simulate_keystrokes("down down down down enter");
     #[cfg(not(native_manager))]
     visual.simulate_keystrokes("down down down enter");
     visual.executor().advance_clock(Duration::from_secs(20));

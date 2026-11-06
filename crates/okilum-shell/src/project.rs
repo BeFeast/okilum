@@ -31,8 +31,6 @@ mod discuss_handoff;
 mod drafts;
 mod executors;
 #[cfg(native_manager)]
-mod express_session;
-#[cfg(native_manager)]
 mod feed;
 mod launch;
 #[cfg(native_manager)]
@@ -121,8 +119,6 @@ pub(crate) struct ProjectView {
     rotation_notice: Option<String>,
     #[cfg(native_manager)]
     rotation_policy: rotation::policy_owner::State,
-    #[cfg(native_manager)]
-    express: express_session::State,
     credentials: credentials::Store,
     state: Option<PathBuf>,
     environment: Option<Environment>,
@@ -461,8 +457,6 @@ impl ProjectView {
             rotation_notice: None,
             #[cfg(native_manager)]
             rotation_policy: Default::default(),
-            #[cfg(native_manager)]
-            express: Default::default(),
             credentials: credentials::Store::default(),
             state,
             environment: None,
@@ -534,7 +528,6 @@ impl ProjectView {
     /// before the next paint or an async draft/store completion can run.
     #[cfg(native_manager)]
     pub(super) fn revoke_rotation(&mut self) {
-        self.express.revoke();
         self.rotation_policy.revoke_requests();
         let active = self.rotation_resolver.is_some() || self.rotation.is_some();
         if let Some(valid) = self.rotation_validity.take() {
@@ -1124,9 +1117,7 @@ impl ProjectView {
                         let sign_out = env.clone();
                         let terminal_area = terminal_area.clone();
                         #[cfg(native_manager)]
-                        let menu = menu
-                            .item(rotation::policy_owner::menu_item(owner.clone(), cx))
-                            .item(express_session::menu_item(owner.clone(), cx));
+                        let menu = menu.item(rotation::policy_owner::menu_item(owner.clone(), cx));
                         menu.item(PopupMenuItem::new("Details").on_click(move |_, _, cx| {
                             let _ = diagnostics.update(cx, |this, cx| {
                                 this.connection_details = true;
@@ -2193,10 +2184,6 @@ impl Render for ProjectView {
         #[cfg(native_manager)]
         let surface = surface.when(self.rotation_policy.is_open(), |surface| {
             surface.child(self.render_rotation_policy(window, cx))
-        });
-        #[cfg(native_manager)]
-        let surface = surface.when(self.express.is_open(), |surface| {
-            surface.child(self.render_express_session(cx))
         });
         surface
             .child(
