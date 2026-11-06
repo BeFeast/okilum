@@ -137,6 +137,17 @@ pub(super) fn remember(peer: &mut Paired, transport: &Transport) -> Result<()> {
     }
     Ok(())
 }
+fn closed_channel(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|e| {
+            matches!(
+                e.kind(),
+                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::BrokenPipe
+            )
+        })
+    })
+}
+
 impl Controller {
     pub(super) fn local_transport(&self) -> Result<Option<Transport>> {
         let Some(identity) = managed(&self.configuration_paths()?)? else {
@@ -218,7 +229,10 @@ impl Controller {
                 ) {
                     Ok(Reply::Catalog { .. }) => {}
                     Err(_) if !live() => {}
-                    Err(error) if transfer::offline(&error) => {}
+                    // Revocation or process exit can close an optional hint
+                    // exchange before a reply. Keep the saved hints; no new
+                    // transport/configuration authority comes from that socket.
+                    Err(error) if transfer::offline(&error) || closed_channel(&error) => {}
                     Err(error) => return Err(error),
                     _ if !live() => {}
                     _ => anyhow::bail!("authenticated peer catalog unavailable"),

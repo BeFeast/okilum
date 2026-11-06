@@ -434,10 +434,13 @@ pub(super) fn peer_is_live(db: &Database, peer: &Paired) -> bool {
             .peers
             .get(&peer.peer.id)
             .is_some_and(|current| current.key == peer.key && current.public == peer.public)
-        && !db
-            .removals
-            .iter()
-            .any(|removal| peer.syncthing_device.as_deref() == Some(removal.device.as_str()))
+        && !db.removals.iter().any(|removal| {
+            peer.syncthing_device.as_deref() == Some(removal.device.as_str())
+                || db
+                    .attached
+                    .iter()
+                    .any(|vault| vault.daemon.device_id == removal.device)
+        })
 }
 
 pub(super) fn pending(db: &Database) -> usize {
