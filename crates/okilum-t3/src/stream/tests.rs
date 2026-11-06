@@ -57,6 +57,9 @@ fn accept(listener: &TcpListener) -> TcpStream {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                // Mac/Windows can inherit the nonblocking listener mode.
+                // The fixture performs blocking HTTP/WS I/O with explicit deadlines.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
