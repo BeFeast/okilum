@@ -54,7 +54,7 @@ fn footnotes_are_numbered_and_land_both_ways() {
 fn math_is_tagged_for_native_rendering() {
     let out = corpus();
     assert!(out.contains(&format!(
-        "Inline [`$e^{{i\\pi}} + 1 = 0$`](okilum://math/{}) next to money: $5 and $10.",
+        "Inline ![`$e^{{i\\pi}} + 1 = 0$`](okilum://math/{}) next to money: $5 and $10.",
         okilum_core::document_links::encode(r"e^{i\pi} + 1 = 0")
     )));
     assert!(out.contains("~~~~math\n\\int_0^1 x^2 \\, dx = \\frac{1}{3}\n~~~~"));

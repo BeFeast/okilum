@@ -148,3 +148,32 @@
      fn table_rows_use_header_column_count() {
          let mut cx = NodeContext::default();
          let document = parse(
+--- a/crates/component/src/text/mod.rs
++++ b/crates/component/src/text/mod.rs
+@@ -8,7 +8,7 @@
+ };
+ pub use gpui_base::text::{
+     LinkPresentation, LinkSecondaryPress, MarkdownBlockParserFn, MarkdownBlockRenderFn, MarkdownExtensions,
+-    MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableCellPress, TableData,
++    MarkdownInline, MarkdownInlineParserFn, MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat, TableCellPress, TableData, TextMark,
+     TableSecondaryPress, TextViewState, markdown_ast,
+ };
+ pub use style::TextViewStyle;
+--- a/crates/component/src/text/compat.rs
++++ b/crates/component/src/text/compat.rs
+@@ -187,6 +187,15 @@
+         self.inner = self.inner.markdown_mdx();
+         self
+     }
++    /// Replaces inline Markdown nodes with ordinary styled paragraph text.
++    pub fn markdown_inline_parser<F>(mut self, parser: F) -> Self
++    where
++        F: Fn(&markdown::mdast::Node) -> Option<super::MarkdownInline> + Send + Sync + 'static,
++    {
++        self.inner = self.inner.markdown_inline_parser(parser);
++        self
++    }
++
+     /// Parses custom block nodes out of the Markdown AST.
+     pub fn markdown_block_parser<F>(mut self, parser: F) -> Self
+     where

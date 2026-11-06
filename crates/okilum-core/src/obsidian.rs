@@ -10,7 +10,7 @@
 //!   lines, so it cannot split the paragraph around it. An unpaired `%%` is
 //!   text: hiding the rest of a note behind a stray marker would hide content
 //!   the user cannot see is there.
-//! - Inline math becomes an internal tagged link, with its exact source as
+//! - Inline math becomes an internal tagged image, with its exact source as
 //!   the fallback label. Display math becomes a fence tagged [`MATH_LANG`].
 //!   The shell draws both through the native TeX renderer (#2596).
 //! - Footnotes are numbered in order of first reference, as Obsidian numbers
@@ -29,7 +29,7 @@ use std::ops::Range;
 
 /// Info-string tag of the fence a display formula is wrapped in.
 pub const MATH_LANG: &str = "math";
-/// Internal inline formula projection; the source label remains an honest fallback.
+/// Internal inline formula projection; its alt label retains the authored source.
 pub const MATH_SCHEME: &str = "okilum://math/";
 /// Info-string tag of a footnote definition fence: `footnote <n> <id>`, the id
 /// percent-encoded as in a `okilum://` URL.
@@ -147,7 +147,7 @@ fn fence_for(body: &str) -> String {
 }
 
 /// Rewrite display `$$…$$` into [`MATH_LANG`] fences and inline `$…$` into
-/// internal math links. Obsidian's (Pandoc's) inline rule: the opening `$` is not
+/// internal math images. Obsidian's (Pandoc's) inline rule: the opening `$` is not
 /// followed by whitespace, the closing one is not preceded by whitespace nor
 /// followed by a digit, and both are on one line — so `$5 and $10` is money.
 /// Conservatively, the closing `$` is the next one, and a bare number such
@@ -277,7 +277,7 @@ fn inline_math(seg: &str) -> String {
             Some((start, end, next)) => {
                 out.push_str(&seg[pos..i]);
                 out.push_str(&format!(
-                    "[{}]({MATH_SCHEME}{})",
+                    "![{}]({MATH_SCHEME}{})",
                     code_span(&seg[i..next]),
                     crate::document_links::encode(seg[start..end].trim()),
                 ));
@@ -760,7 +760,7 @@ mod tests {
     fn inline_math_follows_the_dollar_rules() {
         assert_eq!(
             rewrite_math("e $x^2$ f"),
-            "e [`$x^2$`](okilum://math/x%5E2) f"
+            "e ![`$x^2$`](okilum://math/x%5E2) f"
         );
         assert_eq!(rewrite_math("$5 and $10"), "$5 and $10");
         assert_eq!(rewrite_math("$ x $"), "$ x $");
@@ -769,15 +769,15 @@ mod tests {
         assert_eq!(rewrite_math("`$x$`"), "`$x$`");
         assert_eq!(
             rewrite_math("a $$x+y$$ b"),
-            "a [`$$x+y$$`](okilum://math/x%2By) b"
+            "a ![`$$x+y$$`](okilum://math/x%2By) b"
         );
-        assert_eq!(rewrite_math("$a`b$"), "[``$a`b$``](okilum://math/a%60b)");
+        assert_eq!(rewrite_math("$a`b$"), "![``$a`b$``](okilum://math/a%60b)");
         // #1645: financial notes keep their dollars.
         assert_eq!(rewrite_math("~$1.5k/mo and $2$"), "~$1.5k/mo and $2$");
         assert_eq!(rewrite_math("pay $2$ now"), "pay $2$ now");
         assert_eq!(
             rewrite_math("$x$ costs $2$"),
-            "[`$x$`](okilum://math/x) costs $2$"
+            "![`$x$`](okilum://math/x) costs $2$"
         );
     }
 

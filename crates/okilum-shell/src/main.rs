@@ -1453,7 +1453,10 @@ fn markdown_plugins_at(
         let mut drawing_size = None;
         for child in &p.children {
             match child {
-                markdown_ast::Node::Image(image) if url.is_none() => {
+                markdown_ast::Node::Image(image)
+                    if url.is_none()
+                        && !image.url.starts_with(okilum_core::obsidian::MATH_SCHEME) =>
+                {
                     drawing_size = image.title.as_deref().and_then(reader_drawing::parse_size);
                     if let Some(image_source) = parse_image(&image.url) {
                         unavailable = matches!(image_source, MarkdownImage::Unavailable);

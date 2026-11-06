@@ -53,7 +53,7 @@ in-place rendering is that tree written on one line in Unicode, so it uses the
 editor's own text layout, wrapping, selection and hit-testing; the card lays
 the same tree out with GPUI flex elements. No raster, no background job, no
 new dependency. A small gpui-kit inline-parser extension replaces tagged
-Reader math with ordinary styled paragraph text; no gpui core changes are needed.
+Reader math images with ordinary styled paragraph text; no gpui core changes are needed.
 The tags carry exact-source fallback labels and are presentation data only.
 
 ## Cost on the editing path
@@ -81,3 +81,7 @@ render/reveal with CRLF source on macOS and Windows. A Windows mutation removes
 the Read inline/display renderer registrations, requires both compiled tests to
 fail at runtime, then restores the exact bytes and reruns the complete math tests.
 These native-runner GPUI tests do not claim installed tester acceptance.
+
+Math uses an internal image tag rather than a nested Markdown link, so formulas
+inside link labels retain the surrounding link. The inline parser consumes that
+tag before image resolution; no image or network request renders the formula.

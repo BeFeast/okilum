@@ -164,16 +164,16 @@ pub(super) fn render_math(node: &MarkdownNode, window: &mut Window, cx: &mut App
         .into_any_element()
 }
 
-/// Internal math links become ordinary styled text, sharing Live Preview's
+/// Internal math images become ordinary styled text, sharing Live Preview's
 /// linear renderer and paragraph selection/wrapping. Authored code is untouched.
 pub(super) fn parse_inline_math(
     node: &markdown_ast::Node,
 ) -> Option<gpui_component::text::MarkdownInline> {
     use gpui_component::text::{MarkdownInline, TextMark};
-    let markdown_ast::Node::Link(link) = node else {
+    let markdown_ast::Node::Image(image) = node else {
         return None;
     };
-    let encoded = link.url.strip_prefix(obsidian::MATH_SCHEME)?;
+    let encoded = image.url.strip_prefix(obsidian::MATH_SCHEME)?;
     let tex = okilum_core::document_links::decode(encoded);
     match okilum_core::tex::linear(&tex) {
         Ok(linear) => Some(MarkdownInline {
@@ -193,15 +193,10 @@ pub(super) fn parse_inline_math(
                 })
                 .collect(),
         }),
-        Err(_) => {
-            let markdown_ast::Node::InlineCode(code) = link.children.first()? else {
-                return None;
-            };
-            Some(MarkdownInline {
-                text: code.value.clone(),
-                marks: vec![(0..code.value.len(), TextMark::default().code())],
-            })
-        }
+        Err(_) => Some(MarkdownInline {
+            text: image.alt.clone(),
+            marks: vec![(0..image.alt.len(), TextMark::default().code())],
+        }),
     }
 }
 
@@ -309,14 +304,22 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(crate::test_init);
-        let original = r"Area $x^2$ and $\alpha_1$; pay $5 and $2$; `$x^2$`; $\foo$; **bold**.";
-        let rendered = obsidian::before_links(original);
+        let original = r"Area $x^2$ and $\alpha_1$; [$x^2$](https://example.invalid); pay $5 and $2$; `$x^2$`; $\foo$; **bold**.";
+        let vault = Vault::from_note_paths(["math.md".into()]);
+        let rendered =
+            okilum_core::render::reader_document_from_source(&vault, "math.md", original).rendered;
         let state = cx.new(|cx| TextViewState::markdown(&rendered, cx));
         state.update(cx, |state, cx| {
             markdown_plugins(
                 TextView::new(&cx.entity()),
                 Arc::new(|_, _, _, _| {}),
-                Arc::new(|_| None),
+                Arc::new(|url| {
+                    assert!(
+                        !url.starts_with(obsidian::MATH_SCHEME),
+                        "math never resolves an image"
+                    );
+                    None
+                }),
                 SelectionFormat::Plain,
             )
             .prepare_state(state, cx);
@@ -327,14 +330,14 @@ mod tests {
             state.select_all(cx);
             assert_eq!(
                 state.selected_text_as(SelectionFormat::Plain),
-                "Area x² and α₁; pay $5 and $2$; $x^2$; $\\foo$; bold."
+                "Area x² and α₁; x²; pay $5 and $2$; $x^2$; $\\foo$; bold."
             );
             assert_eq!(state.document_source().unwrap().as_ref(), original);
             assert_eq!(state.selected_text_as(SelectionFormat::Source), original);
             state.set_search_query("x²", cx);
             assert_eq!(
                 state.search_status().1,
-                1,
+                2,
                 "search sees the rendered formula"
             );
         });
