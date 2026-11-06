@@ -83,12 +83,12 @@ try:
  rest,listen=[s.getsockname()[1] for s in ports];xml=ET.parse(peer_home/'config.xml');rx=xml.getroot()
  for f in list(rx.findall('folder')):rx.remove(f)
  rx.find('gui/address').text='127.0.0.1:'+str(rest);options=rx.find('options')
- for k,v in {'globalAnnounceEnabled':'false','localAnnounceEnabled':'false','relaysEnabled':'false','natEnabled':'false','urAccepted':'-1','autoUpgradeIntervalH':'0','startBrowser':'false'}.items():
+ for k,v in {'globalAnnounceEnabled':'false','localAnnounceEnabled':'true','relaysEnabled':'false','natEnabled':'false','urAccepted':'-1','autoUpgradeIntervalH':'0','startBrowser':'false'}.items():
   e=options.find(k)
   if e is None:e=ET.SubElement(options,k)
   e.text=v
  for e in list(options.findall('listenAddress')):options.remove(e)
- ET.SubElement(options,'listenAddress').text='tcp://127.0.0.1:'+str(listen);xml.write(peer_home/'config.xml')
+ ET.SubElement(options,'listenAddress').text='tcp://0.0.0.0:'+str(listen);xml.write(peer_home/'config.xml')
  for s in ports:s.close()
  daemon=subprocess.Popen([str(runtime),'serve','--no-browser','--no-restart','--no-upgrade','--home',str(peer_home)],stdout=open(root/'peer-daemon.log','w'),stderr=subprocess.STDOUT,start_new_session=True,env=dict(os.environ,GOMAXPROCS='2',STMONITORED='1'));receiver_api=api_from(peer_home/'config.xml')
  def peer_ready():
@@ -129,7 +129,7 @@ try:
  else:shutil.copy2(raw,video)
  run('ffmpeg','-v','error','-xerror','-i',video,'-f','null','-',timeout=120);vp=json.loads(run('ffprobe','-v','error','-show_streams','-show_format','-of','json',video).stdout);assert 60<=float(vp['format']['duration'])<=180
  hashes={name:sha(source/name) for name in ['seed.md','from-mac.md','from-peer.md','positive.md']};assert all(sha(target/name)==digest for name,digest in hashes.items())
- result={'build':config['build'],'source':config['source'],'package_sha256':asset['sha256'],'signed_notarized_beta':True,'fresh_mac_account_state':True,'settings_did_not_bootstrap':True,'source_enrolled_via_actual_UI':True,'invitation_created_and_copied_via_UI':True,'approved_via_Mac_UI':True,'receiver':'separate real Syncthing2.1.6 plus production Controller library, headless fixture','both_directions_exact':True,'file_hashes':hashes,'source_device':source_id,'peer_device':peer_id,'common_policy_equal':True,'mandatory_excludes_enforced':True,'managed_retention_days':30,'video_duration':float(vp['format']['duration']),'video_decode_exit':0,'video_edited_chronological':edited,'recorder_exit':recorder_code}
+ result={'build':config['build'],'source':config['source'],'package_sha256':asset['sha256'],'signed_notarized_beta':True,'fresh_mac_account_state':True,'settings_did_not_bootstrap':True,'source_enrolled_via_actual_UI':True,'invitation_created_and_copied_via_UI':True,'approved_via_Mac_UI':True,'receiver':'separate real Syncthing2.1.6 plus production Controller library, headless fixture with ordinary LAN discovery (no manual device dial hints)','both_directions_exact':True,'file_hashes':hashes,'source_device':source_id,'peer_device':peer_id,'common_policy_equal':True,'mandatory_excludes_enforced':True,'managed_retention_days':30,'video_duration':float(vp['format']['duration']),'video_decode_exit':0,'video_edited_chronological':edited,'recorder_exit':recorder_code}
  event('SIGNED_BETA_FRESH_MAC_PAIRING_PASS')
 except BaseException as error:
  event('failure: '+str(error))
