@@ -54,6 +54,9 @@ struct Change {
     after: Value,
 }
 impl Policy {
+    pub fn has_pending(&self) -> bool {
+        self.pending.is_some()
+    }
     /// Start an intent before the PATCH. Exact before/after snapshots make lost
     /// acknowledgements recoverable without accepting unrelated config changes.
     pub fn prepare(&mut self, folder: &Value) -> Result<bool> {
