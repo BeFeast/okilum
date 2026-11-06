@@ -179,7 +179,10 @@ def remove_yaml(source, original, target, backup):
     target_bytes = target.read_bytes()
     if tomlkit.parse(target_bytes.decode()).unwrap() != tomlkit.parse(translate(original.decode())[0]).unwrap():
         raise ValueError("TOML differs before YAML removal")
-    if any(path.is_symlink() for path in [backup, *backup.parents]):
+    # A shared filesystem alias (macOS /var -> /private/var) is already part
+    # of the selected source tree. Refuse aliases introduced only by the backup.
+    source_parents = set(source.parents)
+    if any(path.is_symlink() and path not in source_parents for path in [backup, *backup.parents]):
         raise ValueError("Backup path must not contain symlinks")
     backup.parent.mkdir(parents=True, exist_ok=True)
     if backup.exists():

@@ -141,6 +141,9 @@ fn open(
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");
     std::fs::create_dir_all(root.join("HomeLab")).unwrap();
+    // Reader canonicalizes its vault, including Windows verbatim path prefixes.
+    // Folder selections must use that same identity, as the real tree does.
+    let root = root.canonicalize().unwrap();
     std::fs::write(root.join("HomeLab/mesh.md"), "# Mesh\n").unwrap();
     std::fs::create_dir_all(root.join("Dev/Areas/app/ops")).unwrap();
     std::fs::write(

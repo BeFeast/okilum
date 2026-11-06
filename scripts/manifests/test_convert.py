@@ -114,6 +114,25 @@ class ConvertTests(unittest.TestCase):
             self.assertEqual(recovery.read_text(), "name: Example\n")
 
     @unittest.skipUnless(os.name == "posix", "Unix symlink semantics")
+    def test_shared_system_alias_does_not_reject_a_regular_external_backup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            real = root / "real"
+            real.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            source = alias / "Areas" / "Example" / "ops" / "project.yaml"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"name: Example\n")
+            backup = alias / "backup" / "Example" / "ops" / "project.yaml"
+            result = subprocess.run([sys.executable, str(SCRIPT), str(alias / "Areas"),
+                                     "--write", "--remove-yaml", "--backup-dir", str(alias / "backup")],
+                                    capture_output=True, text=True, check=True)
+            self.assertIn('"yaml": "removed"', result.stdout)
+            self.assertFalse(source.exists())
+            self.assertEqual(backup.read_bytes(), b"name: Example\n")
+
+    @unittest.skipUnless(os.name == "posix", "Unix symlink semantics")
     def test_symlinked_backup_parent_is_refused_before_creating_directories(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
