@@ -22,6 +22,10 @@ def run(package, name, *args):
 
 
 def main():
+    # Native checkouts are shallow. Fetch the exact public baseline before
+    # reading its files; missing source must never look like a negative verdict.
+    subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', BASE],
+                   cwd=ROOT, check=True, timeout=120)
     paths = [ROOT / 'crates/okilum-t3/src' / name for name in ('projects/create.rs', 'board/manage.rs')]
     originals = {path: path.read_bytes() for path in paths}
     try:
