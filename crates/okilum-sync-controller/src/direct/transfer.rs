@@ -1375,15 +1375,22 @@ pub(super) fn removal_view(
     removed: &str,
     folder: &Value,
 ) -> Result<Value> {
-    match db.transfers.iter().find(|t| {
+    let mut view = match db.transfers.iter().find(|t| {
         !t.legacy_hold()
             && t.path == vault.path
             && t.daemon == vault.daemon
             && t.vault == vault.folder_id
     }) {
-        Some(transfer) => owned_view_keeping(transfer, folder, Some(removed)),
-        None => Ok(folder.clone()),
-    }
+        Some(transfer) => owned_view_keeping(transfer, folder, Some(removed))?,
+        None => folder.clone(),
+    };
+    // Syncthing normalizes membership order when a missing sibling is added.
+    // Compare every member/field, without treating that order as a mutation.
+    view["devices"]
+        .as_array_mut()
+        .context("Removal members missing")?
+        .sort_by(|a, b| a["deviceID"].as_str().cmp(&b["deviceID"].as_str()));
+    Ok(view)
 }
 pub(super) fn removal_needs_handoff(db: &Database, vault: &ExistingVault, removed: &str) -> bool {
     db.transfers.iter().any(|t| {
@@ -1733,6 +1740,43 @@ mod tests {
             owned_view_keeping(&transfer, &without_hub, Some("hub"))?,
             "an introduced removal target must remain visible to the mutation guard"
         );
+        Ok(())
+    }
+    #[test]
+    fn removal_readback_allows_member_order_only() -> Result<()> {
+        let (root, mut transfer, mut folder, _, _) = fixture()?;
+        transfer.phase = Phase::Bidirectional;
+        transfer.witness = Some(folder.clone());
+        let vault = ExistingVault {
+            daemon: transfer.daemon.clone(),
+            version: "v2.1.6".into(),
+            folder_id: transfer.vault.clone(),
+            path: transfer.path.clone(),
+            label: "Fixture".into(),
+            paused: false,
+            folder_type: "sendreceive".into(),
+            peers: vec![],
+            root_identity: None,
+        };
+        let controller = Controller::open(root.path().join("order-controller"), vec![])?;
+        let mut db = controller.shared.db.lock().unwrap();
+        db.transfers.push(transfer);
+        folder["devices"] = json!([{"deviceID":"receiver","introducedBy":""},
+            {"deviceID":"peer-B","introducedBy":"","encryptionPassword":""},
+            {"deviceID":"peer-A","introducedBy":"","encryptionPassword":""}]);
+        let expected = removal_view(&db, &vault, "sender", &folder)?;
+        let mut reordered = folder.clone();
+        reordered["devices"].as_array_mut().unwrap().reverse();
+        assert_eq!(removal_view(&db, &vault, "sender", &reordered)?, expected);
+        for changed in ["paused", "path"] {
+            let mut outside = reordered.clone();
+            outside[changed] = json!("changed");
+            assert_ne!(removal_view(&db, &vault, "sender", &outside)?, expected);
+        }
+        reordered["devices"][0]["encryptionPassword"] = json!("unexpected");
+        assert_ne!(removal_view(&db, &vault, "sender", &reordered)?, expected);
+        drop(db);
+        controller.shutdown();
         Ok(())
     }
     #[test]
