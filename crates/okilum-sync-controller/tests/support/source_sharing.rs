@@ -1215,3 +1215,192 @@ fn managed_real_conflicts_resolve_each_choice_with_hashes() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_create_2569_artifacts_and_guarded_existing_policy_migration() -> Result<()> {
+    let mut pair = Pair::loopback()?;
+    let artifact = ".okilum-create-8db23a26-cb93-4484-aafe-923e716e2f5c";
+    let bytes = b"# Ordinary note is the fired-path control\r\n";
+    fs::write(
+        pair.source.vault.join(artifact),
+        b"interrupted exclusive create",
+    )?;
+    fs::write(pair.source.vault.join("ordinary.md"), bytes)?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("new policy ordinary bytes and promotion", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing
+            && same_hash(&pair.target.vault, "ordinary.md", bytes))
+    })?;
+    assert!(!pair.target.vault.join(artifact).exists());
+    let current: Vec<String> = [
+        ".okilum-index",
+        ".okilum-save-*",
+        "/.claude/worktrees",
+        "/worktrees",
+        ".okilum-create-*",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let old = current[..4].to_vec();
+    let old_bytes = format!("{}\n", old.join("\n")).into_bytes();
+    let current_bytes = format!("{}\n", current.join("\n")).into_bytes();
+    for peer in [&pair.source, &pair.target] {
+        assert_eq!(fs::read(peer.vault.join(".stignore"))?, current_bytes);
+    }
+    // Reconstruct a pre-upgrade installation with both folders paused, so an
+    // old policy cannot transport the artifact before the upgrade is exercised.
+    pair.first.shutdown();
+    drop(pair.first);
+    pair.second.shutdown();
+    drop(pair.second);
+    let target_state = pair._root.path().join("target-controller");
+    for (peer, state, records) in [
+        (&pair.source, &pair.source_state, "sources"),
+        (&pair.target, &target_state, "transfers"),
+    ] {
+        peer.api.patch_folder(&id, &json!({"paused":true}))?;
+        peer.api.replace_managed_ignores(&id, &current, &old)?;
+        assert_eq!(fs::read(peer.vault.join(".stignore"))?, old_bytes);
+        let file = state.join("direct.json");
+        let mut journal: Value = serde_json::from_slice(&fs::read(&file)?)?;
+        let record = &mut journal[records][0];
+        record.as_object_mut().unwrap().remove("create_ignores");
+        record["witness"] = peer.api.folder(&id)?;
+        if records == "sources" {
+            record["ignores"] = json!(old_bytes);
+        } else {
+            record["connection"]["ignores"] = json!(old);
+        }
+        fs::write(file, serde_json::to_vec(&journal)?)?;
+    }
+    pair.first = Controller::open(
+        pair.source_state.clone(),
+        vec![pair.source.home.join("config.xml")],
+    )?;
+    pair.second = Controller::open(
+        target_state.clone(),
+        vec![pair.target.home.join("config.xml")],
+    )?;
+    let before_source = pair.source.api.config()?;
+    let before_target = pair.target.api.config()?;
+    for controller in [&pair.first, &pair.second] {
+        assert!(controller.refresh()?.policy_warnings.is_empty());
+        assert!(controller.refresh()?.policy_warnings.is_empty());
+    }
+    assert_eq!(
+        pair.source.api.config()?,
+        before_source,
+        "source unrelated settings changed"
+    );
+    assert_eq!(
+        pair.target.api.config()?,
+        before_target,
+        "receiver unrelated settings changed"
+    );
+    for (peer, state, records) in [
+        (&pair.source, &pair.source_state, "sources"),
+        (&pair.target, &target_state, "transfers"),
+    ] {
+        assert_eq!(fs::read(peer.vault.join(".stignore"))?, current_bytes);
+        assert_eq!(
+            peer.api.folder(&id)?["paused"],
+            true,
+            "user pause preserved"
+        );
+        let journal: Value = serde_json::from_slice(&fs::read(state.join("direct.json"))?)?;
+        assert_eq!(journal[records][0]["create_ignores"]["complete"], true);
+        assert!(journal[records][0]["create_ignores"]["pending"].is_null());
+        peer.api.patch_folder(&id, &json!({"paused":false}))?;
+    }
+    // Lost acknowledgement: disk/daemon already have the new policy, while
+    // the old ignore witness and a pending before/after intent remain durable.
+    pair.first.shutdown();
+    drop(pair.first);
+    pair.second.shutdown();
+    drop(pair.second);
+    for (peer, state, records) in [
+        (&pair.source, &pair.source_state, "sources"),
+        (&pair.target, &target_state, "transfers"),
+    ] {
+        let file = state.join("direct.json");
+        let mut journal: Value = serde_json::from_slice(&fs::read(&file)?)?;
+        let record = &mut journal[records][0];
+        record["create_ignores"] = json!({"complete":false,"pending":{
+            "folder":peer.api.folder(&id)?,"before":old_bytes,"after":current_bytes}});
+        if records == "sources" {
+            record["ignores"] = json!(old_bytes);
+        } else {
+            record["connection"]["ignores"] = json!(old);
+        }
+        fs::write(file, serde_json::to_vec(&journal)?)?;
+    }
+    pair.first = Controller::open(
+        pair.source_state.clone(),
+        vec![pair.source.home.join("config.xml")],
+    )?;
+    pair.second = Controller::open(
+        target_state.clone(),
+        vec![pair.target.home.join("config.xml")],
+    )?;
+    assert!(pair.first.refresh()?.policy_warnings.is_empty());
+    assert!(pair.second.refresh()?.policy_warnings.is_empty());
+    for peer in [&pair.source, &pair.target] {
+        assert_eq!(fs::read(peer.vault.join(".stignore"))?, current_bytes);
+        assert_eq!(peer.api.folder(&id)?["paused"], false);
+    }
+    let second_artifact = ".okilum-create-0489e797-b0b7-4e83-a0af-8cb53a1547ae";
+    fs::write(
+        pair.target.vault.join(second_artifact),
+        b"receiver interrupted create",
+    )?;
+    let return_bytes = b"# Return direction after existing-policy migration\n";
+    fs::write(pair.target.vault.join("return.md"), return_bytes)?;
+    wait("migrated policy ordinary bytes in return direction", || {
+        pair.tick(&id)?;
+        Ok(same_hash(&pair.source.vault, "return.md", return_bytes))
+    })?;
+    assert!(!pair.target.vault.join(artifact).exists());
+    assert!(!pair.source.vault.join(second_artifact).exists());
+    assert_eq!(
+        fs::read(pair.source.vault.join(artifact))?,
+        b"interrupted exclusive create"
+    );
+    assert_eq!(
+        fs::read(pair.target.vault.join(second_artifact))?,
+        b"receiver interrupted create"
+    );
+
+    // An existing custom/negated policy has no automatic migration authority,
+    // even when the durable source bytes match it. It must remain visible.
+    pair.first.shutdown();
+    drop(pair.first);
+    let custom = format!(
+        "// keep exact comments\r\n!important.md\r\n{}\r\n",
+        old.join("\r\n")
+    )
+    .into_bytes();
+    fs::write(pair.source.vault.join(".stignore"), &custom)?;
+    let file = pair.source_state.join("direct.json");
+    let mut journal: Value = serde_json::from_slice(&fs::read(&file)?)?;
+    journal["sources"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("create_ignores");
+    journal["sources"][0]["ignores"] = json!(custom);
+    fs::write(file, serde_json::to_vec(&journal)?)?;
+    pair.first = Controller::open(
+        pair.source_state.clone(),
+        vec![pair.source.home.join("config.xml")],
+    )?;
+    let warning = pair.first.refresh()?.policy_warnings;
+    assert_eq!(warning.len(), 1);
+    assert_eq!(warning[0].path, pair.source.vault);
+    assert!(warning[0].message.contains("custom rules were preserved"));
+    assert_eq!(fs::read(pair.source.vault.join(".stignore"))?, custom);
+    Ok(())
+}

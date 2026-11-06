@@ -374,6 +374,7 @@ fn issue2589_action_failure_is_logged_with_chain_and_visible_cause(cx: &mut Test
 
 fn snapshot(pending: Option<direct::Pending>) -> Snapshot {
     Snapshot {
+        policy_warnings: vec![],
         history_warnings: vec![],
         history_retention: vec![],
         offer_url: None,

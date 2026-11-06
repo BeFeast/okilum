@@ -22,6 +22,8 @@ pub(super) struct Connection {
 pub(super) struct Transfer {
     #[serde(default)]
     history: history::Policy,
+    #[serde(default)]
+    create_ignores: create_ignores::Policy,
     peer: Uuid,
     vault: String,
     path: PathBuf,
@@ -80,7 +82,12 @@ pub(super) fn share(
     // Preserve all existing device settings, including external roles. Never
     // acquire lifecycle/removal authority over an existing external peer.
     // Reject unsupported ignore policy before the first scoped mutation.
-    let lines = ignore_lines(&api.ignores(&source.folder_id)?)?;
+    let mut lines = ignore_lines(&api.ignores(&source.folder_id)?)?;
+    // The destination is a new, owned folder: service staging is never note
+    // content. Keep the source's local file intact, including custom rules.
+    if !lines.iter().any(|line| line == create_ignores::STAGING) {
+        lines.insert(0, create_ignores::STAGING.into());
+    }
     let config = api.config()?;
     let devices = config["devices"]
         .as_array()
@@ -213,6 +220,7 @@ impl Controller {
                 );
                 let t = Transfer {
                     history: history::Policy::default(),
+                    create_ignores: create_ignores::Policy::current(),
                     peer: peer_id,
                     vault: vault_id.into(),
                     path: path.clone(),
@@ -1113,6 +1121,60 @@ pub fn received_vault_names(state: &Path) -> Result<Vec<(PathBuf, String)>> {
 }
 
 impl Controller {
+    fn apply_transfer_ignores(&self, transfer: &mut Transfer) -> Result<()> {
+        if transfer.create_ignores.complete {
+            return Ok(());
+        }
+        ensure!(
+            !transfer.history.has_pending(),
+            "Ignore migration waits for the pending history intent"
+        );
+        let api = self.history_daemon(&transfer.daemon)?;
+        let folder = api.folder(&transfer.vault)?;
+        validate_owned(transfer, &folder)?;
+        let identity = transfer
+            .destination_identity
+            .as_ref()
+            .context("Ignore policy root witness missing")?;
+        let root = existing::VaultRoot::open(&transfer.path)?;
+        root.verify(&transfer.path)?;
+        let identity = (identity.device, identity.inode);
+        let bytes = create_ignores::Policy::read(&transfer.path, identity)?;
+        let connection = transfer
+            .connection
+            .as_ref()
+            .context("Ignore policy connection missing")?;
+        if transfer
+            .create_ignores
+            .prepare(&folder, &bytes, &connection.ignores)?
+        {
+            self.save_transfer(transfer)?;
+            transfer.create_ignores.apply(
+                &api,
+                &transfer.vault,
+                &transfer.path,
+                identity,
+                || self.check(),
+            )?;
+            transfer.connection.as_mut().unwrap().ignores = create_ignores::lines();
+            transfer.create_ignores.finish();
+        }
+        self.save_transfer(transfer)
+    }
+    pub(super) fn reconcile_transfer_ignores(&self, warnings: &mut Vec<PolicyWarning>) {
+        let transfers = self.shared.db.lock().unwrap().transfers.clone();
+        for mut transfer in transfers
+            .into_iter()
+            .filter(|t| t.active && !t.legacy_hold() && t.phase != Phase::Preparing)
+        {
+            if let Err(error) = self.apply_transfer_ignores(&mut transfer) {
+                warnings.push(PolicyWarning {
+                    path: transfer.path.clone(),
+                    message: format!("{error:#}"),
+                });
+            }
+        }
+    }
     fn apply_transfer_history(&self, transfer: &mut Transfer) -> Result<()> {
         let api = self.history_daemon(&transfer.daemon)?;
         let folder = api.folder(&transfer.vault)?;
@@ -1187,6 +1249,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let transfer = Transfer {
             history: history::Policy::default(),
+            create_ignores: create_ignores::Policy::current(),
             peer: Uuid::new_v4(),
             vault: "fixture".into(),
             path: root.path().to_owned(),

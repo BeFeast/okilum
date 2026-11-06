@@ -521,12 +521,23 @@ impl SyncSettings {
             }
         }
         if let Some(snapshot) = &self.snapshot {
-            for (index, warning) in snapshot.history_warnings.iter().enumerate() {
+            for (index, warning) in snapshot
+                .history_warnings
+                .iter()
+                .map(|w| (&w.path, &w.message))
+                .chain(
+                    snapshot
+                        .policy_warnings
+                        .iter()
+                        .map(|w| (&w.path, &w.message)),
+                )
+                .enumerate()
+            {
                 result = result.child(
                     div()
                         .id(("sync-history-warning", index))
                         .text_sm()
-                        .child(format!("{}: {}", warning.path.display(), warning.message)),
+                        .child(format!("{}: {}", warning.0.display(), warning.1)),
                 );
             }
         }

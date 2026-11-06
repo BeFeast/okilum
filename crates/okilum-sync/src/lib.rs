@@ -205,6 +205,36 @@ impl Syncthing {
         );
         Ok(())
     }
+    /// Durable caller-owned policy transition, never external folder adoption.
+    /// The controller separately checks exact file bytes, root and folder identity.
+    pub fn replace_managed_ignores(
+        &self,
+        id: &str,
+        before: &[String],
+        after: &[String],
+    ) -> Result<()> {
+        ensure!(
+            self.folder(id)?["paused"] == true,
+            "ignore migration requires a paused owned folder"
+        );
+        let current = self.ignores(id)?;
+        ensure!(
+            current["ignore"] == json!(before) || current["ignore"] == json!(after),
+            "ignore migration readback differs; explicit review required"
+        );
+        if current["ignore"] != json!(after) {
+            self.request(
+                Method::POST,
+                &format!("/rest/db/ignores?folder={}", segment(id)?),
+                Some(&json!({"ignore":after})),
+            )?;
+        }
+        ensure!(
+            self.ignores(id)?["ignore"] == json!(after),
+            "ignore migration readback mismatch"
+        );
+        Ok(())
+    }
     pub fn ignores(&self, id: &str) -> Result<Value> {
         self.request(
             Method::GET,

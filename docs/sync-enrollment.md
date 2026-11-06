@@ -233,3 +233,23 @@ The [direct-pairing engineering notes](sync-direct-pairing.md) cover the protoco
 readiness checks and remaining lifecycle limits. The older
 [compatibility evidence](sync-compatibility.md) describes isolated hub/client
 fixtures, not today's user setup.
+
+## Interrupted note creation (#2569)
+
+New managed policies exclude `.okilum-create-*`, just as they exclude safe-save
+staging. These are unpublished service artifacts, never notes or evidence of a
+completed save. New receiving folders also exclude this staging prefix without
+changing the source computer's ignore file.
+
+Existing owned source/receiver folders upgrade automatically only from the
+exact earlier generated LF policy. A durable before/after intent records the
+folder configuration and exact bytes; the selected authenticated daemon, vault
+identity and readback must still match. The folder pauses only for this scoped
+change and returns to its previous pause state. A lost acknowledgement replays
+that intent; a second refresh makes no further changes.
+
+Custom rules, comments, CRLF, negations, includes, moved roots and unrelated
+pending transitions require review. Settings shows a path-specific warning;
+Okilum preserves those bytes rather than guessing precedence. Existing external
+folders are not enrolled by the migration. No staging file is deleted by this
+change. Shared policy editing/explicit migration is tracked by #2046.
