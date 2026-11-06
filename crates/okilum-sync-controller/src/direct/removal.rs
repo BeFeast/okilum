@@ -223,6 +223,13 @@ impl Controller {
         if removal.local_applied && removal.pending.is_empty() {
             return Ok(());
         }
+        {
+            let db = self.shared.db.lock().unwrap();
+            ensure!(
+                db.revoked_peers.len() + db.peers.len() <= 256,
+                "Removal replay credential limit reached; no folder was changed"
+            );
+        }
         let configs = self.configuration_paths()?;
         let mut removed_self = false;
         for vault in attached

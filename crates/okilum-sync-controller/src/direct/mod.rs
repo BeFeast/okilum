@@ -1259,6 +1259,7 @@ fn served(db: &Database) -> Vec<SocketAddr> {
     let mut endpoints: Vec<_> = db
         .peers
         .iter()
+        .chain(db.revoked_peers.iter())
         .filter(|&(id, peer)| {
             peer.endpoint == own || (peer.endpoint.ip() == own.ip() && !joined(id))
         })

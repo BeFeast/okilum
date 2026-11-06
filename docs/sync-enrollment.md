@@ -287,3 +287,30 @@ retaining all device-local rules. Review the server's readback and an ordinary
 note transfer before removing a former template dependency. Installing that line
 on a live server is a host change; follow its administrator's approval boundary.
 Do not point an include at a missing file or replace a local policy blindly.
+
+## Remove a computer (#2042)
+
+In Settings → Sync select **Remove** on a computer, check its name/device ID,
+then explicitly confirm **Remove computer**. The removed computer keeps its own
+files. No copied file can be recalled. A headless computer uses
+`okilum sync remove '<exact name or device ID>'`; ambiguous names are refused,
+and `sync status` lists exact transport identities, including introduced peers.
+
+The request removes sharing from Okilum-associated vaults and revokes the old
+pairing/catalog authorization. It does not delete vault files or global devices
+used by unrelated external Syncthing folders. A removed computer that receives
+the request pauses its own associated vaults while retaining its copy. Plain
+Syncthing peers follow introduction removals; manually configured relationships
+outside that introduction still require their administrator's explicit action.
+
+Okilum sends the removal through its authenticated paired connections and the
+sharing/introducer computer to the other peers. A disconnected computer follows
+when it reconnects. Pending delivery is visible; requests and acknowledgements
+survive restarts outside the index. Old credentials retained for lost-reply
+recovery can acknowledge only that exact already-recorded removal, never read a
+catalog, share a vault or change transport settings. A fresh invitation is needed
+before a removed computer can be approved again.
+
+There is no device list in the vault. First setup, common-folder authorization,
+selected daemon/root checks, exact membership PATCH/readback and existing
+external ownership boundaries remain in effect.
