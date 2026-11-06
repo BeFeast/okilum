@@ -178,7 +178,7 @@ try:
  wait('approved native Mac catalog and Choose folder',available,90);screen('04-received-catalog');click('Choose folder')
  wait('native folder picker',lambda:any('new folder' in row['text'].casefold() for row in ocr()),30);screen('05-native-folder-picker')
  def choose_destination_row():
-  rows=ocr();row=next((r for r in rows if r['text'].strip().startswith('received-vault-')),None)
+  rows=ocr();(out/'native-folder-picker-ocr.json').write_text(json.dumps(rows,indent=2)+'\n');row=next((r for r in rows if 'receivedvault' in re.sub('[^a-z0-9]','',r['text'].casefold()) and r['x']>240 and r['y']<450),None)
   if row:return row
   documents=next((r for r in rows if r['text'].strip()=='Documents' and r['x']<240),None)
   if documents:run(driver,'click',documents['x'],documents['y'])
