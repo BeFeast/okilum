@@ -43,13 +43,10 @@ impl HoverProvider for SourceHover {
                 .background_executor()
                 .spawn(async move {
                     let text = snapshot.to_string();
-                    let Some(image) =
+                    let image =
                         okilum_core::render::image_reference::references(&text, &vault, &note)
                             .into_iter()
-                            .find(|image| image.range.contains(&offset))
-                    else {
-                        return None;
-                    };
+                            .find(|image| image.range.contains(&offset))?;
                     let range = lsp_types::Range::new(
                         snapshot.offset_to_position(image.range.start),
                         snapshot.offset_to_position(image.range.end),
