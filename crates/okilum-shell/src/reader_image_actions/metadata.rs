@@ -16,7 +16,7 @@ const HEADER_LIMIT: u64 = 1024 * 1024;
 /// A file replaced while its header was read is read again, at most this often.
 const ATTEMPTS: usize = 3;
 
-pub(super) const HINT: &str = "Right-click for image actions";
+pub(super) const HINT: &str = "Right-click for file actions";
 const LOADING: &str = "Reading size…";
 const UNAVAILABLE: &str = "Size and dimensions unavailable";
 
@@ -92,7 +92,7 @@ fn read_once(root: &Path, relative: &str) -> anyhow::Result<(Revision, Facts)> {
 
 /// Runs on the background executor. `hold` lets tests pause between reading a
 /// revision and confirming it is still current.
-async fn lookup(
+pub(super) async fn lookup(
     root: PathBuf,
     relative: String,
     mut hold: Option<futures::channel::oneshot::Receiver<()>>,
@@ -171,7 +171,7 @@ impl Hover {
     /// Tooltip lines, the first one primary and the rest secondary.
     pub(super) fn lines(&self) -> Vec<String> {
         let target = &self.target;
-        let Some(relative) = target.relative.as_ref().filter(|_| target.url.is_some()) else {
+        let Some(relative) = target.relative.as_ref() else {
             return vec![target.notice().unwrap_or(HINT).to_owned()];
         };
         if let Some(notice) = target.notice() {
@@ -186,7 +186,11 @@ impl Hover {
             Some(State::Ready(Facts {
                 bytes,
                 pixels: None,
-            })) => format!("{} · dimensions unavailable", size_label(bytes)),
+            })) if target.is_image() => format!("{} · dimensions unavailable", size_label(bytes)),
+            Some(State::Ready(Facts {
+                bytes,
+                pixels: None,
+            })) => size_label(bytes),
             Some(State::Unavailable) | None => UNAVAILABLE.to_owned(),
         };
         vec![relative.clone(), details, HINT.to_owned()]
@@ -500,7 +504,14 @@ pub(super) mod tests {
                 assert_eq!(hover.state, None, "{note}");
                 assert_eq!(
                     hover.lines(),
-                    ["Image file not found, outside this vault, or ambiguous."]
+                    [
+                        if note == "ambiguous.md" {
+                            "same.png"
+                        } else {
+                            "missing.png"
+                        },
+                        "File not found, outside this vault, or ambiguous."
+                    ]
                 );
             });
         }
