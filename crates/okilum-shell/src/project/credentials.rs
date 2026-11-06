@@ -3,10 +3,10 @@ use super::*;
 
 type Saved = Option<(String, Vec<u8>)>;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Store {
     #[cfg(test)]
-    pub(super) test: Option<Arc<std::sync::Mutex<TestStore>>>,
+    pub(crate) test: Option<Arc<std::sync::Mutex<TestStore>>>,
 }
 
 impl Store {
@@ -21,7 +21,7 @@ impl Store {
     }
 
     #[cfg(native_manager)]
-    pub(super) fn write(
+    pub(crate) fn write(
         &self,
         key: &str,
         user: &str,
@@ -41,24 +41,14 @@ impl Store {
         }
         cx.write_credentials(key, user, bytes)
     }
-
-    #[cfg(native_manager)]
-    pub(super) fn delete(&self, key: &str, cx: &App) -> Task<anyhow::Result<()>> {
-        #[cfg(test)]
-        if let Some(store) = &self.test {
-            store.lock().unwrap().entries.remove(key);
-            return Task::ready(Ok(()));
-        }
-        cx.delete_credentials(key)
-    }
 }
 
 #[cfg(test)]
 #[derive(Default)]
-pub(super) struct TestStore {
-    pub(super) entries: std::collections::BTreeMap<String, (String, Vec<u8>)>,
-    pub(super) reads: Vec<String>,
-    pub(super) refuse_write: bool,
+pub(crate) struct TestStore {
+    pub(crate) entries: std::collections::BTreeMap<String, (String, Vec<u8>)>,
+    pub(crate) reads: Vec<String>,
+    pub(crate) refuse_write: bool,
 }
 
 #[cfg(all(test, native_manager))]
@@ -90,10 +80,18 @@ impl Store {
                 .await?
                 .map(|(_, bytes)| okilum_t3::StoredToken::from_secret(&bytes))
                 .transpose()?;
-            let native = saved_native
-                .await?
-                .map(|(_, bytes)| okilum_t3::stream::NativeToken::from_secret(&env, &bytes))
-                .transpose()?;
+            let native = match saved_native.await? {
+                Some((_, bytes)) => match okilum_t3::stream::NativeToken::from_secret(&env, &bytes)
+                {
+                    Ok(token) => Some(token),
+                    Err(
+                        okilum_t3::stream::StreamError::Expired
+                        | okilum_t3::stream::StreamError::PairingRequired,
+                    ) => None,
+                    Err(error) => return Err(error.into()),
+                },
+                None => None,
+            };
             let mcp = match mcp {
                 Some(gateway) => gateway,
                 None => Arc::new(

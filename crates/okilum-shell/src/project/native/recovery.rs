@@ -290,7 +290,7 @@ impl ProjectView {
                     ConnectionPhase::Connecting | ConnectionPhase::Reconnecting
                 ));
         let mut view = v_flex().w_full().min_w_0().gap_1();
-        if self.native.active() && !self.native.stream_ready {
+        if self.connection_details && self.native.active() && !self.native.stream_ready {
             let status = match self.native.phase {
                 ConnectionPhase::Connecting => "Connecting…",
                 ConnectionPhase::Reconnecting => "Reconnecting…",
@@ -370,6 +370,9 @@ impl ProjectView {
                 "project-history-error",
             ),
         ] {
+            if origin != ErrorOrigin::History && !self.connection_details {
+                continue;
+            }
             if let Some(banner) = text.and_then(|text| {
                 let preview = self
                     .native
@@ -392,6 +395,16 @@ impl ProjectView {
             actions.set_state(state, window, cx);
             actions.set_enabled(false, cx);
         });
+    }
+
+    pub(super) fn native_retry_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.native.busy {
+            return;
+        }
+        self.native.pause();
+        self.freeze_native_actions(window, cx);
+        self.native_start(window, cx);
+        cx.notify();
     }
 
     pub(super) fn native_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -426,6 +439,25 @@ impl ProjectView {
         } else {
             ConnectionPhase::Terminal
         };
+        if let Some((env, client)) = self.environment.as_ref().zip(self.native.client.as_ref()) {
+            let stage = match &cause {
+                StreamError::Expired | StreamError::PairingRequired => {
+                    reader_t3_settings::manager::Stage::Expired
+                }
+                error if recovery_state::is_transient(error) => {
+                    reader_t3_settings::manager::Stage::Offline
+                }
+                _ => reader_t3_settings::manager::Stage::Error,
+            };
+            reader_t3_settings::manager::transport(
+                env,
+                client.clone(),
+                self.native.expires_at.unwrap_or(0),
+                stage,
+                Some(cause.to_string()),
+                cx,
+            );
+        }
         self.native.failure = Some(ConnectionFailure { cause, context });
     }
 }

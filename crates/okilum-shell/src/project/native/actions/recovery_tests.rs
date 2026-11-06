@@ -221,6 +221,7 @@ fn fixture<'a>(
             );
             view.active = false;
             view.threads.enabled = true;
+            view.connection_details = true; // Recovery internals require an explicit Details disclosure.
             view.environment = Some(environment);
             view.native.client = Some(client);
             view.native.expires_at = Some(expiry);
