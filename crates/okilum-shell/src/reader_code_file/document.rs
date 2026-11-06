@@ -10,6 +10,70 @@ pub(super) struct Document {
     pub text: Arc<str>,
     pub pages: Vec<Range<usize>>,
     tree: Option<tree_sitter::Tree>,
+    pub structure: Vec<StructureRow>,
+}
+
+/// A preorder AST index, with no copied node text or recursive UI elements.
+#[derive(Debug)]
+pub(super) struct StructureRow {
+    pub range: Range<usize>,
+    pub subtree_end: usize,
+    pub depth: usize,
+    pub line: usize,
+}
+
+pub(super) fn structural(kind: &str) -> bool {
+    matches!(
+        kind,
+        "object"
+            | "array"
+            | "pair"
+            | "element"
+            | "empty_element"
+            | "table"
+            | "table_array_element"
+            | "block_mapping_pair"
+            | "block_sequence_item"
+            | "flow_mapping"
+            | "flow_sequence"
+    )
+}
+
+fn structure(tree: &tree_sitter::Tree) -> Vec<StructureRow> {
+    let mut rows: Vec<StructureRow> = Vec::new();
+    let mut cursor = tree.walk();
+    let mut depth = 0;
+    let mut parents: Vec<(usize, usize)> = Vec::new();
+    loop {
+        let node = cursor.node();
+        if structural(node.kind()) {
+            let index = rows.len();
+            rows.push(StructureRow {
+                range: node.byte_range(),
+                subtree_end: index + 1,
+                depth: parents.len(),
+                line: node.start_position().row + 1,
+            });
+            parents.push((depth, index));
+        }
+        if cursor.goto_first_child() {
+            depth += 1;
+            continue;
+        }
+        loop {
+            if parents.last().is_some_and(|&(at, _)| at == depth) {
+                let (_, index) = parents.pop().unwrap();
+                rows[index].subtree_end = rows.len();
+            }
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return rows;
+            }
+            depth -= 1;
+        }
+    }
 }
 
 pub(super) fn first_page(text: &str) -> Range<usize> {
@@ -44,10 +108,16 @@ impl Document {
                 parser.set_language(&language).ok()?;
                 parser.parse(&text, None)
             });
+        let structure = if pages.len() > 1 {
+            tree.as_ref().map(structure).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         Self {
             text: text.into(),
             pages,
             tree,
+            structure,
         }
     }
 
@@ -58,20 +128,7 @@ impl Document {
             .root_node()
             .named_descendant_for_byte_range(offset, offset)?;
         loop {
-            if matches!(
-                node.kind(),
-                "object"
-                    | "array"
-                    | "pair"
-                    | "element"
-                    | "empty_element"
-                    | "table"
-                    | "table_array_element"
-                    | "block_mapping_pair"
-                    | "block_sequence_item"
-                    | "flow_mapping"
-                    | "flow_sequence"
-            ) {
+            if structural(node.kind()) {
                 return Some(node.byte_range());
             }
             node = node.parent()?;

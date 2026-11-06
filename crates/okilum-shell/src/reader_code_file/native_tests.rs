@@ -1,4 +1,5 @@
 use super::*;
+use ::core::prelude::v1::test;
 
 #[gpui::test]
 fn data_view_2669_native_xml_and_text_are_admitted_without_new_write_authority(
@@ -132,6 +133,36 @@ fn data_view_2669_native_32_mib_minified_file_has_bounded_layout_and_global_find
         draw < std::time::Duration::from_secs(2),
         "bounded page first draw: {draw:?}"
     );
+    let fold = visual
+        .debug_bounds("data-fold-all")
+        .expect("Fold all for the complete minified AST");
+    visual.simulate_click(fold.center(), Modifiers::default());
+    visual.run_until_parked();
+    preview.read_with(visual, |p, _| {
+        assert!(p.structure_view);
+        assert_eq!(p.structure.visible, vec![0]);
+    });
+    let unfold = visual.debug_bounds("data-unfold-all").unwrap();
+    visual.simulate_click(unfold.center(), Modifiers::default());
+    visual.run_until_parked();
+    preview.read_with(visual, |p, _| {
+        assert_eq!(
+            p.structure.visible.len(),
+            p.document.as_ref().unwrap().structure.len()
+        )
+    });
+    visual.update(|window, cx| window.draw(cx).clear(cx));
+    let copy = visual
+        .debug_bounds("data-node-copy-2")
+        .expect("whole footer node beyond the first page");
+    visual.simulate_click(copy.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            "\"last\":\"NEEDLE\""
+        )
+    });
     preview.update_in(visual, |p, window, cx| {
         assert!(!p.editable());
         assert!(p.input().unwrap().read(cx).value().len() <= 32 * 1024);

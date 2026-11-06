@@ -14,7 +14,7 @@ base = ['cargo', 'test', '--locked', '-p', 'okilum-shell', '--bin', 'okilum']
 listing = run(*base, 'data_view_2669_', '--', '--list')
 assert listing.returncode == 0
 names = [line for line in listing.stdout.splitlines() if line.endswith(': test')]
-assert len(names) == 6, names
+assert len(names) == 7, names
 assert run(*base, 'data_view_2669_', '--', '--nocapture', '--test-threads=1').returncode == 0
 source = pathlib.Path('crates/okilum-shell/src/reader_code_file.rs')
 positive = source.read_bytes()

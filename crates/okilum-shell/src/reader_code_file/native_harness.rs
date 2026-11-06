@@ -16,7 +16,7 @@ pub(crate) fn entry() -> bool {
         brand::apply_theme(cx);
         cx.activate(true);
         cx.spawn(async move |cx| {
-            for name in ["data.xml", "big.json", "big.txt"] {
+            for name in ["data.xml", "big.json", "big.xml", "big.txt"] {
                 let started = Instant::now();
                 let mut preview = None;
                 let handle = cx.update(|cx| cx.open_window(WindowOptions::default(), |window, cx| {
@@ -42,11 +42,26 @@ pub(crate) fn entry() -> bool {
                 }
                 handle.update(cx, |_, _, cx| {
                     preview.update(cx, |p, cx| {
+                        if name == "big.json" || name == "big.xml" {
+                            p.fold_all(true, cx);
+                            assert_eq!(p.structure.visible, vec![0]);
+                            p.fold_all(false, cx);
+                        }
                         let doc = p.document.as_ref().unwrap();
                         let input = p.input().unwrap();
                         assert!(input.read(cx).is_readonly());
                         if name == "big.json" {
+                            assert!(p.structure_view, "minified native view uses the complete AST");
+                            assert_eq!(p.structure.visible.len(), 3);
                             assert!(doc.text.len() > 32 * 1024 * 1024);
+                            assert!(input.read(cx).text().len() <= 32 * 1024);
+                            let matches = doc.find("NEEDLE");
+                            assert_eq!(matches.len(), 1);
+                            let range = doc.node_range(matches[0].start).unwrap();
+                            cx.write_to_clipboard(ClipboardItem::new_string(doc.text[range].to_owned()));
+                        } else if name == "big.xml" {
+                            assert!(p.structure_view);
+                            assert!(doc.structure.len() > 100_000);
                             assert!(input.read(cx).text().len() <= 32 * 1024);
                             let matches = doc.find("NEEDLE");
                             assert_eq!(matches.len(), 1);

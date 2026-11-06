@@ -22,9 +22,14 @@ A line longer than 64 KiB uses 32 KiB UTF-8-safe pages, with explicit page and
 byte ranges, Previous/Next and whole-file Find with total count and navigation.
 Copy selection is exact within the displayed page; Copy node can cross any number
 of pages. Search can match across a page boundary. A spanning match selects its
-part on the current page. Gutter numbers in this explicitly paged view are local
-to the page. Bulk folding is disabled for fragmented syntax; JSON Pretty can
-restore the complete structured multi-line view without changing its source.
+part on the current page. Gutter numbers in the explicitly paged Source view are local to the page.
+Structured long-line files initially show a virtualized Structure view over the
+complete AST, with original source line numbers, individual node folding, Fold
+all/Unfold all, exact whole-node Copy and Source navigation. Tree folding is
+independent of page boundaries, and row labels read at most 96 characters.
+Find navigates to the matching Source page. No placeholder text is inserted into
+the source or copied as file contents. JSON Pretty can also restore the complete
+multi-line code view without changing its file.
 
 Native regression refs are `data-view-native/**`. They cover admission without
 new write authority, XML folding/copy/count/unchanged bytes, a 32 MiB minified file

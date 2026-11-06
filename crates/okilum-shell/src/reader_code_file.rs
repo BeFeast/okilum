@@ -9,6 +9,7 @@ use std::time::Instant;
 mod document;
 #[cfg(feature = "data-view-native-harness")]
 pub(crate) mod native_harness;
+mod structure;
 use document::Document;
 
 /// Bounded text loading; large files remain read-only.
@@ -94,6 +95,8 @@ pub(crate) struct CodePreview {
     json: Option<JsonText>,
     document: Option<Arc<Document>>,
     page: usize,
+    structure: structure::Structure,
+    structure_view: bool,
     document_revision: u64,
     find: Entity<InputState>,
     matches: Vec<std::ops::Range<usize>>,
@@ -235,6 +238,8 @@ impl CodePreview {
             json: None,
             document: None,
             page: 0,
+            structure: structure::Structure::default(),
+            structure_view: false,
             document_revision: 0,
             find,
             matches: Vec::new(),
@@ -308,6 +313,8 @@ impl CodePreview {
                 if this.document_revision != revision {
                     return;
                 }
+                this.structure.reset(&document);
+                this.structure_view = !document.structure.is_empty();
                 this.document = Some(document);
                 this.search(window, cx);
                 cx.notify();
@@ -320,6 +327,7 @@ impl CodePreview {
         let Some(doc) = &self.document else {
             return;
         };
+        self.structure_view = false;
         self.page = page.min(doc.pages.len() - 1);
         let text = doc.text[doc.pages[self.page].clone()].to_owned();
         if let State::Content(input) = &self.state {
@@ -387,7 +395,15 @@ impl CodePreview {
             return;
         };
         let offset = doc.pages[self.page].start + input.read(cx).cursor();
-        if let Some(range) = doc.node_range(offset) {
+        let range = if self.structure_view {
+            self.structure
+                .selected
+                .and_then(|i| doc.structure.get(i))
+                .map(|row| row.range.clone())
+        } else {
+            doc.node_range(offset)
+        };
+        if let Some(range) = range {
             cx.write_to_clipboard(ClipboardItem::new_string(doc.text[range].to_owned()));
         }
     }
@@ -409,10 +425,7 @@ impl CodePreview {
     fn toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let root = self.root.clone();
         let rel = self.rel.clone();
-        let input = self.input();
-        let copy_input = input.clone();
-        let fold_input = input.clone();
-        let unfold_input = input;
+        let copy_input = self.input();
         let paged = self
             .document
             .as_ref()
@@ -445,32 +458,25 @@ impl CodePreview {
                             .small()
                             .ghost()
                             .label("Fold all")
-                            .disabled(paged)
+                            .disabled(self.document.is_none())
                             .debug_selector(|| "data-fold-all".into())
-                            .on_click(move |_, _, cx| {
-                                if let Some(input) = &fold_input {
-                                    input.update(cx, |s, cx| s.set_all_folded(true, cx));
-                                }
-                            }),
+                            .on_click(cx.listener(|this, _, _, cx| this.fold_all(true, cx))),
                     )
                     .child(
                         Button::new("data-unfold-all")
                             .small()
                             .ghost()
                             .label("Unfold all")
-                            .disabled(paged)
+                            .disabled(self.document.is_none())
                             .debug_selector(|| "data-unfold-all".into())
-                            .on_click(move |_, _, cx| {
-                                if let Some(input) = &unfold_input {
-                                    input.update(cx, |s, cx| s.set_all_folded(false, cx));
-                                }
-                            }),
+                            .on_click(cx.listener(|this, _, _, cx| this.fold_all(false, cx))),
                     )
                     .child(
                         Button::new("data-copy-selection")
                             .small()
                             .ghost()
                             .label("Copy selection")
+                            .disabled(self.structure_view)
                             .debug_selector(|| "data-copy-selection".into())
                             .on_click(move |_, _, cx| {
                                 if let Some(input) = &copy_input {
@@ -514,6 +520,35 @@ impl CodePreview {
                 let doc = self.document.as_ref().unwrap();
                 let range = &doc.pages[self.page];
                 view.child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("data-structure")
+                                .small()
+                                .ghost()
+                                .label("Structure")
+                                .selected(self.structure_view)
+                                .disabled(doc.structure.is_empty())
+                                .debug_selector(|| "data-structure".into())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.structure_view = true;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("data-source")
+                                .small()
+                                .ghost()
+                                .label("Source")
+                                .selected(!self.structure_view)
+                                .debug_selector(|| "data-source".into())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.structure_view = false;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
                     h_flex()
                         .gap_2()
                         .items_center()
@@ -817,20 +852,25 @@ impl Render for CodePreview {
             State::Content(input) => view
                 .child(self.toolbar(cx))
                 .children(self.json_bar(cx))
-                .child(
-                    // The element applies its own flag to the state on every render.
-                    Editor::new(input)
-                        .readonly(true)
-                        .context_menu(|menu, _, _| {
-                            text_menu(menu, false)
-                                .separator()
-                                .menu("Copy node", Box::new(CopyNode))
-                        })
-                        .appearance(false)
-                        .font_family(reader_fonts::code(cx))
-                        .text_size(text_size(cx))
-                        .size_full(),
-                ),
+                .when(self.structure_view, |view| {
+                    view.child(self.structure_element(cx))
+                })
+                .when(!self.structure_view, |view| {
+                    view.child(
+                        // The element applies its own flag to the state on every render.
+                        Editor::new(input)
+                            .readonly(true)
+                            .context_menu(|menu, _, _| {
+                                text_menu(menu, false)
+                                    .separator()
+                                    .menu("Copy node", Box::new(CopyNode))
+                            })
+                            .appearance(false)
+                            .font_family(reader_fonts::code(cx))
+                            .text_size(text_size(cx))
+                            .size_full(),
+                    )
+                }),
         }
     }
 }

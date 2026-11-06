@@ -25,6 +25,7 @@ def main():
         fixtures = {
             'data.xml': '<root>\n  <child>\n    <value>שלום</value>\n    <other>two</other>\n  </child>\n</root>\n',
             'big.json': '{"long":"' + 'x' * (32 * 1024 * 1024) + '","last":"NEEDLE"}',
+            'big.xml': '<root>' + ('<item key="work">value0123456789</item>' * (32 * 1024 * 1024 // 37)) + '<item key="last">NEEDLE</item></root>',
             'big.txt': ('abcdefgh' * 31 + '\n') * (32 * 1024 * 1024 // 249),
         }
         for name, text in fixtures.items():
@@ -34,7 +35,7 @@ def main():
         with log_path.open('w') as log:
             process = subprocess.Popen([binary], env=dict(os.environ, OKILUM_DATA_VIEW_NATIVE_FIXTURE=str(directory)), stdout=log, stderr=subprocess.STDOUT)
             try:
-                for name, expected in [('data.xml', '<value>שלום</value>'), ('big.json', '"last":"NEEDLE"'), ('big.txt', 'abcdefgh')]:
+                for name, expected in [('data.xml', '<value>שלום</value>'), ('big.json', '"last":"NEEDLE"'), ('big.xml', '<item key="last">NEEDLE</item>'), ('big.txt', 'abcdefgh')]:
                     deadline = time.monotonic() + 120
                     while time.monotonic() < deadline:
                         assert process.poll() is None, log_path.read_text()[-6000:]
