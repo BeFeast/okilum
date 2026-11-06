@@ -181,7 +181,7 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
                     returns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     // Model Wayland: Selection arrives after the Enter callback.
                     let link = delivered_link.clone();
-                    cx.defer(move |_, cx| {
+                    cx.defer(move |cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(link))
                     });
                 }
