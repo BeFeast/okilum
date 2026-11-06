@@ -353,6 +353,10 @@ mod tests {
             rules.read_with(visual, |rules, _| rules.scroll.offset().y) < px(0.),
             "real wheel input scrolls the Rules list"
         );
+        // Native Manager chrome reuses its scene on scroll. GPUI's frame debug
+        // map does not replay cached selectors; redraw before measuring it.
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
         assert_eq!(
             visual.debug_bounds("project-chat-header").unwrap().top(),
             header_top
