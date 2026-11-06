@@ -14,13 +14,28 @@ published in their own platform/channel namespace before the Stable feed moves. 
 not an implicit flag; it needs a separate owner disposition.
 
 Before the switch, prepare ONE final pacman package containing the migration
-notice in `okilum.install`. Only after the AppImage Stable URL is ready, the manager
-can authorize `releases.yml` with `pacman_final: "true"`, the exact pacman `build`
+notice in `okilum.install`. Only after the AppImage Stable URL is ready, Oleg
+can explicitly authorize `releases.yml` with `pacman_final: "true"`, the exact pacman `build`
 and full `source`. This validates the signed package and embedded notice, publishes
 that final signed pacman Stable release and then writes `okilum/arch/frozen.json`.
 Automatic Arch builds stop once the marker exists, and both legacy Arch publishers
 and promotion paths reject further writes. The old repository remains available;
 it is never deleted. AppImage beta publication continues from retained CI artifacts.
+
+The final path verifies the exact pacman package/signature, package identity and
+migration notice, then the signed public AppImage Stable descriptor, executable
+and provenance before any publication. A missing or inconsistent migration target
+leaves Arch unchanged. Check the same preflight using public GETs and the pinned
+public key, without publication credentials or signing:
+
+```bash
+python3 scripts/releases/pacman_final.py --check-only --source <full-pacman-beta-source> --build <pacman-beta-build>
+```
+
+Its receipt has `publication_performed: false`; it does not authorize a release.
+The final `pacman_final=true` publication/freeze and the okilum.app AppImage deploy
+each require a separate explicit OK from Oleg (06 Nov decision, #1564). Code merge,
+successful preflight and ordinary beta delivery do not grant either approval.
 Neither this documentation nor merging the capability authorizes that live step.
 
 Download the signed Linux image from the selected channel (`stable` only after
