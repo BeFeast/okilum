@@ -165,15 +165,31 @@ fn catalog() -> Vec<Entry> {
     ]
 }
 
+pub(crate) fn action_label(action: &str) -> String {
+    catalog()
+        .into_iter()
+        .find(|entry| entry.action == action)
+        .map(|entry| entry.label.to_string())
+        .unwrap_or_else(|| action.rsplit("::").next().unwrap_or(action).to_string())
+}
+
 /// Display text of every distinct key bound to `action`, highest precedence
 /// first (the one GPUI and the toolkit menus pick). On macOS a `ctrl` alias of
 /// a `cmd` binding exists for muscle memory and is not shown.
 fn keys_for(keymap: &gpui::Keymap, action: &str, os: Os) -> Vec<String> {
-    let mut keys: Vec<String> = Vec::new();
-    for binding in keymap.bindings().rev() {
-        if binding.action().name() != action {
-            continue;
-        }
+    let keys: Vec<String> = Vec::new();
+    let Some(target) = keymap
+        .bindings()
+        .find(|binding| binding.action().name() == action)
+    else {
+        return keys;
+    };
+    formatted_keys(keymap, target.action(), os)
+}
+
+fn formatted_keys(keymap: &gpui::Keymap, action: &dyn Action, os: Os) -> Vec<String> {
+    let mut keys = Vec::new();
+    for binding in keymap.bindings_for_action(action).rev() {
         let text = binding
             .keystrokes()
             .iter()
@@ -204,7 +220,7 @@ fn mac_native(key: &str) -> Option<String> {
 
 /// The key shown next to `action` in a tooltip or a hint, if it is bound.
 pub(crate) fn shortcut(action: &dyn Action, cx: &App) -> Option<String> {
-    keys_for(&cx.key_bindings().borrow(), action.name(), Os::CURRENT)
+    formatted_keys(&cx.key_bindings().borrow(), action, Os::CURRENT)
         .into_iter()
         .next()
 }
@@ -270,6 +286,41 @@ pub(crate) fn all_shortcuts(action: &dyn Action, cx: &App) -> String {
     let bindings = cx.key_bindings();
     let map = bindings.borrow();
     keys_for(&map, action.name(), Os::CURRENT).join(" · ")
+}
+
+/// Contextual menu hints must omit bindings shadowed in that content mode.
+pub(crate) fn content_shortcuts(action: &dyn Action, editing: bool, cx: &App) -> String {
+    let contexts = if editing {
+        ["Reader", "ReaderSource", "Input"]
+    } else {
+        ["Reader", "ReaderRead", "TextView"]
+    };
+    let contexts: Vec<_> = contexts
+        .iter()
+        .filter_map(|s| gpui::KeyContext::parse(s).ok())
+        .collect();
+    let map = cx.key_bindings();
+    let map = map.borrow();
+    let mut shown = Vec::new();
+    for binding in map.bindings_for_action(action).rev() {
+        let (effective, _) = map.bindings_for_input(binding.keystrokes(), &contexts);
+        if !effective
+            .first()
+            .is_some_and(|candidate| candidate.action().partial_eq(action))
+        {
+            continue;
+        }
+        let key = binding
+            .keystrokes()
+            .iter()
+            .map(|key| Os::CURRENT.shortcut(&key.unparse()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !shown.contains(&key) {
+            shown.push(key);
+        }
+    }
+    shown.join(" · ")
 }
 
 pub(crate) fn hint(label: &str, action: &dyn Action, cx: &App) -> SharedString {
