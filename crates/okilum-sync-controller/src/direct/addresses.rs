@@ -87,9 +87,21 @@ pub(super) fn managed(configs: &[PathBuf]) -> Result<Option<DaemonIdentity>> {
     );
     Ok(Some(identity))
 }
-#[cfg(not(target_os = "linux"))]
-pub(super) fn managed(_configs: &[PathBuf]) -> Result<Option<DaemonIdentity>> {
-    Ok(None)
+#[cfg(target_os = "macos")]
+pub(super) fn managed(configs: &[PathBuf]) -> Result<Option<DaemonIdentity>> {
+    let [config] = configs else {
+        return Ok(None);
+    };
+    let state = crate::sidecar::macos::account_state_directory()?;
+    let Some(owned) = crate::sidecar::discovery::managed_configuration_path(&state)? else {
+        return Ok(None);
+    };
+    if config.canonicalize()? != owned.canonicalize()? {
+        return Ok(None);
+    }
+    // Transport hints are optional. An unclaimed preparation must not prevent
+    // creating an invitation; source enrollment independently requires Ready.
+    Ok(crate::sidecar::macos::bootstrap::managed_source_identity(&state).ok())
 }
 
 /// Whether `daemon` is this computer's own Okilum-managed Syncthing. Device
