@@ -195,7 +195,7 @@ impl Render for RulesView {
             let mut row = v_flex()
                 .gap_1()
                 .id(("rule-layer", index))
-                .debug_selector(move || format!("rules-layer-{index}").into())
+                .debug_selector(move || format!("rules-layer-{index}"))
                 .child(div().child(format!("{} · {}", index + 1, layer.path.display())))
                 .child(
                     div()
@@ -234,7 +234,7 @@ impl Render for RulesView {
                 Button::new(("rule-open", index))
                     .ghost()
                     .label("Open read only")
-                    .debug_selector(move || format!("rules-open-{index}").into())
+                    .debug_selector(move || format!("rules-open-{index}"))
                     .disabled(layer.source.is_none())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.opened = Some(index);
