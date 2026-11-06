@@ -251,6 +251,7 @@ impl Render for RulesView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::core::prelude::v1::test;
 
     #[gpui::test]
     fn rules_1590_mounted_layers_scroll_and_open_at_last_layer(cx: &mut TestAppContext) {
