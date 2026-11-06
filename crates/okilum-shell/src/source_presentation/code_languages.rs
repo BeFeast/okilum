@@ -1,5 +1,5 @@
 //! App language configuration shared by Reader and projected Live code.
-use gpui_component::highlighter::LanguageRegistry;
+use gpui_component::highlighter::{LanguageConfig, LanguageRegistry};
 use std::sync::Once;
 
 pub(crate) fn install() {
@@ -16,6 +16,17 @@ pub(crate) fn install() {
                 registry.register("csharp", &config);
             }
         }
+        registry.register(
+            "xml",
+            &LanguageConfig::new(
+                "xml",
+                tree_sitter_xml::LANGUAGE_XML.into(),
+                vec![],
+                tree_sitter_xml::XML_HIGHLIGHT_QUERY,
+                "",
+                "",
+            ),
+        );
         for &(alias, canonical) in okilum_core::code_language::ALIASES {
             if let Some(config) = registry.language(canonical) {
                 registry.register(alias, &config);

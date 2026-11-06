@@ -3,11 +3,15 @@
 //! opens the same file in a writable editor with the same language.
 use super::*;
 use gpui_component::button::ButtonGroup;
-use gpui_component::input::{Editor, EditorState, WrappingIndent};
+use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, WrappingIndent};
 use std::time::Instant;
 
-/// Above this a code file opens without highlighting or editing, with a note.
-pub(crate) const MAX_BYTES: u64 = 4 * 1024 * 1024;
+mod document;
+use document::Document;
+
+/// Bounded text loading; large files remain read-only.
+pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;
+const EDIT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Key context of code views and code editors; ⌥Z / Alt+Z binds only here.
 pub(crate) const KEY_CONTEXT: &str = "ReaderCode";
@@ -36,6 +40,8 @@ pub(crate) fn language(rel: &str) -> Option<&'static str> {
         "json" | "jsonc" | "okilog" => "json",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
+        "xml" | "xsd" | "xsl" | "svg" => "xml",
+        "txt" => "text",
         "sql" => "sql",
         "c" | "h" => "c",
         "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => "cpp",
@@ -65,6 +71,11 @@ pub(crate) fn eligible(rel: &str) -> bool {
     language(rel).is_some()
 }
 
+/// Preview eligibility does not grant a new writable file format (#2669).
+pub(crate) fn editable_format(rel: &str) -> bool {
+    eligible(rel) && language(rel) != Some("xml")
+}
+
 enum State {
     Loading,
     Content(Entity<EditorState>),
@@ -77,6 +88,15 @@ pub(crate) struct CodePreview {
     state: State,
     /// A `.json` file's raw text and its display-only pretty form (#1131).
     json: Option<JsonText>,
+    document: Option<Arc<Document>>,
+    page: usize,
+    document_revision: u64,
+    find: Entity<InputState>,
+    matches: Vec<std::ops::Range<usize>>,
+    match_index: usize,
+    search_revision: u64,
+    searching: bool,
+    _find_subscription: Subscription,
 }
 
 /// Above this a JSON file opens raw; Pretty formats it on a worker on request.
@@ -129,16 +149,29 @@ impl CodePreview {
             if std::fs::metadata(&path)?.len() > MAX_BYTES {
                 return anyhow::Ok(Loaded::TooLarge);
             }
-            Ok(match String::from_utf8(std::fs::read(&path)?) {
-                Ok(text) => {
-                    // Formatting runs here, off the UI thread, within a budget.
-                    let pretty = (json && text.len() <= PRETTY_BYTES)
-                        .then(|| okilum_core::json_view::pretty(&text));
-                    Loaded::Text(text, pretty)
-                }
-                Err(_) => Loaded::Unsupported,
-            })
+            Ok(
+                match String::from_utf8({
+                    use std::io::Read as _;
+                    let mut bytes = Vec::new();
+                    std::fs::File::open(&path)?
+                        .take(MAX_BYTES + 1)
+                        .read_to_end(&mut bytes)?;
+                    if bytes.len() as u64 > MAX_BYTES {
+                        return Ok(Loaded::TooLarge);
+                    }
+                    bytes
+                }) {
+                    Ok(text) => {
+                        // Formatting runs here, off the UI thread, within a budget.
+                        let pretty = (json && text.len() <= PRETTY_BYTES)
+                            .then(|| okilum_core::json_view::pretty(&text));
+                        Loaded::Text(text, pretty)
+                    }
+                    Err(_) => Loaded::Unsupported,
+                },
+            )
         });
+        crate::source_presentation::code_languages::install();
         let language = language(&rel).unwrap_or("text");
         // Each selection owns its own entity; a late read cannot reach a newer one.
         cx.spawn_in(window, async move |this, cx| {
@@ -159,11 +192,15 @@ impl CodePreview {
                         } else {
                             text
                         };
-                        let input = cx.new(|cx| editor(language, &shown, window, cx));
+                        let range = document::first_page(&shown);
+                        let input = cx.new(|cx| editor(language, &shown[range], window, cx));
+                        this.prepare_document(shown, window, cx);
                         timing(&input, started, cx);
                         State::Content(input)
                     }
-                    Ok(Loaded::TooLarge) => State::Message("This file is too large to highlight."),
+                    Ok(Loaded::TooLarge) => {
+                        State::Message("This file exceeds the 64 MiB preview limit.")
+                    }
                     Ok(Loaded::Unsupported) => {
                         State::Message("This file can’t be previewed as text.")
                     }
@@ -173,11 +210,26 @@ impl CodePreview {
             });
         })
         .detach();
+        let find = cx.new(|cx| InputState::new(window, cx).placeholder("Find in whole file…"));
+        let find_subscription = cx.subscribe_in(&find, window, |this, _, event, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.search(window, cx);
+            }
+        });
         Self {
             root,
             rel,
             state: State::Loading,
             json: None,
+            document: None,
+            page: 0,
+            document_revision: 0,
+            find,
+            matches: Vec::new(),
+            match_index: 0,
+            search_revision: 0,
+            searching: false,
+            _find_subscription: find_subscription,
         }
     }
 
@@ -215,13 +267,324 @@ impl CodePreview {
         }
         json.showing_pretty = pretty && matches!(json.pretty, Some(Ok(_)));
         let shown = json.shown().to_owned();
+        let range = document::first_page(&shown);
         if let State::Content(input) = &self.state {
             input.update(cx, |input, cx| {
-                input.set_value(shown, window, cx);
+                input.set_value(shown[range].to_owned(), window, cx);
                 input.prepare_highlighting(window, cx);
             });
         }
+        self.prepare_document(shown, window, cx);
         cx.notify();
+    }
+
+    fn prepare_document(&mut self, shown: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.page = 0;
+        self.document = None;
+        self.matches.clear();
+        self.document_revision += 1;
+        self.search_revision += 1;
+        self.searching = false;
+        let revision = self.document_revision;
+        let language = language(&self.rel).unwrap_or("text");
+        let task = cx
+            .background_executor()
+            .spawn(async move { Arc::new(Document::new(shown, language)) });
+        cx.spawn_in(window, async move |this, cx| {
+            let document = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.document_revision != revision {
+                    return;
+                }
+                this.document = Some(document);
+                this.search(window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn show_page(&mut self, page: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = &self.document else {
+            return;
+        };
+        self.page = page.min(doc.pages.len() - 1);
+        let text = doc.text[doc.pages[self.page].clone()].to_owned();
+        if let State::Content(input) = &self.state {
+            input.update(cx, |state, cx| {
+                state.set_value(text, window, cx);
+                state.prepare_highlighting(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_revision += 1;
+        let revision = self.search_revision;
+        let Some(doc) = self.document.clone().filter(|doc| doc.pages.len() > 1) else {
+            return;
+        };
+        let query = self.find.read(cx).value().to_string();
+        self.matches.clear();
+        self.searching = !query.is_empty();
+        let task = cx
+            .background_executor()
+            .spawn(async move { doc.find(&query) });
+        cx.spawn_in(window, async move |this, cx| {
+            let matches = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.search_revision != revision {
+                    return;
+                }
+                this.searching = false;
+                this.matches = matches;
+                this.match_index = 0;
+                this.show_match(window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn show_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(range) = self.matches.get(self.match_index).cloned() else {
+            return;
+        };
+        let Some(doc) = &self.document else {
+            return;
+        };
+        let page = doc.page_at(range.start);
+        self.show_page(page, window, cx);
+        let doc = self.document.as_ref().unwrap();
+        let page_range = &doc.pages[self.page];
+        if let State::Content(input) = &self.state {
+            input.update(cx, |state, cx| {
+                state.set_selected_range(
+                    range.start - page_range.start
+                        ..range.end.min(page_range.end) - page_range.start,
+                    cx,
+                );
+            });
+        }
+    }
+
+    fn copy_node(&self, cx: &mut App) {
+        let (Some(doc), State::Content(input)) = (&self.document, &self.state) else {
+            return;
+        };
+        let offset = doc.pages[self.page].start + input.read(cx).cursor();
+        if let Some(range) = doc.node_range(offset) {
+            cx.write_to_clipboard(ClipboardItem::new_string(doc.text[range].to_owned()));
+        }
+    }
+
+    /// Returns true when whole-file Find owns the paged presentation.
+    pub(crate) fn open_paged_find(&self, window: &mut Window, cx: &mut App) -> bool {
+        if self
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.pages.len() > 1)
+        {
+            self.find.update(cx, |input, cx| input.focus(window, cx));
+            true
+        } else {
+            false
+        }
+    }
+
+    fn toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let root = self.root.clone();
+        let rel = self.rel.clone();
+        let input = self.input();
+        let copy_input = input.clone();
+        let fold_input = input.clone();
+        let unfold_input = input;
+        let paged = self
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.pages.len() > 1);
+        v_flex()
+            .gap_1()
+            .pb_2()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .child(
+                        Button::new("data-find")
+                            .small()
+                            .ghost()
+                            .label("Find")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if !this.open_paged_find(window, cx) {
+                                    if let Some(input) = this.input() {
+                                        input.update(cx, |state, cx| {
+                                            state.open_search(false, cx);
+                                            state.focus(window, cx);
+                                        });
+                                    }
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("data-fold-all")
+                            .small()
+                            .ghost()
+                            .label("Fold all")
+                            .disabled(paged)
+                            .debug_selector(|| "data-fold-all".into())
+                            .on_click(move |_, _, cx| {
+                                if let Some(input) = &fold_input {
+                                    input.update(cx, |s, cx| s.set_all_folded(true, cx));
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("data-unfold-all")
+                            .small()
+                            .ghost()
+                            .label("Unfold all")
+                            .disabled(paged)
+                            .debug_selector(|| "data-unfold-all".into())
+                            .on_click(move |_, _, cx| {
+                                if let Some(input) = &unfold_input {
+                                    input.update(cx, |s, cx| s.set_all_folded(false, cx));
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("data-copy-selection")
+                            .small()
+                            .ghost()
+                            .label("Copy selection")
+                            .debug_selector(|| "data-copy-selection".into())
+                            .on_click(move |_, _, cx| {
+                                if let Some(input) = &copy_input {
+                                    let state = input.read(cx);
+                                    let range = state.selected_range();
+                                    if !range.is_empty() {
+                                        let text = state.text().slice(range).to_string();
+                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                    }
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("data-copy-node")
+                            .small()
+                            .ghost()
+                            .label("Copy node")
+                            .disabled(
+                                self.document.is_none() || language(&self.rel) == Some("text"),
+                            )
+                            .debug_selector(|| "data-copy-node".into())
+                            .on_click(cx.listener(|this, _, _, cx| this.copy_node(cx))),
+                    )
+                    .child(
+                        Button::new("data-open-external")
+                            .small()
+                            .ghost()
+                            .label("Open in default editor")
+                            .on_click(move |_, window, cx| {
+                                reader_files::run(
+                                    reader_files::FileAction::Open,
+                                    &root,
+                                    &rel,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                    ),
+            )
+            .when(paged, |view| {
+                let doc = self.document.as_ref().unwrap();
+                let range = &doc.pages[self.page];
+                view.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .flex_wrap()
+                        .child(div().text_sm().child(format!(
+                            "Long-line view · page {}/{} · bytes {}–{} of {}",
+                            self.page + 1,
+                            doc.pages.len(),
+                            range.start + 1,
+                            range.end,
+                            doc.text.len()
+                        )))
+                        .child(
+                            Button::new("data-prev-page")
+                                .small()
+                                .ghost()
+                                .label("Previous")
+                                .disabled(self.page == 0)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_page(this.page.saturating_sub(1), window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("data-next-page")
+                                .small()
+                                .ghost()
+                                .label("Next")
+                                .disabled(self.page + 1 >= doc.pages.len())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_page(this.page + 1, window, cx)
+                                })),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().w_64().child(Input::new(&self.find).small()))
+                        .child(div().text_sm().child(if self.searching {
+                            "Searching…".into()
+                        } else {
+                            format!(
+                                "{} / {} matches",
+                                if self.matches.is_empty() {
+                                    0
+                                } else {
+                                    self.match_index + 1
+                                },
+                                self.matches.len()
+                            )
+                        }))
+                        .child(
+                            Button::new("data-prev-match")
+                                .small()
+                                .ghost()
+                                .label("Previous match")
+                                .disabled(self.matches.is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if !this.matches.is_empty() {
+                                        this.match_index = (this.match_index + this.matches.len()
+                                            - 1)
+                                            % this.matches.len();
+                                        this.show_match(window, cx);
+                                    }
+                                })),
+                        )
+                        .child(
+                            Button::new("data-next-match")
+                                .small()
+                                .ghost()
+                                .label("Next match")
+                                .disabled(self.matches.is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if !this.matches.is_empty() {
+                                        this.match_index =
+                                            (this.match_index + 1) % this.matches.len();
+                                        this.show_match(window, cx);
+                                    }
+                                })),
+                        ),
+                )
+            })
+            .into_any_element()
     }
 
     /// The Pretty / Raw switch and why a file stays raw.
@@ -291,6 +654,11 @@ impl CodePreview {
     /// Edit mode is offered once the text loaded within the size cap.
     pub(crate) fn editable(&self) -> bool {
         matches!(self.state, State::Content(_))
+            && editable_format(&self.rel)
+            && self
+                .document
+                .as_ref()
+                .is_some_and(|doc| doc.text.len() <= EDIT_BYTES)
     }
 
     /// The file is still being read; whether it is editable is not known yet.
@@ -306,7 +674,7 @@ impl CodePreview {
     }
 }
 
-/// The read-only code view: line numbers on, folding off, wrap from the global
+/// The read-only code view: line numbers and folding on, wrap from the global
 /// preference. `toggle_source` configures the writable editor the same way.
 fn editor(
     language: &'static str,
@@ -317,10 +685,10 @@ fn editor(
     let mut input = EditorState::new(window, cx)
         .language(language)
         .line_number(true)
-        .folding(false)
+        .folding(true)
         .searchable(true)
         .replaceable(false)
-        .soft_wrap(reader_ui_state::code_soft_wrap(cx))
+        .soft_wrap(text.len() < EDIT_BYTES && reader_ui_state::code_soft_wrap(cx))
         .wrapping_indent(WrappingIndent::None);
     input.set_value(text.to_owned(), window, cx);
     input.ensure_highlighter_factory(gpui_component::highlighter::input_highlighter_factory());
@@ -433,16 +801,19 @@ impl Render for CodePreview {
                         ),
                 )
             }
-            State::Content(input) => view.children(self.json_bar(cx)).child(
-                // The element applies its own flag to the state on every render.
-                Editor::new(input)
-                    .readonly(true)
-                    .context_menu(|menu, _, _| text_menu(menu, false))
-                    .appearance(false)
-                    .font_family(reader_fonts::code(cx))
-                    .text_size(text_size(cx))
-                    .size_full(),
-            ),
+            State::Content(input) => view
+                .child(self.toolbar(cx))
+                .children(self.json_bar(cx))
+                .child(
+                    // The element applies its own flag to the state on every render.
+                    Editor::new(input)
+                        .readonly(true)
+                        .context_menu(|menu, _, _| text_menu(menu, false))
+                        .appearance(false)
+                        .font_family(reader_fonts::code(cx))
+                        .text_size(text_size(cx))
+                        .size_full(),
+                ),
         }
     }
 }
@@ -502,7 +873,7 @@ mod tests {
             (".env", Some("text")),
             ("notes/Plan.md", None),
             ("data.csv", None),
-            ("notes.txt", None),
+            ("notes.txt", Some("text")),
             ("server.log", None),
             ("photo.png", None),
             ("README", None),
@@ -551,3 +922,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod native_tests;

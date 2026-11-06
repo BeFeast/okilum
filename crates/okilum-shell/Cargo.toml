@@ -77,6 +77,7 @@ serde_yaml = "0.9"
 # Same ABI as the highlighter's tree-sitter.
 tree-sitter = "0.26"
 tree-sitter-mermaid = "=0.2.0"
+tree-sitter-xml = "=0.7.0"
 serde.workspace = true
 sha2 = "0.10"
 similar = { version = "=2.7.0", default-features = false }

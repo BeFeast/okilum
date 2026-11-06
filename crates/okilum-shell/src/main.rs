@@ -2824,6 +2824,14 @@ impl Reader {
 
     fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.file_preview.is_some() && self.editing.is_none() {
+            if self
+                .file_preview
+                .as_ref()
+                .and_then(|p| p.code.as_ref())
+                .is_some_and(|code| code.update(cx, |code, cx| code.open_paged_find(window, cx)))
+            {
+                return;
+            }
             // The read-only code view searches in its own editor (#998).
             if let Some(input) = self.code_view_input(cx) {
                 let sensitive = reader_ui_state::find_case_sensitive(cx);
