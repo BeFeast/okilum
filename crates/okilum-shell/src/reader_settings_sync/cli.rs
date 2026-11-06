@@ -13,6 +13,7 @@ USAGE:
     okilum sync invite [--name NAME] [--approve-first | --approve NAME] [--wait SECONDS]
     okilum sync connect <URL> [--name NAME] [--wait SECONDS]
     okilum sync cancel
+    okilum sync remove <COMPUTER>
     okilum sync serve [--wait SECONDS]
     okilum sync share <VAULT>                       (Linux)
     okilum sync choose <COMPUTER> <VAULT> <DESTINATION> [--wait SECONDS]
@@ -51,6 +52,7 @@ enum Approval {
 }
 #[derive(Debug, PartialEq)]
 enum Verb {
+    Remove(String),
     Status,
     Invite {
         name: Option<String>,
@@ -250,6 +252,11 @@ fn parse(arguments: &[String]) -> anyhow::Result<Option<Request>> {
             only(&["--wait"])?;
             Verb::Serve { wait }
         }
+        "remove" => {
+            arity(1)?;
+            only(&[])?;
+            Verb::Remove(rest[0].clone())
+        }
         "share" | "select" => {
             arity(1)?;
             only(&[])?;
@@ -445,6 +452,18 @@ impl From<Output> for Step {
 fn execute(verb: Verb, mut session: Session) -> anyhow::Result<i32> {
     use anyhow::{bail, Context as _};
     match verb {
+        Verb::Remove(computer) => {
+            let output = session.perform(Operation::Read)?;
+            let matches: Vec<_> = output
+                .snapshot
+                .computers
+                .iter()
+                .filter(|c| c.device_id == computer || c.name == computer)
+                .collect();
+            anyhow::ensure!(matches.len() == 1,"Choose one exact computer device ID from sync status; the name is missing or ambiguous");
+            let output = session.perform(Operation::Remove(matches[0].device_id.clone()))?;
+            print_json(&output.status);
+        }
         Verb::Status => {
             let output = session.perform(Operation::Read)?;
             print_json(&output.status);
@@ -773,6 +792,8 @@ fn status(output: &Output) -> serde_json::Value {
     });
     #[allow(unused_mut)]
     let mut value = serde_json::json!({
+        "computers": output.snapshot.computers,
+        "pending_removals": output.snapshot.pending_removals,
         "computer": name,
         "status": snapshot.status,
         "invitation_open": snapshot.offer_url.is_some(),

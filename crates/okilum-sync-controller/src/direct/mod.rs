@@ -153,6 +153,10 @@ struct Paired {
 #[serde(deny_unknown_fields)]
 struct Database {
     #[serde(default)]
+    local_removed: bool,
+    #[serde(default)]
+    revoked_peers: BTreeMap<Uuid, Paired>,
+    #[serde(default)]
     removals: Vec<removal::Removal>,
     seed: [u8; 32],
     name: String,
@@ -327,6 +331,8 @@ impl Controller {
                 attached: vec![],
                 catalog: vec![],
                 catalog_peer: None,
+                local_removed: false,
+                revoked_peers: BTreeMap::new(),
                 removals: vec![],
                 transfers: vec![],
                 share_grants: vec![],
@@ -419,9 +425,10 @@ impl Controller {
         let mut snapshot = snapshot(&db)?;
         snapshot.policy_warnings = self.shared.policy_warnings.lock().unwrap().clone();
         snapshot.history_warnings = self.shared.history_warnings.lock().unwrap().clone();
+        let removed = db.local_removed;
         let held = db.transfers.iter().any(transfer::Transfer::legacy_hold);
         drop(db);
-        if !held && snapshot.pending.is_none() && snapshot.offer_url.is_none() {
+        if !removed && !held && snapshot.pending.is_none() && snapshot.offer_url.is_none() {
             if let Some(status) = &self.shared.connection_watch.lock().unwrap().status {
                 snapshot.status = status.clone();
             }
@@ -903,16 +910,18 @@ impl Controller {
     ) -> Result<Reply> {
         self.check()?;
         let read_only = operation.read_only();
+        let exchange_transport =
+            !read_only && !matches!(operation, Operation::RemoveComputer { .. });
         let redeem = matches!(operation, Operation::Redeem { .. });
         let seed = self.shared.db.lock().unwrap().seed;
         let message = Message {
             nonce: Uuid::new_v4(),
             target: public.to_vec(),
             operation,
-            transport: if read_only {
-                None
-            } else {
+            transport: if exchange_transport {
                 self.local_transport()?
+            } else {
+                None
             },
         };
         let frame = wire::seal(scope, credential, &seed, &message)?;
@@ -973,7 +982,11 @@ impl Controller {
             ensure!(i.offer.expires > now()?, "invitation expired");
             (i.offer.key, i.request.as_ref().map(|r| r.public.clone()))
         } else {
-            let peer = db.peers.get(&scope).context("unknown pairing capability")?;
+            let peer = db
+                .peers
+                .get(&scope)
+                .or_else(|| db.revoked_peers.get(&scope))
+                .context("unknown pairing capability")?;
             (peer.key, Some(peer.public.clone()))
         };
         let (message, signer): (Message, _) =
@@ -987,6 +1000,13 @@ impl Controller {
             "wrong intended computer"
         );
         self.check()?;
+        if !db.peers.contains_key(&scope) && db.revoked_peers.contains_key(&scope) {
+            ensure!(
+                matches!(&message.operation,Operation::RemoveComputer { id,device,.. } if db.removals.iter().any(|r|r.matches(*id,device)))
+                    && message.transport.is_none(),
+                "Pairing authorization was removed"
+            );
+        }
         // Only an approved, authenticated capability may update a pinned peer.
         let peer_id = if db.peers.contains_key(&scope) {
             Some(scope)
@@ -1300,7 +1320,9 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
             .map(|s| s.path.clone())
             .collect(),
         preparing: db.transfers.iter().any(transfer::Transfer::preparing),
-        status: if db
+        status: if db.local_removed {
+            "This computer was removed from Sync. Its files are kept.".into()
+        } else if db
             .outbound
             .as_ref()
             .is_some_and(|(o, _)| o.expires <= current)
