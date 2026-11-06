@@ -1672,6 +1672,25 @@ fn managed_remove_2042_from_receiver_propagates_and_keeps_files() -> Result<()> 
         pair.second.snapshot()?.pending_removals > 0,
         "delivery survives initiator restart"
     );
+    // Force the ordering where transport has already applied an introducer
+    // removal while the application's source controller was offline. Its
+    // first authenticated request must still be recorded and acknowledged.
+    let members: Vec<_> = pair.source.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["deviceID"] != third.id)
+        .cloned()
+        .collect();
+    pair.source
+        .api
+        .patch_folder(&id, &json!({"devices":members}))?;
+    let source_journal: Value =
+        serde_json::from_slice(&fs::read(pair.source_state.join("direct.json"))?)?;
+    assert!(
+        source_journal["removals"].as_array().unwrap().is_empty(),
+        "application removal intent must not precede the transport control"
+    );
     pair.first = Controller::open(
         pair.source_state.clone(),
         vec![pair.source.home.join("config.xml")],
