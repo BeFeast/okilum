@@ -1411,12 +1411,13 @@ mod tests {
             .unwrap()
             .push(json!({"deviceID":"hub","introducedBy":"sender","encryptionPassword":""}));
         transfer.witness = Some(folder.clone());
+        transfer.history.days = RetentionDays::try_from(90)?;
         assert!(transfer.history.prepare(&folder)?);
         validate_owned(&transfer, &folder)?;
         // Simulate a lost acknowledgement of the journaled history PATCH.
         let mut after = folder.clone();
         after["versioning"]["type"] = json!("staggered");
-        after["versioning"]["params"]["maxAge"] = json!("2592000");
+        after["versioning"]["params"]["maxAge"] = json!("7776000");
         validate_owned(&transfer, &after)?;
         let mut unrelated = after.clone();
         unrelated["paused"] = json!(true);

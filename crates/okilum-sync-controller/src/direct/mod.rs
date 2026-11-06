@@ -1379,9 +1379,13 @@ fn decode_url(input: &str) -> Result<Offer> {
 }
 
 fn history_settings(db: &Database) -> Vec<RetentionSetting> {
-    let mut settings = transfer::history_settings(db);
+    let settings = transfer::history_settings(db);
     #[cfg(target_os = "linux")]
-    settings.extend(source::history_settings(db));
+    let settings = {
+        let mut settings = settings;
+        settings.extend(source::history_settings(db));
+        settings
+    };
     settings
 }
 
