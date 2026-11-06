@@ -2,9 +2,9 @@
 
 ## Before you begin
 
-This guide covers Linux, including two fresh installations. Install Okilum on both computers, open the vault containing your notes on the first, and keep both computers on the same LAN for first pairing. Okilum sets up its bundled Syncthing automatically when no existing connection needs attention. No account or server is required. Keep a separate backup: Sync can propagate edits and deletions.
+This guide covers Linux and macOS beta 29262 or later, including two fresh installations. Install Okilum on both computers, open the vault containing your notes on the first, and keep both computers on the same LAN for first pairing. Okilum sets up its bundled Syncthing automatically when no existing connection needs attention. No account or server is required. Keep a separate backup: Sync can propagate edits and deletions.
 
-macOS is coming in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is coming in [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
+The Mac walkthrough and first containing beta are recorded in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489). On Mac, allow local network access when macOS asks. If Login Items approval is required, allow Okilum Sync in System Settings → General → Login Items, then use Try again. Keep the existing Sync state and identity. Windows is coming in [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
 
 ## 1. First computer: share your vault
 
@@ -34,7 +34,7 @@ The vault begins receiving automatically. Follow the first transfer until First 
 
 ## Check both directions
 
-Open a note, enter the editor, add a recognizable line and save with Ctrl+S. Open the same note on the other computer and confirm the line appears. Edit and save there to check the return direction. Switching Source and Live Preview is not a Save-button click. Later saved edits and deletions sync automatically in both directions.
+Open a note, enter the editor, add a recognizable line and save with Cmd+S on Mac or Ctrl+S on Linux. Open the same note on the other computer and confirm the line appears. Edit and save there to check the return direction. Switching Source and Live Preview is not a Save-button click. Later saved edits and deletions sync automatically in both directions.
 
 ## Network and conflicts
 

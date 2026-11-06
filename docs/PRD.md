@@ -28,13 +28,14 @@ provider jobs, canonical enrollment or deployment.
 **Sync network policy (2026-11-02, #2047):** [Computer network settings](sync-enrollment.md#computer-network-settings-2047) defaults managed Linux transport to public discovery and encrypted relays, with a per-computer LAN/VPN-only switch and one-time durable migration. External Syncthing network options remain unchanged; first pairing stays within the LAN.
 
 **Direct Sync (#2039/#2040, decisions 2026-10-30 and 2026-11-01):**
-[Sync between your computers](sync-enrollment.md) describes the shipped Linux
-flow and unfinished work. On the existing computer, **Share with another
+[Sync between your computers](sync-enrollment.md) describes the shipped Linux and macOS
+flow and unfinished work. Linux and macOS beta 29262 or later support fresh
+setup through Settings (#2489). On the existing computer, **Share with another
 computer…** → **Share with my computers** shares an ordinary vault; **Add
 computer** produces a private, one-computer pairing URL valid for one hour.
 On the new computer, **Get notes from another computer** → paste URL → **Connect**;
 confirm on the old computer, then choose a vault and an empty local folder on the
-new one. First pairing requires the same LAN. The bundled Linux runtime prepares
+new one. First pairing requires the same LAN. The bundled runtime prepares
 automatically when no existing runtime needs selection, receives the vault and
 starts bidirectional Sync. Saved edits and deletions propagate. No account,
 Okilum service or required hub participates; the former service/passkey desktop
@@ -67,8 +68,8 @@ explicit Save or **Keep both versions** saves a separate
 use staggered 30-day history on both managed sides, reconcile existing owned
 folders, offer per-computer retention settings and guarded Restore in Note history
 and Recover notes (#2045). This is not a backup of every local edit. [Shared ignore policy](sync-enrollment.md#one-shared-ignore-policy-2046)
-uses a synced file with a preserved local block (#2046). macOS is **coming** in
-[#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is **coming** in
+uses a synced file with a preserved local block (#2046). The Mac walkthrough and
+first containing beta are recorded in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489). Windows is **coming** in
 [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
 
 **Typed note views extension (2026-10-07, #636):** [typed views and Tasks editing](typed-note-views.md) defines native views over plain Markdown, explicit revision-checked task edits and Undo. The reader/MCP protocol remains read-only.
