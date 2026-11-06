@@ -66,18 +66,6 @@ impl ProjectView {
             .items_center()
             .gap_1()
             .child(self.connection_line(status, cx));
-        #[cfg(native_manager)]
-        if !self.native.active() {
-            actions = actions.child(
-                Button::new("project-pair")
-                    .debug_selector(|| "project-pair".into())
-                    .ghost()
-                    .small()
-                    .label("Pair")
-                    .disabled(self.native_pairing_busy())
-                    .on_click(cx.listener(|this, _, window, cx| this.pair_manager(window, cx))),
-            );
-        }
         let can_open = open.is_some();
         #[cfg(native_manager)]
         let can_open = can_open || (self.native.active() && self.chat.is_some());
@@ -127,13 +115,13 @@ impl ProjectView {
             .gap_2()
             .debug_selector(|| "project-diagnostics".into())
             .child(
-                h_flex().child("Diagnostics").child(div().flex_1()).child(
+                h_flex().child("Details").child(div().flex_1()).child(
                     Button::new("project-diagnostics-close")
                         .debug_selector(|| "project-diagnostics-close".into())
                         .ghost()
                         .small()
                         .icon(IconName::Close)
-                        .tooltip("Close diagnostics")
+                        .tooltip("Close details")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.connection_details = false;
                             cx.notify();

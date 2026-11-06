@@ -1781,6 +1781,32 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
         Ok(!pair.second.snapshot()?.preparing)
     })?;
     let (third, controller, source) = fleet_receiver(&pair, &id, "root-removal-third")?;
+    // Reproduce a receiver that has promoted before the introducer's next
+    // cluster config arrives. It has not yet learned its sibling; root removal
+    // must complete that scoped handoff before accepting the receiver's ACK.
+    let third_members = third.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["deviceID"] != pair.target.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    third
+        .api
+        .patch_folder(&id, &json!({"devices":third_members}))?;
+    if third.api.config()?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["deviceID"] == pair.target.id)
+    {
+        third.api.remove_device(&pair.target.id)?;
+    }
+    assert!(!third.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["deviceID"] == pair.target.id));
     pair.second.remove_computer(&pair.source.id)?;
     assert_eq!(
         pair.source.api.folder(&id)?["paused"],
@@ -1795,6 +1821,21 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
         serde_json::from_slice(&fs::read(pair.source_state.join("direct.json"))?)?;
     assert_eq!(departing["local_removed"], true);
     assert!(departing["removals"][0]["local_applied"] == false);
+    assert_eq!(
+        departing["removals"][0]["pending"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2,
+        "both the initiator and the other receiver must ACK the final handoff"
+    );
+    assert_eq!(
+        departing["removals"][0]["mesh"][&id]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     pair.first.shutdown();
     drop(pair.first);
     pair.first = Controller::open(
@@ -1822,7 +1863,7 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
             writer.vault.join(name),
             b"remaining mesh after introducer removal",
         )?;
-        wait(
+        let result = wait(
             "remaining receivers keep syncing without the removed introducer",
             || {
                 writer.api.scan(&id)?;
@@ -1835,7 +1876,24 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
                     b"remaining mesh after introducer removal",
                 ))
             },
-        )?;
+        );
+        if result.is_err() {
+            eprintln!(
+                "surviving transport writer={} reader={}",
+                writer.id, reader.id
+            );
+            for peer in [&pair.source, &pair.target, &third] {
+                eprintln!(
+                    "device={} folder={:?} devices={:?} connections={:?} status={:?}",
+                    peer.id,
+                    peer.api.folder(&id),
+                    peer.api.config().map(|c| c["devices"].clone()),
+                    peer.api.connections(),
+                    peer.api.status(&id)
+                );
+            }
+        }
+        result?;
         assert!(
             !pair.source.vault.join(name).exists(),
             "removed introducer received a later edit"
@@ -1898,6 +1956,14 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
 #[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
 fn managed_remove_2042_reaches_plain_introducer_peer_without_touching_other_folders() -> Result<()>
 {
+    plain_peer_removal(false)
+}
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_remove_2042_plain_introducer_handoff_refused_without_host_authority() -> Result<()> {
+    plain_peer_removal(true)
+}
+fn plain_peer_removal(remove_root: bool) -> Result<()> {
     let pair = Pair::loopback()?;
     fs::write(
         pair.source.vault.join("seed.md"),
@@ -1942,6 +2008,26 @@ fn managed_remove_2042_reaches_plain_introducer_peer_without_touching_other_fold
                     }))
         },
     )?;
+    if remove_root {
+        let source_before = pair.source.api.folder(&id)?;
+        let target_before = pair.target.api.folder(&id)?;
+        let plain_before = plain.api.folder(&id)?;
+        let error = pair.second.remove_computer(&pair.source.id).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("plain Syncthing"),
+            "{error:#}"
+        );
+        assert_eq!(pair.source.api.folder(&id)?, source_before);
+        assert_eq!(pair.target.api.folder(&id)?, target_before);
+        assert_eq!(plain.api.folder(&id)?, plain_before);
+        for peer in [&pair.source, &pair.target, &plain] {
+            assert_eq!(
+                fs::read(peer.vault.join("seed.md"))?,
+                b"plain server keeps this copy"
+            );
+        }
+        return Ok(());
+    }
     // The same device has an unrelated relationship on the plain daemon.
     // Removing it from this vault must preserve that external folder verbatim.
     let unrelated = pair._root.path().join("plain-unrelated");

@@ -16,7 +16,7 @@ of using it. The corpus note is `fixtures/reader/obsidian-syntax.md`.
 | `==highlight==` | Unchanged (#47). |
 | `%%comment%%` | Hidden, inline or across lines. A comment that fills its lines removes them, so it cannot split the paragraph around it. |
 | `[^id]` footnotes, `^[inline]` | Numbered by first reference, shown as a superscript link. Definitions move to the end of the note after a rule, one block per footnote, each with a back-to-reference glyph. |
-| `$…$`, `$$…$$` math | Reader: inline math is shown as a code span, display math as its TeX source centred in the monospace face on the code tint. Live Preview draws inline formulas in place and previews the one under the caret ([inline math](live-preview-inline-math.md), #1645). |
+| `$…$`, `$$…$$` math | Read and Live Preview share native math rendering: inline formulas in the text flow, standalone display formulas in two dimensions, exact-source reveal when editing and visible fallback for unsupported TeX ([math](live-preview-inline-math.md), #1645 / #2596). |
 | `^id` block IDs | Hidden. `[[note#^id]]` and `[text](note.md#^id)` open the note and land on the block; `![[note#^id]]` embeds just that block (a paragraph, a list item with its children, or the block before an ID alone on its line). |
 | `![[note#Heading]]` | Unchanged (#49): the heading's section. |
 

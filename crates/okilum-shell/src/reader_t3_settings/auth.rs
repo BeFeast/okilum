@@ -272,6 +272,8 @@ pub(super) fn connect(env: Environment, state: Option<PathBuf>, authorize: bool,
 }
 
 pub(super) fn suspend(cx: &mut App) {
+    #[cfg(native_manager)]
+    super::manager::suspend(cx);
     if let Some(mut sessions) = cx.try_global::<Sessions>().cloned() {
         for entry in sessions.entries.values_mut() {
             if let Some(pending) = entry.pending.take() {
@@ -292,6 +294,8 @@ pub(super) fn sign_out(env: Environment, cx: &mut App) {
     if current.busy || current.pending.is_some() {
         return;
     }
+    #[cfg(native_manager)]
+    super::manager::forget(&env, cx);
     edit(&origin, cx, |entry| {
         entry.gateway = None;
         entry.busy = true;

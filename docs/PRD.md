@@ -127,6 +127,11 @@ to the existing Reader window through `ManagerGateway`. Managers remain in T3;
 credentials use OS storage and sends retain durable request identities. Executor
 controls, scheduled-task model following and live-server acceptance remain separate.
 
+**Manager onboarding (#2653, variant B, Oleg 2026-11-05):**
+[Connect manager](manager-onboarding.md) opens T3 Connections and consumes a
+copied same-origin pair link on return, with no normal-path pasting or T3 server
+change. Technical connection details and manual fallback stay under Details.
+
 **Mac native Manager (#2516 / #2522, Oleg 2026-11-03):**
 [Native Mac Manager](macos-native-manager.md) uses the same ProjectView and
 WebSocket T3 session as Linux, restores separate OS credentials, and keeps

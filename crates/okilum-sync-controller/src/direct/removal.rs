@@ -21,6 +21,18 @@ pub(super) struct Removal {
     local_applied: bool,
     #[serde(default)]
     folders: Option<Vec<FolderRemoval>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mesh: Option<Mesh>,
+}
+/// Final membership from the departing introducer, kept only in private state.
+/// It uses the same vault-scoped trust as a Syncthing introduction, and never
+/// carries pairing keys, arbitrary device settings or folder configuration.
+type Mesh = BTreeMap<String, Vec<MeshPeer>>;
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MeshPeer {
+    device: String,
+    addresses: Vec<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +47,8 @@ pub(super) struct Request {
     id: Uuid,
     device: String,
     vaults: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mesh: Option<Mesh>,
 }
 pub(super) fn requests(db: &Database, scope: Uuid) -> Vec<Request> {
     db.removals
@@ -43,10 +57,34 @@ pub(super) fn requests(db: &Database, scope: Uuid) -> Vec<Request> {
             (r.local_applied || db.local_removed && r.folders.is_some())
                 && r.pending.contains_key(&scope)
         })
-        .map(|r| Request {
-            id: r.id,
-            device: r.device.clone(),
-            vaults: r.vaults.clone(),
+        .map(|r| {
+            let peer = &r.pending[&scope];
+            let vaults: BTreeSet<_> = r
+                .vaults
+                .iter()
+                .filter(|v| {
+                    peer.allowed.contains(v)
+                        || knows(db, scope, v)
+                        || db.attached.iter().any(|a| {
+                            a.folder_id == **v
+                                && peer.syncthing_device.as_ref().is_some_and(|device| {
+                                    transfer::removal_needs_handoff(db, a, device)
+                                })
+                        })
+                })
+                .cloned()
+                .collect();
+            Request {
+                id: r.id,
+                device: r.device.clone(),
+                mesh: r.mesh.as_ref().map(|mesh| {
+                    mesh.iter()
+                        .filter(|(v, _)| vaults.contains(*v))
+                        .map(|(v, peers)| (v.clone(), peers.clone()))
+                        .collect()
+                }),
+                vaults,
+            }
         })
         .collect()
 }
@@ -177,8 +215,17 @@ impl Controller {
             computers.iter().any(|c| c.device_id == device),
             "Computer is no longer in these vaults"
         );
-        let id = Uuid::new_v4();
-        self.queue_removal(id, device, BTreeSet::new(), None)?;
+        let pending = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .removals
+            .iter()
+            .any(|r| r.device == device && (!r.local_applied || !r.pending.is_empty()));
+        if !pending {
+            self.queue_removal(Uuid::new_v4(), device, BTreeSet::new(), None)?;
+        }
         self.reconcile_removals()?;
         self.refresh_attached()?;
         let mut snapshot = self.snapshot()?;
@@ -229,6 +276,7 @@ impl Controller {
         };
         let configs = self.configuration_paths()?;
         let mut vaults = BTreeSet::new();
+        let mut removed_self = false;
         for vault in attached {
             if sender.is_some() && !authorized.contains(&vault.folder_id) {
                 continue;
@@ -242,6 +290,7 @@ impl Controller {
             // authenticated application operation. Record/ack that shared
             // scope even when its transport member is already absent.
             if fresh.peers.iter().any(|p| p == device) || authorized.contains(&fresh.folder_id) {
+                removed_self |= fresh.daemon.device_id == device;
                 vaults.insert(fresh.folder_id);
             }
         }
@@ -260,7 +309,8 @@ impl Controller {
             .peers
             .iter()
             .filter(|(peer, _)| {
-                Some(**peer) != sender && vaults.iter().any(|v| knows(&db, **peer, v))
+                (removed_self || Some(**peer) != sender)
+                    && vaults.iter().any(|v| knows(&db, **peer, v))
             })
             .map(|(id, peer)| (*id, peer.clone()))
             .collect();
@@ -271,6 +321,7 @@ impl Controller {
             pending,
             local_applied: false,
             folders: None,
+            mesh: None,
         });
         self.save(&db)
     }
@@ -280,8 +331,61 @@ impl Controller {
         id: Uuid,
         device: String,
         vaults: BTreeSet<String>,
+        mesh: Option<Mesh>,
     ) -> Result<Reply> {
+        if let Some(mesh) = &mesh {
+            let db = self.shared.db.lock().unwrap();
+            let peer = db
+                .peers
+                .get(&scope)
+                .or_else(|| db.revoked_peers.get(&scope))
+                .context("Unknown departing introducer")?;
+            ensure!(
+                peer.syncthing_device.as_deref() == Some(device.as_str()),
+                "Only the departing introducer can hand off its mesh"
+            );
+            ensure!(
+                !mesh.is_empty() && mesh.len() <= 256,
+                "Invalid removal mesh size"
+            );
+            for (vault, members) in mesh {
+                ensure!(
+                    vaults.contains(vault)
+                        && (knows(&db, scope, vault)
+                            || db.removals.iter().any(|r| r.id == id
+                                && r.device == device
+                                && r.vaults.contains(vault))),
+                    "Unrequested mesh handoff"
+                );
+                let mut seen = BTreeSet::new();
+                ensure!(members.len() <= MAX_PEERS, "Excessive removal mesh");
+                for member in members {
+                    ensure!(
+                        valid(&member.device)
+                            && member.device != device
+                            && seen.insert(&member.device)
+                            && !member.addresses.is_empty()
+                            && member.addresses.len() <= 32
+                            && member
+                                .addresses
+                                .iter()
+                                .all(|a| a.len() <= 4096 && !a.chars().any(char::is_control)),
+                        "Invalid removal mesh member"
+                    );
+                }
+            }
+        }
         self.queue_removal(id, &device, vaults, Some(scope))?;
+        if let Some(mesh) = mesh {
+            let mut db = self.shared.db.lock().unwrap();
+            let removal = db.removals.iter_mut().find(|r| r.id == id).unwrap();
+            ensure!(
+                removal.mesh.as_ref().is_none_or(|old| old == &mesh),
+                "Removal mesh changed during replay"
+            );
+            removal.mesh = Some(mesh);
+            self.save(&db)?;
+        }
         self.prepare_removal(id)?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
         if self.apply_removal(id)? {
@@ -334,6 +438,7 @@ impl Controller {
         let configs = self.configuration_paths()?;
         if removal.folders.is_none() {
             let mut folders = Vec::new();
+            let mut mesh = Mesh::new();
             for vault in attached
                 .into_iter()
                 .filter(|v| removal.vaults.contains(&v.folder_id))
@@ -343,7 +448,27 @@ impl Controller {
                     existing::same_binding(&vault, &fresh),
                     "Removal binding changed; no unrelated folder was modified"
                 );
-                let before = fresh.daemon.connect()?.folder(&fresh.folder_id)?;
+                let api = fresh.daemon.connect()?;
+                let before = api.folder(&fresh.folder_id)?;
+                let needs_handoff = transfer::removal_needs_handoff(
+                    &self.shared.db.lock().unwrap(),
+                    &fresh,
+                    &removal.device,
+                );
+                if needs_handoff && removal.mesh.is_none() {
+                    // Ask the still-serving introducer first. It freezes the
+                    // final common-vault mesh before revoking its authority.
+                    return Ok(false);
+                }
+                if fresh.daemon.device_id == removal.device {
+                    let peers = capture_mesh(&api.config()?, &before, &removal.device)?;
+                    let db = self.shared.db.lock().unwrap();
+                    ensure!(peers.iter().all(|member| db.peers.iter().any(|(scope, peer)|
+                        peer.syncthing_device.as_deref() == Some(member.device.as_str())
+                            && knows(&db, *scope, &fresh.folder_id))),
+                        "This introducer still serves plain Syncthing computers. Their surviving relationships need an explicit handoff before removing this computer; no folder was changed");
+                    mesh.insert(fresh.folder_id.clone(), peers);
+                }
                 {
                     let db = self.shared.db.lock().unwrap();
                     source::validate_removal(&db, &fresh, &before)?;
@@ -353,10 +478,10 @@ impl Controller {
                 if fresh.daemon.device_id == removal.device {
                     after["paused"] = json!(true);
                 } else {
-                    after["devices"] = json!(transfer::removal_members(
+                    after["devices"] = json!(handoff_members(
                         &self.shared.db.lock().unwrap(),
                         &fresh,
-                        &removal.device,
+                        &removal,
                         &before
                     )?);
                 }
@@ -369,7 +494,12 @@ impl Controller {
             // Publish every exact preimage before the first REST mutation. A
             // lost PATCH reply can then finish the witness update after restart.
             let mut db = self.shared.db.lock().unwrap();
-            db.removals.iter_mut().find(|r| r.id == id).unwrap().folders = Some(folders.clone());
+            let saved = db.removals.iter_mut().find(|r| r.id == id).unwrap();
+            saved.folders = Some(folders.clone());
+            if !mesh.is_empty() {
+                saved.mesh = Some(mesh.clone());
+                removal.mesh = Some(mesh);
+            }
             self.save(&db)?;
             removal.folders = Some(folders);
         }
@@ -419,7 +549,40 @@ impl Controller {
                 } else {
                     // Never restore introduced members that Syncthing has
                     // already removed since the intent was recorded.
-                    json!({"devices":transfer::removal_members(&self.shared.db.lock().unwrap(), &fresh, &removal.device, &current)?})
+                    let members = handoff_members(
+                        &self.shared.db.lock().unwrap(),
+                        &fresh,
+                        &removal,
+                        &current,
+                    )?;
+                    if transfer::removal_needs_handoff(
+                        &self.shared.db.lock().unwrap(),
+                        &fresh,
+                        &removal.device,
+                    ) {
+                        ensure!(
+                            super::addresses::owned_runtime(&configs, &fresh.daemon)?,
+                            "Mesh handoff requires an Okilum-managed runtime"
+                        );
+                        let known = api.config()?["devices"]
+                            .as_array()
+                            .context("Device inventory missing")?
+                            .clone();
+                        for peer in removal
+                            .mesh
+                            .as_ref()
+                            .and_then(|m| m.get(&fresh.folder_id))
+                            .context("Removal mesh missing")?
+                        {
+                            if peer.device != fresh.daemon.device_id
+                                && !known.iter().any(|d| d["deviceID"] == peer.device)
+                            {
+                                self.check()?;
+                                api.add_device(&json!({"deviceID":peer.device,"addresses":peer.addresses,"introducer":false,"autoAcceptFolders":false}))?;
+                            }
+                        }
+                    }
+                    json!({"devices":members})
                 };
                 self.check()?;
                 api.patch_folder(&fresh.folder_id, &changes)?;
@@ -475,7 +638,7 @@ impl Controller {
             };
             for request in requests {
                 let recorded = matches!(
-                    self.receive_removal(scope, request.id, request.device, request.vaults)?,
+                    self.receive_removal(scope, request.id, request.device, request.vaults, request.mesh)?,
                     Reply::RemovalRecorded { id } if id == request.id
                 );
                 // A lost acknowledgement is replayed on the next pull. The
@@ -513,6 +676,11 @@ impl Controller {
                         vaults: removal.vaults.clone(),
                     },
                 );
+                if !removal.local_applied && removal.folders.is_none() {
+                    if let Ok(Reply::Error { message }) = &reply {
+                        anyhow::bail!("Computer removal needs review: {message}");
+                    }
+                }
                 if matches!(reply,Ok(Reply::RemovalRecorded { id }) if id == removal.id) {
                     let mut db = self.shared.db.lock().unwrap();
                     db.removals
@@ -528,6 +696,83 @@ impl Controller {
         Ok(())
     }
 }
+fn capture_mesh(
+    config: &serde_json::Value,
+    folder: &serde_json::Value,
+    removed: &str,
+) -> Result<Vec<MeshPeer>> {
+    let devices = config["devices"]
+        .as_array()
+        .context("Device inventory missing")?;
+    let mut peers = Vec::new();
+    for member in folder["devices"]
+        .as_array()
+        .context("Folder members missing")?
+    {
+        let device = member["deviceID"]
+            .as_str()
+            .context("Missing mesh device ID")?;
+        if device == removed {
+            continue;
+        }
+        ensure!(
+            member["encryptionPassword"]
+                .as_str()
+                .unwrap_or("")
+                .is_empty(),
+            "Encrypted member requires an explicit introducer handoff"
+        );
+        let definition = devices
+            .iter()
+            .find(|d| d["deviceID"] == device)
+            .context("Missing introduced device")?;
+        let addresses = definition["addresses"]
+            .as_array()
+            .context("Mesh addresses missing")?
+            .iter()
+            .map(|a| {
+                a.as_str()
+                    .map(str::to_owned)
+                    .context("Invalid mesh address")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        peers.push(MeshPeer {
+            device: device.into(),
+            addresses,
+        });
+    }
+    ensure!(peers.len() <= MAX_PEERS, "Excessive removal mesh");
+    Ok(peers)
+}
+fn handoff_members(
+    db: &Database,
+    vault: &ExistingVault,
+    removal: &Removal,
+    folder: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>> {
+    let mut full = folder.clone();
+    if transfer::removal_needs_handoff(db, vault, &removal.device) {
+        let mesh = removal
+            .mesh
+            .as_ref()
+            .and_then(|m| m.get(&vault.folder_id))
+            .context("Departing introducer mesh missing")?;
+        ensure!(
+            mesh.iter().any(|p| p.device == vault.daemon.device_id),
+            "Mesh handoff omits this receiver"
+        );
+        let members = full["devices"]
+            .as_array_mut()
+            .context("Folder members missing")?;
+        for peer in mesh {
+            if !members.iter().any(|m| m["deviceID"] == peer.device) {
+                members.push(json!({"deviceID":peer.device,"introducedBy":removal.device,"encryptionPassword":""}));
+            }
+        }
+    }
+    transfer::removal_members(db, vault, &removal.device, &full)
+}
+
 fn deny(db: &mut Database, removal: &Removal, removed_self: bool) {
     let revoked: Vec<_> = db
         .peers
@@ -584,6 +829,30 @@ pub(super) fn pending(db: &Database) -> usize {
 mod tests {
     use super::*;
     #[test]
+    fn departing_mesh_contains_only_scoped_members_and_addresses() -> Result<()> {
+        let departing = ["AAAAAAA"; 8].join("-");
+        let remaining = ["BBBBBBB"; 8].join("-");
+        let unrelated = ["CCCCCCC"; 8].join("-");
+        let config = json!({"devices":[
+            {"deviceID":departing,"addresses":["dynamic"]},
+            {"deviceID":remaining,"addresses":["tcp://127.0.0.1:22000","dynamic"],"introducer":true,"autoAcceptFolders":true},
+            {"deviceID":unrelated,"addresses":["dynamic"]}
+        ]});
+        let mut folder = json!({"devices":[{"deviceID":departing},{"deviceID":remaining,"encryptionPassword":""}]});
+        let mesh = capture_mesh(&config, &folder, &departing)?;
+        assert_eq!(
+            mesh,
+            vec![MeshPeer {
+                device: remaining,
+                addresses: vec!["tcp://127.0.0.1:22000".into(), "dynamic".into()]
+            }]
+        );
+        assert!(serde_json::to_value(mesh)?[0].get("introducer").is_none());
+        folder["devices"][1]["encryptionPassword"] = json!("encrypted-token");
+        assert!(capture_mesh(&config, &folder, &departing).is_err());
+        Ok(())
+    }
+    #[test]
     fn authenticated_peer_without_a_shared_vault_cannot_remove_a_computer() -> Result<()> {
         let root = tempfile::tempdir()?;
         let first = Controller::open(root.path().join("first"), vec![])?;
@@ -627,6 +896,20 @@ mod tests {
             std::fs::read(file)?,
             before,
             "unauthorized removal wrote durable state"
+        );
+        // An authenticated peer cannot present a different computer's final
+        // mesh; rejection must precede even creation of a durable removal.
+        let spoofed = first.receive_removal(
+            peer.peer.id,
+            Uuid::new_v4(),
+            ["AAAAAAA"; 8].join("-"),
+            BTreeSet::from(["not-authorized".into()]),
+            Some(BTreeMap::from([("not-authorized".into(), vec![])])),
+        );
+        assert!(spoofed.is_err());
+        assert_eq!(
+            std::fs::read(first.shared.state.join("direct.json"))?,
+            before
         );
         first.shutdown();
         second.shutdown();

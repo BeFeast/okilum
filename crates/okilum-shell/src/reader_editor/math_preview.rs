@@ -136,7 +136,7 @@ fn scaled(size: f32, by: f32) -> f32 {
 
 /// A horizontal list centred on the math axis, with TeX's spacing around
 /// operators and relations.
-fn row(nodes: &[Node], size: f32, color: Hsla) -> AnyElement {
+pub(crate) fn row(nodes: &[Node], size: f32, color: Hsla) -> AnyElement {
     let mut previous: Option<Class> = None;
     let mut children = Vec::with_capacity(nodes.len());
     for (index, node) in nodes.iter().enumerate() {

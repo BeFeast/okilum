@@ -29,6 +29,8 @@ pub enum Kind {
     /// Live Preview draws it rendered while the caret is outside (S7, #936).
     /// Its bytes are never classified or rewritten.
     Table,
+    /// A standalone $$ formula, rendered by the Reader while inactive.
+    Math,
     /// A top-level paragraph that is only an image embed, `![[x.png]]` or
     /// `![alt](path)`: Live Preview draws the image while the caret is
     /// outside (S7b, #936).
@@ -177,6 +179,24 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                                 kind: Kind::Image,
                             });
                         }
+                    }
+                }
+            }
+            NodeValue::Math(math) if math.display_math && math.dollar_math => {
+                // Only standalone whole-line formulas can replace editor rows.
+                // In-prose $$ math keeps its existing literal representation.
+                if let Some(range) = context.range(node) {
+                    let start = context.line_start(node.data.borrow().sourcepos.start.line - 1);
+                    let line_end = context.source[range.end..]
+                        .find('\n')
+                        .map_or(context.source.len(), |n| range.end + n);
+                    if !context.source[start..range.start].trim().is_empty()
+                        || !context.source[range.end..line_end].trim().is_empty()
+                    {
+                        continue;
+                    }
+                    if let Some(marker) = whole_line_block(node, context, Kind::Math) {
+                        markers.push(marker);
                     }
                 }
             }

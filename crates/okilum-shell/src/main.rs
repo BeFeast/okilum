@@ -1453,7 +1453,10 @@ fn markdown_plugins_at(
         let mut drawing_size = None;
         for child in &p.children {
             match child {
-                markdown_ast::Node::Image(image) if url.is_none() => {
+                markdown_ast::Node::Image(image)
+                    if url.is_none()
+                        && !image.url.starts_with(okilum_core::obsidian::MATH_SCHEME) =>
+                {
                     drawing_size = image.title.as_deref().and_then(reader_drawing::parse_size);
                     if let Some(image_source) = parse_image(&image.url) {
                         unavailable = matches!(image_source, MarkdownImage::Unavailable);
@@ -1653,6 +1656,7 @@ fn markdown_plugins_at(
     .markdown_block_renderer("footnote", move |node, window, cx| {
         reader_obsidian::render_footnote(node, &footnote_link_handler, window, cx)
     })
+    .markdown_inline_parser(reader_obsidian::parse_inline_math)
     .markdown_block_parser(reader_obsidian::parse_math)
     .markdown_block_renderer("math", reader_obsidian::render_math)
     .markdown_block_parser(reader_obsidian::parse_block_marker)

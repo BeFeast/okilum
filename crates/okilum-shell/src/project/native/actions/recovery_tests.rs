@@ -202,6 +202,7 @@ fn fixture<'a>(
     cx.executor().allow_parking();
     cx.update(|cx| {
         crate::test_init(cx);
+        reader_features::enable_test_modules(cx);
         cx.set_reduce_motion(true);
     });
     let temp = tempfile::tempdir().unwrap();
@@ -334,14 +335,13 @@ async fn real_close_and_cursor_replay_keep_controls_disabled_until_sync_and_reta
         })
         .await;
     repaint(&view, visual);
-    assert!(visual.debug_bounds("project-inline-reconnect").is_some());
+    assert!(visual.debug_bounds("manager-primary").is_some());
     view.read_with(visual, |view, cx| {
         assert!(!view.native.stream_ready);
         assert!(!view.native.actions.read(cx).enabled);
         assert!(!view.native.actions.read(cx).state.ready);
     });
     click(visual, "respond-question");
-    click(visual, "project-inline-reconnect");
     visual.run_until_parked();
     assert_eq!(
         attempts.load(Ordering::SeqCst),
@@ -421,15 +421,15 @@ async fn terminal_ticket_and_protocol_failures_offer_real_inline_recovery_withou
         .await;
     repaint(&view, visual);
     assert!(
-        visual.debug_bounds("project-inline-pair").is_some(),
-        "401 has an explicit credential recovery"
+        visual.debug_bounds("manager-primary").is_some(),
+        "401 has one explicit credential recovery action"
     );
     assert!(
-        visual.debug_bounds("project-inline-reconnect").is_some(),
-        "no Diagnostics required"
+        visual.debug_bounds("manager-details").is_none(),
+        "recovery does not require Details"
     );
     let lease = view.read_with(visual, |view, _| view.native.request_lease.clone());
-    click(visual, "project-inline-reconnect");
+    view.update_in(visual, |view, window, cx| view.native_retry_now(window, cx));
     visual
         .condition(&view, |view, _| {
             view.native
@@ -439,7 +439,8 @@ async fn terminal_ticket_and_protocol_failures_offer_real_inline_recovery_withou
         })
         .await;
     repaint(&view, visual);
-    assert!(visual.debug_bounds("project-inline-open-t3").is_some());
+    assert!(visual.debug_bounds("manager-primary").is_some());
+    assert!(visual.debug_bounds("manager-details").is_none());
     view.read_with(visual, |view, _| {
         assert_eq!(view.native.phase, ConnectionPhase::Terminal);
         assert!(!view.native.stream_ready);
@@ -458,8 +459,8 @@ async fn terminal_ticket_and_protocol_failures_offer_real_inline_recovery_withou
     });
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds("project-inline-pair").is_some(),
-        "typed Expired has its distinct safe credential action"
+        visual.debug_bounds("manager-primary").is_some(),
+        "typed Expired has its safe Reconnect action"
     );
     view.read_with(visual, |view, _| {
         assert_eq!(

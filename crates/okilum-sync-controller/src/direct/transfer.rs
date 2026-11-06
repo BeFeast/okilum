@@ -1385,6 +1385,17 @@ pub(super) fn removal_view(
         None => Ok(folder.clone()),
     }
 }
+pub(super) fn removal_needs_handoff(db: &Database, vault: &ExistingVault, removed: &str) -> bool {
+    db.transfers.iter().any(|t| {
+        !t.legacy_hold()
+            && t.path == vault.path
+            && t.daemon == vault.daemon
+            && t.vault == vault.folder_id
+            && t.connection
+                .as_ref()
+                .is_some_and(|c| c.device_id == removed)
+    })
+}
 pub(super) fn removal_members(
     db: &Database,
     vault: &ExistingVault,

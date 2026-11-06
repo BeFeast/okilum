@@ -9,7 +9,7 @@ mod ime_guard;
 mod link_complete;
 mod lists;
 mod live_preview;
-mod math_preview;
+pub(crate) mod math_preview;
 mod open_note_sync;
 mod paste_jobs;
 mod recovery;

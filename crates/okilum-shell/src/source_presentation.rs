@@ -781,7 +781,8 @@ fn projection_markers(
                 }
                 source_classifier::decorations::Kind::Table
                 | source_classifier::decorations::Kind::Image
-                | source_classifier::decorations::Kind::Callout => {
+                | source_classifier::decorations::Kind::Callout
+                | source_classifier::decorations::Kind::Math => {
                     unreachable!("filtered")
                 }
             },
@@ -797,6 +798,7 @@ fn is_block(kind: &source_classifier::decorations::Kind) -> bool {
         source_classifier::decorations::Kind::Table
             | source_classifier::decorations::Kind::Image
             | source_classifier::decorations::Kind::Callout
+            | source_classifier::decorations::Kind::Math
     )
 }
 
@@ -2737,6 +2739,55 @@ This paragraph remains ordinary Markdown.
                 }));
                 assert_eq!(&*projection.source().text, &*note.text);
             }
+        }
+    }
+
+    #[test]
+    fn math_2596_display_blocks_reveal_for_all_active_ranges_without_rewriting_bytes() {
+        let raw = "Before\n$$\r\n\\frac{a}{b^2}\r\n$$\r\n\r\nAfter";
+        let note = source(raw);
+        let provider = CachedProvider::classify(note.clone());
+        let start = raw.find("$$").unwrap();
+        let end = raw.rfind("$$").unwrap() + 2;
+        let shown = provider.compose(&note, &inactive(&note)).unwrap();
+        assert_eq!(shown.blocks().len(), 1);
+        assert_eq!(shown.blocks()[0].source, SourceByte(start)..SourceByte(end));
+        for active in [
+            ActiveSource {
+                anchor: SourceByte(start + 2),
+                head: SourceByte(start + 2),
+                ..Default::default()
+            },
+            ActiveSource {
+                composition: Some(SourceByte(start)..SourceByte(end)),
+                ..inactive(&note)
+            },
+            ActiveSource {
+                replacement: Some(SourceByte(start)..SourceByte(end)),
+                ..inactive(&note)
+            },
+        ] {
+            let editing = provider.compose(&note, &active).unwrap();
+            assert!(editing.blocks().is_empty());
+            assert_eq!(&*editing.source().text, raw);
+        }
+        for raw in [
+            "a $$x$$ b",
+            "$$unclosed",
+            "`$$x$$`",
+            "```tex\n$$x$$\n```",
+            "pay $5 and $2$",
+        ] {
+            let note = source(raw);
+            let provider = CachedProvider::classify(note.clone());
+            let projection = provider.compose(&note, &inactive(&note)).unwrap();
+            assert!(
+                !projection
+                    .blocks()
+                    .iter()
+                    .any(|b| note.text[b.source.start.0..b.source.end.0].starts_with("$$")),
+                "{raw}"
+            );
         }
     }
 
