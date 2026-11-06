@@ -16,6 +16,10 @@ pub(super) struct Connection {
     folder_id: String,
     device_id: String,
     ignores: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_ignores: Option<Vec<u8>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,10 +86,29 @@ pub(super) fn share(
     // Preserve all existing device settings, including external roles. Never
     // acquire lifecycle/removal authority over an existing external peer.
     // Reject unsupported ignore policy before the first scoped mutation.
-    let mut lines = ignore_lines(&api.ignores(&source.folder_id)?)?;
+    let ignore_view = api.ignores(&source.folder_id)?;
+    ensure!(
+        ignore_view["error"].is_null() || ignore_view["error"] == "",
+        "Source ignore policy failed to load"
+    );
+    let mut lines = ignore_lines(&ignore_view)?;
+    let policy = shared_ignores::shared_source(
+        &source.path,
+        source
+            .root_identity
+            .context("Shared source root identity missing")?,
+        &lines,
+    )?;
     // The destination is a new, owned folder: service staging is never note
     // content. Keep the source's local file intact, including custom rules.
-    if !lines.iter().any(|line| line == create_ignores::STAGING) {
+    if policy.is_some() {
+        // A new computer starts its own local block. Never export the source's
+        // device-local exceptions as though they were shared rules.
+        lines = vec![
+            shared_ignores::INCLUDE.into(),
+            "// Local exclusions on this computer; preserved by Okilum.".into(),
+        ];
+    } else if !lines.iter().any(|line| line == create_ignores::STAGING) {
         lines.insert(0, create_ignores::STAGING.into());
     }
     let config = api.config()?;
@@ -124,6 +147,8 @@ pub(super) fn share(
         folder_id: source.folder_id.clone(),
         device_id: source.daemon.device_id.clone(),
         ignores: lines,
+        policy,
+        local_ignores: None,
     })
 }
 fn ignore_lines(value: &Value) -> Result<Vec<String>> {
@@ -142,7 +167,7 @@ fn ignore_lines(value: &Value) -> Result<Vec<String>> {
         lines.len() <= 1024
             && lines.iter().all(|s| s.len() <= 4096
                 && !s.chars().any(char::is_control)
-                && !s.trim_start().starts_with("#include")),
+                && (!s.trim_start().starts_with("#include") || s == shared_ignores::INCLUDE)),
         "ignore policy requires explicit review"
     );
     Ok(lines)
@@ -318,6 +343,13 @@ impl Controller {
         }
         self.relabel_transfer(&mut transfer)?;
         if folder["paused"] == true {
+            if let Some(policy) = &connection.policy {
+                let identity = transfer
+                    .destination_identity
+                    .as_ref()
+                    .context("Receiving policy root identity missing")?;
+                shared_ignores::seed(&path, (identity.device, identity.inode), policy)?;
+            }
             api.set_ignores(
                 vault_id,
                 &connection
@@ -1175,6 +1207,76 @@ impl Controller {
             }
         }
     }
+    pub(super) fn record_transfer_ignore_policy(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        let transfer = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .transfers
+            .iter()
+            .find(|t| t.active && t.path == path && !t.legacy_hold())
+            .cloned();
+        if let Some(mut transfer) = transfer {
+            let api = self.history_daemon(&transfer.daemon)?;
+            validate_owned(&transfer, &api.folder(&transfer.vault)?)?;
+            transfer
+                .connection
+                .as_mut()
+                .context("Ignore connection witness missing")?
+                .ignores = std::str::from_utf8(bytes)?
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            transfer.connection.as_mut().unwrap().local_ignores = Some(bytes.to_vec());
+            transfer.create_ignores = create_ignores::Policy::current();
+            self.save_transfer(&transfer)?;
+        }
+        Ok(())
+    }
+    pub(super) fn reconcile_transfer_shared_ignores(&self, warnings: &mut Vec<PolicyWarning>) {
+        let transfers = self.shared.db.lock().unwrap().transfers.clone();
+        for transfer in transfers
+            .into_iter()
+            .filter(|t| t.active && !t.legacy_hold() && t.phase == Phase::Bidirectional)
+        {
+            let result = (|| -> Result<Option<Vec<u8>>> {
+                let api = self.history_daemon(&transfer.daemon)?;
+                validate_owned(&transfer, &api.folder(&transfer.vault)?)?;
+                let identity = transfer
+                    .destination_identity
+                    .as_ref()
+                    .context("Shared ignore root identity missing")?;
+                let connection = transfer
+                    .connection
+                    .as_ref()
+                    .context("Shared ignore connection missing")?;
+                self.reconcile_shared_ignore(
+                    &transfer.path,
+                    (identity.device, identity.inode),
+                    connection
+                        .local_ignores
+                        .as_deref()
+                        .unwrap_or(format!("{}\n", connection.ignores.join("\n")).as_bytes()),
+                )
+            })();
+            match result {
+                Ok(Some(bytes)) => {
+                    if let Err(error) = self.record_transfer_ignore_policy(&transfer.path, &bytes) {
+                        warnings.push(PolicyWarning {
+                            path: transfer.path.clone(),
+                            message: format!("{error:#}"),
+                        });
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => warnings.push(PolicyWarning {
+                    path: transfer.path.clone(),
+                    message: format!("{error:#}"),
+                }),
+            }
+        }
+    }
     fn apply_transfer_history(&self, transfer: &mut Transfer) -> Result<()> {
         let api = self.history_daemon(&transfer.daemon)?;
         let folder = api.folder(&transfer.vault)?;
@@ -1262,6 +1364,8 @@ mod tests {
                 folder_id: "fixture".into(),
                 device_id: "sender".into(),
                 ignores: vec![],
+                policy: None,
+                local_ignores: None,
             }),
             active: true,
             owner: Some(Uuid::new_v4()),

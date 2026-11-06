@@ -210,6 +210,7 @@ impl Render for SyncSettings {
         if let Some(snapshot) = &self.snapshot {
             for (index, vault) in snapshot.attached.iter().enumerate() {
                 let path = vault.path.clone();
+                let ignore_path = vault.path.clone();
                 let observed = self
                     .presentation
                     .overview
@@ -287,6 +288,16 @@ impl Render for SyncSettings {
                                             "Status not checked".into()
                                         }),
                                 ),
+                        )
+                        .child(
+                            Button::new(("sync-shared-policy", index))
+                                .debug_selector(move || format!("sync-shared-policy-{index}"))
+                                .ghost()
+                                .label("Shared exclusions")
+                                .disabled(self.busy)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.edit_ignore_policy(ignore_path.clone(), window, cx)
+                                })),
                         )
                         .child(
                             Button::new(("sync-manage", index))

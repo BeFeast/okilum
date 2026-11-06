@@ -1272,3 +1272,6 @@ mod destination;
 
 #[path = "reader_settings_sync/advanced.rs"]
 mod advanced;
+
+#[path = "reader_settings_sync/ignore_editor.rs"]
+mod ignore_editor;

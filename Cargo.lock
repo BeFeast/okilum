@@ -6020,6 +6020,7 @@ dependencies = [
  "base64 0.22.1",
  "core-foundation-sys",
  "getrandom 0.3.4",
+ "globset",
  "libc",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
