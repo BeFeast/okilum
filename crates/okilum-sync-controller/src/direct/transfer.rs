@@ -549,6 +549,9 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
 /// The folder without members that Syncthing introduced on behalf of the share
 /// peer (#2589). The receiver and the share peer themselves are always kept.
 fn owned_view(transfer: &Transfer, folder: &Value) -> Result<Value> {
+    owned_view_keeping(transfer, folder, None)
+}
+fn owned_view_keeping(transfer: &Transfer, folder: &Value, keep: Option<&str>) -> Result<Value> {
     let peer = &transfer
         .connection
         .as_ref()
@@ -564,6 +567,7 @@ fn owned_view(transfer: &Transfer, folder: &Value) -> Result<Value> {
             .filter(|member| {
                 member["deviceID"] == transfer.daemon.device_id.as_str()
                     || member["deviceID"] == peer.as_str()
+                    || keep.is_some_and(|id| member["deviceID"] == id)
                     || !introduced_by(members, member, peer)
             })
             .cloned()
@@ -1362,6 +1366,25 @@ pub(super) fn validate_removal(db: &Database, vault: &ExistingVault, before: &Va
     }
     Ok(())
 }
+/// Introduction membership can change while a removal waits for its ACK.
+/// Normalize only the established receiver's introducer-owned members, keeping
+/// the removed member itself so normalization cannot skip the actual removal.
+pub(super) fn removal_view(
+    db: &Database,
+    vault: &ExistingVault,
+    removed: &str,
+    folder: &Value,
+) -> Result<Value> {
+    match db.transfers.iter().find(|t| {
+        !t.legacy_hold()
+            && t.path == vault.path
+            && t.daemon == vault.daemon
+            && t.vault == vault.folder_id
+    }) {
+        Some(transfer) => owned_view_keeping(transfer, folder, Some(removed)),
+        None => Ok(folder.clone()),
+    }
+}
 impl Transfer {
     pub(super) fn deactivate(&mut self) {
         self.active = false;
@@ -1610,6 +1633,64 @@ mod tests {
             root_identity: None,
         };
         ShareGrant::new(transfer.peer, &source, "sender")
+    }
+    #[test]
+    fn removal_replay_normalizes_only_other_introduced_members() -> Result<()> {
+        let (_root, transfer, mut before, _, _) = fixture()?;
+        before["devices"].as_array_mut().unwrap().push(json!({
+            "deviceID":"hub", "introducedBy":"sender", "encryptionPassword":""
+        }));
+        let mut planned = before.clone();
+        planned["devices"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["deviceID"] != "sender");
+        let mut actual = planned.clone();
+        actual["devices"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["deviceID"] != "hub");
+        assert_ne!(actual, planned, "real introduction-removal drift control");
+        let view = |folder: &Value| owned_view_keeping(&transfer, folder, Some("sender"));
+        assert_eq!(view(&actual)?, view(&planned)?);
+        assert_ne!(
+            view(&before)?,
+            view(&planned)?,
+            "cannot normalize away the removed target"
+        );
+        let mut foreign = actual.clone();
+        foreign["devices"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"deviceID":"manual", "introducedBy":""}));
+        assert_ne!(
+            view(&foreign)?,
+            view(&planned)?,
+            "manual members must still refuse replay"
+        );
+        foreign = actual.clone();
+        foreign["paused"] = json!(true);
+        assert_ne!(
+            view(&foreign)?,
+            view(&planned)?,
+            "other configuration must remain exact"
+        );
+        let mut without_hub = before.clone();
+        without_hub["devices"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["deviceID"] != "hub");
+        assert_eq!(
+            owned_view(&transfer, &before)?,
+            owned_view(&transfer, &without_hub)?,
+            "ordinary ownership ignores the introduced peer"
+        );
+        assert_ne!(
+            owned_view_keeping(&transfer, &before, Some("hub"))?,
+            owned_view_keeping(&transfer, &without_hub, Some("hub"))?,
+            "an introduced removal target must remain visible to the mutation guard"
+        );
+        Ok(())
     }
     #[test]
     fn members_introduced_by_the_share_peer_keep_the_vault_owned() -> Result<()> {
