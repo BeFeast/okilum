@@ -137,6 +137,7 @@ pub(super) fn suspend(cx: &mut App) {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
+    Remove(String),
     Retention(PathBuf, direct::RetentionDays),
     Read,
     EnterPairing,
@@ -207,6 +208,34 @@ pub(super) struct SyncSettings {
         std::collections::BTreeMap<PathBuf, Entity<crate::reader_sync_conflicts::InventoryView>>,
 }
 impl SyncSettings {
+    fn confirm_remove_computer(
+        &self,
+        device: String,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        let answer = reader_confirm::confirm(window,cx,"Remove computer from Sync?",reader_confirm::Body {
+            intro: vec![format!("Stop sharing your vaults with {name} on these computers?")],
+            items: vec![device.clone()],
+            outro: vec!["The removed computer keeps its own files. Already copied files cannot be recalled. Other computers follow the removal when connected; unrelated Syncthing folders stay unchanged.".into()],
+        },"Remove computer");
+        let lifetime = self.lifetime.ticket();
+        cx.spawn(async move |view, cx| {
+            if answer.recv().await != Ok(true) {
+                return;
+            }
+            let _ = view.update(cx, |view, cx| {
+                if lifetime.is_current() {
+                    view.run(Operation::Remove(device), cx);
+                }
+            });
+        })
+        .detach();
+    }
     fn choose_retention(
         &mut self,
         path: PathBuf,
@@ -1067,6 +1096,7 @@ fn perform_with_locations(
         );
         let mut inspected = None;
         let snapshot = match operation {
+            Operation::Remove(device) => controller.remove_computer(&device)?,
             Operation::Retention(path, days) => controller.set_history_retention(&path, days)?,
             Operation::Read | Operation::EnterPairing => controller.refresh()?,
             #[cfg(target_os = "linux")]

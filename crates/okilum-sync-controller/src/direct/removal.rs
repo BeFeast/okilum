@@ -1,7 +1,7 @@
 //! Removal is an authenticated, replayable operation in application state.
 //! It never deletes vault files or unrelated Syncthing folders/devices.
 use super::*;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -17,8 +17,13 @@ pub(super) struct Removal {
     id: Uuid,
     device: String,
     vaults: BTreeSet<String>,
-    pending: BTreeSet<Uuid>,
+    pending: BTreeMap<Uuid, Paired>,
     local_applied: bool,
+}
+impl Removal {
+    pub(super) fn matches(&self, id: Uuid, device: &str) -> bool {
+        self.id == id && self.device == device
+    }
 }
 fn valid(device: &str) -> bool {
     device.len() == 63
@@ -40,6 +45,9 @@ impl Controller {
         self.check()?;
         let (peers, attached) = {
             let db = self.shared.db.lock().unwrap();
+            if db.local_removed {
+                return Ok(vec![]);
+            }
             (db.peers.clone(), db.attached.clone())
         };
         let configs = self.configuration_paths()?;
@@ -156,10 +164,6 @@ impl Controller {
                 existing::same_binding(&vault, &fresh),
                 "Removal vault identity changed"
             );
-            ensure!(
-                fresh.daemon.device_id != device,
-                "Use the other computer to remove this one"
-            );
             if fresh.peers.iter().any(|p| p == device) {
                 vaults.insert(fresh.folder_id);
             }
@@ -178,12 +182,10 @@ impl Controller {
         let pending = db
             .peers
             .iter()
-            .filter(|(peer, p)| {
-                Some(**peer) != sender
-                    && p.syncthing_device.as_deref() != Some(device)
-                    && vaults.iter().any(|v| knows(&db, **peer, v))
+            .filter(|(peer, _)| {
+                Some(**peer) != sender && vaults.iter().any(|v| knows(&db, **peer, v))
             })
-            .map(|(id, _)| *id)
+            .map(|(id, peer)| (*id, peer.clone()))
             .collect();
         db.removals.push(Removal {
             id,
@@ -222,6 +224,7 @@ impl Controller {
             return Ok(());
         }
         let configs = self.configuration_paths()?;
+        let mut removed_self = false;
         for vault in attached
             .into_iter()
             .filter(|v| removal.vaults.contains(&v.folder_id))
@@ -240,9 +243,11 @@ impl Controller {
             if !members.iter().any(|d| d["deviceID"] == removal.device) {
                 continue;
             }
+            let is_self = fresh.daemon.device_id == removal.device;
+            removed_self |= is_self;
             let after_members: Vec<_> = members
                 .iter()
-                .filter(|d| d["deviceID"] != removal.device)
+                .filter(|d| is_self || d["deviceID"] != removal.device)
                 .cloned()
                 .collect();
             self.check()?;
@@ -250,10 +255,19 @@ impl Controller {
                 api.folder(&fresh.folder_id)? == before,
                 "Removal folder changed; retry after review"
             );
-            api.patch_folder(&fresh.folder_id, &json!({"devices":after_members}))?;
+            let changes = if is_self {
+                json!({"paused":true})
+            } else {
+                json!({"devices":after_members})
+            };
+            api.patch_folder(&fresh.folder_id, &changes)?;
             let after = api.folder(&fresh.folder_id)?;
             let mut expected = before;
-            expected["devices"] = json!(after_members);
+            if is_self {
+                expected["paused"] = json!(true);
+            } else {
+                expected["devices"] = json!(after_members);
+            }
             ensure!(
                 after == expected,
                 "Removal readback changed unrelated configuration"
@@ -268,17 +282,22 @@ impl Controller {
         let revoked: Vec<_> = db
             .peers
             .iter()
-            .filter(|(_, p)| p.syncthing_device.as_deref() == Some(removal.device.as_str()))
+            .filter(|(_, p)| {
+                removed_self || p.syncthing_device.as_deref() == Some(removal.device.as_str())
+            })
             .map(|(id, _)| *id)
             .collect();
         for peer in revoked {
-            db.peers.remove(&peer);
+            if let Some(pair) = db.peers.remove(&peer) {
+                db.revoked_peers.insert(peer, pair);
+            }
             db.share_grants.retain(|g| !g.for_peer(peer));
             if db.catalog_peer == Some(peer) {
                 db.catalog.clear();
                 db.catalog_peer = None;
             }
         }
+        db.local_removed |= removed_self;
         db.removals
             .iter_mut()
             .find(|r| r.id == id)
@@ -294,19 +313,7 @@ impl Controller {
                 let _guard = self.shared.transfer_lock.lock().unwrap();
                 self.apply_removal(removal.id)?;
             }
-            let peers = self.shared.db.lock().unwrap().peers.clone();
-            for id in removal.pending {
-                let Some(peer) = peers.get(&id) else {
-                    let mut db = self.shared.db.lock().unwrap();
-                    db.removals
-                        .iter_mut()
-                        .find(|r| r.id == removal.id)
-                        .unwrap()
-                        .pending
-                        .remove(&id);
-                    self.save(&db)?;
-                    continue;
-                };
+            for (id, peer) in removal.pending {
                 let reply = self.call(
                     peer.endpoint,
                     id,
