@@ -8588,6 +8588,7 @@ mod quick_view_tests {
                     preview.text.as_ref().map(Entity::entity_id),
                     preview.table.as_ref().map(Entity::entity_id),
                     preview.log.as_ref().map(Entity::entity_id),
+                    preview.code.as_ref().map(Entity::entity_id),
                 )
             };
             let identities = reader.read_with(visual, |r, _| {
@@ -8595,7 +8596,10 @@ mod quick_view_tests {
                 assert_eq!(r.selected_file(), name);
                 let identities = preview_ids(r);
                 assert!(
-                    identities.0.is_some() || identities.1.is_some() || identities.2.is_some(),
+                    identities.0.is_some()
+                        || identities.1.is_some()
+                        || identities.2.is_some()
+                        || identities.3.is_some(),
                     "positive control: mounted typed viewer"
                 );
                 identities

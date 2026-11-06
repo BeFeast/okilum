@@ -45,7 +45,7 @@ pub(crate) fn language(rel: &str) -> Option<&'static str> {
         "json" | "jsonc" | "okilog" => "json",
         "yaml" | "yml" => "yaml",
         "toml" => "toml",
-        "xml" | "xsd" | "xsl" | "svg" => "xml",
+        "xml" | "xsd" | "xsl" => "xml",
         "txt" => "text",
         "sql" => "sql",
         "c" | "h" => "c",
@@ -91,6 +91,7 @@ pub(crate) struct CodePreview {
     root: PathBuf,
     rel: String,
     state: State,
+    source_bytes: Option<usize>,
     /// A `.json` file's raw text and its display-only pretty form (#1131).
     json: Option<JsonText>,
     document: Option<Arc<Document>>,
@@ -196,6 +197,7 @@ impl CodePreview {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.state = match result {
                     Ok(Loaded::Text(text, pretty)) => {
+                        this.source_bytes = Some(text.len());
                         let shown = if json {
                             let showing_pretty =
                                 !reader_ui_state::json_raw(cx) && matches!(pretty, Some(Ok(_)));
@@ -245,6 +247,7 @@ impl CodePreview {
             root,
             rel,
             state: State::Loading,
+            source_bytes: None,
             json: None,
             document: None,
             page: 0,
@@ -713,10 +716,7 @@ impl CodePreview {
     pub(crate) fn editable(&self) -> bool {
         matches!(self.state, State::Content(_))
             && editable_format(&self.rel)
-            && self
-                .document
-                .as_ref()
-                .is_some_and(|doc| doc.text.len() <= EDIT_BYTES)
+            && self.source_bytes.is_some_and(|bytes| bytes <= EDIT_BYTES)
     }
 
     /// The file is still being read; whether it is editable is not known yet.

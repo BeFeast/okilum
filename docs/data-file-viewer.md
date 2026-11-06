@@ -41,3 +41,10 @@ The native job also builds the actual app with the non-shipping
 event loop must keep 100 ms heartbeat callbacks below a 2 s gap while opening
 XML and both 32 MiB fixtures; an external driver observes the system clipboard
 and unchanged fixture hashes. Test-platform draw timings alone are insufficient.
+
+Edit eligibility uses the successful canonical byte load and existing format
+authority, never the later AST completion. Native and full Linux checks retain
+chosen Edit mode/tree focus, byte-preserving save/conflict recovery, typed viewer
+identity across window-mode changes and SVG image-refresh regressions. SVG keeps
+its existing image viewer. Probe windows stay alive until every fixture finishes;
+closing the final native window is allowed to quit the app.

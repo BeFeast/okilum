@@ -38,7 +38,7 @@ def main():
                 for name, expected in [('data.xml', '<value>שלום</value>'), ('big.json', '"last":"NEEDLE"'), ('big.xml', '<item key="last">NEEDLE</item>'), ('big.txt', 'abcdefgh')]:
                     deadline = time.monotonic() + 120
                     while time.monotonic() < deadline:
-                        assert process.poll() is None, log_path.read_text(encoding="utf-8")[-6000:]
+                        assert process.poll() is None, f"native app exited {process.returncode} before {name}: " + log_path.read_text(encoding="utf-8")[-6000:]
                         ready = directory / ('ready-' + name)
                         if ready.exists():
                             assert clipboard() == expected, (name, clipboard())

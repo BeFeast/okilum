@@ -16,6 +16,16 @@ assert listing.returncode == 0
 names = [line for line in listing.stdout.splitlines() if line.endswith(': test')]
 assert len(names) == 8, names
 assert run(*base, 'data_view_2669_', '--', '--nocapture', '--test-threads=1').returncode == 0
+# Preserve the real selection/edit/recovery/image contracts exercised by full Linux.
+for regression in [
+    'reader_editor::mode_navigation_tests::',
+    'reader_loading::quick_view_tests::window_mode_switch_keeps_typed_preview_entities_in_both_directions',
+    'reader_files::tests::delimited_attachment_edit_saves_only_changed_bytes_and_conflicts_keep_drafts',
+    'reader_files::live::native_tests::native_image_notifications_evict_cached_pixels_and_recover',
+]:
+    inventory = run(*base, regression, '--', '--list')
+    assert inventory.returncode == 0 and any(line.endswith(': test') for line in inventory.stdout.splitlines()), regression
+    assert run(*base, regression, '--', '--nocapture', '--test-threads=1').returncode == 0, regression
 source = pathlib.Path('crates/okilum-shell/src/reader_code_file.rs')
 positive = source.read_bytes()
 assert positive.count(b'.folding(true)') == 1
