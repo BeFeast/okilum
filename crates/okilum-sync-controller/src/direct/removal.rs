@@ -19,6 +19,15 @@ pub(super) struct Removal {
     vaults: BTreeSet<String>,
     pending: BTreeMap<Uuid, Paired>,
     local_applied: bool,
+    #[serde(default)]
+    folders: Option<Vec<FolderRemoval>>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FolderRemoval {
+    vault: ExistingVault,
+    before: serde_json::Value,
+    after: serde_json::Value,
 }
 impl Removal {
     pub(super) fn matches(&self, id: Uuid, device: &str) -> bool {
@@ -202,6 +211,7 @@ impl Controller {
             vaults,
             pending,
             local_applied: false,
+            folders: None,
         });
         self.save(&db)
     }
@@ -218,7 +228,7 @@ impl Controller {
         Ok(Reply::RemovalRecorded { id })
     }
     fn apply_removal(&self, id: Uuid) -> Result<()> {
-        let (removal, attached) = {
+        let (mut removal, attached) = {
             let db = self.shared.db.lock().unwrap();
             (
                 db.removals
@@ -229,7 +239,7 @@ impl Controller {
                 db.attached.clone(),
             )
         };
-        if removal.local_applied && removal.pending.is_empty() {
+        if removal.local_applied {
             return Ok(());
         }
         {
@@ -240,58 +250,75 @@ impl Controller {
             );
         }
         let configs = self.configuration_paths()?;
+        if removal.folders.is_none() {
+            let mut folders = Vec::new();
+            for vault in attached
+                .into_iter()
+                .filter(|v| removal.vaults.contains(&v.folder_id))
+            {
+                let fresh = inspect_existing(&configs, &vault.path)?;
+                ensure!(
+                    existing::same_binding(&vault, &fresh),
+                    "Removal binding changed; no unrelated folder was modified"
+                );
+                let before = fresh.daemon.connect()?.folder(&fresh.folder_id)?;
+                let members = before["devices"]
+                    .as_array()
+                    .context("Removal folder membership missing")?;
+                let mut after = before.clone();
+                if fresh.daemon.device_id == removal.device {
+                    after["paused"] = json!(true);
+                } else {
+                    after["devices"] = json!(members
+                        .iter()
+                        .filter(|d| d["deviceID"] != removal.device)
+                        .cloned()
+                        .collect::<Vec<_>>());
+                }
+                folders.push(FolderRemoval {
+                    vault: fresh,
+                    before,
+                    after,
+                });
+            }
+            // Publish every exact preimage before the first REST mutation. A
+            // lost PATCH reply can then finish the witness update after restart.
+            let mut db = self.shared.db.lock().unwrap();
+            db.removals.iter_mut().find(|r| r.id == id).unwrap().folders = Some(folders.clone());
+            self.save(&db)?;
+            removal.folders = Some(folders);
+        }
         let mut removed_self = false;
-        for vault in attached
-            .into_iter()
-            .filter(|v| removal.vaults.contains(&v.folder_id))
-        {
+        for folder in removal.folders.as_ref().unwrap() {
             self.check()?;
-            let fresh = inspect_existing(&configs, &vault.path)?;
+            let fresh = inspect_existing(&configs, &folder.vault.path)?;
             ensure!(
-                existing::same_binding(&vault, &fresh) && fresh.daemon.device_id != removal.device,
-                "Removal binding changed; no unrelated folder was modified"
+                existing::same_binding(&folder.vault, &fresh),
+                "Removal vault identity changed"
             );
+            removed_self |= fresh.daemon.device_id == removal.device;
             let api = fresh.daemon.connect()?;
-            let before = api.folder(&fresh.folder_id)?;
-            let members = before["devices"]
-                .as_array()
-                .context("Removal folder membership missing")?;
-            if !members.iter().any(|d| d["deviceID"] == removal.device) {
-                continue;
-            }
-            let is_self = fresh.daemon.device_id == removal.device;
-            removed_self |= is_self;
-            let after_members: Vec<_> = members
-                .iter()
-                .filter(|d| is_self || d["deviceID"] != removal.device)
-                .cloned()
-                .collect();
-            self.check()?;
+            let current = api.folder(&fresh.folder_id)?;
             ensure!(
-                api.folder(&fresh.folder_id)? == before,
-                "Removal folder changed; retry after review"
+                current == folder.before || current == folder.after,
+                "Removal folder changed outside its recorded operation; review required"
             );
-            let changes = if is_self {
-                json!({"paused":true})
-            } else {
-                json!({"devices":after_members})
-            };
-            api.patch_folder(&fresh.folder_id, &changes)?;
-            let after = api.folder(&fresh.folder_id)?;
-            let mut expected = before;
-            if is_self {
-                expected["paused"] = json!(true);
-            } else {
-                expected["devices"] = json!(after_members);
+            if current != folder.after {
+                let changes = if fresh.daemon.device_id == removal.device {
+                    json!({"paused":true})
+                } else {
+                    json!({"devices":folder.after["devices"]})
+                };
+                self.check()?;
+                api.patch_folder(&fresh.folder_id, &changes)?;
             }
             ensure!(
-                after == expected,
+                api.folder(&fresh.folder_id)? == folder.after,
                 "Removal readback changed unrelated configuration"
             );
             let mut db = self.shared.db.lock().unwrap();
-            #[cfg(target_os = "linux")]
-            source::record_removed_membership(&mut db, &fresh, &after);
-            transfer::record_removed_membership(&mut db, &fresh, &removal.device, &after);
+            source::record_removed_membership(&mut db, &fresh, &folder.after);
+            transfer::record_removed_membership(&mut db, &fresh, &removal.device, &folder.after);
             self.save(&db)?;
         }
         let mut db = self.shared.db.lock().unwrap();
