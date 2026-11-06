@@ -5,7 +5,8 @@ shortcuts, with Default / Modified labels. Search accepts an action name, contex
 or combination. Record captures the next key press without invoking its existing
 action; modifiers alone are ignored. Esc cancels recording and keeps Settings
 open. Confirm assigns the captured combination; it does not save automatically.
-An action can have several combinations. Clicking a combination disables it;
+The recorder can use Global, ReadMode or Editor; existing specialized contexts
+are retained unless another context is selected. An action can have several combinations. Clicking a combination disables it;
 Reset restores that action/context, and Reset all removes the user overrides.
 
 Assigning a combination already used in the same context offers **Reassign

@@ -417,6 +417,19 @@ impl Render for KeyboardSettings {
             v_flex().id("keymap-recording").debug_selector(|| "keymap-recording".into()).gap_2().p_3()
                 .border_1().border_color(cx.theme().border).rounded_md()
                 .child(format!("{} · {}", pending.row.label, pending.row.context))
+                .child(h_flex().gap_1().children(["Global", "ReadMode", "Editor"].into_iter().map(|scope| {
+                    let normalized = context(scope).unwrap().unwrap_or_else(global_context);
+                    Button::new(SharedString::from(format!("keymap-context-{scope}"))).small().ghost().label(scope)
+                        .debug_selector(move || format!("keymap-context-{scope}"))
+                        .selected(pending.row.context == normalized).disabled(pending.reset.is_some())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if let Some(pending) = &mut this.pending {
+                                pending.row.context = normalized.clone(); pending.row.defaults.clear();
+                                pending.key = None; pending.conflicts.clear(); pending.warnings.clear();
+                            }
+                            window.focus(&this.focus, cx); cx.notify();
+                        }))
+                })))
                 .child(if pending.reset.is_some() { "Reset to defaults".into() } else { label })
                 .children((!pending.conflicts.is_empty()).then(|| div().debug_selector(|| "keymap-conflict".into())
                     .child(format!("Already assigned to {}. Reassigning removes that assignment in this context.", pending.conflicts.join(", ")))))
