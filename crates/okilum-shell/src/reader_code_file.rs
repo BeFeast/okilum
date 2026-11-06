@@ -712,8 +712,16 @@ impl CodePreview {
         )
     }
 
-    /// Edit mode is offered once the text loaded within the size cap.
+    /// Preserve the existing explicit TXT editor; code formats keep their old cap.
     pub(crate) fn editable(&self) -> bool {
+        if Path::new(&self.rel)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
+        {
+            // TXT already had an independent FileEditor before this preview.
+            // Its own canonical read/recovery checks remain authoritative.
+            return true;
+        }
         matches!(self.state, State::Content(_))
             && editable_format(&self.rel)
             && self.source_bytes.is_some_and(|bytes| bytes <= EDIT_BYTES)

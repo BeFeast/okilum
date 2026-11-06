@@ -14,8 +14,9 @@ YAML property/item. A stale parse/search cannot replace a newer display revision
 The external editor button uses the existing guarded default-app file action.
 
 Files up to 64 MiB load on a worker with a bounded read even when the file grows.
-Parsing, JSON Pretty and full-file search run on workers. Files above the old
-4 MiB edit budget remain read-only. Large multi-line files start without soft
+Parsing, JSON Pretty and full-file search run on workers. Code formats above their old
+4 MiB edit budget remain read-only. TXT retains its pre-existing explicit editor
+and canonical FileEditor checks; the Read view is always read-only. Large multi-line files start without soft
 wrap; the existing wrap preference continues for smaller files.
 
 A line longer than 64 KiB uses 32 KiB UTF-8-safe pages, with explicit page and

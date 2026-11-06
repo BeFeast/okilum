@@ -245,7 +245,10 @@ fn data_view_2669_native_32_mib_multiline_file_keeps_full_find_and_numbered_edit
         "multi-line first draw: {draw:?}"
     );
     preview.update_in(visual, |p, _, cx| {
-        assert!(!p.editable());
+        assert!(
+            p.editable(),
+            "existing explicit TXT editing authority is preserved"
+        );
         assert_eq!(p.document.as_ref().unwrap().pages.len(), 1);
         p.input().unwrap().update(cx, |input, cx| {
             assert!(!input.is_editable());
