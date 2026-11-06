@@ -2,6 +2,8 @@
 //! lifecycle. Opening this controller does not listen or start a daemon.
 mod addresses;
 mod create_ignores;
+mod removal;
+pub use removal::SyncComputer;
 pub mod shared_ignores;
 pub use shared_ignores::IgnorePreview;
 mod existing;
@@ -70,6 +72,8 @@ pub struct Vault {
 /// Serializable for the desktop's local `okilum sync` control channel (#2589).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub computers: Vec<SyncComputer>,
+    pub pending_removals: usize,
     pub policy_warnings: Vec<PolicyWarning>,
     pub history_warnings: Vec<history::HistoryWarning>,
     pub history_retention: Vec<RetentionSetting>,
@@ -148,6 +152,8 @@ struct Paired {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Database {
+    #[serde(default)]
+    removals: Vec<removal::Removal>,
     seed: [u8; 32],
     name: String,
     endpoint: Option<SocketAddr>,
@@ -221,6 +227,11 @@ pub struct Controller {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
+    RemoveComputer {
+        id: Uuid,
+        device: String,
+        vaults: std::collections::BTreeSet<String>,
+    },
     Redeem {
         request: Request,
     },
@@ -258,6 +269,9 @@ struct Response {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum Reply {
+    RemovalRecorded {
+        id: Uuid,
+    },
     Pending,
     Rejected,
     Approved {
@@ -313,6 +327,7 @@ impl Controller {
                 attached: vec![],
                 catalog: vec![],
                 catalog_peer: None,
+                removals: vec![],
                 transfers: vec![],
                 share_grants: vec![],
                 #[cfg(target_os = "linux")]
@@ -716,13 +731,16 @@ impl Controller {
         // must never become a local listener.
         self.serve_pinned()?;
         self.refresh_pairing()?;
+        self.reconcile_removals()?;
         self.reconcile_peer_addresses()?;
         self.reconcile_create_ignores()?;
         self.reconcile_history()?;
         self.reconcile_transfers()?;
         self.refresh_connection_status()?;
         self.refresh_attached()?;
-        self.snapshot()
+        let mut snapshot = self.snapshot()?;
+        snapshot.computers = self.sync_computers()?;
+        Ok(snapshot)
     }
     /// Refresh the pairing journal/channel without daemon inventory, binary
     /// verification or transfer reconciliation. Used while a pairing step is open.
@@ -989,6 +1007,10 @@ impl Controller {
         }
         let seed = db.seed;
         let result = match message.operation {
+            Operation::RemoveComputer { id, device, vaults } => {
+                drop(db);
+                self.receive_removal(scope, id, device, vaults)
+            }
             #[cfg(target_os = "linux")]
             Operation::Inspect { request } => {
                 drop(db);
@@ -1053,6 +1075,9 @@ impl Controller {
         signer: Vec<u8>,
     ) -> Result<Reply> {
         match operation {
+            Operation::RemoveComputer { .. } => {
+                anyhow::bail!("removal requires serialized lock-free dispatch")
+            }
             Operation::Redeem { request } => {
                 request.validate(&signer)?;
                 let invitation = db.invitation.as_mut().context("no invitation")?;
@@ -1247,6 +1272,8 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
             .map(|(_, r)| pending(r, false))
     };
     Ok(Snapshot {
+        computers: vec![],
+        pending_removals: removal::pending(db),
         policy_warnings: Vec::new(),
         history_warnings: Vec::new(),
         history_retention: history_settings(db),

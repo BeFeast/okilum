@@ -495,6 +495,16 @@ pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {
         .collect()
 }
 
+pub(super) fn record_removed_membership(db: &mut Database, vault: &ExistingVault, after: &Value) {
+    for source in db
+        .sources
+        .iter_mut()
+        .filter(|s| s.path == vault.path && s.daemon == vault.daemon && s.id == vault.folder_id)
+    {
+        source.witness = Some(after.clone());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
