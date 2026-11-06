@@ -2,9 +2,12 @@
 
 The Manager panel and Settings → T3 share one origin-bound connection flow.
 The normal path is Sign in to T3 → approve in the browser → Connect manager →
-Create link → Copy → return to Okilum. T3 itself is unchanged.
+Create link → Share → Copy link → return to Okilum. T3 itself is unchanged.
 
-Connect manager opens `<configured-origin>/settings/connections`. Only that
+Connect manager opens `<configured-origin>/settings/connections#authorized-clients`.
+In the installed T3 release the legacy anchor redirects to `/settings/access`
+and reveals Authorized clients; on versions with an unsplit Connections page it
+selects that same section. Only that
 explicit action arms clipboard inspection, and inspection runs when an Okilum
 window becomes active. A copied `<same-origin>/pair#token=…` is exchanged once
 for `orchestration:read orchestration:operate`. Scheme, host and effective port
@@ -26,7 +29,10 @@ Protocol evidence was checked read-only against installed T3
 `v0.1.7-nightly.20261031.4004` (`54c5f2524`):
 
 - `apps/web/src/routes/_chat.settings.connections.tsx:8` declares the pathless
-  `_chat` layout's `/settings/connections` route.
+  `_chat` layout's `/settings/connections` route; `settingsSearch.ts:1221,1228`
+  redirects its `authorized-clients` anchor to `/settings/access`. The route at
+  `routes/_chat.settings.access.tsx:8` renders `ConnectionsSettings` with access
+  controls (`ConnectionsSettings.tsx:288,1166`).
 - `apps/web/src/components/settings/pairingUrls.ts:4` sets `/pair` and delegates
   fragment encoding to `packages/shared/src/remote.ts:167` (`#token=…`).
 - `apps/server/src/auth/PairingGrantStore.ts:254` defines the optional manual

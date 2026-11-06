@@ -1097,6 +1097,8 @@ impl ProjectView {
             .child(div().size(px(6.)).rounded_full().bg(match label {
                 "Connected" | "Ready" => brand::palette(cx).success,
                 "Working" => brand::palette(cx).accent,
+                "Connecting" | "Reconnecting" | "Reconnect needed" => brand::palette(cx).warning,
+                "Error" => cx.theme().danger,
                 _ => brand::palette(cx).text_muted,
             }))
             .child(

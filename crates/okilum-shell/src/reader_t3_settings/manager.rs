@@ -25,8 +25,8 @@ impl Stage {
     pub(crate) fn sentence(self) -> &'static str {
         match self {
             Self::SignedOut => "Sign in to T3 once to use your manager in every project.",
-            Self::NotConnected => "T3 opens in your browser: click Create link, then Copy, and switch back here.",
-            Self::Waiting => "In T3, click Create link, then Copy, and switch back here.",
+            Self::NotConnected => "T3 opens in your browser: create a link, then Share → Copy link and switch back here.",
+            Self::Waiting => "In T3, create a link, then Share → Copy link and switch back here.",
             Self::Connecting => "Connecting your manager to T3…",
             Self::Connected => "Your manager is connected to T3.",
             Self::Offline => "Can't reach T3; your history and draft are kept while Okilum retries automatically.",
@@ -106,7 +106,7 @@ pub(crate) fn forget(env: &Environment, cx: &mut App) {
     });
 }
 pub(crate) fn connections_url(env: &Environment) -> String {
-    format!("{}/settings/connections", env.origin())
+    format!("{}/settings/connections#authorized-clients", env.origin())
 }
 pub(crate) fn begin(env: &Environment, cx: &mut App) {
     if !reader_features::enabled(reader_features::Feature::Agents, cx)
@@ -313,16 +313,12 @@ pub(crate) fn restore(env: Environment, cx: &mut App) {
     let saved = cx.read_credentials(&NativeToken::credential_key(&env));
     cx.spawn(async move |cx| {
         let worker_env = env.clone();
-        let worker_access = access.clone();
         let result = match saved.await {
             Ok(Some((_, bytes))) => {
                 cx.background_executor()
                     .spawn(async move {
                         let token = NativeToken::from_secret(&worker_env, &bytes)?;
-                        let expiry = token.expires_at();
-                        NativeClient::new(worker_env, token, Duration::from_secs(10)).map(
-                            |client| Some((Arc::new(client.with_access(worker_access)), expiry)),
-                        )
+                        Ok(Some(token.expires_at()))
                     })
                     .await
             }
@@ -336,9 +332,8 @@ pub(crate) fn restore(env: Environment, cx: &mut App) {
                 return;
             }
             edit(&env, cx, |e| match result {
-                Ok(Some((client, expiry))) => {
+                Ok(Some(expiry)) => {
                     e.stage = Stage::Connected;
-                    e.client = Some(client);
                     e.expiry = Some(expiry);
                 }
                 Ok(None) => {}

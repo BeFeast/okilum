@@ -178,6 +178,22 @@ impl ProjectView {
                     .min_w_0()
                     .gap_3()
                     .p_3()
+                    .when(
+                        !self.native.active()
+                            && matches!(
+                                stage,
+                                Stage::SignedOut
+                                    | Stage::NotConnected
+                                    | Stage::Waiting
+                                    | Stage::Connecting
+                            ),
+                        |view| {
+                            view.min_h(px(200.))
+                                .items_center()
+                                .justify_center()
+                                .text_center()
+                        },
+                    )
                     .debug_selector(|| "manager-onboarding".into())
                     .child(div().w_full().whitespace_normal().child(stage.sentence()))
                     .child(

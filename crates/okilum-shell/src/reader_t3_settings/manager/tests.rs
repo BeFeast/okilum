@@ -39,7 +39,7 @@ fn recognizes_only_same_origin_pair_links_and_keeps_secrets_out_of_debug() {
     assert!(PairLink::manual(&env, "https://foreign.example/pair#token=23456789ABCD").is_none());
     assert_eq!(
         connections_url(&env),
-        "https://t3.example/settings/connections"
+        "https://t3.example/settings/connections#authorized-clients"
     );
 }
 
@@ -147,9 +147,15 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
     );
     store.lock().unwrap().refuse_write = true;
     let store_for_focus = store.clone();
+    let focus_returns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let returns = focus_returns.clone();
+    let focus_env = env.clone();
     let (root, visual) = cx.add_window_view(|window, cx| {
         cx.observe_window_activation(window, move |_, window, cx| {
             if window.is_window_active() {
+                if entry(&focus_env, cx).stage == Stage::Waiting {
+                    returns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
                 consume_clipboard(
                     project::credentials::Store {
                         test: Some(store_for_focus.clone()),
@@ -162,28 +168,29 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
         let surface = cx.new(|_| Surface);
         Root::new(surface, window, cx)
     });
+    visual.deactivate_window();
     let text = format!("{}/pair#token=23456789ABCD", env.origin());
     visual.update(|window, cx| {
         begin(&env, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(text));
-        // The production activation handler takes this same path.
-        window.activate_window();
-        consume_clipboard(
-            project::credentials::Store {
-                test: Some(store.clone()),
-            },
-            cx,
-        );
-        assert_eq!(entry(&env, cx).stage, Stage::Connecting);
+        assert_eq!(entry(&env, cx).stage, Stage::Waiting);
+    });
+    visual.update(|window, _| window.activate_window());
+    visual
+        .condition(&root, |_, cx| entry(&env, cx).stage == Stage::Error)
+        .await;
+    assert_eq!(
+        focus_returns.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "positive control: actual window activation consumed the clipboard"
+    );
+    visual.update(|_, cx| {
         assert_eq!(
             cx.read_from_clipboard().unwrap().text().as_deref(),
             Some("")
         );
         activated(cx); // Duplicate activation must not exchange twice.
     });
-    visual
-        .condition(&root, |_, cx| entry(&env, cx).stage != Stage::Connecting)
-        .await;
     visual.update(|_, cx| {
         let e = entry(&env, cx);
         assert_eq!(e.stage, Stage::Error);
