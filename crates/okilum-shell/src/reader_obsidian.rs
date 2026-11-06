@@ -330,7 +330,9 @@ mod tests {
             state.select_all(cx);
             assert_eq!(
                 state.selected_text_as(SelectionFormat::Plain),
-                "Area x² and α₁; x²; pay $5 and $2$; $x^2$; $\\foo$; bold."
+                // Plain selection includes the paragraph terminator; Source
+                // below must still equal the exact authored bytes without it.
+                "Area x² and α₁; x²; pay $5 and $2$; $x^2$; $\\foo$; bold.\n"
             );
             assert_eq!(state.document_source().unwrap().as_ref(), original);
             assert_eq!(state.selected_text_as(SelectionFormat::Source), original);
