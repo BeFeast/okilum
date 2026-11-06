@@ -334,10 +334,11 @@ mod tests {
             viewport.size.height > px(200.) && viewport.bottom() <= panel.bottom(),
             "Rules must have a finite height inside the actual panel: {viewport:?}, {panel:?}"
         );
-        let selector = format!("rules-open-{last}");
+        // Nine-layer fixture; debug_bounds requires a static selector.
+        let selector = "rules-open-8";
         assert!(
             visual
-                .debug_bounds(&selector)
+                .debug_bounds(selector)
                 .is_none_or(|bounds| bounds.bottom() > viewport.bottom()),
             "positive control: last layer needs scrolling"
         );
@@ -357,7 +358,7 @@ mod tests {
             header_top
         );
         let button = visual
-            .debug_bounds(&selector)
+            .debug_bounds(selector)
             .expect("last layer is reachable after scrolling");
         assert!(button.top() >= viewport.top() && button.bottom() <= viewport.bottom());
         visual.simulate_click(button.center(), Modifiers::default());
