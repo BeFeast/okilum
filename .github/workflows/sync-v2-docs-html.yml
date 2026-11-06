@@ -15,19 +15,15 @@ jobs:
           persist-credentials: false
       - name: Install the existing Help checker media dependency
         run: sudo bash scripts/ci/hosted-ubuntu-apt.sh ffmpeg
-      - name: Capture the changed written HTML guide in the same real Chrome session environment
+      - name: Prepare pinned browser automation
         run: |
-          mkdir -p "$RUNNER_TEMP/html-evidence"
-          google-chrome --version > "$RUNNER_TEMP/html-evidence/browser.txt"
-          for entry in before:3123a1b46a2078c3e3393830db776144df674657 after:657d1f347c44429c9ed31371778e5ab28d1f1b08; do
-            label=${entry%%:*}
-            source=${entry#*:}
-            git checkout --detach "$source"
-            python3 docs/help/sync/check.py
-            google-chrome --headless=new --no-sandbox --disable-gpu --hide-scrollbars --no-first-run --window-size=1440,2400 --virtual-time-budget=4000 --screenshot="$RUNNER_TEMP/html-evidence/$label-HTML-guide.png" "file://$PWD/docs/help/sync/index.html#connect"
-            printf '%s\n' "$source" > "$RUNNER_TEMP/html-evidence/$label-source.txt"
-            sha256sum docs/help/sync/index.html > "$RUNNER_TEMP/html-evidence/$label-html-sha256.txt"
-          done
+          python3 -m venv "$RUNNER_TEMP/help-browser"
+          "$RUNNER_TEMP/help-browser/bin/pip" install playwright==1.56.0
+          cp scripts/ci/sync-docs-html.py "$RUNNER_TEMP/help-capture.py"
+      - name: Capture both changed real HTML sections and verify offline Help
+        run: |
+          google-chrome --version
+          "$RUNNER_TEMP/help-browser/bin/python" "$RUNNER_TEMP/help-capture.py" "$RUNNER_TEMP/html-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
