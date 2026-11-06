@@ -1385,6 +1385,38 @@ pub(super) fn removal_view(
         None => Ok(folder.clone()),
     }
 }
+pub(super) fn removal_members(
+    db: &Database,
+    vault: &ExistingVault,
+    removed: &str,
+    folder: &Value,
+) -> Result<Vec<Value>> {
+    let members = folder["devices"]
+        .as_array()
+        .context("Removal folder membership missing")?;
+    let removing_introducer = db.transfers.iter().any(|t| {
+        !t.legacy_hold()
+            && t.path == vault.path
+            && t.daemon == vault.daemon
+            && t.vault == vault.folder_id
+            && t.connection
+                .as_ref()
+                .is_some_and(|c| c.device_id == removed)
+    });
+    Ok(members
+        .iter()
+        .filter(|m| m["deviceID"] != removed)
+        .map(|member| {
+            let mut member = member.clone();
+            if removing_introducer && introduced_by(members, &member, removed) {
+                // Retain the already-authorized direct relationship independently
+                // before acknowledging the introducer's departure.
+                member["introducedBy"] = json!("");
+            }
+            member
+        })
+        .collect())
+}
 impl Transfer {
     pub(super) fn deactivate(&mut self) {
         self.active = false;

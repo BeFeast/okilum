@@ -39,7 +39,10 @@ pub(super) struct Request {
 pub(super) fn requests(db: &Database, scope: Uuid) -> Vec<Request> {
     db.removals
         .iter()
-        .filter(|r| r.local_applied && r.pending.contains_key(&scope))
+        .filter(|r| {
+            (r.local_applied || db.local_removed && r.folders.is_some())
+                && r.pending.contains_key(&scope)
+        })
         .map(|r| Request {
             id: r.id,
             device: r.device.clone(),
@@ -48,10 +51,15 @@ pub(super) fn requests(db: &Database, scope: Uuid) -> Vec<Request> {
         .collect()
 }
 pub(super) fn acknowledge(db: &mut Database, scope: Uuid, id: Uuid) -> Result<()> {
+    let departing = db.local_removed;
     let removal = db
         .removals
         .iter_mut()
-        .find(|r| r.id == id && r.local_applied)
+        .find(|r| {
+            r.id == id
+                && r.pending.contains_key(&scope)
+                && (r.local_applied || departing && r.folders.is_some())
+        })
         .context("Unknown removal acknowledgement")?;
     removal.pending.remove(&scope);
     Ok(())
@@ -276,8 +284,11 @@ impl Controller {
         self.queue_removal(id, &device, vaults, Some(scope))?;
         self.prepare_removal(id)?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
-        self.apply_removal(id)?;
-        Ok(Reply::RemovalRecorded { id })
+        if self.apply_removal(id)? {
+            Ok(Reply::RemovalRecorded { id })
+        } else {
+            Ok(Reply::Pending)
+        }
     }
     fn prepare_removal(&self, id: Uuid) -> Result<()> {
         let fresh = self
@@ -298,7 +309,7 @@ impl Controller {
         }
         Ok(())
     }
-    fn apply_removal(&self, id: Uuid) -> Result<()> {
+    fn apply_removal(&self, id: Uuid) -> Result<bool> {
         let (mut removal, attached) = {
             let db = self.shared.db.lock().unwrap();
             (
@@ -311,7 +322,7 @@ impl Controller {
             )
         };
         if removal.local_applied {
-            return Ok(());
+            return Ok(true);
         }
         {
             let db = self.shared.db.lock().unwrap();
@@ -338,18 +349,16 @@ impl Controller {
                     source::validate_removal(&db, &fresh, &before)?;
                     transfer::validate_removal(&db, &fresh, &before)?;
                 }
-                let members = before["devices"]
-                    .as_array()
-                    .context("Removal folder membership missing")?;
                 let mut after = before.clone();
                 if fresh.daemon.device_id == removal.device {
                     after["paused"] = json!(true);
                 } else {
-                    after["devices"] = json!(members
-                        .iter()
-                        .filter(|d| d["deviceID"] != removal.device)
-                        .cloned()
-                        .collect::<Vec<_>>());
+                    after["devices"] = json!(transfer::removal_members(
+                        &self.shared.db.lock().unwrap(),
+                        &fresh,
+                        &removal.device,
+                        &before
+                    )?);
                 }
                 folders.push(FolderRemoval {
                     vault: fresh,
@@ -364,7 +373,22 @@ impl Controller {
             self.save(&db)?;
             removal.folders = Some(folders);
         }
-        let mut removed_self = false;
+        let removed_self = removal
+            .folders
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|f| f.vault.daemon.device_id == removal.device);
+        if removed_self && !removal.pending.is_empty() {
+            // Pausing an introducer first would deintroduce every surviving
+            // receiver from its siblings. Deny application authority now, but
+            // keep its transport announcement until every pending receiver has
+            // detached that provenance and acknowledged the departure.
+            let mut db = self.shared.db.lock().unwrap();
+            deny(&mut db, &removal, true);
+            self.save(&db)?;
+            return Ok(false);
+        }
         for folder in removal.folders.as_ref().unwrap() {
             self.check()?;
             let fresh = inspect_existing(&configs, &folder.vault.path)?;
@@ -372,7 +396,6 @@ impl Controller {
                 existing::same_binding(&folder.vault, &fresh),
                 "Removal vault identity changed"
             );
-            removed_self |= fresh.daemon.device_id == removal.device;
             let api = fresh.daemon.connect()?;
             let current = api.folder(&fresh.folder_id)?;
             let view = |value: &serde_json::Value| {
@@ -396,7 +419,7 @@ impl Controller {
                 } else {
                     // Never restore introduced members that Syncthing has
                     // already removed since the intent was recorded.
-                    json!({"devices":current["devices"].as_array().context("Removal folder membership missing")?.iter().filter(|member| member["deviceID"] != removal.device).cloned().collect::<Vec<_>>()})
+                    json!({"devices":transfer::removal_members(&self.shared.db.lock().unwrap(), &fresh, &removal.device, &current)?})
                 };
                 self.check()?;
                 api.patch_folder(&fresh.folder_id, &changes)?;
@@ -412,39 +435,14 @@ impl Controller {
             self.save(&db)?;
         }
         let mut db = self.shared.db.lock().unwrap();
-        let revoked: Vec<_> = db
-            .peers
-            .iter()
-            .filter(|(_, p)| {
-                removed_self || p.syncthing_device.as_deref() == Some(removal.device.as_str())
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        for peer in revoked {
-            if let Some(pair) = db.peers.remove(&peer) {
-                db.revoked_peers.insert(peer, pair);
-            }
-            db.share_grants.retain(|g| !g.for_peer(peer));
-            if db.catalog_peer == Some(peer) {
-                db.catalog.clear();
-                db.catalog_peer = None;
-            }
-        }
-        if removed_self {
-            for source in &mut db.sources {
-                source.active = false;
-            }
-            for transfer in &mut db.transfers {
-                transfer.deactivate();
-            }
-        }
-        db.local_removed |= removed_self;
+        deny(&mut db, &removal, removed_self);
         db.removals
             .iter_mut()
             .find(|r| r.id == id)
             .unwrap()
             .local_applied = true;
-        self.save(&db)
+        self.save(&db)?;
+        Ok(true)
     }
     pub(super) fn reconcile_removals(&self) -> Result<()> {
         self.check()?;
@@ -476,16 +474,21 @@ impl Controller {
                 continue;
             };
             for request in requests {
-                self.receive_removal(scope, request.id, request.device, request.vaults)?;
+                let recorded = matches!(
+                    self.receive_removal(scope, request.id, request.device, request.vaults)?,
+                    Reply::RemovalRecorded { id } if id == request.id
+                );
                 // A lost acknowledgement is replayed on the next pull. The
                 // receiver records and applies before acknowledging, never after.
-                let _ = self.call(
-                    peer.endpoint,
-                    scope,
-                    &peer.key,
-                    &peer.public,
-                    Operation::AcknowledgeRemoval { id: request.id },
-                );
+                if recorded {
+                    let _ = self.call(
+                        peer.endpoint,
+                        scope,
+                        &peer.key,
+                        &peer.public,
+                        Operation::AcknowledgeRemoval { id: request.id },
+                    );
+                }
             }
         }
         let removals = self.shared.db.lock().unwrap().removals.clone();
@@ -525,6 +528,36 @@ impl Controller {
         Ok(())
     }
 }
+fn deny(db: &mut Database, removal: &Removal, removed_self: bool) {
+    let revoked: Vec<_> = db
+        .peers
+        .iter()
+        .filter(|(_, p)| {
+            removed_self || p.syncthing_device.as_deref() == Some(removal.device.as_str())
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    for peer in revoked {
+        if let Some(pair) = db.peers.remove(&peer) {
+            db.revoked_peers.insert(peer, pair);
+        }
+        db.share_grants.retain(|g| !g.for_peer(peer));
+        if db.catalog_peer == Some(peer) {
+            db.catalog.clear();
+            db.catalog_peer = None;
+        }
+    }
+    if removed_self {
+        for source in &mut db.sources {
+            source.active = false;
+        }
+        for transfer in &mut db.transfers {
+            transfer.deactivate();
+        }
+    }
+    db.local_removed |= removed_self;
+}
+
 pub(super) fn peer_is_live(db: &Database, peer: &Paired) -> bool {
     !db.local_removed
         && db
