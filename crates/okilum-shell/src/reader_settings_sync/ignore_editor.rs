@@ -10,6 +10,15 @@ use std::sync::{
     Arc,
 };
 
+fn policy_cause(error: &anyhow::Error) -> String {
+    failure_details("ignore_policy", error)["error"]
+        .as_str()
+        .unwrap_or("Refresh the policy preview")
+        .chars()
+        .take(256)
+        .collect()
+}
+
 impl SyncSettings {
     pub(super) fn edit_ignore_policy(
         &self,
@@ -125,7 +134,7 @@ impl PolicyEditor {
                         Err(error) => {
                             view.message = Some(format!(
                                 "Could not load exclusions. {}",
-                                short_cause(&error)
+                                policy_cause(&error)
                             ))
                         }
                     }
@@ -163,7 +172,7 @@ impl PolicyEditor {
                 view.busy = false;
                 match result {
                     Ok(_) => { view.load(window,cx); view.message = Some("Saved. The shared file syncs to the other computers; their local rules are kept.".into()); },
-                    Err(error) => view.message = Some(format!("Could not save exclusions. {} Refresh the preview before trying again.",short_cause(&error))),
+                    Err(error) => view.message = Some(format!("Could not save exclusions. {} Refresh the preview before trying again.",policy_cause(&error))),
                 }
                 cx.notify();
             }));
