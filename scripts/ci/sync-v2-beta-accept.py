@@ -1,6 +1,6 @@
 """Signed-beta fresh Mac UI + real isolated headless protocol peer; hosted VM only."""
-import hashlib,json,os,pathlib,plistlib,queue,re,shutil,signal,socket,subprocess,sys,tempfile,threading,time,urllib.request,xml.etree.ElementTree as ET
-assert sys.platform=='darwin' and os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('OKILUM_QA_DISPOSABLE_HOST')=='github-hosted-macos-15','disposable hosted Mac only'
+import hashlib,json,os,pathlib,platform,plistlib,queue,re,shutil,signal,socket,subprocess,sys,tempfile,threading,time,urllib.request,xml.etree.ElementTree as ET
+assert sys.platform=='darwin' and os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('OKILUM_QA_DISPOSABLE_HOST') in ('github-hosted-macos-15','github-hosted-macos-26'),'disposable hosted Mac only'
 config=json.loads(pathlib.Path(sys.argv[1]).read_text());driver=pathlib.Path(sys.argv[2]);peer_binary=pathlib.Path(sys.argv[3]);out=pathlib.Path(sys.argv[4]);out.mkdir(exist_ok=True)
 root=pathlib.Path(tempfile.mkdtemp(prefix='okilum-beta-ui-')).resolve();app=pathlib.Path('/Applications/Okilum.app');account=pathlib.Path.home()/'Library/Application Support/Okilum';managed=account/'Sync';direct=account/'SyncDirect'
 assert not app.exists() and not managed.exists() and not direct.exists(),'host already has Okilum; never replace existing state'
@@ -33,7 +33,7 @@ def click(text,timeout=30):
 def allow_local_network_dialog():
  rows=ocr()
  text=' '.join(r['text'] for r in rows).casefold()
- if 'local networks' not in text or not any(name in text for name in ['okilum','syncthing']):return False
+ if 'local network' not in text or not any(name in text for name in ['okilum','syncthing']):return False
  allow=next((r for r in rows if r['text'].strip().casefold()=='allow'),None)
  if not allow:return False
  screen('01b-local-network-consent')
@@ -164,7 +164,7 @@ try:
  else:shutil.copy2(raw,video)
  run('ffmpeg','-v','error','-xerror','-i',video,'-f','null','-',timeout=120);vp=json.loads(run('ffprobe','-v','error','-show_streams','-show_format','-of','json',video).stdout);assert 60<=float(vp['format']['duration'])<=180
  hashes={name:sha(source/name) for name in ['seed.md','from-mac.md','from-peer.md','positive.md']};assert all(sha(target/name)==digest for name,digest in hashes.items())
- result={'build':config['build'],'source':config['source'],'package_sha256':asset['sha256'],'signed_notarized_beta':True,'fresh_mac_account_state':True,'preparation_budget_seconds':preparation_budget,'startup_budget_seconds':startup_budget,'harness_source_wait_seconds':source_wait,'settings_did_not_bootstrap':True,'source_enrolled_via_actual_UI':True,'invitation_created_and_copied_via_UI':True,'approved_via_Mac_UI':True,'receiver':'separate real Syncthing2.1.6 plus production Controller library, headless fixture with ordinary LAN discovery (no manual device dial hints)','both_directions_exact':True,'file_hashes':hashes,'source_device':source_id,'peer_device':peer_id,'common_policy_equal':True,'mandatory_excludes_enforced':True,'managed_retention_days':30,'video_duration':float(vp['format']['duration']),'video_decode_exit':0,'video_edited_chronological':edited,'recorder_exit':recorder_code}
+ result={'build':config['build'],'source':config['source'],'package_sha256':asset['sha256'],'signed_notarized_beta':True,'fresh_mac_account_state':True,'hosted_macos_version':platform.mac_ver()[0],'preparation_budget_seconds':preparation_budget,'startup_budget_seconds':startup_budget,'harness_source_wait_seconds':source_wait,'settings_did_not_bootstrap':True,'source_enrolled_via_actual_UI':True,'invitation_created_and_copied_via_UI':True,'approved_via_Mac_UI':True,'receiver':'separate real Syncthing2.1.6 plus production Controller library, headless fixture with ordinary LAN discovery (no manual device dial hints)','both_directions_exact':True,'file_hashes':hashes,'source_device':source_id,'peer_device':peer_id,'common_policy_equal':True,'mandatory_excludes_enforced':True,'managed_retention_days':30,'video_duration':float(vp['format']['duration']),'video_decode_exit':0,'video_edited_chronological':edited,'recorder_exit':recorder_code}
  event('SIGNED_BETA_FRESH_MAC_PAIRING_PASS')
 except BaseException as error:
  event('failure: '+str(error))

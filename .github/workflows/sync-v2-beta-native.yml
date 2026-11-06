@@ -7,14 +7,14 @@ permissions:
   contents: read
 jobs:
   fresh-pairing:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 50
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
-      OKILUM_QA_DISPOSABLE_HOST: github-hosted-macos-15
+      OKILUM_QA_DISPOSABLE_HOST: github-hosted-macos-26
     steps:
       - uses: actions/checkout@v4
         with:
