@@ -66,6 +66,10 @@ impl ProjectView {
             return;
         };
         let entry = manager::entry(&env, cx);
+        self.native.flow_blocked = matches!(
+            entry.stage,
+            Stage::Waiting | Stage::Connecting | Stage::Offline | Stage::Expired | Stage::Error
+        );
         if entry.retry_epoch != self.native.retry_epoch {
             self.native.retry_epoch = entry.retry_epoch;
             self.native_retry_now(window, cx);
@@ -359,5 +363,58 @@ mod tests {
             view.native.expires_at = Some(1);
             assert_eq!(view.manager_stage(cx), Stage::Expired);
         });
+    }
+    #[gpui::test]
+    fn shared_onboarding_blocks_existing_live_sends_until_cancel(cx: &mut TestAppContext) {
+        cx.update(crate::test_init);
+        cx.update(reader_features::enable_test_modules);
+        let files = tempfile::tempdir().unwrap();
+        let env = Environment::new("fixture", "https://t3.example").unwrap();
+        let expiry = chrono::Utc::now().timestamp().max(0) as u64 + 3600;
+        let token = NativeToken::from_secret(
+            &env,
+            &serde_json::to_vec(&serde_json::json!({
+                "origin":env.origin(),"access_token":"synthetic-only","expires_at":expiry,
+                "scope":"orchestration:read orchestration:operate"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let client =
+            Arc::new(NativeClient::new(env.clone(), token, Duration::from_secs(1)).unwrap());
+        let (view, visual) = cx.add_window_view(|window, cx| {
+            let mut view = super::super::super::fixture::view(
+                files.path().to_owned(),
+                Arc::new(super::super::super::fixture::Fake::default()),
+                window,
+                cx,
+            );
+            view.active = false;
+            view.environment = Some(env.clone());
+            view.native.client = Some(client);
+            view.native.expires_at = Some(expiry);
+            view.native.stream_ready = true;
+            view
+        });
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| {
+            assert!(
+                view.can_send(),
+                "positive control: the existing native connection can send"
+            )
+        });
+        visual.update(|_, cx| manager::begin(&env, cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, cx| {
+            assert_eq!(view.manager_stage(cx), Stage::Waiting);
+            assert!(
+                !view.can_send(),
+                "a shared Settings pairing must also disable the panel's old connection"
+            );
+            assert!(!view.native.actions.read(cx).enabled);
+        });
+        visual.update(|_, cx| manager::cancel(&env, cx));
+        visual.run_until_parked();
+        view.read_with(visual, |view, _| assert!(view.can_send()));
     }
 }

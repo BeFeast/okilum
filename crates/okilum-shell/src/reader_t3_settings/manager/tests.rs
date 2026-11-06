@@ -231,12 +231,14 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
         assert_eq!(e.stage, Stage::Connected);
         assert!(e.client.is_some());
         assert!(e.expiry.is_some());
-        let entries = &store.lock().unwrap().entries;
-        assert_eq!(entries[&mcp_key].1, b"synthetic-mcp-secret");
-        assert_eq!(entries[&NativeToken::credential_key(&env)].0, "legacy-native-user", "GPUI must replace the old URL + username item rather than create a competing credential");
-        let bytes = &entries[&NativeToken::credential_key(&env)].1;
-        assert!(!String::from_utf8_lossy(bytes).contains("23456789ABCD"));
-        NativeToken::from_secret(&env, bytes).unwrap();
+        {
+            let entries = &store.lock().unwrap().entries;
+            assert_eq!(entries[&mcp_key].1, b"synthetic-mcp-secret");
+            assert_eq!(entries[&NativeToken::credential_key(&env)].0, "legacy-native-user", "GPUI must replace the old URL + username item rather than create a competing credential");
+            let bytes = &entries[&NativeToken::credential_key(&env)].1;
+            assert!(!String::from_utf8_lossy(bytes).contains("23456789ABCD"));
+            NativeToken::from_secret(&env, bytes).unwrap();
+        }
         begin(&env, cx);
         let link = PairLink::recognize(&env, &format!("{}/pair#token=23456789ABCD", env.origin()))
             .unwrap();

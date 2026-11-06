@@ -1081,10 +1081,9 @@ impl ProjectView {
             _ => "Offline",
         };
         #[cfg(native_manager)]
-        let label = if self.native.stream_error_is_clear() {
-            self.native.status_label(cx)
-        } else {
-            self.manager_stage(cx).label()
+        let label = match self.manager_stage(cx) {
+            reader_t3_settings::manager::Stage::Connected => self.native.status_label(cx),
+            stage => stage.label(),
         };
         let owner = cx.entity().downgrade();
         let disabled = self.busy || self.model_busy || !reader_t3_settings::can_sign_out(&env, cx);

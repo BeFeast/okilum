@@ -27,6 +27,7 @@ pub(super) struct Native {
     pub(super) actions: Entity<actions::Actions>,
     request_lease: Arc<()>,
     busy: bool,
+    flow_blocked: bool,
     setup_error: Option<String>,
     setup_cause: Option<StreamError>,
     history_error: Option<String>,
@@ -78,6 +79,7 @@ impl Native {
                     .masked(true)
             }),
             busy: false,
+            flow_blocked: false,
             setup_error: None,
             setup_cause: None,
             history_error: None,
@@ -106,7 +108,10 @@ impl Native {
         !self.busy && self.stream_ready && self.failure.is_none()
     }
     pub(super) fn client_can_operate(&self) -> bool {
-        !self.busy && self.stream_ready && self.client.as_ref().is_some_and(|c| c.can_operate())
+        !self.busy
+            && !self.flow_blocked
+            && self.stream_ready
+            && self.client.as_ref().is_some_and(|c| c.can_operate())
     }
     pub(super) fn deleted(&self) -> bool {
         self.metadata.deleted
@@ -189,6 +194,7 @@ impl Native {
         self.retained = None;
         self.setup_error = None;
         self.setup_cause = None;
+        self.flow_blocked = false;
         self.history_error = None;
         self.failure = None;
         self.ever_ready = false;
@@ -341,6 +347,7 @@ impl ProjectView {
         self.native.pause();
         self.gateway = Some(gateway);
         self.native.client = Some(client);
+        self.native.flow_blocked = false;
         self.attachments.connection_changed();
         self.native.setup_error = None;
         self.native.setup_cause = None;
