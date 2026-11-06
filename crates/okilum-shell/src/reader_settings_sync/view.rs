@@ -210,6 +210,7 @@ impl Render for SyncSettings {
         if let Some(snapshot) = &self.snapshot {
             for (index, vault) in snapshot.attached.iter().enumerate() {
                 let path = vault.path.clone();
+                let ignore_path = vault.path.clone();
                 let observed = self
                     .presentation
                     .overview
@@ -287,6 +288,16 @@ impl Render for SyncSettings {
                                             "Status not checked".into()
                                         }),
                                 ),
+                        )
+                        .child(
+                            Button::new(("sync-shared-policy", index))
+                                .debug_selector(move || format!("sync-shared-policy-{index}"))
+                                .ghost()
+                                .label("Shared exclusions")
+                                .disabled(self.busy)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.edit_ignore_policy(ignore_path.clone(), window, cx)
+                                })),
                         )
                         .child(
                             Button::new(("sync-manage", index))
@@ -521,12 +532,23 @@ impl SyncSettings {
             }
         }
         if let Some(snapshot) = &self.snapshot {
-            for (index, warning) in snapshot.history_warnings.iter().enumerate() {
+            for (index, warning) in snapshot
+                .history_warnings
+                .iter()
+                .map(|w| (&w.path, &w.message))
+                .chain(
+                    snapshot
+                        .policy_warnings
+                        .iter()
+                        .map(|w| (&w.path, &w.message)),
+                )
+                .enumerate()
+            {
                 result = result.child(
                     div()
                         .id(("sync-history-warning", index))
                         .text_sm()
-                        .child(format!("{}: {}", warning.path.display(), warning.message)),
+                        .child(format!("{}: {}", warning.0.display(), warning.1)),
                 );
             }
         }

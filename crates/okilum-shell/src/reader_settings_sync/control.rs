@@ -22,7 +22,7 @@ use std::{
 
 /// Changes whenever a call or answer changes shape; an updated command asks a
 /// process started from the previous build to restart.
-const PROTOCOL: u32 = 2;
+const PROTOCOL: u32 = 3;
 const SOCKET: &str = "control.sock";
 const MAX_MESSAGE: u64 = 16 * 1024 * 1024;
 const MAX_CALLS: usize = 8;

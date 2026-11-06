@@ -1,8 +1,16 @@
 //! LAN-first computer pairing, independent of service enrollment and Syncthing
 //! lifecycle. Opening this controller does not listen or start a daemon.
 mod addresses;
+mod create_ignores;
+pub mod shared_ignores;
+pub use shared_ignores::IgnorePreview;
 mod existing;
 mod history;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PolicyWarning {
+    pub path: PathBuf,
+    pub message: String,
+}
 pub use history::{HistoryWarning, RetentionDays, RetentionSetting};
 #[cfg(target_os = "linux")]
 pub mod inventory;
@@ -62,6 +70,7 @@ pub struct Vault {
 /// Serializable for the desktop's local `okilum sync` control channel (#2589).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub policy_warnings: Vec<PolicyWarning>,
     pub history_warnings: Vec<history::HistoryWarning>,
     pub history_retention: Vec<RetentionSetting>,
     pub offer_url: Option<String>,
@@ -162,6 +171,8 @@ struct Database {
 type InspectionHook = Arc<dyn Fn(Uuid) + Send + Sync>;
 
 struct Shared {
+    policy_revisions: Mutex<BTreeMap<PathBuf, String>>,
+    policy_warnings: Mutex<Vec<PolicyWarning>>,
     history_warnings: Mutex<Vec<history::HistoryWarning>>,
     state: PathBuf,
     configs: Mutex<Vec<PathBuf>>,
@@ -321,6 +332,8 @@ impl Controller {
                 access: okilum_sync::NetworkAccess::current(),
                 observation_generation: Uuid::new_v4(),
                 transfer_lock: Mutex::new(()),
+                policy_revisions: Mutex::new(BTreeMap::new()),
+                policy_warnings: Mutex::new(Vec::new()),
                 history_warnings: Mutex::new(Vec::new()),
                 connection_watch: Mutex::new(Default::default()),
                 delivered_approval: Mutex::new(None),
@@ -389,6 +402,7 @@ impl Controller {
         self.check()?;
         let db = self.shared.db.lock().unwrap();
         let mut snapshot = snapshot(&db)?;
+        snapshot.policy_warnings = self.shared.policy_warnings.lock().unwrap().clone();
         snapshot.history_warnings = self.shared.history_warnings.lock().unwrap().clone();
         let held = db.transfers.iter().any(transfer::Transfer::legacy_hold);
         drop(db);
@@ -703,6 +717,7 @@ impl Controller {
         self.serve_pinned()?;
         self.refresh_pairing()?;
         self.reconcile_peer_addresses()?;
+        self.reconcile_create_ignores()?;
         self.reconcile_history()?;
         self.reconcile_transfers()?;
         self.refresh_connection_status()?;
@@ -1232,6 +1247,7 @@ fn snapshot(db: &Database) -> Result<Snapshot> {
             .map(|(_, r)| pending(r, false))
     };
     Ok(Snapshot {
+        policy_warnings: Vec::new(),
         history_warnings: Vec::new(),
         history_retention: history_settings(db),
         offer_url: offer.map(|i| encode_url(&i.offer)).transpose()?,
@@ -1376,6 +1392,22 @@ fn decode_url(input: &str) -> Result<Offer> {
         "invalid pairing invitation lifetime"
     );
     Ok(offer)
+}
+
+impl Controller {
+    fn reconcile_create_ignores(&self) -> Result<()> {
+        self.check()?;
+        let _guard = self.shared.transfer_lock.lock().unwrap();
+        let mut warnings = Vec::new();
+        #[cfg(target_os = "linux")]
+        self.reconcile_source_ignores(&mut warnings);
+        self.reconcile_transfer_ignores(&mut warnings);
+        #[cfg(target_os = "linux")]
+        self.reconcile_source_shared_ignores(&mut warnings);
+        self.reconcile_transfer_shared_ignores(&mut warnings);
+        *self.shared.policy_warnings.lock().unwrap() = warnings;
+        Ok(())
+    }
 }
 
 fn history_settings(db: &Database) -> Vec<RetentionSetting> {

@@ -267,6 +267,7 @@ pub fn service_path(path: &Path) -> bool {
     path.components().any(|component| {
         let name = component.as_os_str();
         name.as_encoded_bytes().starts_with(b".okilum-save-")
+            || name.as_encoded_bytes().starts_with(b".okilum-create-")
             || name.as_encoded_bytes().starts_with(b"._")
             || name.to_str().is_some_and(|name| SKIP_DIRS.contains(&name))
     })
@@ -2323,6 +2324,8 @@ mod preimage_visibility_tests {
             ".okilum-save-legacy.md",
             ".okilum-save-proposed.prepared",
             ".okilum-save-conflict.raced",
+            ".okilum-create-interrupted.md",
+            ".okilum-create-8db23a26-cb93-4484-aafe-923e716e2f5c",
         ];
         for name in service_names {
             fs::write(root.join("nested").join(name), "protected recovery bytes").unwrap();

@@ -31,7 +31,7 @@ provider jobs, canonical enrollment or deployment.
 [Sync between your computers](sync-enrollment.md) describes the shipped Linux
 flow and unfinished work. On the existing computer, **Share with another
 computer…** → **Share with my computers** shares an ordinary vault; **Add
-computer** produces a private, one-computer pairing URL valid for ten minutes.
+computer** produces a private, one-computer pairing URL valid for one hour.
 On the new computer, **Get notes from another computer** → paste URL → **Connect**;
 confirm on the old computer, then choose a vault and an empty local folder on the
 new one. First pairing requires the same LAN. The bundled Linux runtime prepares
@@ -50,12 +50,13 @@ receive through the same flow and hold another trusted copy; plain Syncthing
 peers require explicit Syncthing configuration. A receiver's Okilum-managed
 Syncthing marks the computer that shared the vault as its introducer once the vault
 is bidirectional, so it also syncs directly with every computer that one shares the
-vault with; those computers must still accept it (#2589). Headless/introducer setup
-(#2048) and a shared all-device list with propagated removal (#2042) remain unfinished.
+vault with; those computers must still accept it (#2589). [Headless installation and plain-peer introducer setup](sync-headless.md)
+use the same controller (#2048). Propagated removal remains #2042; the
+06 November decision uses introducer mesh without a device list in the vault.
 Copied data cannot be recalled, and untrusted-server encryption remains open.
 
 A non-empty new destination is refused pending lossless preview/merge (#2043);
-unmerged PRs #2511/#2513 do not enable it. Incoming changes update open reading
+merged PRs #2511/#2513 provide inventory/preflight groundwork, but do not enable this flow. Incoming changes update open reading
 and clean editing views. With unsaved edits, a notice preserves local text;
 explicit Save or **Keep both versions** saves a separate
 `.okilum-conflict-<time>-<random>` copy without replacing the incoming file
@@ -64,8 +65,8 @@ explicit Save or **Keep both versions** saves a separate
 [Previous Sync versions](source-history.md#previous-versions-from-sync-2045)
 use staggered 30-day history on both managed sides, reconcile existing owned
 folders, offer per-computer retention settings and guarded Restore in Note history
-and Recover notes (#2045). This is not a backup of every local edit. Shared ignore
-policy (#2046) remains a follow-up. macOS is **coming** in
+and Recover notes (#2045). This is not a backup of every local edit. [Shared ignore policy](sync-enrollment.md#one-shared-ignore-policy-2046)
+uses a synced file with a preserved local block (#2046). macOS is **coming** in
 [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is **coming** in
 [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
 

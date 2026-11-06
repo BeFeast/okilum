@@ -7,7 +7,7 @@ After the first transfer, saved changes and deletions sync automatically in both
 directions. Keep a separate backup: Sync can copy an accidental deletion too.
 
 This describes the Linux flow on `origin/main`, checked at
-`547a8c4c96be464a4d66921447c6c93e5ad90162` (2026-11-04). The
+`7956dd816ab2f71c747c7eef50aeaa1f5fd4ed5a` (2026-11-06). The
 [Linux outcome](https://git.oklabs.uk/BeFeast/okilum/issues/2039#issuecomment-46260)
 records the fresh two-computer run on beta 7538. macOS is **coming** in
 [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is **coming** in
@@ -164,17 +164,15 @@ hold that copy while another peer is off. It is another trusted peer, not a
 required hub or an Okilum service. It can exchange changes with its connected
 peers while the other computer is unavailable.
 
-For three or more computers, do not assume receiving a vault also makes that
-computer a catalog source, or that pairing with one computer automatically
-connects every other computer. Symmetric catalog serving and a synchronized
-all-device list are not delivered. Add the intended peer connections explicitly
-through supported setup or existing Syncthing configuration.
+For three or more computers, managed receivers trust the computer sharing the
+vault as their Syncthing introducer after first transfer. It introduces the
+other computers sharing that vault, creating direct transport connections.
+An introducer does not grant Okilum catalog/pairing credentials to every peer.
 
-A plain Syncthing server without Okilum is configured in Syncthing, with the
-intended device IDs and folder shares on each side. Existing configurations can
-be reused as above. Headless Okilum and an introducer-based plain-peer workflow
-remain [#2048](https://git.oklabs.uk/BeFeast/okilum/issues/2048); current direct
-pairing creates peers with `introducer: false` and `autoAcceptFolders: false`.
+[Headless installation and plain Syncthing guidance](sync-headless.md) cover
+`okilum sync serve`, explicit external selection, pairing through a running
+service and enabling a trusted sharing device as introducer on a plain peer.
+Existing server services and configurations remain under their own control.
 A server holding an ordinary synced vault can read it. Encryption for servers
 the owner does not trust remains open; transport encryption does not solve that.
 
@@ -190,20 +188,13 @@ recalled. A new invitation does not revoke an earlier pairing.
 The [30 October decisions and 1 November clarification](https://git.oklabs.uk/BeFeast/okilum/issues/2039)
 set the direction. These parts remain unfinished:
 
-- [#2042](https://git.oklabs.uk/BeFeast/okilum/issues/2042): a device list inside
-  the vault, all-to-all connections and propagated additions/removals.
+- [#2042](https://git.oklabs.uk/BeFeast/okilum/issues/2042): propagated removal through the
+  introducer mesh; the 06 November decision does not add a vault device list.
 - [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043): preview and lossless
   first merge when the destination already has files. Local preview groundwork
-  does not enable this flow. Unmerged PRs
+  does not enable this flow. Merged PRs
   [#2511](https://git.oklabs.uk/BeFeast/okilum/pulls/2511) and
-  [#2513](https://git.oklabs.uk/BeFeast/okilum/pulls/2513) are not shipped support.
-- [#2048](https://git.oklabs.uk/BeFeast/okilum/issues/2048): the complete
-  headless/plain-peer journey described above.
-- [#2046](https://git.oklabs.uk/BeFeast/okilum/issues/2046): one shared ignore
-  policy for the whole vault. Today source enrollment seeds/verifies local
-  `.stignore` rules and first receive applies approved ignores; Syncthing does
-  not transport `.stignore`. Indexes, save temporaries and worktrees are excluded;
-  `.claude/skills` can sync. Incompatible existing policy requires review.
+  [#2513](https://git.oklabs.uk/BeFeast/okilum/pulls/2513) supply inventory/preflight groundwork, not a complete first-merge UI.
 - Untrusted-server encryption and the limits of removal for already copied data.
 
 The old service/hub/passkey enrollment is gone from the desktop user flow
@@ -237,3 +228,62 @@ The [direct-pairing engineering notes](sync-direct-pairing.md) cover the protoco
 readiness checks and remaining lifecycle limits. The older
 [compatibility evidence](sync-compatibility.md) describes isolated hub/client
 fixtures, not today's user setup.
+
+## Interrupted note creation (#2569)
+
+New managed policies exclude `.okilum-create-*`, just as they exclude safe-save
+staging. These are unpublished service artifacts, never notes or evidence of a
+completed save. New receiving folders also exclude this staging prefix without
+changing the source computer's ignore file.
+
+Existing owned source/receiver folders upgrade automatically only from the
+exact earlier generated LF policy. A durable before/after intent records the
+folder configuration and exact bytes; the selected authenticated daemon, vault
+identity and readback must still match. The folder pauses only for this scoped
+change and returns to its previous pause state. A lost acknowledgement replays
+that intent; a second refresh makes no further changes.
+
+Custom rules, comments, CRLF, negations, includes, moved roots and unrelated
+pending transitions require review. Settings shows a path-specific warning;
+Okilum preserves those bytes rather than guessing precedence. Existing external
+folders are not enrolled by the migration. No staging file is deleted by this
+change. Shared policy editing/explicit migration is tracked by #2046.
+
+## One shared ignore policy (#2046)
+
+Settings → Sync → **Shared exclusions** on a vault previews the shared rules and
+this computer's resulting `.stignore`. **Save shared policy** writes the ordinary
+synced file `.okilum/sync-ignore`. The first local line is
+`#include .okilum/sync-ignore`; the remaining device-local block is preserved
+byte for byte, including comments, CRLF and local negations. Shared rules come
+first, so local exceptions cannot re-include protected service data. Computer
+and server-local additions are allowed. They are not promoted into fleet rules.
+
+For a legacy vault, the editor offers `_Schema/stignore.template` as the initial
+shared source when that regular file exists. It adds the required index,
+save/create staging and worktree exclusions, including `/worktrees`. Without a
+template it offers those rules plus Git and Obsidian state exclusions. The user
+reviews the actual source before saving. Changes to either canonical or local
+bytes after preview refuse the save; no guessed merge replaces them.
+
+An existing owned receiver/source with the exact generated local policy adds
+the include when the shared file arrives. Custom or divergent local rules are
+reported for explicit preview/apply instead. Editing the shared file later
+updates every including Syncthing peer, without rewriting its local block.
+Multiple policy conflict copies, missing includes, symlinks, unsupported patterns
+and policies excluding their own file produce visible warnings. They are never
+silently resolved or replaced. External folder association does not authorize
+automatic ignore migration.
+
+A missing include is an error in pinned Syncthing 2.1.6. During first receive,
+Okilum therefore validates and seeds the policy from the authenticated share
+response while the new owned folder is paused, before installing `.stignore`.
+The normal synced file takes over after transfer starts. Existing non-empty
+unknown destinations remain refused; this does not enable #2043.
+
+For a plain Syncthing server, first let the shared file arrive under its current
+rules. Back up that server's `.stignore`, then prepend the one include line while
+retaining all device-local rules. Review the server's readback and an ordinary
+note transfer before removing a former template dependency. Installing that line
+on a live server is a host change; follow its administrator's approval boundary.
+Do not point an include at a missing file or replace a local policy blindly.

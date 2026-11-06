@@ -8,29 +8,29 @@ macOS is coming in [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Wi
 
 ## 1. First computer: share your vault
 
-Open the app menu → Share with another computer…. In Settings → Sync, find your vault under Vaults on this computer and select Share with my computers. It becomes Shared with approved computers. Enter a recognizable name under This computer.
+Open the app menu → Share with another computer…. In Settings → Sync, find your vault under Local vaults or Vaults and select Share with my computers. It becomes Shared with approved computers. Use a recognizable name for This computer when creating the invitation.
 
 If Sync finds an existing Syncthing, explicitly select Use connection. For a vault already synced by that runtime, select Choose existing synced vault, check the inspected folder and device, then select Use this connection. Okilum reuses that connection without starting a second daemon or taking over its lifecycle or network options.
 
 ## 2. First computer: invite the second
 
-Select Add computer, then Copy pairing URL. Transfer the invitation privately to the second computer. Keep this Settings window open. The invitation pairs one computer and expires after 10 minutes; do not post the complete pairing URL publicly. If it expires, create a new one.
+Select Add computer, enter This computer’s name, then Create pairing link and Copy link. Transfer the invitation privately to the second computer. Keep Okilum open here. The invitation pairs one computer and expires after one hour; do not post the complete pairing URL publicly. If it expires, create a new one.
 
 ## 3. Second computer: request the connection
 
-On the welcome screen, select Get notes from another computer. This opens Settings → Sync and enables the Sync feature. Enter this computer's own recognizable name under This computer, paste the invitation into Paste pairing URL, then select Connect. If you already have a vault open, you can also use Settings → Sync. Choose Use connection if prompted about an existing runtime.
+On the welcome screen, select Get notes from another computer. This opens Settings → Sync and enables the Sync feature. Select I have a link from another computer, enter this computer's own recognizable name under This computer, paste the invitation, then select Request connection. If you already have a vault open, you can also use Settings → Sync. Choose Use connection if prompted about an existing runtime.
 
 ## 4. First computer: confirm the identity
 
-Compare the displayed name and computer identities with the second computer. Select Confirm computer only for the expected request; decline unexpected requests. The authorized vault catalog then appears on the second computer. Further authorized vault selections between this pair need no new invitation.
+Compare the displayed name and computer identities with the second computer. Select Approve only for the expected request; decline unexpected requests. The authorized vault catalog then appears on the second computer. Further authorized vault selections between this pair need no new invitation.
 
 ## 5. Second computer: choose the vault and local folder
 
-Under Available vaults, find the intended vault and select Choose local folder. Okilum suggests a new folder based on the vault name; confirm its location. Use existing folder also lets you choose an empty local folder. A non-empty folder is refused until the lossless preview and merge in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043); do not delete existing files to force this step.
+Under Available vaults, find the intended vault and select Choose folder. In the native folder dialog, choose or create an empty local folder. After selecting the wanted vaults, select Start first sync. A non-empty folder is refused until the lossless preview and merge in [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043); do not delete existing files to force this step.
 
 ## 6. Wait for the first transfer
 
-The vault begins receiving automatically. Wait for Bidirectional Sync active; the received vault opens when it is ready. There is no extra Enable or daemon setup step. Do not treat a paired-computer entry alone as proof that the first transfer finished. If the runtime or other computer is offline, restore that same connection; do not create a second daemon or replace its identity.
+The vault begins receiving automatically. Follow the first transfer until First sync complete; the received vault opens when it is ready. There is no extra Enable or daemon setup step. Do not treat a paired-computer entry alone as proof that the first transfer finished. If the runtime or other computer is offline, restore that same connection; do not create a second daemon or replace its identity.
 
 ## Check both directions
 
@@ -40,11 +40,11 @@ Open a note, enter the editor, add a recognizable line and save with Ctrl+S. Ope
 
 Managed Linux Sync keeps explicit Syncthing peer addresses and uses public discovery and encrypted relays by default. Settings → Sync → Only local network and VPN turns off public discovery, relays and router traversal for every vault on the selected managed connection on this computer. Direct addresses must still be reachable over your LAN or VPN; first pairing always needs the same LAN. Change an external Syncthing's network options in Syncthing itself.
 
-If an incoming change reaches a note with unsaved edits, Okilum keeps your text and shows a notice. Explicit Save or Keep both versions preserves your local text in a separate `.okilum-conflict-<time>-<random>` file, keeping the note extension and leaving the incoming file unchanged. Reading and clean editing views update when a changed file arrives. Full Sync conflict/history workflows are still being developed (#2044/#2045).
+If an incoming change reaches a note with unsaved edits, Okilum keeps your text and shows a notice. Explicit Save or Keep both versions preserves your local text in a separate `.okilum-conflict-<time>-<random>` file, keeping the note extension and leaving the incoming file unchanged. Reading and clean editing views update when a changed file arrives. Sync conflict review offers Keep this, Keep that and Keep both (#2044). Managed folders retain previous remote versions for 30 days by default; use Note history to restore an overwritten note and Recover notes for a deleted one (#2045). This is not a backup of every local edit.
 
 ## Common questions
 
-**Do I need an always-on server?** No. An always-on Linux computer running Okilum can receive a copy using these steps and act as another trusted peer. A plain Syncthing server needs manual device/folder configuration. Headless Okilum and introducer guidance remain #2048; automatic all-device sharing/removal remains #2042.
+**Do I need an always-on server?** No. An always-on Linux computer running Okilum can receive a copy using these steps and act as another trusted peer. A Linux server can run `okilum sync serve` without a window. Pair through the running service with `okilum sync invite`. On a plain Syncthing server, share the vault explicitly, then edit the trusted sharing device → Advanced → Introducer. Leave Skip Introduction Removals disabled. New computers sharing that vault can then be introduced without repeated server configuration. Manually added devices still need manual removal; copied files remain on the removed device. Fleet-wide Okilum removal remains #2042.
 
 **Does disconnecting erase the other computer's copy?** No. Fleet-wide removal is not available in this flow. Removing shares/connections in Syncthing does not recall files already copied. Closing Okilum or disabling its optional Sync UI is not remote revocation.
 

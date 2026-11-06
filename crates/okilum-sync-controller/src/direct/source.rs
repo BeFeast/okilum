@@ -12,6 +12,7 @@ pub(super) const IGNORES: &[&str] = &[
     ".okilum-save-*",
     "/.claude/worktrees",
     "/worktrees",
+    ".okilum-create-*",
 ];
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -19,6 +20,8 @@ pub(super) const IGNORES: &[&str] = &[
 pub(super) struct Source {
     #[serde(default)]
     history: history::Policy,
+    #[serde(default)]
+    create_ignores: create_ignores::Policy,
     id: String,
     pub(super) path: PathBuf,
     root_identity: (u64, u64),
@@ -111,6 +114,7 @@ impl Controller {
                     .to_string_lossy();
                 let source = Source {
                     history: history::Policy::default(),
+                    create_ignores: create_ignores::Policy::current(),
                     folder: json!({"id":id,"label":label,"path":path,"type":"sendreceive","paused":true,
                         "devices":[{"deviceID":daemon.device_id}],"maxConflicts":-1,
                         "versioning":{"type":"staggered","params":{"maxAge":"2592000"}}}),
@@ -131,6 +135,7 @@ impl Controller {
         root.verify(&path)?;
         self.check()?;
         if source.active {
+            self.apply_source_ignores(&mut source)?;
             ensure!(
                 policy(&path)? == source.ignores,
                 "ignore policy changed; explicit review required"
@@ -277,6 +282,12 @@ fn policy(path: &Path) -> Result<Vec<u8>> {
             );
             let bytes = fs::read(&file)
                 .with_context(|| format!("read ignore policy {}", file.display()))?;
+            if std::str::from_utf8(&bytes)?
+                .lines()
+                .any(|s| s.starts_with("#include"))
+            {
+                return shared_ignores::validate_source_file(path);
+            }
             let text = std::str::from_utf8(&bytes)?;
             let lines = text.lines().map(str::trim).collect::<Vec<_>>();
             // Do not guess includes or precedence of user negations. Existing
@@ -349,6 +360,89 @@ impl Controller {
             "Source history binding changed"
         );
         Ok(api)
+    }
+    fn apply_source_ignores(&self, source: &mut Source) -> Result<()> {
+        if source.create_ignores.complete {
+            return Ok(());
+        }
+        ensure!(
+            !source.history.has_pending(),
+            "Ignore migration waits for the pending history intent"
+        );
+        let api = self.source_history_binding(source)?;
+        let bytes = create_ignores::Policy::read(&source.path, source.root_identity)?;
+        let expected: Vec<_> = std::str::from_utf8(&source.ignores)?
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        if source
+            .create_ignores
+            .prepare(&api.folder(&source.id)?, &bytes, &expected)?
+        {
+            self.save_source(source)?;
+            source.create_ignores.apply(
+                &api,
+                &source.id,
+                &source.path,
+                source.root_identity,
+                || self.check(),
+            )?;
+            source.ignores = format!("{}\n", create_ignores::lines().join("\n")).into_bytes();
+            source.create_ignores.finish();
+        }
+        self.save_source(source)
+    }
+    pub(super) fn reconcile_source_ignores(&self, warnings: &mut Vec<PolicyWarning>) {
+        let sources = self.shared.db.lock().unwrap().sources.clone();
+        for mut source in sources.into_iter().filter(|s| s.active) {
+            if let Err(error) = self.apply_source_ignores(&mut source) {
+                warnings.push(PolicyWarning {
+                    path: source.path.clone(),
+                    message: format!("{error:#}"),
+                });
+            }
+        }
+    }
+    pub(super) fn record_source_ignore_policy(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        let source = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .sources
+            .iter()
+            .find(|s| s.active && s.path == path)
+            .cloned();
+        if let Some(mut source) = source {
+            self.source_history_binding(&source)?;
+            source.ignores = bytes.to_vec();
+            source.create_ignores = create_ignores::Policy::current();
+            self.save_source(&source)?;
+        }
+        Ok(())
+    }
+    pub(super) fn reconcile_source_shared_ignores(&self, warnings: &mut Vec<PolicyWarning>) {
+        let sources = self.shared.db.lock().unwrap().sources.clone();
+        for source in sources.into_iter().filter(|s| s.active) {
+            let result = self.source_history_binding(&source).and_then(|_| {
+                self.reconcile_shared_ignore(&source.path, source.root_identity, &source.ignores)
+            });
+            match result {
+                Ok(Some(bytes)) => {
+                    if let Err(error) = self.record_source_ignore_policy(&source.path, &bytes) {
+                        warnings.push(PolicyWarning {
+                            path: source.path.clone(),
+                            message: format!("{error:#}"),
+                        });
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => warnings.push(PolicyWarning {
+                    path: source.path.clone(),
+                    message: format!("{error:#}"),
+                }),
+            }
+        }
     }
     fn apply_source_history(&self, source: &mut Source) -> Result<()> {
         let api = self.source_history_binding(source)?;
