@@ -15,6 +15,12 @@ must match; foreign origins, unrelated paths and ambiguous fragments are ignored
 A bare code has no verifiable origin, so only Details accepts it manually.
 Clipboard content is compared again before clearing; unrelated/newer content
 is retained. The pair link is never saved or included in errors/Debug output.
+On Wayland, keyboard focus can arrive before the clipboard Selection offer.
+Activation therefore allows the platform event pump to finish and retries for
+at most 750 ms, only while the window is active and the same explicit Connect
+request is still armed. Cancelling, starting another flow or closing the window
+invalidates the pending read. The focus regression delivers the link after the
+activation callback, matching this native event ordering.
 Only the resulting native credential is saved in the OS credential store, under
 the origin's `/ws` key, independently of the MCP OAuth `/mcp` credential.
 

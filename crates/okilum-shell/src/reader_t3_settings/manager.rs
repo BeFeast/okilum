@@ -166,32 +166,79 @@ pub(crate) fn cancel(env: &Environment, cx: &mut App) {
     });
 }
 
-pub(crate) fn activated(cx: &mut App) {
-    consume_clipboard(project::credentials::Store::default(), cx);
+pub(crate) fn activated(window: &Window, cx: &mut App) {
+    activated_with_store(window, project::credentials::Store::default(), cx);
 }
-fn consume_clipboard(store: project::credentials::Store, cx: &mut App) {
-    if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+fn waiting_generations(cx: &App) -> BTreeMap<String, u64> {
+    cx.try_global::<Connections>()
+        .into_iter()
+        .flat_map(|c| c.0.iter())
+        .filter(|(_, e)| e.stage == Stage::Waiting)
+        .map(|(origin, e)| (origin.clone(), e.generation))
+        .collect()
+}
+fn activated_with_store(window: &Window, store: project::credentials::Store, cx: &mut App) {
+    let waiting = waiting_generations(cx);
+    if waiting.is_empty() {
         return;
+    }
+    // Wayland delivers keyboard Enter before the new clipboard Selection offer.
+    // Reading synchronously in the activation callback sees the previous offer.
+    // Let the platform pump finish, then retry briefly while this window and
+    // the explicitly armed flow are still current. Never poll in the background.
+    window
+        .spawn(cx, async move |cx| {
+            for millis in [50, 100, 200, 400] {
+                cx.background_executor()
+                    .timer(Duration::from_millis(millis))
+                    .await;
+                let pending = cx
+                    .update(|window, cx| {
+                        window.is_window_active()
+                            && consume_clipboard_at(store.clone(), &waiting, cx)
+                    })
+                    .unwrap_or(false);
+                if !pending {
+                    break;
+                }
+            }
+        })
+        .detach();
+}
+#[cfg(test)]
+fn consume_clipboard(store: project::credentials::Store, cx: &mut App) {
+    consume_clipboard_at(store, &waiting_generations(cx), cx);
+}
+fn consume_clipboard_at(
+    store: project::credentials::Store,
+    generations: &BTreeMap<String, u64>,
+    cx: &mut App,
+) -> bool {
+    if !reader_features::enabled(reader_features::Feature::Agents, cx) {
+        return false;
     }
     let waiting: Vec<_> = cx
         .try_global::<Connections>()
         .into_iter()
         .flat_map(|c| c.0.iter())
-        .filter(|(_, e)| e.stage == Stage::Waiting)
+        .filter(|(origin, e)| {
+            e.stage == Stage::Waiting && generations.get(*origin) == Some(&e.generation)
+        })
         .filter_map(|(origin, _)| Environment::new("app", origin).ok())
         .collect();
     if waiting.is_empty() {
-        return;
+        return false;
     }
     let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-        return;
+        return true;
     };
     for env in waiting {
         if let Some(link) = PairLink::recognize(&env, &text) {
             pair(env, link, store, cx);
-            return;
+            return false;
         }
     }
+    true
 }
 
 pub(crate) fn paste(env: Environment, text: &str, cx: &mut App) {
