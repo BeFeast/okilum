@@ -51,7 +51,8 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-i", ToggleItalic, keys),
         // Letters keep shift on macOS too, so one string fits.
         KeyBinding::new("secondary-shift-x", ToggleStrikethrough, keys),
-        KeyBinding::new("secondary-shift-q", ToggleQuote, keys),
+        // Control on every OS: macOS reserves Shift+Command+Q for logout.
+        KeyBinding::new("ctrl-shift-q", ToggleQuote, keys),
         // Cmd+E is Edit / Read (#916): inline code is Cmd+` (Oleg, 24.10).
         // macOS may keep Cmd+` for "Move focus to next window"; Ctrl+`
         // (Typora's key) works there too. The Cmd binding comes later, so
@@ -1362,7 +1363,7 @@ mod key_tests {
                     visual.update(|window, cx| window.dispatch_action(action, cx));
                     visual.run_until_parked();
                 } else {
-                    keys(visual, "secondary-shift-q");
+                    keys(visual, "ctrl-shift-q");
                 }
             };
             fire(visual);

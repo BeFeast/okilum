@@ -20,7 +20,7 @@ warning. Okilum cannot capture a combination the OS never delivers.
 ## Quote formatting
 
 **Quote (#2625):** Format → Quote, also in the editor's context menu, toggles
-one outer blockquote level with Cmd/Ctrl+Shift+Q. It applies to the current line
+one outer blockquote level with Control+Shift+Q on every OS. It applies to the current line
 or every line touched by a selection in Source and Live Preview; an ending at
 the next line's start leaves that line alone. When every selected line already
 has a `>` marker, it removes one level. Otherwise it adds `> ` to every selected
