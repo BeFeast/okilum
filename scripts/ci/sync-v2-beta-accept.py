@@ -135,7 +135,7 @@ try:
  screen('02b-shared-exclusions-preview');click('Save shared policy')
  wait('explicit policy Save writes included file',lambda:(source/'.okilum/sync-ignore').exists() and (source/'.stignore').read_bytes().startswith(b'#include .okilum/sync-ignore\n'))
  wait('native shared-policy Save acknowledgement',lambda:any('Saved. The shared file syncs' in row['text'] for row in ocr()))
- screen('02c-shared-exclusions-saved');event('explicit UI shared-policy Save created the vault file and preserved its local include');run(driver,'escape');time.sleep(1)
+ screen('02c-shared-exclusions-saved');event('explicit UI shared-policy Save created the vault file and preserved its local include');run(driver,'click',959,97);event('clicked Shared Sync exclusions close control');wait('shared policy sheet closed',lambda:not any(row['text'].strip()=='Shared Sync exclusions' for row in ocr()))
  click('Add computer');click('Create pairing link');click('Copy link');url=run('pbpaste').stdout.strip();assert len(url)>80
  screen('03-created-invitation');event('UI invitation copied')
  # Prepare an independent real Syncthing/Controller receiver only after the Mac's fresh bootstrap.
@@ -268,7 +268,9 @@ finally:
   for pid in runtime_pids:
    try:os.kill(pid,signal.SIGTERM)
    except ProcessLookupError:pass
-  time.sleep(1);cleanup['managed_registration_removed']=subprocess.run(['launchctl','print',label],capture_output=True).returncode!=0;cleanup['managed_runtime_processes_gone']=not owned_runtime_pids()
+  deadline=time.monotonic()+20
+  while owned_runtime_pids() and time.monotonic()<deadline:time.sleep(.25)
+  cleanup['managed_registration_removed']=subprocess.run(['launchctl','print',label],capture_output=True).returncode!=0;cleanup['managed_runtime_processes_gone']=not owned_runtime_pids()
  (out/'cleanup.json').write_text(json.dumps(cleanup,indent=2)+'\n')
  if result:
   result['cleanup']=cleanup;(out/'acceptance-receipt.json').write_text(json.dumps(result,indent=2)+'\n')
