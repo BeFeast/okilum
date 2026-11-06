@@ -1828,3 +1828,92 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
     controller.shutdown();
     Ok(())
 }
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_remove_2042_reaches_plain_introducer_peer_without_touching_other_folders() -> Result<()>
+{
+    let pair = Pair::loopback()?;
+    fs::write(
+        pair.source.vault.join("seed.md"),
+        b"plain server keeps this copy",
+    )?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    let binary =
+        PathBuf::from(std::env::var_os("OKILUM_SYNC_DIRECT_CLIENT").context("set pinned runtime")?);
+    let plain = Peer::new(pair._root.path(), "plain-server", binary)?;
+    pair.source
+        .api
+        .add_device(&json!({"deviceID":plain.id,"name":"Plain server",
+        "addresses":[format!("tcp://{}", plain.listen)]}))?;
+    let mut members = pair.source.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .clone();
+    members.push(json!({"deviceID":plain.id}));
+    pair.source
+        .api
+        .patch_folder(&id, &json!({"devices":members}))?;
+    plain.api.add_device(&json!({"deviceID":pair.source.id,"name":"Source",
+        "addresses":[format!("tcp://{}",pair.source.listen)],"introducer":true,"skipIntroductionRemovals":false}))?;
+    plain.api.add_paused_folder(&json!({"id":id,"label":"Plain copy","path":plain.vault,
+        "type":"sendreceive","paused":true,"devices":[{"deviceID":plain.id},{"deviceID":pair.source.id}]}))?;
+    plain.api.patch_folder(&id, &json!({"paused":false}))?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait(
+        "plain peer receives both the note and the introduced computer",
+        || {
+            pair.tick(&id)?;
+            plain.api.scan(&id)?;
+            Ok(!pair.second.snapshot()?.preparing
+                && same_hash(&plain.vault, "seed.md", b"plain server keeps this copy")
+                && plain.api.folder(&id)?["devices"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| {
+                        d["deviceID"] == pair.target.id && d["introducedBy"] == pair.source.id
+                    }))
+        },
+    )?;
+    // The same device has an unrelated relationship on the plain daemon.
+    // Removing it from this vault must preserve that external folder verbatim.
+    let unrelated = pair._root.path().join("plain-unrelated");
+    fs::create_dir(&unrelated)?;
+    fs::write(
+        unrelated.join("sentinel.md"),
+        b"external relationship remains",
+    )?;
+    plain.api.add_paused_folder(&json!({"id":"unrelated","label":"Unrelated","path":unrelated,
+        "type":"sendreceive","paused":true,"devices":[{"deviceID":plain.id},{"deviceID":pair.target.id}]}))?;
+    let external = plain.api.folder("unrelated")?;
+    pair.first.remove_computer(&pair.target.id)?;
+    wait(
+        "Syncthing introducer removal reaches a server without Okilum",
+        || {
+            pair.first.refresh()?;
+            pair.second.refresh()?;
+            Ok(pair.target.api.folder(&id)?["paused"] == true
+                && !plain.api.folder(&id)?["devices"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| d["deviceID"] == pair.target.id))
+        },
+    )?;
+    assert_eq!(plain.api.folder("unrelated")?, external);
+    assert_eq!(
+        fs::read(unrelated.join("sentinel.md"))?,
+        b"external relationship remains"
+    );
+    assert_eq!(
+        fs::read(plain.vault.join("seed.md"))?,
+        b"plain server keeps this copy"
+    );
+    assert_eq!(
+        fs::read(pair.target.vault.join("seed.md"))?,
+        b"plain server keeps this copy"
+    );
+    Ok(())
+}
