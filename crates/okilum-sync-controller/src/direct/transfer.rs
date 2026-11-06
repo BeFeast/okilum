@@ -403,6 +403,15 @@ fn expected_label(transfer: &Transfer) -> Result<String> {
         None => owned_label(transfer),
     }
 }
+#[derive(Debug)]
+struct MembershipChanged;
+impl std::fmt::Display for MembershipChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("owned replica membership changed")
+    }
+}
+impl std::error::Error for MembershipChanged {}
+
 fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     ensure!(
         !transfer.legacy_hold(),
@@ -452,10 +461,9 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
     ];
     actual_peers.sort();
     expected_peers.sort();
-    ensure!(
-        actual_peers == expected_peers,
-        "owned replica membership changed"
-    );
+    if actual_peers != expected_peers {
+        return Err(MembershipChanged.into());
+    }
     let allowed_mode = match transfer.phase {
         Phase::Promoting => folder["type"] == "receiveonly" || folder["type"] == "sendreceive",
         Phase::Bidirectional => folder["type"] == "sendreceive",
@@ -1138,7 +1146,11 @@ impl Controller {
         self.apply_transfer_history(&mut transfer)?;
         Ok(true)
     }
-    pub(super) fn reconcile_transfer_history(&self, warnings: &mut Vec<history::HistoryWarning>) {
+    pub(super) fn reconcile_transfer_history(
+        &self,
+        warnings: &mut Vec<history::HistoryWarning>,
+    ) -> Result<()> {
+        let mut membership_error = None;
         let transfers = self.shared.db.lock().unwrap().transfers.clone();
         for mut transfer in transfers
             .into_iter()
@@ -1146,7 +1158,14 @@ impl Controller {
         {
             if let Err(error) = self.apply_transfer_history(&mut transfer) {
                 warnings.push(history::HistoryWarning { path: transfer.path.clone(), message: format!("Previous Sync versions could not be updated: {error:#}. Check this folder and its Sync connection.") });
+                if error.is::<MembershipChanged>() {
+                    membership_error = Some(error);
+                }
             }
+        }
+        match membership_error {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 }

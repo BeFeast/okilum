@@ -164,9 +164,9 @@ impl Controller {
         let mut warnings = Vec::new();
         #[cfg(target_os = "linux")]
         self.reconcile_source_history(&mut warnings);
-        self.reconcile_transfer_history(&mut warnings);
+        let result = self.reconcile_transfer_history(&mut warnings);
         *self.shared.history_warnings.lock().unwrap() = warnings;
-        Ok(())
+        result
     }
 }
 
