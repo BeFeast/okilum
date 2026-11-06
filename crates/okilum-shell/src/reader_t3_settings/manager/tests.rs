@@ -107,6 +107,7 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
     cx: &mut TestAppContext,
 ) {
     use std::io::{BufRead, BufReader, Read, Write};
+    cx.executor().allow_parking();
     cx.update(crate::test_init);
     cx.update(reader_features::enable_test_modules);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -158,6 +159,10 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
     let returns = focus_returns.clone();
     let focus_env = env.clone();
     let (root, visual) = cx.add_window_view(|window, cx| {
+        // The production Settings/panel observes Connections; this minimal
+        // surface must notify the condition waiter on the same global updates.
+        cx.observe_global::<Connections>(|_, cx| cx.notify())
+            .detach();
         cx.observe_window_activation(window, move |_, window, cx| {
             if window.is_window_active() {
                 if entry(&focus_env, cx).stage == Stage::Waiting {
