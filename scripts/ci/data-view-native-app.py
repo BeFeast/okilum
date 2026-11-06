@@ -14,7 +14,7 @@ def clipboard():
     args = ['pbpaste'] if sys.platform == 'darwin' else [
         'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
         '[Console]::OutputEncoding = [Text.UTF8Encoding]::new(); Get-Clipboard -Raw']
-    return subprocess.check_output(args, text=True, timeout=10).rstrip('\r\n')
+    return subprocess.check_output(args, text=True, encoding="utf-8", timeout=10).rstrip('\r\n')
 
 
 def main():
@@ -38,11 +38,11 @@ def main():
                 for name, expected in [('data.xml', '<value>שלום</value>'), ('big.json', '"last":"NEEDLE"'), ('big.xml', '<item key="last">NEEDLE</item>'), ('big.txt', 'abcdefgh')]:
                     deadline = time.monotonic() + 120
                     while time.monotonic() < deadline:
-                        assert process.poll() is None, log_path.read_text()[-6000:]
+                        assert process.poll() is None, log_path.read_text(encoding="utf-8")[-6000:]
                         ready = directory / ('ready-' + name)
                         if ready.exists():
                             assert clipboard() == expected, (name, clipboard())
-                            receipt = json.loads(ready.read_text())
+                            receipt = json.loads(ready.read_text(encoding="utf-8"))
                             assert receipt['real_native_platform'] and receipt['ticks'] >= 6
                             print(json.dumps(receipt), flush=True)
                             (directory / ('ack-' + name)).write_text('observed')
@@ -50,7 +50,7 @@ def main():
                         time.sleep(.1)
                     else:
                         raise AssertionError('native viewer timeout: ' + name)
-                assert process.wait(timeout=20) == 0, log_path.read_text()[-6000:]
+                assert process.wait(timeout=20) == 0, log_path.read_text(encoding="utf-8")[-6000:]
                 assert (directory / 'complete').exists()
                 assert before == {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in fixtures}
                 print('DATA_VIEW_2669_REAL_NATIVE_EVENT_LOOP_CLIPBOARD_SOURCE_PASS', flush=True)
