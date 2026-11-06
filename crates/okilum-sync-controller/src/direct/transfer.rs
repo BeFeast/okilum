@@ -48,6 +48,9 @@ pub(super) struct Transfer {
 }
 
 impl Transfer {
+    pub(super) fn removal_binding(&self, peer: Uuid, vault: &str) -> bool {
+        self.active && self.peer == peer && self.vault == vault
+    }
     /// Display-only binding from the authenticated source share response.
     /// It does not grant transport configuration or sharing authority.
     pub(super) fn overview_binding(&self) -> Option<(Uuid, String)> {
@@ -616,6 +619,9 @@ pub(super) struct ShareGrant {
     source: ExistingVault,
 }
 impl ShareGrant {
+    pub(super) fn for_peer(&self, peer: Uuid) -> bool {
+        self.peer == peer
+    }
     pub(super) fn new(peer: Uuid, source: &ExistingVault, receiver: &str) -> Self {
         Self {
             peer,
@@ -1342,6 +1348,28 @@ pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {
             days: t.history.days,
         })
         .collect()
+}
+
+pub(super) fn record_removed_membership(
+    db: &mut Database,
+    vault: &ExistingVault,
+    device: &str,
+    after: &Value,
+) {
+    for transfer in db
+        .transfers
+        .iter_mut()
+        .filter(|t| t.path == vault.path && t.daemon == vault.daemon && t.vault == vault.folder_id)
+    {
+        transfer.witness = Some(after.clone());
+        if transfer
+            .connection
+            .as_ref()
+            .is_some_and(|c| c.device_id == device)
+        {
+            transfer.active = false;
+        }
+    }
 }
 
 #[cfg(test)]
