@@ -16,9 +16,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 80b64fbe7c34bda2a2f5978658d02e1656aa790d
           fetch-depth: 0
           persist-credentials: false
+      - name: Prepare stock desktop input and capture driver
+        run: |
+          swiftc scripts/ci/sync-ui-hosted.swift -o "$RUNNER_TEMP/sync-ui-driver"
+          cp scripts/ci/sync-ui-hosted.py "$RUNNER_TEMP/sync-ui-hosted.py"
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: agent-macos-sync-v1
@@ -51,7 +54,10 @@ jobs:
             shasum -a 256 "$evidence/$label/okilum" > "$evidence/$label/sha256.txt"
             otool -L "$evidence/$label/okilum" > "$evidence/$label/libraries.txt"
           done
+      - name: Capture actual native before and after Settings
+        run: python3 "$RUNNER_TEMP/sync-ui-hosted.py" "$RUNNER_TEMP/sync-ui" "$RUNNER_TEMP/sync-ui-driver"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: sync-v2-Mac-production-UI-before-after
           path: ${{ runner.temp }}/sync-ui
