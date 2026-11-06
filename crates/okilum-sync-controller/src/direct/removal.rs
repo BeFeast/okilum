@@ -292,7 +292,6 @@ impl Controller {
                 let before = fresh.daemon.connect()?.folder(&fresh.folder_id)?;
                 {
                     let db = self.shared.db.lock().unwrap();
-                    #[cfg(target_os = "linux")]
                     source::validate_removal(&db, &fresh, &before)?;
                     transfer::validate_removal(&db, &fresh, &before)?;
                 }
@@ -351,7 +350,6 @@ impl Controller {
                 "Removal readback changed unrelated configuration"
             );
             let mut db = self.shared.db.lock().unwrap();
-            #[cfg(target_os = "linux")]
             source::record_removed_membership(&mut db, &fresh, &folder.after);
             transfer::record_removed_membership(&mut db, &fresh, &removal.device, &folder.after);
             self.save(&db)?;
@@ -376,7 +374,6 @@ impl Controller {
             }
         }
         if removed_self {
-            #[cfg(target_os = "linux")]
             for source in &mut db.sources {
                 source.active = false;
             }
