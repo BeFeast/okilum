@@ -28,7 +28,7 @@ def screen(name):
 def ocr(name='current'):
  p=screen(name);return json.loads(run(driver,'ocrjson',p).stdout)
 def click(text,timeout=30):
- def locate():return next((r for r in ocr() if r['text'].strip().casefold()==text.casefold()),None)
+ def locate():return next((r for r in ocr() if r['text'].strip().lstrip('›>▾ ').casefold()==text.casefold()),None)
  row=wait('visible '+text,locate,timeout);run(driver,'activate',app_pid);run(driver,'click',row['x'],row['y']);event('clicked '+text);time.sleep(1)
 def allow_local_network_dialog():
  rows=ocr()
@@ -206,6 +206,17 @@ except BaseException as error:
   click('Details',timeout=5);screen('failure-details')
   (out/'failure-details-ocr.json').write_text(json.dumps(ocr(),indent=2)+'\n')
  except Exception as e:(out/'details-diagnostic-error.txt').write_text(type(e).__name__+'\n')
+ # The app already redacts the full error chain before writing these events.
+ # Select only Sync failures; never export private state/configuration/journals.
+ sync_errors=[]
+ for log in [profile/'reader-diagnostic.log',source/'.okilum-index/reader-diagnostic.log']:
+  if log.exists():
+   for line in log.read_text().splitlines():
+    try:
+     value=json.loads(line)
+     if value.get('phase')=='sync_action_failed':sync_errors.append({k:value.get(k) for k in ['phase','elapsed_ms','details']})
+    except ValueError:pass
+ (out/'sync-failures.json').write_text(json.dumps(sync_errors,indent=2)+'\n')
  (out/'failure.txt').write_text(str(error)+'\n')
  diagnostics={'managed_exists':managed.exists(),'managed_config_exists':(managed/'config/config.xml').exists(),'direct_exists':direct.exists()}
  try:diagnostics['source_rows']=[{k:r.get(k) for k in ['id','path','active']} for r in journal().get('sources',[])]
