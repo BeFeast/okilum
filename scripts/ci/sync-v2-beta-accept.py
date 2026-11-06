@@ -5,6 +5,10 @@ config=json.loads(pathlib.Path(sys.argv[1]).read_text());driver=pathlib.Path(sys
 root=pathlib.Path(tempfile.mkdtemp(prefix='okilum-beta-ui-')).resolve();app=pathlib.Path('/Applications/Okilum.app');account=pathlib.Path.home()/'Library/Application Support/Okilum';managed=account/'Sync';direct=account/'SyncDirect'
 assert not app.exists() and not managed.exists() and not direct.exists(),'host already has Okilum; never replace existing state'
 label=f'gui/{os.getuid()}/com.befeast.okilum.sync';assert subprocess.run(['launchctl','print',label],capture_output=True).returncode!=0,'host already has registered Sync'
+budget_source=pathlib.Path('crates/okilum-sync-controller/src/sidecar/macos/connect.rs').read_text()
+preparation_budget=int(re.search(r'pub const MAX_PREPARATION: Duration = Duration::from_secs\((\d+)\)',budget_source)[1])
+startup_budget=int(re.search(r'pub const MAX_STARTUP: Duration = Duration::from_secs\((\d+)\)',budget_source)[1])
+source_wait=preparation_budget+startup_budget+10
 started=time.monotonic();events=[];source_api=None;receiver_api=None;peer=None;daemon=None;app_pid=None;recorder=None;record_started=None;result=None;runtime_pids=[]
 def event(name):
  events.append({'event':name,'seconds':round(time.monotonic()-started,3)});(out/'events.json').write_text(json.dumps(events,indent=2)+'\n');print(name,flush=True)
@@ -89,7 +93,7 @@ try:
   allow_local_network_dialog()
   try:return next((s for s in journal().get('sources',[]) if s.get('path')==str(source) and s.get('active')),None)
   except (OSError,ValueError):return None
- owned=wait('UI-created active managed source',shared,120);source_api=api_from(managed/'config/config.xml');source_id=source_api('/rest/system/status')['myID'];folder=owned['id'];assert owned['daemon']['device_id']==source_id
+ owned=wait('UI-created active managed source within production preparation/startup bounds',shared,source_wait);source_api=api_from(managed/'config/config.xml');source_id=source_api('/rest/system/status')['myID'];folder=owned['id'];assert owned['daemon']['device_id']==source_id
  sf=source_api('/rest/config/folders/'+folder);assert sf['versioning']['type']=='staggered' and sf['versioning']['params']['maxAge']=='2592000';screen('02-share-ready');event('explicit UI Share prepared signed claimed runtime and active vault')
  click('Add computer');click('Create pairing link');click('Copy link');url=run('pbpaste').stdout.strip();assert len(url)>80
  screen('03-created-invitation');event('UI invitation copied')
@@ -141,14 +145,26 @@ try:
  recorder_code=stop_recording();raw=out/'raw-pairing.mp4';probe=json.loads(run('ffprobe','-v','error','-show_streams','-show_format','-of','json',raw).stdout);duration=float(probe['format']['duration']);video=out/'fresh-Mac-beta-pairing.mp4'
  edited=False
  if duration>175:
-  # Preserve chronological beginning, pairing/approval and final successful transport.
-  cut1=min(30,duration);cut2=max(cut1,duration-140)
-  select=f'between(t,0,{cut1})+between(t,{cut2},{duration})'
+  # Keep every native interaction (including OS consent), source-ready and final-data evidence.
+  base_seconds=record_started-started
+  points=[max(0,e['seconds']-base_seconds) for e in events if e['event'].startswith(('clicked ','allowed ','explicit UI Share','both-direction','final native'))]
+  spans=[(max(0,t-4),min(duration,t+8)) for t in points]+[(0,min(15,duration)),(max(0,duration-30),duration)]
+  def merge_spans(items):
+   result=[]
+   for lo,hi in sorted(items):
+    if result and lo<=result[-1][1]:result[-1]=(result[-1][0],max(hi,result[-1][1]))
+    else:result.append((lo,hi))
+   return result
+  spans=merge_spans(spans)
+  if sum(hi-lo for lo,hi in spans)<65:spans=merge_spans(spans+[(max(0,duration-65),duration)])
+  if sum(hi-lo for lo,hi in spans)>170:spans=merge_spans([(max(0,t-2),min(duration,t+5)) for t in points]+[(max(0,duration-25),duration)])
+  select='+'.join(f'between(t,{lo},{hi})' for lo,hi in spans)
   run('ffmpeg','-v','error','-i',raw,'-vf',f"select='{select}',setpts=N/(10*TB)",'-an','-c:v','libx264','-crf','24','-pix_fmt','yuv420p',video,timeout=120);edited=True
+  (out/'video-segments.json').write_text(json.dumps(spans,indent=2)+'\n')
  else:shutil.copy2(raw,video)
  run('ffmpeg','-v','error','-xerror','-i',video,'-f','null','-',timeout=120);vp=json.loads(run('ffprobe','-v','error','-show_streams','-show_format','-of','json',video).stdout);assert 60<=float(vp['format']['duration'])<=180
  hashes={name:sha(source/name) for name in ['seed.md','from-mac.md','from-peer.md','positive.md']};assert all(sha(target/name)==digest for name,digest in hashes.items())
- result={'build':config['build'],'source':config['source'],'package_sha256':asset['sha256'],'signed_notarized_beta':True,'fresh_mac_account_state':True,'settings_did_not_bootstrap':True,'source_enrolled_via_actual_UI':True,'invitation_created_and_copied_via_UI':True,'approved_via_Mac_UI':True,'receiver':'separate real Syncthing2.1.6 plus production Controller library, headless fixture with ordinary LAN discovery (no manual device dial hints)','both_directions_exact':True,'file_hashes':hashes,'source_device':source_id,'peer_device':peer_id,'common_policy_equal':True,'mandatory_excludes_enforced':True,'managed_retention_days':30,'video_duration':float(vp['format']['duration']),'video_decode_exit':0,'video_edited_chronological':edited,'recorder_exit':recorder_code}
+ result={'build':config['build'],'source':config['source'],'package_sha256':asset['sha256'],'signed_notarized_beta':True,'fresh_mac_account_state':True,'preparation_budget_seconds':preparation_budget,'startup_budget_seconds':startup_budget,'harness_source_wait_seconds':source_wait,'settings_did_not_bootstrap':True,'source_enrolled_via_actual_UI':True,'invitation_created_and_copied_via_UI':True,'approved_via_Mac_UI':True,'receiver':'separate real Syncthing2.1.6 plus production Controller library, headless fixture with ordinary LAN discovery (no manual device dial hints)','both_directions_exact':True,'file_hashes':hashes,'source_device':source_id,'peer_device':peer_id,'common_policy_equal':True,'mandatory_excludes_enforced':True,'managed_retention_days':30,'video_duration':float(vp['format']['duration']),'video_decode_exit':0,'video_edited_chronological':edited,'recorder_exit':recorder_code}
  event('SIGNED_BETA_FRESH_MAC_PAIRING_PASS')
 except BaseException as error:
  event('failure: '+str(error))

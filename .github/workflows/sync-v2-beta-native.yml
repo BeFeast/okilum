@@ -69,6 +69,7 @@ jobs:
             ${{ runner.temp }}/sync-v2-evidence/acceptance-receipt.json
             ${{ runner.temp }}/sync-v2-evidence/cleanup.json
             ${{ runner.temp }}/sync-v2-evidence/events.json
+            ${{ runner.temp }}/sync-v2-evidence/video-segments.json
             ${{ runner.temp }}/sync-v2-evidence/release.json
             ${{ runner.temp }}/sync-v2-evidence/build-info.txt
             ${{ runner.temp }}/sync-v2-evidence/signature-summary.txt
