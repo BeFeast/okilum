@@ -788,7 +788,8 @@ impl ProjectView {
                         .into_any_element()
                 },
                 |rules| {
-                    div()
+                    v_flex()
+                        .size_full()
                         .flex_1()
                         .min_h_0()
                         .child(rules.clone())
@@ -2198,7 +2199,15 @@ impl Render for ProjectView {
             surface.child(self.render_express_session(cx))
         });
         surface
-            .child(div().flex_1().min_h_0().child(content))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .when(self.section == ProjectSection::Rules, |view| {
+                        view.flex().flex_col().min_w_0().overflow_hidden()
+                    })
+                    .child(content),
+            )
             .into_any_element()
     }
 }
