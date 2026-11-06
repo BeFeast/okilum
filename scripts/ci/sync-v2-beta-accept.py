@@ -106,7 +106,16 @@ try:
  runtime=app/'Contents/MacOS/syncthing';run('codesign','--verify','--strict',runtime);assert 'syncthing v2.1.6' in run(runtime,'--version').stdout
  info=run(app/'Contents/MacOS/okilum','--build-info').stdout;assert config['source'] in info and 'gpui-test-support: no' in info;(out/'build-info.txt').write_text(info);(out/'signature-summary.txt').write_text(signature+assessment.stdout+assessment.stderr)
  source=root/'ordinary-vault';source.mkdir();seed=b'# Fresh signed-beta Mac\n\nOriginal seed bytes.\n';(source/'seed.md').write_bytes(seed);profile=root/'reader-state';profile.mkdir();(profile/'features.json').write_text('{"sync":true}');(profile/'reader-ui.json').write_text('{"version":1,"settings_section":"sync"}')
- app_pid=int(run(driver,'launch',app,source,profile).stdout.strip().splitlines()[-1]);wait('Reader window',lambda:json.loads(run(driver,'list',app_pid).stdout));run(driver,'settings',app_pid);wait('Settings window',lambda:any('Settings' in w.get('kCGWindowName','') for w in json.loads(run(driver,'list',app_pid).stdout)));run(driver,'resize',app_pid);time.sleep(2);screen('01-fresh-settings');assert not managed.exists(),'opening Settings bootstrapped runtime';event('fresh signed-beta Settings opened without runtime')
+ app_pid=int(run(driver,'launch',app,source,profile).stdout.strip().splitlines()[-1]);wait('Reader window',lambda:json.loads(run(driver,'list',app_pid).stdout))
+ wait('rendered seed note before native Settings command',lambda:any('Fresh signed-beta Mac' in r['text'] for r in ocr()))
+ next_settings_command=0
+ def settings_open():
+  global next_settings_command
+  if any('Settings' in w.get('kCGWindowName','') for w in json.loads(run(driver,'list',app_pid).stdout)):return True
+  if time.monotonic()>=next_settings_command:
+   run(driver,'settings',app_pid);next_settings_command=time.monotonic()+5
+  return False
+ wait('Settings window after native command',settings_open);run(driver,'resize',app_pid);time.sleep(2);screen('01-fresh-settings');assert not managed.exists(),'opening Settings bootstrapped runtime';event('fresh signed-beta Settings opened without runtime')
  devices=subprocess.run(['ffmpeg','-hide_banner','-f','avfoundation','-list_devices','true','-i',''],capture_output=True,text=True,timeout=20);match=re.search(r'\[(\d+)\] Capture screen 0',devices.stderr);assert match,devices.stderr
  recorder=subprocess.Popen(['ffmpeg','-hide_banner','-loglevel','warning','-f','avfoundation','-framerate','10','-capture_cursor','1','-i',match[1]+':none','-an','-vf','scale=1024:-2','-c:v','libx264','-preset','ultrafast','-crf','24','-pix_fmt','yuv420p','-movflags','+frag_keyframe+empty_moov',str(out/'raw-pairing.mp4')],stdin=subprocess.PIPE,stdout=open(out/'recorder.log','w'),stderr=subprocess.STDOUT,text=True,start_new_session=True);record_started=time.monotonic();time.sleep(2);assert recorder.poll() is None,'recorder exited'
  click('Share with my computers')
