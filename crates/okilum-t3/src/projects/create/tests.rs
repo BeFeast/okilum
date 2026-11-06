@@ -336,11 +336,17 @@ fn the_vault_on_the_t3_host_is_found_from_t3_projects_rooted_in_it() {
         t3_workspace_root(&draft, &vault.0, &folder, &listing).unwrap(),
         "/home/god/Obsidian Vault/Music/Areas/Studio"
     );
-    // No T3 project in the vault: the folder's own path (T3 on this machine).
-    assert_eq!(
-        t3_workspace_root(&draft, &vault.0, &folder, &[]).unwrap(),
-        folder.to_string_lossy().replace('\\', "/")
-    );
+    // A Windows vault path cannot be assumed to exist on a remote Unix T3 host.
+    // Unix local fallback remains covered; Windows must preserve the refusal.
+    let local = t3_workspace_root(&draft, &vault.0, &folder, &[]);
+    if cfg!(windows) {
+        assert!(local
+            .unwrap_err()
+            .to_string()
+            .contains("no T3 project is rooted"));
+    } else {
+        assert_eq!(local.unwrap(), folder.to_string_lossy().replace('\\', "/"));
+    }
     // A code project's root is its checkout.
     let mut code = draft.clone();
     code.set_kind(Kind::Code);
