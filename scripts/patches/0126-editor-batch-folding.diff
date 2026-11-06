@@ -43,7 +43,7 @@
 +    }
 +
 +    /// Current folded source-line ranges, including nested folds.
-+    pub fn folded_ranges(&self) -> &[FoldRange] {
++    pub fn folded_ranges(&self) -> &[crate::input::FoldRange] {
 +        self.display_map.folded_ranges()
 +    }
 +

@@ -8486,6 +8486,10 @@ OPTIONS:
 ";
 
 fn main() {
+    #[cfg(feature = "data-view-native-harness")]
+    if reader_code_file::native_harness::entry() {
+        return;
+    }
     #[cfg(feature = "embed-native-harness")]
     if reader_image_actions::native_harness::entry() {
         return;

@@ -89,6 +89,26 @@ jobs:
             export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
           fi
           python3 scripts/ci/data-view-native.py
+      - name: Build real native app without GPUI test support
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          fi
+          cargo build --locked -p okilum-shell --bin okilum --features data-view-native-harness
+      - name: Observe native event loop and system clipboard with 32 MiB files
+        shell: bash
+        run: |
+          binary=target/debug/okilum
+          if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
+          python3 scripts/ci/data-view-native-app.py "$binary"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: data-view-native-${{ runner.os }}
+          path: ${{ runner.temp }}/data-view-native-app.log
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/cache/save@v4
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
         with:

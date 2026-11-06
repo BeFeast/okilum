@@ -30,3 +30,9 @@ Native regression refs are `data-view-native/**`. They cover admission without
 new write authority, XML folding/copy/count/unchanged bytes, a 32 MiB minified file
 and a compiled disabled-folding control. Tests record first-draw duration on the
 same native runner. These measurements are separate from installed tester acceptance.
+
+The native job also builds the actual app with the non-shipping
+`data-view-native-harness` feature and without GPUI test-support. Its real OS
+event loop must keep 100 ms heartbeat callbacks below a 2 s gap while opening
+XML and both 32 MiB fixtures; an external driver observes the system clipboard
+and unchanged fixture hashes. Test-platform draw timings alone are insufficient.

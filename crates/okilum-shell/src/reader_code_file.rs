@@ -7,6 +7,8 @@ use gpui_component::input::{Editor, EditorState, Input, InputEvent, InputState, 
 use std::time::Instant;
 
 mod document;
+#[cfg(feature = "data-view-native-harness")]
+pub(crate) mod native_harness;
 use document::Document;
 
 /// Bounded text loading; large files remain read-only.
