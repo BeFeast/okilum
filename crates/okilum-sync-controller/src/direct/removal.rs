@@ -222,6 +222,9 @@ impl Controller {
         let configs = self.configuration_paths()?;
         let mut vaults = BTreeSet::new();
         for vault in attached {
+            if sender.is_some() && !authorized.contains(&vault.folder_id) {
+                continue;
+            }
             let fresh = inspect_existing(&configs, &vault.path)?;
             ensure!(
                 existing::same_binding(&vault, &fresh),

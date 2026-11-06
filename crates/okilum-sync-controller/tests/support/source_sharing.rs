@@ -1936,3 +1936,58 @@ fn managed_remove_2042_reaches_plain_introducer_peer_without_touching_other_fold
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_remove_2042_remote_request_preserves_unrequested_association() -> Result<()> {
+    let pair = Pair::loopback()?;
+    fs::write(
+        pair.source.vault.join("scope.md"),
+        b"authorized shared scope",
+    )?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("scoped removal positive transfer", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing
+            && same_hash(&pair.target.vault, "scope.md", b"authorized shared scope"))
+    })?;
+    // Associate another existing folder after pairing. The requester has only
+    // selected the primary vault, so its removal request names only that scope.
+    // The same transport identity must not widen that authenticated request.
+    let unrelated = pair._root.path().join("unrequested-association");
+    fs::create_dir(&unrelated)?;
+    fs::write(unrelated.join("sentinel.md"), b"unrequested bytes remain")?;
+    pair.source
+        .api
+        .add_paused_folder(&json!({"id":"unrequested","label":"Unrequested",
+        "path":unrelated,"type":"sendreceive","paused":true,
+        "devices":[{"deviceID":pair.source.id}]}))?;
+    pair.source
+        .api
+        .patch_folder("unrequested", &json!({"paused":false}))?;
+    let inspected = okilum_sync_controller::direct::inspect_existing(
+        &[pair.source.home.join("config.xml")],
+        &unrelated,
+    )?;
+    pair.first.attach_existing(&inspected, true)?;
+    let before = pair.source.api.folder("unrequested")?;
+    assert_eq!(before["paused"], false, "pause mutation negative control");
+    pair.second.remove_computer(&pair.source.id)?;
+    wait("authorized removal is applied", || {
+        pair.first.refresh()?;
+        pair.second.refresh()?;
+        Ok(pair.source.api.folder(&id)?["paused"] == true)
+    })?;
+    assert_eq!(
+        pair.source.api.folder("unrequested")?,
+        before,
+        "remote removal escaped its authenticated requested vault scope"
+    );
+    assert_eq!(
+        fs::read(unrelated.join("sentinel.md"))?,
+        b"unrequested bytes remain"
+    );
+    Ok(())
+}
