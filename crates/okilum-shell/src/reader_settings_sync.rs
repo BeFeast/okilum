@@ -839,7 +839,7 @@ fn sync_pairing_in_progress(snapshot: &Snapshot) -> bool {
 fn sync_refresh_interval(snapshot: &Snapshot) -> Option<Duration> {
     if sync_pairing_in_progress(snapshot) {
         Some(Duration::from_secs(1))
-    } else if snapshot.preparing {
+    } else if snapshot.preparing || snapshot.pending_removals > 0 {
         Some(Duration::from_secs(2))
     } else if !snapshot.peers.is_empty() {
         Some(Duration::from_secs(30))

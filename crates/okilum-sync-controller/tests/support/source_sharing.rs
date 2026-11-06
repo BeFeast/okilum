@@ -1822,7 +1822,7 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
             writer.vault.join(name),
             b"remaining mesh after introducer removal",
         )?;
-        wait(
+        let result = wait(
             "remaining receivers keep syncing without the removed introducer",
             || {
                 writer.api.scan(&id)?;
@@ -1835,7 +1835,24 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
                     b"remaining mesh after introducer removal",
                 ))
             },
-        )?;
+        );
+        if result.is_err() {
+            eprintln!(
+                "surviving transport writer={} reader={}",
+                writer.id, reader.id
+            );
+            for peer in [&pair.source, &pair.target, &third] {
+                eprintln!(
+                    "device={} folder={:?} devices={:?} connections={:?} status={:?}",
+                    peer.id,
+                    peer.api.folder(&id),
+                    peer.api.config().map(|c| c["devices"].clone()),
+                    peer.api.connections(),
+                    peer.api.status(&id)
+                );
+            }
+        }
+        result?;
         assert!(
             !pair.source.vault.join(name).exists(),
             "removed introducer received a later edit"
