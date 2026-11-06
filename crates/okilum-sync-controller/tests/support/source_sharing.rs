@@ -1780,8 +1780,27 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
         pair.tick(&id)?;
         Ok(!pair.second.snapshot()?.preparing)
     })?;
-    let (third, controller, _) = fleet_receiver(&pair, &id, "root-removal-third")?;
+    let (third, controller, source) = fleet_receiver(&pair, &id, "root-removal-third")?;
     pair.second.remove_computer(&pair.source.id)?;
+    assert_eq!(
+        pair.source.api.folder(&id)?["paused"],
+        false,
+        "introducer must keep its membership announcement until the other receiver acknowledges"
+    );
+    assert!(
+        controller.catalog(source).is_err(),
+        "departing introducer must deny ordinary catalog authority immediately"
+    );
+    let departing: Value =
+        serde_json::from_slice(&fs::read(pair.source_state.join("direct.json"))?)?;
+    assert_eq!(departing["local_removed"], true);
+    assert!(departing["removals"][0]["local_applied"] == false);
+    pair.first.shutdown();
+    drop(pair.first);
+    pair.first = Controller::open(
+        pair.source_state.clone(),
+        vec![pair.source.home.join("config.xml")],
+    )?;
     wait("introducer removal reaches its other receiver", || {
         pair.first.refresh()?;
         pair.second.refresh()?;

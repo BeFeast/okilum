@@ -85,7 +85,12 @@ Unrelated folders and external device relationships remain unchanged.
 The paired channel is directional: both journals pin the inviter's listener.
 Joiners pull pending removals from that listener during refresh, apply the
 operation, then acknowledge it. Inviters never try to push to their own endpoint.
-Offline deliveries and ACK loss survive restart. A removed pairing retains only
+Offline deliveries and ACK loss survive restart. A departing introducer denies
+application authority immediately, then waits for the other Okilum receivers to
+detach its introduction provenance and acknowledge before pausing its transport.
+This preserves the surviving receivers' direct relationships. Pending/offline
+acknowledgements remain visible; files already copied cannot be recalled.
+A removed pairing retains only
 the credentials needed for its recorded removal replay, scoped pull and ACK;
 it cannot read a catalog, exchange transport hints or grant new membership.
 The introducer mesh carries folder membership removals to plain Syncthing peers
