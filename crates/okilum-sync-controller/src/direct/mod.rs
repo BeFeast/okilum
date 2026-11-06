@@ -1038,7 +1038,7 @@ impl Controller {
         let result = match message.operation {
             Operation::RemoveComputer { id, device, vaults } => {
                 drop(db);
-                self.receive_removal(scope, id, device, vaults)
+                self.receive_removal(scope, id, device, vaults, None)
             }
             #[cfg(target_os = "linux")]
             Operation::Inspect { request } => {

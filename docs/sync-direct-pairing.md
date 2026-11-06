@@ -308,3 +308,27 @@ external runtime says **Uses your existing Syncthing**, with **Paused** appended
 when appropriate. The runtime inventory is read again before publishing an action
 result, so sharing/attaching publishes its current vault count along with the
 updated controller snapshot. Peer connectivity remains separate evidence (#2397).
+
+### Departing introducer handoff (#2042)
+
+A newly promoted receiver may not yet have received the introducer's next
+Syncthing cluster config. Before removing that introducer, its private removal
+journal freezes the final membership and dial hints of each authorized common
+vault. Both the initiating receiver and other paired receivers acknowledge only
+after installing their scoped surviving relationships. Missing transport devices
+may be added only in an Okilum-managed runtime; existing device settings remain
+untouched. The snapshot carries no pairing keys, device roles or folder settings,
+and is never stored in the vault. Replays require the same removal identity and
+snapshot. Unrequested vaults and snapshots from a different computer are refused.
+
+The departing introducer denies ordinary application authority immediately and
+pauses its copy after those acknowledgements. Invitation URLs, approval and
+existing pairing credentials keep their established formats. This handoff is part
+of the new removal operation; old journals default to no pending handoff.
+
+An introducer with a plain Syncthing member cannot prove that member retained its
+surviving introductions. Root removal therefore stops before changing folders
+and asks for an explicit handoff on those computers. Leaf removal through the
+plain peer's introducer remains supported. Automatic root departure for plain
+peers needs a separate design/host-authority decision; no host API access is
+inferred from consent to install a shared-ignore include.

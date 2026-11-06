@@ -1781,6 +1781,32 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
         Ok(!pair.second.snapshot()?.preparing)
     })?;
     let (third, controller, source) = fleet_receiver(&pair, &id, "root-removal-third")?;
+    // Reproduce a receiver that has promoted before the introducer's next
+    // cluster config arrives. It has not yet learned its sibling; root removal
+    // must complete that scoped handoff before accepting the receiver's ACK.
+    let third_members = third.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["deviceID"] != pair.target.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    third
+        .api
+        .patch_folder(&id, &json!({"devices":third_members}))?;
+    if third.api.config()?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["deviceID"] == pair.target.id)
+    {
+        third.api.remove_device(&pair.target.id)?;
+    }
+    assert!(!third.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["deviceID"] == pair.target.id));
     pair.second.remove_computer(&pair.source.id)?;
     assert_eq!(
         pair.source.api.folder(&id)?["paused"],
@@ -1795,6 +1821,21 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
         serde_json::from_slice(&fs::read(pair.source_state.join("direct.json"))?)?;
     assert_eq!(departing["local_removed"], true);
     assert!(departing["removals"][0]["local_applied"] == false);
+    assert_eq!(
+        departing["removals"][0]["pending"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2,
+        "both the initiator and the other receiver must ACK the final handoff"
+    );
+    assert_eq!(
+        departing["removals"][0]["mesh"][&id]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     pair.first.shutdown();
     drop(pair.first);
     pair.first = Controller::open(
