@@ -13,6 +13,8 @@ use document::Document;
 pub(crate) const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const EDIT_BYTES: usize = 4 * 1024 * 1024;
 
+actions!(reader_code_file, [CopyNode]);
+
 /// Key context of code views and code editors; ⌥Z / Alt+Z binds only here.
 pub(crate) const KEY_CONTEXT: &str = "ReaderCode";
 
@@ -764,6 +766,7 @@ impl Render for CodePreview {
         let view = v_flex()
             .id("reader-code-file")
             .key_context(KEY_CONTEXT)
+            .on_action(cx.listener(|this, _: &CopyNode, _, cx| this.copy_node(cx)))
             .debug_selector(|| "reader-code-file".into())
             .w_full()
             .max_w(px(reader_ui_state::note_column_width(cx)))
@@ -816,7 +819,11 @@ impl Render for CodePreview {
                     // The element applies its own flag to the state on every render.
                     Editor::new(input)
                         .readonly(true)
-                        .context_menu(|menu, _, _| text_menu(menu, false))
+                        .context_menu(|menu, _, _| {
+                            text_menu(menu, false)
+                                .separator()
+                                .menu("Copy node", Box::new(CopyNode))
+                        })
                         .appearance(false)
                         .font_family(reader_fonts::code(cx))
                         .text_size(text_size(cx))
