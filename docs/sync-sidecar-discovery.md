@@ -62,10 +62,16 @@ that limit is checked at preparation, not discovered at Stop time.
 After connect the controller reads `LOCAL_PEERCRED` (effective uid equals the current
 user) and the peer's audit token (`LOCAL_PEERTOKEN`), which includes the PID version, so
 reuse cannot be mistaken for the same process. The signature check is
-`SecCodeCreateWithAuditToken` plus `SecCodeCheckValidity` against a requirement built
+`SecCodeCopyGuestWithAttributes` (`kSecGuestAttributeAudit`) plus `SecCodeCheckValidity` against a requirement built
 from the signature policy, and the code's path must equal `Binding.supervisor`. The
-audit token, not a PID, is what is retained through the exchange. The server side checks
-the controller the same way before accepting a Stop.
+audit token, not a PID, is what is retained through the exchange. After signature
+validity succeeds, `SecCodeCopySigningInformation` supplies
+`kSecCodeInfoMainExecutable` for the exact executable comparison.
+`SecCodeCopyPath` identifies the whole `.app` directory for a bundle and cannot
+be compared with its `Contents/MacOS` executable. Loose helpers and bundled apps
+use the same main-executable check; accepting the bundle directory or a different
+executable is forbidden. The server side checks the controller the same way
+before accepting a Stop or Status.
 
 ## macOS: what "owned tree stopped" means
 

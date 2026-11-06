@@ -11,14 +11,17 @@ use super::{
 };
 use anyhow::{ensure, Context, Result};
 use core_foundation_sys::{
-    base::{kCFAllocatorDefault, CFIndex, CFRelease, CFTypeRef},
+    base::{kCFAllocatorDefault, CFGetTypeID, CFIndex, CFRelease, CFTypeRef},
     data::CFDataCreate,
     dictionary::{
         kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks, CFDictionaryCreate,
-        CFDictionaryRef,
+        CFDictionaryGetValue, CFDictionaryRef,
     },
     string::{kCFStringEncodingUTF8, CFStringCreateWithBytes, CFStringRef},
-    url::{CFURLCreateFromFileSystemRepresentation, CFURLGetFileSystemRepresentation, CFURLRef},
+    url::{
+        CFURLCreateFromFileSystemRepresentation, CFURLGetFileSystemRepresentation, CFURLGetTypeID,
+        CFURLRef,
+    },
 };
 use std::{
     ffi::c_void,
@@ -36,6 +39,7 @@ type SecRequirementRef = *const c_void;
 #[link(name = "Security", kind = "framework")]
 extern "C" {
     static kSecGuestAttributeAudit: CFStringRef;
+    static kSecCodeInfoMainExecutable: CFStringRef;
     fn SecCodeCopyGuestWithAttributes(
         host: SecCodeRef,
         attributes: CFDictionaryRef,
@@ -58,12 +62,11 @@ extern "C" {
         flags: u32,
         requirement: SecRequirementRef,
     ) -> OSStatus;
-    fn SecCodeCopyStaticCode(
+    fn SecCodeCopySigningInformation(
         code: SecCodeRef,
         flags: u32,
-        static_code: *mut SecCodeRef,
+        information: *mut CFDictionaryRef,
     ) -> OSStatus;
-    fn SecCodeCopyPath(static_code: SecCodeRef, flags: u32, path: *mut CFURLRef) -> OSStatus;
 }
 
 const SOL_LOCAL: libc::c_int = 0;
@@ -205,22 +208,25 @@ pub fn verify_static_code(path: &Path, requirement: &CodeRequirement) -> Result<
 }
 fn code_path(code: &Owned) -> Result<PathBuf> {
     unsafe {
-        let mut static_code: SecCodeRef = std::ptr::null();
+        // SecCodeCopyPath names the entire .app directory for bundled code.
+        // Compare the authenticated code's main executable instead, for both
+        // bundles and loose helpers. SignedPeer checks validity before this call.
+        let mut information: CFDictionaryRef = std::ptr::null();
         status(
-            "SecCodeCopyStaticCode",
-            SecCodeCopyStaticCode(code.0, DEFAULT_FLAGS, &mut static_code),
+            "SecCodeCopySigningInformation",
+            SecCodeCopySigningInformation(code.0, DEFAULT_FLAGS, &mut information),
         )?;
-        let static_code = Owned(static_code);
-        let mut url: CFURLRef = std::ptr::null();
-        status(
-            "SecCodeCopyPath",
-            SecCodeCopyPath(static_code.0, DEFAULT_FLAGS, &mut url),
-        )?;
-        let url = Owned(url.cast());
+        let information = Owned(information.cast());
+        ensure!(!information.0.is_null(), "peer signing information missing");
+        let url = CFDictionaryGetValue(information.0.cast(), kSecCodeInfoMainExecutable.cast());
+        ensure!(
+            !url.is_null() && CFGetTypeID(url) == CFURLGetTypeID(),
+            "peer main executable URL missing"
+        );
         let mut buffer = vec![0u8; libc::PATH_MAX as usize];
         ensure!(
             CFURLGetFileSystemRepresentation(
-                url.0.cast(),
+                url.cast(),
                 1,
                 buffer.as_mut_ptr(),
                 buffer.len() as CFIndex

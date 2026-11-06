@@ -115,3 +115,124 @@ fn static_code_checks_the_requirement_and_outer_bundle_resource_seal() -> Result
     assert!(verify_static_code(&root.path().join("absent"), &requirement).is_err());
     Ok(())
 }
+
+/// Real bundled peer, rather than the loose Mach-O used by the current native tests.
+#[test]
+fn bundled_app_peer_uses_the_main_executable() -> Result<()> {
+    use crate::sidecar::supervisor::ipc::{
+        code_requirement::CodeRequirement,
+        macos_peer::SignedPeer,
+        unix_transport::{PeerCheck, PeerEnd},
+    };
+    use std::{
+        io::{Read, Write},
+        os::unix::net::{UnixListener, UnixStream},
+        process::Command,
+        time::Duration,
+    };
+    if let Some(path) = std::env::var_os("OKILUM_TEST_BUNDLED_PEER_SOCKET") {
+        let mut socket = UnixStream::connect(path)?;
+        socket.write_all(b"x")?;
+        let mut byte = [0];
+        socket.read_exact(&mut byte)?;
+        return Ok(());
+    }
+    struct FixtureChild(std::process::Child);
+    impl Drop for FixtureChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let root = tempfile::tempdir()?;
+    let app = root.path().canonicalize()?.join("Fixture.app");
+    let macos = app.join("Contents/MacOS");
+    std::fs::create_dir_all(&macos)?;
+    let executable = macos.join("reader");
+    std::fs::copy(std::env::current_exe()?, &executable)?;
+    std::fs::write(
+        app.join("Contents/Info.plist"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>reader</string><key>CFBundleIdentifier</key><string>org.example.fixture</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>"#,
+    )?;
+    let signed = Command::new("codesign")
+        .args([
+            "--force",
+            "--sign",
+            "-",
+            "--identifier",
+            "org.example.fixture",
+        ])
+        .arg(&app)
+        .output()?;
+    anyhow::ensure!(signed.status.success(), "ad-hoc fixture signing failed");
+    let details = Command::new("codesign").arg("-dvvv").arg(&app).output()?;
+    let details = String::from_utf8(details.stderr)?;
+    let digest = details
+        .lines()
+        .find_map(|s| s.strip_prefix("CDHash="))
+        .context("fixture hash")?;
+    let requirement = CodeRequirement::code_directory_hash(digest)?;
+    let listener = UnixListener::bind(root.path().join("peer.sock"))?;
+    let mut child = FixtureChild(
+        Command::new(&executable)
+            .args([
+                "--exact",
+                "sidecar::supervisor::ipc::macos_peer::tests::bundled_app_peer_uses_the_main_executable",
+                "--nocapture",
+            ])
+            .env("OKILUM_TEST_BUNDLED_PEER_SOCKET", root.path().join("peer.sock"))
+            .spawn()?,
+    );
+    listener.set_nonblocking(true)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let (mut socket, _) = loop {
+        match listener.accept() {
+            Ok(connection) => break connection,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                anyhow::ensure!(
+                    std::time::Instant::now() < deadline && child.0.try_wait()?.is_none(),
+                    "bundled fixture failed to connect"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    socket.set_read_timeout(Some(Duration::from_secs(20)))?;
+    let mut byte = [0];
+    socket.read_exact(&mut byte)?;
+    let positive =
+        SignedPeer::new(requirement.clone(), &executable)?.verify(&socket, PeerEnd::Client);
+    println!("REAL_BUNDLED_PEER_RESULT {positive:?}");
+    anyhow::ensure!(
+        SignedPeer::new(requirement.clone(), &app)?
+            .verify(&socket, PeerEnd::Client)
+            .is_err(),
+        "bundle directory accepted as an executable"
+    );
+    let wrong_path = SignedPeer::new(requirement, std::path::Path::new("/bin/ls"))?
+        .verify(&socket, PeerEnd::Client);
+    anyhow::ensure!(wrong_path.is_err(), "wrong executable accepted");
+    let wrong = CodeRequirement::code_directory_hash("0000000000000000000000000000000000000000")?;
+    anyhow::ensure!(
+        SignedPeer::new(wrong, &executable)?
+            .verify(&socket, PeerEnd::Client)
+            .is_err(),
+        "wrong digest accepted"
+    );
+    socket.write_all(b"q")?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(status) = child.0.try_wait()? {
+            anyhow::ensure!(status.success(), "bundled child did not finish its test");
+            break;
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "bundled child did not exit"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    positive.context("real bundled peer must authenticate as its executable")?;
+    Ok(())
+}
