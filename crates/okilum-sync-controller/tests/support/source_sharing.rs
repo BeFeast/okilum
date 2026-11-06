@@ -1795,6 +1795,33 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
     assert_eq!(fs::read(pair.source.vault.join("seed.md"))?, b"fleet base");
     assert_eq!(fs::read(pair.target.vault.join("seed.md"))?, b"fleet base");
     assert_eq!(fs::read(third.vault.join("seed.md"))?, b"fleet base");
+    for (writer, reader, name) in [
+        (&pair.target, &third, "remaining-target.md"),
+        (&third, &pair.target, "remaining-third.md"),
+    ] {
+        fs::write(
+            writer.vault.join(name),
+            b"remaining mesh after introducer removal",
+        )?;
+        wait(
+            "remaining receivers keep syncing without the removed introducer",
+            || {
+                writer.api.scan(&id)?;
+                reader.api.scan(&id)?;
+                pair.second.refresh()?;
+                controller.refresh()?;
+                Ok(same_hash(
+                    &reader.vault,
+                    name,
+                    b"remaining mesh after introducer removal",
+                ))
+            },
+        )?;
+        assert!(
+            !pair.source.vault.join(name).exists(),
+            "removed introducer received a later edit"
+        );
+    }
     let target_state = pair._root.path().join("target-controller");
     let source_state = &pair.source_state;
     let journal: Value = serde_json::from_slice(&fs::read(target_state.join("direct.json"))?)?;

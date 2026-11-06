@@ -376,27 +376,41 @@ impl Controller {
             removed_self |= fresh.daemon.device_id == removal.device;
             let api = fresh.daemon.connect()?;
             let current = api.folder(&fresh.folder_id)?;
+            let view = |value: &serde_json::Value| {
+                transfer::removal_view(
+                    &self.shared.db.lock().unwrap(),
+                    &fresh,
+                    &removal.device,
+                    value,
+                )
+            };
+            let before = view(&folder.before)?;
+            let after = view(&folder.after)?;
+            let actual = view(&current)?;
             ensure!(
-                current == folder.before || current == folder.after,
+                actual == before || actual == after,
                 "Removal folder changed outside its recorded operation; review required"
             );
-            if current != folder.after {
+            if actual != after {
                 let changes = if fresh.daemon.device_id == removal.device {
                     json!({"paused":true})
                 } else {
-                    json!({"devices":folder.after["devices"]})
+                    // Never restore introduced members that Syncthing has
+                    // already removed since the intent was recorded.
+                    json!({"devices":current["devices"].as_array().context("Removal folder membership missing")?.iter().filter(|member| member["deviceID"] != removal.device).cloned().collect::<Vec<_>>()})
                 };
                 self.check()?;
                 api.patch_folder(&fresh.folder_id, &changes)?;
             }
+            let readback = api.folder(&fresh.folder_id)?;
             ensure!(
-                api.folder(&fresh.folder_id)? == folder.after,
+                view(&readback)? == after,
                 "Removal readback changed unrelated configuration"
             );
             let mut db = self.shared.db.lock().unwrap();
             #[cfg(target_os = "linux")]
-            source::record_removed_membership(&mut db, &fresh, &folder.after);
-            transfer::record_removed_membership(&mut db, &fresh, &removal.device, &folder.after);
+            source::record_removed_membership(&mut db, &fresh, &readback);
+            transfer::record_removed_membership(&mut db, &fresh, &removal.device, &readback);
             self.save(&db)?;
         }
         let mut db = self.shared.db.lock().unwrap();
