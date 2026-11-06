@@ -3,6 +3,8 @@ use super::*;
 mod auth;
 #[cfg(native_manager)]
 pub(crate) mod manager;
+#[cfg(any(native_manager, test))]
+pub(crate) mod pairing_help;
 
 #[derive(Default)]
 pub(super) struct Connection {
@@ -309,6 +311,9 @@ impl T3Settings {
                                     cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
                                 }),
                         )
+                        .when_some(env.as_ref(), |view, env| {
+                            view.child(pairing_help::view(env))
+                        })
                         .child(Input::new(&self.manager_input).w_full())
                         .child(
                             Button::new("t3-manager-paste-link")

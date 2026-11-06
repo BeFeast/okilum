@@ -291,6 +291,7 @@ impl ProjectView {
                 );
             if let Some(env) = self.environment.clone() {
                 let open = manager::connections_url(&env);
+                panel = panel.child(reader_t3_settings::pairing_help::view(&env));
                 panel = panel.child(
                     Button::new("manager-details-open-t3")
                         .ghost()
