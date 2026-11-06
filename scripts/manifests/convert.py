@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare Area TOML manifests. Dry-run by default; legacy YAML is never changed.
+"""Prepare Area TOML manifests. Dry-run by default; YAML removal needs a backup.
 
 The manager applies this to the real vault only after every channel/OS supports
 TOML. Conversion tests use a separate copy of the Area manifests.
@@ -141,7 +141,7 @@ def translate(source):
     return output, changes, len(comments)
 
 
-def atomic_create(path, data, permissions):
+def atomic_create(path, data, permissions, timestamps=None):
     """Same-directory atomic publication; an existing TOML is never replaced."""
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
@@ -150,6 +150,8 @@ def atomic_create(path, data, permissions):
             if hasattr(os, "fchmod"):
                 os.fchmod(file.fileno(), permissions)
             file.flush()
+            if timestamps is not None:
+                os.utime(temporary, ns=timestamps)
             os.fsync(file.fileno())
         os.link(temporary, path)  # atomic no-replace, unlike exists()+rename()
         if os.name == "posix":
@@ -162,7 +164,62 @@ def atomic_create(path, data, permissions):
         os.unlink(temporary)
 
 
-def convert_file(source, apply=False):
+def remove_yaml(source, original, target, backup):
+    """Retire a captured directory entry only after a durable byte-exact backup.
+
+    Quarantine by rename before checking bytes: a replacement writer cannot make
+    us unlink a different entry at the original path. On refusal restore without
+    replacing a concurrent creator; if occupied, retain the recovery file.
+    """
+    metadata = source.stat(follow_symlinks=False)
+    if source.is_symlink() or source.read_bytes() != original:
+        raise ValueError("YAML changed before removal")
+    if target.is_symlink() or not target.is_file():
+        raise ValueError("TOML must remain a regular file before removal")
+    target_bytes = target.read_bytes()
+    if tomlkit.parse(target_bytes.decode()).unwrap() != tomlkit.parse(translate(original.decode())[0]).unwrap():
+        raise ValueError("TOML differs before YAML removal")
+    if any(path.is_symlink() for path in [backup, *backup.parents]):
+        raise ValueError("Backup path must not contain symlinks")
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    if backup.exists():
+        if not backup.is_file() or backup.read_bytes() != original:
+            raise ValueError("Existing backup differs; YAML was not removed")
+    else:
+        atomic_create(backup, original, stat.S_IMODE(metadata.st_mode),
+                      (metadata.st_atime_ns, metadata.st_mtime_ns))
+    fd, temporary = tempfile.mkstemp(prefix=f".{source.name}.recovery-", dir=source.parent)
+    os.close(fd)
+    recovery = Path(temporary)
+    moved = False
+    try:
+        os.replace(source, recovery)
+        moved = True
+        captured = recovery.stat(follow_symlinks=False)
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+        if (not stat.S_ISREG(captured.st_mode) or identity(captured) != identity(metadata)
+                or recovery.read_bytes() != original):
+            raise ValueError("YAML changed during removal")
+        if target.is_symlink() or target.read_bytes() != target_bytes:
+            raise ValueError("TOML changed during YAML removal")
+        if backup.is_symlink() or backup.read_bytes() != original:
+            raise ValueError("Backup changed during YAML removal")
+        if os.path.lexists(source):
+            raise ValueError("YAML was recreated during removal")
+    except Exception:
+        if moved:
+            try:
+                os.link(recovery, source, follow_symlinks=False)
+            except OSError as error:
+                raise ValueError(f"YAML retained for recovery at {recovery}; cannot restore {source}: {error}") from error
+        recovery.unlink()
+        raise
+    recovery.unlink()
+
+
+def convert_file(source, apply=False, backup=None):
+    if backup is not None and not apply:
+        raise ValueError("YAML removal requires --write")
     if source.is_symlink() or not stat.S_ISREG(source.stat().st_mode):
         raise ValueError("Source manifest must be a regular file, not a symlink")
     original = source.read_bytes()
@@ -174,12 +231,19 @@ def convert_file(source, apply=False):
         desired = tomlkit.parse(output).unwrap()
         if tomlkit.parse(target.read_text(encoding="utf-8")).unwrap() != desired:
             raise ValueError("Existing TOML differs; it was not overwritten")
-        return {"status": "unchanged", "changes": changes, "comments": comments}
-    if apply:
+        status = "unchanged"
+    elif apply:
         if source.read_bytes() != original:
             raise ValueError("YAML changed during conversion; no TOML was written")
         atomic_create(target, output.encode("utf-8"), stat.S_IMODE(source.stat().st_mode))
-    return {"status": "created" if apply else "would_create", "changes": changes, "comments": comments}
+        status = "created"
+    else:
+        status = "would_create"
+    result = {"status": status, "changes": changes, "comments": comments}
+    if backup is not None:
+        remove_yaml(source, original, target, backup)
+        result.update(yaml="removed", backup=str(backup))
+    return result
 
 
 def manifests(root):
@@ -197,15 +261,25 @@ def manifests(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, help="Vault or copied Areas tree")
-    parser.add_argument("--write", action="store_true", help="Create missing TOML files; manager only after rollout. YAML remains untouched.")
+    parser.add_argument("--write", action="store_true", help="Create missing TOML files; only after rollout. YAML remains unless --remove-yaml is explicit.")
+    parser.add_argument("--remove-yaml", action="store_true", help="Remove equivalent YAML only with --write and --backup-dir.")
+    parser.add_argument("--backup-dir", type=Path, help="Separate backup directory outside the selected tree; original relative paths are retained.")
     args = parser.parse_args()
     if not args.root.is_dir() or args.root.is_symlink():
         parser.error("root must be an existing directory, not a symlink")
+    if args.remove_yaml and (not args.write or args.backup_dir is None):
+        parser.error("--remove-yaml requires --write and --backup-dir")
+    if args.backup_dir is not None:
+        if not args.remove_yaml:
+            parser.error("--backup-dir requires --remove-yaml")
+        if args.backup_dir.resolve().is_relative_to(args.root.resolve()):
+            parser.error("backup directory must be outside the selected tree")
     rows, failed = [], False
     for source in sorted(manifests(args.root)):
         row = {"source": str(source.relative_to(args.root)), "target": str(source.with_suffix('.toml').relative_to(args.root))}
         try:
-            row.update(convert_file(source, args.write))
+            backup = args.backup_dir / source.relative_to(args.root) if args.remove_yaml else None
+            row.update(convert_file(source, args.write, backup))
         except Exception as error:
             row.update(status="error", error=str(error))
             failed = True

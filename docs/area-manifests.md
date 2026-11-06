@@ -30,9 +30,10 @@ TOML has no null: nullable mapping entries are omitted. In `t3.manager`, omitted
 `project_id` and `thread_id` mean unbound. Legacy YAML keeps its explicit-null
 validation. Existing icon and T3-link edits update the selected format only;
 TOML comments and unrelated values are preserved, with revision checks and
-same-directory atomic replacement. During the rollout, creating a new project
-still writes YAML so older deployed builds can discover it. No read converts or
-deletes a file and no normal app operation rewrites both copies.
+same-directory atomic replacement. Creating a new project writes only
+`ops/project.toml`, including its icon/source and optional later T3 binding.
+Existing YAML projects remain discoverable. No read converts or deletes a file
+and no normal app operation rewrites both copies.
 
 ## One-shot conversion
 
@@ -42,26 +43,31 @@ keep the existing YAML files. The executor tests conversion on a separate copy.
 Vault-side scripts and skills migrate in a separate manager step. Conversion or
 deletion of real vault YAML is not part of shipping this reader change.
 
-During rollout, #1862 blocks removing the last card from a legacy YAML Board:
-older readers reject an empty `issues` array and would show “Board unavailable”.
-The refusal leaves the file unchanged and explains that another card can be
-added first. Other legacy edits/removes remain available; TOML Boards may become
-empty. Remove this temporary guard together with the manager's vault migration
-after every deployed reader supports TOML and empty Boards. Do not convert a
-Board or write both formats to bypass this guard.
+Removing the last card from an existing YAML Board is supported, just as it is
+for TOML. The Board stays in its selected format and reloads as empty; this
+operation does not convert manifests or remove legacy files.
 
 ```sh
-python3 -m venv /tmp/okilum-manifests
-/tmp/okilum-manifests/bin/pip install -r scripts/manifests/requirements.txt
-/tmp/okilum-manifests/bin/python scripts/manifests/convert.py /path/to/copied/Areas
+manifest_env=$(mktemp -d)
+python3 -m venv "$manifest_env"
+"$manifest_env/bin/pip" install -r scripts/manifests/requirements.txt
+"$manifest_env/bin/python" scripts/manifests/convert.py /path/to/copied/Areas
 # Inspect the dry-run JSON before explicitly creating TOML in that copy:
-/tmp/okilum-manifests/bin/python scripts/manifests/convert.py /path/to/copied/Areas --write
+"$manifest_env/bin/python" scripts/manifests/convert.py /path/to/copied/Areas --write
+# Separate, explicit retirement after rollout, with an outside-tree backup:
+"$manifest_env/bin/python" scripts/manifests/convert.py /path/to/copied/Areas \
+  --write --remove-yaml --backup-dir /path/to/manifest-backup
 ```
 
 Dry-run is the default. `--write` atomically creates absent TOML files, preserving
 YAML bytes, permissions and modification times. An existing semantically equal
 TOML is unchanged; a different file or a symlink is refused, including a
-concurrent creator. The converter never deletes YAML. It reports each omitted
+concurrent creator. YAML remains unless both `--write --remove-yaml` and an
+outside-tree `--backup-dir` are supplied. Retirement rechecks TOML equivalence,
+preserves original YAML bytes/permissions/mtime in the backup, and refuses a
+differing existing backup. A source replaced during removal is restored without
+overwriting a concurrent creator; a blocked restoration reports the retained
+recovery path. Backup/TOML failures leave YAML available. It reports each omitted
 null, numeric key converted to a string and date converted to an ISO string.
 Original YAML comments are retained with their field context in the TOML header;
 omitted nulls retain an explicit comment. Comment placement may change, while

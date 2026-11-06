@@ -120,38 +120,33 @@ fn sources_and_slugs() {
 }
 
 #[test]
-fn a_knowledge_project_yaml_holds_what_the_projects_list_reads() {
+fn issue1859_new_project_toml_preserves_identity_icon_and_source() {
     let mut draft = Draft::for_folder(Path::new("/vault/HomeLab"));
     draft.icon = Some(server());
-    assert_eq!(
-        manifest(&draft, "HomeLab"),
-        "# Okilum project manifest, created in Okilum (okilum#1475).\n\
-         schema_version: 1\n\
-         slug: homelab\n\
-         name: \"HomeLab\"\n\
-         kind: knowledge   # code | knowledge | hybrid\n\
-         domain: \"HomeLab\"\n\
-         index: \"HomeLab/_index.md\"\n\
-         icon: {kind: lucide, name: \"server\", color: blue}\n"
-    );
-}
-
-#[test]
-fn a_code_project_yaml_names_its_checkout_or_its_repo() {
-    let mut draft = Draft::for_folder(Path::new("/vault/Dev/Areas/app"));
-    draft.name = "App \"two\"".into();
+    let document: toml::Value = toml::from_str(&manifest(&draft, "HomeLab")).unwrap();
+    assert_eq!(MANIFEST, "ops/project.toml");
+    assert_eq!(document["name"].as_str(), Some("HomeLab"));
+    assert_eq!(document["schema_version"].as_integer(), Some(1));
+    assert_eq!(document["kind"].as_str(), Some("knowledge"));
+    assert_eq!(document["index"].as_str(), Some("HomeLab/_index.md"));
+    assert_eq!(document["icon"]["name"].as_str(), Some("server"));
+    draft.name = "App \"two\" — \u{0007}".into();
     draft.set_kind(Kind::Code);
     draft.source = "/home/me/src/app".into();
-    let text = manifest(&draft, "Dev/Areas/app");
-    assert!(text.contains("name: \"App \\\"two\\\"\"\n"), "{text}");
-    assert!(text.contains("kind: code"));
-    assert!(text.contains("domain: \"Dev\"\n"));
-    assert!(text.contains("execution:\n  source_checkout: \"/home/me/src/app\"\n"));
-    assert!(!text.contains("icon:"), "no icon: the automatic one");
+    let document: toml::Value = toml::from_str(&manifest(&draft, "Dev/Areas/app")).unwrap();
+    assert_eq!(document["name"].as_str(), Some(draft.name.as_str()));
+    assert_eq!(document["domain"].as_str(), Some("Dev"));
+    assert_eq!(
+        document["execution"]["source_checkout"].as_str(),
+        Some("/home/me/src/app")
+    );
     draft.source = "https://git.example/me/app.git".into();
-    let text = manifest(&draft, "Dev/Areas/app");
-    assert!(text.contains("repo:\n  clone_url: \"https://git.example/me/app.git\"\n"));
-    assert!(!text.contains("execution:"));
+    let document: toml::Value = toml::from_str(&manifest(&draft, "Dev/Areas/app")).unwrap();
+    assert_eq!(
+        document["repo"]["clone_url"].as_str(),
+        Some(draft.source.as_str())
+    );
+    assert!(document.get("execution").is_none());
 }
 
 #[test]
@@ -206,9 +201,14 @@ fn create_writes_the_manifest_and_an_index_only_when_there_is_none() {
         std::fs::read_to_string(notes.join("_index.md")).unwrap(),
         "---\ntype: Note\n---\n\n# Studio notes\n"
     );
-    assert!(std::fs::read_to_string(notes.join(MANIFEST))
-        .unwrap()
-        .contains("domain: \"Music\"\nindex: \"Music/Areas/Studio/_index.md\"\n"));
+    let document: toml::Value =
+        toml::from_str(&std::fs::read_to_string(notes.join(MANIFEST)).unwrap()).unwrap();
+    assert_eq!(document["domain"].as_str(), Some("Music"));
+    assert_eq!(
+        document["index"].as_str(),
+        Some("Music/Areas/Studio/_index.md")
+    );
+    assert!(!notes.join("ops/project.yaml").exists());
 }
 
 /// An `_index.md` that cannot be written takes the manifest (and the `ops/`
@@ -258,10 +258,11 @@ fn the_vault_root_becomes_a_local_project_but_missing_and_internal_folders_are_r
     assert_eq!(created.project.folder, vault.0);
     assert_eq!(created.project.manager, super::super::Manager::NotStarted);
     assert!(!created.wrote_index);
-    let document: serde_yaml::Value =
-        serde_yaml::from_str(&std::fs::read_to_string(vault.0.join(MANIFEST)).unwrap()).unwrap();
+    let document: toml::Value =
+        toml::from_str(&std::fs::read_to_string(vault.0.join(MANIFEST)).unwrap()).unwrap();
     assert_eq!(
-        document["index"], INDEX,
+        document["index"].as_str(),
+        Some(INDEX),
         "root index is relative, not /_index.md"
     );
     assert!(document.get("t3").is_none());
@@ -301,9 +302,10 @@ fn the_t3_block_is_appended_and_binds_the_icon_to_t3() {
     assert_eq!(project.appearance.executor_project.as_deref(), Some("p-1"));
     let after = std::fs::read_to_string(folder.join(MANIFEST)).unwrap();
     assert!(after.starts_with(&before), "every earlier byte stays");
-    assert!(after.ends_with(
-        "t3:\n  schema_version: 1\n  environment: \"maestro\"\n  executor_project_id: \"p-1\"\n  manager: {project_id: null, thread_id: null, workspace_mode: local}\n"
-    ));
+    let document: toml::Value = toml::from_str(&after).unwrap();
+    assert_eq!(document["t3"]["environment"].as_str(), Some("maestro"));
+    assert_eq!(document["t3"]["executor_project_id"].as_str(), Some("p-1"));
+    assert!(document["t3"]["manager"].get("thread_id").is_none());
     // The Project view's binding reads: no manager yet.
     let binding = project.native_binding().unwrap().unwrap();
     assert_eq!(binding.environment, "maestro");
@@ -543,7 +545,7 @@ fn the_connection_most_projects_use_is_picked() {
         std::fs::create_dir_all(folder.join("ops")).unwrap();
         std::fs::write(
             folder.join(MANIFEST),
-            format!("name: x\nkind: knowledge\nt3:\n  environment: {env}\n"),
+            format!("name = \"x\"\nkind = \"knowledge\"\n[t3]\nenvironment = \"{env}\"\n"),
         )
         .unwrap();
     }
