@@ -231,14 +231,37 @@ fn pair(env: Environment, link: PairLink, store: project::credentials::Store, cx
     {
         cx.write_to_clipboard(ClipboardItem::new_string(String::new()));
     }
+    let previous = store.read(&NativeToken::credential_key(&env), cx);
     cx.spawn(async move |cx| {
+        // GPUI replaces items by URL AND username. Keep the existing username
+        // so reconnect replaces the credential restored after an app restart.
+        let username = match previous.await {
+            Ok(saved) => saved.map(|(username, _)| username).unwrap_or_else(|| "Okilum Manager".into()),
+            Err(_) => {
+                cx.update(|cx| {
+                    if access.allowed() && entry(&env, cx).generation == generation {
+                        edit(&env, cx, |e| {
+                            e.stage = Stage::Error;
+                            e.error = Some("The saved manager connection could not be read.".into());
+                            e.error_at = Some(chrono::Local::now());
+                        });
+                    }
+                });
+                return;
+            }
+        };
+        if !cx.update(|cx| access.allowed() && entry(&env, cx).generation == generation) { return; }
         let worker_env = env.clone();
         let worker_access = access.clone();
         let result = cx
             .background_executor()
             .spawn(async move {
                 let _lease = worker_access.enter();
-                NativeToken::pair(&worker_env, link.credential(), Duration::from_secs(10))
+                let token = NativeToken::pair(&worker_env, link.credential(), Duration::from_secs(10))?;
+                if !token.can_operate() {
+                    return Err(StreamError::Protocol("the manager connection needs permission to read threads and control agents"));
+                }
+                Ok(token)
             })
             .await;
         let result = match result {
@@ -252,7 +275,7 @@ fn pair(env: Environment, link: PairLink, store: project::credentials::Store, cx
                     .update(|cx| {
                         store.write(
                             &NativeToken::credential_key(&env),
-                            "Okilum Manager",
+                            &username,
                             &token.to_secret(),
                             cx,
                         )

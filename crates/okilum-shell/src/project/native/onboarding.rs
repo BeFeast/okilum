@@ -70,18 +70,20 @@ impl ProjectView {
             self.native.retry_epoch = entry.retry_epoch;
             self.native_retry_now(window, cx);
         }
-        if entry.stage == Stage::Connected && !reader_t3_settings::signed_out(&env.origin(), cx) {
-            if let Some((client, expiry)) = entry.client.zip(entry.expiry) {
-                if self
-                    .native
-                    .client
-                    .as_ref()
-                    .is_none_or(|old| !Arc::ptr_eq(old, &client))
-                {
-                    self.install_native(client, expiry, window, cx);
-                } else if self.native.worker.is_none() && !self.native.stream_ready {
-                    self.native_start(window, cx);
-                }
+        if entry.stage != Stage::Connected || reader_t3_settings::signed_out(&env.origin(), cx) {
+            cx.notify();
+            return;
+        }
+        if let Some((client, expiry)) = entry.client.zip(entry.expiry) {
+            if self
+                .native
+                .client
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(old, &client))
+            {
+                self.install_native(client, expiry, window, cx);
+            } else if self.native.worker.is_none() && !self.native.stream_ready {
+                self.native_start(window, cx);
             }
         }
         cx.notify();
@@ -140,10 +142,11 @@ impl ProjectView {
             shared.error.as_ref(),
             self.model_error.as_ref(),
             self.native.history_error.as_ref(),
-        ] {
-            if let Some(error) = error {
-                lines.push(format!("Last error: {error}"));
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            lines.push(format!("Last error: {error}"));
         }
         if let Some(time) = shared.error_at {
             lines.push(format!(

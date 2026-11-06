@@ -10,7 +10,7 @@ pub(crate) struct Store {
 }
 
 impl Store {
-    pub(super) fn read(&self, key: &str, cx: &App) -> Task<anyhow::Result<Saved>> {
+    pub(crate) fn read(&self, key: &str, cx: &App) -> Task<anyhow::Result<Saved>> {
         #[cfg(test)]
         if let Some(store) = &self.test {
             let mut store = store.lock().unwrap();

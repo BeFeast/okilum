@@ -145,6 +145,13 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
         mcp_key.clone(),
         ("Okilum".into(), b"synthetic-mcp-secret".to_vec()),
     );
+    store.lock().unwrap().entries.insert(
+        NativeToken::credential_key(&env),
+        (
+            "legacy-native-user".into(),
+            b"old-native-credential".to_vec(),
+        ),
+    );
     store.lock().unwrap().refuse_write = true;
     let store_for_focus = store.clone();
     let focus_returns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -198,11 +205,11 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
             e.client.is_none(),
             "failed OS persistence cannot connect a session-only credential"
         );
-        assert!(!store
-            .lock()
-            .unwrap()
-            .entries
-            .contains_key(&NativeToken::credential_key(&env)));
+        assert_eq!(
+            store.lock().unwrap().entries[&NativeToken::credential_key(&env)].1,
+            b"old-native-credential",
+            "a failed replacement preserves the previous credential"
+        );
         store.lock().unwrap().refuse_write = false;
         begin(&env, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(format!(
@@ -226,6 +233,7 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
         assert!(e.expiry.is_some());
         let entries = &store.lock().unwrap().entries;
         assert_eq!(entries[&mcp_key].1, b"synthetic-mcp-secret");
+        assert_eq!(entries[&NativeToken::credential_key(&env)].0, "legacy-native-user", "GPUI must replace the old URL + username item rather than create a competing credential");
         let bytes = &entries[&NativeToken::credential_key(&env)].1;
         assert!(!String::from_utf8_lossy(bytes).contains("23456789ABCD"));
         NativeToken::from_secret(&env, bytes).unwrap();
