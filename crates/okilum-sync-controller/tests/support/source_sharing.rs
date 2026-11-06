@@ -1803,6 +1803,13 @@ fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
         "saved delivery capability is present"
     );
     lost["removals"][0]["pending"] = Value::Object(pending);
+    // Also reconstruct a lost local PATCH acknowledgement: transport has the
+    // after-image but the journal still needs its witness/publication step.
+    lost["removals"][0]["local_applied"] = Value::Bool(false);
+    let folders = lost["removals"][0]["folders"].as_array().unwrap();
+    assert!(!folders.is_empty(), "durable REST preimages were recorded");
+    let original = folders[0]["before"].clone();
+    lost["transfers"][0]["witness"] = original;
     fs::write(target_state.join("direct.json"), serde_json::to_vec(&lost)?)?;
     pair.second = Controller::open(target_state, vec![pair.target.home.join("config.xml")])?;
     let before = pair.source.api.config()?;

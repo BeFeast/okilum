@@ -739,6 +739,9 @@ impl Controller {
         self.serve_pinned()?;
         self.refresh_pairing()?;
         self.reconcile_removals()?;
+        if self.shared.db.lock().unwrap().local_removed {
+            return self.snapshot();
+        }
         self.reconcile_peer_addresses()?;
         self.reconcile_create_ignores()?;
         self.reconcile_history()?;
