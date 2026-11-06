@@ -45,11 +45,16 @@ pub(crate) fn eligible(rel: &str) -> bool {
 /// since #998, source code.
 pub(crate) fn editable(rel: &str) -> bool {
     eligible(rel)
-        || crate::reader_code_file::eligible(rel)
+        || crate::reader_code_file::editable_format(rel)
         || Path::new(rel)
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("txt"))
+}
+
+/// Document admission/restoration is separate from write authority.
+pub(crate) fn previewable(rel: &str) -> bool {
+    editable(rel) || crate::reader_code_file::eligible(rel)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

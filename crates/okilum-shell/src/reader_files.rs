@@ -511,7 +511,7 @@ impl Reader {
                     self.discover_source_recovery(cx);
                 }
                 self.show_window_title(Some(self.selected_title()), window, cx);
-                if log || reader_delimited::editable(rel) {
+                if log || reader_delimited::previewable(rel) {
                     self.record_usable_document(cx);
                 } else {
                     self.focus_handle.focus(window, cx);
@@ -1054,8 +1054,11 @@ mod tests {
         let reader = reader.unwrap();
         visual.run_until_parked();
         for name in ["sheet.csv", "sheet.tsv", "sheet.txt"] {
+            reader.update_in(visual, |r, window, cx| r.preview_file(name, window, cx));
+            // TXT now uses CodePreview's bounded asynchronous read. Chosen Edit
+            // must resume once those bytes load, independently of AST indexing.
+            visual.run_until_parked();
             reader.update_in(visual, |r, window, cx| {
-                r.preview_file(name, window, cx);
                 // The previous file was left in Edit; that chosen mode carries
                 // to the next editable file (GitHub #6).
                 assert_eq!(r.editing.is_some(), name != "sheet.csv");
@@ -1388,7 +1391,7 @@ mod tests {
             assert_eq!(reader.navigation.history.last().unwrap(), "report.pdf");
             reader.preview_file("plain.txt", window, cx);
             assert_eq!(reader.selected_file(), "plain.txt");
-            assert!(reader.file_preview.as_ref().unwrap().text.is_some());
+            assert!(reader.file_preview.as_ref().unwrap().code.is_some());
             reader.file_action(FileAction::Relative, window, cx);
             assert_eq!(
                 cx.read_from_clipboard().unwrap().text().unwrap(),

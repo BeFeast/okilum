@@ -69,7 +69,7 @@ impl OpenIntent {
             });
         }
         let log = okilum_core::log::is_log_path(&path);
-        let plain = super::reader_delimited::editable(&path.to_string_lossy());
+        let plain = super::reader_delimited::previewable(&path.to_string_lossy());
         let markdown = path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));

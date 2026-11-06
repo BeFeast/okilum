@@ -1,0 +1,52 @@
+--- a/crates/base/src/input/editor/display_map/fold_map.rs
++++ b/crates/base/src/input/editor/display_map/fold_map.rs
+@@ -158,6 +158,12 @@
+             self.folded.retain(|f| f.start_line != start_line);
+             self.needs_rebuild = true;
+         }
++    }
++
++    /// Change all candidates in one batch, including nested folds.
++    pub(super) fn set_all_folded(&mut self, folded: bool) {
++        self.folded = if folded { self.candidates.clone() } else { Vec::new() };
++        self.needs_rebuild = true;
+     }
+ 
+     /// Toggle fold at the given start_line
+--- a/crates/base/src/input/editor/display_map/display_map.rs
++++ b/crates/base/src/input/editor/display_map/display_map.rs
+@@ -240,6 +240,12 @@
+         self.rebuild_fold_projection();
+     }
+ 
++    /// Fold or unfold all candidates with a single projection rebuild.
++    pub fn set_all_folded(&mut self, folded: bool) {
++        self.fold_map.set_all_folded(folded);
++        self.rebuild_fold_projection();
++    }
++
+     /// Toggle fold at the given start_line
+     pub fn toggle_fold(&mut self, start_line: usize) {
+         self.fold_map.toggle_fold(start_line);
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -9584,6 +9584,19 @@
+         cx.notify();
+     }
+ 
++    /// Fold or unfold every candidate without editing the source.
++    pub fn set_all_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
++        if self.mode.is_folding() {
++            self.display_map.set_all_folded(folded);
++            cx.notify();
++        }
++    }
++
++    /// Current folded source-line ranges, including nested folds.
++    pub fn folded_ranges(&self) -> &[crate::input::FoldRange] {
++        self.display_map.folded_ranges()
++    }
++
+     /// Unfold any folded ranges that hide the given position.
+     ///
+     /// Use this to reveal a position before acting on it (e.g. before
