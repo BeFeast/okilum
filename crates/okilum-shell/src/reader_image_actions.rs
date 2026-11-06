@@ -8,6 +8,8 @@ use gpui_component::{
 use std::io::Read;
 
 mod metadata;
+#[cfg(feature = "embed-native-harness")]
+pub(super) mod native_harness;
 mod source_hover;
 pub(super) use source_hover::provider as source_hover;
 mod save;

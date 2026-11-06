@@ -19,6 +19,8 @@ settings-ui-harness = []
 appimage-acceptance-harness = ["okilum-appimage/acceptance-harness"]
 # Non-publishing downloaded-update visual fixture; never starts an updater.
 updater-ui-harness = []
+# Synthetic native clipboard/Finder/Explorer acceptance; never a release feature.
+embed-native-harness = []
 # Non-publishing Project UI fixture; never registers OAuth clients or threads.
 project-ui-harness = ["gpui/profiler"]
 

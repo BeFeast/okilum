@@ -8478,6 +8478,10 @@ OPTIONS:
 ";
 
 fn main() {
+    #[cfg(feature = "embed-native-harness")]
+    if reader_image_actions::native_harness::entry() {
+        return;
+    }
     if let Err(error) = linux_sprint::initialize() {
         eprintln!("Linux Sprint isolation: {error:#}");
         std::process::exit(1);

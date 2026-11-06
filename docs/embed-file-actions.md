@@ -32,3 +32,12 @@ FileManager1 with containing-folder fallback). Open and Reveal recheck canonical
 vault containment on the worker. These interactions do not write source files
 or widen the reader protocol. Existing explicitly requested image import, Save
 image as and iCloud actions keep their prior authority.
+
+Native acceptance uses `embeds-native.yml`: issue-scoped parser/GPUI regressions
+run on Mac and Windows, followed by a separately built standalone application
+with `embed-native-harness` (no GPUI test support). Its isolated synthetic Reader
+uses the production reference parser and image commands. The external driver
+observes both path spellings in the system clipboard and the exact selected
+file in Finder/Explorer, and verifies canonical bytes remain unchanged. This
+checks native command integration; it does not assert tester acceptance or
+replace visual hover/menu checks. The harness is excluded from shipping builds.
