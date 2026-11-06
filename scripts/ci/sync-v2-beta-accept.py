@@ -128,6 +128,14 @@ try:
   except (OSError,ValueError):return None
  owned=wait('UI-created active managed source within production preparation/startup bounds',shared,source_wait);source_api=api_from(managed/'config/config.xml');source_id=source_api('/rest/system/status')['myID'];folder=owned['id'];assert owned['daemon']['device_id']==source_id
  sf=source_api('/rest/config/folders/'+folder);assert sf['versioning']['type']=='staggered' and sf['versioning']['params']['maxAge']=='2592000';screen('02-share-ready');event('explicit UI Share prepared signed claimed runtime and active vault')
+ click('Shared exclusions')
+ for _ in range(5):
+  if any(row['text'].strip()=='Save shared policy' for row in ocr()):break
+  run(driver,'scroll',966,610,-7);time.sleep(.75)
+ screen('02b-shared-exclusions-preview');click('Save shared policy')
+ wait('explicit policy Save writes included file',lambda:(source/'.okilum/sync-ignore').exists() and (source/'.stignore').read_bytes().startswith(b'#include .okilum/sync-ignore\n'))
+ wait('native shared-policy Save acknowledgement',lambda:any('Saved. The shared file syncs' in row['text'] for row in ocr()))
+ screen('02c-shared-exclusions-saved');event('explicit UI shared-policy Save created the vault file and preserved its local include');run(driver,'escape');time.sleep(1)
  click('Add computer');click('Create pairing link');click('Copy link');url=run('pbpaste').stdout.strip();assert len(url)>80
  screen('03-created-invitation');event('UI invitation copied')
  # Prepare an independent real Syncthing/Controller receiver only after the Mac's fresh bootstrap.

@@ -35,6 +35,13 @@ if command == "paste" || command == "go-folder" || command == "return" {
     }
     exit(0)
 }
+if command == "scroll" {
+    let point = CGPoint(x:Double(args[2])!,y:Double(args[3])!)
+    CGEvent(mouseEventSource:nil,mouseType:.mouseMoved,mouseCursorPosition:point,mouseButton:.left)!.post(tap:.cghidEventTap)
+    Thread.sleep(forTimeInterval:0.1)
+    CGEvent(scrollWheelEvent2Source:nil,units:.line,wheelCount:1,wheel1:Int32(args[4])!,wheel2:0,wheel3:0)!.post(tap:.cghidEventTap)
+    exit(0)
+}
 if command == "escape" {
     for down in [true,false] { CGEvent(keyboardEventSource:nil,virtualKey:53,keyDown:down)!.post(tap:.cghidEventTap) }
     exit(0)
