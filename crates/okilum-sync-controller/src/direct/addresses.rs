@@ -198,6 +198,10 @@ impl Controller {
             (served(&db), db.peers.values().cloned().collect::<Vec<_>>())
         };
         for peer in peers {
+            let live = || removal::peer_is_live(&self.shared.db.lock().unwrap(), &peer);
+            if !live() {
+                continue;
+            }
             // Reapply durable hints at startup; an offline computer cannot erase them.
             self.apply_addresses(&peer, &peer.addresses)?;
             // A computer that joined this one reaches it at one of this
@@ -213,8 +217,10 @@ impl Controller {
                     Operation::Catalog {},
                 ) {
                     Ok(Reply::Catalog { .. }) => {}
+                    Err(_) if !live() => {}
                     Err(error) if transfer::offline(&error) => {}
                     Err(error) => return Err(error),
+                    _ if !live() => {}
                     _ => anyhow::bail!("authenticated peer catalog unavailable"),
                 }
             }

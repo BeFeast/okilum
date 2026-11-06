@@ -146,7 +146,7 @@ impl Controller {
     ) -> Result<()> {
         self.check()?;
         ensure!(valid(device) && !id.is_nil(), "Invalid removal identity");
-        let (attached, known) = {
+        let (attached, known, authorized) = {
             let db = self.shared.db.lock().unwrap();
             if let Some(old) = db.removals.iter().find(|r| r.id == id) {
                 ensure!(
@@ -172,6 +172,11 @@ impl Controller {
                 db.peers
                     .values()
                     .any(|p| p.syncthing_device.as_deref() == Some(device)),
+                requested
+                    .iter()
+                    .filter(|v| sender.is_some_and(|peer| knows(&db, peer, v)))
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
             )
         };
         let configs = self.configuration_paths()?;
@@ -182,7 +187,10 @@ impl Controller {
                 existing::same_binding(&vault, &fresh),
                 "Removal vault identity changed"
             );
-            if fresh.peers.iter().any(|p| p == device) {
+            // Syncthing may deliver an introduction removal before this
+            // authenticated application operation. Record/ack that shared
+            // scope even when its transport member is already absent.
+            if fresh.peers.iter().any(|p| p == device) || authorized.contains(&fresh.folder_id) {
                 vaults.insert(fresh.folder_id);
             }
         }
@@ -223,9 +231,29 @@ impl Controller {
         vaults: BTreeSet<String>,
     ) -> Result<Reply> {
         self.queue_removal(id, &device, vaults, Some(scope))?;
+        self.prepare_removal(id)?;
         let _guard = self.shared.transfer_lock.lock().unwrap();
         self.apply_removal(id)?;
         Ok(Reply::RemovalRecorded { id })
+    }
+    fn prepare_removal(&self, id: Uuid) -> Result<()> {
+        let fresh = self
+            .shared
+            .db
+            .lock()
+            .unwrap()
+            .removals
+            .iter()
+            .find(|r| r.id == id)
+            .is_some_and(|r| !r.local_applied && r.folders.is_none());
+        if fresh {
+            // Finish existing durable policy transitions before capturing the
+            // removal preimages. Replay of a planned removal never re-enters
+            // ordinary reconciliation with a stale ownership witness.
+            self.reconcile_history()?;
+            self.reconcile_create_ignores()?;
+        }
+        Ok(())
     }
     fn apply_removal(&self, id: Uuid) -> Result<()> {
         let (mut removal, attached) = {
@@ -262,6 +290,12 @@ impl Controller {
                     "Removal binding changed; no unrelated folder was modified"
                 );
                 let before = fresh.daemon.connect()?.folder(&fresh.folder_id)?;
+                {
+                    let db = self.shared.db.lock().unwrap();
+                    #[cfg(target_os = "linux")]
+                    source::validate_removal(&db, &fresh, &before)?;
+                    transfer::validate_removal(&db, &fresh, &before)?;
+                }
                 let members = before["devices"]
                     .as_array()
                     .context("Removal folder membership missing")?;
@@ -317,6 +351,7 @@ impl Controller {
                 "Removal readback changed unrelated configuration"
             );
             let mut db = self.shared.db.lock().unwrap();
+            #[cfg(target_os = "linux")]
             source::record_removed_membership(&mut db, &fresh, &folder.after);
             transfer::record_removed_membership(&mut db, &fresh, &removal.device, &folder.after);
             self.save(&db)?;
@@ -340,6 +375,15 @@ impl Controller {
                 db.catalog_peer = None;
             }
         }
+        if removed_self {
+            #[cfg(target_os = "linux")]
+            for source in &mut db.sources {
+                source.active = false;
+            }
+            for transfer in &mut db.transfers {
+                transfer.deactivate();
+            }
+        }
         db.local_removed |= removed_self;
         db.removals
             .iter_mut()
@@ -352,6 +396,7 @@ impl Controller {
         self.check()?;
         let removals = self.shared.db.lock().unwrap().removals.clone();
         for removal in removals {
+            self.prepare_removal(removal.id)?;
             {
                 let _guard = self.shared.transfer_lock.lock().unwrap();
                 self.apply_removal(removal.id)?;
@@ -383,6 +428,18 @@ impl Controller {
         Ok(())
     }
 }
+pub(super) fn peer_is_live(db: &Database, peer: &Paired) -> bool {
+    !db.local_removed
+        && db
+            .peers
+            .get(&peer.peer.id)
+            .is_some_and(|current| current.key == peer.key && current.public == peer.public)
+        && !db
+            .removals
+            .iter()
+            .any(|removal| peer.syncthing_device.as_deref() == Some(removal.device.as_str()))
+}
+
 pub(super) fn pending(db: &Database) -> usize {
     db.removals
         .iter()

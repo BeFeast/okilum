@@ -1350,6 +1350,24 @@ pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {
         .collect()
 }
 
+pub(super) fn validate_removal(db: &Database, vault: &ExistingVault, before: &Value) -> Result<()> {
+    for transfer in db.transfers.iter().filter(|t| {
+        t.active && t.path == vault.path && t.daemon == vault.daemon && t.vault == vault.folder_id
+    }) {
+        ensure!(
+            !transfer.history.has_pending() && !transfer.create_ignores.has_pending(),
+            "Removal waits for the existing receiver policy intent"
+        );
+        validate_owned(transfer, before)?;
+    }
+    Ok(())
+}
+impl Transfer {
+    pub(super) fn deactivate(&mut self) {
+        self.active = false;
+    }
+}
+
 pub(super) fn record_removed_membership(
     db: &mut Database,
     vault: &ExistingVault,

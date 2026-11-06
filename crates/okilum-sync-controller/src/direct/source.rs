@@ -495,6 +495,30 @@ pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {
         .collect()
 }
 
+pub(super) fn validate_removal(db: &Database, vault: &ExistingVault, before: &Value) -> Result<()> {
+    for source in db.sources.iter().filter(|s| {
+        s.active && s.path == vault.path && s.daemon == vault.daemon && s.id == vault.folder_id
+    }) {
+        ensure!(
+            !source.history.has_pending() && !source.create_ignores.has_pending(),
+            "Removal waits for the existing source policy intent"
+        );
+        let mut expected = source
+            .witness
+            .clone()
+            .context("Source ownership witness missing")?;
+        // Source enrollment can share with further explicitly authorized peers.
+        // The removal changes only its named member; every other field stays exact.
+        expected["devices"] = before["devices"].clone();
+        expected["paused"] = before["paused"].clone();
+        ensure!(
+            expected == *before,
+            "Source configuration changed before removal"
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn record_removed_membership(db: &mut Database, vault: &ExistingVault, after: &Value) {
     for source in db
         .sources
