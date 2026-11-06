@@ -1,0 +1,59 @@
+name: sync-v2-current-beta-upgrade
+on:
+  push:
+    branches: ['sync-v2-upgrade/2489-auth']
+permissions:
+  contents: read
+jobs:
+  beta-upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+      OKILUM_SOURCE_COMMIT: 4db3d2d85678e2ef7a612664590aa23951df2396
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Keep synthetic tools outside exact product checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-tools" "$RUNNER_TEMP/native-evidence" "$RUNNER_TEMP/q"
+          cp scripts/ci/qa_native_prepare.rs scripts/ci/qa_upgrade.py scripts/ci/qa_upgrade_runner.py "$RUNNER_TEMP/native-tools/"
+          git checkout --detach 4db3d2d85678e2ef7a612664590aa23951df2396
+          test "$(git rev-parse HEAD)" = 4db3d2d85678e2ef7a612664590aa23951df2396
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Install exact gate native dependencies
+        run: |
+          sudo bash scripts/ci/hosted-ubuntu-apt.sh build-essential cmake pkg-config curl git mold zstd python3-venv gnupg gpgv tini ffmpeg libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libxcb1-dev
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+            vendor/gpui-component/
+            vendor/comrak-0.47.0/
+          key: sync-v2-auth-upgrade-${{ github.sha }}
+          restore-keys: |
+            agent-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', 'scripts/comrak/**', '.github/workflows/agent-checks.yml') }}-
+      - name: Build exact production binary and separate disposable fixture setup
+        run: |
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+          cargo build --locked -p okilum-shell --bin okilum --message-format=json > "$RUNNER_TEMP/native-tools/product.jsonl"
+          cp "$RUNNER_TEMP/native-tools/qa_native_prepare.rs" crates/okilum-sync-controller/tests/qa_native_prepare.rs
+          cargo test --locked -p okilum-sync-controller --test qa_native_prepare --no-run --message-format=json > "$RUNNER_TEMP/native-tools/prepare.jsonl"
+      - name: Pair published beta and verify mixed and upgraded state in both orders
+        run: python3 -u "$RUNNER_TEMP/native-tools/qa_upgrade_runner.py"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sync-v2-current-beta-upgrade
+          path: ${{ runner.temp }}/native-evidence/*
+          if-no-files-found: error
+          retention-days: 5
