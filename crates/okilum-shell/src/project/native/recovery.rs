@@ -1,5 +1,5 @@
 //! Conversation-local recovery preserves the retained transport and action scope.
-use super::recovery_state::{ErrorDismissKey, ErrorOrigin, RecoveryAction, SessionDismissals};
+use super::recovery_state::{ErrorDismissKey, ErrorOrigin, SessionDismissals};
 use super::*;
 use gpui_component::popover::Popover;
 
@@ -283,107 +283,18 @@ impl ProjectView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let attempting = self.native.busy
-            || (self.native.worker.is_some()
-                && matches!(
-                    self.native.phase,
-                    ConnectionPhase::Connecting | ConnectionPhase::Reconnecting
-                ));
-        let mut view = v_flex().w_full().min_w_0().gap_1();
-        if self.connection_details && self.native.active() && !self.native.stream_ready {
-            let status = match self.native.phase {
-                ConnectionPhase::Connecting => "Connecting…",
-                ConnectionPhase::Reconnecting => "Reconnecting…",
-                ConnectionPhase::Terminal => "Live updates unavailable",
-                ConnectionPhase::Paused => "Live updates paused",
-                ConnectionPhase::Connected => "Connecting…",
-            };
-            let mut controls = h_flex()
-                .gap_1()
-                .items_center()
-                .child(
-                    div()
-                        .debug_selector(|| "project-live-phase".into())
-                        .child(status),
-                )
-                .child(
-                    Button::new("project-inline-reconnect")
-                        .debug_selector(|| "project-inline-reconnect".into())
-                        .ghost()
-                        .label("Reconnect")
-                        .disabled(attempting)
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.native_reconnect(window, cx)),
-                        ),
-                );
-            if let Some(failure) = &self.native.failure {
-                match recovery_state::presentation(&failure.cause).action {
-                    RecoveryAction::Reconnect => {}
-                    RecoveryAction::PairAgain => {
-                        controls =
-                            controls.child(
-                                Button::new("project-inline-pair")
-                                    .debug_selector(|| "project-inline-pair".into())
-                                    .ghost()
-                                    .label("Pair again")
-                                    .disabled(attempting)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.pair_manager(window, cx)
-                                    })),
-                            );
-                    }
-                    RecoveryAction::OpenT3 => {
-                        if let Some(origin) = self.environment.as_ref().map(Environment::origin) {
-                            controls = controls.child(
-                                Button::new("project-inline-open-t3")
-                                    .debug_selector(|| "project-inline-open-t3".into())
-                                    .ghost()
-                                    .label("Open T3")
-                                    .on_click(move |_, _, cx| cx.open_url(&origin)),
-                            );
-                        }
-                    }
-                }
-            }
-            view = view.child(controls);
-        }
-        for (origin, text, selector) in [
-            (
-                ErrorOrigin::Connection,
-                self.native
-                    .failure
-                    .as_ref()
-                    .map(|failure| recovery_state::presentation(&failure.cause).full_safe_text),
-                "project-live-error",
-            ),
-            (
-                ErrorOrigin::Setup,
-                self.native.setup_error.clone(),
-                "project-live-setup-error",
-            ),
-            (
+        let mut view = v_flex().w_full().min_w_0();
+        if let Some(banner) = self.native.history_error.as_ref().and_then(|error| {
+            self.native_error_banner(
                 ErrorOrigin::History,
-                self.native
-                    .history_error
-                    .as_ref()
-                    .map(|error| format!("Could not load earlier messages: {error}")),
+                format!("Could not load earlier messages: {error}"),
+                None,
                 "project-history-error",
-            ),
-        ] {
-            if origin != ErrorOrigin::History && !self.connection_details {
-                continue;
-            }
-            if let Some(banner) = text.and_then(|text| {
-                let preview = self
-                    .native
-                    .failure
-                    .as_ref()
-                    .filter(|_| origin == ErrorOrigin::Connection)
-                    .map(|failure| recovery_state::presentation(&failure.cause).summary);
-                self.native_error_banner(origin, text, preview, selector, window, cx)
-            }) {
-                view = view.child(banner);
-            }
+                window,
+                cx,
+            )
+        }) {
+            view = view.child(banner);
         }
         view.into_any_element()
     }
@@ -401,25 +312,6 @@ impl ProjectView {
         if self.native.busy {
             return;
         }
-        self.native.pause();
-        self.freeze_native_actions(window, cx);
-        self.native_start(window, cx);
-        cx.notify();
-    }
-
-    pub(super) fn native_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.active
-            || self.native.busy
-            || (self.native.worker.is_some()
-                && matches!(
-                    self.native.phase,
-                    ConnectionPhase::Connecting | ConnectionPhase::Reconnecting
-                ))
-        {
-            return;
-        }
-        // pause invalidates old completions and releases a terminal worker.
-        // It retains the client, model/cursor, Actions and request lease.
         self.native.pause();
         self.freeze_native_actions(window, cx);
         self.native_start(window, cx);

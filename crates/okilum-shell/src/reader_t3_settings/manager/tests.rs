@@ -177,7 +177,7 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
     });
     visual.deactivate_window();
     let text = format!("{}/pair#token=23456789ABCD", env.origin());
-    visual.update(|window, cx| {
+    visual.update(|_, cx| {
         begin(&env, cx);
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         assert_eq!(entry(&env, cx).stage, Stage::Waiting);
@@ -264,4 +264,27 @@ async fn focus_return_pairs_once_narrows_scope_and_persists_only_the_native_cred
         assert!(!error.contains("DO NOT LOG"));
     });
     server.join().unwrap();
+}
+
+#[gpui::test]
+fn cancel_restores_the_previous_expired_offline_or_connected_state(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    cx.update(reader_features::enable_test_modules);
+    let env = Environment::new("app", "https://t3.example").unwrap();
+    cx.update(|cx| {
+        for before in [
+            Stage::NotConnected,
+            Stage::Connected,
+            Stage::Offline,
+            Stage::Expired,
+            Stage::Error,
+        ] {
+            edit(&env, cx, |e| e.stage = before);
+            begin(&env, cx);
+            assert_eq!(entry(&env, cx).stage, Stage::Waiting);
+            begin(&env, cx); // Opening T3 again cannot forget where Cancel returns.
+            cancel(&env, cx);
+            assert_eq!(entry(&env, cx).stage, before);
+        }
+    });
 }

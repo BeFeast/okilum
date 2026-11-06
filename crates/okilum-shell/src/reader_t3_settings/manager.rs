@@ -67,6 +67,7 @@ pub(crate) struct Entry {
     pub error_at: Option<chrono::DateTime<chrono::Local>>,
     generation: u64,
     pub retry_epoch: u64,
+    previous_stage: Stage,
 }
 #[derive(Clone, Default)]
 pub(crate) struct Connections(BTreeMap<String, Entry>);
@@ -116,9 +117,10 @@ pub(crate) fn begin(env: &Environment, cx: &mut App) {
     }
     edit(env, cx, |e| {
         e.generation = e.generation.wrapping_add(1);
+        if e.stage != Stage::Waiting {
+            e.previous_stage = e.stage;
+        }
         e.stage = Stage::Waiting;
-        e.error = None;
-        e.error_at = None;
     });
     cx.open_url(&connections_url(env));
 }
@@ -158,11 +160,7 @@ pub(crate) fn transport(
 pub(crate) fn cancel(env: &Environment, cx: &mut App) {
     edit(env, cx, |e| {
         if e.stage == Stage::Waiting {
-            e.stage = if e.client.is_some() {
-                Stage::Connected
-            } else {
-                Stage::NotConnected
-            };
+            e.stage = e.previous_stage;
             e.generation = e.generation.wrapping_add(1);
         }
     });

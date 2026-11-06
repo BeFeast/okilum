@@ -70,6 +70,9 @@ impl ProjectView {
             self.native.retry_epoch = entry.retry_epoch;
             self.native_retry_now(window, cx);
         }
+        if entry.stage == Stage::Offline && self.native.worker.is_none() {
+            self.native_start(window, cx);
+        }
         if entry.stage != Stage::Connected || reader_t3_settings::signed_out(&env.origin(), cx) {
             cx.notify();
             return;

@@ -1358,7 +1358,7 @@ fn connected_controls_collapse_until_details_is_requested(cx: &mut TestAppContex
     let (root, visual) = cx.add_window_view(|window, cx| {
         let view = cx.new(|cx| {
             let mut view = fixture::view(state.path().to_owned(), gateway.clone(), window, cx);
-            view.native.expires_at = Some(expiry);
+            view.native.set_detail_test_expiry(expiry);
             view
         });
         Root::new(view, window, cx)

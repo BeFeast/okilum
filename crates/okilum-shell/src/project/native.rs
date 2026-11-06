@@ -52,6 +52,10 @@ pub(super) struct Native {
 }
 impl Native {
     #[cfg(test)]
+    pub(super) fn set_detail_test_expiry(&mut self, expiry: u64) {
+        self.expires_at = Some(expiry);
+    }
+    #[cfg(test)]
     pub(super) fn set_detail_test_client(&mut self, client: Arc<NativeClient>) {
         self.client = Some(client);
     }
