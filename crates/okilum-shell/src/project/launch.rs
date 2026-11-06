@@ -341,9 +341,9 @@ mod tests {
         let open = visual.debug_bounds("project-connection-menu").unwrap();
         visual.simulate_click(open.center(), Modifiers::default());
         visual.run_until_parked();
-        // The native Manager also has Rotation policy and Express session before Diagnostics.
+        // The native Manager has Rotation policy before Details.
         #[cfg(native_manager)]
-        visual.simulate_keystrokes("down down down down down down enter");
+        visual.simulate_keystrokes("down down down down down enter");
         #[cfg(not(native_manager))]
         visual.simulate_keystrokes("down down down down enter");
         visual.run_until_parked();

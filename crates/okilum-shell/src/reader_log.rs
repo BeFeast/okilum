@@ -3368,7 +3368,7 @@ impl LogView {
                 reader_icon_button(
                     "log-copy-raw",
                     IconName::Copy,
-                    with_shortcut("Copy raw line", COPY_KEY),
+                    reader_shortcuts::hint("Copy raw line", &CopyRawLine, cx),
                     cx,
                 )
                 .debug_selector(|| "log-copy-raw".into())

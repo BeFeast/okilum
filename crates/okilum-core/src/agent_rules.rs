@@ -1,7 +1,7 @@
 //! Local instruction evidence for #1590. Discovery order is not evidence that a
 //! remote executor loaded these files. No writes or provider calls occur here.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -28,6 +28,15 @@ pub struct Layer {
     pub source: Option<String>,
     pub error: Option<String>,
     pub duplicate_lines: Vec<usize>,
+    /// Wording overlap only, not semantic equivalence or a contradiction verdict.
+    pub similar_lines: Vec<SimilarLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SimilarLine {
+    pub line: usize,
+    pub other_layer: usize,
+    pub other_line: usize,
 }
 
 impl Layer {
@@ -50,10 +59,18 @@ pub struct RuleStack {
 
 impl RuleStack {
     pub fn total_bytes(&self) -> usize {
-        self.layers.iter().map(Layer::bytes).sum()
+        self.layers
+            .iter()
+            .filter(|l| l.provenance != Provenance::Alternative)
+            .map(Layer::bytes)
+            .sum()
     }
     pub fn approximate_tokens(&self) -> usize {
-        self.layers.iter().map(Layer::approximate_tokens).sum()
+        self.layers
+            .iter()
+            .filter(|l| l.provenance != Provenance::Alternative)
+            .map(Layer::approximate_tokens)
+            .sum()
     }
 }
 
@@ -222,6 +239,7 @@ pub fn discover(vault: &Path, project: &Path) -> RuleStack {
                 source,
                 error,
                 duplicate_lines: vec![],
+                similar_lines: vec![],
             });
         }
     }
@@ -291,16 +309,19 @@ fn expand(
         .join(&path)
         .canonicalize()
         .unwrap_or_else(|_| root.join(&path));
-    let repeated = seen.get(&identity).cloned();
-    let (source, mut error) = read_source(root, &path);
-    if active.contains(&identity) {
-        error = Some("Import cycle; expansion stopped".into());
-    } else if let Some(first) = repeated {
-        error = Some(format!(
-            "Repeated source, first seen at {}; expansion stopped",
-            first.display()
-        ));
-    }
+    let (source, error) = if active.contains(&identity) {
+        (None, Some("Import cycle; expansion stopped".into()))
+    } else if let Some(first) = seen.get(&identity) {
+        (
+            None,
+            Some(format!(
+                "Repeated source, first seen at {}; expansion stopped",
+                first.display()
+            )),
+        )
+    } else {
+        read_source(root, &path)
+    };
     let expand_imports = error.is_none();
     let imports: Vec<_> = if expand_imports {
         let text = source.as_deref().unwrap_or_default();
@@ -326,6 +347,7 @@ fn expand(
         source,
         error,
         duplicate_lines: vec![],
+        similar_lines: vec![],
     });
     if !expand_imports {
         return;
@@ -362,6 +384,9 @@ fn expand(
 fn mark_duplicates(stack: &mut RuleStack) {
     let mut lines: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
     for (index, layer) in stack.layers.iter().enumerate() {
+        if layer.provenance == Provenance::Alternative {
+            continue;
+        }
         for (line, text) in layer
             .source
             .as_deref()
@@ -397,11 +422,284 @@ fn mark_duplicates(stack: &mut RuleStack) {
         layer.duplicate_lines.sort_unstable();
         layer.duplicate_lines.dedup();
     }
+    mark_similar(stack);
+}
+
+/// Bound both storage and work independently of file size. This is a local
+/// wording hint; unknown/omitted matches remain explicit instead of implying
+/// that all rules have been checked for agreement.
+fn mark_similar(stack: &mut RuleStack) {
+    const MAX_LINES: usize = 4096;
+    const MAX_COMPARISONS: usize = 100_000;
+    const MAX_EDIT_CELLS: usize = 2_000_000;
+    const MAX_CHARS: usize = 512;
+    let mut candidates: Vec<(usize, usize, String, BTreeSet<String>)> = Vec::new();
+    let mut words: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut matches = Vec::new();
+    let mut comparisons = 0;
+    let mut edit_cells = 0;
+    let mut limited = false;
+    'layers: for (layer, entry) in stack.layers.iter().enumerate() {
+        if entry.provenance == Provenance::Alternative {
+            continue;
+        }
+        for (line, text) in entry
+            .source
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .enumerate()
+        {
+            let heading = text.trim_start().starts_with('#');
+            let count = text.chars().take(MAX_CHARS + 1).count();
+            if count > MAX_CHARS {
+                limited = true;
+                continue;
+            }
+            let tokens: BTreeSet<String> = text
+                .to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let letters: usize = tokens.iter().map(|word| word.chars().count()).sum();
+            if letters < if heading { 6 } else { 12 } || text.trim_start().starts_with('@') {
+                continue;
+            }
+            if candidates.len() == MAX_LINES {
+                limited = true;
+                break 'layers;
+            }
+            let normalized = text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase();
+            let previous: BTreeSet<usize> = tokens
+                .iter()
+                .filter_map(|word| words.get(word))
+                .flatten()
+                .copied()
+                .collect();
+            for prior in previous {
+                let (other_layer, other_line, other_text, other_tokens) = &candidates[prior];
+                if *other_layer == layer || *other_text == normalized {
+                    continue;
+                }
+                if comparisons == MAX_COMPARISONS {
+                    limited = true;
+                    break 'layers;
+                }
+                comparisons += 1;
+                let common = tokens.intersection(other_tokens).count();
+                let union = tokens.len() + other_tokens.len() - common;
+                // At least three shared words for prose; short headings use
+                // a bounded edit distance below after sharing an anchor word.
+                let overlap = common >= 3 && common * 4 >= union * 3;
+                let near_heading =
+                    !overlap && heading && other_text.trim_start().starts_with('#') && {
+                        let cost = count * other_text.chars().count();
+                        if edit_cells + cost > MAX_EDIT_CELLS {
+                            limited = true;
+                            false
+                        } else {
+                            edit_cells += cost;
+                            near_heading(text, other_text)
+                        }
+                    };
+                if overlap || near_heading {
+                    matches.push((layer, line + 1, *other_layer, *other_line));
+                }
+            }
+            let index = candidates.len();
+            for word in &tokens {
+                words.entry(word.clone()).or_default().push(index);
+            }
+            candidates.push((layer, line + 1, normalized, tokens));
+        }
+    }
+    // A large repeated corpus must not allocate quadratic peer annotations.
+    for (left, line, right, other_line) in matches {
+        for (owner, hint) in [
+            (
+                left,
+                SimilarLine {
+                    line,
+                    other_layer: right,
+                    other_line,
+                },
+            ),
+            (
+                right,
+                SimilarLine {
+                    line: other_line,
+                    other_layer: left,
+                    other_line: line,
+                },
+            ),
+        ] {
+            if stack.layers[owner].similar_lines.len() < 256 {
+                stack.layers[owner].similar_lines.push(hint);
+            } else {
+                limited = true;
+            }
+        }
+    }
+    for layer in &mut stack.layers {
+        layer.similar_lines.sort();
+        layer.similar_lines.dedup();
+    }
+    if limited {
+        stack.diagnostics.push("Similar-wording analysis is partial (line, length or comparison limit); source files and totals remain complete.".into());
+    }
+}
+
+fn near_heading(left: &str, right: &str) -> bool {
+    let normalize = |text: &str| {
+        text.trim_start()
+            .trim_start_matches('#')
+            .trim()
+            .to_lowercase()
+            .chars()
+            .collect::<Vec<_>>()
+    };
+    let left = normalize(left);
+    let right = normalize(right);
+    let limit = left.len().max(right.len()) / 5;
+    if left.len().abs_diff(right.len()) > limit {
+        return false;
+    }
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.iter().enumerate() {
+        let mut row = vec![i + 1; right.len() + 1];
+        for (j, b) in right.iter().enumerate() {
+            row[j + 1] = (previous[j] + usize::from(a != b))
+                .min(row[j] + 1)
+                .min(previous[j + 1] + 1);
+        }
+        if *row.iter().min().unwrap() > limit {
+            return false;
+        }
+        previous = row;
+    }
+    previous[right.len()] <= limit
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rules_1590_repeated_sources_are_references_without_text_totals_or_false_duplicates() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("Project")).unwrap();
+        let contract = "# Contract\nKeep canonical files unchanged.\n";
+        let agents = "@_AgentContract.md\n";
+        let project = "@../_AgentContract.md\nProject-specific guidance only.\n";
+        fs::write(root.join("_AgentContract.md"), contract).unwrap();
+        fs::write(root.join("AGENTS.md"), agents).unwrap();
+        fs::write(root.join("Project/AGENTS.md"), project).unwrap();
+        fs::write(root.join("Project/CLAUDE.md"), contract).unwrap();
+        let stack = discover(root, &root.join("Project"));
+        assert_eq!(stack.layers.len(), 6);
+        for index in [2, 4] {
+            let repeated = &stack.layers[index];
+            assert!(repeated.source.is_none());
+            assert!(repeated
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Repeated source"));
+            assert_eq!(repeated.bytes(), 0);
+            assert_eq!(repeated.approximate_tokens(), 0);
+            assert!(repeated.duplicate_lines.is_empty() && repeated.similar_lines.is_empty());
+        }
+        assert_eq!(stack.layers[0].source.as_deref(), Some(contract));
+        assert!(
+            stack.layers[0].duplicate_lines.is_empty(),
+            "references and provider candidates cannot make every contract line a duplicate"
+        );
+        assert_eq!(
+            stack.total_bytes(),
+            contract.len() + agents.len() + project.len()
+        );
+        assert_eq!(
+            stack.approximate_tokens(),
+            [contract, agents, project]
+                .iter()
+                .map(|s| s.chars().count().div_ceil(4))
+                .sum::<usize>()
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("_AgentContract.md")).unwrap(),
+            contract
+        );
+    }
+
+    #[test]
+    fn rules_1590_similar_lines_and_headings_keep_peer_coordinates_and_exact_flags() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("_AgentContract.md"), "# Memory usage\nTreat every imported file as read-only evidence.\nKeep canonical files unchanged.\n").unwrap();
+        fs::write(temp.path().join("AGENTS.md"), "## Memory use\nTreat every imported document as read-only evidence.\nKeep   canonical files unchanged.\nUnrelated instructions about garden plants.\n").unwrap();
+        let stack = discover(temp.path(), temp.path());
+        assert_eq!(stack.layers[0].duplicate_lines, [3]);
+        assert_eq!(stack.layers[1].duplicate_lines, [3]);
+        for (layer, peer) in [(0, 1), (1, 0)] {
+            assert_eq!(
+                stack.layers[layer].similar_lines,
+                [
+                    SimilarLine {
+                        line: 1,
+                        other_layer: peer,
+                        other_line: 1
+                    },
+                    SimilarLine {
+                        line: 2,
+                        other_layer: peer,
+                        other_line: 2
+                    },
+                ]
+            );
+        }
+        assert!(stack.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn rules_1590_analysis_limits_are_visible_without_truncating_source_or_totals() {
+        let temp = tempfile::tempdir().unwrap();
+        let source: String = (0..4100)
+            .map(|n| format!("IndependentInstruction{n:05}\n"))
+            .collect();
+        fs::write(temp.path().join("AGENTS.md"), &source).unwrap();
+        let stack = discover(temp.path(), temp.path());
+        assert!(stack
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("analysis is partial")));
+        assert_eq!(stack.total_bytes(), source.len());
+        assert_eq!(stack.layers[0].source.as_deref(), Some(source.as_str()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rules_1590_canonical_alias_is_counted_once_but_distinct_equal_files_are_flagged() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let rule = "Keep canonical files unchanged.\n";
+        fs::write(temp.path().join("_AgentContract.md"), rule).unwrap();
+        fs::write(temp.path().join("AGENTS.md"), "@alias.md\n@copy.md\n").unwrap();
+        fs::write(temp.path().join("copy.md"), rule).unwrap();
+        symlink("_AgentContract.md", temp.path().join("alias.md")).unwrap();
+        let stack = discover(temp.path(), temp.path());
+        assert!(stack.layers[2].source.is_none());
+        assert_eq!(stack.layers[0].duplicate_lines, [1]);
+        assert_eq!(stack.layers[3].duplicate_lines, [1]);
+        assert_eq!(
+            stack.total_bytes(),
+            rule.len() * 2 + "@alias.md\n@copy.md\n".len()
+        );
+    }
     #[test]
     fn rules_share_import_parser_and_ignore_fenced_examples() {
         let root = std::env::temp_dir().join(format!("okilum-rules-parser-{}", std::process::id()));

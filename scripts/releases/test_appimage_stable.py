@@ -114,12 +114,15 @@ class AppImageStableTests(unittest.TestCase):
         manifest = {'filename': 'final.pkg'}
         with patch.object(pacman_final.linux, 'candidate', return_value=(manifest, b'package', b'signature')), \
              patch.object(self.key, 'verify'), patch.object(pacman_final.subprocess, 'run') as run, \
+             patch.object(pacman_final.linux.arch, 'validate_package'), \
+             patch.object(pacman_final, 'stable_target'), \
              patch.object(pacman_final.linux, 'execute') as promote:
             run.return_value.stdout = b'missing notice'
             with self.assertRaisesRegex(ValueError, 'notice'):
                 pacman_final.execute(self.store, self.key, self.root, SOURCE, 9000)
             promote.assert_not_called(); self.assertNotIn(pacman_final.MARKER, self.store.objects)
             run.return_value.stdout = pacman_final.NOTICE + b' https://updates.befeast.com/okilum/linux/stable/Okilum-x86_64.AppImage'
+            self.store.objects.pop('okilum/arch/stable/x86_64/latest.json')
             promote.side_effect = OSError('publication failed')
             with self.assertRaises(OSError): pacman_final.execute(self.store, self.key, self.root, SOURCE, 9000)
             self.assertNotIn(pacman_final.MARKER, self.store.objects)
@@ -136,3 +139,71 @@ class AppImageStableTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'frozen'):
             pacman_final.linux.execute(self.store, self.key, self.root, SOURCE, 9000)
         self.assertEqual(self.store.writes, [])
+
+    def final_package(self):
+        self.store.objects.pop('okilum/arch/stable/x86_64/latest.json', None)
+        return ({'filename': 'okilum-0.1.9000-1-x86_64.pkg.tar.zst', 'build': 9000,
+                 'source': SOURCE, 'sha256': 'fixture'}, b'package', b'signature')
+
+    def test_final_pacman_missing_stable_target_never_promotes_or_freezes(self):
+        with patch.object(pacman_final.linux, 'candidate', return_value=self.final_package()), \
+             patch.object(pacman_final.linux.arch, 'validate_package'), \
+             patch.object(self.key, 'verify'), \
+             patch.object(pacman_final.subprocess, 'run') as run, \
+             patch.object(pacman_final.linux, 'execute') as promote:
+            run.return_value.stdout = pacman_final.NOTICE + b' ' + pacman_final.IMAGE_URL
+            with self.assertRaisesRegex(ValueError, 'Missing signed AppImage'):
+                pacman_final.execute(self.store, self.key, self.root, SOURCE, 9000)
+            promote.assert_not_called()
+            self.assertEqual(self.store.writes, [])
+
+    def test_final_pacman_stable_target_signature_payload_and_provenance_fail_before_writes(self):
+        self.promote()
+        self.store.writes.clear()
+        for name in ['latest.json', 'latest.json.sig', stable.IMAGE, stable.IMAGE + '.sig']:
+            key = 'okilum/linux/stable/' + name
+            original = self.store.objects[key]
+            self.store.objects[key] = original + b'tampered'
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                pacman_final.stable_target(self.store, self.key, self.root)
+            self.assertEqual(self.store.writes, [])
+            self.store.objects[key] = original
+        key = 'okilum/linux/builds/5023/provenance.json'
+        original = self.store.objects.pop(key)
+        with self.assertRaisesRegex(ValueError, 'Missing signed AppImage'):
+            pacman_final.stable_target(self.store, self.key, self.root)
+        self.store.objects[key] = original
+        result = pacman_final.stable_target(self.store, self.key, self.root)
+        self.assertEqual((result['build'], result['source']), (5023, SOURCE))
+        self.assertEqual(self.store.writes, [])
+
+    def test_final_pacman_check_only_uses_no_private_key_signing_or_publication(self):
+        self.promote()
+        self.store.writes.clear()
+        with patch.object(pacman_final, 'PublicStore', return_value=self.store), \
+             patch.object(pacman_final, 'PublicKey') as public_key, \
+             patch.object(pacman_final.linux.arch, 'SigningKey', side_effect=AssertionError('private key')), \
+             patch.object(pacman_final.linux.arch, 'R2', side_effect=AssertionError('publication credentials')), \
+             patch.object(pacman_final.linux, 'candidate', return_value=self.final_package()), \
+             patch.object(pacman_final.linux.arch, 'validate_package'), \
+             patch.object(pacman_final.subprocess, 'run') as run, \
+             patch.object(self.key, 'sign', side_effect=AssertionError('signing')), \
+             patch.object(pacman_final.linux, 'execute', side_effect=AssertionError('promotion')):
+            public_key.return_value.__enter__.return_value = self.key
+            run.return_value.stdout = pacman_final.NOTICE + b' ' + pacman_final.IMAGE_URL
+            # Only the synthetic pacman signature is outside the test key's format.
+            verify = self.key.verify
+            with patch.object(self.key, 'verify', side_effect=lambda path:
+                              None if str(path).endswith('.pkg.tar.zst') else verify(path)):
+                pacman_final.main(['--source', SOURCE, '--build', '9000', '--check-only'])
+            self.assertEqual(self.store.writes, [])
+            self.assertNotIn(pacman_final.MARKER, self.store.objects)
+
+    def test_public_preflight_store_refuses_mutation_and_path_escape(self):
+        store = pacman_final.PublicStore()
+        for method, key in [('PUT', 'okilum/arch/frozen.json'), ('DELETE', 'okilum/arch/frozen.json'),
+                            ('GET', 'okilum/../private'), ('GET', 'https://example.invalid/')]:
+            with self.subTest(method=method, key=key), self.assertRaises(ValueError):
+                store.call(method, key)
+        with self.assertRaises(ValueError):
+            store.put('okilum/arch/frozen.json', b'no', 'application/json')

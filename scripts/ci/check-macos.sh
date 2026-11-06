@@ -81,7 +81,7 @@ run_tests okilum-t3 --lib stream::tests::pairing_reports_build_target_os --exact
 # #2517: compile and execute every native Manager module, including GPUI tests.
 # Each filter has its own positive control and libtest passed/failed counts.
 manager_skip=()
-for module in attachments composer discuss_handoff drafts express_session feed links message_types native rotation threads; do
+for module in attachments composer discuss_handoff drafts feed links message_types native rotation threads; do
     run_tests okilum-shell --bins "project::${module}::"
     manager_skip+=(--skip "project::${module}::")
 done

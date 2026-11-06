@@ -471,6 +471,7 @@ enum Section {
     Appearance,
     /// Editing notes: pasting and dropping files (#1611).
     Editor,
+    Keyboard,
     /// Current vault settings and the other known vaults (#2572).
     Vaults,
     /// Log source links: for logs of software you build (#1355).
@@ -493,6 +494,7 @@ impl Section {
             Self::Features => "features",
             Self::T3 => "t3",
             Self::Editor => "editor",
+            Self::Keyboard => "keyboard",
             Self::Appearance => "appearance",
             Self::Vaults => "vaults",
             Self::Logs => "logs",
@@ -508,6 +510,7 @@ impl Section {
             Some("features") => Self::Features,
             Some("t3") => Self::T3,
             Some("editor") => Self::Editor,
+            Some("keyboard") => Self::Keyboard,
             Some("appearance") => Self::Appearance,
             Some("vaults") => Self::Vaults,
             Some("logs") => Self::Logs,
@@ -525,6 +528,7 @@ impl Section {
             Self::T3 => Icon::new(IconName::SquareTerminal),
             Self::Appearance => Icon::new(IconName::Palette),
             Self::Editor => Icon::new(IconName::FileText),
+            Self::Keyboard => Icon::new(IconName::Settings),
             Self::Vaults => Icon::new(IconName::Folder),
             Self::Logs => Icon::new(IconName::SquareTerminal),
             Self::Updates => Icon::default().path("icons/arrow-down-circle.svg"),
@@ -540,6 +544,7 @@ impl Section {
             Self::T3 => "T3",
             Self::Appearance => "Appearance",
             Self::Editor => "Editor",
+            Self::Keyboard => "Keyboard Shortcuts",
             Self::Vaults => "Vaults",
             Self::Logs => "Logs",
             Self::Updates => "Updates",
@@ -560,6 +565,7 @@ struct Settings {
     section: Section,
     theme_picker: Entity<theme_picker::ThemePicker>,
     font_picker: Entity<reader_fonts::Picker>,
+    keyboard: Option<Entity<reader_keymap::KeyboardSettings>>,
     #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
     preview_beta: Option<bool>,
     reader: Option<WeakEntity<Reader>>,
@@ -595,6 +601,7 @@ struct Settings {
 }
 impl Settings {
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        reader_keymap::stop_recording(window, cx);
         window.blur(cx);
         // GPUI delivers focus/blur events during drawing. Let inputs and their
         // Blur subscribers finish before removing the window and its views.
@@ -616,6 +623,11 @@ impl Settings {
     }
 
     fn select_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if section != Section::Keyboard {
+            if let Some(keyboard) = &self.keyboard {
+                keyboard.update(cx, |keyboard, cx| keyboard.deactivate(cx));
+            }
+        }
         if !self.enable_section(section, cx) {
             self.section = Section::Features;
             cx.notify();
@@ -639,6 +651,11 @@ impl Settings {
 
     /// Explicit entries do not replace the pane chosen in the sidebar (#1496).
     fn show_entry_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if section != Section::Keyboard {
+            if let Some(keyboard) = &self.keyboard {
+                keyboard.update(cx, |keyboard, cx| keyboard.deactivate(cx));
+            }
+        }
         if !self.enable_section(section, cx) {
             self.section = Section::Features;
             cx.notify();
@@ -685,6 +702,7 @@ impl Settings {
             sync: None,
             theme_picker: cx.new(|cx| theme_picker::ThemePicker::new(None, cx)),
             font_picker: cx.new(|_| reader_fonts::Picker::default()),
+            keyboard: None,
             #[cfg(all(target_os = "linux", feature = "settings-ui-harness"))]
             preview_beta: match std::env::var("OKILUM_DEBUG_UPDATER_UI").as_deref() {
                 Ok("sparkle" | "velopack") => Some(false),
@@ -1404,6 +1422,7 @@ impl Settings {
                     .child(self.font_picker.clone())
                     .into_any_element()
             }
+            Section::Keyboard => content.children(self.keyboard.clone()).into_any_element(),
             Section::Editor => content
                 .child(image_import_settings(cx))
                 .child(setting_row(
@@ -1980,10 +1999,19 @@ impl Render for Settings {
             self._vaults_changes = Some(cx.observe(&vaults, |_, _, cx| cx.notify()));
             self.vaults = Some(vaults);
         }
+        if self.section == Section::Keyboard && self.keyboard.is_none() {
+            self.keyboard =
+                Some(cx.new(|cx| {
+                    reader_keymap::KeyboardSettings::new(self.reader.clone(), window, cx)
+                }));
+        }
         let p = brand::palette(cx);
         let body = self.body(window, cx);
         let content = h_flex()
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if reader_keymap::is_recording(window, cx) {
+                    return;
+                }
                 if event.keystroke.key == "escape"
                     && event.keystroke.modifiers == Modifiers::default()
                     && !window.has_active_dialog(cx)
@@ -2008,6 +2036,7 @@ impl Render for Settings {
                             Section::Features,
                             Section::Appearance,
                             Section::Editor,
+                            Section::Keyboard,
                             Section::Vaults,
                             Section::T3,
                             Section::Updates,

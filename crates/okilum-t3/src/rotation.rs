@@ -732,9 +732,14 @@ mod recovery_tests {
             revision: 1,
         }
     }
+    fn jerusalem_resolver() -> TzifResolver {
+        TzifResolver::new(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/zoneinfo"),
+        )
+    }
     #[test]
     fn actual_jerusalem_dst_and_coverage_fail_closed() {
-        let resolver = TzifResolver::new("/usr/share/zoneinfo");
+        let resolver = jerusalem_resolver();
         assert!(matches!(
             resolver.resolve("Asia/Jerusalem", 20539, 150).unwrap(),
             LocalTime::Gap
@@ -756,7 +761,7 @@ mod recovery_tests {
         let path = std::env::temp_dir().join(format!("rotation-recovery-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         let store = PolicyStore::new(&path);
-        let resolver = TzifResolver::new("/usr/share/zoneinfo");
+        let resolver = jerusalem_resolver();
         let p = Policy::new(true, "Asia/Jerusalem", ["08:30", "20:30"]).unwrap();
         let start = 20758 * 86400;
         let configured = store.configure(0, owner(), p, start, &resolver).unwrap();

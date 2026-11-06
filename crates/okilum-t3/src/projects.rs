@@ -661,7 +661,12 @@ mod tests {
         std::fs::write(&path, registry).unwrap();
         let error = Project::read(&folder).unwrap_err();
         let detail = format!("{error:#}");
-        assert!(detail.contains(path.to_str().unwrap()), "{detail}");
+        assert!(
+            detail
+                .replace('\\', "/")
+                .contains(&path.to_string_lossy().replace('\\', "/")),
+            "{detail}"
+        );
         assert!(detail.contains("Manager row, line 8"), "{detail}");
         assert!(
             detail.contains("current thread ID in backticks"),

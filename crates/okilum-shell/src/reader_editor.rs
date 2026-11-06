@@ -613,7 +613,13 @@ impl Reader {
             editing.live_preview.suspend();
             editing.live_preview.enabled = false;
             let sensitive = reader_ui_state::find_case_sensitive(cx);
+            let source_hover = editing
+                .markdown
+                .then(|| reader_image_actions::source_hover(cx.entity().downgrade()));
             editing.input.update(cx, |input, cx| {
+                if let Some(source_hover) = source_hover {
+                    input.lsp_mut().hover_provider = Some(source_hover);
+                }
                 input.set_projection_provider(None, cx);
                 input.set_searchable(true, cx);
                 let query = input.search_session().query.clone();
@@ -842,6 +848,7 @@ impl Reader {
         // Cmd/Ctrl+/ comments code-block lines; elsewhere it falls through.
         code_comforts::ensure_keys(cx);
         tables::ensure_keys(cx);
+        let embed_hover = reader_image_actions::source_hover(cx.entity().downgrade());
         let input = cx.new(|cx| {
             let mut input = EditorState::new(window, cx)
                 .document_newlines(true)
@@ -868,6 +875,9 @@ impl Reader {
             input.set_projection_provider(Some(Arc::new(ExactSource)), cx);
             input.set_exact_clipboard_provider(clipboard, cx);
             input.set_value(store.text().to_owned(), window, cx);
+            if !plain_file {
+                input.lsp_mut().hover_provider = Some(embed_hover);
+            }
             input.set_direction_exempt_lines(direction_exempt_lines(store.text()));
             let press = input.block_press_slot();
             input.set_block_renderer(blocks.map(|(root, rel, reader, context)| {
@@ -888,7 +898,21 @@ impl Reader {
             input
         });
         let mut last_find_case = reader_ui_state::find_case_sensitive(cx);
+        let mut last_embed_hover = None;
         let highlighting = cx.observe_in(&input, window, move |this, input, window, cx| {
+            // Editor/Input are RenderOnce wrappers owned by Reader. Native
+            // hover state alone redraws the text engine, not its overlay host.
+            // Rebuild that host only when the popup opens/closes or changes
+            // target; ordinary input/caret notifications stay on the hot path.
+            let hover = input
+                .read(cx)
+                .hover_popover()
+                .map(|hover| hover.symbol_range.clone());
+            if last_embed_hover != hover {
+                last_embed_hover = hover;
+                cx.notify();
+            }
+
             if this.editing.as_ref().is_some_and(|editing| {
                 editing.input == input
                     && editing.live_preview.restore_after_find
@@ -1061,11 +1085,10 @@ impl Reader {
                         .is_none_or(|editing| editing.input.entity_id() != input.entity_id())
                     || input.read(cx).source_stamp() != click.stamp
                     || click.event.button != MouseButton::Left
-                    || !(if cfg!(target_os = "macos") {
-                        click.event.modifiers.platform
-                    } else {
-                        click.event.modifiers.control || click.event.modifiers.platform
-                    })
+                    || !reader_image_actions::open_modifier(
+                        platform::labels::Os::CURRENT,
+                        click.event.modifiers,
+                    )
                 {
                     return;
                 }
@@ -2878,16 +2901,6 @@ fn live_blocks(
             }
         });
         let font_size = px(reader_ui_state::font_size(cx));
-        // A missing image must not hide its source behind a blank row.
-        if markdown.contains("okilum-asset://unavailable") {
-            return div()
-                .debug_selector(|| "live-image-unavailable".into())
-                .when_some(on_image, |this, f| this.on_mouse_down(MouseButton::Left, f))
-                .text_size(font_size)
-                .text_color(cx.theme().muted_foreground)
-                .child(format!("Image unavailable \u{b7} {source}"))
-                .into_any_element();
-        }
         let mut style = reader_text_zoom::document_style(cx);
         style.heading_base_font_size = font_size;
         // The first line keeps two identical blocks apart.
