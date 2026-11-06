@@ -46,6 +46,9 @@ jobs:
           assert len(bins)==1,bins
           shutil.copy2(bins[0],pathlib.Path(os.environ['RUNNER_TEMP'],'sync-v2-tools/qa-peer'))
           PY
+      - name: Probe bundled peer executable identity with genuine signed fixtures
+        run: |
+          "$RUNNER_TEMP/sync-v2-tools/qa-peer" --exact bundled_peer_executable_identity --nocapture
       - name: Verify actual signed-beta fresh UI pairing and both-way transport
         run: |
           python3 -u "$RUNNER_TEMP/sync-v2-tools/sync-v2-beta-accept.py" \
