@@ -25,13 +25,6 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/icon-env"
           "$RUNNER_TEMP/icon-env/bin/pip" install CairoSVG==2.8.2
           "$RUNNER_TEMP/icon-env/bin/python" scripts/windows-icon.py crates/okilum-shell/assets/brand/app-icon-light.svg target/windows-dist/okilum.ico
-      - name: Exercise read-only data viewing and compiled negative controls
-        shell: bash
-        run: |
-          if [[ "$RUNNER_OS" = Windows ]]; then
-            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
-          fi
-          python3 scripts/ci/data-view-native.py
       - uses: actions/upload-artifact@v4
         with:
           name: updater-windows-icon
@@ -67,6 +60,7 @@ jobs:
           key: data-view-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.github/workflows/data-view-native.yml') }}-${{ github.sha }}
           restore-keys: |
             data-view-native-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'scripts/vendor-setup.sh', 'scripts/patches/*.diff', '.github/workflows/data-view-native.yml') }}-
+            data-view-native-v1-${{ runner.os }}-
             embeds-native-v1-${{ runner.os }}-
             quote-native-v1-${{ runner.os }}-
             keymap-native-v1-${{ runner.os }}-
@@ -102,6 +96,13 @@ jobs:
           binary=target/debug/okilum
           if [[ "$RUNNER_OS" = Windows ]]; then binary="$binary.exe"; fi
           python3 scripts/ci/data-view-native-app.py "$binary"
+      - name: Exercise read-only data viewing and compiled negative controls
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" = Windows ]]; then
+            export OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
+          fi
+          python3 scripts/ci/data-view-native.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
