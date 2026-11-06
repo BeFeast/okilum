@@ -167,7 +167,7 @@ impl T3Settings {
                 .detach();
             cx.observe_window_activation(window, |_, window, cx| {
                 if window.is_window_active() {
-                    manager::activated(cx);
+                    manager::activated(window, cx);
                 }
             })
             .detach();

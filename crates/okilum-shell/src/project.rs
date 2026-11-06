@@ -428,7 +428,7 @@ impl ProjectView {
                 .detach();
             cx.observe_window_activation(window, |_, window, cx| {
                 if window.is_window_active() {
-                    reader_t3_settings::manager::activated(cx);
+                    reader_t3_settings::manager::activated(window, cx);
                 }
             })
             .detach();
