@@ -1561,6 +1561,7 @@ fn managed_shared_2046_include_propagation_local_review_and_initial_seed() -> Re
     )?;
     controller.attach(peer, &id, &third.vault)?;
     assert_eq!(fs::read(third.vault.join(POLICY_PATH))?, newer.as_bytes());
+    assert!(!fs::read_to_string(third.vault.join(".stignore"))?.contains("source-only"));
     assert!(third.api.ignores(&id)?["error"].is_null() || third.api.ignores(&id)?["error"] == "");
     wait("new receiver positive bytes with shared include", || {
         pair.source.api.scan(&id)?;

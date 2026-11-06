@@ -18,6 +18,8 @@ pub(super) struct Connection {
     ignores: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     policy: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_ignores: Option<Vec<u8>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,7 +101,14 @@ pub(super) fn share(
     )?;
     // The destination is a new, owned folder: service staging is never note
     // content. Keep the source's local file intact, including custom rules.
-    if policy.is_none() && !lines.iter().any(|line| line == create_ignores::STAGING) {
+    if policy.is_some() {
+        // A new computer starts its own local block. Never export the source's
+        // device-local exceptions as though they were shared rules.
+        lines = vec![
+            shared_ignores::INCLUDE.into(),
+            "// Local exclusions on this computer; preserved by Okilum.".into(),
+        ];
+    } else if !lines.iter().any(|line| line == create_ignores::STAGING) {
         lines.insert(0, create_ignores::STAGING.into());
     }
     let config = api.config()?;
@@ -139,6 +148,7 @@ pub(super) fn share(
         device_id: source.daemon.device_id.clone(),
         ignores: lines,
         policy,
+        local_ignores: None,
     })
 }
 fn ignore_lines(value: &Value) -> Result<Vec<String>> {
@@ -1218,6 +1228,7 @@ impl Controller {
                 .lines()
                 .map(str::to_owned)
                 .collect();
+            transfer.connection.as_mut().unwrap().local_ignores = Some(bytes.to_vec());
             transfer.create_ignores = create_ignores::Policy::current();
             self.save_transfer(&transfer)?;
         }
@@ -1243,7 +1254,10 @@ impl Controller {
                 self.reconcile_shared_ignore(
                     &transfer.path,
                     (identity.device, identity.inode),
-                    format!("{}\n", connection.ignores.join("\n")).as_bytes(),
+                    connection
+                        .local_ignores
+                        .as_deref()
+                        .unwrap_or(format!("{}\n", connection.ignores.join("\n")).as_bytes()),
                 )
             })();
             match result {
@@ -1351,6 +1365,7 @@ mod tests {
                 device_id: "sender".into(),
                 ignores: vec![],
                 policy: None,
+                local_ignores: None,
             }),
             active: true,
             owner: Some(Uuid::new_v4()),

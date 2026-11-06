@@ -65,8 +65,8 @@ explicit Save or **Keep both versions** saves a separate
 [Previous Sync versions](source-history.md#previous-versions-from-sync-2045)
 use staggered 30-day history on both managed sides, reconcile existing owned
 folders, offer per-computer retention settings and guarded Restore in Note history
-and Recover notes (#2045). This is not a backup of every local edit. Shared ignore
-policy (#2046) remains a follow-up. macOS is **coming** in
+and Recover notes (#2045). This is not a backup of every local edit. [Shared ignore policy](sync-enrollment.md#one-shared-ignore-policy-2046)
+uses a synced file with a preserved local block (#2046). macOS is **coming** in
 [#2489](https://git.oklabs.uk/BeFeast/okilum/issues/2489); Windows is **coming** in
 [#2490](https://git.oklabs.uk/BeFeast/okilum/issues/2490).
 

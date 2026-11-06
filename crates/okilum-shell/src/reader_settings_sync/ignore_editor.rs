@@ -106,29 +106,31 @@ impl PolicyEditor {
                     controller.preview_ignore_policy(&path)
                 }))
                 .await;
-            let _ = view.update_in_own_window(cx, |view, window, cx| {
-                if !view.parent.is_current() || !view.alive.load(Ordering::Acquire) {
-                    return;
-                }
-                view.busy = false;
-                match result {
-                    Ok(preview) => {
-                        view.editor.update(cx, |input, cx| {
-                            input.set_value(preview.text.clone(), window, cx)
-                        });
-                        view.local.update(cx, |input, cx| {
-                            input.set_value(preview.proposed_local.clone(), window, cx)
-                        });
-                        view.preview = Some(preview);
+            let _ = cx.update(|window, app| {
+                view.update(app, |view, cx| {
+                    if !view.parent.is_current() || !view.alive.load(Ordering::Acquire) {
+                        return;
                     }
-                    Err(error) => {
-                        view.message = Some(format!(
-                            "Could not load exclusions. {}",
-                            short_cause(&error)
-                        ))
+                    view.busy = false;
+                    match result {
+                        Ok(preview) => {
+                            view.editor.update(cx, |input, cx| {
+                                input.set_value(preview.text.clone(), window, cx)
+                            });
+                            view.local.update(cx, |input, cx| {
+                                input.set_value(preview.proposed_local.clone(), window, cx)
+                            });
+                            view.preview = Some(preview);
+                        }
+                        Err(error) => {
+                            view.message = Some(format!(
+                                "Could not load exclusions. {}",
+                                short_cause(&error)
+                            ))
+                        }
                     }
-                }
-                cx.notify();
+                    cx.notify();
+                })
             });
         })
         .detach();
@@ -156,7 +158,7 @@ impl PolicyEditor {
                     Ok(())
                 })
             })).await;
-            let _ = view.update_in_own_window(cx,|view,window,cx| {
+            let _ = cx.update(|window,app| view.update(app,|view,cx| {
                 if !view.parent.is_current() || !view.alive.load(Ordering::Acquire) { return; }
                 view.busy = false;
                 match result {
@@ -164,7 +166,7 @@ impl PolicyEditor {
                     Err(error) => view.message = Some(format!("Could not save exclusions. {} Refresh the preview before trying again.",short_cause(&error))),
                 }
                 cx.notify();
-            });
+            }));
         }).detach();
         cx.notify();
     }
