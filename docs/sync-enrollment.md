@@ -178,9 +178,10 @@ the owner does not trust remains open; transport encryption does not solve that.
 
 ## Removal, ignores, and remaining work
 
-The direct Settings flow does not yet offer fleet-wide device removal or
-propagated revocation. To disconnect a plain/external Syncthing peer, remove its
-folder shares and device connections in Syncthing on the relevant computers.
+Settings offers [Remove computer](#remove-a-computer-2042) with propagated
+sharing/pairing revocation. For a manually configured plain/external Syncthing
+relationship outside the introducer, remove its shares/connections in Syncthing
+on the relevant computers.
 Stopping a local app or disabling its optional Sync UI is not remote revocation.
 Already copied files remain on a disconnected or lost computer; they cannot be
 recalled. A new invitation does not revoke an earlier pairing.
@@ -188,8 +189,6 @@ recalled. A new invitation does not revoke an earlier pairing.
 The [30 October decisions and 1 November clarification](https://git.oklabs.uk/BeFeast/okilum/issues/2039)
 set the direction. These parts remain unfinished:
 
-- [#2042](https://git.oklabs.uk/BeFeast/okilum/issues/2042): propagated removal through the
-  introducer mesh; the 06 November decision does not add a vault device list.
 - [#2043](https://git.oklabs.uk/BeFeast/okilum/issues/2043): preview and lossless
   first merge when the destination already has files. Local preview groundwork
   does not enable this flow. Merged PRs
@@ -287,3 +286,30 @@ retaining all device-local rules. Review the server's readback and an ordinary
 note transfer before removing a former template dependency. Installing that line
 on a live server is a host change; follow its administrator's approval boundary.
 Do not point an include at a missing file or replace a local policy blindly.
+
+## Remove a computer (#2042)
+
+In Settings → Sync select **Remove** on a computer, check its name/device ID,
+then explicitly confirm **Remove computer**. The removed computer keeps its own
+files. No copied file can be recalled. A headless computer uses
+`okilum sync remove '<exact name or device ID>'`; ambiguous names are refused,
+and `sync status` lists exact transport identities, including introduced peers.
+
+The request removes sharing from Okilum-associated vaults and revokes the old
+pairing/catalog authorization. It does not delete vault files or global devices
+used by unrelated external Syncthing folders. A removed computer that receives
+the request pauses its own associated vaults while retaining its copy. Plain
+Syncthing peers follow introduction removals; manually configured relationships
+outside that introduction still require their administrator's explicit action.
+
+Okilum sends the removal through its authenticated paired connections and the
+sharing/introducer computer to the other peers. A disconnected computer follows
+when it reconnects. Pending delivery is visible; requests and acknowledgements
+survive restarts outside the index. Old credentials retained for lost-reply
+recovery can acknowledge only that exact already-recorded removal, never read a
+catalog, share a vault or change transport settings. A fresh invitation is needed
+before a removed computer can be approved again.
+
+There is no device list in the vault. First setup, common-folder authorization,
+selected daemon/root checks, exact membership PATCH/readback and existing
+external ownership boundaries remain in effect.

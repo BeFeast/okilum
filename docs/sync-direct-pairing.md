@@ -74,6 +74,29 @@ A lifetime lock prevents two controllers from owning the same journal.
   and refreshes it like `okilum sync serve`, so paired computers are answered
   without opening Settings → Sync (#2589). Settings reuses that controller.
 
+### Fleet removal (#2042)
+
+`sync_computers()` combines paired identities with the members of associated
+Syncthing folders. `remove_computer(device_id)` records a durable removal before
+changing any folder. Exact before/after folder plans make a lost REST reply
+replayable; removed computers keep their files and pause their associated copies.
+Unrelated folders and external device relationships remain unchanged.
+
+The paired channel is directional: both journals pin the inviter's listener.
+Joiners pull pending removals from that listener during refresh, apply the
+operation, then acknowledge it. Inviters never try to push to their own endpoint.
+Offline deliveries and ACK loss survive restart. A departing introducer denies
+application authority immediately, then waits for the other Okilum receivers to
+detach its introduction provenance and acknowledge before pausing its transport.
+This preserves the surviving receivers' direct relationships. Pending/offline
+acknowledgements remain visible; files already copied cannot be recalled.
+A removed pairing retains only
+the credentials needed for its recorded removal replay, scoped pull and ACK;
+it cannot read a catalog, exchange transport hints or grant new membership.
+The introducer mesh carries folder membership removals to plain Syncthing peers
+that trust the introducer with introduction removals enabled. No device list is
+stored in the vault. Settings shows pending delivery until acknowledgement.
+
 ### `okilum sync` while another process owns Sync (#2589)
 
 One process owns a computer's Sync journal (its lifetime lock). When that owner
@@ -157,7 +180,7 @@ external administrative writers still require coordination.
 Current explicit missing boundaries: fresh macOS native absence inventory and
 signed-package/offline staging composition; native acceptance; symmetric
 catalog serving from a formerly receiving computer; general catalog authorization
-changes and peer removal (ordinary-source sharing below grants its own additions). A running source controller serves additional authorized
+changes (ordinary-source sharing below grants its own additions; fleet removal is described above). A running source controller serves additional authorized
 vault selections without a new URL, and paired identities/capabilities are durable,
 but these missing lifecycle boundaries must not be presented as delivered.
 
@@ -285,3 +308,27 @@ external runtime says **Uses your existing Syncthing**, with **Paused** appended
 when appropriate. The runtime inventory is read again before publishing an action
 result, so sharing/attaching publishes its current vault count along with the
 updated controller snapshot. Peer connectivity remains separate evidence (#2397).
+
+### Departing introducer handoff (#2042)
+
+A newly promoted receiver may not yet have received the introducer's next
+Syncthing cluster config. Before removing that introducer, its private removal
+journal freezes the final membership and dial hints of each authorized common
+vault. Both the initiating receiver and other paired receivers acknowledge only
+after installing their scoped surviving relationships. Missing transport devices
+may be added only in an Okilum-managed runtime; existing device settings remain
+untouched. The snapshot carries no pairing keys, device roles or folder settings,
+and is never stored in the vault. Replays require the same removal identity and
+snapshot. Unrequested vaults and snapshots from a different computer are refused.
+
+The departing introducer denies ordinary application authority immediately and
+pauses its copy after those acknowledgements. Invitation URLs, approval and
+existing pairing credentials keep their established formats. This handoff is part
+of the new removal operation; old journals default to no pending handoff.
+
+An introducer with a plain Syncthing member cannot prove that member retained its
+surviving introductions. Root removal therefore stops before changing folders
+and asks for an explicit handoff on those computers. Leaf removal through the
+plain peer's introducer remains supported. Automatic root departure for plain
+peers needs a separate design/host-authority decision; no host API access is
+inferred from consent to install a shared-ignore include.

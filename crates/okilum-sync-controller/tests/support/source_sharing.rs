@@ -1593,3 +1593,533 @@ fn managed_shared_2046_include_propagation_local_review_and_initial_seed() -> Re
     controller.shutdown();
     Ok(())
 }
+
+fn fleet_receiver(pair: &Pair, id: &str, name: &str) -> Result<(Peer, Controller, uuid::Uuid)> {
+    let binary =
+        PathBuf::from(std::env::var_os("OKILUM_SYNC_DIRECT_CLIENT").unwrap()).canonicalize()?;
+    let (peer, _) = Peer::managed(pair._root.path(), name, binary)?;
+    let controller = Controller::open(
+        pair._root.path().join(format!("{name}-controller")),
+        vec![peer.home.join("config.xml")],
+    )?;
+    let url = pair
+        .first
+        .begin_pairing_at("Source", "127.0.0.1:0".parse()?, "127.0.0.1".parse()?)?
+        .offer_url
+        .unwrap();
+    controller.redeem(&url, name)?;
+    pair.first
+        .approve(pair.first.snapshot()?.pending.unwrap().request_id)?;
+    let source = controller.refresh()?.peers[0].id;
+    controller.catalog(source)?;
+    pair.source
+        .api
+        .add_device(&json!({"deviceID":peer.id,"addresses":[format!("tcp://{}",peer.listen)]}))?;
+    peer.api.add_device(
+        &json!({"deviceID":pair.source.id,"addresses":[format!("tcp://{}",pair.source.listen)]}),
+    )?;
+    controller.attach(source, id, &peer.vault)?;
+    wait("third fleet computer positive initial transfer", || {
+        pair.source.api.scan(id)?;
+        peer.api.scan(id)?;
+        controller.refresh()?;
+        pair.second.refresh()?;
+        Ok(!controller.snapshot()?.preparing && same_hash(&peer.vault, "seed.md", b"fleet base"))
+    })?;
+    wait("introducer advertises the paired third computer", || {
+        pair.second.refresh()?;
+        Ok(pair
+            .second
+            .sync_computers()?
+            .iter()
+            .any(|c| c.device_id == peer.id))
+    })?;
+    Ok((peer, controller, source))
+}
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_remove_2042_from_receiver_propagates_and_keeps_files() -> Result<()> {
+    let mut pair = Pair::loopback()?;
+    fs::write(pair.source.vault.join("seed.md"), b"fleet base")?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("fleet initial two-computer transfer", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing
+            && same_hash(&pair.target.vault, "seed.md", b"fleet base"))
+    })?;
+    let (third, controller, source) = fleet_receiver(&pair, &id, "removal-third")?;
+    assert!(
+        !controller.catalog(source)?.is_empty(),
+        "positive catalog authority control"
+    );
+    let before = fs::read(third.vault.join("seed.md"))?;
+    pair.first.shutdown();
+    drop(pair.first);
+    let report = pair.second.remove_computer(&third.id)?;
+    assert!(
+        report.pending_removals > 0,
+        "offline introducer keeps a durable delivery intent"
+    );
+    pair.second.shutdown();
+    drop(pair.second);
+    pair.second = Controller::open(
+        pair._root.path().join("target-controller"),
+        vec![pair.target.home.join("config.xml")],
+    )?;
+    assert!(
+        pair.second.snapshot()?.pending_removals > 0,
+        "delivery survives initiator restart"
+    );
+    // Force the ordering where transport has already applied an introducer
+    // removal while the application's source controller was offline. Its
+    // first authenticated request must still be recorded and acknowledged.
+    let members: Vec<_> = pair.source.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["deviceID"] != third.id)
+        .cloned()
+        .collect();
+    pair.source
+        .api
+        .patch_folder(&id, &json!({"devices":members}))?;
+    let source_journal: Value =
+        serde_json::from_slice(&fs::read(pair.source_state.join("direct.json"))?)?;
+    assert!(
+        source_journal["removals"].as_array().unwrap().is_empty(),
+        "application removal intent must not precede the transport control"
+    );
+    pair.first = Controller::open(
+        pair.source_state.clone(),
+        vec![pair.source.home.join("config.xml")],
+    )?;
+    pair.first.refresh()?;
+    wait(
+        "receiver removal reaches source and removed computer",
+        || {
+            pair.first.refresh()?;
+            pair.second.refresh()?;
+            controller.refresh()?;
+            Ok([&pair.source.api, &pair.target.api].into_iter().all(|api| {
+                api.folder(&id).is_ok_and(|f| {
+                    !f["devices"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|d| d["deviceID"] == third.id)
+                })
+            }) && third.api.folder(&id)?["paused"] == true)
+        },
+    )?;
+    assert!(
+        controller.catalog(source).is_err(),
+        "old pairing cannot access catalogs"
+    );
+    assert_eq!(
+        fs::read(third.vault.join("seed.md"))?,
+        before,
+        "removed copy was modified"
+    );
+    fs::write(
+        pair.target.vault.join("after-removal.md"),
+        b"remaining fleet still syncs",
+    )?;
+    wait("remaining fleet fired-path control after removal", || {
+        pair.tick(&id)?;
+        Ok(same_hash(
+            &pair.source.vault,
+            "after-removal.md",
+            b"remaining fleet still syncs",
+        ))
+    })?;
+    assert!(!third.vault.join("after-removal.md").exists());
+    assert!(!pair
+        .first
+        .sync_computers()?
+        .iter()
+        .any(|c| c.device_id == third.id));
+    assert!(!pair
+        .second
+        .sync_computers()?
+        .iter()
+        .any(|c| c.device_id == third.id));
+    // Completed removal and its acknowledgements survive restart; no note or
+    // Syncthing configuration is recreated by replay.
+    pair.second.shutdown();
+    drop(pair.second);
+    pair.second = Controller::open(
+        pair._root.path().join("target-controller"),
+        vec![pair.target.home.join("config.xml")],
+    )?;
+    let config = pair.target.api.config()?;
+    pair.second.refresh()?;
+    assert_eq!(pair.target.api.config()?, config);
+    assert!(!pair
+        .second
+        .sync_computers()?
+        .iter()
+        .any(|c| c.device_id == third.id));
+    assert!(
+        pair.second.remove_computer(&pair.target.id).is_err(),
+        "local device cannot be accidentally removed here"
+    );
+    controller.shutdown();
+    Ok(())
+}
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_remove_2042_introducer_replays_after_lost_reply() -> Result<()> {
+    let mut pair = Pair::loopback()?;
+    fs::write(pair.source.vault.join("seed.md"), b"fleet base")?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("introducer removal initial transfer control", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing)
+    })?;
+    let (third, controller, source) = fleet_receiver(&pair, &id, "root-removal-third")?;
+    // Reproduce a receiver that has promoted before the introducer's next
+    // cluster config arrives. It has not yet learned its sibling; root removal
+    // must complete that scoped handoff before accepting the receiver's ACK.
+    let third_members = third.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["deviceID"] != pair.target.id)
+        .cloned()
+        .collect::<Vec<_>>();
+    third
+        .api
+        .patch_folder(&id, &json!({"devices":third_members}))?;
+    if third.api.config()?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["deviceID"] == pair.target.id)
+    {
+        third.api.remove_device(&pair.target.id)?;
+    }
+    assert!(!third.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["deviceID"] == pair.target.id));
+    pair.second.remove_computer(&pair.source.id)?;
+    assert_eq!(
+        pair.source.api.folder(&id)?["paused"],
+        false,
+        "introducer must keep its membership announcement until the other receiver acknowledges"
+    );
+    assert!(
+        controller.catalog(source).is_err(),
+        "departing introducer must deny ordinary catalog authority immediately"
+    );
+    let departing: Value =
+        serde_json::from_slice(&fs::read(pair.source_state.join("direct.json"))?)?;
+    assert_eq!(departing["local_removed"], true);
+    assert!(departing["removals"][0]["local_applied"] == false);
+    assert_eq!(
+        departing["removals"][0]["pending"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2,
+        "both the initiator and the other receiver must ACK the final handoff"
+    );
+    assert_eq!(
+        departing["removals"][0]["mesh"][&id]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    pair.first.shutdown();
+    drop(pair.first);
+    pair.first = Controller::open(
+        pair.source_state.clone(),
+        vec![pair.source.home.join("config.xml")],
+    )?;
+    wait("introducer removal reaches its other receiver", || {
+        pair.first.refresh()?;
+        pair.second.refresh()?;
+        controller.refresh()?;
+        Ok(pair.source.api.folder(&id)?["paused"] == true
+            && !controller
+                .sync_computers()?
+                .iter()
+                .any(|c| c.device_id == pair.source.id))
+    })?;
+    assert_eq!(fs::read(pair.source.vault.join("seed.md"))?, b"fleet base");
+    assert_eq!(fs::read(pair.target.vault.join("seed.md"))?, b"fleet base");
+    assert_eq!(fs::read(third.vault.join("seed.md"))?, b"fleet base");
+    for (writer, reader, name) in [
+        (&pair.target, &third, "remaining-target.md"),
+        (&third, &pair.target, "remaining-third.md"),
+    ] {
+        fs::write(
+            writer.vault.join(name),
+            b"remaining mesh after introducer removal",
+        )?;
+        let result = wait(
+            "remaining receivers keep syncing without the removed introducer",
+            || {
+                writer.api.scan(&id)?;
+                reader.api.scan(&id)?;
+                pair.second.refresh()?;
+                controller.refresh()?;
+                Ok(same_hash(
+                    &reader.vault,
+                    name,
+                    b"remaining mesh after introducer removal",
+                ))
+            },
+        );
+        if result.is_err() {
+            eprintln!(
+                "surviving transport writer={} reader={}",
+                writer.id, reader.id
+            );
+            for peer in [&pair.source, &pair.target, &third] {
+                eprintln!(
+                    "device={} folder={:?} devices={:?} connections={:?} status={:?}",
+                    peer.id,
+                    peer.api.folder(&id),
+                    peer.api.config().map(|c| c["devices"].clone()),
+                    peer.api.connections(),
+                    peer.api.status(&id)
+                );
+            }
+        }
+        result?;
+        assert!(
+            !pair.source.vault.join(name).exists(),
+            "removed introducer received a later edit"
+        );
+    }
+    let target_state = pair._root.path().join("target-controller");
+    let source_state = &pair.source_state;
+    let journal: Value = serde_json::from_slice(&fs::read(target_state.join("direct.json"))?)?;
+    let source_journal: Value =
+        serde_json::from_slice(&fs::read(source_state.join("direct.json"))?)?;
+    assert!(source_journal["local_removed"] == true);
+    assert!(
+        !source_journal["revoked_peers"]
+            .as_object()
+            .unwrap()
+            .is_empty(),
+        "reply-only replay credentials retained"
+    );
+    assert!(journal["removals"][0]["local_applied"] == true);
+    // Reconstruct the initiator's crash point immediately before saving its
+    // acknowledgement. The target has already revoked that pairing capability.
+    pair.second.shutdown();
+    drop(pair.second);
+    let mut lost = journal;
+    let scope = pair.peer.to_string();
+    let mut pending = serde_json::Map::new();
+    pending.insert(scope.clone(), lost["revoked_peers"][&scope].clone());
+    assert!(
+        !pending[&scope].is_null(),
+        "saved delivery capability is present"
+    );
+    lost["removals"][0]["pending"] = Value::Object(pending);
+    // Also reconstruct a lost local PATCH acknowledgement: transport has the
+    // after-image but the journal still needs its witness/publication step.
+    lost["removals"][0]["local_applied"] = Value::Bool(false);
+    let folders = lost["removals"][0]["folders"].as_array().unwrap();
+    assert!(!folders.is_empty(), "durable REST preimages were recorded");
+    let original = folders[0]["before"].clone();
+    lost["transfers"][0]["witness"] = original;
+    fs::write(target_state.join("direct.json"), serde_json::to_vec(&lost)?)?;
+    pair.second = Controller::open(target_state, vec![pair.target.home.join("config.xml")])?;
+    let before = pair.source.api.config()?;
+    pair.first.refresh()?; // reply-only endpoints remain available after revocation
+    assert_eq!(
+        pair.second.refresh()?.pending_removals,
+        0,
+        "duplicate request must be acknowledged without restoring pairing"
+    );
+    assert_eq!(
+        pair.source.api.config()?,
+        before,
+        "duplicate removal changed configuration"
+    );
+
+    controller.shutdown();
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_remove_2042_reaches_plain_introducer_peer_without_touching_other_folders() -> Result<()>
+{
+    plain_peer_removal(false)
+}
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_remove_2042_plain_introducer_handoff_refused_without_host_authority() -> Result<()> {
+    plain_peer_removal(true)
+}
+fn plain_peer_removal(remove_root: bool) -> Result<()> {
+    let pair = Pair::loopback()?;
+    fs::write(
+        pair.source.vault.join("seed.md"),
+        b"plain server keeps this copy",
+    )?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    let binary =
+        PathBuf::from(std::env::var_os("OKILUM_SYNC_DIRECT_CLIENT").context("set pinned runtime")?);
+    let plain = Peer::new(pair._root.path(), "plain-server", binary)?;
+    pair.source
+        .api
+        .add_device(&json!({"deviceID":plain.id,"name":"Plain server",
+        "addresses":[format!("tcp://{}", plain.listen)]}))?;
+    let mut members = pair.source.api.folder(&id)?["devices"]
+        .as_array()
+        .unwrap()
+        .clone();
+    members.push(json!({"deviceID":plain.id}));
+    pair.source
+        .api
+        .patch_folder(&id, &json!({"devices":members}))?;
+    plain.api.add_device(&json!({"deviceID":pair.source.id,"name":"Source",
+        "addresses":[format!("tcp://{}",pair.source.listen)],"introducer":true,"skipIntroductionRemovals":false}))?;
+    plain.api.add_paused_folder(&json!({"id":id,"label":"Plain copy","path":plain.vault,
+        "type":"sendreceive","paused":true,"devices":[{"deviceID":plain.id},{"deviceID":pair.source.id}]}))?;
+    plain.api.patch_folder(&id, &json!({"paused":false}))?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait(
+        "plain peer receives both the note and the introduced computer",
+        || {
+            pair.tick(&id)?;
+            plain.api.scan(&id)?;
+            Ok(!pair.second.snapshot()?.preparing
+                && same_hash(&plain.vault, "seed.md", b"plain server keeps this copy")
+                && plain.api.folder(&id)?["devices"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| {
+                        d["deviceID"] == pair.target.id && d["introducedBy"] == pair.source.id
+                    }))
+        },
+    )?;
+    if remove_root {
+        let source_before = pair.source.api.folder(&id)?;
+        let target_before = pair.target.api.folder(&id)?;
+        let plain_before = plain.api.folder(&id)?;
+        let error = pair.second.remove_computer(&pair.source.id).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("plain Syncthing"),
+            "{error:#}"
+        );
+        assert_eq!(pair.source.api.folder(&id)?, source_before);
+        assert_eq!(pair.target.api.folder(&id)?, target_before);
+        assert_eq!(plain.api.folder(&id)?, plain_before);
+        for peer in [&pair.source, &pair.target, &plain] {
+            assert_eq!(
+                fs::read(peer.vault.join("seed.md"))?,
+                b"plain server keeps this copy"
+            );
+        }
+        return Ok(());
+    }
+    // The same device has an unrelated relationship on the plain daemon.
+    // Removing it from this vault must preserve that external folder verbatim.
+    let unrelated = pair._root.path().join("plain-unrelated");
+    fs::create_dir(&unrelated)?;
+    fs::write(
+        unrelated.join("sentinel.md"),
+        b"external relationship remains",
+    )?;
+    plain.api.add_paused_folder(&json!({"id":"unrelated","label":"Unrelated","path":unrelated,
+        "type":"sendreceive","paused":true,"devices":[{"deviceID":plain.id},{"deviceID":pair.target.id}]}))?;
+    let external = plain.api.folder("unrelated")?;
+    pair.first.remove_computer(&pair.target.id)?;
+    wait(
+        "Syncthing introducer removal reaches a server without Okilum",
+        || {
+            pair.first.refresh()?;
+            pair.second.refresh()?;
+            Ok(pair.target.api.folder(&id)?["paused"] == true
+                && !plain.api.folder(&id)?["devices"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| d["deviceID"] == pair.target.id))
+        },
+    )?;
+    assert_eq!(plain.api.folder("unrelated")?, external);
+    assert_eq!(
+        fs::read(unrelated.join("sentinel.md"))?,
+        b"external relationship remains"
+    );
+    assert_eq!(
+        fs::read(plain.vault.join("seed.md"))?,
+        b"plain server keeps this copy"
+    );
+    assert_eq!(
+        fs::read(pair.target.vault.join("seed.md"))?,
+        b"plain server keeps this copy"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires checksum-pinned Syncthing 2.1.6; run scripts/ci/sync-source-sharing.sh"]
+fn managed_remove_2042_remote_request_preserves_unrequested_association() -> Result<()> {
+    let pair = Pair::loopback()?;
+    fs::write(
+        pair.source.vault.join("scope.md"),
+        b"authorized shared scope",
+    )?;
+    pair.first.share_vault(&pair.prepared, &pair.source.vault)?;
+    let id = pair.shared_catalog()?;
+    pair.second.attach(pair.peer, &id, &pair.target.vault)?;
+    wait("scoped removal positive transfer", || {
+        pair.tick(&id)?;
+        Ok(!pair.second.snapshot()?.preparing
+            && same_hash(&pair.target.vault, "scope.md", b"authorized shared scope"))
+    })?;
+    // Associate another existing folder after pairing. The requester has only
+    // selected the primary vault, so its removal request names only that scope.
+    // The same transport identity must not widen that authenticated request.
+    let unrelated = pair._root.path().join("unrequested-association");
+    fs::create_dir(&unrelated)?;
+    fs::write(unrelated.join("sentinel.md"), b"unrequested bytes remain")?;
+    pair.source
+        .api
+        .add_paused_folder(&json!({"id":"unrequested","label":"Unrequested",
+        "path":unrelated,"type":"sendreceive","paused":true,
+        "devices":[{"deviceID":pair.source.id}]}))?;
+    pair.source
+        .api
+        .patch_folder("unrequested", &json!({"paused":false}))?;
+    let inspected = okilum_sync_controller::direct::inspect_existing(
+        &[pair.source.home.join("config.xml")],
+        &unrelated,
+    )?;
+    pair.first.attach_existing(&inspected, true)?;
+    let before = pair.source.api.folder("unrequested")?;
+    assert_eq!(before["paused"], false, "pause mutation negative control");
+    pair.second.remove_computer(&pair.source.id)?;
+    wait("authorized removal is applied", || {
+        pair.first.refresh()?;
+        pair.second.refresh()?;
+        Ok(pair.source.api.folder(&id)?["paused"] == true)
+    })?;
+    assert_eq!(
+        pair.source.api.folder("unrequested")?,
+        before,
+        "remote removal escaped its authenticated requested vault scope"
+    );
+    assert_eq!(
+        fs::read(unrelated.join("sentinel.md"))?,
+        b"unrequested bytes remain"
+    );
+    Ok(())
+}

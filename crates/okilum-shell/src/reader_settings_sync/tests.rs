@@ -374,6 +374,8 @@ fn issue2589_action_failure_is_logged_with_chain_and_visible_cause(cx: &mut Test
 
 fn snapshot(pending: Option<direct::Pending>) -> Snapshot {
     Snapshot {
+        computers: vec![],
+        pending_removals: 0,
         policy_warnings: vec![],
         history_warnings: vec![],
         history_retention: vec![],
@@ -1119,6 +1121,61 @@ fn guided_first_run_offer_incoming_confirmation_update_without_refresh_and_stay_
     });
     visual.run_until_parked();
     assert_visible(&mut visual, "sync-error");
+}
+
+#[gpui::test]
+fn issue2042_last_peer_removal_refreshes_until_ack_then_stops(cx: &mut TestAppContext) {
+    cx.update(crate::test_init);
+    let mut waiting = snapshot(None);
+    waiting.pending_removals = 1;
+    assert!(
+        waiting.peers.is_empty(),
+        "last-peer removal regression control"
+    );
+    let calls = guided_worker(cx, vec![waiting, snapshot(None)]);
+    let (root, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = fixture(window, cx);
+            view.run(Operation::Read, cx);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    visual.run_until_parked();
+    let view = root.read_with(visual, |root, _| {
+        root.view().clone().downcast::<SyncSettings>().unwrap()
+    });
+    assert_eq!(
+        view.read_with(visual, |view, _| view
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .pending_removals),
+        1
+    );
+    assert_eq!(*calls.lock().unwrap(), vec!["read"]);
+    visual.executor().advance_clock(Duration::from_secs(3));
+    visual.run_until_parked();
+    assert_eq!(
+        view.read_with(visual, |view, _| view
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .pending_removals),
+        0
+    );
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["read", "read"],
+        "ACK must arrive without Check again or a remaining peer"
+    );
+    visual.executor().advance_clock(Duration::from_secs(60));
+    visual.run_until_parked();
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["read", "read"],
+        "completed removal must stop idle polling"
+    );
 }
 
 #[gpui::test]

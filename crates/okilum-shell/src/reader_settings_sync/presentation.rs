@@ -226,6 +226,8 @@ mod tests {
     #[test]
     fn raw_controller_ready_is_never_the_page_status() {
         let snapshot = Snapshot {
+            computers: vec![],
+            pending_removals: 0,
             policy_warnings: vec![],
             history_warnings: vec![],
             history_retention: vec![],
@@ -261,6 +263,8 @@ mod tests {
     #[test]
     fn first_sync_requires_observed_completion_for_every_vault() {
         let mut snapshot = Snapshot {
+            computers: vec![],
+            pending_removals: 0,
             policy_warnings: vec![],
             history_warnings: vec![],
             history_retention: vec![],
@@ -337,6 +341,8 @@ mod tests {
     #[test]
     fn attention_takes_priority_over_an_unfinished_first_transfer() {
         let mut snapshot = Snapshot {
+            computers: vec![],
+            pending_removals: 0,
             policy_warnings: vec![],
             history_warnings: vec![],
             history_retention: vec![],

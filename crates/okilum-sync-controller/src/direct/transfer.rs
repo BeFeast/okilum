@@ -48,6 +48,9 @@ pub(super) struct Transfer {
 }
 
 impl Transfer {
+    pub(super) fn removal_binding(&self, peer: Uuid, vault: &str) -> bool {
+        self.active && self.peer == peer && self.vault == vault
+    }
     /// Display-only binding from the authenticated source share response.
     /// It does not grant transport configuration or sharing authority.
     pub(super) fn overview_binding(&self) -> Option<(Uuid, String)> {
@@ -546,6 +549,9 @@ fn validate_owned(transfer: &Transfer, folder: &Value) -> Result<()> {
 /// The folder without members that Syncthing introduced on behalf of the share
 /// peer (#2589). The receiver and the share peer themselves are always kept.
 fn owned_view(transfer: &Transfer, folder: &Value) -> Result<Value> {
+    owned_view_keeping(transfer, folder, None)
+}
+fn owned_view_keeping(transfer: &Transfer, folder: &Value, keep: Option<&str>) -> Result<Value> {
     let peer = &transfer
         .connection
         .as_ref()
@@ -561,6 +567,7 @@ fn owned_view(transfer: &Transfer, folder: &Value) -> Result<Value> {
             .filter(|member| {
                 member["deviceID"] == transfer.daemon.device_id.as_str()
                     || member["deviceID"] == peer.as_str()
+                    || keep.is_some_and(|id| member["deviceID"] == id)
                     || !introduced_by(members, member, peer)
             })
             .cloned()
@@ -616,6 +623,9 @@ pub(super) struct ShareGrant {
     source: ExistingVault,
 }
 impl ShareGrant {
+    pub(super) fn for_peer(&self, peer: Uuid) -> bool {
+        self.peer == peer
+    }
     pub(super) fn new(peer: Uuid, source: &ExistingVault, receiver: &str) -> Self {
         Self {
             peer,
@@ -1344,6 +1354,115 @@ pub(super) fn history_settings(db: &Database) -> Vec<RetentionSetting> {
         .collect()
 }
 
+pub(super) fn validate_removal(db: &Database, vault: &ExistingVault, before: &Value) -> Result<()> {
+    for transfer in db.transfers.iter().filter(|t| {
+        t.active && t.path == vault.path && t.daemon == vault.daemon && t.vault == vault.folder_id
+    }) {
+        ensure!(
+            !transfer.history.has_pending() && !transfer.create_ignores.has_pending(),
+            "Removal waits for the existing receiver policy intent"
+        );
+        validate_owned(transfer, before)?;
+    }
+    Ok(())
+}
+/// Introduction membership can change while a removal waits for its ACK.
+/// Normalize only the established receiver's introducer-owned members, keeping
+/// the removed member itself so normalization cannot skip the actual removal.
+pub(super) fn removal_view(
+    db: &Database,
+    vault: &ExistingVault,
+    removed: &str,
+    folder: &Value,
+) -> Result<Value> {
+    let mut view = match db.transfers.iter().find(|t| {
+        !t.legacy_hold()
+            && t.path == vault.path
+            && t.daemon == vault.daemon
+            && t.vault == vault.folder_id
+    }) {
+        Some(transfer) => owned_view_keeping(transfer, folder, Some(removed))?,
+        None => folder.clone(),
+    };
+    // Syncthing normalizes membership order when a missing sibling is added.
+    // Compare every member/field, without treating that order as a mutation.
+    view["devices"]
+        .as_array_mut()
+        .context("Removal members missing")?
+        .sort_by(|a, b| a["deviceID"].as_str().cmp(&b["deviceID"].as_str()));
+    Ok(view)
+}
+pub(super) fn removal_needs_handoff(db: &Database, vault: &ExistingVault, removed: &str) -> bool {
+    db.transfers.iter().any(|t| {
+        !t.legacy_hold()
+            && t.path == vault.path
+            && t.daemon == vault.daemon
+            && t.vault == vault.folder_id
+            && t.connection
+                .as_ref()
+                .is_some_and(|c| c.device_id == removed)
+    })
+}
+pub(super) fn removal_members(
+    db: &Database,
+    vault: &ExistingVault,
+    removed: &str,
+    folder: &Value,
+) -> Result<Vec<Value>> {
+    let members = folder["devices"]
+        .as_array()
+        .context("Removal folder membership missing")?;
+    let removing_introducer = db.transfers.iter().any(|t| {
+        !t.legacy_hold()
+            && t.path == vault.path
+            && t.daemon == vault.daemon
+            && t.vault == vault.folder_id
+            && t.connection
+                .as_ref()
+                .is_some_and(|c| c.device_id == removed)
+    });
+    Ok(members
+        .iter()
+        .filter(|m| m["deviceID"] != removed)
+        .map(|member| {
+            let mut member = member.clone();
+            if removing_introducer && introduced_by(members, &member, removed) {
+                // Retain the already-authorized direct relationship independently
+                // before acknowledging the introducer's departure.
+                member["introducedBy"] = json!("");
+            }
+            member
+        })
+        .collect())
+}
+impl Transfer {
+    pub(super) fn deactivate(&mut self) {
+        self.active = false;
+    }
+}
+
+pub(super) fn record_removed_membership(
+    db: &mut Database,
+    vault: &ExistingVault,
+    device: &str,
+    after: &Value,
+) {
+    for transfer in db
+        .transfers
+        .iter_mut()
+        .filter(|t| t.path == vault.path && t.daemon == vault.daemon && t.vault == vault.folder_id)
+    {
+        transfer.witness = Some(after.clone());
+        if transfer
+            .connection
+            .as_ref()
+            .is_some_and(|c| c.device_id == device)
+        {
+            transfer.active = false;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1564,6 +1683,101 @@ mod tests {
             root_identity: None,
         };
         ShareGrant::new(transfer.peer, &source, "sender")
+    }
+    #[test]
+    fn removal_replay_normalizes_only_other_introduced_members() -> Result<()> {
+        let (_root, transfer, mut before, _, _) = fixture()?;
+        before["devices"].as_array_mut().unwrap().push(json!({
+            "deviceID":"hub", "introducedBy":"sender", "encryptionPassword":""
+        }));
+        let mut planned = before.clone();
+        planned["devices"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["deviceID"] != "sender");
+        let mut actual = planned.clone();
+        actual["devices"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["deviceID"] != "hub");
+        assert_ne!(actual, planned, "real introduction-removal drift control");
+        let view = |folder: &Value| owned_view_keeping(&transfer, folder, Some("sender"));
+        assert_eq!(view(&actual)?, view(&planned)?);
+        assert_ne!(
+            view(&before)?,
+            view(&planned)?,
+            "cannot normalize away the removed target"
+        );
+        let mut foreign = actual.clone();
+        foreign["devices"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"deviceID":"manual", "introducedBy":""}));
+        assert_ne!(
+            view(&foreign)?,
+            view(&planned)?,
+            "manual members must still refuse replay"
+        );
+        foreign = actual.clone();
+        foreign["paused"] = json!(true);
+        assert_ne!(
+            view(&foreign)?,
+            view(&planned)?,
+            "other configuration must remain exact"
+        );
+        let mut without_hub = before.clone();
+        without_hub["devices"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["deviceID"] != "hub");
+        assert_eq!(
+            owned_view(&transfer, &before)?,
+            owned_view(&transfer, &without_hub)?,
+            "ordinary ownership ignores the introduced peer"
+        );
+        assert_ne!(
+            owned_view_keeping(&transfer, &before, Some("hub"))?,
+            owned_view_keeping(&transfer, &without_hub, Some("hub"))?,
+            "an introduced removal target must remain visible to the mutation guard"
+        );
+        Ok(())
+    }
+    #[test]
+    fn removal_readback_allows_member_order_only() -> Result<()> {
+        let (root, mut transfer, mut folder, _, _) = fixture()?;
+        transfer.phase = Phase::Bidirectional;
+        transfer.witness = Some(folder.clone());
+        let vault = ExistingVault {
+            daemon: transfer.daemon.clone(),
+            version: "v2.1.6".into(),
+            folder_id: transfer.vault.clone(),
+            path: transfer.path.clone(),
+            label: "Fixture".into(),
+            paused: false,
+            folder_type: "sendreceive".into(),
+            peers: vec![],
+            root_identity: None,
+        };
+        let controller = Controller::open(root.path().join("order-controller"), vec![])?;
+        let mut db = controller.shared.db.lock().unwrap();
+        db.transfers.push(transfer);
+        folder["devices"] = json!([{"deviceID":"receiver","introducedBy":""},
+            {"deviceID":"peer-B","introducedBy":"","encryptionPassword":""},
+            {"deviceID":"peer-A","introducedBy":"","encryptionPassword":""}]);
+        let expected = removal_view(&db, &vault, "sender", &folder)?;
+        let mut reordered = folder.clone();
+        reordered["devices"].as_array_mut().unwrap().reverse();
+        assert_eq!(removal_view(&db, &vault, "sender", &reordered)?, expected);
+        for changed in ["paused", "path"] {
+            let mut outside = reordered.clone();
+            outside[changed] = json!("changed");
+            assert_ne!(removal_view(&db, &vault, "sender", &outside)?, expected);
+        }
+        reordered["devices"][0]["encryptionPassword"] = json!("unexpected");
+        assert_ne!(removal_view(&db, &vault, "sender", &reordered)?, expected);
+        drop(db);
+        controller.shutdown();
+        Ok(())
     }
     #[test]
     fn members_introduced_by_the_share_peer_keep_the_vault_owned() -> Result<()> {
