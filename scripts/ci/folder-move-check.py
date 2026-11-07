@@ -28,6 +28,27 @@ def measure(label):
     return {s["operation"]: statistics.median(s["preview_ms"]) for s in samples}
 
 
+def containment_control(committed):
+    before = b'let root = crate::vault::canonical_root(&vault.root)?;'
+    assert committed.count(before) == 1
+    command = ["cargo", "test", "--locked", "-p", "okilum-core", "--lib",
+               "link_rewrite::tests::alias_ancestor_attachment_containment_keeps_outside_symlinks_refused",
+               "--", "--exact", "--nocapture", "--test-threads=1"]
+    try:
+        SOURCE.write_bytes(committed.replace(before, b'let root = vault.root.clone();', 1))
+        result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        (QA / "containment-negative.log").write_text(result.stdout)
+        print(result.stdout, flush=True)
+        assert result.returncode != 0 and "running 1 test" in result.stdout
+        assert "0 passed; 1 failed;" in result.stdout, "require the old guard's actual runtime failure"
+    finally:
+        SOURCE.write_bytes(committed)
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    (QA / "containment-restored.log").write_text(result.stdout)
+    print(result.stdout, flush=True)
+    assert result.returncode == 0 and "1 passed; 0 failed;" in result.stdout
+
+
 def main():
     QA.mkdir(parents=True, exist_ok=True)
     committed = SOURCE.read_bytes()
@@ -43,6 +64,7 @@ def main():
     (QA / "comparison.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2), flush=True)
     assert all(v >= 3 for v in report["speedup"].values()), "expected >=3x preview improvement on both operations"
+    containment_control(committed)
     assert SOURCE.read_bytes() == committed, "exact checked source was not restored"
 
 

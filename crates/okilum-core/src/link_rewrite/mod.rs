@@ -692,8 +692,9 @@ fn resolve_attachment(vault: &Vault, source: &str, target: &str) -> Result<Strin
     };
     let absolute = vault.root.join(&candidate);
     let canonical = absolute.canonicalize()?;
+    let root = crate::vault::canonical_root(&vault.root)?;
     ensure!(
-        canonical.starts_with(&vault.root) && canonical.is_file(),
+        canonical.starts_with(&root) && canonical.is_file(),
         "Attachment is outside the folder or not a file"
     );
     Ok(candidate)
@@ -773,6 +774,45 @@ fn encode_path(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn alias_ancestor_attachment_containment_keeps_outside_symlinks_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let real = directory.path().join("real/vault");
+        fs::create_dir_all(real.join("Old/media")).unwrap();
+        fs::create_dir(real.join("Parent")).unwrap();
+        fs::write(real.join("Old/media/p.png"), [0, 255, 1]).unwrap();
+        fs::write(real.join("Old/media/escape.png"), [2, 3]).unwrap();
+        fs::write(real.join("Ref.md"), "![p](Old/media/p.png)\r\n").unwrap();
+        let outside = directory.path().join("outside.png");
+        fs::write(&outside, [7, 8, 9]).unwrap();
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(directory.path().join("real"), &alias).unwrap();
+        let root = alias.join("vault");
+        let vault = Vault::scan_metadata(&root).unwrap();
+        assert_ne!(vault.root, root.canonicalize().unwrap());
+        assert_eq!(
+            resolve_attachment(&vault, "Ref.md", "Old/media/p.png").unwrap(),
+            "Old/media/p.png"
+        );
+        // The inventory saw a regular file; a subsequent replacement must still
+        // be checked against the real root rather than following it outside.
+        fs::remove_file(real.join("Old/media/escape.png")).unwrap();
+        std::os::unix::fs::symlink(&outside, real.join("Old/media/escape.png")).unwrap();
+        let error = resolve_attachment(&vault, "Ref.md", "Old/media/escape.png").unwrap_err();
+        assert!(
+            error.to_string().contains("outside the folder"),
+            "{error:#}"
+        );
+        let preview = Preview::prepare(&root, "Old", "Parent/New").unwrap();
+        assert!(preview
+            .changes
+            .iter()
+            .any(|change| change.path == "Ref.md" && change.after == "./Parent/New/media/p.png"));
+        assert_eq!(fs::read(outside).unwrap(), [7, 8, 9]);
+    }
+
     #[test]
     fn indexed_preview_matches_full_scan_and_detects_new_incoming_links() {
         let dir = fixture();

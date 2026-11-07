@@ -187,3 +187,10 @@ the same hosted runner, using synthetic 5,000 unrelated notes, 277 referrers and
 runtime test also checks stale-preview refusal, exact rewritten bytes and Undo.
 The comparison is additional evidence, not a substitute for exact-source
 gh-check or actual beta UI verification.
+
+Attachment containment compares canonical file and root paths. A root whose
+ancestor is an OS alias (such as macOS `/var` → `/private/var`) must not make an
+inside attachment look external and leave its link unchanged after a move.
+The native control also replaces an inventoried file with an outgoing symlink;
+it stays refused. A compiled negative control restores the old lexical-root
+comparison and requires an actual runtime failure before restoring exact source.
