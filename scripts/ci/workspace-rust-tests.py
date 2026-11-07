@@ -17,25 +17,19 @@ def run(name, arguments, expected):
     process = subprocess.Popen(COMMAND + arguments, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, bufsize=1)
     observed = 0
-    footer = None
+    completed = 0
     for line in process.stdout:
         print(line, end="", flush=True)
         text = ANSI.sub("", line).strip()
-        # A child-process fixture can print its own harness summary. Cargo's
-        # target footer is last, after those children have completed.
-        if text.startswith(("Running unittests ", "Running tests/", "Doc-tests ")):
-            if footer is not None:
-                observed += footer
-            footer = None
         match = SUMMARY.match(text)
         if match:
-            footer = sum(map(int, match.groups()))
-    if footer is not None:
-        observed += footer
+            passed, failed, ignored = map(int, match.groups())
+            observed += passed + failed + ignored
+            completed += passed + failed
     status = process.wait()
-    print(f"WORKSPACE_CENSUS_END part={name} expected={expected} observed={observed} status={status}",
+    print(f"WORKSPACE_CENSUS_END part={name} expected={expected} observed={observed} completed={completed} status={status}",
           flush=True)
-    return status == 0 and observed == expected
+    return status == 0 and observed == expected and completed > 0
 
 
 def main():
