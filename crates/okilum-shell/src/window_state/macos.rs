@@ -1,6 +1,6 @@
 //! AppKit frame/state adapter for GPUI 0.3.3. Never used by Linux or Windows.
 use super::Frame;
-use gpui::{Bounds, Pixels, WindowBounds, point, px, size};
+use gpui::{point, px, size, Bounds, Pixels, WindowBounds};
 
 /// AppKit frames are logical points, not backing pixels. Preserve fractional
 /// normal frames exactly; only shrink/move when the current work area requires it.
@@ -66,6 +66,28 @@ fn to_appkit(frame: Bounds<Pixels>, screen: Bounds<Pixels>) -> Bounds<Pixels> {
     )
 }
 
+fn zoom_bounds(frame: &Frame, visible: Bounds<Pixels>) -> Bounds<Pixels> {
+    if frame.maximized {
+        visible
+    } else {
+        normal_bounds(frame, visible)
+    }
+}
+
+fn maximized(
+    zoomed: bool,
+    fullscreen: bool,
+    frame: Bounds<Pixels>,
+    visible: Bounds<Pixels>,
+) -> bool {
+    !fullscreen && (zoomed || fills_visible(frame, visible))
+}
+
+pub(super) fn restore_ready(target: &Frame, current: &Frame) -> bool {
+    target.fullscreen == current.fullscreen
+        && (target.fullscreen || target.maximized == current.maximized)
+}
+
 fn fills_visible(frame: Bounds<Pixels>, visible: Bounds<Pixels>) -> bool {
     // Accommodate AppKit's point rounding without classifying a near-full-size
     // normal window (the original bug's right/bottom margins) as maximized.
@@ -85,12 +107,12 @@ pub(super) use native::{restore, snapshot};
 #[cfg(target_os = "macos")]
 mod native {
     use super::*;
-    use gpui::{App, Window};
+    use gpui::{App, DisplayId, Window};
     use objc2::{
         msg_send,
         runtime::{AnyObject, Bool},
     };
-    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     fn with_window<T>(window: &Window, f: impl FnOnce(&AnyObject) -> T) -> Option<T> {
@@ -104,6 +126,34 @@ mod native {
             let native: *mut AnyObject =
                 msg_send![&*handle.ns_view.as_ptr().cast::<AnyObject>(), window];
             native.as_ref().map(f)
+        }
+    }
+
+    fn screen_id(screen: &AnyObject) -> DisplayId {
+        // SAFETY: NSScreen's deviceDescription exposes the CGDirectDisplayID.
+        unsafe {
+            let description: *mut AnyObject = msg_send![screen, deviceDescription];
+            let key = NSString::from_str("NSScreenNumber");
+            let number: *mut AnyObject = msg_send![&*description, objectForKey: &*key];
+            let number: u64 = msg_send![&*number, unsignedLongLongValue];
+            DisplayId::new(number)
+        }
+    }
+
+    fn with_screen<T>(id: DisplayId, f: impl FnOnce(&AnyObject) -> T) -> Option<T> {
+        // SAFETY: enumerate AppKit's live NSScreens synchronously on the UI
+        // thread. The autoreleased array/screens remain alive for this call.
+        unsafe {
+            let screens: *mut AnyObject = msg_send![objc2::class!(NSScreen), screens];
+            let screens = screens.as_ref()?;
+            let count: usize = msg_send![screens, count];
+            for index in 0..count {
+                let screen: *mut AnyObject = msg_send![screens, objectAtIndex: index];
+                if let Some(screen) = screen.as_ref().filter(|screen| screen_id(screen) == id) {
+                    return Some(f(screen));
+                }
+            }
+            None
         }
     }
 
@@ -128,15 +178,17 @@ mod native {
     }
 
     pub(crate) fn snapshot(window: &Window, cx: &App) -> Option<Frame> {
-        let display = window
-            .display(cx)
-            .and_then(|d| d.uuid().ok())
-            .map(|u| u.to_string());
         // SAFETY: AppKit object methods on the UI thread; NSRect/Bool match the
         // native method signatures. No global display or Retina pixel conversion.
         with_window(window, |native| unsafe {
             let screen: *mut AnyObject = msg_send![native, screen];
             let screen = screen.as_ref()?;
+            let display = cx
+                .displays()
+                .into_iter()
+                .find(|display| display.id() == screen_id(screen))
+                .and_then(|display| display.uuid().ok())
+                .map(|uuid| uuid.to_string());
             let screen_frame: NSRect = msg_send![screen, frame];
             let visible: NSRect = msg_send![screen, visibleFrame];
             let outer: NSRect = msg_send![native, frame];
@@ -151,40 +203,51 @@ mod native {
                 height: outer.size.height.into(),
                 display,
                 fullscreen,
-                maximized: !fullscreen && (zoomed.as_bool() || fills_visible(outer, visible)),
+                maximized: maximized(zoomed.as_bool(), fullscreen, outer, visible),
             })
         })
         .flatten()
     }
 
     pub(crate) fn restore(frame: &Frame, window: &Window, cx: &App) {
-        let Some(display) = window.display(cx) else {
-            return;
-        };
+        let display = cx
+            .displays()
+            .into_iter()
+            .find(|display| {
+                frame.display.as_ref().is_some_and(|saved| {
+                    display
+                        .uuid()
+                        .ok()
+                        .is_some_and(|uuid| uuid.to_string() == *saved)
+                })
+            })
+            .or_else(|| cx.primary_display());
+        let Some(display) = display else { return };
         let state = plan(frame, display.visible_bounds());
         // SAFETY: synchronous UI-thread messages to the live NSWindow. Set the
         // *outer* frame, avoiding GPUI's content-rect initialization and incorrect
         // secondary-screen y conversion. Zoom first gives AppKit its normal frame;
         // then fill the current visibleFrame, including changed Dock/menu insets.
-        let _ = with_window(window, |native| unsafe {
-            let screen: *mut AnyObject = msg_send![native, screen];
-            let Some(screen) = screen.as_ref() else {
-                return;
-            };
-            let screen_frame: NSRect = msg_send![screen, frame];
-            let normal = rect(to_appkit(state.get_bounds(), bounds(screen_frame)));
-            let _: () = msg_send![native, setFrame: normal, display: Bool::YES];
-            if frame.maximized {
-                let zoomed: Bool = msg_send![native, isZoomed];
-                if !zoomed.as_bool() {
-                    let _: () = msg_send![native, zoom: std::ptr::null::<AnyObject>()];
+        let _ = with_window(window, |native| {
+            with_screen(display.id(), |screen| unsafe {
+                let screen_frame: NSRect = msg_send![screen, frame];
+                let normal = rect(to_appkit(state.get_bounds(), bounds(screen_frame)));
+                let _: () = msg_send![native, setFrame: normal, display: Bool::YES];
+                if frame.maximized {
+                    let zoomed: Bool = msg_send![native, isZoomed];
+                    if !zoomed.as_bool() {
+                        let _: () = msg_send![native, zoom: std::ptr::null::<AnyObject>()];
+                    }
+                    let visible: NSRect = msg_send![screen, visibleFrame];
+                    let screen = bounds(screen_frame);
+                    let visible = from_appkit(bounds(visible), screen);
+                    let zoomed = rect(to_appkit(zoom_bounds(frame, visible), screen));
+                    let _: () = msg_send![native, setFrame: zoomed, display: Bool::YES];
                 }
-                let visible: NSRect = msg_send![screen, visibleFrame];
-                let _: () = msg_send![native, setFrame: visible, display: Bool::YES];
-            }
-            if matches!(state, WindowBounds::Fullscreen(_)) && !window.is_fullscreen() {
-                let _: () = msg_send![native, toggleFullScreen: std::ptr::null::<AnyObject>()];
-            }
+                if matches!(state, WindowBounds::Fullscreen(_)) && !window.is_fullscreen() {
+                    let _: () = msg_send![native, toggleFullScreen: std::ptr::null::<AnyObject>()];
+                }
+            })
         });
     }
 }
@@ -263,6 +326,39 @@ mod tests {
     }
 
     #[test]
+    fn native_zoom_is_preserved_even_when_standard_frame_differs_from_visible_frame() {
+        let standard = Bounds::new(point(px(0.), px(30.)), size(px(1580.), px(810.)));
+        assert_ne!(
+            standard.size,
+            visible().size,
+            "old GPUI maximized detection returned false"
+        );
+        assert!(maximized(true, false, standard, visible()));
+        assert!(!maximized(false, false, standard, visible()));
+        assert!(maximized(false, false, visible(), visible()), "native Fill");
+        assert!(
+            !maximized(true, true, visible(), visible()),
+            "fullscreen is separate"
+        );
+    }
+
+    #[test]
+    fn fullscreen_restore_waits_for_the_native_transition_without_losing_intent() {
+        let target = Frame {
+            fullscreen: true,
+            ..normal()
+        };
+        assert!(!restore_ready(&target, &normal()));
+        assert!(restore_ready(&target, &target));
+        let zoomed = Frame {
+            maximized: true,
+            ..normal()
+        };
+        assert!(!restore_ready(&zoomed, &normal()));
+        assert!(restore_ready(&zoomed, &zoomed));
+    }
+
+    #[test]
     fn normal_frame_is_exact_in_logical_points_even_below_default_minimum() {
         let frame = Frame {
             width: 500.5,
@@ -297,6 +393,17 @@ mod tests {
             normal_bounds(&frame, screen),
             Bounds::new(point(px(580.), px(274.)), size(px(700.), px(450.)))
         );
+        assert_eq!(
+            zoom_bounds(
+                &Frame {
+                    maximized: true,
+                    ..frame.clone()
+                },
+                screen
+            ),
+            screen
+        );
+        assert_eq!(zoom_bounds(&frame, screen), normal_bounds(&frame, screen));
         assert!(fills_visible(screen, screen));
         assert!(!fills_visible(
             Bounds::new(

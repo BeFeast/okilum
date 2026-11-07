@@ -1,6 +1,6 @@
 //! Durable native window geometry, separate from vaults and rebuildable caches.
 use gpui::{
-    App, Bounds, Entity, Global, Pixels, Size, Window, WindowBounds, WindowOptions, point, px, size,
+    point, px, size, App, Bounds, Entity, Global, Pixels, Size, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::Root;
 
@@ -294,9 +294,7 @@ fn record(key: &str, window: &Window, cx: &mut App) {
         // Fullscreen enters a Space asynchronously. Do not replace its saved
         // intent with the temporary normal frame during the transition.
         if let Some(target) = cx.global::<State>().restoring.get(key) {
-            if target.fullscreen != current.fullscreen
-                || (!target.fullscreen && target.maximized != current.maximized)
-            {
+            if !macos::restore_ready(target, &current) {
                 return;
             }
             cx.global_mut::<State>().restoring.remove(key);
