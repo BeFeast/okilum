@@ -84,10 +84,13 @@ fn records_1892_actual_project_tabs_preserve_board_and_append_only_to_visible_ma
     let board = reader.read_with(visual, |r, _| {
         r.project_navigation.boards[&area].entity_id()
     });
-    for label in ["Decisions", "Reports", "Handovers", "Decisions"] {
-        let bounds = visual
-            .debug_bounds(format!("project-tab-{label}"))
-            .expect("real project tab");
+    for selector in [
+        "project-tab-Decisions",
+        "project-tab-Reports",
+        "project-tab-Handovers",
+        "project-tab-Decisions",
+    ] {
+        let bounds = visual.debug_bounds(selector).expect("real project tab");
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(
