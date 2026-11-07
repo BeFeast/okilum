@@ -73,7 +73,28 @@ class SprintTests(unittest.TestCase):
             self.assertFalse((base / 'build/stale').exists())
             self.assertFalse((base / '.fingerprint/stale').exists())
             self.assertTrue((base / 'build/warm/output').exists())
-            self.assertEqual((root / 'target/.okilum-sprint-root').read_text().strip(), str(root))
+            self.assertEqual((root / 'target/.okilum-sprint-root').read_text().strip(), str(root.resolve()))
+
+    def test_root_alias_keeps_warm_outputs_and_migrates_the_path_stamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            physical = base / 'physical'
+            physical.mkdir()
+            alias = base / 'alias'
+            alias.symlink_to(physical, target_is_directory=True)
+            root = alias / 'sprint'
+            output = root / 'target/aarch64-apple-darwin/sprint/build/warm/output'
+            output.parent.mkdir(parents=True)
+            expected = f'cargo:rustc-env=GPUI_KIT_DEFAULT_ICONS_DIR={root}/src/vendor/icons\n'
+            output.write_text(expected)
+            stamp = root / 'target/.okilum-sprint-root'
+            stamp.write_text(str(root) + '\n')
+            MODULE['repair_cache'](root)
+            self.assertTrue(output.is_file(), 'an alias of the same root must keep warm outputs')
+            self.assertEqual(output.read_text(), expected)
+            self.assertEqual(stamp.read_text().strip(), str(root.resolve()))
+            MODULE['repair_cache'](root.resolve())
+            self.assertEqual(output.read_text(), expected)
 
     def test_fetch_failure_trap_uploads_once_without_checkout_helper(self):
         self.fetch_failure_trap()

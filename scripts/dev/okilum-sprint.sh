@@ -135,9 +135,11 @@ def repair_cache(root):
     target = root / 'target'
     stamp = target / '.okilum-sprint-root'
     previous = stamp.read_text().strip() if stamp.is_file() else ''
-    old = {previous, str(Path.home() / 'okilum-sprint')}
-    old.discard('')
-    old.discard(str(root))
+    # macOS temp/workspace paths can name the same root through /var and
+    # /private/var. Such aliases do not make a warm build output stale.
+    old = {value for origin in [previous, str(Path.home() / 'okilum-sprint')]
+           if origin and Path(origin).resolve() != root
+           for value in [origin, str(Path(origin).resolve())]}
     removed = []
     for build in [target / 'sprint' / 'build', *target.glob('*/sprint/build')]:
         if not build.is_dir() or build.is_symlink() or not build.resolve().is_relative_to(target.resolve()):
@@ -148,7 +150,8 @@ def repair_cache(root):
                 continue
             text = output.read_text(errors='replace')
             icons = re.findall(r'cargo::?rustc-env=GPUI_KIT_DEFAULT_ICONS_DIR=([^\n]+)', text)
-            stale = any(path in text for path in old) or any(not path.startswith(str(root / 'src') + '/') for path in icons)
+            stale = any(path in text for path in old) or any(
+                not Path(path).resolve().is_relative_to(root / 'src') for path in icons)
             if stale:
                 # Only dedicated build-script outputs and their Cargo fingerprint.
                 fingerprint = build.parent / '.fingerprint' / directory.name
