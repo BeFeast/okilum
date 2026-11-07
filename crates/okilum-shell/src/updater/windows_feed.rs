@@ -34,6 +34,7 @@ pub(super) fn endpoint(beta: bool) -> (String, &'static str) {
 /// The record that a downloaded package was checked against a channel's feed:
 /// `<channel> <sha256>`. Written after a download from that channel, or after
 /// the feed was found to list the package; removed when the channel changes.
+#[cfg(test)]
 pub(super) fn verified_record(beta: bool, sha256: &str) -> String {
     format!("{} {sha256}", if beta { "beta" } else { "stable" })
 }
@@ -41,6 +42,7 @@ pub(super) fn verified_record(beta: bool, sha256: &str) -> String {
 /// Whether Velopack may apply the pending package when Okilum starts: only one
 /// recorded as checked against the channel the install follows now (#1318).
 /// Anything else waits for the next check, which keeps or discards it.
+#[cfg(test)]
 pub(super) fn may_apply_at_start(
     pending_sha256: Option<&str>,
     record: Option<&str>,
@@ -54,9 +56,124 @@ pub(super) fn may_apply_at_start(
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VerifiedDownload {
+    schema: u8,
+    channel: String,
+    version: String,
+    package_sha256: String,
+    offered_sha256: String,
+}
+
+pub(super) fn verified_download(
+    beta: bool,
+    version: &str,
+    package_sha256: &str,
+    offered_sha256: &str,
+) -> String {
+    serde_json::to_string(&VerifiedDownload {
+        schema: 1,
+        channel: if beta { "beta" } else { "stable" }.into(),
+        version: version.into(),
+        package_sha256: package_sha256.into(),
+        offered_sha256: offered_sha256.into(),
+    })
+    .expect("download verification contains only strings")
+}
+
+/// The SDK selects the newest offered full release before this admission.
+/// A delta reconstruction has different ZIP bytes from that original full
+/// archive. Its recorded local digest is valid only on the channel where the
+/// SDK verified the download, and only while that version is the newest offer.
+pub(super) fn pending_matches_offer(
+    pending: (&str, &str),
+    offered: (&str, &str),
+    record: Option<&str>,
+    beta: bool,
+) -> Result<bool, &'static str> {
+    if pending.0 != offered.0 {
+        return Ok(false);
+    }
+    let recorded = record.and_then(|r| serde_json::from_str::<VerifiedDownload>(r).ok());
+    if let Some(recorded) = recorded.filter(|r| {
+        r.schema == 1
+            && r.channel == if beta { "beta" } else { "stable" }
+            && r.version == pending.0
+            && r.package_sha256.eq_ignore_ascii_case(pending.1)
+    }) {
+        if !recorded.offered_sha256.eq_ignore_ascii_case(offered.1) {
+            return Err(
+                "The published package identity changed for this version. Nothing was installed.",
+            );
+        }
+        return Ok(true);
+    }
+    // Legacy/missing receipts can admit only the original full archive. A
+    // reconstruction without its version-bound receipt is downloaded again.
+    Ok(pending.1.eq_ignore_ascii_case(offered.1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_newer_offer_supersedes_a_verified_ready_package() {
+        let pending = ("0.1.101", "downloaded-first");
+        let record = verified_download(true, pending.0, pending.1, pending.1);
+        assert!(pending_matches_offer(pending, pending, None, true).unwrap());
+        assert!(!pending_matches_offer(
+            pending,
+            ("0.1.102", "published-next"),
+            Some(&record),
+            true
+        )
+        .unwrap());
+        assert!(!pending_matches_offer(
+            pending,
+            ("0.1.100", "withdrawn-offer"),
+            Some(&record),
+            true
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn a_verified_delta_reconstruction_is_reused_only_for_its_current_channel_offer() {
+        let pending = ("0.1.101", "reconstructed-zip");
+        let offered = ("0.1.101", "original-full-zip");
+        let record = verified_download(true, pending.0, pending.1, offered.1);
+        assert!(pending_matches_offer(pending, offered, Some(&record), true).unwrap());
+        assert!(!pending_matches_offer(pending, offered, None, true).unwrap());
+        assert!(!pending_matches_offer(pending, offered, Some(&record), false).unwrap());
+        assert!(!pending_matches_offer(
+            (pending.0, "changed-local-bytes"),
+            offered,
+            Some(&record),
+            true
+        )
+        .unwrap());
+        assert!(
+            !pending_matches_offer(pending, ("0.1.102", offered.1), Some(&record), true).unwrap()
+        );
+        assert!(pending_matches_offer(
+            pending,
+            (pending.0, "changed-published-full-zip"),
+            Some(&record),
+            true,
+        )
+        .is_err());
+        assert!(
+            !pending_matches_offer(
+                ("0.1.102", pending.1),
+                ("0.1.102", offered.1),
+                Some(&record),
+                true,
+            )
+            .unwrap(),
+            "renaming a package cannot move its verification to another version"
+        );
+    }
 
     #[test]
     fn a_pending_package_applies_at_start_only_when_checked_for_the_current_channel() {

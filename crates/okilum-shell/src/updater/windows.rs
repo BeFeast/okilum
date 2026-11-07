@@ -10,6 +10,7 @@ static AVAILABLE: OnceLock<bool> = OnceLock::new();
 static BETA: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static READY: OnceLock<Mutex<super::ready::Ready>> = OnceLock::new();
+static RESTART: super::restart_intent::RestartIntent = super::restart_intent::RestartIntent::new();
 fn state() -> &'static Mutex<super::ready::Ready> {
     READY.get_or_init(|| Mutex::new(super::ready::Ready::default()))
 }
@@ -30,7 +31,39 @@ pub(super) fn take_announcement() -> Option<String> {
 }
 /// Installs the newest pending package, whichever notice was clicked (#2679).
 pub(super) fn restart(cx: &mut gpui::App) {
+    if !available() {
+        super::restart_feedback::refused("Open the installed app to update.");
+        return;
+    }
+    if !RESTART.request() {
+        return;
+    }
     super::restart_feedback::attempt();
+    super::restart_feedback::notify("verifying", "Checking the latest update before restarting…");
+    if !check(true) && !BUSY.load(Ordering::Acquire) {
+        RESTART.cancel();
+        super::restart_feedback::refused(
+            "The update could not be checked. Choose Restart now to retry.",
+        );
+        return;
+    }
+    finish_requested_restart(cx);
+}
+
+pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
+    use super::restart_intent::Next;
+    match RESTART.poll(BUSY.load(Ordering::Acquire), super::status::get()) {
+        Next::Wait => {}
+        Next::Download => {
+            super::restart_feedback::notify("downloading", "Downloading the latest update…");
+            check(true);
+        }
+        Next::Apply => restart_verified(cx),
+        Next::Refuse(reason) => super::restart_feedback::refused(reason),
+    }
+}
+
+fn restart_verified(cx: &mut gpui::App) {
     // Serialize restart against background checks until Velopack is armed.
     // The refusal appears in the single update notice, never a second toast.
     if BUSY.swap(true, Ordering::AcqRel) {
@@ -139,10 +172,18 @@ fn package_sha256(asset: &velopack::VelopackAsset) -> Option<String> {
 }
 
 /// Records that the pending package belongs to the current channel's feed.
-fn record_verified(sha256: &str) {
+fn record_verified(sha256: &str, offered: &velopack::VelopackAsset) {
     if let Some(path) = verified_path() {
         let _ = path.parent().map(std::fs::create_dir_all);
-        let _ = std::fs::write(path, super::windows_feed::verified_record(beta(), sha256));
+        let _ = std::fs::write(
+            path,
+            super::windows_feed::verified_download(
+                beta(),
+                &offered.Version,
+                sha256,
+                &offered.SHA256,
+            ),
+        );
     }
 }
 
@@ -249,6 +290,8 @@ pub(super) fn set_beta(value: bool) {
         Ok(()) => {
             BETA.store(value, Ordering::Relaxed);
             if previous != value {
+                RESTART.cancel();
+                super::restart_feedback::clear_pending();
                 // A package downloaded for the other channel is checked again
                 // before it can be applied (#1318).
                 forget_verified();
@@ -267,6 +310,7 @@ pub(super) fn check(download: bool) -> bool {
     if BUSY.swap(true, Ordering::AcqRel) {
         return false;
     }
+    let download = download || RESTART.requested();
     status::set(CheckStatus::Checking);
     // HTTP and package IO never block the GPUI/UI thread or vault preparation.
     // A manual check reports inline, never in a message box (#995).
@@ -284,13 +328,14 @@ pub(super) fn check(download: bool) -> bool {
                 status::set(CheckStatus::Note(
                     "Update cancelled. Nothing was installed.".into(),
                 ));
+                super::restart_feedback::offer("Update cancelled. Nothing was installed.");
                 return;
             }
             status::set(match result {
                 Ok(status) => status,
                 Err(error) => {
                     crate::reader_diagnostics::network_failure("Windows update", &error);
-                    CheckStatus::Failed(format!(
+                    let reason = format!(
                         "{}. Your current version is unchanged.",
                         error
                             .to_string()
@@ -298,7 +343,16 @@ pub(super) fn check(download: bool) -> bool {
                             .next()
                             .unwrap_or("Update failed")
                             .trim_end_matches('.')
-                    ))
+                    );
+                    if ready()
+                        || matches!(
+                            status::get(),
+                            CheckStatus::Downloading(_) | CheckStatus::Preparing
+                        )
+                    {
+                        super::restart_feedback::refused(reason.clone());
+                    }
+                    CheckStatus::Failed(reason)
                 }
             });
         });
@@ -310,32 +364,55 @@ pub(super) fn check(download: bool) -> bool {
 fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStatus> {
     use super::status::CheckStatus;
     let manager = manager()?;
-    if let Some(asset) = manager.get_update_pending_restart() {
-        // Applied only if the current channel's feed lists it (#1318). A feed
-        // or a package file that cannot be read (a scan holding it, say) keeps
-        // the package, unverified, for the next check.
-        let feed = manager.get_release_feed()?;
-        let sha256 = package_sha256(&asset).ok_or_else(|| {
-            anyhow::anyhow!("The downloaded update could not be read. Okilum will try again later")
-        })?;
-        let listed = feed.Assets.iter().any(|offered| {
-            offered.Version == asset.Version && offered.SHA256.eq_ignore_ascii_case(&sha256)
-        });
-        if listed {
-            record_verified(&sha256);
-            state().lock().unwrap().observe(Some(identity(&asset)));
-            return Ok(CheckStatus::Ready);
-        }
-        discard(&asset);
-        state().lock().unwrap().observe(None);
-    }
+    // Selection must precede Ready admission: the previous version can remain
+    // listed after a newer beta is published (#2706).
+    let pending = manager.get_update_pending_restart();
     match manager.check_for_updates()? {
         UpdateCheck::UpdateAvailable(update) => {
+            if let Some(asset) = pending.as_ref() {
+                let sha256 = package_sha256(asset).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "The downloaded update could not be read. Okilum will try again later"
+                    )
+                })?;
+                let record = verified_path().and_then(|p| std::fs::read_to_string(p).ok());
+                let offered = &update.TargetFullRelease;
+                if asset.PackageId == offered.PackageId
+                    && asset.FileName == offered.FileName
+                    && super::windows_feed::pending_matches_offer(
+                        (&asset.Version, &sha256),
+                        (&offered.Version, &offered.SHA256),
+                        record.as_deref(),
+                        beta(),
+                    )
+                    .map_err(anyhow::Error::msg)?
+                {
+                    record_verified(&sha256, offered);
+                    state().lock().unwrap().observe(Some(identity(asset)));
+                    super::restart_feedback::clear_pending();
+                    return Ok(CheckStatus::Ready);
+                }
+            }
+            let replacing = pending.is_some();
+            // Retain the file for the SDK's delta base selection, but revoke
+            // its restart admission before starting a replacement transfer.
+            state().lock().unwrap().observe(None);
+            forget_verified();
             use super::status;
             if !download {
+                if let Some(asset) = pending.as_ref() {
+                    discard(asset);
+                    super::restart_feedback::offer(format!(
+                        "An update ({}) is available. Download it to update.",
+                        update.TargetFullRelease.Version
+                    ));
+                }
                 return Ok(CheckStatus::Available(
                     update.TargetFullRelease.Version.clone(),
                 ));
+            }
+            if replacing {
+                super::restart_feedback::notify("downloading", "Downloading the latest update…");
             }
             let token = super::policy::DOWNLOAD.begin();
             let manager = manager_with_token(beta(), token.clone())?;
@@ -358,8 +435,16 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
             })?;
             status::set(CheckStatus::Preparing);
             let pending = manager.get_update_pending_restart();
+            anyhow::ensure!(
+                pending.as_ref().is_some_and(|asset| {
+                    asset.PackageId == update.TargetFullRelease.PackageId
+                        && asset.Version == update.TargetFullRelease.Version
+                        && asset.FileName == update.TargetFullRelease.FileName
+                }),
+                "The verified download does not match the selected update. Check for updates again."
+            );
             if let Some(sha256) = pending.as_ref().and_then(package_sha256) {
-                record_verified(&sha256);
+                record_verified(&sha256, &update.TargetFullRelease);
             }
             state()
                 .lock()
@@ -369,12 +454,31 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                 pending.is_some(),
                 "The downloaded package is no longer available. Check for updates again."
             );
+            super::restart_feedback::clear_pending();
             Ok(CheckStatus::Ready)
         }
-        UpdateCheck::NoUpdateAvailable => Ok(CheckStatus::UpToDate(std::time::SystemTime::now())),
-        UpdateCheck::RemoteIsEmpty => Ok(CheckStatus::Note(
-            "No release has been published on the selected channel yet.".into(),
-        )),
+        UpdateCheck::NoUpdateAvailable => {
+            if let Some(asset) = pending.as_ref() {
+                discard(asset);
+                state().lock().unwrap().observe(None);
+                super::restart_feedback::offer(
+                    "The update offer changed. No newer update is currently available.",
+                );
+            }
+            Ok(CheckStatus::UpToDate(std::time::SystemTime::now()))
+        }
+        UpdateCheck::RemoteIsEmpty => {
+            if let Some(asset) = pending.as_ref() {
+                discard(asset);
+                state().lock().unwrap().observe(None);
+                super::restart_feedback::offer(
+                    "No release has been published on the selected channel yet.",
+                );
+            }
+            Ok(CheckStatus::Note(
+                "No release has been published on the selected channel yet.".into(),
+            ))
+        }
     }
 }
 

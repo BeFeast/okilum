@@ -95,10 +95,20 @@ fn post(outcome: &str, reason: String, actionable: bool) {
     });
 }
 
-// Progress comes only from the macOS bridge; elsewhere restarts quit or refuse.
-#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+// Replacement downloads and the macOS bridge share the existing update notice.
 pub(super) fn notify(outcome: &str, reason: impl Into<String>) {
     post(outcome, reason.into(), false);
+}
+
+/// A completed replacement must not be overwritten by queued download progress.
+#[cfg(any(target_os = "linux", windows, test))]
+pub(super) fn clear_pending() {
+    *MESSAGE.lock().unwrap() = None;
+}
+
+#[cfg(any(target_os = "linux", windows, test))]
+pub(super) fn offer(reason: impl Into<String>) {
+    post("available", reason.into(), true);
 }
 
 pub(super) fn refused(reason: impl Into<String>) {
@@ -180,8 +190,26 @@ fn show_message(window: &mut gpui::Window, cx: &mut App, message: Message) {
             Button::new("update-notice-action")
                 .debug_selector(|| "update-notice-action".into())
                 .small()
-                .label(super::action_label())
-                .on_click(|_, _, cx| super::activate(cx))
+                .label(
+                    if matches!(
+                        super::status::get(),
+                        super::status::CheckStatus::Available(_)
+                    ) {
+                        "Download update"
+                    } else {
+                        super::action_label()
+                    },
+                )
+                .on_click(|_, _, cx| {
+                    if matches!(
+                        super::status::get(),
+                        super::status::CheckStatus::Available(_)
+                    ) {
+                        super::install_update();
+                    } else {
+                        super::activate(cx);
+                    }
+                })
         });
     }
     window.push_notification(notice, cx);

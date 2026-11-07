@@ -9,6 +9,8 @@ mod policy;
 #[cfg(any(windows, test))]
 mod ready;
 mod restart_feedback;
+#[cfg(any(target_os = "linux", windows, test))]
+mod restart_intent;
 mod scheduler;
 pub(crate) use policy::{mode, Mode};
 pub(crate) mod status;
@@ -106,13 +108,7 @@ fn automatic_checks_enabled() -> bool {
 
 fn start_check(trigger: Trigger) -> bool {
     #[cfg(target_os = "linux")]
-    return if appimage::ready() {
-        // The staged AppImage holds the installation lock until restart. Keep
-        // Ready intact rather than trying to stage the same archive again.
-        false
-    } else {
-        appimage::check(mode().download(matches!(trigger, Trigger::Download)))
-    };
+    return appimage::check(mode().download(matches!(trigger, Trigger::Download)));
     #[cfg(not(target_os = "linux"))]
     let _ = trigger;
     #[cfg(target_os = "macos")]
@@ -154,7 +150,13 @@ fn install_schedule(cx: &mut App) {
         // Ticks only consult the policy; the network runs once per due interval.
         cx.background_executor().timer(Duration::from_secs(1)).await;
         run_check(Trigger::Interval);
-        cx.update(restart_feedback::present);
+        cx.update(|cx| {
+            #[cfg(target_os = "linux")]
+            appimage::finish_requested_restart(cx);
+            #[cfg(windows)]
+            windows::finish_requested_restart(cx);
+            restart_feedback::present(cx);
+        });
     })
     .detach();
 }
@@ -777,6 +779,29 @@ mod tests {
 
     /// #2679: «Update ready» and «This update is no longer ready» were stacked.
     /// Restart progress and failures now render into the same single notice.
+    #[gpui::test]
+    fn replacement_ready_is_not_overwritten_by_queued_download_progress(cx: &mut TestAppContext) {
+        let _guard = restart_feedback::TEST_LOCK.lock().unwrap();
+        let app = cx.clone();
+        let visual = notice_window(cx);
+        visual.update(|window, cx| show_ready_notice(window, cx, |_| {}));
+        visual.run_until_parked();
+        restart_feedback::notify("downloading", "Downloading the latest update…");
+        // The worker can complete before the one-second presenter tick.
+        restart_feedback::clear_pending();
+        visual.update(|window, cx| show_ready_notice(window, cx, |_| {}));
+        visual.run_until_parked();
+        app.update(restart_feedback::present);
+        visual.run_until_parked();
+        assert_eq!(notice_count(visual), 1);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("restart-update").is_some(),
+            "a late download message must not remove the newest Restart action"
+        );
+        assert!(visual.debug_bounds("update-notice-action").is_none());
+    }
+
     #[gpui::test]
     fn restart_outcomes_replace_the_ready_notice_in_place(cx: &mut TestAppContext) {
         let _guard = restart_feedback::TEST_LOCK.lock().unwrap();
