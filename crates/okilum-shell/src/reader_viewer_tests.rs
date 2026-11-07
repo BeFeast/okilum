@@ -176,3 +176,68 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     );
     assert!(visual.opened_url().is_none());
 }
+
+#[gpui::test]
+fn cold_start_canvas_opens_its_exact_note_before_another_document(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    std::fs::create_dir_all(root.join("canvas")).unwrap();
+    let root = root.canonicalize().unwrap();
+    let canvas = include_bytes!("../../okilum-core/tests/fixtures/viewers/canvas/read-only.canvas");
+    let note = b"# Linked note\n\n## Acceptance\n\nNever change this source.\n";
+    std::fs::write(root.join("canvas/read-only.canvas"), canvas).unwrap();
+    std::fs::write(root.join("canvas/linked-note.md"), note).unwrap();
+    cx.update(|cx| {
+        crate::test_init(cx);
+        reader_ui_state::install(&dir.path().join("state"), cx);
+        bind_keys(cx);
+    });
+    let mut reader = None;
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let entity = cx.new(|cx| {
+            Reader::new(
+                Opts {
+                    vault: Some(root.clone()),
+                    note: Some("canvas/read-only.canvas".into()),
+                    index_dir: Some(dir.path().join("index")),
+                    session_directory: Some(dir.path().join("state")),
+                    panel_settings_override: Some(dir.path().join("panels.json")),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            )
+        });
+        reader = Some(entity.clone());
+        Root::new(entity, window, cx)
+    });
+    let reader = reader.unwrap();
+    visual.simulate_resize(size(px(1400.), px(1000.)));
+    visual.run_until_parked();
+    visual.update(|window, cx| window.simulate_next_frame(cx));
+    visual.run_until_parked();
+    reader.read_with(visual, |r, _| {
+        assert_eq!(r.selected_file(), "canvas/read-only.canvas");
+        assert!(r.vault.notes.contains(&"canvas/linked-note.md".to_owned()));
+    });
+    let button = visual.debug_bounds("canvas-open-note-note").unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    reader.read_with(visual, |r, _| {
+        assert_eq!(
+            r.selected_file(),
+            "canvas/linked-note.md",
+            "the cold Canvas must not retain its incomplete startup inventory"
+        );
+    });
+    assert!(visual.opened_url().is_none());
+    assert_eq!(
+        std::fs::read(root.join("canvas/read-only.canvas")).unwrap(),
+        canvas
+    );
+    assert_eq!(
+        std::fs::read(root.join("canvas/linked-note.md")).unwrap(),
+        note
+    );
+}
