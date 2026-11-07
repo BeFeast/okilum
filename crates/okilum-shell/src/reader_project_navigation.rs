@@ -298,6 +298,7 @@ pub(super) struct State {
     pub generation: u64,
     pub active: Option<Project>,
     pub boards: std::collections::BTreeMap<PathBuf, Entity<project::board::Board>>,
+    pub records: std::collections::BTreeMap<PathBuf, Entity<project::records::RecordsView>>,
     pub board_visible: bool,
     pub(super) saved: Option<Saved>,
     /// Shared Project presentation for this vault, persisted independently of Tree.

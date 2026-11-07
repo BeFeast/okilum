@@ -134,6 +134,11 @@ to the existing Reader window through `ManagerGateway`. Managers remain in T3;
 credentials use OS storage and sends retain durable request identities. Executor
 controls, scheduled-task model following and live-server acceptance remain separate.
 
+**Project app views (#1892, variant A, Oleg 2026-11-06):**
+[Project records](project-records.md) adds Decisions, Reports and Handovers beside
+Board, with Manager on the right. Existing Markdown records remain read-only;
+changes begin with an editable contextual Manager draft through **Обсудить в Manager**.
+
 **Manager onboarding (#2653, variant B, Oleg 2026-11-05):**
 [Connect manager](manager-onboarding.md) opens T3 Connections and consumes a
 copied same-origin pair link on return, with no normal-path pasting or T3 server

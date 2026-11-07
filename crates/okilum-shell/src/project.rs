@@ -42,6 +42,7 @@ mod models;
 mod native;
 #[cfg(all(target_os = "linux", any(test, feature = "project-ui-harness")))]
 pub(crate) mod performance;
+pub(crate) mod records;
 #[cfg(native_manager)]
 mod rotation;
 mod rules_reread;
@@ -2205,6 +2206,11 @@ impl Reader {
         changes: &okilum_core::Changes,
         cx: &mut Context<Self>,
     ) {
+        if !changes.is_empty() {
+            for records in self.project_navigation.records.values() {
+                records.update(cx, |records, cx| records.changed(cx));
+            }
+        }
         if let Some(project) = self.project.as_ref().filter(|_| self.project_open) {
             project.update(cx, |view, cx| view.resources_changed(changes, cx));
         }
