@@ -6,6 +6,10 @@
 mod model;
 
 #[allow(dead_code)]
+#[path = "../../okilum-shell/src/reader_feedback/identity.rs"]
+mod identity;
+
+#[allow(dead_code)]
 #[path = "../../okilum-shell/src/reader_feedback/video.rs"]
 mod video;
 

@@ -2,6 +2,60 @@ use super::*;
 use ::core::prelude::v1::test;
 use gpui_component::WindowExt;
 
+#[gpui::test]
+fn feedback2683_mounted_reporter_persists_privately_and_clears_without_changing_install(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_DRAFT_ROOT.with(|root| *root.borrow_mut() = None);
+        }
+    }
+    let _reset = Reset;
+    TEST_DRAFT_ROOT.with(|root| *root.borrow_mut() = Some(temp.path().join("drafts")));
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        assert!(feedback.debug_bounds("feedback-reporter").is_some());
+        let install = view.read_with(&feedback, |view, _| view.identity.install_id);
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.reporter.update(cx, |input, cx| {
+                input.set_value("synthetic-reporter-2683", window, cx)
+            });
+            view.text.update(cx, |input, cx| {
+                input.set_value("Public synthetic feedback", window, cx)
+            });
+            assert!(view.checkpoint(cx));
+            let report = view.report_without_log(cx);
+            assert_eq!(report.identity.reporter_name, "synthetic-reporter-2683");
+            assert!(!report.copy_text().contains("synthetic-reporter-2683"));
+            view.remount(window, cx);
+            assert_eq!(
+                view.reporter.read(cx).value().as_ref(),
+                "synthetic-reporter-2683"
+            );
+        });
+        let path = temp.path().join("feedback-identity.json");
+        let store = identity::Store::open(path.clone()).unwrap();
+        assert_eq!(store.data.install_id, install);
+        assert_eq!(store.data.reporter_name, "synthetic-reporter-2683");
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.reporter
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            assert!(view.checkpoint(cx));
+            assert!(view
+                .report_without_log(cx)
+                .identity
+                .reporter_name
+                .is_empty());
+        });
+        let store = identity::Store::open(path).unwrap();
+        assert_eq!(store.data.install_id, install);
+        assert!(store.data.reporter_name.is_empty());
+    });
+}
+
 fn with_reader(cx: &mut TestAppContext, check: impl FnOnce(&mut VisualTestContext)) {
     cx.update(|cx| {
         crate::test_init(cx);
@@ -268,7 +322,32 @@ fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_i
         });
         visual.update(|window, cx| window.draw(cx).clear(cx));
 
+        // Authored identity/disclosure and both media slots can overflow the
+        // normal form. Reach the real control through its scroll viewport;
+        // debug bounds alone do not prove that an offscreen click can fire.
+        let form = visual.debug_bounds("feedback-form").unwrap();
+        let before = visual.debug_bounds("feedback-remove-video").unwrap();
+        println!("FEEDBACK_2683_REMOVE_BEFORE form={form:?} button={before:?}");
+        for _ in 0..4 {
+            let bounds = visual.debug_bounds("feedback-remove-video").unwrap();
+            if bounds.top() >= form.top() && bounds.bottom() <= form.bottom() {
+                break;
+            }
+            visual.simulate_event(ScrollWheelEvent {
+                position: point(form.center().x, form.top() + px(4.)),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-300.))),
+                touch_phase: TouchPhase::Moved,
+                modifiers: Modifiers::default(),
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        }
         let remove = visual.debug_bounds("feedback-remove-video").unwrap();
+        let viewport = visual.update(|window, _| window.viewport_size());
+        assert!(remove.size.height > px(0.) && remove.size.width > px(0.));
+        assert!(remove.top() >= form.top() && remove.bottom() <= form.bottom());
+        assert!(remove.top() >= px(0.) && remove.bottom() <= viewport.height);
+        println!("FEEDBACK_2683_REMOVE_VISIBLE button={remove:?}");
         visual.simulate_click(remove.center(), Modifiers::default());
         visual.run_until_parked();
         view.read_with(visual, |view, cx| {

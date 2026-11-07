@@ -300,6 +300,7 @@ pub(super) struct Report {
     pub text: String,
     pub kind: Kind,
     pub meta: Metadata,
+    pub identity: super::identity::Data,
     pub screenshot: Option<Arc<Vec<u8>>>,
     pub log: Option<String>,
     pub video: Option<Video>,
@@ -480,6 +481,7 @@ pub(super) fn video_file_with_limits(path: &Path, limits: Limits) -> Result<Vide
 }
 impl Report {
     fn validate(&self) -> Result<()> {
+        self.identity.validate()?;
         ensure!(
             !self.text.trim().is_empty(),
             "Describe your feedback before sending."
@@ -626,7 +628,11 @@ async fn send_to_async(endpoint: &str, report: &Report) -> Result<Receipt> {
     let mut form = Form::new()
         .text("text", report.text.clone())
         .text("kind", report.kind.wire())
+        .text("install_id", report.identity.install_id.to_string())
         .text("meta", serde_json::to_string(&meta)?);
+    if !report.identity.reporter_name.is_empty() {
+        form = form.text("reporter_name", report.identity.reporter_name.clone());
+    }
     if super::sprint::enabled() {
         form = form.text("title", super::sprint::title());
     }
@@ -1027,6 +1033,7 @@ mod limits_tests {
             text: "Keep authored feedback".into(),
             kind: Kind::Bug,
             meta: tests::meta(),
+            identity: super::super::identity::Data::anonymous(),
             screenshot: Some(Arc::new(vec![1; 8])),
             log: Some("log".into()),
             video: None,
@@ -1068,6 +1075,7 @@ mod cancellation_tests {
             text: "Keep this draft".into(),
             kind: Kind::Bug,
             meta: tests::meta(),
+            identity: super::super::identity::Data::anonymous(),
             screenshot: Some(Arc::new(vec![1, 2, 3])),
             log: None,
             video: None,

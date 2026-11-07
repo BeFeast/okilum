@@ -84,7 +84,7 @@ tree-sitter-xml = "=0.7.0"
 serde.workspace = true
 sha2 = "0.10"
 similar = { version = "=2.7.0", default-features = false }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 base64 = "0.22"
 shell-words = "1.1"
 tempfile = "3"
