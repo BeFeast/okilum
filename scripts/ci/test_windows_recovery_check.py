@@ -22,9 +22,18 @@ class WindowsRecoveryCheckTests(unittest.TestCase):
 
     def test_discovered_regression_runs_and_propagates_failure(self):
         for result in (0, 101):
-            listing = subprocess.CompletedProcess([], 0, check.REGRESSION + ": test\n")
+            listing = subprocess.CompletedProcess([], 0,
+                check.REGRESSION + ": test\n" + check.PARENT_REGRESSION + ": test\n")
             with patch.object(check.subprocess, "run", side_effect=[
                     listing, subprocess.CompletedProcess([], result)]) as run:
                 self.assertEqual(check.main(), result)
                 self.assertIn("windows_", run.call_args.args[0])
+                self.assertIn("--tests", run.call_args.args[0])
                 self.assertIn("--test-threads=1", run.call_args.args[0])
+
+    def test_missing_changed_parent_regression_stops_before_execution(self):
+        with patch.object(check.subprocess, "run") as run:
+            run.return_value.stdout = check.REGRESSION + ": test\n"
+            with self.assertRaisesRegex(RuntimeError, check.PARENT_REGRESSION):
+                check.main()
+            self.assertEqual(run.call_count, 1)
