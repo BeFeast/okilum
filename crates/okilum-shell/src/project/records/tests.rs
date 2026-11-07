@@ -60,6 +60,10 @@ fn records_1892_actual_project_tabs_preserve_board_and_append_only_to_visible_ma
         reader.project_open = true;
         let manager = cx.new(|cx| {
             let mut view = ProjectView::empty(Some(temp.path().join("drafts")), window, cx);
+            #[cfg(native_manager)]
+            {
+                view.threads.enabled = true;
+            }
             view.area = Some(area.clone());
             view.compose
                 .update(cx, |input, cx| input.set_value("Keep my draft", window, cx));
@@ -82,7 +86,7 @@ fn records_1892_actual_project_tabs_preserve_board_and_append_only_to_visible_ma
     });
     for label in ["Decisions", "Reports", "Handovers", "Decisions"] {
         let bounds = visual
-            .debug_bounds(&format!("project-tab-{label}"))
+            .debug_bounds(format!("project-tab-{label}"))
             .expect("real project tab");
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.run_until_parked();
@@ -113,6 +117,18 @@ fn records_1892_actual_project_tabs_preserve_board_and_append_only_to_visible_ma
         );
     });
     assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
+    manager.update_in(visual, |view, window, cx| {
+        let before = view.compose.read(cx).value();
+        assert_eq!(
+            view.append_record_context(&vault, "wrong project".into(), true, window, cx),
+            Err(okilum_t3::draft_handoff::Refusal::WrongTarget)
+        );
+        assert_eq!(
+            view.append_record_context(&area, "hidden composer".into(), false, window, cx),
+            Err(okilum_t3::draft_handoff::Refusal::Unavailable)
+        );
+        assert_eq!(view.compose.read(cx).value(), before);
+    });
     let back = visual.debug_bounds("project-tab-Board").unwrap();
     visual.simulate_click(back.center(), Modifiers::default());
     visual.run_until_parked();

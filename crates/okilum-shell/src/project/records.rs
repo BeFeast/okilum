@@ -12,6 +12,7 @@ pub(crate) struct RecordsView {
     selected: Option<String>,
     query: Entity<InputState>,
     _query: Subscription,
+    _publication: Option<Subscription>,
     content: Entity<TextViewState>,
     list_scroll: ScrollHandle,
     detail_scroll: ScrollHandle,
@@ -33,8 +34,8 @@ impl Reader {
         let mut published = self.vault.clone();
         let mut epoch = self.source_publication_epoch;
         let root = self.vault_root.clone();
-        let refreshed = records.clone();
-        cx.observe(&cx.entity(), move |this, _, cx| {
+        let refreshed = records.downgrade();
+        let publication = cx.observe(&cx.entity(), move |this, _, cx| {
             if this.vault_root != root
                 || (Arc::ptr_eq(&published, &this.vault) && epoch == this.source_publication_epoch)
             {
@@ -42,9 +43,9 @@ impl Reader {
             }
             published = this.vault.clone();
             epoch = this.source_publication_epoch;
-            refreshed.update(cx, |records, cx| records.changed(cx));
-        })
-        .detach();
+            let _ = refreshed.update(cx, |records, cx| records.changed(cx));
+        });
+        records.update(cx, |records, _| records._publication = Some(publication));
         let owner = area.to_owned();
         cx.subscribe(&records, move |this, _, action: &board::Action, cx| {
             if this.project_navigation.active.as_ref().map(|p| &p.folder) != Some(&owner) {
@@ -148,7 +149,9 @@ impl ProjectView {
             }
             // An established typed conversation uses its existing exact-owner
             // handoff. A disconnected, never-bound composer has no remote owner.
-            if !self.draft_ready() || self.composer.read(cx).typed_scope().is_some() {
+            if !self.draft_unbound_context_allowed()
+                || self.composer.read(cx).typed_scope().is_some()
+            {
                 return Err(Refusal::Unavailable);
             }
         }
@@ -190,6 +193,7 @@ impl RecordsView {
             selected: None,
             query,
             _query: subscription,
+            _publication: None,
             content: cx.new(|cx| TextViewState::markdown("", cx)),
             list_scroll: ScrollHandle::new(),
             detail_scroll: ScrollHandle::new(),
@@ -374,7 +378,11 @@ impl Render for RecordsView {
         }
         if count == 0 {
             list = list.child(if query.is_empty() {
-                "No records yet."
+                if self.snapshot.problems.is_empty() {
+                    "No records yet."
+                } else {
+                    "Records unavailable."
+                }
             } else {
                 "No matching records."
             });
@@ -405,7 +413,7 @@ impl Render for RecordsView {
                         .label("Open in Notes").on_click(cx.listener(move |_, _, _, cx| cx.emit(board::Action::Note(open.clone()))))))
                 .child(div().w_full().whitespace_normal().text_xs().text_color(colors.text_muted).child(record.path));
         } else {
-            detail = detail.child(div().text_lg().child(if self.refresh.is_pending() { "Loading records…" } else { "No project records" }))
+            detail = detail.child(div().text_lg().child(if self.refresh.is_pending() { "Loading records…" } else if !self.snapshot.problems.is_empty() { "Records unavailable" } else { "No project records" }))
                 .child(div().whitespace_normal().child(format!("Read-only Markdown from {}. Create or edit records in Files; refresh to read them here.", kind.directories().join(", "))));
         }
         let mut root = v_flex()

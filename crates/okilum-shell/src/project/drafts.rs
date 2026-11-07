@@ -779,6 +779,12 @@ impl ProjectView {
         !self.threads.draft.loading
     }
 
+    pub(super) fn draft_unbound_context_allowed(&self) -> bool {
+        !self.threads.draft.loading
+            && self.threads.draft.key.is_none()
+            && self.threads.draft.error.is_none()
+    }
+
     // MCP cannot carry native asset references; keep its text-only guard.
     pub(super) fn draft_is_sendable(&self) -> bool {
         self.draft_ready() && self.draft_attachments().is_empty()
