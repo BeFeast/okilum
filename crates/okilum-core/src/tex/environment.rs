@@ -127,7 +127,7 @@ mod tests {
         let fixtures: Vec<serde_json::Value> =
             serde_json::from_str(include_str!("../../tests/fixtures/tex-environments.json"))
                 .unwrap();
-        assert_eq!(fixtures.len(), 19);
+        assert_eq!(fixtures.len(), 20);
         for fixture in fixtures {
             let source = fixture["tex"].as_str().unwrap();
             assert!(
@@ -198,6 +198,57 @@ mod tests {
             ]
         );
         assert!(rows.iter().all(|r| r.len() == 6));
+    }
+
+    #[test]
+    fn math_2698_original_triple_backslash_and_control_space() {
+        let fixtures: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../tests/fixtures/tex-environments.json"))
+                .unwrap();
+        let original = fixtures
+            .iter()
+            .find(|f| f["name"] == "reported-jupyter-triple-backslash-newline")
+            .unwrap()["tex"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            original
+                .lines()
+                .filter(|line| line
+                    .as_bytes()
+                    .iter()
+                    .rev()
+                    .take_while(|c| **c == b'\\')
+                    .count()
+                    == 3)
+                .count(),
+            2
+        );
+        for newline in ["\n", "\r\n"] {
+            let tex = original.replace('\n', newline);
+            let parsed = parse(&tex).unwrap();
+            let [Node::Array { rows, columns, .. }] = parsed.as_slice() else {
+                panic!()
+            };
+            assert_eq!(rows.len(), 3, "escaped newline must not add an empty row");
+            assert_eq!(columns.len(), 1);
+            assert!(rows.iter().all(|r| r.len() == 1 && !r[0].is_empty()));
+            assert_eq!(linear(&tex).unwrap().text.matches(';').count(), 2);
+        }
+        for tex in ["x\\ y", "x\\\ny", "x\\\r\ny", "x\\\ty"] {
+            let parsed = parse(tex).unwrap();
+            assert!(matches!(parsed.as_slice(), [_, Node::Space(6), _]));
+        }
+        for tex in [
+            "x\\",
+            r"\unsupported",
+            r"\begin{array}{c}x\unknown y\end{array}",
+        ] {
+            assert!(
+                parse(tex).is_err(),
+                "unsupported commands must remain visible errors"
+            );
+        }
     }
 
     #[test]

@@ -50,8 +50,13 @@ The existing 4 KiB/depth-24 limits apply, with additional limits of 32 columns,
 64 rows and 256 cells per environment. Column rules, custom column macros,
 row-height commands and unsupported environments remain visible source with an
 explicit reason. No external TeX process, network rendering or GPUI core patch.
-Nineteen synthetic fixtures cover all fifteen environments named in #2684,
+Twenty synthetic fixtures cover all fifteen environments named in #2684,
 including complete Lorenz/Maxwell equations and the cross-product determinant.
+The #2698 regression retains the exact original Jupyter array with three
+backslashes before LF or CRLF: a row separator followed by TeX control-space.
+Escaped space, newline and tab share the existing explicit-space width; unsupported
+commands and lone backslashes still report errors. The original four-backslash
+empty-row fixture remains as a separate valid case.
 Native tests cover the reported arrays (both row separators, including repeated
 separators/empty rows) and six-column eqnarray, actual non-overlapping row/shared-column
 geometry, smallmatrix size, cases delimiter height, and CRLF Live Preview reveal

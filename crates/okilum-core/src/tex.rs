@@ -757,7 +757,9 @@ fn space(name: &str) -> Option<u8> {
         "," | "thinspace" => 3,
         ":" | ">" | "medspace" => 4,
         ";" | "thickspace" => 5,
-        " " => 6,
+        // A backslash followed by a line ending/tab is TeX control-space,
+        // including the third backslash after an array row separator (#2698).
+        " " | "\n" | "\r" | "\t" => 6,
         "quad" => 18,
         "qquad" => 36,
         "!" | "negthinspace" => 0,
