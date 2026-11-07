@@ -125,6 +125,16 @@ jobs:
           if [[ "$RUNNER_OS" = Windows ]]; then
             python3 scripts/ci/deleted-note-close-check.py
           fi
+      - name: Reject shared and active-only Ready announcement policies
+        if: runner.os == 'macOS'
+        run: python3 scripts/ci/updater-ready-control.py
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && runner.os == 'macOS' }}
+        with:
+          name: native-updater-ready-controls
+          path: ${{ runner.temp }}/updater-ready-controls/
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/cache/save@v4
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}
         with:

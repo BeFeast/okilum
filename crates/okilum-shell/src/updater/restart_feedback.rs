@@ -28,16 +28,12 @@ struct Message {
 /// Remembers which ready package was announced, so the same package is not
 /// announced twice but a newer one always is (#2679), even after the older
 /// notice was closed.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 #[derive(Debug, Default)]
 pub(super) struct Announced(Option<String>);
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "linux", windows, target_os = "macos", test))]
 impl Announced {
-    pub(super) const fn new() -> Self {
-        Self(None)
-    }
-
     /// True once per distinct ready package.
     pub(super) fn claim(&mut self, package: &str) -> bool {
         if self.0.as_deref() == Some(package) {
@@ -138,7 +134,9 @@ pub(super) fn report(kind: i32, reason: &str) {
         return;
     }
     match kind {
-        2 => refused(format!("{reason} Open Settings → Updates and check for updates again. Okilum is staying open.")),
+        2 => refused(format!(
+            "{reason} Open Settings → Updates and check for updates again. Okilum is staying open."
+        )),
         // Sparkle can offer its retry continuation while GPUI's asynchronous
         // quit is already completing. An empty signal is waiting, not proof
         // of a failed restart. Keep ACTIVE for subsequent install outcomes.
@@ -149,8 +147,13 @@ pub(super) fn report(kind: i32, reason: &str) {
         ),
         10 | 14 => refused(if reason.is_empty() {
             "Okilum is still open. Save or close any pending dialog, then choose Restart now again."
-        } else { reason }),
-        4 => notify("verifying", "Verifying the update. Restart will continue automatically; your edits will be protected first."),
+        } else {
+            reason
+        }),
+        4 => notify(
+            "verifying",
+            "Verifying the update. Restart will continue automatically; your edits will be protected first.",
+        ),
         6 => notify("accepted", "Restarting to install the update…"),
         7 => refused("Update cancelled. Check for updates and download it again."),
         8 => {
@@ -398,10 +401,12 @@ mod tests {
                 .count(),
             2
         );
-        assert!(events.iter().any(|e| e["details"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("Save or close")));
+        assert!(events.iter().any(|e| {
+            e["details"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Save or close")
+        }));
         *TRACE.lock().unwrap() = None;
     }
 }

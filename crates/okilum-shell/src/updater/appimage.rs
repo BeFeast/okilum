@@ -9,7 +9,6 @@ use std::{
     },
 };
 
-static ANNOUNCE: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static STARTUP_CONFIRMED: AtomicBool = AtomicBool::new(false);
 static CHANNEL: Mutex<Option<Channel>> = Mutex::new(None);
@@ -68,8 +67,11 @@ fn gpgv() -> anyhow::Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Missing AppDir"))?
         .join("gpgv"))
 }
-pub(super) fn take_announcement() -> bool {
-    ready() && ANNOUNCE.swap(false, Ordering::SeqCst)
+pub(super) fn ready_package() -> Option<String> {
+    PENDING.lock().unwrap().as_ref().map(|staged| {
+        let release = staged.release();
+        format!("{}:{}:{}", release.channel, release.build, release.sha256)
+    })
 }
 pub(super) fn ready() -> bool {
     PENDING.lock().unwrap().is_some()
@@ -196,7 +198,6 @@ pub(super) fn check(download: bool) -> bool {
                                     } else {
                                         super::restart_feedback::clear_pending();
                                     }
-                                    ANNOUNCE.store(true, Ordering::SeqCst);
                                     status::set(CheckStatus::Ready);
                                 }
                                 Err(error) => {

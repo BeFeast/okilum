@@ -123,9 +123,15 @@ ready notice, restart progress («Verifying…», «Downloading the latest updat
 window shows at most one update notice. A failure carries one action: Restart now
 while an update is ready, otherwise Check for Updates. No separate error toast.
 
-macOS announces each ready package by version. A newer package replaces the
-notice even after the user closed the older one; a closed notice does not
-return for the same package. Restart now never targets the package the notice
+Each platform announces its verified pending package in every Reader window,
+including inactive and newly opened windows (#2719). A window cannot consume
+another window's announcement. The identity includes the selected channel;
+macOS supplies its ready version, Windows its verified pending package identity,
+and Linux the signed channel/build/hash. Dismissal is local to that
+window/package; closed windows retain no announcement state. A newer package
+replaces the notice even after
+the user closed the older one; a closed notice does not return for the same
+package. Restart now never targets the package the notice
 was drawn for. If Sparkle has superseded it, the click's consent carries over
 to the newest update: the bridge reports «Downloading the latest update» in the
 same notice and restarts once that update has passed freshness verification and

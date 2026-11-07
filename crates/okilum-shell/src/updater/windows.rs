@@ -26,9 +26,6 @@ pub(super) fn ready_package() -> Option<String> {
 pub(super) fn ready() -> bool {
     ready_package().is_some()
 }
-pub(super) fn take_announcement() -> Option<String> {
-    state().lock().unwrap().take_announcement()
-}
 /// Installs the newest pending package, whichever notice was clicked (#2679).
 pub(super) fn restart(cx: &mut gpui::App) {
     if !available() {
