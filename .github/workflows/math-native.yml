@@ -85,7 +85,7 @@ jobs:
             OKILUM_WINDOWS_ICON="$(cygpath -w "$PWD/target/windows-dist/okilum.ico")"
             export OKILUM_WINDOWS_ICON
           fi
-          filters=(math_2596_)
+          filters=(math_2596_ math_2684_)
           if [[ "$RUNNER_OS" = macOS ]]; then
             filters+=(project::tests::connected_controls_collapse_until_details_is_requested)
           fi
@@ -96,6 +96,7 @@ jobs:
           done
           if [[ "$RUNNER_OS" = Windows ]]; then
             python3 scripts/ci/math-reader-check.py
+            python3 scripts/ci/math-environment-check.py
           fi
       - uses: actions/cache/save@v4
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' }}

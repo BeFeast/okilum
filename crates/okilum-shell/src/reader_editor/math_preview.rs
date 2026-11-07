@@ -188,7 +188,7 @@ fn glyph(text: &str, size: f32, italic: bool, bold: bool) -> Div {
 /// True when `nodes` stand taller than a line, so delimiters grow with them.
 fn tall(nodes: &[Node]) -> bool {
     nodes.iter().any(|node| match node {
-        Node::Frac { .. } => true,
+        Node::Frac { .. } | Node::Array { .. } => true,
         Node::Scripts { base, sub, sup } => {
             (base.class() == Class::Large && limits(base)) || (sub.is_some() && sup.is_some())
         }
@@ -216,6 +216,34 @@ fn element(node: &Node, size: f32, color: Hsla) -> AnyElement {
             glyph(text, size, italic, font.bold).into_any_element()
         }
         Node::Group(nodes) => row(nodes, size, color),
+        Node::Array { rows, columns } => {
+            let mut grid = div()
+                .grid()
+                .grid_cols_max_content(columns.len() as u16)
+                .items_center()
+                .gap_x(px(size * 0.6))
+                .gap_y(px(size * 0.2))
+                .flex_none()
+                .debug_selector(|| "math-array".into());
+            for (r, cells) in rows.iter().enumerate() {
+                for (c, alignment) in columns.iter().enumerate() {
+                    let cell = h_flex()
+                        .min_h(px(size * 1.25))
+                        .items_center()
+                        .when(*alignment == tex::Alignment::Left, |d| d.justify_start())
+                        .when(*alignment == tex::Alignment::Center, |d| d.justify_center())
+                        .when(*alignment == tex::Alignment::Right, |d| d.justify_end())
+                        .debug_selector(move || format!("math-array-cell-{r}-{c}"))
+                        .child(row(
+                            cells.get(c).map(Vec::as_slice).unwrap_or(&[]),
+                            size,
+                            color,
+                        ));
+                    grid = grid.child(cell);
+                }
+            }
+            grid.into_any_element()
+        }
         Node::Scripts { base, sub, sup } => {
             let small = scaled(size, SCRIPT);
             if limits(base) {

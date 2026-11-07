@@ -28,7 +28,29 @@ Point 14 of research #1537, accepted 2026-10-24. Live Preview draws inline
   Source mode and canonical Markdown bytes remain unchanged. Display math in
   a rendered callout uses that callout's existing source reveal boundary.
 - Unsupported display TeX retains its source and a visible error reason;
-  it never becomes an empty formula. The supported TeX subset is unchanged.
+  it never becomes an empty formula.
+
+## Alignment environments (#2684)
+
+Read, Live Preview and the caret card share native grids for `array` (`l`, `c`,
+`r` columns), `eqnarray`/`eqnarray*`, `aligned`, `align`/`align*`, `split`,
+`gather`/`gather*`, `gathered`, `equation`/`equation*`, `cases`, and the usual
+`matrix`, `pmatrix`, `bmatrix`, `Bmatrix`, `vmatrix`, `Vmatrix` forms. Both `\\`
+and `\cr` separate rows; `&` separates cells. Nested environments retain their
+own separators. Grids share column widths across rows and preserve empty cells.
+Eqnarray accepts additional alignment cells such as those in the reported
+formula, keeping every cell visible. Inline projection keeps row boundaries
+with semicolons and cell boundaries with commas; editing retains exact TeX.
+
+The existing 4 KiB/depth-24 limits apply, with additional limits of 32 columns,
+64 rows and 256 cells per environment. Column rules, custom column macros,
+row-height commands and unsupported environments remain visible source with an
+explicit reason. No external TeX process, network rendering or GPUI core patch.
+Native tests cover the reported arrays (both row separators) and five-column
+eqnarray, actual non-overlapping row/shared-column geometry, and CRLF Live
+Preview reveal without source changes. A compiled negative control restores
+the previous rejection of `\begin`, requires both native regressions to fail
+at runtime, then restores and reruns them.
 
 ## Conservative detection
 

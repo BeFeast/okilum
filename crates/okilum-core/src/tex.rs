@@ -9,6 +9,16 @@
 //! Unsupported syntax is an [`Error`] with a short message, never a guess.
 use std::ops::Range;
 
+mod environment;
+
+/// Horizontal alignment of a TeX array column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Alignment {
+    Left,
+    Center,
+    Right,
+}
+
 /// Formulas longer than this are left as source: inline math is short, and a
 /// pathological span must not cost more than the line it sits on.
 pub const MAX_FORMULA_BYTES: usize = 4 * 1024;
@@ -122,6 +132,11 @@ pub enum Node {
         mark: char,
         body: Vec<Node>,
     },
+    /// Rows of cells with shared column widths, including nested environments.
+    Array {
+        rows: Vec<Vec<Vec<Node>>>,
+        columns: Vec<Alignment>,
+    },
     /// Horizontal space in eighteenths of an em (TeX's `mu`).
     Space(u8),
 }
@@ -139,7 +154,9 @@ impl Node {
         match self {
             Node::Atom { class, .. } => *class,
             Node::Scripts { base, .. } => base.class(),
-            Node::Fenced { .. } | Node::Frac { .. } | Node::Sqrt { .. } => Class::Ord,
+            Node::Fenced { .. } | Node::Frac { .. } | Node::Sqrt { .. } | Node::Array { .. } => {
+                Class::Ord
+            }
             Node::Group(nodes) | Node::Accent { body: nodes, .. } => match nodes.as_slice() {
                 [only] => only.class(),
                 _ => Class::Ord,
@@ -172,6 +189,7 @@ enum End {
     Brace,
     Bracket,
     Right,
+    Cell,
 }
 
 struct Parser<'s> {
@@ -226,6 +244,8 @@ impl Parser<'_> {
                 (None, End::Eof) => break,
                 (None, End::Brace | End::Bracket) => return error("Missing closing brace"),
                 (None, End::Right) => return error("\\left without \\right"),
+                (None, End::Cell) => return error("Missing \\end for math environment"),
+                (Some('&'), End::Cell) => break,
                 (Some('}'), End::Brace) | (Some(']'), End::Bracket) => {
                     self.chars.next();
                     break;
@@ -247,6 +267,11 @@ impl Parser<'_> {
             if end == End::Right && self.at_command("right") {
                 break;
             }
+            if end == End::Cell
+                && (self.at_command("end") || self.at_command("cr") || self.at_command("\\"))
+            {
+                break;
+            }
             match self.item()? {
                 Some(node) => nodes.push(node),
                 None => continue,
@@ -261,7 +286,7 @@ impl Parser<'_> {
         let rest = self.chars.peek().map_or("", |&(at, _)| &self.source[at..]);
         rest.strip_prefix('\\')
             .and_then(|r| r.strip_prefix(name))
-            .is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_alphabetic()))
+            .is_some_and(|r| name == "\\" || !r.starts_with(|c: char| c.is_ascii_alphabetic()))
     }
 
     fn scripts(&mut self, base: Node) -> Result<Node, Error> {
@@ -360,6 +385,8 @@ impl Parser<'_> {
         };
         Ok(Some(match name.as_str() {
             "" => return error("Lone backslash"),
+            "begin" => self.environment()?,
+            "end" => return error("\\end without \\begin"),
             "frac" | "dfrac" | "tfrac" | "cfrac" => Node::Frac {
                 num: self.argument()?,
                 den: self.argument()?,
@@ -565,6 +592,11 @@ fn restyle(nodes: Vec<Node>, change: impl Fn(&mut Font) + Copy) -> Node {
                     .chain(index.iter_mut().flatten())
                     .for_each(|n| walk(n, change));
             }
+            Node::Array { rows, .. } => rows
+                .iter_mut()
+                .flatten()
+                .flatten()
+                .for_each(|n| walk(n, change)),
             Node::Space(_) => {}
         }
     }
@@ -972,6 +1004,22 @@ fn write_node(node: &Node, out: &mut Linear) {
             out.push(text, *font, matches!(class, Class::Var));
         }
         Node::Group(nodes) => write_row(nodes, out),
+        Node::Array { rows, .. } => {
+            // Inline rendering keeps a matrix's row/cell boundaries explicit.
+            out.plain("[");
+            for (r, cells) in rows.iter().enumerate() {
+                if r > 0 {
+                    out.plain("; ");
+                }
+                for (c, cell) in cells.iter().enumerate() {
+                    if c > 0 {
+                        out.plain(", ");
+                    }
+                    write_row(cell, out);
+                }
+            }
+            out.plain("]");
+        }
         Node::Scripts { base, sub, sup } => {
             write_node(base, out);
             if let Some(sub) = sub {

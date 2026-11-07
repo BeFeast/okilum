@@ -2012,6 +2012,32 @@ mod tests {
     }
 
     #[gpui::test]
+    fn math_2684_live_array_renders_and_reveals_unchanged_source(cx: &mut TestAppContext) {
+        let formula = "$$\r\n\\begin{array}{c}\r\ny_1 \\\\\r\ny_2 \\mathtt{t}_i \\\\\r\nz_{3,4}\r\n\\end{array}\r\n$$";
+        let note = format!("Before.\r\n\r\n{formula}\r\n\r\nEnd.\r\n");
+        let start = note.find("$$").unwrap();
+        let (_reader, input, visual, directory) = live_fixture(cx, &note);
+        assert!(visual.debug_bounds("reader-math-formula-0").is_some());
+        assert!(visual.debug_bounds("math-array-cell-2-0").is_some());
+        assert!(visual.debug_bounds("reader-math-error-0").is_none());
+        input.update(visual, |input, cx| {
+            input.set_selected_range(start + 2..start + 2, cx)
+        });
+        block_draw(visual);
+        assert!(visual.debug_bounds("reader-math-formula-0").is_none());
+        assert_eq!(input.read_with(visual, |i, _| i.value().to_string()), note);
+        input.update(visual, |input, cx| {
+            input.set_selected_range(note.len()..note.len(), cx)
+        });
+        block_draw(visual);
+        assert!(visual.debug_bounds("math-array-cell-2-0").is_some());
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
+            note
+        );
+    }
+
+    #[gpui::test]
     fn math_2596_live_display_renders_and_reveals_exact_source(cx: &mut TestAppContext) {
         for formula in ["$$\\frac{a}{b^2}$$", "$$\r\n\\sum_{i=1}^n i\r\n$$"] {
             let note = format!("Before $x^2$; pay $5 and $2$.\r\n\r\n{formula}\r\n\r\nEnd.\r\n");

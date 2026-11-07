@@ -375,6 +375,69 @@ mod tests {
     }
 
     #[gpui::test]
+    fn math_2684_read_renders_reported_array_rows_and_eqnarray_columns(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::test_init);
+        for (formula, row_count, col_count) in [
+            (
+                r"\begin{array}{c} y_1 \\ y_2 \mathtt{t}_i \\ z_{3,4} \end{array}",
+                3,
+                1,
+            ),
+            (
+                r"\begin{array}{c} y_1 \cr y_2 \mathtt{t}_i \cr y_{3} \end{array}",
+                3,
+                1,
+            ),
+            (
+                r"\begin{eqnarray} x' &=& &x \sin\phi &+& z \cos\phi \\ z' &=& - &x \cos\phi &+& z \sin\phi \\ \end{eqnarray}",
+                2,
+                5,
+            ),
+        ] {
+            let source = obsidian::before_links(&format!("$$\n{formula}\n$$\n"));
+            let (_, visual) = cx.add_window_view(|_, _| Fixture {
+                source,
+                clicked: Default::default(),
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                visual.debug_bounds("reader-math-formula-0").is_some(),
+                "{formula}"
+            );
+            assert!(visual.debug_bounds("reader-math-error-0").is_none());
+            let grid = visual
+                .debug_bounds("math-array")
+                .expect("actual array grid");
+            assert!(grid.size.height > px(BODY_FONT_SIZE * row_count as f32));
+            for r in 0..row_count {
+                for c in 0..col_count {
+                    let cell = visual
+                        .debug_bounds(sel(format!("math-array-cell-{r}-{c}")))
+                        .expect("every reported cell is laid out");
+                    assert!(cell.size.height > px(0.));
+                    if r > 0 {
+                        let above = visual
+                            .debug_bounds(sel(format!("math-array-cell-{}-{c}", r - 1)))
+                            .unwrap();
+                        assert!(cell.top() >= above.bottom(), "rows must not overlap");
+                        assert!(
+                            (cell.left() - above.left()).abs() < px(0.5),
+                            "column alignment"
+                        );
+                        assert!(
+                            (cell.size.width - above.size.width).abs() < px(0.5),
+                            "shared column widths"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
     fn corpus_note_renders_obsidian_blocks(cx: &mut gpui::TestAppContext) {
         cx.update(crate::test_init);
         let source = rendered_fixture();
