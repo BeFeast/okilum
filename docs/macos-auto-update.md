@@ -18,7 +18,7 @@ The application menu has **About Okilum**, **Check for Updates…** and
 **Receive Beta Builds**. Sparkle uses the public thirty-minute scheduled-check
 setting with two minutes of jitter. Stock Sparkle 2.10 clamps its timer to a
 minimum of one hour, so the shared scheduler also runs its silent metadata probe
-every 28–32 minutes. Window focus and application activation trigger discovery
+every 28–30 minutes. Window focus and application activation trigger discovery
 immediately, with a shared five-minute automatic-check throttle. Off disables
 both native scheduling and the shared automatic gate; explicit checks still
 work. No checks create Sparkle windows. See [update modes](update-modes.md).

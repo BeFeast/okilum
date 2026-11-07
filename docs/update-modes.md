@@ -5,7 +5,7 @@ application state, outside vaults and deletable indexes. Missing or legacy value
 migrate to Background. Saving is an atomic file replacement; failure leaves the
 previous in-memory choice and reports an inline error. Channels remain separate.
 
-| Mode | Startup, activation/focus, 28–32 minute timer | Available release | Install |
+| Mode | Startup, activation/focus, 28–30 minute timer | Available release | Install |
 | --- | --- | --- | --- |
 | Background (default) | Check, with the shared five-minute throttle | Download, then Update ready | Explicit Restart now |
 | Ask | Same automatic discovery | Version and Download update button | Explicit Restart now |

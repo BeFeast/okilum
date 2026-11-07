@@ -676,10 +676,10 @@ static void TSStart(NSBundle *bundle, TSUserDriver *driver, TSUpdaterDelegate *d
                                         userDriver:TSDriver delegate:TSDelegate];
     // Public setting, including existing installs with an older saved value.
     // Stock Sparkle 2.10 clamps scheduling to >=1 hour. Rust also drives silent
-    // metadata discovery every 28-32 minutes, without patching that minimum.
+    // metadata discovery every 28-30 minutes, without patching that minimum.
     TSUpdater.automaticallyChecksForUpdates = TSAutomaticChecks;
     TSUpdater.automaticallyDownloadsUpdates = NO; // use the guarded silent driver
-    TSUpdater.updateCheckInterval = 28 * 60 + arc4random_uniform(4 * 60 + 1);
+    TSUpdater.updateCheckInterval = 28 * 60 + arc4random_uniform(2 * 60 + 1);
     NSError *error = nil;
     if (![TSUpdater startUpdater:&error]) TSSend(2, error.localizedDescription);
 }
