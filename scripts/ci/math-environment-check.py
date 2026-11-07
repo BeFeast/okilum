@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the reported #2684 controls with the previous unsupported-begin path."""
+"""Require native runtime failures for both #2684 and #2698 old parser paths."""
 from pathlib import Path
 import subprocess
 
@@ -19,24 +19,27 @@ def run(*args):
 def main():
     path = ROOT / 'crates/okilum-core/src/tex.rs'
     original = path.read_bytes()
-    # Keep the parser implementation compiled (including warnings-as-errors)
-    # while reproducing the old renderer's rejection of every \\begin token.
-    before = b'"begin" => self.environment()?,'
-    assert original.count(before) == 1
-    try:
-        path.write_bytes(original.replace(before, b'"begin" if false => self.environment()?,', 1))
-        inventory = run('--list')
-        assert inventory.returncode == 0, 'negative controls must compile'
-        assert inventory.stdout.count(': test\n') == 2, 'both native controls must be discovered'
-        result = run('--nocapture', '--test-threads=1')
-        assert result.returncode != 0
-        assert 'test result: FAILED. 0 passed; 2 failed;' in result.stdout, (
-            'require two actual runtime failures, never compile/infra failures')
-        print('MATH_ENVIRONMENT_NEGATIVE_PASS', flush=True)
-    finally:
-        path.write_bytes(original)
-    assert run('--nocapture', '--test-threads=1').returncode == 0
-    print('MATH_ENVIRONMENT_RESTORED_PASS', flush=True)
+    controls = [
+        ('ENVIRONMENT', b'"begin" => self.environment()?,',
+         b'"begin" if false => self.environment()?, '),
+        ('CONTROL_SPACE', rb'" " | "\n" | "\r" | "\t" => 6,', b'" " => 6,'),
+    ]
+    for name, before, old in controls:
+        assert original.count(before) == 1
+        try:
+            path.write_bytes(original.replace(before, old, 1))
+            inventory = run('--list')
+            assert inventory.returncode == 0, 'negative controls must compile'
+            assert inventory.stdout.count(': test\n') == 2, 'both native controls must be discovered'
+            result = run('--nocapture', '--test-threads=1')
+            assert result.returncode != 0
+            assert 'test result: FAILED. 0 passed; 2 failed;' in result.stdout, (
+                'require two actual runtime failures, never compile/infra failures')
+            print(f'MATH_{name}_NEGATIVE_PASS', flush=True)
+        finally:
+            path.write_bytes(original)
+        assert run('--nocapture', '--test-threads=1').returncode == 0
+        print(f'MATH_{name}_RESTORED_PASS', flush=True)
 
 
 if __name__ == '__main__':

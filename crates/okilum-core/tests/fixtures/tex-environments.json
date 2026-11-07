@@ -74,5 +74,9 @@
   {
     "name": "rcases",
     "tex": "\\begin{rcases}a&\\text{if }b\\\\c&\\text{if }d\\end{rcases}"
+  },
+  {
+    "name": "reported-jupyter-triple-backslash-newline",
+    "tex": "\\begin{array}{c}\ny_1 \\\\\\\ny_2 \\mathtt{t}_i \\\\\\\nz_{3,4}\n\\end{array}"
   }
 ]

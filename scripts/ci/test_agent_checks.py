@@ -19,6 +19,10 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("gh_check", ROOT / "scripts/agent/gh_check.py")
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
+workspace_spec = importlib.util.spec_from_file_location(
+    "workspace_tests", ROOT / "scripts/ci/workspace-rust-tests.py")
+workspace = importlib.util.module_from_spec(workspace_spec)
+workspace_spec.loader.exec_module(workspace)
 SHA = "a" * 40
 
 
@@ -188,17 +192,42 @@ class HelperFlowTests(unittest.TestCase):
         self.assertIn("python3 -m unittest discover -s scripts/ci", linux)
         self.assertIn("bash scripts/ci/linux-rust-tests.sh", linux)
         for command in ("cargo test -p okilum-appimage --all-features",
-                        "cargo test -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3",
                         "bash scripts/ci/vendor-tests.sh",
                         "cargo test -p okilum-core --no-default-features --test portable_reader"):
             self.assertIn(command, suites)
+        self.assertIn("suite workspace-full 1320 python3 scripts/ci/workspace-rust-tests.py", suites)
+        self.assertEqual(workspace.COMMAND[:3], ["cargo", "test", "--locked"])
+        self.assertEqual([workspace.COMMAND[i + 1] for i, arg in enumerate(workspace.COMMAND)
+                          if arg == "-p"],
+                         ["okilum-core", "okilum-shell", "okilum-sync", "okilum-t3"])
+        self.assertEqual(workspace.COMMAND[-2:], ["--no-fail-fast", "--"])
+
+    def test_workspace_census_rejects_missing_failed_and_unfired_controls(self):
+        # Real harness shapes, including a child verdict before its parent.
+        lines = ["Running unittests src/lib.rs (fixture)\n",
+                 "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 998 filtered out;\n",
+                 "test result: ok. 982 passed; 0 failed; 17 ignored; 0 measured; 0 filtered out;\n",
+                 "Running tests/fixture.rs (fixture)\n",
+                 "test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out;\n"]
+        for text, status, expected, accepted in [
+            (lines, 0, 1006, True),
+            (lines[:2] + lines[3:], 0, 1006, False),  # missing parent verdict
+            (lines, 0, 1007, False),  # missing case
+            (lines, 1, 1006, False),  # real command failure
+            (["test result: ok. 0 passed; 0 failed; 1 ignored;\n"], 0, 1, False),
+        ]:
+            process = type("Process", (), {"stdout": iter(text), "wait": lambda self: status})()
+            with patch.object(workspace.subprocess, "Popen", return_value=process), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(workspace.run("fixture", [], expected), accepted)
 
     def test_linux_suites_keep_the_first_failure_and_still_execute_later_checks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             scripts = root / 'scripts/ci'
             scripts.mkdir(parents=True)
-            for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py'):
+            for name in ('linux-rust-tests.sh', 'test-nofile.sh', 'test-group.sh', 'test-group.py',
+                         'workspace-rust-tests.py'):
                 shutil.copy2(ROOT / 'scripts/ci' / name, scripts / name)
             # This control measures command inventory and first-failure retention,
             # not process supervision. Record every wrapper invocation and run
@@ -216,6 +245,13 @@ class HelperFlowTests(unittest.TestCase):
                              'echo "$* sprint=${OKILUM_SPRINT_BUILD:-0}" >> "$CALL_LOG"\n'
                              'if [[ "$FAIL_FIRST" = 1 && ! -e "$FAIL_MARKER" ]]; then\n'
                              '  touch "$FAIL_MARKER"; exit 7\n'
+                             'fi\n'
+                             'if [[ " $* " == *" -p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3 "* ]]; then\n'
+                             '  if [[ " $* " == *" --list "* ]]; then\n'
+                             '    printf "ordinary::sample: test\\nreader_log::sample: test\\nplatform::reveal::tests::sample: test\\n"\n'
+                             '  else\n'
+                             '    printf "Running unittests src/lib.rs (stub)\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\\n"\n'
+                             '  fi\n'
                              'fi\n')
             cargo.chmod(0o755)
             # The shared suite also runs web reachability checks. Stub every
@@ -238,7 +274,14 @@ class HelperFlowTests(unittest.TestCase):
                 self.assertIn('vendor-tests', calls)
                 self.assertIn('sidecar::macos::preparation::', calls[-1])
                 wrapped = groups.read_text().splitlines()
-                self.assertEqual(len(wrapped), len(calls))
+                workspace_calls = [call for call in calls if
+                                   '-p okilum-core -p okilum-shell -p okilum-sync -p okilum-t3' in call]
+                self.assertEqual(len(workspace_calls), 4)  # census + three disjoint runs
+                self.assertIn('--list', workspace_calls[0])
+                self.assertIn('--skip reader_log --skip platform::reveal::tests::', workspace_calls[1])
+                self.assertIn('reader_log --nocapture --test-threads=1', workspace_calls[2])
+                self.assertIn('platform::reveal::tests:: --nocapture --test-threads=1', workspace_calls[3])
+                self.assertEqual(len(wrapped) + 3, len(calls))
                 self.assertIn('issue2049 120', wrapped)
                 self.assertEqual(wrapped[-1], 'sidecar-macos-preparation 120')
                 counts.append(len(calls))

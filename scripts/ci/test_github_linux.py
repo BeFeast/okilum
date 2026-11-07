@@ -258,8 +258,15 @@ class LinuxBridgeTests(unittest.TestCase):
         script = (ROOT / 'scripts/ci/check-linux.sh').read_text()
         self.assertIn('bash scripts/ci/linux-rust-tests.sh', script)
         script += (ROOT / 'scripts/ci/linux-rust-tests.sh').read_text()
+        self.assertIn('suite workspace-full 1320 python3 scripts/ci/workspace-rust-tests.py', script)
+        workspace_spec = importlib.util.spec_from_file_location(
+            'workspace_tests', ROOT / 'scripts/ci/workspace-rust-tests.py')
+        workspace = importlib.util.module_from_spec(workspace_spec)
+        workspace_spec.loader.exec_module(workspace)
+        self.assertEqual(workspace.COMMAND, [
+            'cargo', 'test', '--locked', '-p', 'okilum-core', '-p', 'okilum-shell',
+            '-p', 'okilum-sync', '-p', 'okilum-t3', '--no-fail-fast', '--'])
         for command in ['cargo fmt --check', 'cargo clippy --workspace --all-targets -- -D warnings',
-                        'cargo test -p okilum-core -p okilum-shell -p okilum-sync',
                         'cargo check -p okilum-shell --no-default-features',
                         'cargo test -p okilum-core --no-default-features --test portable_reader',
                         'python3 scripts/test-maintenance-matrix.py', 'python3 scripts/brand-assets.py verify',
