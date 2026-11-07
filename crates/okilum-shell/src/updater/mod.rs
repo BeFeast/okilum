@@ -12,7 +12,7 @@ mod restart_feedback;
 #[cfg(any(target_os = "linux", windows, test))]
 mod restart_intent;
 mod scheduler;
-pub(crate) use policy::{Mode, mode};
+pub(crate) use policy::{mode, Mode};
 pub(crate) mod status;
 pub(crate) mod whats_new;
 #[cfg(windows)]

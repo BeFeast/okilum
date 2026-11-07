@@ -6,8 +6,8 @@
 //! update notice and a newer message replaces the older one in place.
 use gpui::App;
 use std::sync::{
-    Mutex,
     atomic::{AtomicBool, Ordering},
+    Mutex,
 };
 
 static TRACE: Mutex<Option<crate::reader_diagnostics::Trace>> = Mutex::new(None);
@@ -175,7 +175,7 @@ pub(super) fn show_ready(
 ) {
     use gpui::InteractiveElement as _;
     use gpui_component::button::Button;
-    use gpui_component::{Sizable, WindowExt, notification::Notification};
+    use gpui_component::{notification::Notification, Sizable, WindowExt};
     use std::rc::Rc;
     let restart = Rc::new(restart);
     window.defer(cx, move |window, cx| {
@@ -201,7 +201,7 @@ pub(super) fn show_ready(
 fn show_message(window: &mut gpui::Window, cx: &mut App, message: Message) {
     use gpui::InteractiveElement as _;
     use gpui_component::button::Button;
-    use gpui_component::{Sizable, WindowExt, notification::Notification};
+    use gpui_component::{notification::Notification, Sizable, WindowExt};
     let mut notice = Notification::new()
         .id::<UpdateNotice>()
         .message(message.text)
@@ -334,12 +334,10 @@ mod tests {
                 "refused"
             ]
         );
-        assert!(
-            events.last().unwrap()["details"]["reason"]
-                .as_str()
-                .unwrap()
-                .contains("latest edits could not be protected")
-        );
+        assert!(events.last().unwrap()["details"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("latest edits could not be protected"));
         *TRACE.lock().unwrap() = None;
     }
 
