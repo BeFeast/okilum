@@ -36,6 +36,7 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     }
     cx.update(|cx| {
         crate::test_init(cx);
+        reader_ui_state::install(&dir.path().join("state"), cx);
         bind_keys(cx);
     });
     let mut reader = None;
@@ -124,6 +125,11 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     let original_text_zoom = visual.update(|_, cx| {
         let zoom = reader_ui_state::text_zoom(cx);
         reader_ui_state::set_text_zoom(3., cx);
+        assert_eq!(
+            reader_ui_state::text_zoom(cx),
+            3.,
+            "the zoom-limit control must be active"
+        );
         zoom
     });
     let before = view.read_with(visual, |v, _| v.view.scale);

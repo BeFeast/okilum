@@ -51,6 +51,17 @@ jobs:
           python3 scripts/updater/sparkle.py fetch "$archive"
           python3 scripts/updater/sparkle.py prepare --archive "$archive" --destination vendor/sparkle
           printf 'DYLD_FRAMEWORK_PATH=%s/vendor/sparkle\n' "$PWD" >> "$GITHUB_ENV"
+      - name: Prepare Windows test resource
+        # The shell embeds an icon even in test binaries. Reuse the existing
+        # synthetic native-test resource; this job never ships an application.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $icon = python -c "import pathlib,tempfile; print(pathlib.Path(tempfile.mkdtemp(prefix='viewers-icon-')) / 'test.ico')"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/ci/test-icon.py $icon
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "OKILUM_WINDOWS_ICON=$icon" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Decode and playback-state controls
         shell: bash
         run: python scripts/ci/viewers-native-check.py audio
