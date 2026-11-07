@@ -19,12 +19,25 @@ Restart keeps editor protection, state persistence, freshness/channel admission,
 and window restoration from #2387. Existing channel migration from #2369/#2457
 and Linux launcher downgrade protection remain in force.
 
-Linux stages a verified image under the existing installation lock, and never
-restages an image retained at Ready, even after another manual check. Cancellation
+Linux keeps checking metadata at Ready. An unchanged signed release retains its
+verified stage without reacquiring its installation lock or downloading again.
+A newer offer discards the superseded unarmed stage, then reacquires the same
+installation lock and rechecks the original inode/hash before preparing the new
+payload. Conflicting signed identities for the same build remain a visible error.
+Cancellation
 is observed between payload chunks and before publishing Ready. Dropping the
 unarmed stage removes partial bytes and releases the lock; original executable,
 launchers and applied-update receipt are untouched. Startup confirmation still
 precedes any recovery or update request. The acceptance harness remains isolated.
+
+Windows selects the newest release before admitting a pending package, even when
+the previous version is still listed in the feed. Its verification receipt binds
+channel, version, the local package digest and the offered full-archive digest.
+This preserves a valid SDK delta reconstruction, whose ZIP bytes differ from the
+published full archive, without admitting a changed local file, another version
+or channel, or a conflicting published identity. Missing/legacy receipts retain
+only an original full archive matching the offer; other packages are downloaded
+again automatically.
 
 Windows passes cancellation to the existing HTTP UpdateSource. A cancelled
 stream removes its partial package, and completion is serialized with cancellation
@@ -121,3 +134,29 @@ intent ends on cancel, verification timeout, a download or verification failure
 (shown in the notice), or when no newer update exists. Windows restarts into
 the newest pending package verified for the current channel. Linux stages only
 one AppImage at a time.
+
+An empty Sparkle termination-retry callback is actionable waiting, rather than
+proof that Restart failed (#2709). GPUI can still be completing an asynchronous
+quit at that point. The single notice says that restart is finishing and keeps
+later install outcomes active. A callback carrying an actual refusal reason
+still reports that reason as a failure; freshness and editor guards are unchanged.
+
+## A newer beta while Ready (#2706)
+
+Linux and Windows continue due/focus discovery while retaining a downloaded
+update. The same offer keeps its package and dismissed-notice state; a newer
+offer replaces the old stage and the single notice. Background mode downloads
+it immediately; Ask exposes the newer offer without installing or downloading.
+The installed executable and canonical notes remain untouched during replacement.
+
+Restart now on these platforms first rechecks the latest offer asynchronously.
+One explicit click carries through a superseding download, including Ask/Off
+mode, then runs the final editor/state guards and normal platform restart.
+Repeated clicks share the request. Failure, cancellation or withdrawal revokes
+that request; a later Ready event cannot install without a new click. Ordinary
+startup and Quit still authorize no installation. Queued replacement progress
+cannot overwrite the newest Ready notice or its Restart action.
+
+The explicit non-shipping AppImage acceptance fixture retains its isolated local
+trust and never requests a production feed. Production-feed beta acceptance is
+recorded separately from that fixture.

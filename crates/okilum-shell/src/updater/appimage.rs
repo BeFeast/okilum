@@ -14,6 +14,7 @@ static BUSY: AtomicBool = AtomicBool::new(false);
 static STARTUP_CONFIRMED: AtomicBool = AtomicBool::new(false);
 static CHANNEL: Mutex<Option<Channel>> = Mutex::new(None);
 static PENDING: Mutex<Option<okilum_appimage::Staged>> = Mutex::new(None);
+static RESTART: super::restart_intent::RestartIntent = super::restart_intent::RestartIntent::new();
 
 fn preference() -> anyhow::Result<PathBuf> {
     Ok(crate::reader_history::state_directory()?.join("appimage-update-channel"))
@@ -49,6 +50,8 @@ pub(super) fn set_beta(enabled: bool) {
             Channel::Stable
         };
         channel::save(&preference()?, chosen)?;
+        RESTART.cancel();
+        super::restart_feedback::clear_pending();
         *CHANNEL.lock().unwrap() = Some(chosen);
         *PENDING.lock().unwrap() = None;
         status::set(CheckStatus::Idle);
@@ -81,7 +84,7 @@ pub(super) fn start() {
     }
 }
 pub(super) fn check(download: bool) -> bool {
-    if ready() || !packaged()
+    if !packaged()
         // A focus event can arrive before the receipt writer. Do not recover
         // an update that this process has not yet confirmed (#2387/#2455).
         || (std::env::var_os("OKILUM_APPIMAGE_UPDATE_RECEIPT").is_some()
@@ -92,8 +95,10 @@ pub(super) fn check(download: bool) -> bool {
     {
         return false;
     }
+    let download = download || RESTART.requested();
     status::set(CheckStatus::Checking);
     std::thread::spawn(move || {
+        let mut replacing = false;
         let result = (|| -> anyhow::Result<()> {
             okilum_appimage::recover_interrupted()?;
             let target = okilum_appimage::Target::detect()?;
@@ -112,9 +117,49 @@ pub(super) fn check(download: bool) -> bool {
             let beta = chosen == Channel::Beta;
             match okilum_appimage::check(beta, current, &verifier)? {
                 Some(release) => {
+                    // A retained stage owns the install lock. Rechecking an
+                    // unchanged signed identity must neither acquire it again
+                    // nor download the archive again (#2706).
+                    if PENDING
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .is_some_and(|staged| staged.release() == &release)
+                    {
+                        super::restart_feedback::clear_pending();
+                        status::set(CheckStatus::Ready);
+                        return Ok(());
+                    }
+                    {
+                        let mut pending = PENDING.lock().unwrap();
+                        replacing = pending.is_some();
+                        // Keep the authenticated old identity as evidence of
+                        // the conflict. Neither a retry nor a timer can silently
+                        // choose different bytes for that same build.
+                        anyhow::ensure!(
+                            !pending.as_ref().is_some_and(|staged| staged.release().build == release.build),
+                            "The signed identity for this update build changed. Check for updates again"
+                        );
+                        *pending = None;
+                    }
+                    // Dropping an unarmed superseded stage releases its lock.
+                    // The next prepare reacquires it and rechecks the original
+                    // inode/hash before any payload or installation work.
                     if !download {
                         status::set(CheckStatus::Available(release.version.clone()));
+                        if replacing {
+                            super::restart_feedback::offer(format!(
+                                "An update ({}) is available. Download it to update.",
+                                release.version
+                            ));
+                        }
                         return Ok(());
+                    }
+                    if replacing {
+                        super::restart_feedback::notify(
+                            "downloading",
+                            "Downloading the latest update…",
+                        );
                     }
                     let token = super::policy::DOWNLOAD.begin();
                     status::set(CheckStatus::Downloading(Some(0)));
@@ -137,37 +182,116 @@ pub(super) fn check(download: bool) -> bool {
                             status::set(CheckStatus::Note(
                                 "Update cancelled. Nothing was installed.".into(),
                             ));
+                            if replacing {
+                                super::restart_feedback::offer(
+                                    "Update cancelled. Nothing was installed.",
+                                );
+                            }
                         } else {
                             match staged {
                                 Ok(staged) => {
                                     *PENDING.lock().unwrap() = Some(staged);
+                                    if replacing {
+                                        super::restart_feedback::latest_ready();
+                                    } else {
+                                        super::restart_feedback::clear_pending();
+                                    }
                                     ANNOUNCE.store(true, Ordering::SeqCst);
                                     status::set(CheckStatus::Ready);
                                 }
-                                Err(error) => status::set(CheckStatus::Failed(format!(
-                                    "{error}. The original AppImage has been retained."
-                                ))),
+                                Err(error) => {
+                                    let reason = format!(
+                                        "{error}. The original AppImage has been retained."
+                                    );
+                                    status::set(CheckStatus::Failed(reason.clone()));
+                                    if replacing {
+                                        super::restart_feedback::refused(reason);
+                                    }
+                                }
                             }
                         }
                     });
                 }
                 None => {
+                    if PENDING.lock().unwrap().take().is_some() {
+                        super::restart_feedback::offer(
+                            "The update offer changed. No newer update is currently available.",
+                        );
+                    }
                     status::set(CheckStatus::UpToDate(std::time::SystemTime::now()));
                 }
             }
             Ok(())
         })();
         if let Err(error) = result {
-            status::set(CheckStatus::Failed(format!(
-                "{error}. The original AppImage has been retained."
-            )));
+            let reason = format!("{error}. The original AppImage has been retained.");
+            status::set(CheckStatus::Failed(reason.clone()));
+            if replacing {
+                super::restart_feedback::refused(reason);
+            }
         }
         BUSY.store(false, Ordering::SeqCst);
     });
     true
 }
 pub(super) fn restart(cx: &mut gpui::App) {
+    if !crate::linux_sprint::allows_updates() {
+        super::restart_feedback::refused(
+            "Updates are disabled for this Sprint. Open the installed AppImage to update.",
+        );
+        return;
+    }
+    #[cfg(feature = "appimage-acceptance-harness")]
+    if crate::appimage_acceptance::active() {
+        // This explicit non-shipping fixture owns local disposable-key trust;
+        // it must never make a production-feed request.
+        super::restart_feedback::attempt();
+        restart_verified(cx);
+        return;
+    }
+    if !packaged() {
+        super::restart_feedback::refused("Open the installed AppImage to update.");
+        return;
+    }
+    if !RESTART.request() {
+        return;
+    }
     super::restart_feedback::attempt();
+    super::restart_feedback::notify("verifying", "Checking the latest update before restarting…");
+    // Explicit restart authorizes downloading a superseding update, including
+    // Ask/Off mode. The final editor/state guards still run on the UI thread.
+    if !check(true) && !BUSY.load(Ordering::SeqCst) {
+        RESTART.cancel();
+        super::restart_feedback::refused(
+            "The update could not be checked. Choose Restart now to retry.",
+        );
+        return;
+    }
+    finish_requested_restart(cx);
+}
+
+pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
+    use super::restart_intent::Next;
+    match RESTART.poll(BUSY.load(Ordering::SeqCst), status::get()) {
+        Next::Wait => {}
+        Next::Download => {
+            super::restart_feedback::notify("downloading", "Downloading the latest update…");
+            check(true);
+        }
+        Next::Apply => restart_verified(cx),
+        Next::Refuse(reason) => super::restart_feedback::refused(reason),
+    }
+}
+
+pub(super) fn cancel_requested_restart() {
+    let requested = RESTART.requested();
+    RESTART.cancel();
+    if requested {
+        super::restart_feedback::offer("Restart cancelled. Nothing was installed.");
+    }
+}
+
+fn restart_verified(cx: &mut gpui::App) {
     if !crate::linux_sprint::allows_updates() {
         super::restart_feedback::refused(
             "Updates are disabled for this Sprint. Open the installed AppImage to update.",
@@ -262,13 +386,16 @@ mod restart_tests {
     use super::*;
 
     #[gpui::test]
-    fn busy_restart_reports_a_retry_reason_without_arming_or_quitting(
+    fn busy_verified_restart_reports_a_retry_reason_without_arming_or_quitting(
         cx: &mut gpui::TestAppContext,
     ) {
         let _guard = super::super::restart_feedback::TEST_LOCK.lock().unwrap();
         cx.update(crate::test_init);
         assert!(!BUSY.swap(true, Ordering::SeqCst));
-        cx.update(restart);
+        // The final install guard still refuses a competing operation. The
+        // public Restart entry now carries consent through discovery first;
+        // its queued/busy behavior is covered by restart_intent controls.
+        cx.update(restart_verified);
         BUSY.store(false, Ordering::SeqCst);
         assert!(super::super::restart_feedback::pending_message()
             .is_some_and(|reason| reason.contains("busy") && reason.contains("Restart now again")));

@@ -22,7 +22,7 @@ const IMAGE: &str = "Okilum-x86_64.AppImage";
 const MAX_IMAGE: u64 = 2 * 1024 * 1024 * 1024;
 const KEY: &str = include_str!("../../../scripts/arch/okilum-signing-key.asc");
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Release {
     pub schema: u64,
     pub platform: String,
@@ -435,6 +435,11 @@ pub struct Staged {
     _lock: File,
 }
 impl Staged {
+    /// Identity authenticated before this unarmed stage was published Ready.
+    pub fn release(&self) -> &Release {
+        &self.release
+    }
+
     pub fn prepare(target: Target, release: Release, beta: bool, gpgv: &Path) -> Result<Self> {
         release.validate(if beta { "beta" } else { "stable" })?;
         Self::prepare_with(target, release, gpgv, KEY, FINGERPRINT, download)
