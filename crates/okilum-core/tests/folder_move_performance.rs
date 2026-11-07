@@ -26,8 +26,10 @@ fn folder_move_2682_link_dense_preview_and_exact_undo() {
         )
         .unwrap();
     }
+    // Explicit relative links require a rewrite for rename AND move. Bare suffix
+    // wiki links can correctly remain unchanged when a folder gains a parent.
     let source = ("---\r\ntitle: Keep this property\r\n---\r\n\r\n".to_owned()
-        + &"See [[AQA/Note-00|target]] and [[AQA/Note-01|second]].\r\n".repeat(20)
+        + &"See [[../AQA/Note-00|target]] and [[../AQA/Note-01|second]].\r\n".repeat(20)
         + "\r\n`[[AQA/Note-00]]` stays literal.\r\n")
         .into_bytes();
     for n in 0..277 {
@@ -66,12 +68,12 @@ fn folder_move_2682_link_dense_preview_and_exact_undo() {
         let expected = String::from_utf8(source.clone())
             .unwrap()
             .replace(
-                "[[AQA/Note-00|target]]",
-                &format!("[[{destination}/Note-00|target]]"),
+                "[[../AQA/Note-00|target]]",
+                &format!("[[../{destination}/Note-00|target]]"),
             )
             .replace(
-                "[[AQA/Note-01|second]]",
-                &format!("[[{destination}/Note-01|second]]"),
+                "[[../AQA/Note-01|second]]",
+                &format!("[[../{destination}/Note-01|second]]"),
             );
         for n in 0..277 {
             assert_eq!(
