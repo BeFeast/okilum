@@ -48,7 +48,14 @@ opened that geometry as an AppKit content rect and unconditionally called native
 `zoom:` (`gpui-pre-0.3.3/src/window.rs`, `Window::new` →
 `gpui-pre-macos-0.3.3/src/window.rs`, `MacWindow::open` / `zoom`). The measured
 result on M4 was `(0,30) 1580×850` instead of `(0,30) 1600×870`. AppKit's Zoom
-standard frame is not a contract to fill `visibleFrame`.
+standard frame is not a contract to fill `visibleFrame`. A disposable interpreted
+AppKit probe on Oleg's M4 (macOS 27.2, scale 1) reproduced the exact transition:
+a hidden full-size window already has `isZoomed=true`; the unconditional
+`zoom:nil` toggles it off, returning bottom-left `(0,20) 1580×850`, equivalent
+to top-left `(0,30) 1580×850`. `setFrame:visibleFrame` returns `(0,0) 1600×870`
+in AppKit coordinates. `maxSize` / `contentMaxSize` remain unbounded, so this is
+an unzoom transition, not a maximum-size clamp. Scoped native evidence lives at
+`~/work/qa-evidence/okilum-window-fill/` and the shared DropBox screenshot folder.
 
 There is no 20-point restore inset in the shell or these GPUI paths. The #1007
 first-window fallback only shrinks/centers a preferred size in the visible area;
