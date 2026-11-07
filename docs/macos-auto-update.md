@@ -69,6 +69,17 @@ and its signature stay the same.
 The hand-built 4791/4792 releases accept only Forgejo asset URLs and cannot use the
 public feed; install a current ZIP by hand once.
 
+## Isolated Reader profiles
+
+An explicit `OKILUM_STATE_DIR` starts an isolated Reader profile and disables
+the native updater (#2723). A copied signed QA bundle still has the production
+`CFBundleIdentifier`; Sparkle keys its installer connection by that identity,
+not by the Reader profile. Letting both copies update can retain the same helper
+and reject the installed app's Restart with “multiple XPC connections”. Use the
+normal installed profile for production beta update acceptance. Native updater
+fixtures use their own bundle identities and local feeds. Isolated Reader tests
+must not acquire the production installation or change its update preferences.
+
 ## Rolling back
 
 Sparkle does not downgrade. Each build stays a separate release: download the ZIP
