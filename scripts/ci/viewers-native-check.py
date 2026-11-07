@@ -8,6 +8,7 @@ GROUPS = {
         "real_sink_controls_pause_seek_volume_end_and_replay",
     ]),
     "media": ("okilum-shell", None, "reader_media::tests", [
+        "media_file_urls_share_the_canonical_vault_identity_and_reject_outside_files",
         "video_extensions_do_not_capture_audio_or_images",
         "video_card_only_opens_its_checked_file_after_an_explicit_click",
         "showcase_images_use_the_shipping_decoder_and_apply_exif",

@@ -342,12 +342,14 @@ pub(super) fn inline(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let Ok(relative) = path.strip_prefix(&root) else {
-        return div()
-            .child("Audio is outside this vault")
-            .into_any_element();
+    let rel = match reader_media::relative_file(&root, &path) {
+        Ok(relative) => relative,
+        Err(error) => {
+            return div()
+                .child(format!("Cannot open audio: {error}"))
+                .into_any_element()
+        }
     };
-    let rel = relative.to_string_lossy().into_owned();
     // Window keyed state is dropped when the embed stops rendering: the sender
     // disconnects, so its worker drops both sink and device. No global player cache.
     window
