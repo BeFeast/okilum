@@ -37,6 +37,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: native-viewers-v1
+          cache-on-failure: true
       - name: Prepare and verify pinned vendor
         shell: bash
         run: |

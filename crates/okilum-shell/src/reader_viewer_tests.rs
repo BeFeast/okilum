@@ -10,6 +10,8 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("vault");
     std::fs::create_dir_all(root.join("canvas")).unwrap();
+    // Match production vault admission, including macOS /var -> /private/var.
+    let root = root.canonicalize().unwrap();
     let canvas = include_bytes!("../../okilum-core/tests/fixtures/viewers/canvas/read-only.canvas");
     std::fs::write(root.join("canvas/read-only.canvas"), canvas).unwrap();
     std::fs::write(

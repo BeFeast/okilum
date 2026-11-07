@@ -131,7 +131,7 @@ impl CanvasView {
                     Button::new("canvas-open-note")
                         .small()
                         .label("Open note")
-                        .debug_selector(move || selector.clone().into())
+                        .debug_selector(move || selector.clone())
                         .on_click(move |_, window, cx| handle_link(&reader, &url, window, cx)),
                 );
                 if resolved.status != "resolved" && resolved.status != "attachment" {
