@@ -152,8 +152,20 @@ mod tests {
         let source = r"\mathbf{\begin{pmatrix} a & \frac{1}{2} \\ \begin{array}{lr} x & y \end{array} & b \end{pmatrix}}";
         assert!(parse(source).is_ok());
         let rendered = linear(source).unwrap();
-        assert!(rendered.text.contains("a, ½; [x, y], b"), "{rendered:?}");
-        assert!(!rendered.runs.is_empty());
+        // The existing linear renderer retains individually styled numerator
+        // and denominator glyphs instead of collapsing bold 1/2 into plain ½.
+        assert_eq!(rendered.text, "([a, 1/2; [x, y], b])");
+        assert_eq!(
+            rendered
+                .runs
+                .iter()
+                .map(|run| {
+                    assert!(run.bold && !run.italic);
+                    &rendered.text[run.range.clone()]
+                })
+                .collect::<Vec<_>>(),
+            ["a", "1", "2", "x", "y", "b"]
+        );
     }
 
     #[test]
