@@ -416,7 +416,7 @@ pub(crate) fn restart_now(cx: &mut App) {
     #[cfg(target_os = "linux")]
     appimage::restart(cx);
     #[cfg(windows)]
-    windows::restart(None, cx);
+    windows::restart(cx);
     #[cfg(target_os = "macos")]
     macos::restart(cx);
     let _ = cx;
@@ -430,7 +430,7 @@ pub(crate) fn activate(cx: &mut App) {
     }
     #[cfg(windows)]
     if windows::ready() {
-        windows::restart(None, cx);
+        windows::restart(cx);
         return;
     }
     #[cfg(target_os = "macos")]
@@ -448,29 +448,29 @@ pub(crate) fn install_update() {
 }
 
 pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
+    // Every platform's notice restarts into the newest ready update, not the
+    // package that was current when the notice was drawn (#2679).
     #[cfg(target_os = "linux")]
     if window.is_window_active() && appimage::take_announcement() {
-        show_ready_notice(window, cx, appimage::restart);
+        show_ready_notice(window, cx, restart_now);
     }
     whats_new::notice(window, cx);
     #[cfg(windows)]
-    if window.is_window_active() {
-        if let Some(id) = windows::take_announcement() {
-            show_ready_notice(window, cx, move |cx| windows::restart(Some(&id), cx));
-        }
+    if window.is_window_active() && windows::take_announcement().is_some() {
+        show_ready_notice(window, cx, restart_now);
     }
     #[cfg(target_os = "macos")]
     {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static ANNOUNCED: AtomicBool = AtomicBool::new(false);
-        if !matches!(
-            status::get(),
-            status::CheckStatus::Ready | status::CheckStatus::RestartRetry(_)
-        ) {
-            ANNOUNCED.store(false, Ordering::Relaxed);
-        } else if window.is_window_active() && !ANNOUNCED.swap(true, Ordering::Relaxed) {
-            show_ready_notice(window, cx, macos::restart);
-        }
+        static ANNOUNCED: Mutex<restart_feedback::Announced> =
+            Mutex::new(restart_feedback::Announced::new());
+        announce_ready(
+            &mut ANNOUNCED.lock().unwrap(),
+            &status::get(),
+            macos::ready_package().as_deref(),
+            window,
+            cx,
+            restart_now,
+        );
     }
     #[cfg(all(target_os = "linux", feature = "updater-ui-harness"))]
     {
@@ -485,39 +485,42 @@ pub(crate) fn ready_notice(window: &mut gpui::Window, cx: &mut App) {
     let _ = (window, cx);
 }
 
-/// «Update ready» with Restart (#683). It stays until the user closes it or
-/// restarts: a downloaded update must not pass unnoticed. Closed, it does not
-/// return for the same package until the next launch.
+/// Sparkle reports each ready package by version. Announce every newer one,
+/// replacing the previous notice; never the same package twice in a row.
+#[cfg(any(target_os = "macos", test))]
+fn announce_ready(
+    announced: &mut restart_feedback::Announced,
+    status: &status::CheckStatus,
+    package: Option<&str>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+    restart: impl Fn(&mut App) + 'static,
+) {
+    use status::CheckStatus;
+    match status {
+        CheckStatus::Ready | CheckStatus::RestartRetry(_) => {
+            if window.is_window_active() && announced.claim(package.unwrap_or_default()) {
+                show_ready_notice(window, cx, restart);
+            }
+        }
+        // Transient states while a ready package is verified or replaced.
+        CheckStatus::Checking
+        | CheckStatus::Available(_)
+        | CheckStatus::Downloading(_)
+        | CheckStatus::Preparing
+        | CheckStatus::Restarting => {}
+        _ => announced.reset(),
+    }
+}
+
+/// «Update ready» with Restart, in the one update notice (#683, #2679).
 #[cfg(any(windows, test, target_os = "linux", target_os = "macos"))]
 fn show_ready_notice(
     window: &mut gpui::Window,
     cx: &mut App,
     restart: impl Fn(&mut App) + 'static,
 ) {
-    use gpui::InteractiveElement as _;
-    use gpui_component::button::Button;
-    use gpui_component::{notification::Notification, Sizable, WindowExt};
-    use std::rc::Rc;
-    struct UpdateNotice;
-    let restart = Rc::new(restart);
-    window.defer(cx, move |window, cx| {
-        window.push_notification(
-            Notification::new()
-                .id::<UpdateNotice>()
-                .message("Update ready")
-                .autohide(false)
-                .placement(gpui::Anchor::BottomRight)
-                .action(move |_, _, _| {
-                    let restart = restart.clone();
-                    Button::new("restart-update")
-                        .debug_selector(|| "restart-update".into())
-                        .small()
-                        .label("Restart now")
-                        .on_click(move |_, _, cx| restart(cx))
-                }),
-            cx,
-        );
-    });
+    restart_feedback::show_ready(window, cx, restart);
 }
 
 #[cfg(test)]
@@ -673,6 +676,153 @@ mod tests {
         visual.simulate_click(restart, gpui::Modifiers::default());
         visual.run_until_parked();
         assert!(restarted.get(), "Restart runs the restart");
+    }
+
+    fn notice_window(cx: &mut TestAppContext) -> &mut gpui::VisualTestContext {
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            crate::test_init(cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| Empty);
+            Root::new(view, window, cx)
+        });
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        visual
+    }
+
+    fn notice_count(visual: &mut gpui::VisualTestContext) -> usize {
+        visual.update(|window, cx| window.notifications(cx).len())
+    }
+
+    /// #2679: beta ships on every merge, so several updates become ready while
+    /// Okilum is open. Each replaces the one notice; none stacks, and a newer
+    /// package is announced even after the older notice was closed.
+    #[gpui::test]
+    fn consecutive_ready_updates_show_one_notice_for_the_newest(cx: &mut TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+        let visual = notice_window(cx);
+        let restarted = Rc::new(RefCell::new(Vec::<&str>::new()));
+        let mut announced = restart_feedback::Announced::new();
+        let ready = status::CheckStatus::Ready;
+        let announce = |visual: &mut gpui::VisualTestContext,
+                        announced: &mut restart_feedback::Announced,
+                        status: &status::CheckStatus,
+                        package: &'static str| {
+            let restarted = restarted.clone();
+            visual.update(|window, cx| {
+                announce_ready(announced, status, Some(package), window, cx, move |_| {
+                    restarted.borrow_mut().push(package)
+                })
+            });
+            visual.run_until_parked();
+        };
+        announce(visual, &mut announced, &ready, "1");
+        assert_eq!(notice_count(visual), 1);
+        announce(visual, &mut announced, &ready, "1");
+        assert_eq!(
+            notice_count(visual),
+            1,
+            "the same package is announced once"
+        );
+        // Verification and the replacement download pass through transient
+        // states; none of them stacks a second notice.
+        for transient in [
+            status::CheckStatus::Preparing,
+            status::CheckStatus::Checking,
+            status::CheckStatus::Downloading(Some(40)),
+        ] {
+            announce(visual, &mut announced, &transient, "1");
+        }
+        announce(visual, &mut announced, &ready, "2");
+        assert_eq!(
+            notice_count(visual),
+            1,
+            "a newer update replaces the notice in place"
+        );
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let restart = visual
+            .debug_bounds("restart-update")
+            .expect("the newest notice offers Restart now")
+            .center();
+        visual.simulate_click(restart, gpui::Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            *restarted.borrow(),
+            ["2"],
+            "Restart targets the newest update"
+        );
+
+        // Closing a notice keeps that package quiet, never a newer one.
+        visual
+            .update(|window, cx| window.remove_notification::<restart_feedback::UpdateNotice>(cx));
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        visual.run_until_parked();
+        announce(visual, &mut announced, &ready, "2");
+        assert_eq!(
+            notice_count(visual),
+            0,
+            "a closed notice stays closed for its package"
+        );
+        announce(visual, &mut announced, &ready, "3");
+        assert_eq!(
+            notice_count(visual),
+            1,
+            "a newer package is announced after a closed one"
+        );
+    }
+
+    /// #2679: «Update ready» and «This update is no longer ready» were stacked.
+    /// Restart progress and failures now render into the same single notice.
+    #[gpui::test]
+    fn restart_outcomes_replace_the_ready_notice_in_place(cx: &mut TestAppContext) {
+        let _guard = restart_feedback::TEST_LOCK.lock().unwrap();
+        let app = cx.clone();
+        let visual = notice_window(cx);
+        visual.update(|window, cx| show_ready_notice(window, cx, |_| {}));
+        visual.run_until_parked();
+        assert_eq!(notice_count(visual), 1);
+
+        restart_feedback::attempt();
+        restart_feedback::notify("waiting", "Downloading the latest update.");
+        app.update(restart_feedback::present);
+        visual.run_until_parked();
+        assert_eq!(
+            notice_count(visual),
+            1,
+            "progress replaces the ready notice"
+        );
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(visual.debug_bounds("restart-update").is_none());
+        assert!(
+            visual.debug_bounds("update-notice-action").is_none(),
+            "progress offers no action"
+        );
+
+        restart_feedback::refused("Could not restart to update: disk full.");
+        app.update(restart_feedback::present);
+        visual.run_until_parked();
+        assert_eq!(
+            notice_count(visual),
+            1,
+            "a failure stays in the same notice"
+        );
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("update-notice-action").is_some(),
+            "a failure offers exactly one action"
+        );
+
+        visual.update(|window, cx| show_ready_notice(window, cx, |_| {}));
+        visual.run_until_parked();
+        assert_eq!(
+            notice_count(visual),
+            1,
+            "a newer ready update replaces the failure"
+        );
     }
 }
 

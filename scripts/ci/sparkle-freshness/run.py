@@ -600,7 +600,7 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         expected_revision = 'edited after retry verification' if scenario.startswith('termination-') else 'edited after verification'
                         assert (case / 'protected-editor').read_text() == expected_revision, trace.read_text()
                         assert trace.read_text().index('editor changed after verification') < trace.read_text().index('protect current editor after verification'), trace.read_text()
-                        if scenario != 'quit-during-download':
+                        if scenario not in ('quit-during-download', 'restart-newest'):
                             assert f'verified-ready {expected}' in trace.read_text()
                         assert trace.read_text().count('original delegate restored for shutdown') == 1, trace.read_text()
                         if scenario not in ('unchanged', 'phase-unchanged', 'background-phase-unchanged'):
@@ -622,10 +622,15 @@ try key.publicKey.rawRepresentation.base64EncodedData().write(to: directory.appe
                         assert callbacks.count('persist UI after editor protection') == 2, callbacks
                         assert sum('GET /appcast.xml' in r for r in requests) >= 5, requests
                     if scenario == 'restart-newest':
+                        # #2679: Restart chosen for a superseded update carries
+                        # over to the newest one. No refusal, no second click:
+                        # the newest update is verified and installed directly.
                         callbacks = trace.read_text()
-                        refusal = 'report 14 A newer update is being downloaded. Choose Restart now when it is ready.'
-                        assert refusal in callbacks, callbacks
-                        assert callbacks.index('verified-ready 2') < callbacks.index(refusal) < callbacks.index('verified-ready 4'), callbacks
+                        waiting = 'report 13 Downloading the latest update. Okilum will restart into it automatically when it is ready.'
+                        assert waiting in callbacks, callbacks
+                        assert 'report 14 ' not in callbacks, callbacks
+                        assert callbacks.index('verified-ready 2') < callbacks.index(waiting) < callbacks.index('report 5 4'), callbacks
+                        assert 'verified-ready 4' not in callbacks, callbacks
                     if scenario in ('guard-refusal', 'quit-guard-refusal'):
                         assert 'editor changed after verification' in trace.read_text()
                         assert 'protect current editor after verification' in trace.read_text()

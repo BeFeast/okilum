@@ -41,6 +41,10 @@ extern "C" fn report(kind: c_int, text: *const c_char) {
     if kind == 13 {
         return;
     }
+    if kind == 5 && !text.is_empty() {
+        // The ready package's version keys the single update notice (#2679).
+        *READY_PACKAGE.lock().unwrap() = Some(text.clone());
+    }
     if kind == 6 {
         status::begin_restart();
         return;
@@ -106,12 +110,21 @@ pub(super) fn set_beta(enabled: bool) {
 pub(super) fn ready() -> bool {
     unsafe { okilum_updater_ready() }
 }
+
+static READY_PACKAGE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The version Sparkle last reported ready; a newer one replaces the notice.
+pub(super) fn ready_package() -> Option<String> {
+    READY_PACKAGE.lock().unwrap().clone()
+}
 pub(super) fn restart(_cx: &mut gpui::App) {
     super::restart_feedback::attempt();
     // Freshness is asynchronous. The final save guards run after it completes,
     // through finish_requested_restart, even for Sparkle's own Restart button.
-    // The bridge reports stale, busy and accepted clicks, including callers
-    // holding an older toast. Never discard its refusal without feedback.
+    // A click on a notice older than Sparkle's current state keeps its
+    // consent: the bridge installs the newest ready update, downloading it
+    // first if needed (#2679). Busy and failed clicks are reported in the same
+    // single notice. Never discard a refusal without feedback.
     unsafe { okilum_updater_restart() };
 }
 
@@ -132,16 +145,8 @@ pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
         || unsafe { okilum_updater_refuse_restart() },
     );
     if let Err(error) = result {
+        // Shown inside the single update notice, not as a second toast.
         super::restart_feedback::refused(format!("Could not restart to update: {error}. Save or close the affected note, then try again."));
-        if let Some(window) = cx.active_window() {
-            let _ = window.update(cx, |_, window, cx| {
-                crate::reader_toast::error(
-                    format!("Could not restart to update: {error}"),
-                    window,
-                    cx,
-                )
-            });
-        }
     }
 }
 

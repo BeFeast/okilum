@@ -95,3 +95,29 @@ verification. The pre-fix bridge must reach real download, Ready verification an
 the click, then fail to reach the guard/relaunch: compilation/setup failure is not
 a passing negative control. A GPUI regression checks persistent refusal feedback
 after focus changes and the structured records in the actual Feedback log.
+
+## One update notice, always for the newest update (#2679)
+
+Beta ships on every merge, so several updates can become ready while Okilum is
+open. «Update ready» and the restart feedback used to have different notification
+ids and stacked: a Mac showed «Update ready · Restart now» under «This update is
+no longer ready», the refusal from clicking a notice whose update Sparkle had
+already superseded. Some failures also raised a separate error toast.
+
+Every update message now shares one notification id on all three platforms: the
+ready notice, restart progress («Verifying…», «Downloading the latest update…»,
+«Restarting…») and failures. A newer message replaces the notice in place. Each
+window shows at most one update notice. A failure carries one action: Restart now
+while an update is ready, otherwise Check for Updates. No separate error toast.
+
+macOS announces each ready package by version. A newer package replaces the
+notice even after the user closed the older one; a closed notice does not
+return for the same package. Restart now never targets the package the notice
+was drawn for. If Sparkle has superseded it, the click's consent carries over
+to the newest update: the bridge reports «Downloading the latest update» in the
+same notice and restarts once that update has passed freshness verification and
+the editor guard. If nothing is downloading, the click starts the download. The
+intent ends on cancel, verification timeout, a download or verification failure
+(shown in the notice), or when no newer update exists. Windows restarts into
+the newest pending package verified for the current channel. Linux stages only
+one AppImage at a time.
