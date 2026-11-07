@@ -46,7 +46,7 @@ The existing 4 KiB/depth-24 limits apply, with additional limits of 32 columns,
 64 rows and 256 cells per environment. Column rules, custom column macros,
 row-height commands and unsupported environments remain visible source with an
 explicit reason. No external TeX process, network rendering or GPUI core patch.
-Native tests cover the reported arrays (both row separators) and five-column
+Native tests cover the reported arrays (both row separators) and six-column
 eqnarray, actual non-overlapping row/shared-column geometry, and CRLF Live
 Preview reveal without source changes. A compiled negative control restores
 the previous rejection of `\begin`, requires both native regressions to fail

@@ -393,7 +393,7 @@ mod tests {
             (
                 r"\begin{eqnarray} x' &=& &x \sin\phi &+& z \cos\phi \\ z' &=& - &x \cos\phi &+& z \sin\phi \\ \end{eqnarray}",
                 2,
-                5,
+                6,
             ),
         ] {
             let source = obsidian::before_links(&format!("$$\n{formula}\n$$\n"));

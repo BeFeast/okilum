@@ -140,10 +140,11 @@ mod tests {
                 Alignment::Center,
                 Alignment::Left,
                 Alignment::Center,
-                Alignment::Left
+                Alignment::Left,
+                Alignment::Center
             ]
         );
-        assert!(rows.iter().all(|r| r.len() == 5));
+        assert!(rows.iter().all(|r| r.len() == 6));
     }
 
     #[test]
