@@ -434,9 +434,28 @@ fn windows_editor_changed_parent_keeps_the_latest_queued_draft() {
     );
     drop(editor);
     drop(pending);
-    let editor = FileEditor::open(&note, &state).unwrap();
+    // The quick-file authority belongs to the original folder. Reopening an
+    // unrelated replacement must not silently rebind it or consume its draft.
+    let error = FileEditor::open(&note, &state).err().unwrap();
+    assert_eq!(
+        okilum_write_authority::replaced_root(&error),
+        Some(root.join("Folder"))
+    );
+    assert!(FileEditor::has_unsaved_draft(&note, &state).unwrap());
+    assert_eq!(fs::read_to_string(&note).unwrap(), "unrelated replacement");
+    // Returning the original folder restores admission without re-attaching
+    // the replacement. The failed save already made the queued input durable.
+    fs::rename(root.join("Folder"), root.join("Replacement")).unwrap();
+    fs::rename(root.join("Moved"), root.join("Folder")).unwrap();
+    let mut editor = FileEditor::open(&note, &state).unwrap();
     assert_eq!(editor.text(), "latest queued draft");
     assert!(editor.dirty());
+    assert_eq!(editor.save().unwrap(), Save::Saved);
+    assert_eq!(fs::read_to_string(&note).unwrap(), "latest queued draft");
+    assert_eq!(
+        fs::read_to_string(root.join("Replacement/Note.md")).unwrap(),
+        "unrelated replacement"
+    );
 }
 #[cfg(windows)]
 #[test]

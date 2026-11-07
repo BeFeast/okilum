@@ -1430,6 +1430,31 @@ mod tests {
         assert!(!root.join("Start.md").exists());
     }
 
+    // Keep the open lock file and its parent in place: Windows refuses to
+    // rename that parent. Block only the atomic journal publication instead.
+    fn block_recovery_journal(visual: &mut VisualTestContext, state: &Path, expected: &str) {
+        visual.run_until_parked();
+        visual.executor().advance_clock(Duration::from_millis(301));
+        visual.run_until_parked();
+        let journals = std::fs::read_dir(state.join("state/editor-drafts"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .collect::<Vec<_>>();
+        assert_eq!(journals.len(), 1, "the active note has a durable journal");
+        let journal = &journals[0];
+        let saved = std::fs::read(journal).unwrap();
+        let draft: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(draft["text"].as_str(), Some(expected));
+        std::fs::rename(journal, state.join("saved-draft.json")).unwrap();
+        std::fs::create_dir(journal).unwrap();
+        assert!(journal.is_dir(), "positive control: publication is blocked");
+        assert_eq!(
+            std::fs::read(state.join("saved-draft.json")).unwrap(),
+            saved
+        );
+    }
+
     #[gpui::test]
     fn window_mode_switch_keeps_deleted_editor_on_cancel_and_failed_recovery(
         cx: &mut TestAppContext,
@@ -1451,9 +1476,7 @@ mod tests {
             assert!(!r.single_file);
             assert_eq!(r.source_text(cx).as_deref(), Some(latest));
         });
-        let journal = temp.path().join("state/editor-drafts");
-        std::fs::rename(&journal, temp.path().join("saved-drafts")).unwrap();
-        std::fs::write(&journal, "blocked").unwrap();
+        block_recovery_journal(visual, temp.path(), latest);
         reader.update_in(visual, |r, window, cx| r.switch_window_mode(window, cx));
         visual.run_until_parked();
         click(visual, "deleted-note-dont-save");
@@ -1462,6 +1485,11 @@ mod tests {
             assert_eq!(r.current_rel, "Start.md");
             assert_eq!(r.source_text(cx).as_deref(), Some(latest));
             assert!(r.editing.is_some());
+            assert!(r
+                .link_notice
+                .as_deref()
+                .unwrap()
+                .starts_with("Cannot protect this draft:"));
         });
         assert!(!root.join("Start.md").exists());
     }
@@ -1481,11 +1509,7 @@ mod tests {
         settle(visual, &reader, "deleted", |r| {
             disk(r) == Some(Disk::Missing)
         });
-        // A file in place of the recovery directory reliably fails even when
-        // the test runner has elevated filesystem permissions.
-        let journal = temp.path().join("state/editor-drafts");
-        std::fs::rename(&journal, temp.path().join("saved-drafts")).unwrap();
-        std::fs::write(&journal, "blocked").unwrap();
+        block_recovery_journal(visual, temp.path(), "# Unsaved draft\n");
         reader.update_in(visual, |r, window, cx| {
             r.open_note("Other.md", None, window, cx)
         });
@@ -1495,6 +1519,11 @@ mod tests {
             assert_eq!(r.current_rel, "Start.md");
             assert_eq!(r.source_text(cx).as_deref(), Some("# Unsaved draft\n"));
             assert!(r.deleted_current().is_some());
+            assert!(r
+                .link_notice
+                .as_deref()
+                .unwrap()
+                .starts_with("Cannot protect this draft:"));
         });
         assert!(!root.join("Start.md").exists());
     }

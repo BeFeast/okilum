@@ -21,6 +21,9 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: native-core-2700
     - name: Diagnose patch line endings
       shell: bash
       run: |
@@ -86,3 +89,15 @@ jobs:
           cargo test --locked -p $filter[0] $filter[1] $filter[2] -- --nocapture --test-threads=1; if ($LASTEXITCODE) { exit $LASTEXITCODE }
         }
       name: Run link tests with a non-UTF-8 note
+    - name: Verify Windows main recovery negative and restored controls
+      shell: pwsh
+      run: |
+        python scripts/ci/windows-main-recovery-check.py
+        exit $LASTEXITCODE
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: windows-main-recovery-2700
+        path: qa/windows-main-recovery-2700/
+        if-no-files-found: warn
+        retention-days: 7
