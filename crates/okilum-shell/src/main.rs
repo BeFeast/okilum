@@ -93,7 +93,7 @@ mod reader_loading;
 mod reader_log;
 mod reader_log_kubernetes;
 mod reader_log_sftp;
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(native_manager, test))]
 mod reader_manager_links;
 #[cfg(test)]
 mod reader_manager_occlusion;

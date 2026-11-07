@@ -29,7 +29,8 @@ pub enum Kind {
     /// Live Preview draws it rendered while the caret is outside (S7, #936).
     /// Its bytes are never classified or rewritten.
     Table,
-    /// A standalone $$ formula, rendered by the Reader while inactive.
+    /// A standalone $$ formula or single-dollar environment paragraph,
+    /// rendered by the Reader while inactive.
     Math,
     /// A top-level paragraph that is only an image embed, `![[x.png]]` or
     /// `![alt](path)`: Live Preview draws the image while the caret is
@@ -171,6 +172,12 @@ pub(super) fn extract<'a>(root: &'a AstNode<'a>, context: &Context<'_>) -> Optio
                         // The block covers the whole line, trailing blanks too:
                         // a caret there is inside it and reveals the source.
                         let line = text.trim_end_matches(['\r', '\n']);
+                        if crate::tex::single_dollar_environment(line).is_some() {
+                            if let Some(marker) = whole_line_block(node, context, Kind::Math) {
+                                markers.push(marker);
+                            }
+                            continue;
+                        }
                         if image_embed(line.trim_end_matches([' ', '\t'])) {
                             let range = start..start + line.len();
                             markers.push(Marker {
@@ -568,6 +575,22 @@ mod tests {
                 ("[x]", true, true)
             ]
         );
+    }
+
+    #[test]
+    fn standalone_single_dollar_environment_is_a_source_bound_math_block() {
+        let formula = "$\\begin{align}\r\na&=b\\\\\r\nc&=d\r\n\\end{align}$";
+        let text = format!("{formula}\r\n\r\n$5\r\n$10\r\n\r\n```\r\n{formula}\r\n```\r\n");
+        let source = snapshot(&text, 1);
+        let classified = classify(&source);
+        let math: Vec<_> = classified
+            .decorations_for(&source)
+            .unwrap()
+            .iter()
+            .filter(|m| m.kind == Kind::Math)
+            .map(|m| &text[m.range.clone()])
+            .collect();
+        assert_eq!(math, [formula]);
     }
 
     #[test]

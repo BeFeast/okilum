@@ -1,4 +1,4 @@
-//! The visible Manager is the retained native ProjectView on macOS and Linux.
+//! The visible Manager is the retained native ProjectView on every desktop OS.
 use super::*;
 
 impl Reader {

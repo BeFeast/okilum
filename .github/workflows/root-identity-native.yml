@@ -1,0 +1,53 @@
+# Disposable hosted Mac only; no corporate-M4 CI, installation or live repair.
+name: root-identity-native
+on:
+  push:
+    branches: ['root-identity-native/**']
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '4'
+  OKILUM_SOURCE_COMMIT: ${{ github.sha }}
+concurrency:
+  group: root-identity-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  macos-authority:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: root-identity-v2-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            root-identity-v2-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            root-identity-v1-${{ runner.os }}-
+      - name: Prepare and verify pinned source dependencies
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(git rev-parse HEAD)" = "$OKILUM_SOURCE_COMMIT"
+          bash scripts/vendor-setup.sh
+          bash scripts/vendor-setup.sh --verify
+      - name: Check all native authority targets
+        run: cargo clippy --locked -p okilum-write-authority --all-targets -- -D warnings
+      - name: Exercise native UUID and migration with compiled negative controls
+        run: python3 scripts/ci/mac-writer-identity-check.py
+      - name: Preserve all native admission, hold, replacement and concurrency controls
+        run: |
+          cargo test --locked -p okilum-write-authority --lib -- --nocapture --test-threads=1
+          test -z "$(git diff -- crates/okilum-write-authority/src/)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: writer-identity-2692
+          path: qa/writer-identity-2692/
+          if-no-files-found: error
+          retention-days: 7

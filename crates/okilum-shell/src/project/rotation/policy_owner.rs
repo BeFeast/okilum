@@ -5,6 +5,7 @@ use okilum_t3::rotation::{Checkpoint, Owner, Policy, PolicyStore, TzifResolver};
 use okilum_t3::stream::NativeClient;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
     fs,
@@ -138,14 +139,11 @@ impl Store {
                 Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => (),
                 Ok(_) => return Err("Rotation namespace is not an owned plain directory".into()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound && create => {
-                    if path == &self.state {
-                        io(fs::DirBuilder::new()
-                            .recursive(true)
-                            .mode(0o700)
-                            .create(path))?;
-                    } else {
-                        io(fs::DirBuilder::new().mode(0o700).create(path))?;
-                    }
+                    let mut builder = fs::DirBuilder::new();
+                    builder.recursive(path == &self.state);
+                    #[cfg(unix)]
+                    builder.mode(0o700);
+                    io(builder.create(path))?;
                     let metadata = io(fs::symlink_metadata(path))?;
                     if !metadata.is_dir() || metadata.file_type().is_symlink() {
                         return Err("Rotation namespace changed while opening".into());
@@ -165,14 +163,13 @@ impl Store {
     fn lock(&self) -> Result<IdentityLock> {
         self.directories(true)?;
         let path = self.directory.join("identity.lock");
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| {
-                format!("Rotation state is busy or needs interrupted-write recovery: {e}")
-            })?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&path).map_err(|e| {
+            format!("Rotation state is busy or needs interrupted-write recovery: {e}")
+        })?;
         let lock = IdentityLock(path);
         io(file.write_all(uuid::Uuid::new_v4().to_string().as_bytes()))?;
         io(file.sync_all())?;
@@ -273,11 +270,11 @@ impl Store {
             }
         }
         let cleanup = Temporary(temporary);
-        let mut file = io(fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&cleanup.0))?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = io(options.open(&cleanup.0))?;
         io(file.write_all(&bytes))?;
         io(file.sync_all())?;
         drop(file);
@@ -285,6 +282,9 @@ impl Store {
             &cleanup.0,
             self.directory.join(format!("{}.owner", record.sequence)),
         ))?;
+        // Match PolicyStore's platform contract: flush immutable file bytes on
+        // every OS, and the directory entry where directory fsync is supported.
+        #[cfg(unix)]
         io(fs::File::open(&self.directory).and_then(|d| d.sync_all()))?;
         Ok(())
     }
