@@ -28,24 +28,15 @@ pub(super) fn ready() -> bool {
 pub(super) fn take_announcement() -> Option<String> {
     state().lock().unwrap().take_announcement()
 }
-pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
+/// Installs the newest pending package, whichever notice was clicked (#2679).
+pub(super) fn restart(cx: &mut gpui::App) {
     super::restart_feedback::attempt();
     // Serialize restart against background checks until Velopack is armed.
+    // The refusal appears in the single update notice, never a second toast.
     if BUSY.swap(true, Ordering::AcqRel) {
         super::restart_feedback::refused(
             "The updater is busy. Wait for it to finish, then choose Restart now again.",
         );
-        cx.defer(|cx| {
-            if let Some(window) = cx.active_window() {
-                let _ = window.update(cx, |_, window, cx| {
-                    crate::reader_toast::error(
-                        "The updater is busy. Wait for it to finish, then choose Restart now again.",
-                        window,
-                        cx,
-                    )
-                });
-            }
-        });
         return;
     }
     let result = (|| -> anyhow::Result<()> {
@@ -60,15 +51,16 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
             )
         })?;
         let id = identity(asset);
-        if expected.is_some_and(|expected| expected != id) {
-            state().lock().unwrap().observe(Some(id));
-            anyhow::bail!("The pending update changed. Check for updates again.");
-        }
         {
             let mut state = state().lock().unwrap();
+            // Only a package verified against the current channel's feed may
+            // be applied (#1318). The notice carries no package of its own:
+            // Restart always targets the newest verified one (#2679).
             if state.package() != Some(id.as_str()) {
-                state.observe(Some(id));
-                anyhow::bail!("The pending update changed. Choose Restart again.");
+                state.observe(None);
+                anyhow::bail!(
+                    "The downloaded update must be checked again. Choose Check for Updates"
+                );
             }
             if !state.begin_restart(&id) {
                 super::restart_feedback::refused("The installer is already waiting for Okilum to close. Save or close any pending dialog, then quit Okilum to finish the update.");
@@ -112,14 +104,6 @@ pub(super) fn restart(expected: Option<&str>, cx: &mut gpui::App) {
             super::status::CheckStatus::RestartRetry(error.to_string())
         } else {
             super::status::CheckStatus::Failed(error.to_string())
-        });
-        let message = format!("Could not restart to update: {error}");
-        cx.defer(move |cx| {
-            if let Some(window) = cx.active_window() {
-                let _ = window.update(cx, |_, window, cx| {
-                    crate::reader_toast::error(message, window, cx)
-                });
-            }
         });
     }
     BUSY.store(false, Ordering::Release);

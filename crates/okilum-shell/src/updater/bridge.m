@@ -201,8 +201,22 @@ static BOOL TSBackgroundDownloads;
 static BOOL TSAutomaticChecks = YES;
 static BOOL TSCancelledCycle;
 static BOOL TSScheduledCheckSkipped;
+// #2679: Restart now was chosen, but the update it was shown for has been
+// superseded (or is still downloading). The consent carries over to the newest
+// update: Okilum restarts into it as soon as it is verified. Survives Sparkle's
+// per-session dismissUpdateInstallation; cleared by cancel, failure or no update.
+static BOOL TSRestartWhenReady;
+static NSString *const TSDownloadingLatest = @"Downloading the latest update. Okilum will restart into it automatically when it is ready.";
+static void TSEndRestartIntent(NSString *reason) {
+    if (!TSRestartWhenReady) return;
+    TSRestartWhenReady = NO;
+    // A real outcome, shown in the single update notice with one action.
+    if (reason) TSSend(14, reason);
+}
+static NSString *const TSNothingNewer = @"No newer update is ready to install. Okilum is up to date.";
 static void (^TSQuitAfterCycle)(BOOL);
 static BOOL TSReplacingUpdate(void);
+static void TSEndReplacement(void);
 static BOOL TSRetainsInstallation(void);
 static NSSet<NSString *> *TSChannels(void) {
     return [NSUserDefaults.standardUserDefaults boolForKey:TSBetaKey]
@@ -303,6 +317,11 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     // scheduler reserves a session for interval discovery, and a queued check
     // is ignored. This is cycle completion, never a user-driver reply.
     BOOL restart = TSRestartAfterCycle && !error;
+    if (TSRestartAfterCycle && error) {
+        // No replacement will start: a carried-over Restart cannot continue.
+        TSEndReplacement();
+        TSEndRestartIntent(error.localizedDescription ?: @"The latest update could not be downloaded. Check for updates again.");
+    }
     TSCancelledCycle = NO;
     TSScheduledCheckSkipped = NO;
     TSRestartAfterCycle = NO;
@@ -318,14 +337,20 @@ static void TSCheckFreshness(SUAppcastItem *item, BOOL foreground, void (^comple
     }
 }
 - (void)updaterDidNotFindUpdate:(SPUUpdater *)updater {
+    TSInstallRequested = NO;
+    TSEndRestartIntent(TSNothingNewer);
     TSSend(0, nil);
 }
 - (void)updater:(SPUUpdater *)updater didAbortWithError:(NSError *)error {
     if (TSCancelledCycle || TSScheduledCheckSkipped) return;
     // "No update" can also arrive as an error; it is not a failure.
     if ([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError) {
+        TSInstallRequested = NO;
+        TSEndRestartIntent(TSNothingNewer);
         TSSend(0, nil);
     } else {
+        // A replacement scheduled by this cycle keeps the restart intent.
+        if (!TSRestartAfterCycle) TSEndRestartIntent(nil);
         TSSend(2, error.localizedDescription);
     }
 }
@@ -367,10 +392,14 @@ static TSTerminationDelegate *TSTermination;
     TSSend(9, nil);
 }
 - (void)showUpdateNotFoundWithError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
+    TSEndRestartIntent(TSNothingNewer);
     TSSend(0, nil); acknowledgement();
 }
 - (void)showUpdaterError:(NSError *)error acknowledgement:(void (^)(void))acknowledgement {
-    if (!TSCancelledCycle && !TSScheduledCheckSkipped) TSSend(2, error.localizedDescription);
+    if (!TSCancelledCycle && !TSScheduledCheckSkipped) {
+        if (!TSRestartAfterCycle) TSEndRestartIntent(nil);
+        TSSend(2, error.localizedDescription);
+    }
     acknowledgement();
 }
 - (void)showInstallingUpdateWithApplicationTerminated:(BOOL)terminated retryTerminatingApplication:(void (^)(void))retry {
@@ -388,6 +417,7 @@ static TSTerminationDelegate *TSTermination;
     TSCancelledCycle = YES;
     TSInstallRequested = NO;
     TSRestartAfterCycle = NO;
+    TSRestartWhenReady = NO;
     self.replacing = NO;
     [self dismissUpdateInstallation]; // invalidate in-flight freshness first
     if (ready) ready(SPUUserUpdateChoiceSkip);
@@ -407,7 +437,7 @@ static TSTerminationDelegate *TSTermination;
 - (void)presentUpdate:(SUAppcastItem *)item state:(SPUUserUpdateState *)state reply:(void (^)(SPUUserUpdateChoice))reply {
     // Background mode uses this same silent download/Ready path as an explicit
     // Download click. The Ready continuation is never consumed automatically.
-    if ((self.replacing || TSInstallRequested || TSBackgroundDownloads) && !item.informationOnlyUpdate && !item.majorUpgrade
+    if ((self.replacing || TSInstallRequested || TSBackgroundDownloads || TSRestartWhenReady) && !item.informationOnlyUpdate && !item.majorUpgrade
         && item.signingValidationStatus != SPUAppcastSigningValidationStatusFailed) {
         self.replacing = NO;
         TSInstallRequested = NO;
@@ -415,15 +445,25 @@ static TSTerminationDelegate *TSTermination;
     } else {
         self.replacing = NO;
         TSInstallRequested = NO;
-        if (item.informationOnlyUpdate || item.majorUpgrade || item.signingValidationStatus == SPUAppcastSigningValidationStatusFailed)
+        if (item.informationOnlyUpdate || item.majorUpgrade || item.signingValidationStatus == SPUAppcastSigningValidationStatusFailed) {
+            TSEndRestartIntent(nil);
             TSSend(2, @"This update requires a separate upgrade or cannot be verified. Nothing was installed.");
+        }
         reply(SPUUserUpdateChoiceDismiss);
     }
 }
 - (void)cancelForReplacement:(void (^)(SPUUserUpdateChoice))reply error:(NSError *)error {
-    // This attempt ends here. Replacement may download, but needs a new
-    // explicit Restart; do not keep promising automatic continuation in Rust.
-    if (self.restartRequested) TSSend(14, error.localizedDescription ?: @"A newer update is being downloaded. Choose Restart now when it is ready.");
+    // Superseded (no error): a newer update replaces this one. A Restart the
+    // user already chose carries over and continues when the newest update is
+    // verified (#2679); the single notice says so. An error ends the attempt.
+    BOOL intent = self.restartRequested || TSRestartWhenReady;
+    if (intent && error) {
+        TSRestartWhenReady = NO;
+        TSSend(14, error.localizedDescription);
+    } else if (intent) {
+        TSRestartWhenReady = YES;
+        TSSend(13, TSDownloadingLatest);
+    }
     self.restartRequested = NO;
     self.restartReply = nil;
     self.retryTermination = nil;
@@ -476,11 +516,14 @@ static TSTerminationDelegate *TSTermination;
         if (driver.quitReply) {
             driver.verifiedRestart = YES;
             TSGuardRequested = YES;
-            TSSend(5, nil);
+            TSSend(5, driver.item.versionString);
             return;
         }
-        TSSend(5, nil);
-        if (driver.restartRequested) { [driver requestRestart]; return; }
+        TSSend(5, driver.item.versionString);
+        if (driver.restartRequested || TSRestartWhenReady) {
+            TSRestartWhenReady = NO;
+            [driver requestRestart]; return;
+        }
         [driver presentReady:^(SPUUserUpdateChoice choice) {
             if (!driver.restartReply || driver.verifying) return;
             if (choice == SPUUserUpdateChoiceInstall) { [driver requestRestart]; return; }
@@ -523,7 +566,7 @@ static TSTerminationDelegate *TSTermination;
         TSGuardRequested = YES;
         // Rust reruns editor protection/UI persistence after the async check,
         // for both ordinary Quit and Okilum's Restart action.
-        TSSend(5, nil);
+        TSSend(5, driver.item.versionString);
     });
     [self watchVerification:generation];
 }
@@ -537,6 +580,7 @@ static TSTerminationDelegate *TSTermination;
         driver.generation += 1;
         driver.verifying = NO;
         driver.restartRequested = NO;
+        TSRestartWhenReady = NO;
         driver.verifiedRestart = NO;
         TSGuardRequested = NO;
         if (driver.quitReply) { void (^quit)(BOOL) = driver.quitReply; driver.quitReply = nil; quit(NO); }
@@ -617,6 +661,7 @@ static TSTerminationDelegate *TSTermination;
 static TSUpdaterDelegate *TSDelegate;
 
 static BOOL TSReplacingUpdate(void) { return TSDriver.replacing; }
+static void TSEndReplacement(void) { TSDriver.replacing = NO; }
 static BOOL TSRetainsInstallation(void) { return TSDriver.restartReply || TSDriver.retryTermination || TSDriver.preparing || TSDriver.verifying || TSGuardRequested; }
 
 static void TSStart(NSBundle *bundle, TSUserDriver *driver, TSUpdaterDelegate *delegate) {
@@ -663,17 +708,20 @@ bool okilum_updater_check(bool download, bool foreground) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [TSProbe check:TSUpdater channels:TSChannels() foreground:NO completion:^(SUAppcastItem *selected, NSError *error) {
             TSManualCheck = NO;
-            if (error && !([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError))
+            if (error && !([error.domain isEqualToString:SUSparkleErrorDomain] && error.code == SUNoUpdateError)) {
+                TSEndRestartIntent(nil);
                 TSSend(2, error.localizedDescription);
+            }
             else if (selected) {
                 TSSend(1, selected.displayVersionString);
-                if (download) {
+                // A Restart chosen during this check downloads the newest update.
+                if (download || TSRestartWhenReady) {
                     TSInstallRequested = YES;
                     if (foreground) [TSUpdater checkForUpdates];
                     else [TSUpdater checkForUpdatesInBackground];
                 }
             }
-            else TSSend(0, nil);
+            else { TSEndRestartIntent(TSNothingNewer); TSSend(0, nil); }
         }];
     });
     return true;
@@ -706,8 +754,19 @@ void okilum_updater_forget_beta(void) {
 
 // Called on main only after the Rust save/recovery guards succeed.
 bool okilum_updater_restart(void) {
+    if (!TSUpdater) return false;
     if (!TSDriver.restartReply && !TSDriver.retryTermination) {
-        TSSend(14, @"This update is no longer ready. Open Settings → Updates, check for updates and download it again.");
+        // #2679: the notice the user clicked predates Sparkle's current state;
+        // a newer update superseded it. Never answer «no longer ready»: keep
+        // the consent and restart into the newest update once it is verified.
+        TSRestartWhenReady = YES;
+        TSSend(13, TSDownloadingLatest);
+        // A running check, download or replacement continues by itself.
+        if (TSDriver.replacing || TSDriver.preparing || TSRestartAfterCycle || TSUpdater.sessionInProgress
+            || TSProbe.completion || TSManualCheck) return false;
+        // Nothing is running: fetch the newest update now.
+        TSInstallRequested = YES;
+        [TSUpdater checkForUpdatesInBackground];
         return false;
     }
     if (TSDriver.verifying) {

@@ -1,5 +1,9 @@
 //! Restart is an explicit transaction: every click and asynchronous outcome is
 //! recorded in the same diagnostic log attached to Feedback.
+//!
+//! #2679: every update message — «Update ready», restart progress and
+//! failures — shares one notification id, so a window shows at most one
+//! update notice and a newer message replaces the older one in place.
 use gpui::App;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -8,14 +12,56 @@ use std::sync::{
 
 static TRACE: Mutex<Option<crate::reader_diagnostics::Trace>> = Mutex::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-static MESSAGE: Mutex<Option<String>> = Mutex::new(None);
+static MESSAGE: Mutex<Option<Message>> = Mutex::new(None);
+
+/// The single update notice's id on every platform.
+pub(super) struct UpdateNotice;
+
+#[derive(Clone, Debug)]
+struct Message {
+    text: String,
+    /// A refusal or failure offers one action; progress offers none.
+    actionable: bool,
+}
+
+/// Remembers which ready package was announced, so the same package is not
+/// announced twice but a newer one always is (#2679), even after the older
+/// notice was closed.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Default)]
+pub(super) struct Announced(Option<String>);
+
+#[cfg(any(target_os = "macos", test))]
+impl Announced {
+    pub(super) const fn new() -> Self {
+        Self(None)
+    }
+
+    /// True once per distinct ready package.
+    pub(super) fn claim(&mut self, package: &str) -> bool {
+        if self.0.as_deref() == Some(package) {
+            return false;
+        }
+        self.0 = Some(package.to_owned());
+        true
+    }
+
+    /// Nothing is ready any more: the same package may be announced again.
+    pub(super) fn reset(&mut self) {
+        self.0 = None;
+    }
+}
 
 #[cfg(test)]
 pub(super) static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(all(test, target_os = "linux", not(feature = "linux-sprint")))]
 pub(super) fn pending_message() -> Option<String> {
-    MESSAGE.lock().unwrap().clone()
+    MESSAGE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|message| message.text.clone())
 }
 
 pub(super) fn install(cx: &App) {
@@ -41,15 +87,23 @@ pub(super) fn attempt() {
     record("attempt", "Restart now clicked");
 }
 
-pub(super) fn notify(outcome: &str, reason: impl Into<String>) {
-    let reason = reason.into();
+fn post(outcome: &str, reason: String, actionable: bool) {
     record(outcome, &reason);
-    *MESSAGE.lock().unwrap() = Some(reason);
+    *MESSAGE.lock().unwrap() = Some(Message {
+        text: reason,
+        actionable,
+    });
+}
+
+// Progress comes only from the macOS bridge; elsewhere restarts quit or refuse.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(super) fn notify(outcome: &str, reason: impl Into<String>) {
+    post(outcome, reason.into(), false);
 }
 
 pub(super) fn refused(reason: impl Into<String>) {
     ACTIVE.store(false, Ordering::Release);
-    notify("refused", reason);
+    post("refused", reason.into(), true);
 }
 
 #[cfg(target_os = "macos")]
@@ -77,6 +131,62 @@ pub(super) fn report(kind: i32, reason: &str) {
     }
 }
 
+/// «Update ready» with Restart (#683). It stays until the user closes it or
+/// restarts: a downloaded update must not pass unnoticed. A newer package or
+/// any restart outcome replaces it in place (#2679).
+pub(super) fn show_ready(
+    window: &mut gpui::Window,
+    cx: &mut App,
+    restart: impl Fn(&mut App) + 'static,
+) {
+    use gpui::InteractiveElement as _;
+    use gpui_component::button::Button;
+    use gpui_component::{notification::Notification, Sizable, WindowExt};
+    use std::rc::Rc;
+    let restart = Rc::new(restart);
+    window.defer(cx, move |window, cx| {
+        window.push_notification(
+            Notification::new()
+                .id::<UpdateNotice>()
+                .message("Update ready")
+                .autohide(false)
+                .placement(gpui::Anchor::BottomRight)
+                .action(move |_, _, _| {
+                    let restart = restart.clone();
+                    Button::new("restart-update")
+                        .debug_selector(|| "restart-update".into())
+                        .small()
+                        .label("Restart now")
+                        .on_click(move |_, _, cx| restart(cx))
+                }),
+            cx,
+        );
+    });
+}
+
+fn show_message(window: &mut gpui::Window, cx: &mut App, message: Message) {
+    use gpui::InteractiveElement as _;
+    use gpui_component::button::Button;
+    use gpui_component::{notification::Notification, Sizable, WindowExt};
+    let mut notice = Notification::new()
+        .id::<UpdateNotice>()
+        .message(message.text)
+        .autohide(false)
+        .placement(gpui::Anchor::BottomRight);
+    if message.actionable {
+        // Restart now while an update is ready (always the newest one),
+        // otherwise a fresh check. Never a second notice.
+        notice = notice.action(|_, _, _| {
+            Button::new("update-notice-action")
+                .debug_selector(|| "update-notice-action".into())
+                .small()
+                .label(super::action_label())
+                .on_click(|_, _, cx| super::activate(cx))
+        });
+    }
+    window.push_notification(notice, cx);
+}
+
 pub(super) fn present(cx: &mut App) {
     let Some(message) = MESSAGE.lock().unwrap().take() else {
         return;
@@ -84,18 +194,7 @@ pub(super) fn present(cx: &mut App) {
     // Includes Settings/About and windows that lost focus after the click.
     for handle in cx.windows() {
         let message = message.clone();
-        let _ = handle.update(cx, |_, window, cx| {
-            use gpui_component::{notification::Notification, WindowExt};
-            struct RestartFeedback;
-            window.push_notification(
-                Notification::new()
-                    .id::<RestartFeedback>()
-                    .message(message)
-                    .autohide(false)
-                    .placement(gpui::Anchor::BottomRight),
-                cx,
-            );
-        });
+        let _ = handle.update(cx, |_, window, cx| show_message(window, cx, message));
     }
 }
 
