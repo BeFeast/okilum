@@ -365,6 +365,23 @@ mod tests {
             "legacy pair has no birthtime/UUID proof"
         );
         assert!(same_binding_with_consent(&legacy, &fresh));
+        // Durable share grants carry a second copy of the source witness. The
+        // same explicit attachment must upgrade it without widening the grant.
+        let mut grant = super::super::transfer::ShareGrant::new(
+            uuid::Uuid::new_v4(),
+            &legacy,
+            "approved-receiver",
+        );
+        let before = serde_json::to_value(&grant)?;
+        assert!(grant.validate(&fresh, "approved-receiver").is_err());
+        assert!(grant.refresh_source(&fresh, false).is_err());
+        assert!(grant.refresh_source(&fresh, true)?);
+        grant.validate(&fresh, "approved-receiver")?;
+        let after = serde_json::to_value(&grant)?;
+        for key in ["peer", "vault", "receiver"] {
+            assert_eq!(before[key], after[key]);
+        }
+        assert!(grant.validate(&fresh, "other-receiver").is_err());
         legacy.root_identity.as_mut().unwrap().1 += 1;
         assert!(!same_binding_with_consent(&legacy, &fresh));
         legacy.root_identity = fresh.root_identity;

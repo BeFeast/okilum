@@ -641,6 +641,17 @@ impl ShareGrant {
         );
         Ok(())
     }
+    #[cfg(target_os = "linux")]
+    pub(super) fn refresh_source(&mut self, fresh: &ExistingVault, consent: bool) -> Result<bool> {
+        ensure!(
+            existing::same_binding(&self.source, fresh)
+                || consent && existing::same_binding_with_consent(&self.source, fresh),
+            "explicit share scope changed"
+        );
+        let changed = self.source != *fresh;
+        self.source = fresh.clone();
+        Ok(changed)
+    }
     pub(super) fn observe(&self, configs: &[PathBuf], generation: Uuid) -> Result<Observation> {
         ensure!(
             configs.iter().any(|p| p

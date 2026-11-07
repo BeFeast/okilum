@@ -457,6 +457,14 @@ impl Controller {
             "operational state must be outside the vault"
         );
         let mut db = self.shared.db.lock().unwrap();
+        #[cfg(target_os = "linux")]
+        let upgraded_grants = {
+            let mut grants = db.share_grants.clone();
+            for grant in grants.iter_mut().filter(|g| g.vault == fresh.folder_id) {
+                grant.refresh_source(&fresh, true)?;
+            }
+            grants
+        };
         if let Some(old) = db
             .attached
             .iter_mut()
@@ -471,6 +479,10 @@ impl Controller {
             *old = fresh.clone();
         } else {
             db.attached.push(fresh.clone());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            db.share_grants = upgraded_grants;
         }
         // Explicit consent also exposes this vault to computers already approved
         // before enrollment, matching Share with my computers for managed vaults.
@@ -1247,18 +1259,30 @@ impl Controller {
         // Offline replicas retain their durable association.
         let configs = self.shared.configs.lock().unwrap().clone();
         let mut db = self.shared.db.lock().unwrap();
+        let mut attached = db.attached.clone();
+        #[cfg(target_os = "linux")]
+        let mut grants = db.share_grants.clone();
         let mut changed = false;
-        for attached in &mut db.attached {
+        for attached in &mut attached {
             if let Ok(fresh) = inspect_existing(&configs, &attached.path) {
                 ensure!(
                     existing::same_binding(attached, &fresh),
                     "attached replica identity changed"
                 );
+                #[cfg(target_os = "linux")]
+                for grant in grants.iter_mut().filter(|g| g.vault == fresh.folder_id) {
+                    changed |= grant.refresh_source(&fresh, false)?;
+                }
                 changed |= *attached != fresh;
                 *attached = fresh;
             }
         }
         if changed {
+            db.attached = attached;
+            #[cfg(target_os = "linux")]
+            {
+                db.share_grants = grants;
+            }
             self.save(&db)?;
         }
         Ok(())
