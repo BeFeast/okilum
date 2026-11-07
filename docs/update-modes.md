@@ -135,6 +135,12 @@ intent ends on cancel, verification timeout, a download or verification failure
 the newest pending package verified for the current channel. Linux stages only
 one AppImage at a time.
 
+An empty Sparkle termination-retry callback is actionable waiting, rather than
+proof that Restart failed (#2709). GPUI can still be completing an asynchronous
+quit at that point. The single notice says that restart is finishing and keeps
+later install outcomes active. A callback carrying an actual refusal reason
+still reports that reason as a failure; freshness and editor guards are unchanged.
+
 ## A newer beta while Ready (#2706)
 
 Linux and Windows continue due/focus discovery while retaining a downloaded

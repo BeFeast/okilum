@@ -139,6 +139,14 @@ pub(super) fn report(kind: i32, reason: &str) {
     }
     match kind {
         2 => refused(format!("{reason} Open Settings → Updates and check for updates again. Okilum is staying open.")),
+        // Sparkle can offer its retry continuation while GPUI's asynchronous
+        // quit is already completing. An empty signal is waiting, not proof
+        // of a failed restart. Keep ACTIVE for subsequent install outcomes.
+        10 if reason.is_empty() => post(
+            "waiting",
+            "Finishing restart. If Okilum stays open, choose Restart now again.".into(),
+            true,
+        ),
         10 | 14 => refused(if reason.is_empty() {
             "Okilum is still open. Save or close any pending dialog, then choose Restart now again."
         } else { reason }),
@@ -263,6 +271,71 @@ mod tests {
                 .size_full()
                 .children(Root::render_notification_layer(window, cx))
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn termination_wait_does_not_report_a_false_refusal_or_drop_later_install_outcomes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        *TRACE.lock().unwrap() = Some(crate::reader_diagnostics::Trace::new(
+            Some(directory.path().into()),
+            None,
+        ));
+        cx.update(|cx| {
+            cx.set_reduce_motion(true);
+            crate::test_init(cx);
+        });
+        let app = cx.clone();
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let host = cx.new(|_| NoticeHost);
+            Root::new(host, window, cx)
+        });
+        attempt();
+        report(6, "");
+        report(10, "");
+        app.update(present);
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_eq!(window.notifications(cx).len(), 1);
+            window.draw(cx).clear(cx);
+        });
+        assert!(visual.debug_bounds("update-notice-action").is_some());
+        report(8, "");
+        // A later explicit attempt with a real refusal keeps the failure path.
+        attempt();
+        report(10, "Your latest edits could not be protected.");
+        app.update(present);
+        visual.run_until_parked();
+        visual.update(|window, cx| assert_eq!(window.notifications(cx).len(), 1));
+        let log = std::fs::read_to_string(directory.path().join("reader-diagnostic.log")).unwrap();
+        let events: Vec<serde_json::Value> = log
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .filter(|event: &serde_json::Value| event["phase"] == "update_restart")
+            .collect();
+        let outcomes: Vec<_> = events
+            .iter()
+            .map(|event| event["details"]["outcome"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                "attempt",
+                "accepted",
+                "waiting",
+                "relaunched",
+                "attempt",
+                "refused"
+            ]
+        );
+        assert!(events.last().unwrap()["details"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("latest edits could not be protected"));
+        *TRACE.lock().unwrap() = None;
     }
 
     #[gpui::test]
