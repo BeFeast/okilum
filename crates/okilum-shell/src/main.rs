@@ -99,6 +99,7 @@ mod reader_manager_links;
 mod reader_manager_occlusion;
 mod reader_manager_panel;
 mod reader_manager_start;
+mod reader_media;
 mod reader_mermaid;
 #[cfg(any(unix, windows))]
 mod reader_move;
@@ -1355,6 +1356,8 @@ fn reader_plugins_at(
             {
                 if okilum_core::excalidraw::is_drawing(&path.to_string_lossy()) {
                     Some(MarkdownImage::Drawing(root.clone(), path))
+                } else if reader_media::is_video(&path) {
+                    Some(MarkdownImage::Video(root.clone(), path))
                 } else {
                     Some(MarkdownImage::Source(reader_files::image_source(path)))
                 }
@@ -1392,6 +1395,7 @@ fn reader_plugins_at(
 type MarkdownLinkHandler = Arc<dyn Fn(&str, &ClickEvent, &mut Window, &mut App) + Send + Sync>;
 enum MarkdownImage {
     Drawing(PathBuf, PathBuf),
+    Video(PathBuf, PathBuf),
     DrawingUnavailable(String),
     Source(ImageSource),
     // Constructed only by the remote Brain image authority; renderer is shared.
@@ -1497,6 +1501,9 @@ fn markdown_plugins_at(
         let mut column = v_flex().py_2().gap_1();
         for (index, image) in data.images.iter().enumerate() {
             let element = match render_image(&image.url) {
+                Some(MarkdownImage::Video(root, path)) => {
+                    reader_media::video_card(&root, &path, cx)
+                }
                 Some(MarkdownImage::Drawing(root, path)) => {
                     reader_drawing::render(&root, &path, image.drawing_size, window, cx)
                 }
