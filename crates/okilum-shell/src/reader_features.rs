@@ -264,6 +264,9 @@ impl Reader {
             for board in self.project_navigation.boards.values() {
                 board.update(cx, |board, cx| board.set_visible(false, window, cx));
             }
+            for records in self.project_navigation.records.values() {
+                records.update(cx, |records, cx| records.set_visible(false, cx));
+            }
             self.project_navigation.discovered = false;
             self.project_navigation.discovery = Default::default();
             self.project_navigation.t3_gateways.clear();

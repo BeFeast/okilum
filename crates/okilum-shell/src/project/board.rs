@@ -90,6 +90,7 @@ pub(crate) struct Board {
 pub(crate) enum Action {
     Note(String),
     Discuss(String),
+    RecordDiscuss(String),
     Peek,
 }
 impl EventEmitter<Action> for Board {}
@@ -940,6 +941,7 @@ impl Reader {
         cx: &mut Context<Self>,
     ) {
         self.project_navigation.board_visible = true;
+        self.ensure_project_records(&area, window, cx);
         if self.project_navigation.boards.contains_key(&area) {
             return;
         }
@@ -966,9 +968,8 @@ impl Reader {
                         Err(error) => { this.link_notice = Some(format!("Board note unavailable: {error:#}").into()); cx.notify(); }
                     }
                 }
-                Action::Discuss(text) => {
+                Action::Discuss(text) | Action::RecordDiscuss(text) => {
                     board.update(cx, |board,cx| { board.peek.manager_tab = true; cx.notify(); });
-                    #[cfg(native_manager)]
                     let result = this.project.clone().ok_or(okilum_t3::draft_handoff::Refusal::Unavailable)
                         .and_then(|manager| {
                             if manager.read(cx).area.as_deref() != Some(owner.as_path()) {
@@ -985,11 +986,15 @@ impl Reader {
                                 && this.workspace_panels().visible(reader_layout::Panel::Backlinks, available);
                             manager.update(cx, |manager, cx| {
                                 manager.select_section(ProjectSection::Manager, cx);
+                                #[cfg(native_manager)]
                                 manager.draft_handoff_surface_visible(visible, cx);
-                                manager.append_board_context(&owner, text.clone(), window, cx)
+                                if matches!(action, Action::RecordDiscuss(_)) {
+                                    manager.append_record_context(&owner, text.clone(), visible, window, cx)
+                                } else {
+                                    manager.append_board_context(&owner, text.clone(), window, cx)
+                                }
                             })
                         });
-                    #[cfg(native_manager)]
                     let notice = match result {
                         Ok(()) => {
                             "Context appended to the existing Manager draft. Review and send when ready; Undo removes the block."
@@ -998,12 +1003,16 @@ impl Reader {
                             "Manager target changed. Check its draft before trying again.",
                         Err(_) => "Manager draft unavailable. Open the Manager and try again.",
                     };
-                    #[cfg(not(native_manager))]
-                    let notice = "Draft handoff to this Manager panel is unavailable. No draft was changed.";
                     board.update(cx, |board, cx| {
                         board.notice = Some(notice.into());
                         cx.notify();
                     });
+                    if let Some(records) = this.project_navigation.records.get(&owner) {
+                        records.update(cx, |records, cx| {
+                            records.notice = Some(notice.into());
+                            cx.notify();
+                        });
+                    }
                 }
             }
         }).detach();
@@ -1044,7 +1053,16 @@ impl Reader {
             let visible = active == Some(area)
                 && self.project_navigation.board_visible
                 && self.project_navigation.section == reader_project_navigation::Section::Reader;
-            board.update(cx, |board, cx| board.set_visible(visible, window, cx));
+            let records = self.project_navigation.records.get(area);
+            let record_tab = records.is_some_and(|records| records.read(cx).kind.is_some());
+            board.update(cx, |board, cx| {
+                board.set_visible(visible && !record_tab, window, cx)
+            });
+            if let Some(records) = records {
+                records.update(cx, |records, cx| {
+                    records.set_visible(visible && record_tab, cx)
+                });
+            }
         }
     }
     pub(crate) fn render_project_center(
@@ -1067,9 +1085,26 @@ impl Reader {
                             cx.notify();
                         }
                     });
-                    return div()
+                    let records = self
+                        .project_navigation
+                        .active
+                        .as_ref()
+                        .and_then(|p| self.project_navigation.records.get(&p.folder));
+                    let record_tab = records.is_some_and(|records| records.read(cx).kind.is_some());
+                    let content = if record_tab {
+                        records.unwrap().clone().into_any_element()
+                    } else {
+                        board
+                            .clone()
+                            .cached(StyleRefinement::default().size_full())
+                            .into_any_element()
+                    };
+                    return v_flex()
                         .size_full()
-                        .child(board.clone().cached(StyleRefinement::default().size_full()))
+                        .min_h_0()
+                        .min_w_0()
+                        .child(self.render_project_tabs(cx))
+                        .child(div().flex_1().min_h_0().min_w_0().child(content))
                         .into_any_element();
                 }
                 return v_flex()
@@ -1080,7 +1115,7 @@ impl Reader {
                             Button::new("project-return-board")
                                 .debug_selector(|| "project-return-board".into())
                                 .ghost()
-                                .label("← Board")
+                                .label("← Project views")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.return_to_project_board(cx);
                                 })),

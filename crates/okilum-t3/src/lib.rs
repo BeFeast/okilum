@@ -33,6 +33,7 @@ pub mod oauth;
 pub mod projection;
 pub mod projects;
 pub mod reconnect;
+pub mod records;
 pub mod rotation;
 mod session;
 pub mod stream;
