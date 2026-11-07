@@ -322,7 +322,32 @@ fn dropped_video_goes_to_the_video_slot_beside_the_screenshot_and_remove_omits_i
         });
         visual.update(|window, cx| window.draw(cx).clear(cx));
 
+        // Authored identity/disclosure and both media slots can overflow the
+        // normal form. Reach the real control through its scroll viewport;
+        // debug bounds alone do not prove that an offscreen click can fire.
+        let form = visual.debug_bounds("feedback-form").unwrap();
+        let before = visual.debug_bounds("feedback-remove-video").unwrap();
+        println!("FEEDBACK_2683_REMOVE_BEFORE form={form:?} button={before:?}");
+        for _ in 0..4 {
+            let bounds = visual.debug_bounds("feedback-remove-video").unwrap();
+            if bounds.top() >= form.top() && bounds.bottom() <= form.bottom() {
+                break;
+            }
+            visual.simulate_event(ScrollWheelEvent {
+                position: form.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-300.))),
+                touch_phase: TouchPhase::Moved,
+                modifiers: Modifiers::default(),
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.draw(cx).clear(cx));
+        }
         let remove = visual.debug_bounds("feedback-remove-video").unwrap();
+        let viewport = visual.update(|window, _| window.viewport_size());
+        assert!(remove.size.height > px(0.) && remove.size.width > px(0.));
+        assert!(remove.top() >= form.top() && remove.bottom() <= form.bottom());
+        assert!(remove.top() >= px(0.) && remove.bottom() <= viewport.height);
+        println!("FEEDBACK_2683_REMOVE_VISIBLE button={remove:?}");
         visual.simulate_click(remove.center(), Modifiers::default());
         visual.run_until_parked();
         view.read_with(visual, |view, cx| {
