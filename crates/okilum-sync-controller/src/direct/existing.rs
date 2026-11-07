@@ -163,6 +163,10 @@ pub(super) fn same_binding_with_consent(saved: &ExistingVault, fresh: &ExistingV
         return true;
     }
     #[cfg(target_os = "linux")]
+    if saved.stable_root_identity.is_some() {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
     if saved.stable_root_identity.is_none()
         && fresh.stable_root_identity.is_some()
         && same_replica(saved, fresh)

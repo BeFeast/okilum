@@ -27,6 +27,7 @@ const KEY: &str = "synthetic-fixture-key";
 
 struct Fixture {
     config: PathBuf,
+    #[cfg(target_os = "linux")]
     folders: Arc<Mutex<Vec<serde_json::Value>>>,
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
@@ -111,6 +112,7 @@ impl Fixture {
         });
         Ok(Self {
             config: config.canonicalize()?,
+            #[cfg(target_os = "linux")]
             folders,
             requests,
             stop,
