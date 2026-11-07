@@ -83,9 +83,13 @@ echo 'APPIMAGE_STATIC_RUNTIME_PASS (dynamic shell positive control passed)'
 export APPIMAGE_EXTRACT_AND_RUN=1
 ./tools/linuxdeploy --appdir AppDir --executable "$binary" \
     --executable /usr/bin/gpgv \
+    --library "$(pkg-config --variable=libdir alsa)/libasound.so.2" \
     --desktop-file ../../scripts/arch/okilum.desktop \
     --icon-file ../../crates/okilum-shell/assets/brand/app-icon-light.svg \
     --icon-filename okilum
+# linuxdeploy excludes ALSA by default. The audio viewer links it at startup,
+# so force the loader library into the image; device configuration stays native.
+test -e AppDir/usr/lib/libasound.so.2
 python3 ../../scripts/appimage/check-elf.py AppDir/usr/bin/okilum \
     2>&1 | tee evidence/elf-after-deploy.log
 install -Dm644 ../../LICENSE AppDir/usr/share/licenses/okilum/LICENSE
