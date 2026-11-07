@@ -514,7 +514,7 @@ fn execute(verb: Verb, mut session: Session) -> anyhow::Result<i32> {
             // Share on an existing Syncthing folder becomes inspection; the
             // explicit command is the consent the Settings view asks for.
             if let Some(inspected) = output.inspected.take() {
-                output = session.perform(Operation::Consent(inspected))?;
+                output = session.perform(Operation::Consent(Box::new(inspected)))?;
             }
             print_json(&output.status);
         }

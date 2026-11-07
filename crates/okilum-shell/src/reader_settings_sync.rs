@@ -156,7 +156,7 @@ enum Operation {
     Cancel,
     Catalog(uuid::Uuid),
     Inspect(PathBuf),
-    Consent(ExistingVault),
+    Consent(Box<ExistingVault>),
     Attach(uuid::Uuid, String, PathBuf),
     AttachNew(uuid::Uuid, String, PathBuf),
 }

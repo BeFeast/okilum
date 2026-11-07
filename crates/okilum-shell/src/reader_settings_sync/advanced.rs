@@ -166,7 +166,7 @@ impl SyncSettings {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.inspected = None;
                         this.presentation.wizard = None;
-                        this.run(Operation::Consent(approved.clone()), cx);
+                        this.run(Operation::Consent(Box::new(approved.clone())), cx);
                     })))
                 .child(Button::new("sync-dismiss-existing")
                     .debug_selector(|| "sync-dismiss-existing".into()).ghost().label("Cancel").disabled(self.busy)

@@ -2122,7 +2122,7 @@ fn issue2615_existing_preview_is_visible_without_opening_advanced(cx: &mut TestA
                 }
                 Operation::Consent(vault) => {
                     recorded.lock().unwrap().push("consent");
-                    snapshot.attached.push(vault);
+                    snapshot.attached.push(*vault);
                     None
                 }
                 _ => panic!("unexpected existing-connection operation"),
