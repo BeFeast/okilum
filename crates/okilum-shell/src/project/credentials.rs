@@ -70,7 +70,7 @@ impl Store {
         } else {
             Task::ready(Ok(None))
         };
-        let saved_native = if cfg!(any(target_os = "linux", target_os = "macos")) {
+        let saved_native = if cfg!(native_manager) {
             self.read(&okilum_t3::stream::NativeToken::credential_key(&env), cx)
         } else {
             Task::ready(Ok(None))
