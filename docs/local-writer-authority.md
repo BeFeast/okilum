@@ -26,6 +26,23 @@ clear it, and deleting authority is not a supported recovery/reset procedure.
 Complete destruction/replacement of all private account state by its owner is
 outside the cooperative fencing guarantee.
 
+On macOS (#2692), schema 2 identifies a filesystem object by its full native
+volume UUID, inode and creation time. `fgetattrlist(ATTR_VOL_UUID)` and metadata
+come from the same no-follow file handle. Raw `st_dev` is a diagnostic hint:
+APFS can renumber the Data volume after a reboot or OS update. Other platforms
+retain schema 1 and their existing identity rules.
+
+Existing Mac schema-1 bindings migrate automatically under registry, admission,
+exclusive writer and owner locks. The canonical root and every recorded authority
+directory/lock inode and nonmissing creation time must match. The migration only
+adds the observed volume UUIDs and updates private binding metadata; it leaves
+canonical files, epoch and the complete state/hold record unchanged. A busy old
+writer must finish first. Old schema-1 handles remain stale after publication;
+an unfinished hold still refuses admission. Replaced roots/lock files, unknown
+birth identities and corrupt state fail closed. This is format migration, never
+an automatic Re-attach. Subsequent UUID or inode/creation changes are replacements
+even if the raw device hint stayed equal.
+
 A vault folder re-created at the same canonical path (for example re-received by
 Sync) stays refused until the user re-attaches it: Reader's failed preparation
 offers **Re-attach folder** in place of Retry (#2589). That click calls

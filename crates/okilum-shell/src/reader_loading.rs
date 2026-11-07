@@ -2874,7 +2874,9 @@ impl Reader {
                                 this.loading.as_mut().unwrap().active = false;
                                 let load = this.loading.as_mut().unwrap();
                                 load.replaced_root = replaced_root;
-                                load.phase = if load.network {
+                                load.phase = if load.replaced_root.is_some() {
+                                    "Vault folder changed. Re-attach it to continue.".into()
+                                } else if load.network {
                                     load.network_waiting = true;
                                     "Cannot refresh vault — showing last loaded content".into()
                                 } else { error };
@@ -4736,7 +4738,10 @@ mod tests {
         reader.read_with(visual, |v, _| {
             let load = v.loading.as_ref().unwrap();
             assert!(!load.active);
-            assert!(load.phase.contains("Vault root replaced"), "{}", load.phase);
+            assert_eq!(
+                load.phase,
+                "Vault folder changed. Re-attach it to continue."
+            );
             assert_eq!(
                 load.replaced_root.as_deref(),
                 Some(root.canonicalize().unwrap().as_path())
