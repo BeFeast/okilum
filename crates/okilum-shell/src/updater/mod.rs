@@ -514,7 +514,7 @@ fn announce_ready(
         .iter()
         .map(|handle| handle.window_id())
         .collect();
-    let window_id = window.window_id();
+    let window_id = window.window_handle().window_id();
     let announcements = cx.default_global::<ReadyAnnouncements>();
     // Keep the current window even when GPUI temporarily takes it out of the
     // application during its update. Closed windows retain no announcement state.
