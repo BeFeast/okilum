@@ -117,6 +117,30 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     view.read_with(visual, |v, _| {
         assert!(v.view.x > before, "wheel must pan the actual scene")
     });
+    // The Reader's capture-phase text zoom must yield to Canvas even when
+    // ordinary note text is already at its own maximum zoom.
+    let original_text_zoom = visual.update(|_, cx| {
+        let zoom = reader_ui_state::text_zoom(cx);
+        reader_ui_state::set_text_zoom(3., cx);
+        zoom
+    });
+    let before = view.read_with(visual, |v, _| v.view.scale);
+    visual.simulate_event(ScrollWheelEvent {
+        position: area.center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(64.))),
+        modifiers: Modifiers {
+            control: true,
+            platform: true,
+            ..Default::default()
+        },
+        touch_phase: TouchPhase::Moved,
+    });
+    visual.run_until_parked();
+    view.read_with(visual, |v, _| assert!(v.view.scale > before));
+    visual.update(|_, cx| {
+        assert_eq!(reader_ui_state::text_zoom(cx), 3.);
+        reader_ui_state::set_text_zoom(original_text_zoom, cx);
+    });
     let note = visual
         .debug_bounds("canvas-open-note-note")
         .expect("existing file card must render");

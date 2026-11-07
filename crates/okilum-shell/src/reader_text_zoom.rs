@@ -384,7 +384,7 @@ fn change(
     if this
         .file_preview
         .as_ref()
-        .is_some_and(|preview| preview.pdf.is_some())
+        .is_some_and(|preview| preview.pdf.is_some() || preview.canvas.is_some())
     {
         cx.propagate();
         return;
