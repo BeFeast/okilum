@@ -95,6 +95,15 @@ fn local_viewers_dispatch_inline_and_as_files_and_canvas_navigates_without_write
     let view = reader.read_with(visual, |r, _| {
         r.file_preview.as_ref().unwrap().canvas.clone().unwrap()
     });
+    // The first frame must fit negative scene coordinates without a user input.
+    // Previously the measure callback notified during drawing, which left the
+    // native window showing only the group border until Fit or another event.
+    let initial_area = visual.debug_bounds("canvas-scene").unwrap();
+    assert!(initial_area.size.width > px(200.) && initial_area.size.height > px(200.));
+    let initial_note = visual
+        .debug_bounds("canvas-open-note-note")
+        .expect("a file card must be visible before the first user input");
+    assert!(initial_area.contains(&initial_note.center()));
     let scale = view.read_with(visual, |v, _| {
         assert!(matches!(v.scene, Some(Ok(_))));
         v.view.scale
