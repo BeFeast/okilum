@@ -160,3 +160,7 @@ cannot overwrite the newest Ready notice or its Restart action.
 The explicit non-shipping AppImage acceptance fixture retains its isolated local
 trust and never requests a production feed. Production-feed beta acceptance is
 recorded separately from that fixture.
+
+For production beta N → N+1 checks on the three native OSes, use the
+[native acceptance procedure](updater-native-acceptance.md). Installing a fix
+and exercising the updater from that installed fix are separate results.
