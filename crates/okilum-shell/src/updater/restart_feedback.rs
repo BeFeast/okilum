@@ -6,8 +6,8 @@
 //! update notice and a newer message replaces the older one in place.
 use gpui::App;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 static TRACE: Mutex<Option<crate::reader_diagnostics::Trace>> = Mutex::new(None);
@@ -34,10 +34,6 @@ pub(super) struct Announced(Option<String>);
 
 #[cfg(any(target_os = "macos", test))]
 impl Announced {
-    pub(super) const fn new() -> Self {
-        Self(None)
-    }
-
     /// True once per distinct ready package.
     pub(super) fn claim(&mut self, package: &str) -> bool {
         if self.0.as_deref() == Some(package) {
@@ -138,7 +134,9 @@ pub(super) fn report(kind: i32, reason: &str) {
         return;
     }
     match kind {
-        2 => refused(format!("{reason} Open Settings → Updates and check for updates again. Okilum is staying open.")),
+        2 => refused(format!(
+            "{reason} Open Settings → Updates and check for updates again. Okilum is staying open."
+        )),
         // Sparkle can offer its retry continuation while GPUI's asynchronous
         // quit is already completing. An empty signal is waiting, not proof
         // of a failed restart. Keep ACTIVE for subsequent install outcomes.
@@ -149,8 +147,13 @@ pub(super) fn report(kind: i32, reason: &str) {
         ),
         10 | 14 => refused(if reason.is_empty() {
             "Okilum is still open. Save or close any pending dialog, then choose Restart now again."
-        } else { reason }),
-        4 => notify("verifying", "Verifying the update. Restart will continue automatically; your edits will be protected first."),
+        } else {
+            reason
+        }),
+        4 => notify(
+            "verifying",
+            "Verifying the update. Restart will continue automatically; your edits will be protected first.",
+        ),
         6 => notify("accepted", "Restarting to install the update…"),
         7 => refused("Update cancelled. Check for updates and download it again."),
         8 => {
@@ -172,7 +175,7 @@ pub(super) fn show_ready(
 ) {
     use gpui::InteractiveElement as _;
     use gpui_component::button::Button;
-    use gpui_component::{notification::Notification, Sizable, WindowExt};
+    use gpui_component::{Sizable, WindowExt, notification::Notification};
     use std::rc::Rc;
     let restart = Rc::new(restart);
     window.defer(cx, move |window, cx| {
@@ -198,7 +201,7 @@ pub(super) fn show_ready(
 fn show_message(window: &mut gpui::Window, cx: &mut App, message: Message) {
     use gpui::InteractiveElement as _;
     use gpui_component::button::Button;
-    use gpui_component::{notification::Notification, Sizable, WindowExt};
+    use gpui_component::{Sizable, WindowExt, notification::Notification};
     let mut notice = Notification::new()
         .id::<UpdateNotice>()
         .message(message.text)
@@ -331,10 +334,12 @@ mod tests {
                 "refused"
             ]
         );
-        assert!(events.last().unwrap()["details"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("latest edits could not be protected"));
+        assert!(
+            events.last().unwrap()["details"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("latest edits could not be protected")
+        );
         *TRACE.lock().unwrap() = None;
     }
 
@@ -398,10 +403,12 @@ mod tests {
                 .count(),
             2
         );
-        assert!(events.iter().any(|e| e["details"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("Save or close")));
+        assert!(events.iter().any(|e| {
+            e["details"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Save or close")
+        }));
         *TRACE.lock().unwrap() = None;
     }
 }

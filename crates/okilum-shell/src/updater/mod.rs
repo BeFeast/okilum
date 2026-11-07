@@ -521,10 +521,7 @@ fn announce_ready(
     announcements
         .windows
         .retain(|id, _| *id == window_id || live_windows.contains(id));
-    let announced = announcements
-        .windows
-        .entry(window_id)
-        .or_insert_with(restart_feedback::Announced::new);
+    let announced = announcements.windows.entry(window_id).or_default();
     let show = match status {
         CheckStatus::Ready | CheckStatus::RestartRetry(_) => {
             announced.claim(package.unwrap_or_default())

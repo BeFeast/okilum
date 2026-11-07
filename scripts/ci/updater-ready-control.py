@@ -17,17 +17,13 @@ FAILURE = 'each restored window must show its ready notice'
 
 
 def variants(source):
-    shared = '''    let announced = announcements
-        .windows
-        .entry(window_id)'''
+    shared = '    let announced = announcements.windows.entry(window_id).or_default();'
     inactive = 'announced.claim(package.unwrap_or_default())'
     if source.count(shared) != 1 or source.count(inactive) != 1:
         raise ValueError('The two reviewed announcement-control anchors changed')
     return {
         'shared-claim': source.replace(shared, '''    let shared_window_id = announcements.windows.keys().next().copied().unwrap_or(window_id);
-    let announced = announcements
-        .windows
-        .entry(shared_window_id)'''),
+    let announced = announcements.windows.entry(shared_window_id).or_default();'''),
         'active-only': source.replace(inactive, 'window.is_window_active() && ' + inactive),
     }
 
