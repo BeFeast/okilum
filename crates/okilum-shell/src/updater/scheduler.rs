@@ -2,10 +2,10 @@
 use std::time::Duration;
 
 pub(super) const MIN_INTERVAL: Duration = Duration::from_secs(28 * 60);
-pub(super) const MAX_INTERVAL: Duration = Duration::from_secs(32 * 60);
+pub(super) const MAX_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const THROTTLE: Duration = Duration::from_secs(5 * 60);
 
-/// Uniform jitter of up to two minutes around thirty minutes.
+/// Spread requests over two minutes without exceeding the discovery deadline.
 pub(super) fn interval(entropy: u64) -> Duration {
     MIN_INTERVAL
         + Duration::from_secs(entropy % (MAX_INTERVAL - MIN_INTERVAL).as_secs().saturating_add(1))
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn intervals_cover_both_jitter_bounds_and_stay_near_thirty_minutes() {
         assert_eq!(interval(0), MIN_INTERVAL);
-        assert_eq!(interval(240), MAX_INTERVAL);
+        assert_eq!(interval(120), MAX_INTERVAL);
         for entropy in (0..1000).chain([u64::MAX]) {
             assert!((MIN_INTERVAL..=MAX_INTERVAL).contains(&interval(entropy)));
         }
@@ -105,6 +105,22 @@ mod tests {
                 || panic!("early recheck")
             ));
             assert!(schedule.run(period + period, Trigger::Interval, true, period, || true));
+        }
+    }
+
+    #[test]
+    fn every_entropy_allows_automatic_discovery_within_thirty_minutes() {
+        let deadline = Duration::from_secs(30 * 60);
+        // Includes values that selected delays beyond thirty minutes before
+        // the deadline was bounded, plus the full random input's upper edge.
+        for entropy in (0..=240).chain([u64::MAX]) {
+            let period = interval(entropy);
+            let mut schedule = Schedule::new(ZERO, period);
+            assert!(schedule.run(ZERO, Trigger::Manual, true, period, || true));
+            assert!(
+                schedule.run(deadline, Trigger::Interval, true, period, || true),
+                "automatic discovery missed the deadline for entropy {entropy}"
+            );
         }
     }
 
