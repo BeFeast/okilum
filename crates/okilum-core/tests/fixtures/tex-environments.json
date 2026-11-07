@@ -1,0 +1,78 @@
+[
+  {
+    "name": "equation",
+    "tex": "\\begin{equation} a^2+b^2=c^2 \\end{equation}"
+  },
+  {
+    "name": "equation-star",
+    "tex": "\\begin{equation*}\\left(\\sum_{k=1}^n a_k b_k\\right)^2 \\leq \\left(\\sum_{k=1}^n a_k^2\\right)\\left(\\sum_{k=1}^n b_k^2\\right)\\end{equation*}"
+  },
+  {
+    "name": "choose",
+    "tex": "\\begin{equation*} P(E)={n \\choose k}p^k(1-p)^{n-k}\\end{equation*}"
+  },
+  {
+    "name": "array-repeated-separator",
+    "tex": "\\begin{array}{c} y_1 \\\\\\\\ y_2 \\mathtt{t}_i \\\\\\\\ z_{3,4} \\end{array}"
+  },
+  {
+    "name": "array-cr",
+    "tex": "\\begin{array}{c} y_1 \\cr y_2 \\mathtt{t}_i \\cr y_3 \\end{array}"
+  },
+  {
+    "name": "align-lorenz",
+    "tex": "\\begin{align}\n\\dot{x} & = \\sigma(y-x) \\\\\n\\dot{y} & = \\rho x-y-xz \\\\\n\\dot{z} & = -\\beta z+xy\n\\end{align}"
+  },
+  {
+    "name": "align-maxwell",
+    "tex": "\\begin{align}\n\\nabla\\times\\vec{\\mathbf{B}}-\\,\\frac1c\\,\\frac{\\partial\\vec{\\mathbf{E}}}{\\partial t} &=\\frac{4\\pi}{c}\\vec{\\mathbf{j}} \\\\\n\\nabla\\cdot\\vec{\\mathbf{E}} &=4\\pi\\rho \\\\\n\\nabla\\times\\vec{\\mathbf{E}}+\\,\\frac1c\\,\\frac{\\partial\\vec{\\mathbf{B}}}{\\partial t} &=\\vec{\\mathbf{0}} \\\\\n\\nabla\\cdot\\vec{\\mathbf{B}} &=0\n\\end{align}"
+  },
+  {
+    "name": "vmatrix-cross-product",
+    "tex": "\\begin{equation*}\n\\mathbf{V}_1\\times\\mathbf{V}_2=\\begin{vmatrix}\n\\mathbf{i}&\\mathbf{j}&\\mathbf{k} \\\\\n\\frac{\\partial X}{\\partial u}&\\frac{\\partial Y}{\\partial u}&0 \\\\\n\\frac{\\partial X}{\\partial v}&\\frac{\\partial Y}{\\partial v}&0\n\\end{vmatrix}\\end{equation*}"
+  },
+  {
+    "name": "vmatrix",
+    "tex": "\\begin{vmatrix}a&b\\\\c&d\\end{vmatrix}=ad-bc"
+  },
+  {
+    "name": "pmatrix",
+    "tex": "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}"
+  },
+  {
+    "name": "bmatrix",
+    "tex": "\\begin{bmatrix}a&b\\\\c&d\\end{bmatrix}"
+  },
+  {
+    "name": "matrix",
+    "tex": "\\begin{matrix}a&b\\\\c&d\\end{matrix}"
+  },
+  {
+    "name": "smallmatrix",
+    "tex": "\\begin{smallmatrix}a&b\\\\c&d\\end{smallmatrix}"
+  },
+  {
+    "name": "subarray",
+    "tex": "\\sum_{\\begin{subarray}{l}i\\in\\Lambda\\\\0<j<n\\end{subarray}} a_i"
+  },
+  {
+    "name": "split",
+    "tex": "\\begin{equation}\\begin{split}a&=b+c\\\\&=e+f\\end{split}\\end{equation}"
+  },
+  {
+    "name": "gather",
+    "tex": "\\begin{gather}a=b\\\\e=b+c\\end{gather}"
+  },
+  {
+    "name": "eqnarray",
+    "tex": "\\begin{eqnarray}x'&=& &x\\sin\\phi&+&z\\cos\\phi\\\\z'&=&-&x\\cos\\phi&+&z\\sin\\phi\\\\\\end{eqnarray}"
+  },
+  {
+    "name": "cases",
+    "tex": "x=\\begin{cases}a&\\text{if }b\\\\c&\\text{if }d\\end{cases}"
+  },
+  {
+    "name": "rcases",
+    "tex": "\\begin{rcases}a&\\text{if }b\\\\c&\\text{if }d\\end{rcases}"
+  }
+]

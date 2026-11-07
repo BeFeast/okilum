@@ -10,7 +10,7 @@ impl Parser<'_> {
     pub(super) fn environment(&mut self) -> Result<Node, Error> {
         let name = self.environment_name()?;
         let mut columns = match name.as_str() {
-            "array" => {
+            "array" | "subarray" => {
                 let spec = self.environment_name()?;
                 let columns: Vec<_> = spec
                     .chars()
@@ -25,14 +25,19 @@ impl Parser<'_> {
                 if columns.is_empty() || columns.len() > MAX_COLUMNS {
                     return error("Array needs 1 to 32 columns");
                 }
+                if name == "subarray" && columns.len() != 1 {
+                    return error("Subarray needs one column");
+                }
                 columns
             }
             "equation" | "equation*" | "gathered" | "gather" | "gather*" => {
                 vec![Alignment::Center]
             }
-            "cases" => vec![Alignment::Left; 2],
-            "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "aligned"
-            | "align" | "align*" | "split" | "eqnarray" | "eqnarray*" => Vec::new(),
+            "cases" | "rcases" => vec![Alignment::Left; 2],
+            "matrix" | "smallmatrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix"
+            | "Vmatrix" | "aligned" | "align" | "align*" | "split" | "eqnarray" | "eqnarray*" => {
+                Vec::new()
+            }
             _ => return error(format!("Unsupported math environment {name}")),
         };
         let fixed_columns = !columns.is_empty();
@@ -83,7 +88,11 @@ impl Parser<'_> {
                 })
                 .collect();
         }
-        let body = Node::Array { rows, columns };
+        let body = Node::Array {
+            rows,
+            columns,
+            small: name == "smallmatrix",
+        };
         let (open, close) = match name.as_str() {
             "pmatrix" => ("(", ")"),
             "bmatrix" => ("[", "]"),
@@ -91,6 +100,7 @@ impl Parser<'_> {
             "vmatrix" => ("|", "|"),
             "Vmatrix" => ("‖", "‖"),
             "cases" => ("{", ""),
+            "rcases" => ("", "}"),
             _ => return Ok(body),
         };
         Ok(Node::Fenced {
@@ -113,13 +123,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn all_named_showcase_environments_and_complete_formulas_parse() {
+        let fixtures: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../../tests/fixtures/tex-environments.json"))
+                .unwrap();
+        assert_eq!(fixtures.len(), 19);
+        for fixture in fixtures {
+            let source = fixture["tex"].as_str().unwrap();
+            assert!(
+                parse(source).is_ok(),
+                "{}: {:?}",
+                fixture["name"],
+                parse(source)
+            );
+            assert!(linear(source).is_ok(), "{}", fixture["name"]);
+        }
+        assert!(matches!(
+            parse(r"\begin{smallmatrix}a\end{smallmatrix}").unwrap()[0],
+            Node::Array { small: true, .. }
+        ));
+        assert!(
+            matches!(&parse(r"\begin{rcases}a&b\end{rcases}").unwrap()[0], Node::Fenced { open, close, .. } if open.is_empty() && close == "}")
+        );
+    }
+
+    #[test]
+    fn single_dollar_environment_boundary_cannot_pair_prices_or_prose() {
+        let good = "$\\begin{align}\r\na&=b\\\\\r\nc&=d\r\n\\end{align}$\r\n";
+        assert_eq!(
+            single_dollar_environment(good),
+            Some("\\begin{align}\r\na&=b\\\\\r\nc&=d\r\n\\end{align}")
+        );
+        for source in [
+            "$5\n$10",
+            "$x\ny$",
+            "$\\begin{matrix}x\\end{array}$",
+            "before $\\begin{matrix}x\\end{matrix}$",
+            "$$\\begin{matrix}x\\end{matrix}$$",
+        ] {
+            assert!(single_dollar_environment(source).is_none(), "{source}");
+        }
+    }
+
+    #[test]
     fn math_2684_reported_arrays_and_eqnarray_parse() {
         for separator in [r"\\", r"\cr"] {
             let source = format!(
                 r"\begin{{array}}{{c}} y_1 {separator} y_2 \mathtt{{t}}_i {separator} z_{{3,4}} \end{{array}}"
             );
             let nodes = parse(&source).unwrap();
-            let [Node::Array { rows, columns }] = nodes.as_slice() else {
+            let [Node::Array { rows, columns, .. }] = nodes.as_slice() else {
                 panic!("expected an array: {nodes:?}");
             };
             assert_eq!(rows.len(), 3);
@@ -129,7 +182,7 @@ mod tests {
         let nodes = parse(
             r"\begin{eqnarray} x' &=& &x \sin\phi &+& z \cos\phi \\ z' &=& - &x \cos\phi &+& z \sin\phi \\ \end{eqnarray}",
         ).unwrap();
-        let [Node::Array { rows, columns }] = nodes.as_slice() else {
+        let [Node::Array { rows, columns, .. }] = nodes.as_slice() else {
             panic!()
         };
         assert_eq!(rows.len(), 2);
@@ -179,6 +232,10 @@ mod tests {
             r"\end{array}",
             r"a & b",
             r"\begin{array}{c} {a & b} \end{array}",
+            r"\begin{subarray}{lr} x & y \end{subarray}",
+            r"{n \choose k \choose m}",
+            r"{\choose k}",
+            r"{n \choose}",
         ] {
             assert!(parse(source).is_err(), "{source}");
         }

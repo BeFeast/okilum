@@ -2013,28 +2013,52 @@ mod tests {
 
     #[gpui::test]
     fn math_2684_live_array_renders_and_reveals_unchanged_source(cx: &mut TestAppContext) {
-        let formula = "$$\r\n\\begin{array}{c}\r\ny_1 \\\\\r\ny_2 \\mathtt{t}_i \\\\\r\nz_{3,4}\r\n\\end{array}\r\n$$";
-        let note = format!("Before.\r\n\r\n{formula}\r\n\r\nEnd.\r\n");
-        let start = note.find("$$").unwrap();
-        let (_reader, input, visual, directory) = live_fixture(cx, &note);
-        assert!(visual.debug_bounds("reader-math-formula-0").is_some());
-        assert!(visual.debug_bounds("math-array-cell-2-0").is_some());
-        assert!(visual.debug_bounds("reader-math-error-0").is_none());
-        input.update(visual, |input, cx| {
-            input.set_selected_range(start + 2..start + 2, cx)
-        });
-        block_draw(visual);
-        assert!(visual.debug_bounds("reader-math-formula-0").is_none());
-        assert_eq!(input.read_with(visual, |i, _| i.value().to_string()), note);
-        input.update(visual, |input, cx| {
-            input.set_selected_range(note.len()..note.len(), cx)
-        });
-        block_draw(visual);
-        assert!(visual.debug_bounds("math-array-cell-2-0").is_some());
-        assert_eq!(
-            std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
-            note
-        );
+        let fixtures: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../okilum-core/tests/fixtures/tex-environments.json"
+        ))
+        .unwrap();
+        for fixture in fixtures {
+            for delimiter in ["$$", "$"] {
+                let tex = fixture["tex"].as_str().unwrap().replace('\n', "\r\n");
+                let formula = format!("{delimiter}{tex}{delimiter}");
+                if delimiter == "$"
+                    && okilum_core::tex::single_dollar_environment(&formula).is_none()
+                {
+                    continue;
+                }
+                let note = format!("Before.\r\n\r\n{formula}\r\n\r\nEnd.\r\n");
+                let start = note.find(delimiter).unwrap();
+                let (_reader, input, visual, directory) = live_fixture(cx, &note);
+                assert!(
+                    visual.debug_bounds("reader-math-formula-0").is_some(),
+                    "{} {delimiter}",
+                    fixture["name"]
+                );
+                assert!(
+                    visual.debug_bounds("math-array").is_some(),
+                    "{}",
+                    fixture["name"]
+                );
+                assert!(visual.debug_bounds("reader-math-error-0").is_none());
+                input.update(visual, |input, cx| {
+                    let caret = start + delimiter.len();
+                    input.set_selected_range(caret..caret, cx)
+                });
+                block_draw(visual);
+                assert!(visual.debug_bounds("reader-math-formula-0").is_none());
+                assert_eq!(input.read_with(visual, |i, _| i.value().to_string()), note);
+                input.update(visual, |input, cx| {
+                    input.set_selected_range(note.len()..note.len(), cx)
+                });
+                block_draw(visual);
+                assert!(visual.debug_bounds("math-array").is_some());
+                assert_eq!(
+                    std::fs::read_to_string(directory.path().join("vault/note.md")).unwrap(),
+                    note
+                );
+                visual.update(|window, _| window.remove_window());
+            }
+        }
     }
 
     #[gpui::test]

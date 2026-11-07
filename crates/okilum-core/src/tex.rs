@@ -42,6 +42,26 @@ pub fn is_inline_formula(content: &str) -> bool {
     !inner_dollar && !is_amount(trimmed)
 }
 
+/// A whole paragraph containing a single-dollar TeX environment, as used by
+/// the Jupyter showcase. This explicit boundary cannot pair ordinary prices
+/// across lines. Delimiters and canonical source bytes are never edited.
+pub fn single_dollar_environment(source: &str) -> Option<&str> {
+    let source = source.trim();
+    let body = source.strip_prefix('$')?.strip_suffix('$')?.trim();
+    if body.len() > MAX_FORMULA_BYTES {
+        return None;
+    }
+    let (name, _) = body.strip_prefix(r"\begin{")?.split_once('}')?;
+    if name.is_empty()
+        || name.len() > 32
+        || !name.chars().all(|c| c.is_ascii_alphabetic() || c == '*')
+        || !body.ends_with(&format!(r"\end{{{name}}}"))
+    {
+        return None;
+    }
+    Some(body)
+}
+
 /// A number, optionally signed, with separators and one magnitude or
 /// percent suffix: `2`, `1,500`, `-3.50`, `1.5k`, `12%`, `3 M`.
 fn is_amount(text: &str) -> bool {
@@ -136,6 +156,7 @@ pub enum Node {
     Array {
         rows: Vec<Vec<Vec<Node>>>,
         columns: Vec<Alignment>,
+        small: bool,
     },
     /// Horizontal space in eighteenths of an em (TeX's `mu`).
     Space(u8),
@@ -234,6 +255,10 @@ impl Parser<'_> {
     }
 
     fn row(&mut self, end: End) -> Result<Vec<Node>, Error> {
+        self.row_infix(end, false)
+    }
+
+    fn row_infix(&mut self, end: End, denominator: bool) -> Result<Vec<Node>, Error> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             return error("Formula is nested too deeply");
@@ -271,6 +296,26 @@ impl Parser<'_> {
                 && (self.at_command("end") || self.at_command("cr") || self.at_command("\\"))
             {
                 break;
+            }
+            if self.at_command("choose") {
+                if denominator || nodes.is_empty() {
+                    return error("Invalid infix \\choose");
+                }
+                self.next_token();
+                let den = self.row_infix(end, true)?;
+                if den.is_empty() {
+                    return error("Missing denominator for \\choose");
+                }
+                self.depth -= 1;
+                return Ok(vec![Node::Fenced {
+                    open: "(".into(),
+                    close: ")".into(),
+                    body: vec![Node::Frac {
+                        num: nodes,
+                        den,
+                        bar: false,
+                    }],
+                }]);
             }
             match self.item()? {
                 Some(node) => nodes.push(node),

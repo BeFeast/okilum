@@ -434,6 +434,68 @@ mod tests {
                     }
                 }
             }
+            visual.update(|window, _| window.remove_window());
+        }
+        let fixtures: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../okilum-core/tests/fixtures/tex-environments.json"
+        ))
+        .unwrap();
+        let mut matrix_height = None;
+        for fixture in fixtures {
+            let tex = fixture["tex"].as_str().unwrap();
+            for delimiter in ["$$", "$"] {
+                let original = format!("{delimiter}{tex}{delimiter}\n");
+                if delimiter == "$"
+                    && okilum_core::tex::single_dollar_environment(&original).is_none()
+                {
+                    continue;
+                }
+                let source = obsidian::before_links(&original);
+                let (_, visual) = cx.add_window_view(|_, _| Fixture {
+                    source,
+                    clicked: Default::default(),
+                });
+                visual.simulate_resize(size(px(1400.), px(1100.)));
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                assert!(
+                    visual.debug_bounds("reader-math-formula-0").is_some(),
+                    "{} {delimiter}",
+                    fixture["name"]
+                );
+                assert!(
+                    visual.debug_bounds("reader-math-error-0").is_none(),
+                    "{}",
+                    fixture["name"]
+                );
+                let grid = visual
+                    .debug_bounds("math-array")
+                    .expect("named environment must actually render its grid");
+                if delimiter == "$$" {
+                    if fixture["name"] == "matrix" {
+                        matrix_height = Some(grid.size.height);
+                    }
+                    if fixture["name"] == "smallmatrix" {
+                        assert!(
+                            grid.size.height < matrix_height.unwrap() * 0.85,
+                            "smallmatrix uses script size"
+                        );
+                    }
+                    if fixture["name"] == "cases" || fixture["name"] == "rcases" {
+                        let selector = if fixture["name"] == "cases" {
+                            "math-delimiter-open"
+                        } else {
+                            "math-delimiter-close"
+                        };
+                        let brace = visual.debug_bounds(selector).expect("cases brace");
+                        assert!(
+                            (brace.size.height - grid.size.height).abs() < px(2.),
+                            "brace spans all rows: {brace:?} vs {grid:?}"
+                        );
+                    }
+                }
+                visual.update(|window, _| window.remove_window());
+            }
         }
     }
 
