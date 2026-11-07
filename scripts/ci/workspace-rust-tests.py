@@ -18,14 +18,24 @@ def run(name, arguments, expected):
                                stderr=subprocess.STDOUT, text=True, bufsize=1)
     observed = 0
     completed = 0
+    footer = None
     for line in process.stdout:
         print(line, end="", flush=True)
         text = ANSI.sub("", line).strip()
+        # stderr is merged into stdout BEFORE Cargo starts, so these target
+        # boundaries and harness footers share one ordered pipe. Fixtures may
+        # launch nested harnesses; only the final parent footer counts.
+        if text.startswith(("Running unittests ", "Running tests/", "Doc-tests ")):
+            if footer is not None:
+                observed += sum(footer)
+                completed += sum(footer[:2])
+            footer = None
         match = SUMMARY.match(text)
         if match:
-            passed, failed, ignored = map(int, match.groups())
-            observed += passed + failed + ignored
-            completed += passed + failed
+            footer = tuple(map(int, match.groups()))
+    if footer is not None:
+        observed += sum(footer)
+        completed += sum(footer[:2])
     status = process.wait()
     print(f"WORKSPACE_CENSUS_END part={name} expected={expected} observed={observed} completed={completed} status={status}",
           flush=True)
