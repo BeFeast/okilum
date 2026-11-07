@@ -19,8 +19,7 @@ fn showcase_virtual_log_selects_both_sources_without_mutating_them() {
 fn showcase_jpeg_and_bmp_embeds_resolve_to_real_files() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/viewers");
     let vault = Vault::scan(&root).unwrap();
-    let source = std::fs::read_to_string(root.join("images/README.md")).unwrap();
-    let rewritten = render::rewrite_source_images(&source, &vault, "images/README.md");
+    let rewritten = render::reader_source(&vault, "images/README.md").unwrap();
     for file in [
         "photo.jpg",
         "progressive.jpeg",
