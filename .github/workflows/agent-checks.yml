@@ -173,6 +173,7 @@ jobs:
           bash scripts/ci/test-group.sh agent-ci-python 300 python3 -I -m unittest discover -s scripts/ci -p 'test_*.py' -v
           bash scripts/ci/test-group.sh agent-releases-python 90 python3 -I -m unittest discover -s scripts/releases -p 'test_*.py' -v
           bash scripts/ci/test-group.sh agent-updater-python 90 python3 -I -m unittest discover -s scripts/updater -p 'test_*.py' -v
+          bash scripts/ci/test-group.sh agent-sprint-python 90 python3 scripts/dev/test-sprint-report.py
       - name: Verify bundled Sync Help and brand
         run: |
           python3 docs/help/sync/check.py
