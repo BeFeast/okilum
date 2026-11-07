@@ -92,6 +92,7 @@ jobs:
     - name: Verify Windows main recovery negative and restored controls
       shell: pwsh
       run: |
+        $env:OKILUM_WINDOWS_ICON = "$env:RUNNER_TEMP\test.ico"
         python scripts/ci/windows-main-recovery-check.py
         exit $LASTEXITCODE
     - uses: actions/upload-artifact@v4
