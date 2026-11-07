@@ -7,7 +7,12 @@ pub use operation::{Applied, Operation, RecoveryList};
 use crate::{Resolution, Vault};
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, ops::Range, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fs,
+    ops::Range,
+    path::Path,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Change {
@@ -125,6 +130,7 @@ impl Preview {
             Vault::from_note_paths(vault.notes.iter().map(|n| moved_path(&n.path, from, to)));
         // Simulated inventory must not consult pre-move filesystem entries.
         after.root = root.to_path_buf();
+        let rewrite = RewriteContext::new(&vault, &after, from, to);
         let candidates_started = std::time::Instant::now();
         let (candidates, unchanged) = if let Some(index) = index {
             let (paths, unchanged) = index.select(root, &vault, from, to, checkpoint)?;
@@ -217,17 +223,16 @@ impl Preview {
                     .filter(|b| *b == b'\n')
                     .count()
                     + 1;
-                let replacement = replacement(&vault, &after, from, to, &note.path, &target)
-                    .and_then(|next| {
-                        if let Some(next) = &next {
-                            syntax::validate_frontmatter_replacement(
-                                &source,
-                                target.range.clone(),
-                                next,
-                            )?;
-                        }
-                        Ok(next)
-                    });
+                let replacement = replacement(&rewrite, &note.path, &target).and_then(|next| {
+                    if let Some(next) = &next {
+                        syntax::validate_frontmatter_replacement(
+                            &source,
+                            target.range.clone(),
+                            next,
+                        )?;
+                    }
+                    Ok(next)
+                });
                 match replacement {
                     Ok(Some(replacement)) if replacement != target.text => {
                         preview.changes.push(Change {
@@ -372,13 +377,14 @@ impl Preview {
                 .map(|n| moved_path(&n.path, &self.from, &self.to)),
         );
         after.root = root.to_path_buf();
+        let rewrite = RewriteContext::new(&vault, &after, &self.from, &self.to);
         let validate_unaffected = |path: &str, source: &str| -> Result<()> {
             ensure!(
                 !protected.contains(path),
                 "{path} changed; preview again. Nothing was written"
             );
             for target in syntax::targets_in_vault(source, &vault, path) {
-                let unchanged = replacement(&vault, &after, &self.from, &self.to, path, &target)
+                let unchanged = replacement(&rewrite, path, &target)
                     .is_ok_and(|next| next.is_none_or(|next| next == target.text));
                 ensure!(
                     unchanged,
@@ -441,14 +447,56 @@ pub fn moved_path(path: &str, from: &str, to: &str) -> String {
         .map_or_else(|| path.to_owned(), |rest| format!("{to}/{rest}"))
 }
 
+// Keep canonical spelling membership and Unicode case-ambiguity counts for one
+// captured inventory. Rebuilding/scanning these per link made a folder preview
+// proportional to the entire vault size times its number of candidate links.
+struct NotePaths<'a> {
+    exact: HashSet<&'a str>,
+    folded_counts: HashMap<String, usize>,
+}
+impl<'a> NotePaths<'a> {
+    fn new(vault: &'a Vault) -> Self {
+        let mut exact = HashSet::new();
+        let mut folded_counts = HashMap::new();
+        for note in &vault.notes {
+            exact.insert(note.path.as_str());
+            *folded_counts.entry(note.path.to_lowercase()).or_insert(0) += 1;
+        }
+        Self {
+            exact,
+            folded_counts,
+        }
+    }
+    fn unique(&self, path: &str) -> bool {
+        self.folded_counts.get(&path.to_lowercase()) == Some(&1)
+    }
+}
+struct RewriteContext<'a> {
+    before: &'a Vault,
+    after: &'a Vault,
+    before_notes: NotePaths<'a>,
+    after_notes: NotePaths<'a>,
+    from: &'a str,
+    to: &'a str,
+}
+impl<'a> RewriteContext<'a> {
+    fn new(before: &'a Vault, after: &'a Vault, from: &'a str, to: &'a str) -> Self {
+        Self {
+            before,
+            after,
+            before_notes: NotePaths::new(before),
+            after_notes: NotePaths::new(after),
+            from,
+            to,
+        }
+    }
+}
 fn replacement(
-    before: &Vault,
-    after: &Vault,
-    from: &str,
-    to: &str,
+    context: &RewriteContext<'_>,
     source: &str,
     target: &syntax::Target,
 ) -> Result<Option<String>> {
+    let (before, after, from, to) = (context.before, context.after, context.from, context.to);
     let (base, fragment) = target
         .text
         .find('#')
@@ -515,26 +563,15 @@ fn replacement(
             "Folder inventory is incomplete; suffix link target cannot be verified"
         );
     }
-    let is_note = before.notes.iter().any(|n| n.path == resolved);
+    let is_note = context.before_notes.exact.contains(resolved.as_str());
     if is_note {
         ensure!(
-            before
-                .notes
-                .iter()
-                .filter(|n| n.path.to_lowercase() == resolved.to_lowercase())
-                .count()
-                == 1,
+            context.before_notes.unique(&resolved),
             "Case-ambiguous note path"
         );
         let mapped = moved_path(&resolved, from, to);
-        let desired = mapped.as_str();
         ensure!(
-            after
-                .notes
-                .iter()
-                .filter(|n| n.path.to_lowercase() == desired.to_lowercase())
-                .count()
-                == 1,
+            context.after_notes.unique(&mapped),
             "Destination would be case-ambiguous"
         );
     }
@@ -655,8 +692,9 @@ fn resolve_attachment(vault: &Vault, source: &str, target: &str) -> Result<Strin
     };
     let absolute = vault.root.join(&candidate);
     let canonical = absolute.canonicalize()?;
+    let root = crate::vault::canonical_root(&vault.root)?;
     ensure!(
-        canonical.starts_with(&vault.root) && canonical.is_file(),
+        canonical.starts_with(&root) && canonical.is_file(),
         "Attachment is outside the folder or not a file"
     );
     Ok(candidate)
@@ -736,6 +774,45 @@ fn encode_path(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn alias_ancestor_attachment_containment_keeps_outside_symlinks_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let real = directory.path().join("real/vault");
+        fs::create_dir_all(real.join("Old/media")).unwrap();
+        fs::create_dir(real.join("Parent")).unwrap();
+        fs::write(real.join("Old/media/p.png"), [0, 255, 1]).unwrap();
+        fs::write(real.join("Old/media/escape.png"), [2, 3]).unwrap();
+        fs::write(real.join("Ref.md"), "![p](Old/media/p.png)\r\n").unwrap();
+        let outside = directory.path().join("outside.png");
+        fs::write(&outside, [7, 8, 9]).unwrap();
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(directory.path().join("real"), &alias).unwrap();
+        let root = alias.join("vault");
+        let vault = Vault::scan_metadata(&root).unwrap();
+        assert_ne!(vault.root, root.canonicalize().unwrap());
+        assert_eq!(
+            resolve_attachment(&vault, "Ref.md", "Old/media/p.png").unwrap(),
+            "Old/media/p.png"
+        );
+        // The inventory saw a regular file; a subsequent replacement must still
+        // be checked against the real root rather than following it outside.
+        fs::remove_file(real.join("Old/media/escape.png")).unwrap();
+        std::os::unix::fs::symlink(&outside, real.join("Old/media/escape.png")).unwrap();
+        let error = resolve_attachment(&vault, "Ref.md", "Old/media/escape.png").unwrap_err();
+        assert!(
+            error.to_string().contains("outside the folder"),
+            "{error:#}"
+        );
+        let preview = Preview::prepare(&root, "Old", "Parent/New").unwrap();
+        assert!(preview
+            .changes
+            .iter()
+            .any(|change| change.path == "Ref.md" && change.after == "./Parent/New/media/p.png"));
+        assert_eq!(fs::read(outside).unwrap(), [7, 8, 9]);
+    }
+
     #[test]
     fn indexed_preview_matches_full_scan_and_detects_new_incoming_links() {
         let dir = fixture();
