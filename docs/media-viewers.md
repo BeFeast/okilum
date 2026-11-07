@@ -21,8 +21,10 @@ Symphonia 0.5.5 decoder and CPAL output (ALSA/CoreAudio/WASAPI). Only MP3 and
 PCM/WAV features are enabled. Play/Pause, seek, volume and replay share the
 same sink implementation. The output device opens on Play, never on selection;
 closing the view disconnects its command channel and releases output. The Linux
-AppImage explicitly bundles libasound.so.2 (excluded by linuxdeploy by default);
-ALSA device configuration and audio drivers remain native to the host. Decoder
+AppImage includes libasound.so.2 as a startup fallback. Its launcher prefers an
+installed native ALSA loader so the host's PipeWire/Pulse plugins retain their
+matching ABI and plugin directory; device configuration remains native. The
+fallback alone cannot provide a missing system audio stack. Decoder
 and device errors are visible and can be retried. Seek replaces the source on
 the worker rather than waiting for a potentially disconnected output callback.
 Audio samples are synthetic three-second tones, not external recordings.

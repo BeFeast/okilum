@@ -90,6 +90,13 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 # linuxdeploy excludes ALSA by default. The audio viewer links it at startup,
 # so force the loader library into the image; device configuration stays native.
 test -e AppDir/usr/lib/libasound.so.2
+# A newer host's PipeWire/Pulse plugin may require newer ALSA symbols and a
+# different plugin directory. Prefer its matching host loader when available.
+rm -f AppDir/AppRun
+install -m755 ../../scripts/appimage/apprun.sh AppDir/AppRun
+if [[ $local_dev != 1 ]]; then
+    install -Dm644 /usr/share/doc/libasound2/copyright AppDir/usr/share/licenses/alsa-lib/copyright
+fi
 python3 ../../scripts/appimage/check-elf.py AppDir/usr/bin/okilum \
     2>&1 | tee evidence/elf-after-deploy.log
 install -Dm644 ../../LICENSE AppDir/usr/share/licenses/okilum/LICENSE
