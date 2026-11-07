@@ -372,13 +372,16 @@ mod restart_tests {
     use super::*;
 
     #[gpui::test]
-    fn busy_restart_reports_a_retry_reason_without_arming_or_quitting(
+    fn busy_verified_restart_reports_a_retry_reason_without_arming_or_quitting(
         cx: &mut gpui::TestAppContext,
     ) {
         let _guard = super::super::restart_feedback::TEST_LOCK.lock().unwrap();
         cx.update(crate::test_init);
         assert!(!BUSY.swap(true, Ordering::SeqCst));
-        cx.update(restart);
+        // The final install guard still refuses a competing operation. The
+        // public Restart entry now carries consent through discovery first;
+        // its queued/busy behavior is covered by restart_intent controls.
+        cx.update(restart_verified);
         BUSY.store(false, Ordering::SeqCst);
         assert!(super::super::restart_feedback::pending_message()
             .is_some_and(|reason| reason.contains("busy") && reason.contains("Restart now again")));
