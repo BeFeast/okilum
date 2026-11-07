@@ -189,7 +189,7 @@ def trim_target(root):
             return 0
         return int(subprocess.check_output(['du', '-sk', str(target)], text=True).split()[0])
 
-    free = shutil.disk_usage(root).free / 1024**3
+    free = shutil.disk_usage(target if target.exists() else root).free / 1024**3
     print(f'Sprint target volume: free={free:.2f} GiB' +
           ('; WARNING below 50 GiB' if free < 50 else ''), flush=True)
     before = after = size()

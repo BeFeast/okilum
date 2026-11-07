@@ -356,16 +356,20 @@ class SprintTargetTests(unittest.TestCase):
             self.assertTrue(deps.exists())
             self.assert_kept(root, outside)
 
-    def test_low_space_warning_uses_the_target_root_volume(self):
+    def test_low_space_warning_uses_target_volume_or_root_before_first_build(self):
         for free_gib in [49, 51]:
             with self.subTest(free_gib=free_gib), self.tree() as (root, helper, outside):
                 (root / 'build.lock/owner').write_text(f'{os.getppid()} test parent\n')
+                volume = root
+                if free_gib == 49:
+                    (root / 'target').mkdir()
+                    volume = root / 'target'
                 usage = shutil.disk_usage(root)._replace(free=free_gib * 1024**3)
                 output = io.StringIO()
                 with patch.object(MODULE['shutil'], 'disk_usage', return_value=usage) as disk, \
                      contextlib.redirect_stdout(output):
                     MODULE['trim_target'](root)
-                disk.assert_called_once_with(root)
+                disk.assert_called_once_with(volume)
                 self.assertEqual('WARNING below 50 GiB' in output.getvalue(), free_gib < 50)
                 self.assert_kept(root, outside)
 
