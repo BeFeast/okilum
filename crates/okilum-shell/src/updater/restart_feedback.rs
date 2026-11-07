@@ -22,6 +22,7 @@ struct Message {
     text: String,
     /// A refusal or failure offers one action; progress offers none.
     actionable: bool,
+    ready: bool,
 }
 
 /// Remembers which ready package was announced, so the same package is not
@@ -92,6 +93,7 @@ fn post(outcome: &str, reason: String, actionable: bool) {
     *MESSAGE.lock().unwrap() = Some(Message {
         text: reason,
         actionable,
+        ready: false,
     });
 }
 
@@ -104,6 +106,17 @@ pub(super) fn notify(outcome: &str, reason: impl Into<String>) {
 #[cfg(any(target_os = "linux", windows, test))]
 pub(super) fn clear_pending() {
     *MESSAGE.lock().unwrap() = None;
+}
+
+/// Replace download progress in every window, including ones that lost focus.
+#[cfg(any(target_os = "linux", windows, test))]
+pub(super) fn latest_ready() {
+    record("ready", "The latest update is ready");
+    *MESSAGE.lock().unwrap() = Some(Message {
+        text: "Update ready".into(),
+        actionable: true,
+        ready: true,
+    });
 }
 
 #[cfg(any(target_os = "linux", windows, test))]
@@ -222,7 +235,13 @@ pub(super) fn present(cx: &mut App) {
     // Includes Settings/About and windows that lost focus after the click.
     for handle in cx.windows() {
         let message = message.clone();
-        let _ = handle.update(cx, |_, window, cx| show_message(window, cx, message));
+        let _ = handle.update(cx, |_, window, cx| {
+            if message.ready {
+                show_ready(window, cx, super::restart_now);
+            } else {
+                show_message(window, cx, message);
+            }
+        });
     }
 }
 

@@ -783,23 +783,32 @@ mod tests {
     fn replacement_ready_is_not_overwritten_by_queued_download_progress(cx: &mut TestAppContext) {
         let _guard = restart_feedback::TEST_LOCK.lock().unwrap();
         let app = cx.clone();
+        let mut other_app = cx.clone();
+        let other = notice_window(&mut other_app);
         let visual = notice_window(cx);
         visual.update(|window, cx| show_ready_notice(window, cx, |_| {}));
+        other.update(|window, cx| show_ready_notice(window, cx, |_| {}));
         visual.run_until_parked();
+        other.deactivate_window();
         restart_feedback::notify("downloading", "Downloading the latest update…");
-        // The worker can complete before the one-second presenter tick.
-        restart_feedback::clear_pending();
-        visual.update(|window, cx| show_ready_notice(window, cx, |_| {}));
-        visual.run_until_parked();
         app.update(restart_feedback::present);
         visual.run_until_parked();
-        assert_eq!(notice_count(visual), 1);
-        visual.update(|window, cx| window.draw(cx).clear(cx));
-        assert!(
-            visual.debug_bounds("restart-update").is_some(),
-            "a late download message must not remove the newest Restart action"
-        );
-        assert!(visual.debug_bounds("update-notice-action").is_none());
+        other.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(other.debug_bounds("restart-update").is_none());
+        restart_feedback::notify("downloading", "Downloading the latest update…");
+        // The worker can complete before the one-second presenter tick.
+        restart_feedback::latest_ready();
+        app.update(restart_feedback::present);
+        visual.run_until_parked();
+        for window in [visual, other] {
+            assert_eq!(notice_count(window), 1);
+            window.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(
+                window.debug_bounds("restart-update").is_some(),
+                "the newest Restart action must replace progress even in an inactive window"
+            );
+            assert!(window.debug_bounds("update-notice-action").is_none());
+        }
     }
 
     #[gpui::test]
@@ -868,6 +877,12 @@ pub(crate) fn can_cancel_update() -> bool {
     false
 }
 pub(crate) fn cancel_update() {
+    // Cancellation must revoke explicit restart consent even when the worker
+    // won the download-completion race and already cleared its token.
+    #[cfg(target_os = "linux")]
+    appimage::cancel_requested_restart();
+    #[cfg(windows)]
+    windows::cancel_requested_restart();
     #[cfg(any(target_os = "linux", windows))]
     policy::DOWNLOAD.cancel();
     #[cfg(target_os = "macos")]

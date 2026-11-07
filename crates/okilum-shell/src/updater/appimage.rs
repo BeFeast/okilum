@@ -130,16 +130,18 @@ pub(super) fn check(download: bool) -> bool {
                         status::set(CheckStatus::Ready);
                         return Ok(());
                     }
-                    let previous = PENDING.lock().unwrap().take();
-                    replacing = previous.is_some();
-                    let conflicting_identity = previous
-                        .as_ref()
-                        .is_some_and(|staged| staged.release().build == release.build);
-                    drop(previous);
-                    anyhow::ensure!(
-                        !conflicting_identity,
-                        "The signed identity for this update build changed. Check for updates again"
-                    );
+                    {
+                        let mut pending = PENDING.lock().unwrap();
+                        replacing = pending.is_some();
+                        // Keep the authenticated old identity as evidence of
+                        // the conflict. Neither a retry nor a timer can silently
+                        // choose different bytes for that same build.
+                        anyhow::ensure!(
+                            !pending.as_ref().is_some_and(|staged| staged.release().build == release.build),
+                            "The signed identity for this update build changed. Check for updates again"
+                        );
+                        *pending = None;
+                    }
                     // Dropping an unarmed superseded stage releases its lock.
                     // The next prepare reacquires it and rechecks the original
                     // inode/hash before any payload or installation work.
@@ -189,7 +191,11 @@ pub(super) fn check(download: bool) -> bool {
                             match staged {
                                 Ok(staged) => {
                                     *PENDING.lock().unwrap() = Some(staged);
-                                    super::restart_feedback::clear_pending();
+                                    if replacing {
+                                        super::restart_feedback::latest_ready();
+                                    } else {
+                                        super::restart_feedback::clear_pending();
+                                    }
                                     ANNOUNCE.store(true, Ordering::SeqCst);
                                     status::set(CheckStatus::Ready);
                                 }
@@ -274,6 +280,14 @@ pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
         }
         Next::Apply => restart_verified(cx),
         Next::Refuse(reason) => super::restart_feedback::refused(reason),
+    }
+}
+
+pub(super) fn cancel_requested_restart() {
+    let requested = RESTART.requested();
+    RESTART.cancel();
+    if requested {
+        super::restart_feedback::offer("Restart cancelled. Nothing was installed.");
     }
 }
 

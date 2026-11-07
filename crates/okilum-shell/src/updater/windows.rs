@@ -63,6 +63,14 @@ pub(super) fn finish_requested_restart(cx: &mut gpui::App) {
     }
 }
 
+pub(super) fn cancel_requested_restart() {
+    let requested = RESTART.requested();
+    RESTART.cancel();
+    if requested {
+        super::restart_feedback::offer("Restart cancelled. Nothing was installed.");
+    }
+}
+
 fn restart_verified(cx: &mut gpui::App) {
     // Serialize restart against background checks until Velopack is armed.
     // The refusal appears in the single update notice, never a second toast.
@@ -315,6 +323,7 @@ pub(super) fn check(download: bool) -> bool {
     // HTTP and package IO never block the GPUI/UI thread or vault preparation.
     // A manual check reports inline, never in a message box (#995).
     std::thread::spawn(move || {
+        let previous = ready_package();
         let result = check_and_download(download);
         // Download/preparation failures stay visible even for background checks.
         super::policy::DOWNLOAD.finish(|cancelled| {
@@ -332,7 +341,16 @@ pub(super) fn check(download: bool) -> bool {
                 return;
             }
             status::set(match result {
-                Ok(status) => status,
+                Ok(status) => {
+                    if status == CheckStatus::Ready {
+                        if previous.is_some() && ready_package() != previous {
+                            super::restart_feedback::latest_ready();
+                        } else {
+                            super::restart_feedback::clear_pending();
+                        }
+                    }
+                    status
+                }
                 Err(error) => {
                     crate::reader_diagnostics::network_failure("Windows update", &error);
                     let reason = format!(
@@ -389,7 +407,6 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                 {
                     record_verified(&sha256, offered);
                     state().lock().unwrap().observe(Some(identity(asset)));
-                    super::restart_feedback::clear_pending();
                     return Ok(CheckStatus::Ready);
                 }
             }
@@ -454,7 +471,6 @@ fn check_and_download(download: bool) -> anyhow::Result<super::status::CheckStat
                 pending.is_some(),
                 "The downloaded package is no longer available. Check for updates again."
             );
-            super::restart_feedback::clear_pending();
             Ok(CheckStatus::Ready)
         }
         UpdateCheck::NoUpdateAvailable => {
