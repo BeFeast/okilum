@@ -457,14 +457,21 @@ impl Controller {
             "operational state must be outside the vault"
         );
         let mut db = self.shared.db.lock().unwrap();
+        #[cfg(target_os = "linux")]
+        let upgraded_grants = {
+            let mut grants = db.share_grants.clone();
+            for grant in grants.iter_mut().filter(|g| g.vault == fresh.folder_id) {
+                grant.refresh_source(&fresh, true)?;
+            }
+            grants
+        };
         if let Some(old) = db
             .attached
             .iter_mut()
             .find(|v| v.folder_id == fresh.folder_id)
         {
             ensure!(
-                existing::same_binding(old, &fresh)
-                    || old.root_identity.is_none() && existing::same_replica(old, &fresh),
+                existing::same_binding_with_consent(old, &fresh),
                 "folder ID already associated with another replica"
             );
             // Only this explicit, freshly inspected consent can upgrade a legacy
@@ -472,6 +479,10 @@ impl Controller {
             *old = fresh.clone();
         } else {
             db.attached.push(fresh.clone());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            db.share_grants = upgraded_grants;
         }
         // Explicit consent also exposes this vault to computers already approved
         // before enrollment, matching Share with my computers for managed vaults.
@@ -1244,17 +1255,35 @@ impl Controller {
         )
     }
     fn refresh_attached(&self) -> Result<()> {
-        // Explicitly read-only; offline replicas retain their durable association.
+        // Daemon inspection is read-only; persist upgraded private identity witnesses.
+        // Offline replicas retain their durable association.
         let configs = self.shared.configs.lock().unwrap().clone();
         let mut db = self.shared.db.lock().unwrap();
-        for attached in &mut db.attached {
+        let mut attached = db.attached.clone();
+        #[cfg(target_os = "linux")]
+        let mut grants = db.share_grants.clone();
+        let mut changed = false;
+        for attached in &mut attached {
             if let Ok(fresh) = inspect_existing(&configs, &attached.path) {
                 ensure!(
                     existing::same_binding(attached, &fresh),
                     "attached replica identity changed"
                 );
+                #[cfg(target_os = "linux")]
+                for grant in grants.iter_mut().filter(|g| g.vault == fresh.folder_id) {
+                    changed |= grant.refresh_source(&fresh, false)?;
+                }
+                changed |= *attached != fresh;
                 *attached = fresh;
             }
+        }
+        if changed {
+            db.attached = attached;
+            #[cfg(target_os = "linux")]
+            {
+                db.share_grants = grants;
+            }
+            self.save(&db)?;
         }
         Ok(())
     }
@@ -1725,6 +1754,8 @@ mod tests {
                 folder_type: "sendreceive".into(),
                 peers: vec![],
                 root_identity: None,
+                #[cfg(target_os = "linux")]
+                stable_root_identity: None,
             });
         let url = offer(&source)?;
         assert!(!url.contains("private-local-path"));

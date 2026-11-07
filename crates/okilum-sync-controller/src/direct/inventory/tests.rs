@@ -316,6 +316,8 @@ fn source(path: &Path) -> ExistingVault {
         folder_type: "sendreceive".into(),
         peers: vec![],
         root_identity: Some((1, 2)),
+        #[cfg(target_os = "linux")]
+        stable_root_identity: None,
     }
 }
 fn stored(path: &Path, peer: Uuid, vault: &str) -> Result<Stored> {

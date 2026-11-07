@@ -27,6 +27,8 @@ const KEY: &str = "synthetic-fixture-key";
 
 struct Fixture {
     config: PathBuf,
+    #[cfg(target_os = "linux")]
+    folders: Arc<Mutex<Vec<serde_json::Value>>>,
     requests: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     server: Option<JoinHandle<()>>,
@@ -51,6 +53,8 @@ impl Fixture {
         let requests = Arc::new(Mutex::new(vec![]));
         let stop = Arc::new(AtomicBool::new(false));
         let (recorded, stopping) = (requests.clone(), stop.clone());
+        let folders: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(vec![]));
+        let served_folders = folders.clone();
         let (device, version) = (device.to_owned(), version.to_owned());
         let server = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(30);
@@ -94,7 +98,12 @@ impl Fixture {
                 let body = match request.as_str() {
                     "GET /rest/system/version HTTP/1.1" => json!({"version":version}),
                     "GET /rest/system/status HTTP/1.1" => json!({"myID":device}),
-                    "GET /rest/config HTTP/1.1" => json!({"folders":[], "devices":[]}),
+                    "GET /rest/config HTTP/1.1" => {
+                        json!({"folders":*served_folders.lock().unwrap(), "devices":[]})
+                    }
+                    "GET /rest/config/folders/fixture HTTP/1.1" => {
+                        served_folders.lock().unwrap()[0].clone()
+                    }
                     _ => panic!("unexpected or mutating REST call: {request}"),
                 }
                 .to_string();
@@ -103,6 +112,8 @@ impl Fixture {
         });
         Ok(Self {
             config: config.canonicalize()?,
+            #[cfg(target_os = "linux")]
+            folders,
             requests,
             stop,
             server: Some(server),
@@ -212,5 +223,67 @@ fn external_217_compatibility_does_not_change_bundled_pin() -> Result<()> {
     assert!(!okilum_sync_controller::daemon::compatible_external_version("v2.1.8"));
     assert!(!okilum_sync_controller::daemon::compatible_external_version("v2.1.7-rc.1"));
     assert!(!okilum_sync_controller::daemon::compatible_external_version("v1.29.5"));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sync_2710_persisted_attachment_migrates_and_survives_device_renumbering() -> Result<()> {
+    use okilum_sync_controller::direct::{attach_existing, inspect_existing, AttachedVault};
+    let root = tempfile::tempdir()?;
+    let fixture = Fixture::new(root.path(), "daemon", DEVICE, CLIENT_VERSION)?;
+    let vault = root.path().join("vault");
+    fs::create_dir(&vault)?;
+    fs::write(vault.join("note.md"), b"canonical bytes\r\n")?;
+    fixture.folders.lock().unwrap().push(json!({
+        "id":"fixture", "path":vault, "label":"fixture", "paused":false,
+        "type":"sendreceive", "devices":[]
+    }));
+    let configs = std::slice::from_ref(&fixture.config);
+    let state = root.path().join("attachment");
+    let inspected = inspect_existing(configs, &vault)?;
+    attach_existing(&state, &inspected, true)?;
+    let file = state.join("existing.json");
+    let original: serde_json::Value = serde_json::from_slice(&fs::read(&file)?)?;
+    let mut changed = original.clone();
+    changed["root_identity"][0] = json!(60);
+    changed["stable_root_identity"][0] = json!(60);
+    fs::write(&file, serde_json::to_vec(&changed)?)?;
+    AttachedVault::load(state.clone())?.inspect()?;
+
+    let mut legacy = original.clone();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("stable_root_identity");
+    fs::write(&file, serde_json::to_vec(&legacy)?)?;
+    AttachedVault::load(state.clone())?;
+    let migrated: serde_json::Value = serde_json::from_slice(&fs::read(&file)?)?;
+    assert_eq!(
+        migrated["stable_root_identity"],
+        original["stable_root_identity"]
+    );
+    legacy["root_identity"][0] = json!(inspected.root_identity.unwrap().0 + 1024);
+    fs::write(&file, serde_json::to_vec(&legacy)?)?;
+    assert!(AttachedVault::load(state.clone()).is_err());
+    assert!(attach_existing(&state, &inspected, false).is_err());
+    attach_existing(&state, &inspected, true)?;
+    AttachedVault::load(state.clone())?.inspect()?;
+
+    fs::rename(&vault, root.path().join("previous"))?;
+    fs::create_dir(&vault)?;
+    let replaced = inspect_existing(configs, &vault)?;
+    assert!(AttachedVault::load(state.clone()).is_err());
+    assert!(attach_existing(&state, &replaced, true).is_err());
+    assert_eq!(
+        fs::read(root.path().join("previous/note.md"))?,
+        b"canonical bytes\r\n"
+    );
+    assert!(fixture
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|r| r.starts_with("GET ")));
     Ok(())
 }

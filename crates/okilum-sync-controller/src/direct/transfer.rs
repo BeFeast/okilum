@@ -641,6 +641,17 @@ impl ShareGrant {
         );
         Ok(())
     }
+    #[cfg(target_os = "linux")]
+    pub(super) fn refresh_source(&mut self, fresh: &ExistingVault, consent: bool) -> Result<bool> {
+        ensure!(
+            existing::same_binding(&self.source, fresh)
+                || consent && existing::same_binding_with_consent(&self.source, fresh),
+            "explicit share scope changed"
+        );
+        let changed = self.source != *fresh;
+        self.source = fresh.clone();
+        Ok(changed)
+    }
     pub(super) fn observe(&self, configs: &[PathBuf], generation: Uuid) -> Result<Observation> {
         ensure!(
             configs.iter().any(|p| p
@@ -1681,6 +1692,8 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
+            #[cfg(target_os = "linux")]
+            stable_root_identity: None,
         };
         ShareGrant::new(transfer.peer, &source, "sender")
     }
@@ -1757,6 +1770,8 @@ mod tests {
             folder_type: "sendreceive".into(),
             peers: vec![],
             root_identity: None,
+            #[cfg(target_os = "linux")]
+            stable_root_identity: None,
         };
         let controller = Controller::open(root.path().join("order-controller"), vec![])?;
         let mut db = controller.shared.db.lock().unwrap();

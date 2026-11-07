@@ -82,6 +82,17 @@ impl Authority {
                 && self.binding.owner.legacy_matches(&owner_identity),
             "Writer authority identity replaced; recovery required"
         );
+        #[cfg(target_os = "linux")]
+        ensure!(
+            identity_linux::legacy_filesystems_match(&[
+                (&self.binding.root_identity, &root_identity),
+                (&self.binding.directory, &directory),
+                (&self.binding.admission, &admission_identity),
+                (&self.binding.writers, &writers_identity),
+                (&self.binding.owner, &owner_identity),
+            ]),
+            "Writer authority filesystem changed; recovery required"
+        );
         ensure!(
             !self.account.starts_with(&self.binding.root),
             "Authority is inside canonical vault"
