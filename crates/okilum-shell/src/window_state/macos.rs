@@ -5,6 +5,15 @@ use gpui::{point, px, size, Bounds, Pixels, WindowBounds};
 /// AppKit frames are logical points, not backing pixels. Preserve fractional
 /// normal frames exactly; only shrink/move when the current work area requires it.
 pub(super) fn normal_bounds(frame: &Frame, visible: Bounds<Pixels>) -> Bounds<Pixels> {
+    let saved = Bounds::new(
+        point(px(frame.x), px(frame.y)),
+        size(px(frame.width), px(frame.height)),
+    );
+    // Fill/drag-to-fill need not set isZoomed. Normalize the saved outer frame
+    // before clamping, including older JSON with maximized:false.
+    if fills_visible(saved, visible) {
+        return visible;
+    }
     let width = px(frame.width).min(visible.size.width);
     let height = px(frame.height).min(visible.size.height);
     Bounds::new(
@@ -89,8 +98,9 @@ pub(super) fn restore_ready(target: &Frame, current: &Frame) -> bool {
 }
 
 fn fills_visible(frame: Bounds<Pixels>, visible: Bounds<Pixels>) -> bool {
-    // Accommodate AppKit's point rounding without classifying a near-full-size
-    // normal window (the original bug's right/bottom margins) as maximized.
+    // Fill/tiling and fractional display coordinates may differ by a few logical
+    // points. Compare all four edges: half/quarter tiles and the old 20 pt
+    // right/bottom gap must remain ordinary geometry, never guessed as Fill.
     [
         frame.left() - visible.left(),
         frame.top() - visible.top(),
@@ -98,7 +108,7 @@ fn fills_visible(frame: Bounds<Pixels>, visible: Bounds<Pixels>) -> bool {
         frame.bottom() - visible.bottom(),
     ]
     .iter()
-    .all(|delta| f32::from(*delta).abs() <= 1.)
+    .all(|delta| f32::from(*delta).abs() <= 3.)
 }
 
 #[cfg(target_os = "macos")]
@@ -340,6 +350,86 @@ mod tests {
             !maximized(true, true, visible(), visible()),
             "fullscreen is separate"
         );
+    }
+
+    #[test]
+    fn non_zoomed_fill_and_legacy_near_fill_restore_exact_visible_frame() {
+        let visible = Bounds::new(point(px(0.), px(30.)), size(px(1600.), px(870.)));
+        for (x, y, width, height) in [
+            (0., 30., 1600., 870.),
+            (2., 32., 1596., 866.),
+            (-0.5, 29.5, 1601., 871.),
+        ] {
+            let frame = Frame {
+                x,
+                y,
+                width,
+                height,
+                ..normal()
+            };
+            assert!(!frame.maximized, "Fill does not require native Zoom");
+            let saved: Frame =
+                serde_json::from_slice(&serde_json::to_vec(&frame).unwrap()).unwrap();
+            assert!(maximized(
+                false,
+                false,
+                Bounds::new(point(px(x), px(y)), size(px(width), px(height))),
+                visible
+            ));
+            assert_eq!(plan(&saved, visible).get_bounds(), visible);
+            assert_eq!(zoom_bounds(&saved, visible), visible);
+        }
+    }
+
+    #[test]
+    fn twenty_point_zoom_gap_is_replaced_but_an_ordinary_frame_is_exact() {
+        // #2717: AppKit's standard Zoom frame after opening a saved full-size
+        // window was 1580x850, not NSScreen.visibleFrame's 1600x870.
+        let visible = Bounds::new(point(px(0.), px(30.)), size(px(1600.), px(870.)));
+        let frame = Frame {
+            x: 0.,
+            y: 30.,
+            width: 1580.,
+            height: 850.,
+            ..normal()
+        };
+        let ordinary = Bounds::new(point(px(0.), px(30.)), size(px(1580.), px(850.)));
+        assert!(!maximized(false, false, ordinary, visible));
+        assert!(maximized(true, false, ordinary, visible));
+        assert_eq!(zoom_bounds(&frame, visible), ordinary);
+        let zoomed = Frame {
+            maximized: true,
+            ..frame
+        };
+        let saved: Frame = serde_json::from_slice(&serde_json::to_vec(&zoomed).unwrap()).unwrap();
+        assert_eq!(zoom_bounds(&saved, visible), visible);
+        let screen = Bounds::new(point(px(0.), px(0.)), size(px(1600.), px(900.)));
+        assert_eq!(
+            to_appkit(zoom_bounds(&saved, visible), screen),
+            Bounds::new(point(px(0.), px(0.)), size(px(1600.), px(870.)))
+        );
+    }
+
+    #[test]
+    fn half_tiles_and_normal_windows_keep_every_logical_point() {
+        let visible = Bounds::new(point(px(0.), px(30.)), size(px(1600.), px(870.)));
+        for bounds in [
+            Bounds::new(point(px(0.), px(30.)), size(px(800.), px(870.))),
+            Bounds::new(point(px(800.), px(30.)), size(px(800.), px(870.))),
+            Bounds::new(point(px(0.), px(30.)), size(px(1600.), px(435.))),
+            Bounds::new(point(px(4.), px(34.)), size(px(1592.), px(862.))),
+            Bounds::new(point(px(81.5), px(62.5)), size(px(1100.5), px(700.5))),
+        ] {
+            assert!(!maximized(false, false, bounds, visible));
+            let frame = Frame {
+                x: bounds.left().into(),
+                y: bounds.top().into(),
+                width: bounds.size.width.into(),
+                height: bounds.size.height.into(),
+                ..normal()
+            };
+            assert_eq!(zoom_bounds(&frame, visible), bounds);
+        }
     }
 
     #[test]

@@ -103,7 +103,7 @@ pub(super) fn notify(outcome: &str, reason: impl Into<String>) {
 }
 
 /// A completed replacement must not be overwritten by queued download progress.
-#[cfg(any(target_os = "linux", windows, test))]
+#[cfg(any(target_os = "linux", windows))]
 pub(super) fn clear_pending() {
     *MESSAGE.lock().unwrap() = None;
 }
@@ -119,7 +119,7 @@ pub(super) fn latest_ready() {
     });
 }
 
-#[cfg(any(target_os = "linux", windows, test))]
+#[cfg(any(target_os = "linux", windows))]
 pub(super) fn offer(reason: impl Into<String>) {
     post("available", reason.into(), true);
 }
