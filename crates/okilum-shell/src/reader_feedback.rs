@@ -5,6 +5,7 @@ use gpui_component::{
     checkbox::Checkbox,
     input::{Input, InputState, Paste, Textarea, TextareaState},
 };
+mod identity;
 mod model;
 pub(crate) mod sprint;
 mod video;
@@ -414,6 +415,11 @@ enum ImageInput {
 type Sender = Arc<dyn Fn(Report) -> anyhow::Result<Receipt> + Send + Sync>;
 struct FeedbackView {
     text: Entity<TextareaState>,
+    reporter: Entity<InputState>,
+    identity: identity::Data,
+    identity_store: Option<identity::Store>,
+    identity_error: Option<String>,
+    _reporter: Subscription,
     meta: Metadata,
     kind: Kind,
     visible: bool,
@@ -451,6 +457,31 @@ struct FeedbackView {
 }
 impl FeedbackView {
     fn new(meta: Metadata, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let (identity_store, identity_error) = match feedback_limits_path()
+            .map(|path| identity::Store::open(path.with_file_name("feedback-identity.json")))
+            .transpose()
+        {
+            Ok(store) => (store, None),
+            Err(_) => (None, Some("Couldn't read the private feedback identity. Its file was kept; restore it before sending.".into())),
+        };
+        let identity = identity_store
+            .as_ref()
+            .map(|store| store.data.clone())
+            .unwrap_or_else(identity::Data::anonymous);
+        let reporter = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("Name or GitHub (optional)");
+            input.set_value(identity.reporter_name.clone(), window, cx);
+            input
+        });
+        let reporter_subscription = cx.subscribe(
+            &reporter,
+            |this, _, event: &gpui_component::input::InputEvent, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.schedule_checkpoint(cx);
+                    cx.notify();
+                }
+            },
+        );
         let text = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(3, 8)
@@ -509,6 +540,11 @@ impl FeedbackView {
             .collect();
         Self {
             text,
+            reporter,
+            identity,
+            identity_store,
+            identity_error,
+            _reporter: reporter_subscription,
             meta,
             kind: Kind::Bug,
             visible: false,
@@ -573,6 +609,21 @@ impl FeedbackView {
     /// Commit authored data before any network request; failures stay visible
     /// and stop Send rather than pretending restart recovery is available.
     fn checkpoint(&mut self, cx: &App) -> bool {
+        let reporter = self.reporter.read(cx).value().to_string();
+        if let Some(store) = &mut self.identity_store {
+            if store.remember(&reporter).is_err() {
+                self.identity_error = Some("Couldn't save the private reporter name. Use at most 128 characters without line breaks and check the app data folder.".into());
+                return false;
+            }
+            self.identity = store.data.clone();
+            self.identity_error = None;
+        } else {
+            #[cfg(not(test))]
+            {
+                self.identity_error = Some("Feedback identity storage is unavailable. Sending is stopped; keep this window open and check the app data folder.".into());
+                return false;
+            }
+        }
         if self.draft_store.is_none() {
             if self.text.read(cx).value().is_empty() && self.image.is_none() && self.video.is_none()
             {
@@ -739,6 +790,21 @@ impl FeedbackView {
     }
     fn remount(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.limit_inputs = None;
+        let reporter = self.reporter.read(cx).value();
+        self.reporter = cx.new(|cx| {
+            let mut input = InputState::new(window, cx).placeholder("Name or GitHub (optional)");
+            input.set_value(reporter, window, cx);
+            input
+        });
+        self._reporter = cx.subscribe(
+            &self.reporter,
+            |this, _, event: &gpui_component::input::InputEvent, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.schedule_checkpoint(cx);
+                    cx.notify();
+                }
+            },
+        );
         let value = self.text.read(cx).value();
         let selection = self.text.read(cx).selected_range();
         let scroll = self.text.read(cx).scroll_offset();
@@ -823,6 +889,11 @@ impl FeedbackView {
         cx.notify();
     }
     fn selection_limits_error(&self, cx: &App) -> Option<String> {
+        let mut identity = self.identity.clone();
+        identity.reporter_name = self.reporter.read(cx).value().trim().to_owned();
+        if let Err(error) = identity.validate() {
+            return Some(error.to_string());
+        }
         let text = self.text.read(cx).value();
         if text.chars().count() > 10_000 || text.contains('\0') {
             return Some(
@@ -843,6 +914,10 @@ impl FeedbackView {
             text: report_text(&self.text.read(cx).value(), sprint::enabled()).unwrap_or_default(),
             kind: self.kind,
             meta: self.meta.clone(),
+            identity: identity::Data {
+                install_id: self.identity.install_id,
+                reporter_name: self.reporter.read(cx).value().trim().to_owned(),
+            },
             screenshot: self.image.as_ref().map(|image| image.png.clone()),
             log: None,
             video: self.video.clone(),
@@ -871,6 +946,7 @@ impl FeedbackView {
             && self.unavailable_screenshot.is_none()
             && !self.video_needs_reselect
             && self.limits_error.is_none()
+            && self.identity_error.is_none()
             && self.limit_inputs.is_none()
             && self.preflight_error.is_none()
             && self.selection_limits_error(cx).is_none()
@@ -1295,9 +1371,13 @@ impl Render for FeedbackView {
                     })),
             );
         }
-        for error in [&self.recovery_error, &self.persistence_error]
-            .into_iter()
-            .flatten()
+        for error in [
+            &self.recovery_error,
+            &self.persistence_error,
+            &self.identity_error,
+        ]
+        .into_iter()
+        .flatten()
         {
             body = body.child(div().text_sm().child(error.clone()));
         }
@@ -1372,8 +1452,10 @@ impl Render for FeedbackView {
                 div()
                     .debug_selector(|| "feedback-public-notice".into())
                     .text_sm()
-                    .child("Sending creates a public issue. Your message, system details and chosen attachments will be visible to everyone."),
+                    .child("Sending creates a public issue. Your message, system details and chosen screenshot or video are public. Diagnostic logs stay private."),
             )
+            .child(div().debug_selector(|| "feedback-reporter".into()).child(Input::new(&self.reporter).disabled(busy)))
+            .child(div().text_sm().child("Your optional name and a random installation ID are sent privately to group reports. Public issues show only an opaque label. Your name is remembered on this installation."))
             .child(h_flex().gap_1().children(
                 [(Kind::Bug, "Problem"), (Kind::Feature, "Idea")].map(|(kind, label)| {
                     Button::new(label)

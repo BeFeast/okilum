@@ -24,6 +24,7 @@ fn report() -> Report {
         text: "A report with Ελληνικά and an idea 💡".into(),
         kind: Kind::Bug,
         meta: meta(),
+        identity: super::super::identity::Data::anonymous(),
         screenshot: None,
         log: None,
         video: None,
@@ -204,6 +205,30 @@ fn multipart_preserves_unicode_and_only_attaches_chosen_data() {
         if attachments {
             assert!(wire.windows(8).any(|b| b == b"\x89PNG\r\n\x1a\n"));
         }
+    }
+}
+
+#[test]
+fn feedback2683_identity_uses_private_parts_and_is_omitted_when_name_is_empty() {
+    let mut draft = report();
+    let install = draft.identity.install_id.to_string();
+    for name in ["", "synthetic-reporter-2683"] {
+        draft.identity.reporter_name = name.into();
+        let (url, server) = mock(201, RECEIPT);
+        assert_eq!(send_to(&url, &draft).unwrap().issue_number, 123);
+        let wire = server.join().unwrap();
+        let wire = String::from_utf8_lossy(&wire);
+        assert!(wire.contains(&format!("name=\"install_id\"\r\n\r\n{install}")));
+        assert_eq!(wire.contains("name=\"reporter_name\""), !name.is_empty());
+        if !name.is_empty() {
+            assert!(wire.contains(&format!("name=\"reporter_name\"\r\n\r\n{name}")));
+            assert!(!draft.copy_text().contains(name));
+            assert!(!format!("{draft:?}").contains(name));
+        }
+        let metadata = serde_json::to_string(&draft.meta).unwrap();
+        assert!(!metadata.contains("install_id") && !metadata.contains("reporter_name"));
+        assert!(!draft.copy_text().contains(&install));
+        assert!(!format!("{draft:?}").contains(&install));
     }
 }
 #[test]

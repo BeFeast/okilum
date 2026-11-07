@@ -2,6 +2,60 @@ use super::*;
 use ::core::prelude::v1::test;
 use gpui_component::WindowExt;
 
+#[gpui::test]
+fn feedback2683_mounted_reporter_persists_privately_and_clears_without_changing_install(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_DRAFT_ROOT.with(|root| *root.borrow_mut() = None);
+        }
+    }
+    let _reset = Reset;
+    TEST_DRAFT_ROOT.with(|root| *root.borrow_mut() = Some(temp.path().join("drafts")));
+    with_reader(cx, |reader| {
+        let (view, mut feedback) = open_from_button(reader);
+        assert!(feedback.debug_bounds("feedback-reporter").is_some());
+        let install = view.read_with(&feedback, |view, _| view.identity.install_id);
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.reporter.update(cx, |input, cx| {
+                input.set_value("synthetic-reporter-2683", window, cx)
+            });
+            view.text.update(cx, |input, cx| {
+                input.set_value("Public synthetic feedback", window, cx)
+            });
+            assert!(view.checkpoint(cx));
+            let report = view.report_without_log(cx);
+            assert_eq!(report.identity.reporter_name, "synthetic-reporter-2683");
+            assert!(!report.copy_text().contains("synthetic-reporter-2683"));
+            view.remount(window, cx);
+            assert_eq!(
+                view.reporter.read(cx).value().as_ref(),
+                "synthetic-reporter-2683"
+            );
+        });
+        let path = temp.path().join("feedback-identity.json");
+        let store = identity::Store::open(path.clone()).unwrap();
+        assert_eq!(store.data.install_id, install);
+        assert_eq!(store.data.reporter_name, "synthetic-reporter-2683");
+        view.update_in(&mut feedback, |view, window, cx| {
+            view.reporter
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            assert!(view.checkpoint(cx));
+            assert!(view
+                .report_without_log(cx)
+                .identity
+                .reporter_name
+                .is_empty());
+        });
+        let store = identity::Store::open(path).unwrap();
+        assert_eq!(store.data.install_id, install);
+        assert!(store.data.reporter_name.is_empty());
+    });
+}
+
 fn with_reader(cx: &mut TestAppContext, check: impl FnOnce(&mut VisualTestContext)) {
     cx.update(|cx| {
         crate::test_init(cx);

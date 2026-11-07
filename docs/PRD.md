@@ -216,6 +216,10 @@ by these local-start slices.
 
 ## 2. Canonical data
 
+Feedback's optional reporter and random installation identity follow the
+[private feedback identity contract](feedback-identity.md) (#2683). They are app
+configuration and private service records, never canonical note metadata.
+
 - Markdown and adjacent media files are canonical, inspectable, portable, and
   editable without Okilum.
 - Search indexes, thumbnails, embeddings, graph projections, and caches are **derived**
