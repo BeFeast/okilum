@@ -1,6 +1,6 @@
 //! AppKit frame/state adapter for GPUI 0.3.3. Never used by Linux or Windows.
 use super::Frame;
-use gpui::{Bounds, Pixels, WindowBounds, point, px, size};
+use gpui::{point, px, size, Bounds, Pixels, WindowBounds};
 
 /// AppKit frames are logical points, not backing pixels. Preserve fractional
 /// normal frames exactly; only shrink/move when the current work area requires it.
