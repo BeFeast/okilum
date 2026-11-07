@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           inventory=$(mktemp)
           cargo test --locked -p okilum-write-authority --lib diagnostic_2692_ -- --list | tee "$inventory"
-          test "$(rg -c ': test$' "$inventory")" = 1
+          test "$(grep -c ': test$' "$inventory")" = 1
           mkdir -p qa
           cargo test --locked -p okilum-write-authority --lib diagnostic_2692_ -- --nocapture --test-threads=1 | tee qa/2692-native-probe.log
       - name: Retain all native admission and hold controls

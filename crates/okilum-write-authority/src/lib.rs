@@ -1103,6 +1103,7 @@ mod native_identity_diagnosis {
     /// metadata restoration from replacement on a disposable synthetic root.
     #[test]
     fn diagnostic_2692_creation_time_after_ordinary_mtime_restore() {
+        use std::os::macos::fs::MetadataExt as _;
         use std::time::{Duration, SystemTime};
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("vault");
@@ -1112,6 +1113,7 @@ mod native_identity_diagnosis {
         let authority = Authority::open_in(&account, &root).unwrap();
         authority.admit().unwrap();
         let before = identity(&root).unwrap();
+        let generation = fs::symlink_metadata(&root).unwrap().st_gen();
         File::open(&root)
             .unwrap()
             .set_times(
@@ -1130,6 +1132,10 @@ mod native_identity_diagnosis {
             b"Unchanged canonical bytes\n"
         );
         println!("ROOT_IDENTITY_2692 before={before:?} after={after:?} same_dev_inode=true");
+        println!(
+            "ROOT_IDENTITY_2692 generation_before={generation} generation_after={}",
+            fs::symlink_metadata(&root).unwrap().st_gen()
+        );
         let reopened = Authority::open_in(&account, &root);
         if before != after {
             let error = reopened.unwrap_err();
