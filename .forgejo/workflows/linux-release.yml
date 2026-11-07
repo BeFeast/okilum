@@ -93,7 +93,7 @@ jobs:
       - name: Install Arch build and packaging tools
         run: |
           pacman -Syu --noconfirm --needed nodejs git python curl cmake clang mold \
-            wayland libxkbcommon libxkbcommon-x11 fontconfig freetype2 libxcb \
+            wayland libxkbcommon libxkbcommon-x11 fontconfig freetype2 libxcb alsa-lib \
             vulkan-icd-loader librsvg desktop-file-utils xorg-server-xvfb xorg-xauth xdotool vulkan-swrast dbus
       - uses: https://code.forgejo.org/actions/checkout@v4
         with:

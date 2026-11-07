@@ -49,7 +49,9 @@ mod quick_open;
 #[cfg(not(all(unix, feature = "brain")))]
 mod reader_app_menu;
 mod reader_archive;
+mod reader_audio;
 mod reader_cache;
+mod reader_canvas;
 mod reader_capture;
 mod reader_code;
 mod reader_code_file;
@@ -128,6 +130,8 @@ mod reader_replay;
 mod reader_right_panel;
 mod reader_session;
 mod reader_settings;
+#[cfg(test)]
+mod reader_viewer_tests;
 // One module for Linux and macOS: an `include!` wrapper made every name in
 // it macro-expanded on macOS only, so `use super::*` plus an explicit
 // `use ::core::prelude::v1::test` was E0659-ambiguous there (#2589).
@@ -1012,6 +1016,7 @@ struct LocalImage {
 }
 #[derive(Clone)]
 struct LocalImages {
+    offset: usize,
     images: Vec<LocalImage>,
     caption: String,
 }
@@ -1358,6 +1363,8 @@ fn reader_plugins_at(
                     Some(MarkdownImage::Drawing(root.clone(), path))
                 } else if reader_media::is_video(&path) {
                     Some(MarkdownImage::Video(root.clone(), path))
+                } else if reader_audio::eligible(&path) {
+                    Some(MarkdownImage::Audio(root.clone(), path))
                 } else {
                     Some(MarkdownImage::Source(reader_files::image_source(path)))
                 }
@@ -1396,6 +1403,7 @@ type MarkdownLinkHandler = Arc<dyn Fn(&str, &ClickEvent, &mut Window, &mut App) 
 enum MarkdownImage {
     Drawing(PathBuf, PathBuf),
     Video(PathBuf, PathBuf),
+    Audio(PathBuf, PathBuf),
     DrawingUnavailable(String),
     Source(ImageSource),
     // Constructed only by the remote Brain image authority; renderer is shared.
@@ -1477,6 +1485,7 @@ fn markdown_plugins_at(
         let mut node = MarkdownNode::new(
             "local-image",
             LocalImages {
+                offset: cx.offset() + node.position()?.start.offset,
                 images: images.clone(),
                 caption: caption.trim().to_owned(),
             },
@@ -1501,6 +1510,9 @@ fn markdown_plugins_at(
         let mut column = v_flex().py_2().gap_1();
         for (index, image) in data.images.iter().enumerate() {
             let element = match render_image(&image.url) {
+                Some(MarkdownImage::Audio(root, path)) => {
+                    reader_audio::inline(root, path, data.offset + index, window, cx)
+                }
                 Some(MarkdownImage::Video(root, path)) => {
                     reader_media::video_card(&root, &path, cx)
                 }

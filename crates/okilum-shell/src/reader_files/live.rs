@@ -55,7 +55,10 @@ impl Reader {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !preview.image && !reader_pdf::is_pdf(&preview.rel) {
+        if !preview.image
+            && !reader_pdf::is_pdf(&preview.rel)
+            && !reader_canvas::eligible(&preview.path)
+        {
             return;
         }
         if preview.image {
@@ -155,6 +158,9 @@ impl Reader {
                 preview.unavailable = None;
                 if let Some(pdf) = &preview.pdf {
                     pdf.update(cx, |pdf, cx| pdf.reload(preview.path.clone(), cx));
+                }
+                if let Some(canvas) = &preview.canvas {
+                    canvas.update(cx, |canvas, cx| canvas.reload(cx));
                 }
                 #[cfg(target_os = "macos")]
                 if preview.thumbnail.is_some() {

@@ -26,7 +26,7 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential cmake pkg-config curl git mold zstd \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libfontconfig-dev libfreetype-dev libxcb1-dev libvulkan1
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev libvulkan1
       - name: Pin source identity
         id: source
         run: |

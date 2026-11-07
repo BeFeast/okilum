@@ -144,7 +144,7 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential cmake pkg-config curl git mold zstd tini python3-venv \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libfontconfig-dev libfreetype-dev libxcb1-dev
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
 
       - name: Install repository Rust toolchain
         run: |
@@ -183,7 +183,7 @@ jobs:
             mold --version
             dpkg-query -W -f='${Package}=${Version}\n' \
               libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-              libfontconfig-dev libfreetype-dev libxcb1-dev
+              libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
             python3 -c 'import json, os; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(("CARGO_", "RUST")) or k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS")}, sort_keys=True))'
           } | sha256sum | cut -d ' ' -f 1)
           echo "compatibility=$compatibility" >> "$GITHUB_OUTPUT"
@@ -325,7 +325,7 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential cmake pkg-config curl git mold zstd python3-venv \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libfontconfig-dev libfreetype-dev libxcb1-dev
+            libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
 
       - name: Install repository Rust toolchain
         run: |
@@ -363,7 +363,7 @@ jobs:
             mold --version
             dpkg-query -W -f='${Package}=${Version}\n' \
               libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-              libfontconfig-dev libfreetype-dev libxcb1-dev
+              libfontconfig-dev libfreetype-dev libxcb1-dev libasound2-dev
             python3 -c 'import json, os; print(json.dumps({k: v for k, v in os.environ.items() if k.startswith(("CARGO_", "RUST")) or k in ("CC", "CXX", "CFLAGS", "CXXFLAGS", "LDFLAGS")}, sort_keys=True))'
           } | sha256sum | cut -d ' ' -f 1)
           echo "compatibility=$compatibility" >> "$GITHUB_OUTPUT"

@@ -195,6 +195,8 @@ pub(crate) struct FilePreview {
     pub table: Option<Entity<reader_delimited::TablePreview>>,
     /// A ZIP archive's entries, previews and extraction (#996).
     pub archive: Option<Entity<reader_archive::ArchivePreview>>,
+    pub audio: Option<Entity<reader_audio::AudioView>>,
+    pub canvas: Option<Entity<reader_canvas::CanvasView>>,
     #[cfg(any(target_os = "macos", all(test, unix)))]
     pub thumbnail: Option<Entity<reader_thumbnail::Thumbnail>>,
     /// The log view, for a log opened in the quick viewer (#602).
@@ -225,6 +227,8 @@ impl FilePreview {
             _live: None,
             table: None,
             archive: None,
+            audio: None,
+            canvas: None,
             code: None,
             rel: rel.into(),
             path,
@@ -429,6 +433,28 @@ impl Reader {
                 }
                 let mut preview = preview;
                 self.observe_preview_file(&mut preview, window, cx);
+                if reader_canvas::eligible(&preview.path) {
+                    let reader = cx.entity().downgrade();
+                    preview.canvas = Some(cx.new(|cx| {
+                        reader_canvas::CanvasView::new(
+                            self.vault_root.clone(),
+                            rel.into(),
+                            self.vault.clone(),
+                            reader,
+                            cx,
+                        )
+                    }));
+                }
+                if reader_audio::eligible(&preview.path) {
+                    preview.audio = Some(cx.new(|cx| {
+                        reader_audio::AudioView::new(
+                            self.vault_root.clone(),
+                            rel.into(),
+                            window,
+                            cx,
+                        )
+                    }));
+                }
                 if reader_pdf::is_pdf(rel) {
                     let path = preview.path.clone();
                     let viewer = cx.new(|cx| reader_pdf::PdfViewer::new(path, window, cx));
@@ -496,6 +522,8 @@ impl Reader {
                     && preview.table.is_none()
                     && preview.archive.is_none()
                     && !reader_media::is_video(&preview.path)
+                    && preview.audio.is_none()
+                    && preview.canvas.is_none()
                     && reader_thumbnail::eligible(rel)
                 {
                     preview.thumbnail = Some(cx.new(|cx| {
@@ -555,6 +583,13 @@ impl Reader {
                 .child(div().flex_1().min_h_0().child(virtual_log.clone()))
                 .into_any_element();
         }
+        if let Some(audio) = &preview.audio {
+            return v_flex()
+                .size_full()
+                .child(self.render_document_header(window, cx))
+                .child(div().p_6().child(audio.clone()))
+                .into_any_element();
+        }
         if let Some(message) = &preview.unavailable {
             return v_flex()
                 .id("reader-file-unavailable")
@@ -581,6 +616,14 @@ impl Reader {
                 .min_h_0()
                 .child(self.render_document_header(window, cx))
                 .child(archive.clone())
+                .into_any_element();
+        }
+        if let Some(canvas) = &preview.canvas {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .child(self.render_document_header(window, cx))
+                .child(div().flex_1().min_h_0().child(canvas.clone()))
                 .into_any_element();
         }
         if let Some(table) = &preview.table {

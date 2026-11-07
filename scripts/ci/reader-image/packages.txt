@@ -12,3 +12,4 @@ libxkbcommon-x11-dev
 libfontconfig-dev
 libfreetype-dev
 libxcb1-dev
+libasound2-dev

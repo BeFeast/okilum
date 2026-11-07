@@ -1,0 +1,70 @@
+{
+  "nodes": [
+    {
+      "id": "group",
+      "type": "group",
+      "x": -440,
+      "y": -240,
+      "width": 880,
+      "height": 540,
+      "label": "Release review",
+      "color": "5"
+    },
+    {
+      "id": "text",
+      "type": "text",
+      "x": -400,
+      "y": -180,
+      "width": 320,
+      "height": 180,
+      "text": "# Release review\n\nCards stay read only. Scroll to pan; Ctrl/Cmd + scroll to zoom.",
+      "color": "3"
+    },
+    {
+      "id": "note",
+      "type": "file",
+      "x": 80,
+      "y": -180,
+      "width": 300,
+      "height": 180,
+      "file": "canvas/linked-note.md",
+      "subpath": "#Acceptance"
+    },
+    {
+      "id": "link",
+      "type": "link",
+      "x": 80,
+      "y": 80,
+      "width": 300,
+      "height": 140,
+      "url": "https://jsoncanvas.org/"
+    },
+    {
+      "id": "missing",
+      "type": "file",
+      "x": -400,
+      "y": 80,
+      "width": 320,
+      "height": 140,
+      "file": "canvas/missing-note.md"
+    }
+  ],
+  "edges": [
+    {
+      "id": "review",
+      "fromNode": "text",
+      "fromSide": "right",
+      "toNode": "note",
+      "toSide": "left",
+      "label": "Check acceptance"
+    },
+    {
+      "id": "reference",
+      "fromNode": "note",
+      "fromSide": "bottom",
+      "toNode": "link",
+      "toSide": "top",
+      "color": "5"
+    }
+  ]
+}
